@@ -1,0 +1,19 @@
+# Local-only installation artifacts — never committed.
+# The committed repository must contain zero installation-specific data
+# (domains, e-mail addresses, local account or group names, host paths,
+# certificate locations). Those live in the untracked instance/ directory
+# and in /etc (see docs/instance-configuration.md).
+HANDOVER.md
+instance/
+.env
+.env.*
+
+# Development environment
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+
+# Runtime state that must never enter the repository
+.devcoordinator/

@@ -1,0 +1,6 @@
+# Parent slice for all DevCoordinator2 transient test units, so test load is
+# isolated and accountable as one cgroup subtree.
+[Unit]
+Description=DevCoordinator2 test workloads
+
+[Slice]
