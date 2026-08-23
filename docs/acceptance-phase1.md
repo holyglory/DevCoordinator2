@@ -24,3 +24,12 @@ passed, `ruff check` clean.
 Deliberately not yet done (later phases / cutover): wiring the MCP server
 into a real agent client's configuration, installing the systemd unit as a
 permanent service, and any deployment/health/edge/Telegram/bug surface.
+
+## Phase 2 addendum (2026-08-22)
+
+| Item | Result | Evidence |
+|---|---|---|
+| Ephemeral PostgreSQL reachable by the test via injected env; real SQL round-trip | PASS | integration `test_postgres_real_query_labels_secrecy_and_cleanup` |
+| Container carries exact run/repository/caller/client/data labels | PASS | same |
+| Credentials absent from unit `Environment`, summary, and status; env file 0600 caller-owned | PASS | same |
+| Container removed on completion, on supersession, and by daemon crash recovery (REQ-TEST-09) | PASS | `test_postgres_removed_on_supersession_and_recovery` |

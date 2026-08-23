@@ -1,0 +1,133 @@
+"""Docker CLI wrapper: argv-only, label-scoped, exact-ID operations.
+
+The daemon is the only component that invokes Docker for managed work. It
+injects labels callers cannot override, records the full container ID Docker
+returns, and removes only exact IDs it recorded or containers carrying its
+own instance/purpose labels. Docker prune is never used.
+"""
+
+from __future__ import annotations
+
+import json
+import subprocess
+
+LABEL_PREFIX = "devcoordinator2"
+_TIMEOUT = 120
+
+
+class DockerError(Exception):
+    """Docker invocation failure with a bounded diagnostic."""
+
+
+def _run(argv: list[str], env: dict[str, str] | None = None,
+         timeout: int = _TIMEOUT) -> subprocess.CompletedProcess:
+    try:
+        return subprocess.run(["docker", *argv], capture_output=True, text=True,
+                              timeout=timeout, check=False, env=env)
+    except FileNotFoundError as exc:
+        raise DockerError("docker CLI not installed") from exc
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise DockerError(f"docker {argv[0]} failed: {exc}") from exc
+
+
+def available() -> bool:
+    try:
+        return _run(["version", "--format", "{{.Server.Version}}"],
+                    timeout=15).returncode == 0
+    except DockerError:
+        return False
+
+
+def managed_labels(*, instance: str, repository_id: str, worktree_id: str,
+                   run_id: str, purpose: str, caller_uid: int, client: str,
+                   session: str | None, created_at: str,
+                   data_class: str) -> dict[str, str]:
+    labels = {
+        f"{LABEL_PREFIX}.instance": instance,
+        f"{LABEL_PREFIX}.repository": repository_id,
+        f"{LABEL_PREFIX}.worktree": worktree_id,
+        f"{LABEL_PREFIX}.run": run_id,
+        f"{LABEL_PREFIX}.purpose": purpose,
+        f"{LABEL_PREFIX}.caller_uid": str(caller_uid),
+        f"{LABEL_PREFIX}.client": client,
+        f"{LABEL_PREFIX}.created": created_at,
+        f"{LABEL_PREFIX}.data": data_class,
+    }
+    if session:
+        labels[f"{LABEL_PREFIX}.session"] = session[:128]
+    return labels
+
+
+def run_detached(*, name: str, image: str, labels: dict[str, str],
+                 env_names: list[str], env_values: dict[str, str],
+                 publish: list[str], tmpfs: list[str],
+                 command: list[str] | None = None) -> str:
+    """`docker run -d`; secrets travel via the process environment (-e NAME),
+    never via argv. Returns the full 64-hex container ID."""
+    argv = ["run", "--detach", "--name", name, "--pull", "never"]
+    for key, value in labels.items():
+        argv += ["--label", f"{key}={value}"]
+    for key in env_names:
+        argv += ["--env", key]
+    for spec in publish:
+        argv += ["--publish", spec]
+    for spec in tmpfs:
+        argv += ["--tmpfs", spec]
+    argv.append(image)
+    if command:
+        argv += command
+    proc = _run(argv, env={"PATH": "/usr/bin:/bin", **env_values})
+    if proc.returncode != 0:
+        raise DockerError(proc.stderr.strip()[:1024] or "docker run failed")
+    container_id = proc.stdout.strip()
+    if len(container_id) != 64:
+        raise DockerError(f"unexpected docker run output: {container_id[:80]!r}")
+    return container_id
+
+
+def inspect(container_id: str) -> dict:
+    proc = _run(["inspect", "--format", "{{json .}}", container_id], timeout=30)
+    if proc.returncode != 0:
+        raise DockerError(proc.stderr.strip()[:512] or "docker inspect failed")
+    try:
+        return json.loads(proc.stdout)
+    except json.JSONDecodeError as exc:
+        raise DockerError("docker inspect returned invalid JSON") from exc
+
+
+def published_host_port(container_id: str, container_port: str) -> int:
+    info = inspect(container_id)
+    ports = (info.get("NetworkSettings") or {}).get("Ports") or {}
+    bindings = ports.get(container_port) or []
+    for binding in bindings:
+        try:
+            return int(binding["HostPort"])
+        except (KeyError, TypeError, ValueError):
+            continue
+    raise DockerError(f"container publishes no host port for {container_port}")
+
+
+def exec_ok(container_id: str, argv: list[str], timeout: int = 15) -> bool:
+    proc = _run(["exec", container_id, *argv], timeout=timeout)
+    return proc.returncode == 0
+
+
+def remove_exact(container_id: str) -> None:
+    """Remove one exact full ID with its anonymous volumes; idempotent."""
+    if len(container_id) != 64:
+        raise DockerError("refusing to remove a non-exact container reference")
+    proc = _run(["rm", "--force", "--volumes", container_id], timeout=60)
+    if proc.returncode != 0 and "No such container" not in proc.stderr:
+        raise DockerError(proc.stderr.strip()[:512] or "docker rm failed")
+
+
+def list_ids_by_labels(labels: dict[str, str]) -> list[str]:
+    """Full IDs of all containers (any state) carrying every given label."""
+    argv = ["ps", "--all", "--no-trunc", "--quiet"]
+    for key, value in labels.items():
+        argv += ["--filter", f"label={key}={value}"]
+    proc = _run(argv, timeout=30)
+    if proc.returncode != 0:
+        raise DockerError(proc.stderr.strip()[:512] or "docker ps failed")
+    return [line.strip() for line in proc.stdout.splitlines()
+            if len(line.strip()) == 64]

@@ -17,7 +17,22 @@ command = ["python3", "-m", "pytest", "-q"]   # argv array, REQUIRED
 cwd = "."                   # optional, repo-relative, default "."
 timeout_seconds = 600       # optional, 1..21600, default 600
 env = { CI = "1" }          # optional, string→string; additive only
+
+[test.unit.postgres]        # optional: test-scoped ephemeral PostgreSQL
+image = "postgres:16-alpine"   # official postgres:<tag> only (default shown)
+database = "test"              # [a-z_][a-z0-9_]{0,62}
+user = "test"
 ```
+
+An ephemeral PostgreSQL is one throwaway instance per run: a Docker
+container carrying the exact run identity in daemon-owned labels, data on
+tmpfs, published on loopback only, credentials generated per run. The test
+process receives `PGHOST`, `PGPORT`, `PGUSER`, `PGPASSWORD`, `PGDATABASE`,
+and `DATABASE_URL` through a caller-owned 0600 environment file (never via
+argv or the unit's public environment). The container is removed on
+completion, timeout, cancellation, supersession, daemon recovery, or the
+next start. Declared and injected environment values never appear in
+summaries, logs, metrics, or agent results.
 
 Validation rules:
 

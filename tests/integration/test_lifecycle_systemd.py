@@ -310,3 +310,79 @@ def test_root_caller_rejected(world):
     assert resp["ok"] is False
     assert resp["error"]["code"] == "test_start_failed"
     assert "root" in resp["error"]["message"]
+
+
+# -- Phase 2: test-scoped ephemeral PostgreSQL ---------------------------------
+
+def _containers_with_label(key: str, value: str) -> list[str]:
+    out = subprocess.run(
+        ["docker", "ps", "--all", "--no-trunc", "--quiet",
+         "--filter", f"label=devcoordinator2.{key}={value}"],
+        capture_output=True, text=True).stdout
+    return [ln.strip() for ln in out.splitlines() if ln.strip()]
+
+
+PG_TOML = ('schema = 1\n[test.unit]\n'
+           'command = ["psql", "-v", "ON_ERROR_STOP=1", "-c",'
+           ' "create table t(x int); insert into t values (42); select x from t"]\n'
+           'timeout_seconds = 120\n[test.unit.postgres]\n'
+           'image = "postgres:16-alpine"\ndatabase = "app_test"\nuser = "app"\n')
+
+
+def test_postgres_real_query_labels_secrecy_and_cleanup(world):
+    _write_config(world.repo, world.caller, PG_TOML)
+    resp = _call(world, "test.start", {"path": str(world.repo)})
+    assert resp["ok"], resp
+    run_id = resp["result"]["run_id"]
+    unit = resp["result"]["unit"]
+    # The container exists, carries the exact run identity and attribution.
+    owned = _containers_with_label("run", run_id)
+    assert len(owned) == 1, owned
+    labels = json.loads(subprocess.run(
+        ["docker", "inspect", "--format", "{{json .Config.Labels}}", owned[0]],
+        capture_output=True, text=True).stdout)
+    assert labels["devcoordinator2.purpose"] == "test"
+    assert labels["devcoordinator2.caller_uid"] == str(world.caller.pw_uid)
+    assert labels["devcoordinator2.data"] == "disposable"
+    assert labels["devcoordinator2.instance"] == UNIT_PREFIX
+    # The password never enters the unit's public Environment property.
+    env_prop = subprocess.run(["systemctl", "show", unit, "-p", "Environment"],
+                              capture_output=True, text=True).stdout
+    assert "PGPASSWORD" not in env_prop
+    env_file = world.repo / ".devcoordinator" / "test" / "current" / "env"
+    st = env_file.stat()
+    assert st.st_mode & 0o777 == 0o600 and st.st_uid == world.caller.pw_uid
+    final = _wait_status(world, world.repo, {"passed", "failed"}, timeout=120)
+    out = _call(world, "test.output", {"path": str(world.repo),
+                                       "stream": "stdout"})["result"]["tail"]
+    err = _call(world, "test.output", {"path": str(world.repo),
+                                       "stream": "stderr"})["result"]["tail"]
+    assert final["status"] == "passed", (final, out, err)
+    assert "42" in out
+    # Summary and status carry no credentials; container is gone.
+    assert "PGPASSWORD" not in json.dumps(final)
+    assert _containers_with_label("run", run_id) == []
+
+
+def test_postgres_removed_on_supersession_and_recovery(world):
+    slow = ('schema = 1\n[test.unit]\ncommand = ["sleep", "120"]\n'
+            '[test.unit.postgres]\nimage = "postgres:16-alpine"\n')
+    _write_config(world.repo, world.caller, slow)
+    first = _call(world, "test.start", {"path": str(world.repo)})
+    assert first["ok"], first
+    first_run = first["result"]["run_id"]
+    assert len(_containers_with_label("run", first_run)) == 1
+    second = _call(world, "test.start", {"path": str(world.repo)})
+    assert second["ok"], second
+    second_run = second["result"]["run_id"]
+    assert _containers_with_label("run", first_run) == []
+    assert len(_containers_with_label("run", second_run)) == 1
+    # Daemon dies; restart recovery removes the orphaned test container.
+    world.daemon.kill_hard()
+    assert len(_containers_with_label("run", second_run)) == 1
+    world.daemon.start()
+    deadline = time.monotonic() + 60
+    while time.monotonic() < deadline and _containers_with_label("run", second_run):
+        time.sleep(0.5)
+    assert _containers_with_label("run", second_run) == []
+    assert _containers_with_label("instance", UNIT_PREFIX) == []

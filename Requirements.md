@@ -34,7 +34,7 @@ not contradict them.
 - **REQ-TEST-08** (P1, in scope): On daemon restart, a complete atomic
   summary is imported as-is; unfinished test units are stopped and marked
   `interrupted`. Nothing is resurrected, migrated, or retried.
-- **REQ-TEST-09** (P2): A test-scoped ephemeral PostgreSQL and test
+- **REQ-TEST-09** (P2, done): A test-scoped ephemeral PostgreSQL and test
   containers carry the exact test identity and are removed on completion,
   timeout, supersession, or the next start. Declared shared/permanent
   database dependencies are never stopped and their data never deleted by

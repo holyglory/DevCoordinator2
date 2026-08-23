@@ -84,3 +84,33 @@ def test_unknown_test_name(tmp_path):
     root = write(tmp_path, 'schema = 1\n[test.u]\ncommand = ["x"]\n')
     with pytest.raises(ConfigError, match="not defined"):
         load_test_spec(root, "missing")
+
+
+def test_postgres_section_defaults_and_overrides(tmp_path):
+    root = write(tmp_path, 'schema = 1\n[test.u]\ncommand = ["x"]\n'
+                           '[test.u.postgres]\n')
+    spec = load_test_spec(root, None)
+    assert spec.postgres is not None
+    assert spec.postgres.image == "postgres:16-alpine"
+    assert spec.postgres.database == "test"
+    root = write(tmp_path, 'schema = 1\n[test.u]\ncommand = ["x"]\n'
+                           '[test.u.postgres]\nimage = "postgres:17.10-alpine"\n'
+                           'database = "app_db"\nuser = "app"\n')
+    spec = load_test_spec(root, None)
+    assert spec.postgres.image == "postgres:17.10-alpine"
+    assert spec.postgres.database == "app_db"
+
+
+@pytest.mark.parametrize("body,fragment", [
+    ('image = "mysql:8"', "official 'postgres:<tag>'"),
+    ('image = "evil/postgres:16"', "official 'postgres:<tag>'"),
+    ('database = "Bad-Name"', "database must match"),
+    ('user = "1abc"', "user must match"),
+    ('persistent = true', "unknown keys"),
+])
+def test_postgres_section_rejections(tmp_path, body, fragment):
+    root = write(tmp_path, 'schema = 1\n[test.u]\ncommand = ["x"]\n'
+                           f'[test.u.postgres]\n{body}\n')
+    with pytest.raises(ConfigError) as excinfo:
+        load_test_spec(root, None)
+    assert fragment in str(excinfo.value)

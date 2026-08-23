@@ -15,7 +15,7 @@ def test_argv_shape_and_no_shell(tmp_path: Path):
         unit="devcoordinator2-dev-w1-0001.service",
         slice_name="devcoordinator2-tests.slice",
         uid=uid, gid=entry.pw_gid, timeout_seconds=60,
-        cwd=tmp_path, env={"CI": "1"},
+        cwd=tmp_path, env_file=tmp_path / "env",
         command=("echo", "hello world; rm -rf /"),
         scratch_dir=tmp_path / "scratch",
     )
@@ -25,7 +25,8 @@ def test_argv_shape_and_no_shell(tmp_path: Path):
     assert "--property=KillMode=control-group" in argv
     assert "--property=RuntimeMaxSec=60s" in argv
     assert "--property=NoNewPrivileges=yes" in argv
-    assert "--setenv=CI=1" in argv
+    assert f"--property=EnvironmentFile={tmp_path / 'env'}" in argv
+    assert not any(a.startswith("--setenv=CI") for a in argv)
     # The command stays an argv tail after "--"; shell metacharacters inert.
     sep = argv.index("--")
     assert argv[sep + 1:] == ["echo", "hello world; rm -rf /"]

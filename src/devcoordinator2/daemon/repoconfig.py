@@ -15,6 +15,9 @@ CONFIG_NAME = ".devcoordinator.toml"
 MAX_CONFIG_BYTES = 262144
 TEST_NAME_RE = re.compile(r"[a-z0-9][a-z0-9-]{0,31}$")
 TIMEOUT_MIN, TIMEOUT_MAX, TIMEOUT_DEFAULT = 1, 21600, 600
+POSTGRES_IMAGE_RE = re.compile(r"postgres:[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+PG_IDENT_RE = re.compile(r"[a-z_][a-z0-9_]{0,62}$")
+POSTGRES_IMAGE_DEFAULT = "postgres:16-alpine"
 _SECRET_KEY_RE = re.compile(r"(token|secret|password|passwd|credential|api_?key)",
                             re.IGNORECASE)
 
@@ -24,12 +27,21 @@ class ConfigError(Exception):
 
 
 @dataclass(frozen=True)
+class PostgresSpec:
+    """Test-scoped ephemeral PostgreSQL: one throwaway instance per run."""
+    image: str
+    database: str
+    user: str
+
+
+@dataclass(frozen=True)
 class TestSpec:
     name: str
     command: tuple[str, ...]
     cwd: Path  # resolved absolute, proven inside the worktree
     timeout_seconds: int
     env: dict[str, str]
+    postgres: PostgresSpec | None = None
 
 
 def load_test_spec(worktree_root: Path, test_name: str | None) -> TestSpec:
@@ -83,7 +95,7 @@ def load_test_spec(worktree_root: Path, test_name: str | None) -> TestSpec:
 
 
 def _validate_test(worktree_root: Path, name: str, section: dict) -> TestSpec:
-    unknown = set(section) - {"command", "cwd", "timeout_seconds", "env"}
+    unknown = set(section) - {"command", "cwd", "timeout_seconds", "env", "postgres"}
     if unknown:
         raise ConfigError(f"[test.{name}] unknown keys: {sorted(unknown)}")
 
@@ -125,5 +137,28 @@ def _validate_test(worktree_root: Path, name: str, section: dict) -> TestSpec:
                 "reference secrets held outside the repository instead")
         env[key] = value
 
+    postgres = None
+    if "postgres" in section:
+        postgres = _validate_postgres(name, section["postgres"])
+
     return TestSpec(name=name, command=tuple(command), cwd=cwd,
-                    timeout_seconds=timeout, env=env)
+                    timeout_seconds=timeout, env=env, postgres=postgres)
+
+
+def _validate_postgres(name: str, section) -> PostgresSpec:
+    if not isinstance(section, dict):
+        raise ConfigError(f"[test.{name}.postgres] must be a table")
+    unknown = set(section) - {"image", "database", "user"}
+    if unknown:
+        raise ConfigError(f"[test.{name}.postgres] unknown keys: {sorted(unknown)}")
+    image = section.get("image", POSTGRES_IMAGE_DEFAULT)
+    if not isinstance(image, str) or not POSTGRES_IMAGE_RE.fullmatch(image):
+        raise ConfigError(f"[test.{name}.postgres] image must be an official "
+                          "'postgres:<tag>' reference")
+    database = section.get("database", "test")
+    user = section.get("user", "test")
+    for key, value in (("database", database), ("user", user)):
+        if not isinstance(value, str) or not PG_IDENT_RE.fullmatch(value):
+            raise ConfigError(f"[test.{name}.postgres] {key} must match "
+                              "[a-z_][a-z0-9_]{0,62}")
+    return PostgresSpec(image=image, database=database, user=user)

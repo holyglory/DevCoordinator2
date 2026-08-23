@@ -7,6 +7,8 @@ repository-local files; the daemon only holds live handles.
 
 from __future__ import annotations
 
+import json
+import logging
 import os
 import threading
 import time
@@ -14,7 +16,14 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from devcoordinator2 import ids
-from devcoordinator2.daemon import capture, securefs, summary, systemd_unit
+from devcoordinator2.daemon import (
+    capture,
+    docker_cli,
+    securefs,
+    summary,
+    systemd_unit,
+    test_postgres,
+)
 from devcoordinator2.daemon.gitinfo import GitResolveError, resolve_worktree
 from devcoordinator2.daemon.registry import Registry
 from devcoordinator2.daemon.repoconfig import ConfigError, load_test_spec
@@ -24,6 +33,9 @@ from devcoordinator2.protocol import ProtocolError
 
 _START_LOCK_WAIT = 10.0
 _LAUNCH_VERIFY_WAIT = 10.0
+_CONTAINERS_FILE = "containers.json"
+_ENV_FILE = "env"
+log = logging.getLogger("devcoordinator2.tests")
 
 
 def _now_iso() -> str:
@@ -54,6 +66,7 @@ class _RunHandle:
         # through it so a stale writer can never clobber a successor run.
         self.dir_fd: int | None = None
         self.finalized = threading.Event()  # set after the summary write
+        self.containers: list[str] = []  # exact full IDs owned by this run
 
     def close_dir_fd(self) -> None:
         with self.lock:
@@ -119,16 +132,41 @@ class TestLifecycle:
                                         caller.uid, client)
                 summary.write_atomic_at(dir_fd, initial,
                                         owner=(caller.uid, caller.gid))
+                env = dict(spec.env)
+                containers: list[str] = []
+                if spec.postgres is not None:
+                    labels = docker_cli.managed_labels(
+                        instance=self._config.unit_prefix,
+                        repository_id=reg.repository_id,
+                        worktree_id=reg.worktree_id, run_id=run,
+                        purpose="test", caller_uid=caller.uid, client=client,
+                        session=caller.client_session, created_at=started_at,
+                        data_class="disposable")
+                    try:
+                        pg = test_postgres.provision(spec.postgres, run_id=run,
+                                                     labels=labels)
+                    except docker_cli.DockerError as exc:
+                        raise ProtocolError(
+                            "test_start_failed",
+                            f"ephemeral postgres failed: {exc}") from exc
+                    containers.append(pg.container_id)
+                    _write_containers(dir_fd, containers, (caller.uid, caller.gid))
+                    env.update(pg.env())
+                env_file = None
+                if env:
+                    _write_env_file(dir_fd, env, (caller.uid, caller.gid))
+                    env_file = current / _ENV_FILE
                 argv = systemd_unit.build_systemd_run_argv(
                     unit=unit, slice_name=self._config.slice_name,
                     uid=caller.uid, gid=caller.gid,
                     timeout_seconds=spec.timeout_seconds, cwd=spec.cwd,
-                    env=spec.env, command=spec.command,
+                    env_file=env_file, command=spec.command,
                     scratch_dir=current / "scratch",
                 )
                 try:
                     proc = systemd_unit.spawn(argv)
                 except OSError as exc:
+                    _remove_containers(containers)
                     raise ProtocolError(
                         "test_start_failed",
                         f"cannot spawn systemd-run: {exc}") from exc
@@ -143,6 +181,7 @@ class TestLifecycle:
                                     started_at)
                 handle.caller_gid = caller.gid
                 handle.dir_fd = dir_fd
+                handle.containers = containers
             except (OSError, ProtocolError) as exc:
                 os.close(dir_fd)
                 if isinstance(exc, ProtocolError):
@@ -245,6 +284,17 @@ class TestLifecycle:
                 pass
             systemd_unit.prove_cgroup_empty(cgroup)
             systemd_unit.reset_failed(unit)
+        # Every test container of this instance is ephemeral by definition:
+        # unfinished runs are interrupted, finished runs already cleaned up.
+        try:
+            leftovers = docker_cli.list_ids_by_labels({
+                f"{docker_cli.LABEL_PREFIX}.instance": self._config.unit_prefix,
+                f"{docker_cli.LABEL_PREFIX}.purpose": "test",
+            })
+        except docker_cli.DockerError as exc:
+            log.warning("recovery: cannot list test containers: %s", exc)
+            leftovers = []
+        _remove_containers(leftovers)
         for worktree_path in self._registry.registered_worktree_paths():
             summary_path = test_dir(worktree_path) / "summary.json"
             doc = summary.read(summary_path)
@@ -288,6 +338,15 @@ class TestLifecycle:
                     "unit_stop_failed",
                     f"cgroup of {unit} still has processes after stop")
             systemd_unit.reset_failed(unit)
+        try:
+            stale = docker_cli.list_ids_by_labels({
+                f"{docker_cli.LABEL_PREFIX}.instance": self._config.unit_prefix,
+                f"{docker_cli.LABEL_PREFIX}.purpose": "test",
+                f"{docker_cli.LABEL_PREFIX}.worktree": wt_id,
+            })
+        except docker_cli.DockerError:
+            stale = []
+        _remove_containers(stale)
 
     def _terminate(self, handle: _RunHandle, reason: str) -> None:
         with handle.lock:
@@ -389,6 +448,7 @@ class TestLifecycle:
                 status, exit_code = "failed", rc
             handle.final_status = status
         try:
+            _remove_containers(handle.containers)
             finished_at = _now_iso()
             duration = round(time.monotonic() - handle.started_mono, 3)
             out, err = handle.out.counts, handle.err.counts
@@ -411,3 +471,44 @@ class TestLifecycle:
                 pass  # directory superseded underneath us; successor owns the slot
         finally:
             handle.finalized.set()
+
+
+def _write_containers(dir_fd: int, containers: list[str],
+                      owner: tuple[int, int]) -> None:
+    """Record exact owned container IDs beside the summary for recovery."""
+    payload = json.dumps({"containers": containers}).encode()
+    fd = os.open(_CONTAINERS_FILE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644,
+                 dir_fd=dir_fd)
+    try:
+        os.write(fd, payload)
+        os.fchown(fd, owner[0], owner[1])
+    finally:
+        os.close(fd)
+
+
+def _write_env_file(dir_fd: int, env: dict[str, str],
+                    owner: tuple[int, int]) -> None:
+    """systemd EnvironmentFile syntax, caller-owned, mode 0600."""
+    lines = []
+    for key, value in env.items():
+        if not key.isidentifier():
+            raise ProtocolError("repository_config_invalid",
+                                f"invalid environment variable name {key!r}")
+        escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+        lines.append(f'{key}="{escaped}"')
+    fd = os.open(_ENV_FILE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600,
+                 dir_fd=dir_fd)
+    try:
+        os.write(fd, ("\n".join(lines) + "\n").encode())
+        os.fchmod(fd, 0o600)
+        os.fchown(fd, owner[0], owner[1])
+    finally:
+        os.close(fd)
+
+
+def _remove_containers(container_ids: list[str]) -> None:
+    for container_id in list(container_ids):
+        try:
+            docker_cli.remove_exact(container_id)
+        except docker_cli.DockerError as exc:
+            log.error("container cleanup failed for %s: %s", container_id, exc)

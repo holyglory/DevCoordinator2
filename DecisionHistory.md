@@ -177,3 +177,26 @@ into a stdlib-first product for five tools and one transport — not
 justified. **Revisit trigger:** a real client requires MCP features
 (resources, sampling, server notifications) the thin server lacks, or
 protocol-version negotiation breaks against a supported client.
+
+## DC2-2026-08-22-TEST-POSTGRES — Ephemeral PostgreSQL as a labeled Docker container
+
+**Decision.** A test's `[test.<name>.postgres]` provisions one throwaway
+PostgreSQL per run as a Docker container (official `postgres:<tag>` images
+only), data on tmpfs, loopback-published random port, per-run generated
+credentials delivered through a caller-owned 0600 `EnvironmentFile`. The
+daemon records the exact full container ID beside the summary
+(`containers.json`) and removes it on completion, timeout, cancellation,
+supersession, daemon recovery, or the next start — by exact ID or by its own
+instance+purpose labels only. Docker prune is never used.
+
+**Alternatives.** (a) A systemd-managed `postgres` process per run: avoids
+Docker but needs a host PostgreSQL install of every wanted version and
+manual initdb/cleanup. (b) A shared long-lived test database with per-run
+schemas: fast but violates exact per-run ownership and cleanup. Shared
+permanent PostgreSQL as a declared test dependency is a Phase 3 deployment
+concept and is not stopped or cleaned by tests.
+
+**Owner context.** Follows the handover's stated model (test-scoped
+PostgreSQL carrying the exact test identity, removed with the run). Applied
+autonomously under the "continue towards phase 8" instruction; recorded for
+review.

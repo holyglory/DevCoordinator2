@@ -40,8 +40,11 @@ def supplementary_groups(uid: int) -> list[int]:
 
 def build_systemd_run_argv(*, unit: str, slice_name: str, uid: int, gid: int,
                            timeout_seconds: int, cwd: Path,
-                           env: dict[str, str], command: tuple[str, ...],
+                           env_file: Path | None, command: tuple[str, ...],
                            scratch_dir: Path) -> list[str]:
+    """Repository-declared and injected env (possibly secrets) travel via a
+    caller-owned 0600 EnvironmentFile, never via argv or the unit's public
+    Environment property."""
     entry = pwd.getpwuid(uid)
     argv = [
         "systemd-run", "--quiet", "--pipe",
@@ -63,8 +66,8 @@ def build_systemd_run_argv(*, unit: str, slice_name: str, uid: int, gid: int,
     if sup:
         names = " ".join(_group_name(g) for g in sup)  # space-separated list
         argv.append(f"--property=SupplementaryGroups={names}")
-    for key, value in env.items():
-        argv.append(f"--setenv={key}={value}")
+    if env_file is not None:
+        argv.append(f"--property=EnvironmentFile={env_file}")
     argv.append("--")
     argv.extend(command)
     return argv
