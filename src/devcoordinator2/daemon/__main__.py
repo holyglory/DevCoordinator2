@@ -6,6 +6,7 @@ import logging
 import signal
 import sys
 
+from devcoordinator2.daemon.access import Access, guard, public_commands
 from devcoordinator2.daemon.db import Database, SchemaMismatch
 from devcoordinator2.daemon.deploy_control import Deployments
 from devcoordinator2.daemon.handlers import build_handlers
@@ -37,8 +38,11 @@ def main() -> int:
     sampler = Sampler(config, db)
     sampler.start()
     handlers.update(build_health_handlers(config, db, registry, sampler))
+    access = Access(config, db)
+    handlers.update(public_commands(access))
+    handlers = guard(handlers, access, db)
     server = Server(config.socket_path, handlers,
-                    client_group=config.client_group)
+                    client_group=config.client_group, edge_uid=config.edge_uid)
     server.bind()
 
     def _shutdown(signum, frame):

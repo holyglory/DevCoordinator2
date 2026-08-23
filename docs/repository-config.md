@@ -71,6 +71,7 @@ domain = { checkout = "app", worktree = "app-dev" }   # per-source labels under 
 components = ["db", "api", "worker", "cache"]   # declared order; stop is reverse
 build = ["npm", "run", "build"]                 # optional argv run as the caller before components start
 ttl_seconds = 86400          # optional: temporary (preview) deployment, auto-stopped when expired
+public = false               # true: the route needs no sign-in at the edge
 
 [deployment.web.component.db]
 type = "postgres"            # dedicated instance; persistent named volume, never deleted by stop/redeploy

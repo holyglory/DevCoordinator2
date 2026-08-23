@@ -95,6 +95,8 @@ def upsert_deployment(db: Database, *, dep_id: str, reg, name: str, source: str,
                 " updated_at=?, ttl_expires_at=? WHERE deployment_id=?",
                 (domain, spec_fp, json.dumps(spec.canonical(source)), state, now,
                  ttl_expires_at, dep_id))
+        conn.execute("UPDATE deployments SET public=? WHERE deployment_id=?",
+                     (int(spec.public), dep_id))
         for cspec in spec.components:
             conn.execute(
                 "INSERT INTO components(deployment_id, name, type, order_index,"

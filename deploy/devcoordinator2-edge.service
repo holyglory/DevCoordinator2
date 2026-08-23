@@ -1,0 +1,40 @@
+# DevCoordinator2 stable edge: public TLS, sign-in, grant enforcement, and
+# proxying from the last valid route document. Independent of the daemon;
+# keeps serving while devcoordinatord restarts.
+# Instance configuration: /etc/devcoordinator2/edge.env (see docs/edge.md);
+# secrets via systemd credentials, never in the repository.
+[Unit]
+Description=DevCoordinator2 public edge
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=devcoordinator2-edge
+Group=devcoordinator2-edge
+SupplementaryGroups=devcoordinator2-clients
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+EnvironmentFile=/etc/devcoordinator2/edge.env
+LoadCredential=tls.crt:/etc/devcoordinator2/edge/tls.crt
+LoadCredential=tls.key:/etc/devcoordinator2/edge/tls.key
+LoadCredential=session.secret:/etc/devcoordinator2/edge/session.secret
+LoadCredential=oidc.client_id:/etc/devcoordinator2/edge/oidc.client_id
+LoadCredential=oidc.client_secret:/etc/devcoordinator2/edge/oidc.client_secret
+Environment=EDGE_TLS_CERT=%d/tls.crt EDGE_TLS_KEY=%d/tls.key
+Environment=EDGE_SESSION_SECRET_FILE=%d/session.secret
+Environment=EDGE_OIDC_CLIENT_ID_FILE=%d/oidc.client_id
+Environment=EDGE_OIDC_CLIENT_SECRET_FILE=%d/oidc.client_secret
+Environment=EDGE_STATE_DIR=/var/lib/devcoordinator2-edge
+ExecStart=/usr/bin/node /opt/devcoordinator2/edge/devcoordinator2-edge.mjs
+StateDirectory=devcoordinator2-edge
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ReadOnlyPaths=/var/lib/devcoordinator2/routes.json
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

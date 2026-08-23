@@ -35,6 +35,15 @@ live in root-only 0600 files under the instance secrets directory.
 | `metric_minutes` | (subject_kind, subject_id, metric, minute_utc) PK, min/avg/max, samples; index on minute_utc; rows older than 30 days deleted directly | done |
 | `alerts` | alert_key PK, kind, subject_kind, subject_id, severity, message, opened_at, last_seen_at — current alerts only; resolved rows are deleted | done |
 
+## Schema version 4 (Phase 5) — control data, always preserved
+
+| Table | Fields | Status |
+|---|---|---|
+| `users` | user_id PK, email UNIQUE, subject, display_name, administrator, created_at, created_by, last_seen_at | done |
+| `invitations` | invitation_id PK, email UNIQUE, administrator, grants_json, created_at, created_by, expires_at | done |
+| `grants` | (user_id, deployment_id) PK, role, granted_at, granted_by | done |
+| `deployments.public` | added column (route needs no sign-in) | done |
+
 ## Reserved ID-prefix namespace
 
 Deterministic opaque TEXT IDs; later phases never migrate existing IDs.
@@ -47,7 +56,7 @@ Deterministic opaque TEXT IDs; later phases never migrate existing IDs.
 | `d` | deployment | sha256("devcoordinator2.deployment\0" + worktree_id + name + source)[:16] | 3 (done) |
 | `c` | component | not needed: components are keyed (deployment_id, name) | — |
 | `g` | generation | (deployment_id, number) counter | 3 (done) |
-| `u` | public user | random at creation | 5 |
+| `u` | public user | random at creation | 5 (done); `i` invitation |
 | `b` | bug | random at creation (independent store, not this DB) | 6 |
 
 ## Later-phase entities (from the handover's durable-state list)
@@ -61,7 +70,7 @@ Deterministic opaque TEXT IDs; later phases never migrate existing IDs.
 | current Docker observations | 3/4 | projection, rebuildable |
 | bounded health samples | 4 | done |
 | current alerts | 4 | done |
-| users, invitations, deployment grants | 5 | |
+| users, invitations, deployment grants | 5 | done |
 | Telegram subscriptions + bounded outbox | 6 | single server-owned bot; token in instance config, never in DB |
 
 ## Change rules

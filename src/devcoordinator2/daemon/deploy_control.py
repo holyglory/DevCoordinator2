@@ -6,9 +6,11 @@ from __future__ import annotations
 
 import json
 import logging
+import pwd
 import threading
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 
 from devcoordinator2.daemon import deploy_engine as eng
 from devcoordinator2.daemon import deploy_runtime as rt
@@ -40,17 +42,38 @@ class Deployments:
 
     # -- resolution ----------------------------------------------------------
 
-    def _resolve(self, path: Path, name: str | None, dep_id: str | None,
+    def _resolve(self, path: Path | None, name: str | None, dep_id: str | None,
                  caller: Caller) -> tuple[eng.Ctx, object, Path]:
-        """Return (ctx, registration, worktree_root) for a deployment reference."""
-        reg = eng.resolve_registration(self._registry, path, caller)
-        worktree = Path(reg.worktree_path)
+        """Return (ctx, registration, worktree_root) for a deployment reference.
+
+        By deployment_id the recorded worktree is used and no git runs as the
+        caller; actions on behalf of a public identity execute as the account
+        that created the deployment. By name a path is required and the
+        caller's own account resolves the repository."""
+        exec_uid, exec_gid = caller.uid, caller.gid
         if dep_id is not None:
             row = st.get_deployment(self._db, dep_id)
             if row is None:
                 raise ProtocolError("deployment_not_found", f"no deployment {dep_id}")
+            wt = self._db.query("SELECT worktree_path FROM worktrees WHERE worktree_id=?",
+                                (row["worktree_id"],))
+            if not wt:
+                raise ProtocolError("deployment_not_found", "deployment worktree unregistered")
+            worktree = Path(wt[0]["worktree_path"])
+            reg = SimpleNamespace(repository_id=row["repository_id"],
+                                  worktree_id=row["worktree_id"], worktree_path=str(worktree))
             name, source = row["name"], row["source"]
+            if caller.identity is not None:
+                exec_uid = row["created_by_uid"]
+                exec_gid = pwd.getpwuid(exec_uid).pw_gid
         else:
+            if path is None:
+                raise ProtocolError("args_invalid", "'path' is required with 'name'")
+            if caller.identity is not None:
+                raise ProtocolError("permission_denied",
+                                    "public callers address deployments by deployment_id")
+            reg = eng.resolve_registration(self._registry, path, caller)
+            worktree = Path(reg.worktree_path)
             if not name:
                 raise ProtocolError("args_invalid", "'name' (or 'deployment_id') is required")
             name, _, source = name.partition("@")
@@ -69,7 +92,7 @@ class Deployments:
                                 f"deployment {name!r} does not enable source {source!r}")
         ctx = eng.Ctx(config=self._config, db=self._db,
                       dep_id=st.deployment_id(reg.worktree_id, name, source), spec=spec,
-                      source=source, caller_uid=caller.uid, caller_gid=caller.gid,
+                      source=source, caller_uid=exec_uid, caller_gid=exec_gid,
                       client=caller.client_kind, session=caller.client_session)
         return ctx, reg, worktree
 
@@ -82,12 +105,12 @@ class Deployments:
 
     # -- apply / rollback ----------------------------------------------------
 
-    def apply(self, path: Path, name: str | None, dep_id: str | None,
+    def apply(self, path: Path | None, name: str | None, dep_id: str | None,
               caller: Caller) -> dict:
-        if caller.uid == 0:
+        ctx, reg, worktree = self._resolve(path, name, dep_id, caller)
+        if ctx.caller_uid == 0:
             raise ProtocolError("deployment_apply_failed",
                                 "repository code never runs as root; call as non-root")
-        ctx, reg, worktree = self._resolve(path, name, dep_id, caller)
         lock = self._busy.acquire(ctx.dep_id)
         try:
             commit, dirty = eng.head_commit(ctx, worktree)
@@ -115,7 +138,7 @@ class Deployments:
             old_rows = {c["name"]: c for c in st.components(self._db, ctx.dep_id)}
             st.upsert_deployment(self._db, dep_id=ctx.dep_id, reg=reg, name=ctx.spec.name,
                                  source=ctx.source, domain=domain, spec=ctx.spec,
-                                 spec_fp=spec_fp, state="applying", caller_uid=caller.uid,
+                                 spec_fp=spec_fp, state="applying", caller_uid=ctx.caller_uid,
                                  client=caller.client_kind, ttl_expires_at=ttl)
             gen_path = eng.prepare_generation_path(ctx, worktree, number, commit)
             st.add_generation(self._db, ctx.dep_id, number, commit, dirty, gen_path, spec_fp)

@@ -247,3 +247,26 @@ reviewed TOML file, no sealed templates, no admission values).
 
 **Owner context.** Schema content follows the handover's allowed/forbidden
 lists; the source-mode choice above is the owner decision within it.
+
+## DC2-2026-08-23-PUBLIC-IDENTITY — Edge-asserted identity, roles in the daemon
+
+**Decision.** The edge authenticates users (OIDC, reusing the reviewed
+legacy client) and enforces route access from the route document's
+`access` section (owners + grants bound to deployment IDs). For Console/API
+calls the edge forwards the signed-in e-mail as `client.identity`; the
+daemon accepts an identity only from the configured edge uid
+(`DEVCOORDINATOR2_EDGE_UID`) and applies the four-role model per request
+from its database. Bootstrap administrators come from instance
+configuration; invitations admit one exact identity and are accepted by the
+edge after a verified sign-in. Actions performed on behalf of a public
+identity execute as the Unix account that created the deployment; public
+callers address deployments by ID so no git ever runs as the edge user.
+
+**Alternatives.** Shared secret between edge and daemon (an extra secret to
+manage; peer uid is already kernel-verified). Sessions validated by the
+daemon (makes the edge depend on the daemon on every request — violates
+edge availability across daemon restarts).
+
+**Owner context.** Follows the handover's access model; applied under the
+"continue towards phase 8" instruction; the identity provider remains the
+one in instance configuration (Google by default, as legacy).

@@ -21,6 +21,8 @@ _DEFAULTS = {
     "DEVCOORDINATOR2_CLIENT_GROUP": "devcoordinator2-clients",
     "DEVCOORDINATOR2_PORT_RANGE": "20000-29999",
     "DEVCOORDINATOR2_BASE_DOMAIN": "",
+    "DEVCOORDINATOR2_EDGE_UID": "",
+    "DEVCOORDINATOR2_ADMIN_EMAILS": "",
 }
 
 INSTALLED_ENV_PATH = Path("/etc/devcoordinator2/instance.env")
@@ -64,6 +66,8 @@ class InstanceConfig:
     client_group: str
     port_range: tuple[int, int] = (20000, 29999)
     base_domain: str = ""
+    edge_uid: int | None = None          # only this peer may assert a public identity
+    admin_emails: tuple[str, ...] = ()   # bootstrap administrators (instance data)
 
     @property
     def database_path(self) -> Path:
@@ -107,6 +111,10 @@ def load_instance_config() -> InstanceConfig:
         client_group=get("DEVCOORDINATOR2_CLIENT_GROUP"),
         port_range=port_range,
         base_domain=get("DEVCOORDINATOR2_BASE_DOMAIN").strip().strip("."),
+        edge_uid=int(get("DEVCOORDINATOR2_EDGE_UID")) if get("DEVCOORDINATOR2_EDGE_UID")
+        else None,
+        admin_emails=tuple(e.strip().lower() for e in
+                           get("DEVCOORDINATOR2_ADMIN_EMAILS").split(",") if e.strip()),
     )
 
 

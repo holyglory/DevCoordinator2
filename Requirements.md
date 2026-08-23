@@ -77,11 +77,11 @@ not contradict them.
 
 ## Public access (REQ-ACCESS, P5)
 
-- **REQ-ACCESS-01**: An invited user authenticates at the edge and accesses
+- **REQ-ACCESS-01** (P5, done): An invited user authenticates at the edge and accesses
   only granted deployments; grants bind to immutable deployment IDs.
-- **REQ-ACCESS-02**: Roles are exactly access / viewer / operator /
+- **REQ-ACCESS-02** (P5, done): Roles are exactly access / viewer / operator /
   administrator; no per-action permission matrices.
-- **REQ-ACCESS-03**: Revocation takes effect on the next edge/API request.
+- **REQ-ACCESS-03** (P5, done): Revocation takes effect on the next edge/API request.
 - **REQ-ACCESS-04**: Local agent calls via the Unix socket are independent
   of public deployment grants; the kernel peer UID is the caller identity
   and request bodies cannot assert identity (P1, in scope).
@@ -91,7 +91,7 @@ not contradict them.
 - **REQ-REL-01** (P1, in scope): `devcoordinatord` and the stable edge are
   the only persistent control-plane services; periodic-task failures are
   isolated and never block test or deployment mutations.
-- **REQ-REL-02** (P5): Edge routes remain available across daemon restarts
+- **REQ-REL-02** (P5, done): Edge routes remain available across daemon restarts
   from the last valid atomic route document.
 - **REQ-REL-03** (P6): Bug intake works while the daemon, database, or edge
   is unavailable (independent store, open records only).

@@ -64,3 +64,14 @@ PostgreSQL container; Docker/Compose env files now use the literal format.
 | Dedicated PostgreSQL operational facts (connections, WAL, temp, size) — numbers only | PASS | same |
 | One-minute aggregates persisted and queryable; 30-day expiry (REQ-HEALTH-04) | PASS | same + `test_metrics.py` |
 | Sustained-threshold alerts: window, dedupe, single recovery, persistence across restart, vanished-subject recovery | PASS | `test_metrics.py::test_alert_sustain_dedupe_and_recovery` |
+
+## Phase 5 addendum (2026-08-23)
+
+| Item | Result | Evidence |
+|---|---|---|
+| Invited identity signs in (real OIDC flow vs fixture issuer), is admitted via the daemon, reaches only granted routes (REQ-ACCESS-01) | PASS | `edge/test/edge.test.mjs` |
+| Roles access/viewer/operator/administrator enforced per request; filtered list/health for non-admins (REQ-ACCESS-02) | PASS | `tests/test_access.py`, `tests/integration/test_access_edge.py` |
+| Revocation effective on the next edge request and API call (REQ-ACCESS-03) | PASS | both |
+| Only the configured edge uid may assert an identity; spoofing from another uid is refused (REQ-ACCESS-04) | PASS | `test_access_edge.py` |
+| Edge keeps serving the last valid route document; malformed/tampered/stale documents rejected (REQ-REL-02) | PASS | `edge.test.mjs` |
+| Session cookie never reaches upstreams; verified identity forwarded only on authenticated routes | PASS | `edge.test.mjs` |

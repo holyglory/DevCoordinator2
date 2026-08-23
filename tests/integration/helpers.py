@@ -65,7 +65,8 @@ def call_as(uid: int, gid: int, sock_path: Path, request: dict) -> dict:
                     data += part
             os.write(write_fd, data)
             os._exit(0)
-        except Exception:
+        except Exception as exc:  # surfaced to the parent for diagnosis
+            os.write(write_fd, f"CHILD-ERROR: {exc!r}".encode())
             os._exit(1)
     os.close(write_fd)
     chunks = b""
@@ -107,6 +108,9 @@ class Daemon:
         self.proc: subprocess.Popen | None = None
 
     def start(self):
+        # A stale socket from a killed daemon would make readiness detection
+        # lie; the new daemon re-creates it on bind.
+        self.socket_path.unlink(missing_ok=True)
         self.proc = subprocess.Popen(
             [sys.executable, "-m", "devcoordinator2.daemon"],
             env=self.env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,

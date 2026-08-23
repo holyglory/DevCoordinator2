@@ -132,8 +132,14 @@ def _deployment_handlers(config: InstanceConfig, deployments, db) -> dict[str, H
     ref_keys = {"path", "name", "deployment_id"}
 
     def ref(args: dict[str, Any], extra: set[str] = frozenset()):
-        path = _require_path(args, ref_keys | extra)
-        return path, _optional_str(args, "name"), _optional_str(args, "deployment_id")
+        unknown = set(args) - (ref_keys | extra)
+        if unknown:
+            raise ProtocolError("args_invalid", f"unknown args: {sorted(unknown)}")
+        dep_id = _optional_str(args, "deployment_id")
+        if dep_id is not None and not args.get("path"):
+            return None, _optional_str(args, "name"), dep_id
+        path = _require_path({k: v for k, v in args.items() if k == "path"}, {"path"})
+        return path, _optional_str(args, "name"), dep_id
 
     def dep_list(args, caller):
         unknown = set(args) - {"path"}

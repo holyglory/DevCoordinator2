@@ -11,7 +11,7 @@ import threading
 from contextlib import contextmanager
 from pathlib import Path
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (
@@ -128,6 +128,38 @@ CREATE TABLE IF NOT EXISTS alerts (
 );
 """
 
+# Schema 4 (Phase 5): public users, invitations, deployment grants. Control
+# data: always preserved.
+_SCHEMA_V4 = """
+CREATE TABLE IF NOT EXISTS users (
+  user_id       TEXT PRIMARY KEY,
+  email         TEXT NOT NULL UNIQUE,
+  subject       TEXT,
+  display_name  TEXT,
+  administrator INTEGER NOT NULL DEFAULT 0,
+  created_at    TEXT NOT NULL,
+  created_by    TEXT NOT NULL,
+  last_seen_at  TEXT
+);
+CREATE TABLE IF NOT EXISTS invitations (
+  invitation_id TEXT PRIMARY KEY,
+  email         TEXT NOT NULL UNIQUE,
+  administrator INTEGER NOT NULL DEFAULT 0,
+  grants_json   TEXT NOT NULL,
+  created_at    TEXT NOT NULL,
+  created_by    TEXT NOT NULL,
+  expires_at    TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS grants (
+  user_id       TEXT NOT NULL REFERENCES users(user_id),
+  deployment_id TEXT NOT NULL,
+  role          TEXT NOT NULL,
+  granted_at    TEXT NOT NULL,
+  granted_by    TEXT NOT NULL,
+  PRIMARY KEY(user_id, deployment_id)
+);
+"""
+
 
 class SchemaMismatch(Exception):
     pass
@@ -158,11 +190,18 @@ class Database:
             # ports, domains) is always preserved (docs/database-ledger.md).
             self._conn.executescript(_SCHEMA_V2)
             self._conn.executescript(_SCHEMA_V3)
+            self._conn.executescript(_SCHEMA_V4)
+            self._ensure_column("deployments", "public", "INTEGER NOT NULL DEFAULT 0")
             self._conn.execute(
                 "INSERT OR REPLACE INTO meta(key, value) VALUES('schema_version', ?)",
                 (str(SCHEMA_VERSION),),
             )
             self._conn.commit()
+
+    def _ensure_column(self, table: str, column: str, ddl: str) -> None:
+        cols = {r[1] for r in self._conn.execute(f"PRAGMA table_info({table})")}
+        if column not in cols:
+            self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
 
     @contextmanager
     def transaction(self):

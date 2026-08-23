@@ -12,7 +12,7 @@ MAX_ERROR_DETAIL_BYTES = 4096
 READ_TIMEOUT_SECONDS = 5.0
 WRITE_TIMEOUT_SECONDS = 10.0
 
-CLIENT_KINDS = ("codex", "claude", "cursor", "antigravity", "human", "other")
+CLIENT_KINDS = ("codex", "claude", "cursor", "antigravity", "human", "other", "edge")
 
 ERROR_CODES = (
     "protocol_invalid",
@@ -30,6 +30,8 @@ ERROR_CODES = (
     "deployment_apply_failed",
     "deployment_action_failed",
     "rollback_unavailable",
+    "permission_denied",
+    "user_not_found",
     "internal_error",
 )
 
@@ -76,8 +78,13 @@ def parse_request(raw: bytes) -> dict[str, Any]:
     session = client.get("session")
     if session is not None and not isinstance(session, str):
         session = None
+    identity = client.get("identity")
+    if identity is not None and (not isinstance(identity, str) or "@" not in identity
+                                 or len(identity) > 254):
+        raise ProtocolError("protocol_invalid", "client.identity must be an e-mail")
     data["args"] = args
-    data["client"] = {"kind": kind, "session": session}
+    data["client"] = {"kind": kind, "session": session,
+                      "identity": identity.lower() if identity else None}
     return data
 
 

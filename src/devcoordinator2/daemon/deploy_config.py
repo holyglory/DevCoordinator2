@@ -85,6 +85,7 @@ class DeploymentSpec:
     domains: dict[str, str]             # source -> domain label
     build: tuple[str, ...]
     ttl_seconds: int | None
+    public: bool = False                 # route without sign-in at the edge
     components: tuple[ComponentSpec, ...] = field(default_factory=tuple)
 
     def domain_for(self, source: str) -> str | None:
@@ -103,6 +104,7 @@ class DeploymentSpec:
         return {
             "name": self.name, "source": source, "domain": self.domain_for(source),
             "build": list(self.build), "ttl_seconds": self.ttl_seconds,
+            "public": self.public,
             "components": [
                 {k: (list(v) if isinstance(v, tuple) else
                      (v.__dict__ if isinstance(v, HealthSpec) else v))
@@ -157,7 +159,7 @@ def load_deployment_spec(worktree_root: Path, name: str) -> DeploymentSpec:
 def _validate_deployment(root: Path, name: str, body: dict) -> DeploymentSpec:
     prefix = f"[deployment.{name}]"
     unknown = set(body) - {"source", "domain", "components", "build",
-                           "ttl_seconds", "component"}
+                           "ttl_seconds", "component", "public"}
     if unknown:
         raise ConfigError(f"{prefix} unknown keys: {sorted(unknown)}")
     sources = _validate_sources(prefix, body.get("source", "worktree"))
@@ -166,6 +168,9 @@ def _validate_deployment(root: Path, name: str, body: dict) -> DeploymentSpec:
     if isinstance(build, str) or not isinstance(build, list) \
             or not all(isinstance(a, str) and a for a in build):
         raise ConfigError(f"{prefix} build must be an argv array")
+    public = body.get("public", False)
+    if not isinstance(public, bool):
+        raise ConfigError(f"{prefix} public must be a boolean")
     ttl = body.get("ttl_seconds")
     if ttl is not None and (not isinstance(ttl, int) or isinstance(ttl, bool)
                             or not (60 <= ttl <= 30 * 86400)):
@@ -196,7 +201,7 @@ def _validate_deployment(root: Path, name: str, body: dict) -> DeploymentSpec:
     if routes and not routes[0].wants_port:
         raise ConfigError(f"{prefix} the route component must lease a port")
     return DeploymentSpec(name=name, sources=sources, domains=domains,
-                          build=tuple(build), ttl_seconds=ttl,
+                          build=tuple(build), ttl_seconds=ttl, public=public,
                           components=tuple(components))
 
 

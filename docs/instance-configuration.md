@@ -24,12 +24,14 @@ stripping one pair of surrounding quotes.
 | `DEVCOORDINATOR2_CLIENT_GROUP` | `devcoordinator2-clients` | Unix group granted socket access |
 | `DEVCOORDINATOR2_PORT_RANGE` | `20000-29999` | host port range the daemon leases to deployment components |
 | `DEVCOORDINATOR2_BASE_DOMAIN` | (empty) | base public domain; deployment `domain` labels resolve beneath it (Phase 3+) |
+| `DEVCOORDINATOR2_EDGE_UID` | (unset) | Unix uid of the edge service; the only peer allowed to assert a public identity |
+| `DEVCOORDINATOR2_ADMIN_EMAILS` | (empty) | comma-separated bootstrap administrators |
+
+Edge configuration lives in `/etc/devcoordinator2/edge.env` (`docs/edge.md`).
 
 ## Reserved for later phases
 
-Base public domain, certificate locations, OIDC client configuration,
-session secret reference, Telegram bot token reference, edge listener
-configuration. Secrets are referenced (systemd credentials, private files),
+Telegram bot token reference. Secrets are referenced (systemd credentials, private files),
 never placed in the repository or the database.
 
 ## Enforcement

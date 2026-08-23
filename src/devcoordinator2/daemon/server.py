@@ -28,6 +28,7 @@ class Caller:
     gid: int
     client_kind: str
     client_session: str | None
+    identity: str | None = None  # public user e-mail, only when asserted by the edge uid
 
 
 Handler = Callable[[dict[str, Any], Caller], dict[str, Any]]
@@ -41,10 +42,11 @@ def peer_credentials(conn: socket.socket) -> tuple[int, int, int]:
 
 class Server:
     def __init__(self, socket_path: Path, handlers: dict[str, Handler],
-                 client_group: str | None = None):
+                 client_group: str | None = None, edge_uid: int | None = None):
         self._path = socket_path
         self._handlers = handlers
         self._client_group = client_group
+        self._edge_uid = edge_uid
         self._sock: socket.socket | None = None
         self._stop = threading.Event()
         self._threads: set[threading.Thread] = set()
@@ -97,10 +99,15 @@ class Server:
             raw = self._read_frame(conn)
             request = protocol.parse_request(raw)
             request_id = request["id"]
+            identity = request["client"].get("identity")
+            if identity is not None and (self._edge_uid is None or uid != self._edge_uid):
+                raise ProtocolError("permission_denied",
+                                    "only the configured edge may assert a public identity")
             caller = Caller(
                 pid=pid, uid=uid, gid=gid,
                 client_kind=request["client"]["kind"],
                 client_session=request["client"]["session"],
+                identity=identity,
             )
             handler = self._handlers.get(request["command"])
             if handler is None:

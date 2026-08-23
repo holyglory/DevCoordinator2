@@ -163,6 +163,32 @@ root filesystem < 10% free, component not running for 2 min while desired
 running, ≥ 3 restarts in 10 min (crash loop), test scratch > 10 GiB.
 Deduplicated while active; one recovery each.
 
+## Public identities and roles (Phase 5, implemented)
+
+A request carries `client.identity` only when the configured edge uid sends
+it; any other peer is refused (`permission_denied`). Local callers stay
+unrestricted. For identities: administrators may do everything;
+`operator` may start/stop/restart granted deployments; `viewer` may read
+status/logs/health of granted deployments; `access` only uses the deployed
+application. `deployment.list` and `health.repositories` are filtered to
+granted deployments; `health.summary`, `health.containers`, `test.*`,
+`repository.*`, apply/rollback/remove, and user administration require an
+administrator. Public callers address deployments by `deployment_id`.
+
+- `user.whoami` → `{local, identity, user_id, administrator, grants}`.
+- `user.list` → `{users: [{email, administrator, grants, …}], invitations,
+  roles, owners}`.
+- `user.invite {email, administrator?, grants?: [{deployment_id, role}]}`
+  → `{invitation_id, email, expires_at}` (14 days; one exact identity).
+- `user.accept_invitation {email, subject?, display_name?}` — edge only,
+  for the signed-in identity itself → `{accepted, administrator, …}`.
+- `user.remove {email}` → removes the user (and grants) or the invitation.
+- `grant.set {email, deployment_id, role}` / `grant.remove {email,
+  deployment_id}`.
+
+Every user/grant change republishes the route document (owners + grants),
+so edge enforcement changes on the next request.
+
 ## Reserved sketches (later phases)
 
 - `bug.report | list | close` — backed by the independent open-only store

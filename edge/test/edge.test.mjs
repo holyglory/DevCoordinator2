@@ -1,0 +1,154 @@
+// Edge behavior against a fixture OIDC issuer, a fake daemon socket, and
+// real upstream servers. Run: node --test edge/test
+import assert from 'node:assert/strict';
+import crypto from 'node:crypto';
+import fs from 'node:fs/promises';
+import http from 'node:http';
+import net from 'node:net';
+import os from 'node:os';
+import path from 'node:path';
+import { after, before, test } from 'node:test';
+
+import { createEdge } from '../devcoordinator2-edge.mjs';
+import { canonicalJson } from '../lib/routes-store.mjs';
+import { startIssuer } from './fixture-issuer.mjs';
+
+const BASE = 'example.test';
+let tmp; let issuer; let upstream; let upstreamPort; let daemonSock; let daemon; let daemonCalls = []; let edge; let port;
+
+function document(routes, access, generation) {
+  const payload = { generation, published_at: '2026-01-01T00:00:00Z', domain: BASE, routes, access };
+  const sha = crypto.createHash('sha256').update(canonicalJson(payload)).digest('hex');
+  return JSON.stringify({ schema: 1, payload_sha256: sha, ...payload });
+}
+
+async function publish(routes, access, generation) {
+  const file = path.join(tmp, 'routes.json');
+  await fs.writeFile(`${file}.tmp`, document(routes, access, generation));
+  await fs.rename(`${file}.tmp`, file);
+  await edge.store.reload();
+}
+
+function get(pathname, { host, cookie, method = 'GET', body } = {}) {
+  return new Promise((resolve, reject) => {
+    const req = http.request({ host: '127.0.0.1', port, path: pathname, method,
+      headers: { host: host || `console.${BASE}`, ...(cookie ? { cookie } : {}),
+        ...(body ? { 'content-type': 'application/json' } : {}) } }, (res) => {
+      const chunks = [];
+      res.on('data', (c) => chunks.push(c));
+      res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, body: Buffer.concat(chunks).toString() }));
+    });
+    req.on('error', reject);
+    if (body) req.write(JSON.stringify(body));
+    req.end();
+  });
+}
+
+function cookieOf(res, name) {
+  const raw = [].concat(res.headers['set-cookie'] || []).find((c) => c.startsWith(`${name}=`));
+  return raw ? raw.split(';')[0] : null;
+}
+
+async function signIn() {
+  const start = await get(`/auth/start?rt=${encodeURIComponent('/')}`);
+  assert.equal(start.status, 302);
+  const flow = cookieOf(start, 'dc_flow');
+  const authorize = await fetch(start.headers.location, { redirect: 'manual' });
+  assert.equal(authorize.status, 302);
+  const callback = new URL(authorize.headers.get('location'));
+  const done = await get(`${callback.pathname}${callback.search}`, { cookie: flow });
+  assert.equal(done.status, 302, done.body);
+  return cookieOf(done, 'dc2_session');
+}
+
+before(async () => {
+  tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'dc2-edge-'));
+  issuer = await startIssuer({ claims: { email: 'dev@example.test', sub: 'sub-dev' } });
+  upstream = http.createServer((req, res) => {
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ host: req.headers.host, path: req.url, forwarded: req.headers['x-forwarded-host'] || null, cookie: req.headers.cookie || null, who: req.headers['x-devcoordinator2-email'] || null, route: req.headers['x-devcoordinator2-route-id'] || null }));
+  });
+  await new Promise((r) => upstream.listen(0, '127.0.0.1', r));
+  upstreamPort = upstream.address().port;
+  daemonSock = path.join(tmp, 'daemon.sock');
+  daemon = net.createServer((socket) => {
+    let buf = '';
+    socket.on('data', (c) => { buf += c; if (buf.endsWith('\n')) {
+      const req = JSON.parse(buf); daemonCalls.push(req);
+      socket.end(`${JSON.stringify({ protocol: 1, id: req.id, ok: true, result: { echoed: req.command, identity: req.client.identity, args: req.args } })}\n`);
+    } });
+  });
+  await new Promise((r) => daemon.listen(daemonSock, r));
+  edge = await createEdge({ baseDomain: BASE, consoleHost: `console.${BASE}`, httpPort: 0, httpOnly: true,
+    sessionSecret: 'test-secret-at-least-16-bytes', oidcIssuer: issuer.url, oidcClientId: 'test-client',
+    oidcClientSecret: 'test-secret', routesFile: path.join(tmp, 'routes.json'), stateDir: path.join(tmp, 'edge-state'),
+    daemonSocket: daemonSock, consoleDir: '' }, { log: { info() {}, warn() {}, error: (...a) => console.error('EDGE', ...a), debug() {} } });
+  [port] = await edge.listen();
+});
+
+after(async () => { await edge?.close(); await issuer?.close(); upstream?.closeAllConnections?.(); await new Promise((r) => upstream?.close(r)); await new Promise((r) => daemon?.close(r)); });
+
+test('public route proxies without sign-in; authenticated route demands sign-in', async () => {
+  await publish([
+    { deployment_id: 'd0123456789abcd01', component: 'api', label: 'app', domain: `app.${BASE}`, port: upstreamPort, scheme: 'http', auth: 'authenticated', generation: 1 },
+    { deployment_id: 'd0123456789abcd02', component: 'api', label: 'open', domain: `open.${BASE}`, port: upstreamPort, scheme: 'http', auth: 'public', generation: 1 },
+  ], { owners: ['owner@example.test'], grants: [{ identity: 'dev@example.test', deployment_id: 'd0123456789abcd01', role: 'access' }] }, 1);
+  const open = await get('/x?y=1', { host: `open.${BASE}` });
+  assert.equal(open.status, 200);
+  assert.equal(JSON.parse(open.body).path, '/x?y=1');
+  const closed = await get('/', { host: `app.${BASE}` });
+  assert.equal(closed.status, 302);
+  assert.match(closed.headers.location, /^\/auth\/login/);
+  const missing = await get('/', { host: `nope.${BASE}` });
+  assert.equal(missing.status, 404);
+});
+
+test('sign-in admits the invited identity via the daemon and enforces grants per request', async () => {
+  const session = await signIn();
+  assert.ok(session, 'session cookie issued');
+  const accept = daemonCalls.find((c) => c.command === 'user.accept_invitation');
+  assert.equal(accept.client.identity, 'dev@example.test');
+  assert.equal(accept.client.kind, 'edge');
+  const ok = await get('/hello', { host: `app.${BASE}`, cookie: session });
+  assert.equal(ok.status, 200, ok.body);
+  const seen = JSON.parse(ok.body);
+  assert.equal(seen.forwarded, `app.${BASE}`);
+  assert.equal(seen.cookie, null, 'session cookie never reaches the upstream');
+  assert.equal(seen.who, 'dev@example.test', 'upstream learns the verified identity');
+  assert.equal(seen.route, 'd0123456789abcd01/api');
+  assert.equal(JSON.parse((await get('/x', { host: `open.${BASE}` })).body).who, null, 'public routes carry no identity');
+  // Revocation: republish without the grant -> denied on the next request.
+  await publish(edge.store.current().routes, { owners: ['owner@example.test'], grants: [] }, 2);
+  const denied = await get('/hello', { host: `app.${BASE}`, cookie: session });
+  assert.equal(denied.status, 403);
+  // Owners pass everywhere.
+  await publish(edge.store.current().routes, { owners: ['dev@example.test'], grants: [] }, 3);
+  assert.equal((await get('/hello', { host: `app.${BASE}`, cookie: session })).status, 200);
+  // Console API bridge carries the identity to the daemon; unauthenticated is 401.
+  const api = await get('/api/deployment.list', { cookie: session, method: 'POST', body: {} });
+  assert.equal(api.status, 200);
+  assert.equal(JSON.parse(api.body).result.identity, 'dev@example.test');
+  assert.equal((await get('/api/deployment.list', { method: 'POST', body: {} })).status, 401);
+  assert.equal((await get('/api/bogus', { cookie: session, method: 'POST' })).status, 400);
+  assert.ok(!daemonCalls.some((c) => c.command === 'bogus'));
+});
+
+test('malformed, stale, or tampered route documents never clear served routes', async () => {
+  const before = edge.store.current();
+  const file = path.join(tmp, 'routes.json');
+  await fs.writeFile(file, '{"schema": 1, "gen');
+  await edge.store.reload();
+  assert.equal(edge.store.current().generation, before.generation);
+  const tampered = JSON.parse(document(before.routes, before.access, before.generation + 1));
+  tampered.routes[0].port = 1;
+  await fs.writeFile(file, JSON.stringify(tampered));
+  await edge.store.reload();
+  assert.equal(edge.store.current().routes[0].port, before.routes[0].port);
+  await fs.writeFile(file, document(before.routes, before.access, 0));
+  await edge.store.reload();
+  assert.equal(edge.store.current().generation, before.generation);
+  // Last-known-good copy exists for daemon-restart continuity.
+  const lkg = JSON.parse(await fs.readFile(path.join(tmp, 'edge-state', 'routes.last-known-good.json'), 'utf8'));
+  assert.equal(lkg.generation, before.generation);
+  assert.equal((await get('/healthz')).status, 200);
+});
