@@ -73,7 +73,7 @@ const GOOGLE_ICON =
 export function createPages({ config }) {
   const domain = config.domain;
   const consoleOrigin = config.consoleOrigin;
-  const brandLine = `DevOps Console — ${domain}`;
+  const brandLine = `DevCoordinator2 — ${domain}`;
 
   function page({ title, body }) {
     return `<!doctype html>
@@ -82,12 +82,12 @@ export function createPages({ config }) {
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex, nofollow">
-<title>${escapeHtml(title)} · DevOps Console</title>
+<title>${escapeHtml(title)} · DevCoordinator2</title>
 <style>${CSS}</style>
 </head>
 <body>
 <main class="card">
-<div class="brand">${MARK_SVG}<span class="brand-name">DevOps Console</span><span class="brand-domain">${escapeHtml(domain)}</span></div>
+<div class="brand">${MARK_SVG}<span class="brand-name">DevCoordinator2</span><span class="brand-domain">${escapeHtml(domain)}</span></div>
 ${body}
 <footer class="foot">${escapeHtml(brandLine)}</footer>
 </main>

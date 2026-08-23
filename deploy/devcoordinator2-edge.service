@@ -32,7 +32,7 @@ NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes
 PrivateTmp=yes
-ReadOnlyPaths=/var/lib/devcoordinator2/routes.json
+ReadOnlyPaths=-/var/lib/devcoordinator2/public
 Restart=always
 RestartSec=2
 

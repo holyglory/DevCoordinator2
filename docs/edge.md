@@ -16,7 +16,7 @@ authenticated routes only), and a static file server for the Console.
 ## Behavior
 
 - Route document (`docs/route-document.md`): read from
-  `EDGE_ROUTES_FILE`, validated (schema, checksum, shape), kept as
+  `EDGE_ROUTES_FILE` (the daemon publishes to `<state>/public/routes.json`, the only world-readable part of its state), validated (schema, checksum, shape), kept as
   `routes.last-known-good.json` in `EDGE_STATE_DIR`. Malformed, tampered, or
   older-generation documents never clear served routes. Reload on file
   change and every 5 s.

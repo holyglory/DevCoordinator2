@@ -1,7 +1,8 @@
 """.devcoordinator.toml loading and strict validation (docs/repository-config.md).
 
 Unknown keys are rejected everywhere so typos never silently change meaning.
-Only the Phase 1 [test.*] schema exists; [deployment.*] is reserved.
+This module validates [test.*]; deploy_config.py validates [deployment.*]
+from the same file.
 """
 
 from __future__ import annotations
@@ -59,7 +60,7 @@ def load_test_spec(worktree_root: Path, test_name: str | None) -> TestSpec:
     except (UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
         raise ConfigError(f"invalid TOML: {exc}") from exc
 
-    unknown = set(data) - {"schema", "test"}
+    unknown = set(data) - {"schema", "test", "deployment"}
     if unknown:
         raise ConfigError(f"unknown top-level keys: {sorted(unknown)}")
     if data.get("schema") != 1:

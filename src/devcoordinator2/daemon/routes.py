@@ -66,6 +66,7 @@ def publish(db: Database, path: Path, base_domain: str,
                 **payload}
     data = json.dumps(document, indent=2).encode()
     path.parent.mkdir(parents=True, exist_ok=True)
+    os.chmod(path.parent, 0o755)
     fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".routes-")
     try:
         os.write(fd, data)

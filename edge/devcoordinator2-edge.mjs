@@ -13,7 +13,7 @@
 import fs from 'node:fs';
 import http from 'node:http';
 import https from 'node:https';
-import { URL } from 'node:url';
+import { URL, fileURLToPath } from 'node:url';
 
 import { createDaemonClient } from './lib/daemon-client.mjs';
 import { createOidc } from './lib/oidc.mjs';
@@ -283,7 +283,8 @@ export async function createEdge(config, { log = console } = {}) {
   return { listen, close, store, handleRequest, get consoleOrigin() { return consoleOrigin; } };
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+const invokedDirectly = (() => { try { return fs.realpathSync(process.argv[1] || '') === fs.realpathSync(fileURLToPath(import.meta.url)); } catch { return false; } })();
+if (invokedDirectly) {
   const config = loadConfig();
   const edge = await createEdge(config);
   const ports = await edge.listen();

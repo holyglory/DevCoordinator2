@@ -89,7 +89,9 @@ class InstanceConfig:
 
     @property
     def routes_path(self) -> Path:
-        return self.state_dir / "routes.json"
+        """World-readable publication directory; the state dir itself stays
+        closed (0751) so only this document is exposed to the edge."""
+        return self.state_dir / "public" / "routes.json"
 
     @property
     def deploy_unit_prefix(self) -> str:

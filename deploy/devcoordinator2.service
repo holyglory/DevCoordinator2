@@ -18,7 +18,6 @@ NoNewPrivileges=yes
 ProtectSystem=full
 ProtectHome=no
 ReadWritePaths=/home /var/lib/devcoordinator2 /run/devcoordinator2
-PrivateTmp=yes
 Restart=on-failure
 RestartSec=2
 

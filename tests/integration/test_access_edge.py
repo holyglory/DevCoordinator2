@@ -83,7 +83,7 @@ def test_edge_identity_trust_roles_and_revocation(world):
     assert repos["ok"] and "host" not in repos["result"]
 
     # Route document carries owners + grants; promotion to operator enables stop.
-    doc = json.loads((world.base / "state" / "routes.json").read_text())
+    doc = json.loads((world.base / "state" / "public" / "routes.json").read_text())
     assert doc["access"]["owners"] == ["owner@example.test"]
     assert doc["access"]["grants"] == [{"identity": "dev@example.test", "deployment_id": dep_id,
                                         "role": "viewer"}]
@@ -100,7 +100,7 @@ def test_edge_identity_trust_roles_and_revocation(world):
                           {"deployment_id": dep_id},
                           "dev@example.test")
     assert again["error"]["code"] == "permission_denied"
-    doc = json.loads((world.base / "state" / "routes.json").read_text())
+    doc = json.loads((world.base / "state" / "public" / "routes.json").read_text())
     assert doc["access"]["grants"] == []
     _call(world, "deployment.remove", {"path": str(world.repo), "name": "svc",
                                        "delete_data": True})

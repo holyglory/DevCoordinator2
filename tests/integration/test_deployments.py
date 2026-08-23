@@ -93,7 +93,7 @@ def _comp(status: dict, name: str) -> dict:
 
 
 def _routes(world) -> dict:
-    return json.loads((world.base / "state" / "routes.json").read_text())
+    return json.loads((world.base / "state" / "public" / "routes.json").read_text())
 
 
 def _units(prefix: str) -> list[str]:

@@ -41,6 +41,7 @@ def main() -> int:
     sampler.start()
     handlers.update(build_health_handlers(config, db, registry, sampler))
     access = Access(config, db)
+    access.republish()  # the edge always has a current document after a (re)start
     handlers.update(public_commands(access))
     telegram = Telegram(config, db)
     handlers.update(build_notification_handlers(config, telegram, access))

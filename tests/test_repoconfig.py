@@ -114,3 +114,12 @@ def test_postgres_section_rejections(tmp_path, body, fragment):
     with pytest.raises(ConfigError) as excinfo:
         load_test_spec(root, None)
     assert fragment in str(excinfo.value)
+
+
+def test_file_with_both_tests_and_deployments(tmp_path):
+    """One file declares both; the test parser must tolerate deployment sections."""
+    root = write(tmp_path, 'schema = 1\n[test.unit]\ncommand = ["true"]\n'
+                           '[deployment.svc]\ncomponents = ["api"]\n'
+                           '[deployment.svc.component.api]\ntype = "process"\n'
+                           'command = ["x"]\n')
+    assert load_test_spec(root, None).name == "unit"

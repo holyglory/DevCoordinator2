@@ -270,3 +270,19 @@ edge availability across daemon restarts).
 **Owner context.** Follows the handover's access model; applied under the
 "continue towards phase 8" instruction; the identity provider remains the
 one in instance configuration (Google by default, as legacy).
+
+## DC2-2026-08-23-CANARY — Canary installed beside the legacy system; cutover owner-executed
+
+**Decision.** Phase 8 installs DevCoordinator2 as a canary (private socket,
+http-only edge on a private port, separate release root, client group, edge
+user) without touching the legacy edge on 80/443 or any legacy state. The
+consequential steps — edge switch, legacy fence, live-state import, Docker
+authoritative mode — are documented in `docs/cutover.md` with rollback and
+are performed by the owner, never by the agent.
+
+**Alternatives.** Performing the cutover automatically: rejected by the
+handover ("explicit reviewed cutover"; "do not decommission until verified
+through installed surfaces").
+
+**Owner context.** "Continue towards phase 8" authorized building the
+tooling and the canary; the owner retains every irreversible step.
