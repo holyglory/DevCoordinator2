@@ -21,6 +21,7 @@ import { createPages } from './lib/pages.mjs';
 import { createProxy } from './lib/proxy.mjs';
 import { createRoutesStore } from './lib/routes-store.mjs';
 import { createSessionManager, parseCookies } from './lib/session.mjs';
+import { createStaticServer } from './lib/static.mjs';
 
 const SESSION_COOKIE = 'dc2_session';
 const SESSION_TTL_MS = 12 * 60 * 60 * 1000;
@@ -133,6 +134,7 @@ export async function createEdge(config, { log = console } = {}) {
     renderBadGateway: (req, res, { kind, target }) => writePage(res, pages.renderUpstreamError({ slug: target.slug, kind, consoleUrl: consoleOrigin })),
     renderUpstreamAuthFailure: (req, res, { target }) => writePage(res, pages.renderUpstreamError({ slug: target.slug, kind: 'upstream_auth', consoleUrl: consoleOrigin })) });
   const daemon = createDaemonClient({ socketPath: config.daemonSocket });
+  const consoleStatic = config.consoleDir ? createStaticServer({ dir: config.consoleDir, log }) : null;
 
   function identityOf(req) {
     const session = sessions.parse(req.headers.cookie);
@@ -203,7 +205,11 @@ export async function createEdge(config, { log = console } = {}) {
     }
     const identity = identityOf(req);
     if (!identity) return redirect(res, `/auth/login?rt=${encodeURIComponent(url.pathname)}`);
-    return writePage(res, { status: 200, html: `<!doctype html><title>DevCoordinator2</title><p>Signed in as ${identity.email.replace(/[<>&]/g, '')}. The Console arrives in Phase 7.</p>` });
+    if (consoleStatic) {
+      if (url.pathname === '/' || url.pathname === '/index.html') req.url = '/index.html';
+      return consoleStatic.handle(req, res);
+    }
+    return writePage(res, { status: 200, html: '<!doctype html><title>DevCoordinator2</title><p>Console assets are not configured on this edge.</p>' });
   }
 
   async function handleRequest(req, res) {

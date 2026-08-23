@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DevCoordinator2</title>
+<link rel="stylesheet" href="/app.css">
+</head>
+<body>
+<header class="top">
+  <a class="brand" href="#/deployments">DevCoordinator2</a>
+  <nav id="nav" aria-label="Primary">
+    <a href="#/deployments" data-view="deployments">Deployments</a>
+    <a href="#/tests" data-view="tests">Tests</a>
+    <a href="#/health" data-view="health">Health</a>
+    <a href="#/bugs" data-view="bugs">Bugs</a>
+    <a href="#/admin" data-view="admin" id="nav-admin" hidden>Administration</a>
+  </nav>
+  <div class="who"><span id="who-email" class="mono"></span> <a href="/auth/logout" class="btn btn-small">Sign out</a></div>
+</header>
+<div id="banner" class="banner" hidden></div>
+<main id="main" class="main"><p class="muted">Loading…</p></main>
+<div id="toasts" class="toasts" aria-live="polite"></div>
+<script src="/app.js"></script>
+</body>
+</html>

@@ -155,6 +155,7 @@ _TOOL_TO_COMMAND = {
     "test_status": "test.status",
     "test_output": "test.output",
     "test_stop": "test.stop",
+    "test_list": "test.list",
     "repository_list": "repository.list",
 }
 

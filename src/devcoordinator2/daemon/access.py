@@ -235,7 +235,8 @@ def _validate_grant(g) -> None:
 # -- policy: wrap handlers for public principals ----------------------------
 
 _ADMIN_ONLY_PREFIXES = ("test.", "repository.", "user.", "invitation.", "grant.",
-                        "health.summary", "health.containers", "deployment.apply",
+                        "health.summary", "health.containers", "health.container_remove",
+                        "deployment.apply",
                         "deployment.rollback", "deployment.remove")
 _OPERATOR = ("deployment.start", "deployment.stop", "deployment.restart")
 _VIEWER = ("deployment.status", "deployment.logs", "health.repository", "health.history")

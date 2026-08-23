@@ -84,3 +84,11 @@ PostgreSQL container; Docker/Compose env files now use the literal format.
 | Bounded outbox: retry with backoff, attempt cap, row cap, age cap | PASS | same |
 | Bot token never appears in stored or returned data | PASS | same |
 | Bug intake works with the daemon unavailable; recurrence counting; secrets/raw-log/private-path rejection; close removes the record (REQ-REL-03) | PASS | `test_clients.py::test_bug_report_works_without_daemon`, `test_bug_registry_independent_store` |
+
+## Phase 7 addendum (2026-08-23)
+
+| Item | Result | Evidence |
+|---|---|---|
+| Deployments, Tests, Health (+Containers), Bugs, Administration destinations rendered at wide and narrow viewports in populated / empty / error / loading / permission-denied states; no overflow, clipping, or off-canvas controls | PASS | `console/verify.mjs`: 275 checks, 0 failures |
+| Every control calls the real API and re-reads state (stop→stopped, start→running, logs, remove with explicit data choice, test output, bug report, invite, container removal) | PASS | interaction proofs in the same run |
+| Non-administrators get explicit permission-denied notices; host health hidden, repositories filtered | PASS | `denied` scenario |

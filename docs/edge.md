@@ -54,7 +54,7 @@ authenticated routes only), and a static file server for the Console.
 | `EDGE_ROUTES_FILE` | daemon route document (default instance state dir) |
 | `EDGE_STATE_DIR` | last-known-good copy |
 | `EDGE_DAEMON_SOCKET` | daemon socket; the edge user must be in the client group |
-| `EDGE_CONSOLE_DIR` | Console static assets (Phase 7) |
+| `EDGE_CONSOLE_DIR` | Console static assets (`console/` in the release) |
 
 Daemon side: `DEVCOORDINATOR2_EDGE_UID` (the edge service uid) and
 `DEVCOORDINATOR2_ADMIN_EMAILS` (bootstrap administrators).

@@ -52,6 +52,7 @@ def build_parser() -> argparse.ArgumentParser:
                         default="stdout")
     output.add_argument("--tail-bytes", type=int, default=16384)
     _add_common(test_sub.add_parser("stop", help="cancel the current run"))
+    _add_common(test_sub.add_parser("list", help="current run per worktree"), with_path=False)
 
     dep = sub.add_parser("deployment", help="deployment lifecycle")
     dep_sub = dep.add_subparsers(dest="action", required=True)
@@ -147,6 +148,8 @@ def _to_call(ns: argparse.Namespace) -> tuple[str, dict]:
                                    "tail_bytes": ns.tail_bytes}
         case ("test", "stop"):
             return "test.stop", path_args
+        case ("test", "list"):
+            return "test.list", {}
         case ("deployment", "list"):
             return "deployment.list", ({"path": str(Path(ns.path).absolute())}
                                        if ns.path else {})

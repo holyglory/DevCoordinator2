@@ -7,7 +7,6 @@ repository-local files; the daemon only holds live handles.
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 import threading
@@ -24,18 +23,23 @@ from devcoordinator2.daemon import (
     summary,
     systemd_unit,
     test_postgres,
+    tests_support,
 )
 from devcoordinator2.daemon.gitinfo import GitResolveError, resolve_worktree
 from devcoordinator2.daemon.registry import Registry
 from devcoordinator2.daemon.repoconfig import ConfigError, load_test_spec
 from devcoordinator2.daemon.server import Caller
+from devcoordinator2.daemon.tests_support import (
+    _remove_containers,
+    _write_containers,
+    _write_env_file,
+)
 from devcoordinator2.paths import InstanceConfig, test_dir
 from devcoordinator2.protocol import ProtocolError
 
 _START_LOCK_WAIT = 10.0
 _LAUNCH_VERIFY_WAIT = 10.0
-_CONTAINERS_FILE = "containers.json"
-_ENV_FILE = "env"
+_ENV_FILE = tests_support.ENV_FILE
 log = logging.getLogger("devcoordinator2.tests")
 
 
@@ -264,6 +268,9 @@ class TestLifecycle:
         return {"run_id": handle.run_id,
                 "status": final["status"] if final else "cancelled"}
 
+    def list_current(self) -> list[dict]:
+        return tests_support.list_current(self._registry._db, self._runs)
+
     def current_summary_ref(self, path: Path, caller: Caller) -> dict | None:
         try:
             worktree_root, _ = self._resolve(path, caller)
@@ -483,43 +490,3 @@ class TestLifecycle:
         finally:
             handle.finalized.set()
 
-
-def _write_containers(dir_fd: int, containers: list[str],
-                      owner: tuple[int, int]) -> None:
-    """Record exact owned container IDs beside the summary for recovery."""
-    payload = json.dumps({"containers": containers}).encode()
-    fd = os.open(_CONTAINERS_FILE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644,
-                 dir_fd=dir_fd)
-    try:
-        os.write(fd, payload)
-        os.fchown(fd, owner[0], owner[1])
-    finally:
-        os.close(fd)
-
-
-def _write_env_file(dir_fd: int, env: dict[str, str],
-                    owner: tuple[int, int]) -> None:
-    """systemd EnvironmentFile syntax, caller-owned, mode 0600."""
-    lines = []
-    for key, value in env.items():
-        if not key.isidentifier():
-            raise ProtocolError("repository_config_invalid",
-                                f"invalid environment variable name {key!r}")
-        escaped = value.replace("\\", "\\\\").replace('"', '\\"')
-        lines.append(f'{key}="{escaped}"')
-    fd = os.open(_ENV_FILE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600,
-                 dir_fd=dir_fd)
-    try:
-        os.write(fd, ("\n".join(lines) + "\n").encode())
-        os.fchmod(fd, 0o600)
-        os.fchown(fd, owner[0], owner[1])
-    finally:
-        os.close(fd)
-
-
-def _remove_containers(container_ids: list[str]) -> None:
-    for container_id in list(container_ids):
-        try:
-            docker_cli.remove_exact(container_id)
-        except docker_cli.DockerError as exc:
-            log.error("container cleanup failed for %s: %s", container_id, exc)

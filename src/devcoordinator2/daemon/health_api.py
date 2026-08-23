@@ -128,5 +128,52 @@ def build_health_handlers(config: InstanceConfig, db: Database, registry: Regist
                 "minutes": minutes, "points": points[-1440:],
                 "truncated": len(points) > 1440}
 
+    def containers(args: dict[str, Any], caller: Caller) -> dict[str, Any]:
+        if args:
+            raise ProtocolError("args_invalid", f"unexpected args: {sorted(args)}")
+        try:
+            rows = inventory.containers(db, config.unit_prefix)
+        except docker_cli.DockerError as exc:
+            raise ProtocolError("internal_error", f"docker unavailable: {exc}") from exc
+        snap = sampler.snapshot()
+        for row in rows:
+            live = snap["current"].get(("container", row["id"]), {})
+            storage = snap["storage"].get(("component", f"{row['deployment_id']}/"
+                                                        f"{row['component']}"), {})
+            row["cpu_percent"] = live.get("cpu_percent")
+            row["memory_bytes"] = live.get("memory_bytes")
+            row["pids"] = live.get("pids")
+            row["container_layer_bytes"] = storage.get("container_layer")
+        return {"containers": rows, "counts": inventory.summary(rows)}
+
+    def container_remove(args: dict[str, Any], caller: Caller) -> dict[str, Any]:
+        """Explicit removal of one exact DevCoordinator-owned ephemeral
+        container (orphaned managed or managed test). Unmanaged containers
+        and permanent deployment containers are never removable here."""
+        unknown = set(args) - {"container_id"}
+        if unknown:
+            raise ProtocolError("args_invalid", f"unknown args: {sorted(unknown)}")
+        cid = args.get("container_id")
+        if not isinstance(cid, str) or len(cid) != 64:
+            raise ProtocolError("args_invalid", "'container_id' must be a full 64-hex id")
+        try:
+            rows = inventory.containers(db, config.unit_prefix)
+        except docker_cli.DockerError as exc:
+            raise ProtocolError("internal_error", f"docker unavailable: {exc}") from exc
+        row = next((r for r in rows if r["id"] == cid), None)
+        if row is None:
+            raise ProtocolError("args_invalid", "no such container")
+        if row["classification"] not in ("orphaned-managed", "managed-test"):
+            raise ProtocolError("permission_denied",
+                                f"{row['classification']} containers are not removed by"
+                                " DevCoordinator; decide manually")
+        try:
+            docker_cli.remove_exact(cid)
+        except docker_cli.DockerError as exc:
+            raise ProtocolError("internal_error", str(exc)) from exc
+        return {"container_id": cid, "removed": True,
+                "classification": row["classification"]}
+
     return {"health.summary": summary, "health.repositories": repositories,
-            "health.repository": repository, "health.history": history}
+            "health.repository": repository, "health.history": history,
+            "health.containers": containers, "health.container_remove": container_remove}

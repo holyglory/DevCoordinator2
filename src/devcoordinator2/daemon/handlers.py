@@ -116,11 +116,16 @@ def build_handlers(config: InstanceConfig, registry: Registry,
             path = _require_path(args, {"path"})
             return lifecycle.stop(path, caller)
 
+        def test_list(args: dict[str, Any], caller: Caller) -> dict[str, Any]:
+            _no_args(args)
+            return {"runs": lifecycle.list_current()}
+
         handlers.update({
             "test.start": test_start,
             "test.status": test_status,
             "test.output": test_output,
             "test.stop": test_stop,
+            "test.list": test_list,
         })
 
     if deployments is not None:

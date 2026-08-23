@@ -1,0 +1,44 @@
+:root{color-scheme:dark;--bg:#0b0f15;--panel:#121824;--line:#243044;--fg:#e7edf5;--muted:#93a1b5;--ok:#3fb950;--warn:#d29922;--bad:#f85149;--accent:#4c8dff}
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+html,body{min-height:100%;background:var(--bg);color:var(--fg);font:14px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+a{color:var(--accent);text-decoration:none}
+.top{display:flex;flex-wrap:wrap;align-items:center;gap:12px;padding:10px 16px;border-bottom:1px solid var(--line);background:var(--panel)}
+.brand{font-weight:700;color:var(--fg)}
+#nav{display:flex;flex-wrap:wrap;gap:4px}
+#nav a{padding:6px 10px;border-radius:6px;color:var(--muted)}
+#nav a.active,#nav a:hover{background:#1b2435;color:var(--fg)}
+.who{margin-left:auto;display:flex;gap:8px;align-items:center;min-width:0}
+.who .mono{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:40vw}
+.main{padding:16px;max-width:1400px;margin:0 auto}
+h1{font-size:20px;margin:0 0 12px}h2{font-size:16px;margin:18px 0 8px}
+.muted{color:var(--muted)}.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px}
+.banner{margin:12px 16px;padding:10px 12px;border:1px solid var(--bad);border-radius:8px;background:#2a1416}
+.notice{padding:10px 12px;border:1px solid var(--line);border-radius:8px;background:var(--panel);margin:8px 0}
+.notice.denied{border-color:var(--warn)}
+.grid{display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));align-items:start}
+.tile{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:10px 12px;min-width:0}
+.tile .k{color:var(--muted);font-size:12px}.tile .v{font-size:20px;font-weight:600;overflow-wrap:anywhere}
+.tile .v.bad{color:var(--bad)}.tile .v.warn{color:var(--warn)}
+.tablewrap{overflow-x:auto;border:1px solid var(--line);border-radius:8px;background:var(--panel)}
+table{border-collapse:collapse;width:100%;min-width:640px}
+th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line);vertical-align:top;white-space:nowrap}
+td.wrap,th.wrap{white-space:normal;overflow-wrap:anywhere;max-width:320px}
+tr:last-child td{border-bottom:0}
+.badge{display:inline-block;padding:1px 8px;border-radius:10px;font-size:12px;border:1px solid var(--line);background:#1b2435}
+.badge.ok{border-color:var(--ok);color:var(--ok)}.badge.warn{border-color:var(--warn);color:var(--warn)}.badge.bad{border-color:var(--bad);color:var(--bad)}
+.btn{display:inline-block;padding:6px 10px;border-radius:6px;border:1px solid var(--line);background:#1b2435;color:var(--fg);cursor:pointer;font:inherit}
+.btn:hover{border-color:var(--accent)}.btn[disabled]{opacity:.5;cursor:wait}
+.btn-small{padding:3px 8px;font-size:12px}.btn-danger{border-color:var(--bad)}
+.actions{display:flex;flex-wrap:wrap;gap:6px}
+form.inline{display:flex;flex-wrap:wrap;gap:8px;align-items:end;margin:8px 0}
+label.f{display:flex;flex-direction:column;gap:2px;font-size:12px;color:var(--muted);min-width:0}
+input,select,textarea{font:inherit;padding:6px 8px;border-radius:6px;border:1px solid var(--line);background:#0f141d;color:var(--fg);max-width:100%}
+textarea{min-width:240px;min-height:60px}
+pre.log{background:#0f141d;border:1px solid var(--line);border-radius:8px;padding:10px;overflow:auto;max-height:360px;font-size:12px;white-space:pre-wrap;overflow-wrap:anywhere}
+.spark{vertical-align:middle}
+.toasts{position:fixed;right:12px;bottom:12px;display:flex;flex-direction:column;gap:6px;max-width:min(420px,90vw)}
+.toast{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:8px 12px;box-shadow:0 4px 16px rgba(0,0,0,.4);overflow-wrap:anywhere}
+.toast.bad{border-color:var(--bad)}.toast.ok{border-color:var(--ok)}
+.skeleton{height:14px;border-radius:4px;background:linear-gradient(90deg,#1b2435,#243044,#1b2435);background-size:200% 100%;animation:sh 1.2s infinite;margin:6px 0}
+@keyframes sh{0%{background-position:200% 0}100%{background-position:-200% 0}}
+@media (max-width:640px){.main{padding:10px}.top{padding:8px 10px}th,td{padding:6px 8px}.tile .v{font-size:17px}}
