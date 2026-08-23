@@ -93,7 +93,7 @@ not contradict them.
   isolated and never block test or deployment mutations.
 - **REQ-REL-02** (P5, done): Edge routes remain available across daemon restarts
   from the last valid atomic route document.
-- **REQ-REL-03** (P6): Bug intake works while the daemon, database, or edge
+- **REQ-REL-03** (P6, done): Bug intake works while the daemon, database, or edge
   is unavailable (independent store, open records only).
 - **REQ-REL-04** (P1, in scope): Durable state uses atomic file replacement
   and SQLite transactions; test/metric histories are disposable and their

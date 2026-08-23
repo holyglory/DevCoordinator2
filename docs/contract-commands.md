@@ -189,9 +189,28 @@ administrator. Public callers address deployments by `deployment_id`.
 Every user/grant change republishes the route document (owners + grants),
 so edge enforcement changes on the next request.
 
-## Reserved sketches (later phases)
+## telegram.* and bug.* (Phase 6, implemented)
 
-- `bug.report | list | close` — backed by the independent open-only store
-  (Phase 6).
+One server-owned bot (token in a private instance file, never in the
+database or results). A Telegram user sends `/start` and receives a link
+code; `telegram.link {code, email}` binds the chat to an identity (self or
+administrator). `telegram.subscribe {chat_id, scope}` with scope `server`
+(administrators), `deployment:<id>` (viewer or better), or
+`repository:<id>` (a viewable deployment in it); `telegram.unsubscribe`;
+`telegram.list` (own chats for public users; all for administrators).
+Events: deployment apply/failure/rollback/start/stop/restart/remove,
+component failure, preview expiry, test failure/timeout/supersession/
+interruption (successful tests are silent), alert open/recover, new
+unmanaged/orphaned container, daemon start, bug open/close, user and grant
+changes. Delivery uses a bounded durable outbox (≤ 1000 rows, ≤ 10
+attempts with backoff, ≤ 24 h) — reliability, never a work queue.
+
+`bug.report {component, summary, expected, actual, steps, correlations?}`,
+`bug.list`, `bug.close {bug_id}` — the daemon path only adds event emission;
+the CLI and MCP write the same independent store directly so intake works
+while the daemon, database, or edge is unavailable, then notify the daemon
+best-effort (`notified: false` when it was down). Records are bounded atomic
+text without secrets, raw logs, or private host paths; a recurrence
+increments `occurrences` instead of duplicating; closing removes the record.
 
 All follow the same envelope, error model, and file-reference conventions.

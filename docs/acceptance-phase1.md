@@ -75,3 +75,12 @@ PostgreSQL container; Docker/Compose env files now use the literal format.
 | Only the configured edge uid may assert an identity; spoofing from another uid is refused (REQ-ACCESS-04) | PASS | `test_access_edge.py` |
 | Edge keeps serving the last valid route document; malformed/tampered/stale documents rejected (REQ-REL-02) | PASS | `edge.test.mjs` |
 | Session cookie never reaches upstreams; verified identity forwarded only on authenticated routes | PASS | `edge.test.mjs` |
+
+## Phase 6 addendum (2026-08-23)
+
+| Item | Result | Evidence |
+|---|---|---|
+| /start → link code → link to identity → scoped subscriptions; routing of deployment/test/alert/container/bug events; successful tests silent | PASS | `tests/test_telegram_bugs.py` (fake Telegram API) |
+| Bounded outbox: retry with backoff, attempt cap, row cap, age cap | PASS | same |
+| Bot token never appears in stored or returned data | PASS | same |
+| Bug intake works with the daemon unavailable; recurrence counting; secrets/raw-log/private-path rejection; close removes the record (REQ-REL-03) | PASS | `test_clients.py::test_bug_report_works_without_daemon`, `test_bug_registry_independent_store` |

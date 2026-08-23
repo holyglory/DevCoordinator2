@@ -6,14 +6,16 @@ import logging
 import signal
 import sys
 
+from devcoordinator2.daemon import events
 from devcoordinator2.daemon.access import Access, guard, public_commands
 from devcoordinator2.daemon.db import Database, SchemaMismatch
 from devcoordinator2.daemon.deploy_control import Deployments
-from devcoordinator2.daemon.handlers import build_handlers
+from devcoordinator2.daemon.handlers import build_handlers, build_notification_handlers
 from devcoordinator2.daemon.health_api import build_health_handlers
 from devcoordinator2.daemon.metrics_sampler import Sampler
 from devcoordinator2.daemon.registry import Registry
 from devcoordinator2.daemon.server import Server
+from devcoordinator2.daemon.telegram import Telegram
 from devcoordinator2.daemon.tests_lifecycle import TestLifecycle
 from devcoordinator2.paths import load_instance_config
 
@@ -40,7 +42,10 @@ def main() -> int:
     handlers.update(build_health_handlers(config, db, registry, sampler))
     access = Access(config, db)
     handlers.update(public_commands(access))
+    telegram = Telegram(config, db)
+    handlers.update(build_notification_handlers(config, telegram, access))
     handlers = guard(handlers, access, db)
+    telegram.start()
     server = Server(config.socket_path, handlers,
                     client_group=config.client_group, edge_uid=config.edge_uid)
     server.bind()
@@ -52,7 +57,9 @@ def main() -> int:
     signal.signal(signal.SIGTERM, _shutdown)
     signal.signal(signal.SIGINT, _shutdown)
     log.info("serving on %s", config.socket_path)
+    events.publish("coordinator.started", socket=str(config.socket_path))
     server.serve_forever()
+    telegram.stop()
     deployments.shutdown()
     sampler.stop()
     db.close()

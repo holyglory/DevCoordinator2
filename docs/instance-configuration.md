@@ -26,12 +26,15 @@ stripping one pair of surrounding quotes.
 | `DEVCOORDINATOR2_BASE_DOMAIN` | (empty) | base public domain; deployment `domain` labels resolve beneath it (Phase 3+) |
 | `DEVCOORDINATOR2_EDGE_UID` | (unset) | Unix uid of the edge service; the only peer allowed to assert a public identity |
 | `DEVCOORDINATOR2_ADMIN_EMAILS` | (empty) | comma-separated bootstrap administrators |
+| `DEVCOORDINATOR2_TELEGRAM_TOKEN_FILE` | (unset) | private 0600 file holding the single server-owned bot token; unset disables notifications |
+| `DEVCOORDINATOR2_TELEGRAM_API` | `https://api.telegram.org` | API base (tests point it at a fixture) |
+| `DEVCOORDINATOR2_BUGS_DIR` | `/var/lib/devcoordinator2-bugs` | independent open-bug store; group-writable for the client group |
 
 Edge configuration lives in `/etc/devcoordinator2/edge.env` (`docs/edge.md`).
 
 ## Reserved for later phases
 
-Telegram bot token reference. Secrets are referenced (systemd credentials, private files),
+None. Secrets are referenced (systemd credentials, private files),
 never placed in the repository or the database.
 
 ## Enforcement

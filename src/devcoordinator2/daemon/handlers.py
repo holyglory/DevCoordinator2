@@ -128,6 +128,110 @@ def build_handlers(config: InstanceConfig, registry: Registry,
     return handlers
 
 
+def build_notification_handlers(config: InstanceConfig, telegram, access) -> dict[str, Handler]:
+    """telegram.* (scoped by what the identity may view) and bug.* (shared
+    independent store; the daemon path only adds event emission)."""
+    from devcoordinator2 import bugs
+    from devcoordinator2.daemon import events
+
+    def _chat_for(args: dict[str, Any], caller: Caller) -> int:
+        chat_id = args.get("chat_id")
+        if not isinstance(chat_id, int) or isinstance(chat_id, bool):
+            raise ProtocolError("args_invalid", "'chat_id' (integer) is required")
+        principal = access.principal(caller)
+        if not principal.local and not principal.administrator \
+                and telegram.chat_email(chat_id) != principal.identity:
+            raise ProtocolError("permission_denied", "chat is linked to another identity")
+        return chat_id
+
+    def tg_link(args, caller):
+        _only(args, {"code", "email"})
+        principal = access.principal(caller)
+        email = args.get("email") or principal.identity
+        if not isinstance(email, str) or "@" not in email:
+            raise ProtocolError("args_invalid", "'email' is required")
+        if not principal.local and not principal.administrator and email != principal.identity:
+            raise ProtocolError("permission_denied", "may only link chats to yourself")
+        return telegram.link(str(args.get("code", "")), email.lower())
+
+    def tg_subscribe(args, caller):
+        _only(args, {"chat_id", "scope"})
+        chat_id = _chat_for(args, caller)
+        scope = str(args.get("scope", ""))
+        from devcoordinator2.daemon.telegram import parse_scope
+        kind, ident = parse_scope(scope)
+        principal = access.principal(caller)
+        if not principal.local and not principal.administrator:
+            if kind == "server":
+                raise ProtocolError("permission_denied", "server scope requires administrator")
+            if kind == "deployment" and not principal.at_least(ident, "viewer"):
+                raise ProtocolError("permission_denied", "viewer on the deployment required")
+            if kind == "repository":
+                allowed = set()
+                if principal.grants:
+                    marks = ",".join("?" * len(principal.grants))
+                    allowed = {r["repository_id"] for r in access.db.query(
+                        "SELECT repository_id FROM deployments WHERE deployment_id IN"
+                        f" ({marks})", tuple(principal.grants))}
+                if ident not in allowed:
+                    raise ProtocolError("permission_denied",
+                                        "no viewable deployment in that repository")
+        return telegram.subscribe(chat_id, scope)
+
+    def tg_unsubscribe(args, caller):
+        _only(args, {"chat_id", "scope"})
+        chat_id = _chat_for(args, caller)
+        return telegram.unsubscribe(chat_id, str(args.get("scope", "")))
+
+    def tg_list(args, caller):
+        _no_args(args)
+        principal = access.principal(caller)
+        email = None if principal.local or principal.administrator else principal.identity
+        return telegram.listing(email)
+
+    def bug_report(args, caller):
+        _only(args, {"component", "summary", "expected", "actual", "steps", "correlations"})
+        principal = access.principal(caller)
+        try:
+            record = bugs.report(component=args.get("component"), summary=args.get("summary"),
+                                 expected=args.get("expected"), actual=args.get("actual"),
+                                 steps=args.get("steps"), correlations=args.get("correlations"),
+                                 reporter=principal.identity or f"uid:{caller.uid}",
+                                 directory=config.bugs_dir)
+        except bugs.BugError as exc:
+            raise ProtocolError("args_invalid", str(exc)) from exc
+        if not record["duplicate"]:
+            events.publish("bug.opened", bug_id=record["bug_id"], component=record["component"],
+                           summary=record["summary"],
+                           repository_id=record["correlations"].get("repository_id"),
+                           deployment_id=record["correlations"].get("deployment_id"))
+        return record
+
+    def bug_list(args, caller):
+        _no_args(args)
+        return {"bugs": bugs.list_open(config.bugs_dir), "store": str(config.bugs_dir)}
+
+    def bug_close(args, caller):
+        _only(args, {"bug_id"})
+        try:
+            result = bugs.close(str(args.get("bug_id", "")), config.bugs_dir)
+        except bugs.BugError as exc:
+            raise ProtocolError("args_invalid", str(exc)) from exc
+        events.publish("bug.closed", bug_id=result["bug_id"], component=result["component"],
+                       summary=result["summary"])
+        return result
+
+    return {"telegram.link": tg_link, "telegram.subscribe": tg_subscribe,
+            "telegram.unsubscribe": tg_unsubscribe, "telegram.list": tg_list,
+            "bug.report": bug_report, "bug.list": bug_list, "bug.close": bug_close}
+
+
+def _only(args: dict[str, Any], allowed: set[str]) -> None:
+    unknown = set(args) - allowed
+    if unknown:
+        raise ProtocolError("args_invalid", f"unknown args: {sorted(unknown)}")
+
+
 def _deployment_handlers(config: InstanceConfig, deployments, db) -> dict[str, Handler]:
     ref_keys = {"path", "name", "deployment_id"}
 

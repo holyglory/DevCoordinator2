@@ -23,6 +23,9 @@ _DEFAULTS = {
     "DEVCOORDINATOR2_BASE_DOMAIN": "",
     "DEVCOORDINATOR2_EDGE_UID": "",
     "DEVCOORDINATOR2_ADMIN_EMAILS": "",
+    "DEVCOORDINATOR2_TELEGRAM_TOKEN_FILE": "",
+    "DEVCOORDINATOR2_TELEGRAM_API": "https://api.telegram.org",
+    "DEVCOORDINATOR2_BUGS_DIR": "/var/lib/devcoordinator2-bugs",
 }
 
 INSTALLED_ENV_PATH = Path("/etc/devcoordinator2/instance.env")
@@ -68,6 +71,9 @@ class InstanceConfig:
     base_domain: str = ""
     edge_uid: int | None = None          # only this peer may assert a public identity
     admin_emails: tuple[str, ...] = ()   # bootstrap administrators (instance data)
+    telegram_token_file: Path | None = None
+    telegram_api: str = "https://api.telegram.org"
+    bugs_dir: Path = Path("/var/lib/devcoordinator2-bugs")
 
     @property
     def database_path(self) -> Path:
@@ -115,6 +121,10 @@ def load_instance_config() -> InstanceConfig:
         else None,
         admin_emails=tuple(e.strip().lower() for e in
                            get("DEVCOORDINATOR2_ADMIN_EMAILS").split(",") if e.strip()),
+        telegram_token_file=Path(get("DEVCOORDINATOR2_TELEGRAM_TOKEN_FILE"))
+        if get("DEVCOORDINATOR2_TELEGRAM_TOKEN_FILE") else None,
+        telegram_api=get("DEVCOORDINATOR2_TELEGRAM_API").rstrip("/"),
+        bugs_dir=Path(get("DEVCOORDINATOR2_BUGS_DIR")),
     )
 
 

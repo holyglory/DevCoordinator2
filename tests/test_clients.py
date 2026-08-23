@@ -44,7 +44,7 @@ def test_cli_ping_and_register_roundtrip(live, capsys):
     assert rc == 0
     response = json.loads(capsys.readouterr().out)
     assert response["ok"] is True
-    assert response["result"]["schema_version"] == 4
+    assert response["result"]["schema_version"] == 5
 
     rc = cli.main(["repository", "register", str(live.repo)])
     assert rc == 0
@@ -115,3 +115,21 @@ def test_mcp_unsupported_version_negotiated_down(live):
                     "clientInfo": {"name": "x"}, "capabilities": {}}},
     ])
     assert replies[0]["result"]["protocolVersion"] == "2025-06-18"
+
+
+def test_bug_report_works_without_daemon(tmp_path, monkeypatch, capsys):
+    """REQ-REL-03: intake is independent of daemon, database, and edge."""
+    monkeypatch.setenv("DEVCOORDINATOR2_SOCKET", "/nonexistent/daemon.sock")
+    monkeypatch.setenv("DEVCOORDINATOR2_BUGS_DIR", str(tmp_path / "bugs"))
+    monkeypatch.setenv("DEVCOORDINATOR2_INSTANCE_ENV", "/nonexistent")
+    rc = cli.main(["bug", "report", "--component", "api", "--summary", "crash",
+                   "--expected", "ok", "--actual", "500", "--steps", "GET /"])
+    assert rc == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["ok"] and out["result"]["notified"] is False
+    bug_id = out["result"]["bug_id"]
+    assert (tmp_path / "bugs" / f"{bug_id}.json").exists()
+    rc = cli.main(["bug", "list"])
+    assert rc == 0 and len(json.loads(capsys.readouterr().out)["result"]["bugs"]) == 1
+    rc = cli.main(["bug", "close", bug_id])
+    assert rc == 0 and json.loads(capsys.readouterr().out)["result"]["closed"]

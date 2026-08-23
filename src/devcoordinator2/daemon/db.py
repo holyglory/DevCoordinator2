@@ -11,7 +11,7 @@ import threading
 from contextlib import contextmanager
 from pathlib import Path
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (
@@ -160,6 +160,38 @@ CREATE TABLE IF NOT EXISTS grants (
 );
 """
 
+# Schema 5 (Phase 6): Telegram chats, link codes, subscriptions, bounded outbox.
+_SCHEMA_V5 = """
+CREATE TABLE IF NOT EXISTS telegram_chats (
+  chat_id    INTEGER PRIMARY KEY,
+  email      TEXT NOT NULL,
+  label      TEXT,
+  linked_at  TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS telegram_links (
+  code       TEXT PRIMARY KEY,
+  chat_id    INTEGER NOT NULL,
+  label      TEXT,
+  created_at TEXT NOT NULL,
+  expires_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS telegram_subscriptions (
+  chat_id    INTEGER NOT NULL REFERENCES telegram_chats(chat_id),
+  scope      TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY(chat_id, scope)
+);
+CREATE TABLE IF NOT EXISTS telegram_outbox (
+  message_id      INTEGER PRIMARY KEY AUTOINCREMENT,
+  chat_id         INTEGER NOT NULL,
+  text            TEXT NOT NULL,
+  created_at      TEXT NOT NULL,
+  attempts        INTEGER NOT NULL DEFAULT 0,
+  next_attempt_at TEXT NOT NULL,
+  last_error      TEXT
+);
+"""
+
 
 class SchemaMismatch(Exception):
     pass
@@ -191,6 +223,7 @@ class Database:
             self._conn.executescript(_SCHEMA_V2)
             self._conn.executescript(_SCHEMA_V3)
             self._conn.executescript(_SCHEMA_V4)
+            self._conn.executescript(_SCHEMA_V5)
             self._ensure_column("deployments", "public", "INTEGER NOT NULL DEFAULT 0")
             self._conn.execute(
                 "INSERT OR REPLACE INTO meta(key, value) VALUES('schema_version', ?)",

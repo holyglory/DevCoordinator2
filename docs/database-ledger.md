@@ -44,6 +44,18 @@ live in root-only 0600 files under the instance secrets directory.
 | `grants` | (user_id, deployment_id) PK, role, granted_at, granted_by | done |
 | `deployments.public` | added column (route needs no sign-in) | done |
 
+## Schema version 5 (Phase 6)
+
+| Table | Fields | Status |
+|---|---|---|
+| `telegram_chats` | chat_id PK, email, label, linked_at | done |
+| `telegram_links` | code PK, chat_id, label, created_at, expires_at (15 min) | done |
+| `telegram_subscriptions` | (chat_id, scope) PK, created_at | done |
+| `telegram_outbox` | message_id PK, chat_id, text, created_at, attempts, next_attempt_at, last_error — bounded (1000 rows / 10 attempts / 24 h) | done |
+
+Bugs are **not** in this database: `DEVCOORDINATOR2_BUGS_DIR` holds one
+atomic JSON file per open bug.
+
 ## Reserved ID-prefix namespace
 
 Deterministic opaque TEXT IDs; later phases never migrate existing IDs.
@@ -71,7 +83,7 @@ Deterministic opaque TEXT IDs; later phases never migrate existing IDs.
 | bounded health samples | 4 | done |
 | current alerts | 4 | done |
 | users, invitations, deployment grants | 5 | done |
-| Telegram subscriptions + bounded outbox | 6 | single server-owned bot; token in instance config, never in DB |
+| Telegram subscriptions + bounded outbox | 6 | done |
 
 ## Change rules
 

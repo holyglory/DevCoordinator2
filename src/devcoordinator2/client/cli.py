@@ -93,6 +93,32 @@ def build_parser() -> argparse.ArgumentParser:
     hist.add_argument("--metric", required=True)
     hist.add_argument("--minutes", type=int, default=60)
 
+    bug = sub.add_parser("bug", help="open bug registry (works without the daemon)")
+    bug_sub = bug.add_subparsers(dest="action", required=True)
+    br = bug_sub.add_parser("report", help="open (or count a recurrence of) a bug")
+    for field in ("component", "summary", "expected", "actual", "steps"):
+        br.add_argument(f"--{field}", required=True)
+    br.add_argument("--run-id", default=None)
+    br.add_argument("--deployment-id", default=None)
+    bug_sub.add_parser("list", help="all open bugs")
+    bc = bug_sub.add_parser("close", help="close (remove) an open bug")
+    bc.add_argument("bug_id")
+
+    tg = sub.add_parser("telegram", help="notification subscriptions")
+    tg_sub = tg.add_subparsers(dest="action", required=True)
+    _add_common(tg_sub.add_parser("list", help="linked chats and subscriptions"),
+                with_path=False)
+    tl = tg_sub.add_parser("link", help="link a chat (code from /start) to an e-mail")
+    _add_common(tl, with_path=False)
+    tl.add_argument("--code", required=True)
+    tl.add_argument("--email", required=True)
+    for action in ("subscribe", "unsubscribe"):
+        ts = tg_sub.add_parser(action)
+        _add_common(ts, with_path=False)
+        ts.add_argument("--chat-id", type=int, required=True)
+        ts.add_argument("--scope", required=True,
+                        help="server | deployment:<id> | repository:<id>")
+
     repo = sub.add_parser("repository", help="repository registry")
     repo_sub = repo.add_subparsers(dest="action", required=True)
     _add_common(repo_sub.add_parser("list", help="all repositories"),
@@ -139,6 +165,12 @@ def _to_call(ns: argparse.Namespace) -> tuple[str, dict]:
             if action == "remove":
                 args["delete_data"] = ns.delete_data
             return f"deployment.{action}", args
+        case ("telegram", "list"):
+            return "telegram.list", {}
+        case ("telegram", "link"):
+            return "telegram.link", {"code": ns.code, "email": ns.email}
+        case ("telegram", action):
+            return f"telegram.{action}", {"chat_id": ns.chat_id, "scope": ns.scope}
         case ("health", "containers"):
             return "health.containers", {}
         case ("health", "summary"):
@@ -160,6 +192,39 @@ def _to_call(ns: argparse.Namespace) -> tuple[str, dict]:
     raise SystemExit(2)
 
 
+def _bug_command(ns: argparse.Namespace) -> int:
+    """Bugs are written to the independent store directly, so intake works
+    while the daemon, its database, or the edge is down. The daemon is told
+    best-effort afterwards so subscribers get notified."""
+    from devcoordinator2 import bugs
+    config = load_instance_config()
+    try:
+        if ns.action == "report":
+            correlations = {k: v for k, v in (("run_id", ns.run_id),
+                                              ("deployment_id", ns.deployment_id)) if v}
+            result = bugs.report(component=ns.component, summary=ns.summary,
+                                 expected=ns.expected, actual=ns.actual, steps=ns.steps,
+                                 correlations=correlations, reporter=f"uid:{os.getuid()}",
+                                 directory=config.bugs_dir)
+        elif ns.action == "list":
+            result = {"bugs": bugs.list_open(config.bugs_dir), "store": str(config.bugs_dir)}
+        else:
+            result = bugs.close(ns.bug_id, config.bugs_dir)
+    except bugs.BugError as exc:
+        print(json.dumps({"ok": False, "error": {"code": "args_invalid", "message": str(exc)}}))
+        return 1
+    if ns.action != "list":
+        try:  # notify subscribers; the record is already durable either way
+            call(config.socket_path, "bug.report" if ns.action == "report" else "bug.close",
+                 {"component": ns.component, "summary": ns.summary, "expected": ns.expected,
+                  "actual": ns.actual, "steps": ns.steps} if ns.action == "report"
+                 else {"bug_id": ns.bug_id})
+        except DaemonUnavailable:
+            result["notified"] = False
+    print(json.dumps({"ok": True, "result": result}, indent=2))
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     ns = build_parser().parse_args(argv)
     if ns.group == "daemon":
@@ -168,6 +233,8 @@ def main(argv: list[str] | None = None) -> int:
     if ns.group == "mcp":
         from devcoordinator2.client.mcp_server import main as mcp_main
         return mcp_main()
+    if ns.group == "bug":
+        return _bug_command(ns)
     command, args = _to_call(ns)
     config = load_instance_config()
     try:

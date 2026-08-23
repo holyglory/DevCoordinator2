@@ -49,6 +49,7 @@ class Sampler:
         self._restarts: dict[str, list[tuple[float, int]]] = {}
         self._last_expire = 0.0
         self._storage_wakeup = threading.Event()
+        self._seen_containers: set[str] | None = None  # None until the first tick
         events.subscribe(self._on_event)
 
     def _on_event(self, event: dict) -> None:
@@ -145,9 +146,12 @@ class Sampler:
                         if c["binding_kind"] == "container" and c["binding_identity"]}
         compose_projects = {c["binding_identity"]: c for c in components
                             if c["binding_kind"] == "compose" and c["binding_identity"]}
+        seen_now: set[str] = set()
         for container in src.running_containers():
             labels = container["labels"]
             cid = container["id"]
+            seen_now.add(cid)
+            self._notice_container(container, labels, by_container, compose_projects)
             repo = None
             dep_id = labels.get(f"{LABEL_PREFIX}.deployment")
             comp = by_container.get(cid)
@@ -165,7 +169,25 @@ class Sampler:
                              "type": comp["type"] if comp else None,
                              "image": container["image"], "state": container["state"],
                              "cgroup": cg})
+        self._seen_containers = seen_now
         return subjects
+
+    def _notice_container(self, container: dict, labels: dict, by_container: dict,
+                          compose_projects: dict) -> None:
+        """Emit one event per newly observed unmanaged or orphaned container.
+        The first tick seeds silently so a restart never floods."""
+        cid = container["id"]
+        if self._seen_containers is None or cid in self._seen_containers:
+            return
+        ours = labels.get(f"{LABEL_PREFIX}.instance") == self._config.unit_prefix
+        project = labels.get("com.docker.compose.project")
+        if ours:
+            if labels.get(f"{LABEL_PREFIX}.purpose") != "test" and cid not in by_container:
+                events.publish("container.orphaned_seen", container_id=cid,
+                               name=container["name"], image=container["image"])
+        elif project not in compose_projects:
+            events.publish("container.unmanaged_seen", container_id=cid,
+                           name=container["name"], image=container["image"])
 
     # -- 15 s tick -------------------------------------------------------------
 

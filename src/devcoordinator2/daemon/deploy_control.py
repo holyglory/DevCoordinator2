@@ -531,6 +531,9 @@ class Deployments:
                 try:
                     self.control("stop", Path(wt[0]["worktree_path"]), None,
                                  row["deployment_id"], None, caller)
+                    events.publish("preview.expired", deployment_id=row["deployment_id"],
+                                   name=row["name"], source=row["source"],
+                                   repository_id=row["repository_id"])
                 except ProtocolError as exc:
                     log.error("expiring %s failed: %s", row["deployment_id"], exc)
         return expired

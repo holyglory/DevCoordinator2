@@ -68,6 +68,7 @@ class _RunHandle:
         self.dir_fd: int | None = None
         self.finalized = threading.Event()  # set after the summary write
         self.containers: list[str] = []  # exact full IDs owned by this run
+        self.repository_id: str | None = None
 
     def close_dir_fd(self) -> None:
         with self.lock:
@@ -183,6 +184,7 @@ class TestLifecycle:
                 handle.caller_gid = caller.gid
                 handle.dir_fd = dir_fd
                 handle.containers = containers
+                handle.repository_id = reg.repository_id
             except (OSError, ProtocolError) as exc:
                 os.close(dir_fd)
                 if isinstance(exc, ProtocolError):
@@ -475,6 +477,7 @@ class TestLifecycle:
                 pass  # directory superseded underneath us; successor owns the slot
             events.publish("test.finished", run_id=handle.run_id, test=handle.test,
                            status=status, exit_code=exit_code,
+                           repository_id=handle.repository_id,
                            duration_seconds=duration, caller_uid=handle.caller_uid,
                            client=handle.client, worktree=str(handle.worktree_root))
         finally:

@@ -124,6 +124,22 @@ TOOLS += [
     {"name": "health_repository", "description": "Every measured component of one "
                                                  "repository with live usage and storage.",
      "inputSchema": {"type": "object", "properties": {"path": _PATH}, "required": ["path"]}},
+    {"name": "bug_report", "description": "Open a bounded atomic bug record (or count a "
+                                          "recurrence). Independent of the daemon. No secrets, "
+                                          "raw logs, or private paths.",
+     "inputSchema": {"type": "object", "properties": {
+         "component": {"type": "string"}, "summary": {"type": "string"},
+         "expected": {"type": "string"}, "actual": {"type": "string"},
+         "steps": {"type": "string"},
+         "correlations": {"type": "object", "properties": {
+             "run_id": {"type": "string"}, "deployment_id": {"type": "string"},
+             "repository_id": {"type": "string"}}}},
+      "required": ["component", "summary", "expected", "actual", "steps"]}},
+    {"name": "bug_list", "description": "All currently open bugs.",
+     "inputSchema": {"type": "object", "properties": {}}},
+    {"name": "bug_close", "description": "Close (remove) an open bug by id.",
+     "inputSchema": {"type": "object", "properties": {"bug_id": {"type": "string"}},
+                     "required": ["bug_id"]}},
 ]
 
 _TOOL_TO_COMMAND = {
@@ -134,6 +150,7 @@ _TOOL_TO_COMMAND = {
     "health_containers": "health.containers",
     "health_summary": "health.summary", "health_repositories": "health.repositories",
     "health_repository": "health.repository",
+    "bug_report": "bug.report", "bug_list": "bug.list", "bug_close": "bug.close",
     "test_start": "test.start",
     "test_status": "test.status",
     "test_output": "test.output",
@@ -204,17 +221,44 @@ class McpServer:
             self._send_error(msg_id, -32602, f"unknown tool: {name}")
             return
         arguments = params.get("arguments") or {}
-        try:
-            response = call(self._config.socket_path, command, arguments,
-                            client_kind=self._client_kind)
-        except DaemonUnavailable as exc:
-            response = {"ok": False, "error": {"code": "daemon_unavailable",
-                                               "message": str(exc)}}
+        if name.startswith("bug_"):
+            response = self._bug_tool(name, arguments)
+        else:
+            try:
+                response = call(self._config.socket_path, command, arguments,
+                                client_kind=self._client_kind)
+            except DaemonUnavailable as exc:
+                response = {"ok": False, "error": {"code": "daemon_unavailable",
+                                                   "message": str(exc)}}
         self._send_result(msg_id, {
             "content": [{"type": "text",
                          "text": json.dumps(response, indent=2)}],
             "isError": not response.get("ok", False),
         })
+
+    def _bug_tool(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        """Bugs go to the independent store directly (daemon-outage safe),
+        then the daemon is notified best-effort."""
+        import os
+
+        from devcoordinator2 import bugs
+        try:
+            if name == "bug_report":
+                result = bugs.report(reporter=f"uid:{os.getuid()}",
+                                     directory=self._config.bugs_dir, **arguments)
+            elif name == "bug_list":
+                result = {"bugs": bugs.list_open(self._config.bugs_dir)}
+            else:
+                result = bugs.close(str(arguments.get("bug_id", "")), self._config.bugs_dir)
+        except (bugs.BugError, TypeError) as exc:
+            return {"ok": False, "error": {"code": "args_invalid", "message": str(exc)}}
+        if name != "bug_list":
+            try:
+                call(self._config.socket_path, _TOOL_TO_COMMAND[name], arguments,
+                     client_kind=self._client_kind)
+            except DaemonUnavailable:
+                result["notified"] = False
+        return {"ok": True, "result": result}
 
     def _send_result(self, msg_id, result: dict[str, Any]) -> None:
         self._write({"jsonrpc": "2.0", "id": msg_id, "result": result})

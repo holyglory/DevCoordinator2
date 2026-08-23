@@ -52,6 +52,7 @@ class Access:
     def __init__(self, config: InstanceConfig, db: Database):
         self._config = config
         self._db = db
+        self.db = db
         self._bootstrap()
 
     # -- principals ----------------------------------------------------------
@@ -238,6 +239,9 @@ _ADMIN_ONLY_PREFIXES = ("test.", "repository.", "user.", "invitation.", "grant."
                         "deployment.rollback", "deployment.remove")
 _OPERATOR = ("deployment.start", "deployment.stop", "deployment.restart")
 _VIEWER = ("deployment.status", "deployment.logs", "health.repository", "health.history")
+# Commands that enforce their own scope for admitted public users.
+_SELF_GUARDED = ("telegram.link", "telegram.subscribe", "telegram.unsubscribe",
+                 "telegram.list", "bug.report", "bug.list", "bug.close")
 
 
 def guard(handlers: dict[str, Handler], access: Access,
@@ -267,6 +271,8 @@ def _wrap(command: str, handler: Handler, access: Access, db: Database) -> Handl
             return handler(args, caller)
         if principal.user_id is None:
             raise ProtocolError("permission_denied", "identity is not an admitted user")
+        if command in _SELF_GUARDED:
+            return handler(args, caller)
         if command.startswith(_ADMIN_ONLY_PREFIXES):
             raise ProtocolError("permission_denied", f"{command} requires administrator")
         if command in _OPERATOR or command in _VIEWER:
