@@ -25,6 +25,11 @@ ERROR_CODES = (
     "test_not_found",
     "test_start_failed",
     "unit_stop_failed",
+    "deployment_not_found",
+    "busy",
+    "deployment_apply_failed",
+    "deployment_action_failed",
+    "rollback_unavailable",
     "internal_error",
 )
 

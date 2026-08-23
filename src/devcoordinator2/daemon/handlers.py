@@ -32,8 +32,15 @@ def _no_args(args: dict[str, Any]) -> None:
         raise ProtocolError("args_invalid", f"unexpected args: {sorted(args)}")
 
 
+def _optional_str(args: dict[str, Any], key: str) -> str | None:
+    value = args.get(key)
+    if value is not None and not isinstance(value, str):
+        raise ProtocolError("args_invalid", f"'{key}' must be a string")
+    return value
+
+
 def build_handlers(config: InstanceConfig, registry: Registry,
-                   lifecycle=None) -> dict[str, Handler]:
+                   lifecycle=None, deployments=None, db=None) -> dict[str, Handler]:
     def ping(args: dict[str, Any], caller: Caller) -> dict[str, Any]:
         _no_args(args)
         return {"daemon_version": __version__, "schema_version": SCHEMA_VERSION,
@@ -116,4 +123,73 @@ def build_handlers(config: InstanceConfig, registry: Registry,
             "test.stop": test_stop,
         })
 
+    if deployments is not None:
+        handlers.update(_deployment_handlers(config, deployments, db))
     return handlers
+
+
+def _deployment_handlers(config: InstanceConfig, deployments, db) -> dict[str, Handler]:
+    ref_keys = {"path", "name", "deployment_id"}
+
+    def ref(args: dict[str, Any], extra: set[str] = frozenset()):
+        path = _require_path(args, ref_keys | extra)
+        return path, _optional_str(args, "name"), _optional_str(args, "deployment_id")
+
+    def dep_list(args, caller):
+        unknown = set(args) - {"path"}
+        if unknown:
+            raise ProtocolError("args_invalid", f"unknown args: {sorted(unknown)}")
+        path = Path(args["path"]) if args.get("path") else None
+        if path is not None and not path.is_absolute():
+            raise ProtocolError("args_invalid", "'path' must be absolute")
+        return deployments.list(path, caller)
+
+    def dep_apply(args, caller):
+        return deployments.apply(*ref(args), caller)
+
+    def dep_status(args, caller):
+        return deployments.status(*ref(args), caller)
+
+    def dep_rollback(args, caller):
+        return deployments.rollback(*ref(args), caller)
+
+    def make_control(action):
+        def handler(args, caller):
+            path, name, dep_id = ref(args, {"component"})
+            return deployments.control(action, path, name, dep_id,
+                                       _optional_str(args, "component"), caller)
+        return handler
+
+    def dep_logs(args, caller):
+        path, name, dep_id = ref(args, {"component", "tail_lines"})
+        component = _optional_str(args, "component")
+        if not component:
+            raise ProtocolError("args_invalid", "'component' is required")
+        tail = args.get("tail_lines", 200)
+        if not isinstance(tail, int) or not (1 <= tail <= 5000):
+            raise ProtocolError("args_invalid", "'tail_lines' must be 1..5000")
+        return deployments.logs(path, name, dep_id, component, tail, caller)
+
+    def dep_remove(args, caller):
+        path, name, dep_id = ref(args, {"delete_data"})
+        delete = args.get("delete_data", False)
+        if not isinstance(delete, bool):
+            raise ProtocolError("args_invalid", "'delete_data' must be a boolean")
+        return deployments.remove(path, name, dep_id, delete, caller)
+
+    def health_containers(args, caller):
+        _no_args(args)
+        from devcoordinator2.daemon import docker_cli, inventory
+        try:
+            rows = inventory.containers(db, config.unit_prefix)
+        except docker_cli.DockerError as exc:
+            raise ProtocolError("internal_error", f"docker unavailable: {exc}") from exc
+        return {"containers": rows, "counts": inventory.summary(rows)}
+
+    return {
+        "deployment.list": dep_list, "deployment.apply": dep_apply,
+        "deployment.status": dep_status, "deployment.rollback": dep_rollback,
+        "deployment.start": make_control("start"), "deployment.stop": make_control("stop"),
+        "deployment.restart": make_control("restart"), "deployment.logs": dep_logs,
+        "deployment.remove": dep_remove, "health.containers": health_containers,
+    }

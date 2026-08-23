@@ -42,26 +42,26 @@ not contradict them.
 
 ## Deployments (REQ-DEPLOY, P3)
 
-- **REQ-DEPLOY-01**: One permanent deployment containing HTTP, worker,
+- **REQ-DEPLOY-01** (P3, done): One permanent deployment containing HTTP, worker,
   Docker, and PostgreSQL components can apply, start, stop, restart,
   update, and roll back (current + immediately previous generation only).
-- **REQ-DEPLOY-02**: Concurrent mutation of the same deployment returns
+- **REQ-DEPLOY-02** (P3, done): Concurrent mutation of the same deployment returns
   `busy`; it is never queued.
-- **REQ-DEPLOY-03**: Partial failure yields an honest `degraded` state
+- **REQ-DEPLOY-03** (P3, done): Partial failure yields an honest `degraded` state
   listing exact running and failed components; no fake success.
-- **REQ-DEPLOY-04**: Stop/restart/redeploy never deletes persistent
+- **REQ-DEPLOY-04** (P3, done): Stop/restart/redeploy never deletes persistent
   database or volume data; destructive removal is a separate explicit
   action.
-- **REQ-DEPLOY-05**: Port and domain assignments are transactionally unique
+- **REQ-DEPLOY-05** (P3, done): Port and domain assignments are transactionally unique
   and route only to healthy selected generations via atomic route-document
   publication.
 
 ## Accountability and health (REQ-HEALTH, P3/P4)
 
-- **REQ-HEALTH-01**: Every managed process/container reports repository,
+- **REQ-HEALTH-01** (P3, done for Docker/processes): Every managed process/container reports repository,
   deployment/test, component, physical caller UID, and descriptive creating
   client via daemon-owned labels/records that callers cannot override.
-- **REQ-HEALTH-02**: Every unlabeled Docker container appears as
+- **REQ-HEALTH-02** (P3, done): Every unlabeled Docker container appears as
   `unmanaged/unknown` within one observation interval; ownership is never
   inferred from names, ports, image tags, or paths.
 - **REQ-HEALTH-03**: Repository CPU/memory/storage aggregates reconcile:
@@ -70,7 +70,7 @@ not contradict them.
 - **REQ-HEALTH-04**: Metrics: 15 s CPU/memory sampling, 1-minute persisted
   aggregates, 5-minute storage sampling, 30-day retention, direct deletion
   of expired rows.
-- **REQ-HEALTH-05**: Automatic cleanup is limited to exact DevCoordinator-
+- **REQ-HEALTH-05** (P3, done): Automatic cleanup is limited to exact DevCoordinator-
   owned ephemeral work; unmanaged containers and persistent volumes are
   surfaced for explicit decisions; Docker prune is never a lifecycle
   operation.

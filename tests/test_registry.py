@@ -73,7 +73,7 @@ def test_register_idempotent_and_worktree_shares_repo(repo: Path, tmp_path: Path
     db.close()
 
 
-def test_schema_version_mismatch(tmp_path: Path):
+def test_schema_newer_than_daemon_refused(tmp_path: Path):
     path = tmp_path / "db.sqlite3"
     db = Database(path)
     with db.transaction() as conn:
@@ -81,6 +81,21 @@ def test_schema_version_mismatch(tmp_path: Path):
     db.close()
     with pytest.raises(SchemaMismatch):
         Database(path)
+
+
+def test_schema_v1_upgrades_in_place_preserving_repositories(tmp_path: Path):
+    path = tmp_path / "db.sqlite3"
+    db = Database(path)
+    with db.transaction() as conn:
+        conn.execute("INSERT INTO repositories VALUES('r1','/x','x','t',1,'t')")
+        conn.execute("UPDATE meta SET value='1' WHERE key='schema_version'")
+        conn.execute("DROP TABLE deployments")
+    db.close()
+    db = Database(path)
+    assert db.query("SELECT value FROM meta WHERE key='schema_version'")[0]["value"] == "2"
+    assert db.query("SELECT repository_id FROM repositories")[0]["repository_id"] == "r1"
+    assert db.query("SELECT count(*) AS n FROM deployments")[0]["n"] == 0
+    db.close()
 
 
 def test_schema_idempotent(tmp_path: Path):

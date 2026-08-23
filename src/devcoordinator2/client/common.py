@@ -11,7 +11,7 @@ from typing import Any
 from devcoordinator2 import protocol
 
 CONNECT_TIMEOUT = 5.0
-RESPONSE_TIMEOUT = 30.0
+RESPONSE_TIMEOUT = 1800.0  # apply may build, pull images, and prove health
 
 
 class DaemonUnavailable(Exception):

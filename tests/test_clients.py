@@ -44,7 +44,7 @@ def test_cli_ping_and_register_roundtrip(live, capsys):
     assert rc == 0
     response = json.loads(capsys.readouterr().out)
     assert response["ok"] is True
-    assert response["result"]["schema_version"] == 1
+    assert response["result"]["schema_version"] == 2
 
     rc = cli.main(["repository", "register", str(live.repo)])
     assert rc == 0
@@ -97,8 +97,9 @@ def test_mcp_full_session(live):
     assert init["protocolVersion"] == "2025-06-18"
     assert init["serverInfo"]["name"] == "devcoordinator2"
     tools = {t["name"] for t in replies[1]["result"]["tools"]}
-    assert tools == {"test_start", "test_status", "test_output", "test_stop",
-                     "repository_list"}
+    assert {"test_start", "test_status", "test_output", "test_stop", "repository_list",
+            "deployment_apply", "deployment_status", "deployment_stop", "deployment_logs",
+            "health_containers"} <= tools
     call_result = replies[2]["result"]
     assert call_result["isError"] is False
     inner = json.loads(call_result["content"][0]["text"])

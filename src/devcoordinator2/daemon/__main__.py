@@ -7,6 +7,7 @@ import signal
 import sys
 
 from devcoordinator2.daemon.db import Database, SchemaMismatch
+from devcoordinator2.daemon.deploy_control import Deployments
 from devcoordinator2.daemon.handlers import build_handlers
 from devcoordinator2.daemon.registry import Registry
 from devcoordinator2.daemon.server import Server
@@ -28,7 +29,9 @@ def main() -> int:
     registry = Registry(db)
     lifecycle = TestLifecycle(config, registry)
     lifecycle.recover()
-    handlers = build_handlers(config, registry, lifecycle)
+    deployments = Deployments(config, db, registry)
+    deployments.start_expiry_thread()
+    handlers = build_handlers(config, registry, lifecycle, deployments, db)
     server = Server(config.socket_path, handlers,
                     client_group=config.client_group)
     server.bind()
@@ -41,6 +44,7 @@ def main() -> int:
     signal.signal(signal.SIGINT, _shutdown)
     log.info("serving on %s", config.socket_path)
     server.serve_forever()
+    deployments.shutdown()
     db.close()
     return 0
 

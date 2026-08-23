@@ -90,14 +90,55 @@ Args: `path`.
 Result: one repository object as above plus, when present, the current test
 summary reference (`summary_path`, `status`).
 
+## deployment.* (Phase 3, implemented)
+
+Reference args on every command except `list`: `path` (required) plus
+`name` (`web` or `web@checkout`) or `deployment_id`.
+
+- `deployment.list {path?}` → `{deployments: [...], declared: [...]}` — all
+  applied deployments; with `path`, also the declared-but-not-applied
+  `name`/`source`/`deployment_id` triples of that repository.
+- `deployment.apply` → status (below) after: validate, fingerprint (spec +
+  commit + dirty flag), reserve ports/domain transactionally, prepare the
+  candidate (checkout worktree + optional build), start components in
+  declared order (blue/green for generation-scoped components, in-place for
+  stable data-owning ones), prove health, publish the route atomically,
+  retire the previous generation in reverse order. Errors:
+  `deployment_apply_failed` (detail = JSON of component states; candidate
+  components are stopped and removed; nothing is routed), `busy`,
+  `repository_config_invalid`. An identical running specification returns
+  the status with `unchanged: true`.
+- `deployment.status` → `{deployment_id, name, source, repository_id, state
+  (running|stopped|degraded|applying|failed), current_generation,
+  previous_generation, domain, route_port, ttl_expires_at, components:
+  [{name, type, state, health, generation, binding{kind, identity}, port,
+  restarts, owned, independent_control, last_error}], log_dir}`.
+- `deployment.start | stop | restart {component?}` → status. Whole
+  deployment in declared/reverse order, or one component whose declaration
+  permits independent control. Stop withdraws the route, never deletes data.
+- `deployment.logs {component, tail_lines<=5000}` → `{component, tail,
+  log_path | container_id}`.
+- `deployment.rollback` → status with `rolled_back_from`/`rolled_back_to`;
+  checkout source only (`rollback_unavailable` otherwise).
+- `deployment.remove {delete_data=false}` → `{removed, data_deleted,
+  deleted_volumes}`. Stops everything, removes containers/units/generation
+  checkouts and records; named volumes and PostgreSQL data survive unless
+  `delete_data` is true. Repository `persistent_paths` are never touched.
+
+## health.containers (Phase 3, implemented)
+
+Args: none. Result: `{containers: [{id, name, image, state, status, created,
+repository_id, deployment_id, component, run_id, caller_uid, client,
+ttl_seconds, data, classification}], counts}` where classification is one
+of `managed-test`, `managed-preview`, `managed-permanent`,
+`orphaned-managed`, `unmanaged`. Classification uses daemon-owned labels
+and recorded bindings only — never names, ports, images, or paths.
+
 ## Reserved sketches (later phases)
 
-- `deployment.list | apply | status | start | stop | restart | logs` — apply
-  validates config, fingerprints the spec, reserves ports/domains
-  transactionally, converges generations, publishes routes atomically;
-  concurrent mutation of one deployment returns error code `busy`.
-- `health.summary | repositories | containers` — host condition, per-repo
-  aggregates, full container inventory with ownership classification.
-- `bug.report | list | close` — backed by the independent open-only store.
+- `health.summary | repositories` — host condition and per-repository
+  aggregates (Phase 4).
+- `bug.report | list | close` — backed by the independent open-only store
+  (Phase 6).
 
 All follow the same envelope, error model, and file-reference conventions.

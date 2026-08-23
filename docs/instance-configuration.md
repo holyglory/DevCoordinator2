@@ -22,6 +22,8 @@ stripping one pair of surrounding quotes.
 | `DEVCOORDINATOR2_UNIT_PREFIX` | `devcoordinator2-test` | transient test unit prefix (dev instances use e.g. `devcoordinator2-dev`) |
 | `DEVCOORDINATOR2_SLICE` | `devcoordinator2-tests.slice` | parent slice for test units |
 | `DEVCOORDINATOR2_CLIENT_GROUP` | `devcoordinator2-clients` | Unix group granted socket access |
+| `DEVCOORDINATOR2_PORT_RANGE` | `20000-29999` | host port range the daemon leases to deployment components |
+| `DEVCOORDINATOR2_BASE_DOMAIN` | (empty) | base public domain; deployment `domain` labels resolve beneath it (Phase 3+) |
 
 ## Reserved for later phases
 

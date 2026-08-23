@@ -200,3 +200,50 @@ concept and is not stopped or cleaned by tests.
 PostgreSQL carrying the exact test identity, removed with the run). Applied
 autonomously under the "continue towards phase 8" instruction; recorded for
 review.
+
+## DC2-2026-08-22-DEPLOYMENT-SOURCE — Live-worktree deployments by default, immutable checkouts on request
+
+**Decision.** A deployment declares `source = "worktree"` (default) or
+`source = "checkout"`. Worktree deployments run directly from the live
+repository checkout so an agent's edits can be applied and observed
+immediately (`apply`/`restart` picks up the current tree); they have no
+previous generation and the product never pretends otherwise. Checkout
+deployments create an immutable per-generation copy (a detached git
+worktree at the applied commit under a daemon-owned deployment root, plus an
+optional build step) and keep the current and immediately previous
+generation for exact rollback. Components, ports, domains, health checks,
+and controls are identical in both modes. A declaration may enable both
+sources at once (`source = ["checkout", "worktree"]`) with a domain per
+source; each source is then an independent deployment instance
+(`web@checkout`, `web@worktree`) with its own identity, ports, generations,
+and data, sharing one component declaration.
+
+**Alternatives.** Immutable checkouts only (exact rollback, isolation from
+in-progress edits, ~2 extra copies of each deployed repository on disk) or
+live checkout only (simplest, but no real rollback). The owner wants both:
+live-worktree for guiding development by immediately seeing results, and
+checkouts for permanent deployments.
+
+**Owner context.** The rollback/isolation trade-off was presented in plain
+language; the owner chose both modes and stated live-worktree will be the
+most used. Applied under the "continue towards phase 8" instruction.
+
+## DC2-2026-08-22-DEPLOYMENT-SCHEMA — `[deployment.<name>]` configuration schema
+
+**Decision.** Recorded before Phase 3 code, per the handover. The schema is
+specified in `docs/repository-config.md` (Phase 3 section): named
+deployments with `source`, an optional `domain` label resolved under the
+instance base domain, ordered `components`, and component tables of type
+`process`, `docker`, `compose`, `postgres` (dedicated, or `shared_from` an
+existing deployment component), or `external` (observed, never owned).
+Ports are leased by the daemon from an instance-configured range and
+injected as environment; repositories never claim host ports or domains
+literally. Persistent data is declared explicitly (`persistent = true` /
+named volumes / paths) and is never deleted by stop, restart, or redeploy.
+
+**Alternatives.** Re-using the legacy two-file JSON declarations
+(`dev-runtime.json` + `tests.json`): rejected by the handover (one small
+reviewed TOML file, no sealed templates, no admission values).
+
+**Owner context.** Schema content follows the handover's allowed/forbidden
+lists; the source-mode choice above is the owner decision within it.

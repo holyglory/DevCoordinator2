@@ -53,6 +53,35 @@ def build_parser() -> argparse.ArgumentParser:
     output.add_argument("--tail-bytes", type=int, default=16384)
     _add_common(test_sub.add_parser("stop", help="cancel the current run"))
 
+    dep = sub.add_parser("deployment", help="deployment lifecycle")
+    dep_sub = dep.add_subparsers(dest="action", required=True)
+    dl = dep_sub.add_parser("list", help="all deployments (+ declared ones for a path)")
+    dl.add_argument("path", nargs="?", default=None)
+    _add_common(dl, with_path=False)
+    for action, help_text in (("apply", "apply the declared specification"),
+                              ("status", "live deployment status"),
+                              ("rollback", "return to the previous generation (checkout)"),
+                              ("start", "start deployment or one component"),
+                              ("stop", "stop deployment or one component"),
+                              ("restart", "restart deployment or one component"),
+                              ("logs", "bounded component logs"),
+                              ("remove", "remove the deployment (keeps data unless told)")):
+        sp = dep_sub.add_parser(action, help=help_text)
+        _add_common(sp)
+        sp.add_argument("--name", default=None, help="deployment name[@source]")
+        sp.add_argument("--deployment-id", dest="deployment_id", default=None)
+        if action in ("start", "stop", "restart", "logs"):
+            sp.add_argument("--component", default=None)
+        if action == "logs":
+            sp.add_argument("--tail-lines", type=int, default=200)
+        if action == "remove":
+            sp.add_argument("--delete-data", action="store_true")
+
+    health = sub.add_parser("health", help="host and container health")
+    health_sub = health.add_subparsers(dest="action", required=True)
+    _add_common(health_sub.add_parser("containers", help="every container, classified"),
+                with_path=False)
+
     repo = sub.add_parser("repository", help="repository registry")
     repo_sub = repo.add_subparsers(dest="action", required=True)
     _add_common(repo_sub.add_parser("list", help="all repositories"),
@@ -81,6 +110,26 @@ def _to_call(ns: argparse.Namespace) -> tuple[str, dict]:
                                    "tail_bytes": ns.tail_bytes}
         case ("test", "stop"):
             return "test.stop", path_args
+        case ("deployment", "list"):
+            return "deployment.list", ({"path": str(Path(ns.path).absolute())}
+                                       if ns.path else {})
+        case ("deployment", action):
+            args = dict(path_args)
+            if ns.name:
+                args["name"] = ns.name
+            if ns.deployment_id:
+                args["deployment_id"] = ns.deployment_id
+            if getattr(ns, "component", None):
+                args["component"] = ns.component
+            if action == "logs":
+                args["tail_lines"] = ns.tail_lines
+                if not ns.component:
+                    raise SystemExit("deployment logs requires --component")
+            if action == "remove":
+                args["delete_data"] = ns.delete_data
+            return f"deployment.{action}", args
+        case ("health", "containers"):
+            return "health.containers", {}
         case ("repository", "list"):
             return "repository.list", {}
         case ("repository", "status"):

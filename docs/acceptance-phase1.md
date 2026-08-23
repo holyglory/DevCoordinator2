@@ -33,3 +33,24 @@ permanent service, and any deployment/health/edge/Telegram/bug surface.
 | Container carries exact run/repository/caller/client/data labels | PASS | same |
 | Credentials absent from unit `Environment`, summary, and status; env file 0600 caller-owned | PASS | same |
 | Container removed on completion, on supersession, and by daemon crash recovery (REQ-TEST-09) | PASS | `test_postgres_removed_on_supersession_and_recovery` |
+
+## Phase 3 addendum (2026-08-23)
+
+Root integration suite `tests/integration/test_deployments.py` against real
+systemd units and Docker containers:
+
+| Item | Result | Evidence |
+|---|---|---|
+| Heterogeneous deployment (HTTP process + worker + dedicated PostgreSQL + Docker cache) applies, runs, and serves with injected ports/DB URL (REQ-DEPLOY-01) | PASS | `test_worktree_apply_stop_start_reapply_remove` |
+| Route document published atomically with checksum; withdrawn on stop; moved on reapply (REQ-DEPLOY-05) | PASS | same + `test_ports_routes.py` |
+| Stop/start preserves the PostgreSQL container and its data; component-level restart (REQ-DEPLOY-04) | PASS | same |
+| Live-worktree reapply → new generation on a new port, old unit retired, stable DB kept | PASS | same |
+| Checkout source: immutable generations, worktree edits cannot affect it, rollback to previous, only two generation dirs retained | PASS | `test_checkout_generations_and_rollback` |
+| Failing component → `deployment_apply_failed` with exact component states, nothing routed, honest degraded/failed state (REQ-DEPLOY-03) | PASS | `test_failed_component_is_degraded_and_busy_is_immediate` |
+| Concurrent mutation → immediate `busy`, never queued (REQ-DEPLOY-02) | PASS | same |
+| Inventory classifies managed containers by labels + recorded bindings; others unmanaged (REQ-HEALTH-02) | PASS | same |
+| Remove keeps data unless `delete_data`; volumes deleted only when asked | PASS | both |
+
+Bug found and fixed by the integration run: `docker --env-file` keeps quotes
+literally, so the systemd-style env file put `"app"` (with quotes) into the
+PostgreSQL container; Docker/Compose env files now use the literal format.

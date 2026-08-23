@@ -74,7 +74,53 @@ TOOLS = [
     },
 ]
 
+_DEP_REF = {
+    "path": _PATH,
+    "name": {"type": "string", "description": "Deployment name, or name@source when the "
+                                              "declaration enables both sources"},
+    "deployment_id": {"type": "string", "description": "Exact deployment identity"},
+}
+TOOLS += [
+    {"name": "deployment_list", "description": "All deployments; with a path, also the "
+                                               "declared-but-not-applied ones.",
+     "inputSchema": {"type": "object", "properties": {"path": _PATH}}},
+    {"name": "deployment_apply",
+     "description": "Apply the declared specification immediately: prepare the candidate, "
+                    "start components in order, prove health, switch the route, retire the "
+                    "previous generation. Concurrent mutation returns busy.",
+     "inputSchema": {"type": "object", "properties": _DEP_REF, "required": ["path"]}},
+    {"name": "deployment_status", "description": "Live per-component state, health, "
+                                                 "bindings, ports, and generation.",
+     "inputSchema": {"type": "object", "properties": _DEP_REF, "required": ["path"]}},
+    {"name": "deployment_start", "description": "Start a deployment or one component.",
+     "inputSchema": {"type": "object", "properties": {**_DEP_REF, "component":
+                     {"type": "string"}}, "required": ["path"]}},
+    {"name": "deployment_stop", "description": "Stop a deployment or one component "
+                                               "(never deletes data).",
+     "inputSchema": {"type": "object", "properties": {**_DEP_REF, "component":
+                     {"type": "string"}}, "required": ["path"]}},
+    {"name": "deployment_restart", "description": "Restart a deployment or one component.",
+     "inputSchema": {"type": "object", "properties": {**_DEP_REF, "component":
+                     {"type": "string"}}, "required": ["path"]}},
+    {"name": "deployment_logs", "description": "Bounded tail of one component's logs.",
+     "inputSchema": {"type": "object", "properties": {**_DEP_REF, "component":
+                     {"type": "string"}, "tail_lines": {"type": "integer", "minimum": 1,
+                                                        "maximum": 5000}},
+                     "required": ["path", "component"]}},
+    {"name": "deployment_rollback", "description": "Return a checkout deployment to its "
+                                                   "previous generation.",
+     "inputSchema": {"type": "object", "properties": _DEP_REF, "required": ["path"]}},
+    {"name": "health_containers", "description": "Every container on the host with "
+                                                 "ownership classification.",
+     "inputSchema": {"type": "object", "properties": {}}},
+]
+
 _TOOL_TO_COMMAND = {
+    "deployment_list": "deployment.list", "deployment_apply": "deployment.apply",
+    "deployment_status": "deployment.status", "deployment_start": "deployment.start",
+    "deployment_stop": "deployment.stop", "deployment_restart": "deployment.restart",
+    "deployment_logs": "deployment.logs", "deployment_rollback": "deployment.rollback",
+    "health_containers": "health.containers",
     "test_start": "test.start",
     "test_status": "test.status",
     "test_output": "test.output",

@@ -11,7 +11,7 @@ import threading
 from contextlib import contextmanager
 from pathlib import Path
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (
@@ -32,6 +32,72 @@ CREATE TABLE IF NOT EXISTS worktrees (
   worktree_path TEXT NOT NULL UNIQUE,
   registered_at TEXT NOT NULL,
   last_seen_at  TEXT NOT NULL
+);
+"""
+
+# Schema 2 (Phase 3): deployments. Repositories/worktrees are preserved.
+_SCHEMA_V2 = """
+CREATE TABLE IF NOT EXISTS deployments (
+  deployment_id       TEXT PRIMARY KEY,
+  repository_id       TEXT NOT NULL REFERENCES repositories(repository_id),
+  worktree_id         TEXT NOT NULL REFERENCES worktrees(worktree_id),
+  name                TEXT NOT NULL,
+  source              TEXT NOT NULL,
+  domain              TEXT,
+  spec_fingerprint    TEXT NOT NULL,
+  spec_json           TEXT NOT NULL,
+  state               TEXT NOT NULL,
+  current_generation  INTEGER,
+  previous_generation INTEGER,
+  created_at          TEXT NOT NULL,
+  created_by_uid      INTEGER NOT NULL,
+  client              TEXT NOT NULL,
+  updated_at          TEXT NOT NULL,
+  ttl_expires_at      TEXT,
+  UNIQUE(worktree_id, name, source)
+);
+CREATE TABLE IF NOT EXISTS generations (
+  deployment_id TEXT NOT NULL REFERENCES deployments(deployment_id),
+  number        INTEGER NOT NULL,
+  commit_hash   TEXT,
+  dirty         INTEGER NOT NULL DEFAULT 0,
+  path          TEXT NOT NULL,
+  fingerprint   TEXT NOT NULL,
+  created_at    TEXT NOT NULL,
+  state         TEXT NOT NULL,
+  PRIMARY KEY(deployment_id, number)
+);
+CREATE TABLE IF NOT EXISTS components (
+  deployment_id       TEXT NOT NULL REFERENCES deployments(deployment_id),
+  name                TEXT NOT NULL,
+  type                TEXT NOT NULL,
+  order_index         INTEGER NOT NULL,
+  spec_fingerprint    TEXT NOT NULL,
+  desired_state       TEXT NOT NULL,
+  state               TEXT NOT NULL,
+  health              TEXT NOT NULL,
+  generation          INTEGER,
+  binding_kind        TEXT,
+  binding_identity    TEXT,
+  restarts            INTEGER NOT NULL DEFAULT 0,
+  last_error          TEXT,
+  updated_at          TEXT NOT NULL,
+  PRIMARY KEY(deployment_id, name)
+);
+CREATE TABLE IF NOT EXISTS port_assignments (
+  port          INTEGER PRIMARY KEY,
+  deployment_id TEXT NOT NULL REFERENCES deployments(deployment_id),
+  component     TEXT NOT NULL,
+  generation    INTEGER NOT NULL,
+  assigned_at   TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS domain_routes (
+  domain        TEXT PRIMARY KEY,
+  deployment_id TEXT NOT NULL REFERENCES deployments(deployment_id),
+  component     TEXT NOT NULL,
+  port          INTEGER,
+  generation    INTEGER,
+  published_at  TEXT
 );
 """
 
@@ -56,16 +122,19 @@ class Database:
             row = self._conn.execute(
                 "SELECT value FROM meta WHERE key='schema_version'"
             ).fetchone()
-            if row is None:
-                self._conn.execute(
-                    "INSERT INTO meta(key, value) VALUES('schema_version', ?)",
-                    (str(SCHEMA_VERSION),),
-                )
-                self._conn.commit()
-            elif int(row["value"]) != SCHEMA_VERSION:
+            current = int(row["value"]) if row is not None else None
+            if current is not None and current > SCHEMA_VERSION:
                 raise SchemaMismatch(
-                    f"database schema {row['value']}, daemon expects {SCHEMA_VERSION}"
+                    f"database schema {current} is newer than daemon {SCHEMA_VERSION}"
                 )
+            # Additive upgrades only: control data (repositories, deployments,
+            # ports, domains) is always preserved (docs/database-ledger.md).
+            self._conn.executescript(_SCHEMA_V2)
+            self._conn.execute(
+                "INSERT OR REPLACE INTO meta(key, value) VALUES('schema_version', ?)",
+                (str(SCHEMA_VERSION),),
+            )
+            self._conn.commit()
 
     @contextmanager
     def transaction(self):

@@ -19,6 +19,8 @@ _DEFAULTS = {
     "DEVCOORDINATOR2_UNIT_PREFIX": "devcoordinator2-test",
     "DEVCOORDINATOR2_SLICE": "devcoordinator2-tests.slice",
     "DEVCOORDINATOR2_CLIENT_GROUP": "devcoordinator2-clients",
+    "DEVCOORDINATOR2_PORT_RANGE": "20000-29999",
+    "DEVCOORDINATOR2_BASE_DOMAIN": "",
 }
 
 INSTALLED_ENV_PATH = Path("/etc/devcoordinator2/instance.env")
@@ -60,10 +62,28 @@ class InstanceConfig:
     unit_prefix: str
     slice_name: str
     client_group: str
+    port_range: tuple[int, int] = (20000, 29999)
+    base_domain: str = ""
 
     @property
     def database_path(self) -> Path:
         return self.state_dir / "authority.sqlite3"
+
+    @property
+    def deployments_dir(self) -> Path:
+        return self.state_dir / "deployments"
+
+    @property
+    def secrets_dir(self) -> Path:
+        return self.state_dir / "secrets"
+
+    @property
+    def routes_path(self) -> Path:
+        return self.state_dir / "routes.json"
+
+    @property
+    def deploy_unit_prefix(self) -> str:
+        return self.unit_prefix.replace("-test", "") + "-deploy"
 
 
 def load_instance_config() -> InstanceConfig:
@@ -72,12 +92,21 @@ def load_instance_config() -> InstanceConfig:
     def get(key: str) -> str:
         return os.environ.get(key) or file_values.get(key) or _DEFAULTS[key]
 
+    low, _, high = get("DEVCOORDINATOR2_PORT_RANGE").partition("-")
+    try:
+        port_range = (int(low), int(high))
+    except ValueError as exc:
+        raise ValueError("DEVCOORDINATOR2_PORT_RANGE must be 'low-high'") from exc
+    if not (1024 <= port_range[0] < port_range[1] <= 65535):
+        raise ValueError("DEVCOORDINATOR2_PORT_RANGE must lie within 1024-65535")
     return InstanceConfig(
         socket_path=Path(get("DEVCOORDINATOR2_SOCKET")),
         state_dir=Path(get("DEVCOORDINATOR2_STATE_DIR")),
         unit_prefix=get("DEVCOORDINATOR2_UNIT_PREFIX"),
         slice_name=get("DEVCOORDINATOR2_SLICE"),
         client_group=get("DEVCOORDINATOR2_CLIENT_GROUP"),
+        port_range=port_range,
+        base_domain=get("DEVCOORDINATOR2_BASE_DOMAIN").strip().strip("."),
     )
 
 
