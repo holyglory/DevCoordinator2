@@ -58,16 +58,16 @@ not contradict them.
 
 ## Accountability and health (REQ-HEALTH, P3/P4)
 
-- **REQ-HEALTH-01** (P3, done for Docker/processes): Every managed process/container reports repository,
+- **REQ-HEALTH-01** (P3/P4, done): Every managed process/container reports repository,
   deployment/test, component, physical caller UID, and descriptive creating
   client via daemon-owned labels/records that callers cannot override.
 - **REQ-HEALTH-02** (P3, done): Every unlabeled Docker container appears as
   `unmanaged/unknown` within one observation interval; ownership is never
   inferred from names, ports, image tags, or paths.
-- **REQ-HEALTH-03**: Repository CPU/memory/storage aggregates reconcile:
+- **REQ-HEALTH-03** (P4, done): Repository CPU/memory/storage aggregates reconcile:
   managed repositories + DevCoordinator + shared/unattributed = host total,
   without double-counting or invented per-database CPU/memory.
-- **REQ-HEALTH-04**: Metrics: 15 s CPU/memory sampling, 1-minute persisted
+- **REQ-HEALTH-04** (P4, done): Metrics: 15 s CPU/memory sampling, 1-minute persisted
   aggregates, 5-minute storage sampling, 30-day retention, direct deletion
   of expired rows.
 - **REQ-HEALTH-05** (P3, done): Automatic cleanup is limited to exact DevCoordinator-

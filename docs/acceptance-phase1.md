@@ -54,3 +54,13 @@ systemd units and Docker containers:
 Bug found and fixed by the integration run: `docker --env-file` keeps quotes
 literally, so the systemd-style env file put `"app"` (with quotes) into the
 PostgreSQL container; Docker/Compose env files now use the literal format.
+
+## Phase 4 addendum (2026-08-23)
+
+| Item | Result | Evidence |
+|---|---|---|
+| 15 s cgroup sampling of real deployment components and containers; per-repository attribution; reconciliation managed + DevCoordinator + other = host (REQ-HEALTH-03) | PASS | integration `test_health_views_measure_real_workloads` |
+| Storage buckets per repository (checkout, scratch, artifacts, layers, volumes, PostgreSQL data) and host reconciliation incl. Docker shared images/cache | PASS | same |
+| Dedicated PostgreSQL operational facts (connections, WAL, temp, size) — numbers only | PASS | same |
+| One-minute aggregates persisted and queryable; 30-day expiry (REQ-HEALTH-04) | PASS | same + `test_metrics.py` |
+| Sustained-threshold alerts: window, dedupe, single recovery, persistence across restart, vanished-subject recovery | PASS | `test_metrics.py::test_alert_sustain_dedupe_and_recovery` |

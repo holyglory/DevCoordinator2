@@ -134,10 +134,37 @@ of `managed-test`, `managed-preview`, `managed-permanent`,
 `orphaned-managed`, `unmanaged`. Classification uses daemon-owned labels
 and recorded bindings only — never names, ports, images, or paths.
 
+## health.summary | repositories | repository | history (Phase 4, implemented)
+
+- `health.summary` → `{host: {cpu_percent, memory_total/used/available,
+  swap_total/used, load_1/5/15, fs_size/free/used, ncpu, reconciliation:
+  {managed_cpu_percent, daemon_cpu_percent, other_cpu_percent,
+  managed_memory, daemon_memory, other_memory}}, storage: {fs_used,
+  managed_repositories, devcoordinator_state, docker_shared, docker_images,
+  docker_build_cache, docker_shared_volumes, other}, unhealthy_deployments,
+  active_tests, container_counts, alerts, sampling}`.
+- `health.repositories` → one row per repository with live `cpu_percent`,
+  `memory_bytes`, `storage` buckets (checkout, test_scratch,
+  deployment_artifacts, container_layers, volumes, postgres_data, total),
+  `health`, deployments, and 12-point `trend_cpu`/`trend_memory`; plus the
+  `devcoordinator` and `shared_unattributed` rows that complete the
+  reconciliation `managed + DevCoordinator + shared/unattributed = host`.
+- `health.repository {path}` → every measured subject of one repository
+  (component, container, test) with live cgroup metrics and storage; dedicated
+  PostgreSQL components carry `pg_connections`, `pg_wal_bytes`,
+  `pg_temp_bytes`, `pg_database_bytes` (numbers only, never content).
+- `health.history {subject_kind, subject_id, metric, minutes<=43200}` →
+  one-minute `{minute, min, avg, max, samples}` points, at most 1440 per
+  call (`truncated` flag), from the 30-day bounded store.
+
+Alerts (in `health.summary.alerts` and as `alert.opened`/`alert.recovered`
+events): host CPU > 90% for 5 min, host memory available < 10% for 5 min,
+root filesystem < 10% free, component not running for 2 min while desired
+running, ≥ 3 restarts in 10 min (crash loop), test scratch > 10 GiB.
+Deduplicated while active; one recovery each.
+
 ## Reserved sketches (later phases)
 
-- `health.summary | repositories` — host condition and per-repository
-  aggregates (Phase 4).
 - `bug.report | list | close` — backed by the independent open-only store
   (Phase 6).
 

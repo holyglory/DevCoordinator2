@@ -81,6 +81,17 @@ def build_parser() -> argparse.ArgumentParser:
     health_sub = health.add_subparsers(dest="action", required=True)
     _add_common(health_sub.add_parser("containers", help="every container, classified"),
                 with_path=False)
+    _add_common(health_sub.add_parser("summary", help="host condition, alerts, counts"),
+                with_path=False)
+    _add_common(health_sub.add_parser("repositories", help="per-repository usage"),
+                with_path=False)
+    _add_common(health_sub.add_parser("repository", help="one repository's components"))
+    hist = health_sub.add_parser("history", help="bounded metric series")
+    _add_common(hist, with_path=False)
+    hist.add_argument("--subject-kind", required=True)
+    hist.add_argument("--subject-id", required=True)
+    hist.add_argument("--metric", required=True)
+    hist.add_argument("--minutes", type=int, default=60)
 
     repo = sub.add_parser("repository", help="repository registry")
     repo_sub = repo.add_subparsers(dest="action", required=True)
@@ -130,6 +141,16 @@ def _to_call(ns: argparse.Namespace) -> tuple[str, dict]:
             return f"deployment.{action}", args
         case ("health", "containers"):
             return "health.containers", {}
+        case ("health", "summary"):
+            return "health.summary", {}
+        case ("health", "repositories"):
+            return "health.repositories", {}
+        case ("health", "repository"):
+            return "health.repository", path_args
+        case ("health", "history"):
+            return "health.history", {"subject_kind": ns.subject_kind,
+                                      "subject_id": ns.subject_id, "metric": ns.metric,
+                                      "minutes": ns.minutes}
         case ("repository", "list"):
             return "repository.list", {}
         case ("repository", "status"):

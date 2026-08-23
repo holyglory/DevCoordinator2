@@ -1,7 +1,8 @@
 # Health Metrics Notes (Phase 4 — design only)
 
-Owner decision DC2-2026-08-22-METRICS. No code exists yet; this note fixes
-the cadence and the schema direction so earlier phases don't contradict it.
+Owner decision DC2-2026-08-22-METRICS. Implemented in Phase 4
+(`metrics_sampler.py`, `metrics_store.py`, `alerts.py`); this note records the
+cadence and model.
 
 ## Cadence and retention
 

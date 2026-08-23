@@ -11,7 +11,7 @@ import threading
 from contextlib import contextmanager
 from pathlib import Path
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (
@@ -101,6 +101,33 @@ CREATE TABLE IF NOT EXISTS domain_routes (
 );
 """
 
+# Schema 3 (Phase 4): bounded health samples and current alerts. Disposable:
+# may be rebuilt or dropped without affecting control data.
+_SCHEMA_V3 = """
+CREATE TABLE IF NOT EXISTS metric_minutes (
+  subject_kind TEXT NOT NULL,
+  subject_id   TEXT NOT NULL,
+  metric       TEXT NOT NULL,
+  minute_utc   TEXT NOT NULL,
+  min_value    REAL NOT NULL,
+  avg_value    REAL NOT NULL,
+  max_value    REAL NOT NULL,
+  samples      INTEGER NOT NULL,
+  PRIMARY KEY(subject_kind, subject_id, metric, minute_utc)
+);
+CREATE INDEX IF NOT EXISTS metric_minutes_time ON metric_minutes(minute_utc);
+CREATE TABLE IF NOT EXISTS alerts (
+  alert_key    TEXT PRIMARY KEY,
+  kind         TEXT NOT NULL,
+  subject_kind TEXT NOT NULL,
+  subject_id   TEXT NOT NULL,
+  severity     TEXT NOT NULL,
+  message      TEXT NOT NULL,
+  opened_at    TEXT NOT NULL,
+  last_seen_at TEXT NOT NULL
+);
+"""
+
 
 class SchemaMismatch(Exception):
     pass
@@ -130,6 +157,7 @@ class Database:
             # Additive upgrades only: control data (repositories, deployments,
             # ports, domains) is always preserved (docs/database-ledger.md).
             self._conn.executescript(_SCHEMA_V2)
+            self._conn.executescript(_SCHEMA_V3)
             self._conn.execute(
                 "INSERT OR REPLACE INTO meta(key, value) VALUES('schema_version', ?)",
                 (str(SCHEMA_VERSION),),

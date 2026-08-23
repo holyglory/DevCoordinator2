@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from devcoordinator2 import ids
+from devcoordinator2.daemon import events
 from devcoordinator2.daemon.db import Database
 from devcoordinator2.daemon.gitinfo import WorktreeInfo, resolve_worktree
 
@@ -69,6 +70,10 @@ class Registry:
                     "UPDATE worktrees SET last_seen_at=? WHERE worktree_id=?",
                     (now, wt_id),
                 )
+        if existing is None or wt_existing is None:
+            events.publish("repository.registered", repository_id=repo_id,
+                           worktree_id=wt_id, display_name=display_name,
+                           caller_uid=caller_uid)
         return Registration(
             repository_id=repo_id,
             worktree_id=wt_id,

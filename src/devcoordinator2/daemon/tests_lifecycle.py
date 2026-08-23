@@ -19,6 +19,7 @@ from devcoordinator2 import ids
 from devcoordinator2.daemon import (
     capture,
     docker_cli,
+    events,
     securefs,
     summary,
     systemd_unit,
@@ -196,6 +197,9 @@ class TestLifecycle:
             self._runs[reg.worktree_id] = handle
             threading.Thread(target=self._reap, args=(reg.worktree_id, handle),
                              daemon=True).start()
+            events.publish("test.started", run_id=run, test=spec.name,
+                           repository_id=reg.repository_id, worktree_id=reg.worktree_id,
+                           caller_uid=caller.uid, client=client)
             return {
                 "run_id": run,
                 "repository_id": reg.repository_id,
@@ -469,6 +473,10 @@ class TestLifecycle:
                         owner=(handle.caller_uid, handle.caller_gid))
             except OSError:
                 pass  # directory superseded underneath us; successor owns the slot
+            events.publish("test.finished", run_id=handle.run_id, test=handle.test,
+                           status=status, exit_code=exit_code,
+                           duration_seconds=duration, caller_uid=handle.caller_uid,
+                           client=handle.client, worktree=str(handle.worktree_root))
         finally:
             handle.finalized.set()
 

@@ -113,6 +113,17 @@ TOOLS += [
     {"name": "health_containers", "description": "Every container on the host with "
                                                  "ownership classification.",
      "inputSchema": {"type": "object", "properties": {}}},
+    {"name": "health_summary", "description": "Host CPU/memory/disk/load, unhealthy "
+                                              "deployments, active tests, container counts "
+                                              "by ownership, current alerts.",
+     "inputSchema": {"type": "object", "properties": {}}},
+    {"name": "health_repositories", "description": "Per-repository CPU, memory, storage, "
+                                                   "health and compact trends, reconciled "
+                                                   "against DevCoordinator and shared usage.",
+     "inputSchema": {"type": "object", "properties": {}}},
+    {"name": "health_repository", "description": "Every measured component of one "
+                                                 "repository with live usage and storage.",
+     "inputSchema": {"type": "object", "properties": {"path": _PATH}, "required": ["path"]}},
 ]
 
 _TOOL_TO_COMMAND = {
@@ -121,6 +132,8 @@ _TOOL_TO_COMMAND = {
     "deployment_stop": "deployment.stop", "deployment_restart": "deployment.restart",
     "deployment_logs": "deployment.logs", "deployment_rollback": "deployment.rollback",
     "health_containers": "health.containers",
+    "health_summary": "health.summary", "health_repositories": "health.repositories",
+    "health_repository": "health.repository",
     "test_start": "test.start",
     "test_status": "test.status",
     "test_output": "test.output",

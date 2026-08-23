@@ -9,6 +9,8 @@ import sys
 from devcoordinator2.daemon.db import Database, SchemaMismatch
 from devcoordinator2.daemon.deploy_control import Deployments
 from devcoordinator2.daemon.handlers import build_handlers
+from devcoordinator2.daemon.health_api import build_health_handlers
+from devcoordinator2.daemon.metrics_sampler import Sampler
 from devcoordinator2.daemon.registry import Registry
 from devcoordinator2.daemon.server import Server
 from devcoordinator2.daemon.tests_lifecycle import TestLifecycle
@@ -32,6 +34,9 @@ def main() -> int:
     deployments = Deployments(config, db, registry)
     deployments.start_expiry_thread()
     handlers = build_handlers(config, registry, lifecycle, deployments, db)
+    sampler = Sampler(config, db)
+    sampler.start()
+    handlers.update(build_health_handlers(config, db, registry, sampler))
     server = Server(config.socket_path, handlers,
                     client_group=config.client_group)
     server.bind()
@@ -45,6 +50,7 @@ def main() -> int:
     log.info("serving on %s", config.socket_path)
     server.serve_forever()
     deployments.shutdown()
+    sampler.stop()
     db.close()
     return 0
 

@@ -28,6 +28,13 @@ samples, not an append-only archive.
 Secrets (generated PostgreSQL credentials) are **not** in the database: they
 live in root-only 0600 files under the instance secrets directory.
 
+## Schema version 3 (Phase 4) — disposable, rebuildable
+
+| Table | Fields | Status |
+|---|---|---|
+| `metric_minutes` | (subject_kind, subject_id, metric, minute_utc) PK, min/avg/max, samples; index on minute_utc; rows older than 30 days deleted directly | done |
+| `alerts` | alert_key PK, kind, subject_kind, subject_id, severity, message, opened_at, last_seen_at — current alerts only; resolved rows are deleted | done |
+
 ## Reserved ID-prefix namespace
 
 Deterministic opaque TEXT IDs; later phases never migrate existing IDs.
@@ -52,8 +59,8 @@ Deterministic opaque TEXT IDs; later phases never migrate existing IDs.
 | port assignments, domain routes | 3 | done |
 | current managed native identities | 3 | done (components.binding_*) |
 | current Docker observations | 3/4 | projection, rebuildable |
-| bounded health samples | 4 | 1-min aggregates, 30-day retention, direct deletion |
-| current alerts | 4 | active + dedup state |
+| bounded health samples | 4 | done |
+| current alerts | 4 | done |
 | users, invitations, deployment grants | 5 | |
 | Telegram subscriptions + bounded outbox | 6 | single server-owned bot; token in instance config, never in DB |
 

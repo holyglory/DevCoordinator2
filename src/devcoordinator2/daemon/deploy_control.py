@@ -14,7 +14,7 @@ from devcoordinator2.daemon import deploy_engine as eng
 from devcoordinator2.daemon import deploy_runtime as rt
 from devcoordinator2.daemon import deploy_state as st
 from devcoordinator2.daemon import deploy_status as dstatus
-from devcoordinator2.daemon import ports
+from devcoordinator2.daemon import events, ports
 from devcoordinator2.daemon.db import Database
 from devcoordinator2.daemon.deploy_config import (
     ComponentSpec,
@@ -194,6 +194,9 @@ class Deployments:
                                  "components": self._component_states(ctx)})
             had_generation = bool(row and row["current_generation"])
             st.set_deployment(db, ctx.dep_id, state="degraded" if had_generation else "failed")
+            events.publish("deployment.failed", deployment_id=ctx.dep_id, name=ctx.spec.name,
+                           source=ctx.source, repository_id=row["repository_id"] if row else
+                           None, message=exc.message, caller_uid=ctx.caller_uid)
             raise ProtocolError("deployment_apply_failed", exc.message, detail) from exc
 
         route_comp = spec.route_component
@@ -218,6 +221,10 @@ class Deployments:
         status = self._status(ctx, st.get_deployment(db, ctx.dep_id))
         if rollback is not None:
             status["rolled_back_from"], status["rolled_back_to"] = rollback
+        events.publish("deployment.rolled_back" if rollback else "deployment.applied",
+                       deployment_id=ctx.dep_id, name=ctx.spec.name, source=ctx.source,
+                       repository_id=status["repository_id"], generation=number,
+                       domain=status["domain"], caller_uid=ctx.caller_uid)
         return status
 
     def _bring_up(self, ctx: eng.Ctx, comp: ComponentSpec, number: int, gen_path: Path,
@@ -310,7 +317,12 @@ class Deployments:
             if action in ("start", "restart"):
                 self._start(ctx, row, worktree, comps)
             self._recompute_state(ctx, row)
-            return self._status(ctx, st.get_deployment(self._db, ctx.dep_id))
+            status = self._status(ctx, st.get_deployment(self._db, ctx.dep_id))
+            events.publish(f"deployment.{action}", deployment_id=ctx.dep_id,
+                           name=ctx.spec.name, source=ctx.source, component=component,
+                           repository_id=status["repository_id"], state=status["state"],
+                           caller_uid=ctx.caller_uid)
+            return status
         finally:
             lock.release()
 
@@ -368,6 +380,8 @@ class Deployments:
                 st.set_component(self._db, ctx.dep_id, comp.name, state="failed",
                                  health="unhealthy", desired_state="running",
                                  last_error=str(exc)[:512])
+                events.publish("component.failed", deployment_id=ctx.dep_id,
+                               component=comp.name, message=str(exc)[:256])
                 raise ProtocolError("deployment_action_failed",
                                     f"start {comp.name} failed: {exc}") from exc
             st.set_component(self._db, ctx.dep_id, comp.name,
@@ -457,6 +471,10 @@ class Deployments:
                     d.rmdir()
             if ctx.dir.is_dir() and not any(ctx.dir.iterdir()):
                 ctx.dir.rmdir()
+            events.publish("deployment.removed", deployment_id=ctx.dep_id,
+                           name=ctx.spec.name, source=ctx.source,
+                           repository_id=row["repository_id"], data_deleted=delete_data,
+                           caller_uid=ctx.caller_uid)
             return {"deployment_id": ctx.dep_id, "removed": True,
                     "data_deleted": delete_data, "deleted_volumes": deleted_volumes}
         finally:
