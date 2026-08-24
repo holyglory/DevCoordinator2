@@ -113,6 +113,8 @@ test('sign-in admits the invited identity via the daemon and enforces grants per
   assert.equal(ok.status, 200, ok.body);
   const seen = JSON.parse(ok.body);
   assert.equal(seen.forwarded, `app.${BASE}`);
+  assert.match(seen.host, /^127\.0\.0\.1:\d+$/,
+    'upstream Host is the loopback target so dev servers need no allowedHosts');
   assert.equal(seen.cookie, null, 'session cookie never reaches the upstream');
   assert.equal(seen.who, 'dev@example.test', 'upstream learns the verified identity');
   assert.equal(seen.route, 'd0123456789abcd01/api');

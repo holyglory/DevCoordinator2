@@ -233,8 +233,11 @@ export function createProxy({
       else headers.cookie = safeCookie;
       Object.assign(headers, localAttributionHeaders(target));
     }
-    // Host preserved: dev servers see the real vhost (Vite server.allowedHosts).
-    headers.host = target.publicHost;
+    // Host is the loopback upstream (the nginx default): dev servers (Vite,
+    // webpack-dev-server) accept it without per-repository allowedHosts
+    // configuration (DC2-2026-08-24-ZERO-CONFIG-PROXY). The public name
+    // travels in X-Forwarded-Host for applications that build absolute URLs.
+    headers.host = `${LOOPBACK}:${target.port}`;
     const clientIp = req.socket.remoteAddress || '';
     headers['x-forwarded-for'] = headers['x-forwarded-for']
       ? `${headers['x-forwarded-for']}, ${clientIp}`

@@ -53,7 +53,7 @@ authenticated routes only), and a static file server for the Console.
 | `EDGE_OIDC_CLIENT_ID_FILE` / `EDGE_OIDC_CLIENT_SECRET_FILE` | credentials |
 | `EDGE_ROUTES_FILE` | daemon route document (default instance state dir) |
 | `EDGE_STATE_DIR` | last-known-good copy |
-| `EDGE_DAEMON_SOCKET` | daemon socket; the edge user must be in the client group |
+| `EDGE_DAEMON_SOCKET` | daemon socket (world-connectable since DC2-2026-08-24-OPEN-LOCAL-ACCESS; no group membership needed) |
 | `EDGE_CONSOLE_DIR` | Console static assets (`console/` in the release) |
 
 Daemon side: `DEVCOORDINATOR2_EDGE_UID` (the edge service uid) and

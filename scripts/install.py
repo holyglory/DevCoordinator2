@@ -169,7 +169,10 @@ def main() -> int:
     for path, mode, owner in ((Path("/run/devcoordinator2"), 0o755, (0, 0)),
                               (Path("/var/lib/devcoordinator2"), 0o751, (0, 0)),
                               (Path("/var/lib/devcoordinator2/public"), 0o755, (0, 0)),
-                              (Path("/var/lib/devcoordinator2-bugs"), 0o2775, (0, gid)),
+                              # World-writable by owner decision
+                              # DC2-2026-08-24-OPEN-LOCAL-ACCESS: bug intake
+                              # must work from any account, sandboxed included.
+                              (Path("/var/lib/devcoordinator2-bugs"), 0o777, (0, gid)),
                               (Path("/var/lib/devcoordinator2-edge"), 0o750,
                                (edge_uid, edge_gid))):
         path.mkdir(parents=True, exist_ok=True)

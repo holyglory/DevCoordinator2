@@ -123,3 +123,10 @@ def test_concurrent_connections(running_server):
         t.join()
     assert len(results) == 16
     assert all(r["ok"] for r in results)
+
+
+def test_socket_world_connectable(running_server):
+    """DC2-2026-08-24-OPEN-LOCAL-ACCESS: mode 0666 so any local account —
+    including sandboxed clients whose namespaces drop the client group —
+    connects without ACL setup."""
+    assert os.stat(running_server.socket_path).st_mode & 0o777 == 0o666

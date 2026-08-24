@@ -57,7 +57,11 @@ class Server:
             self._path.unlink()
         sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         sock.bind(str(self._path))
-        os.chmod(self._path, 0o660)
+        # World-connectable by owner decision DC2-2026-08-24-OPEN-LOCAL-ACCESS:
+        # every local Unix account is a trusted caller (SO_PEERCRED still
+        # records exactly who), and sandboxed clients (user namespaces where
+        # the client group maps to nogroup) must connect without ACL setup.
+        os.chmod(self._path, 0o666)
         if self._client_group:
             try:
                 gid = grp.getgrnam(self._client_group).gr_gid

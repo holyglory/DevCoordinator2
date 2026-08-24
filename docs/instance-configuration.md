@@ -28,7 +28,7 @@ stripping one pair of surrounding quotes.
 | `DEVCOORDINATOR2_ADMIN_EMAILS` | (empty) | comma-separated bootstrap administrators |
 | `DEVCOORDINATOR2_TELEGRAM_TOKEN_FILE` | (unset) | private 0600 file holding the single server-owned bot token; unset disables notifications |
 | `DEVCOORDINATOR2_TELEGRAM_API` | `https://api.telegram.org` | API base (tests point it at a fixture) |
-| `DEVCOORDINATOR2_BUGS_DIR` | `/var/lib/devcoordinator2-bugs` | independent open-bug store; group-writable for the client group |
+| `DEVCOORDINATOR2_BUGS_DIR` | `/var/lib/devcoordinator2-bugs` | independent open-bug store; world-writable so any local account reports bugs (DC2-2026-08-24-OPEN-LOCAL-ACCESS) |
 
 Edge configuration lives in `/etc/devcoordinator2/edge.env` (`docs/edge.md`).
 

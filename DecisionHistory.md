@@ -370,3 +370,48 @@ the override while reporting failure — the worst of both.
 ("deployment.set_domain failed: this deployment declares no route
 component…") on `web@worktree`, which has exactly one port-leasing
 component.
+
+## DC2-2026-08-24-OPEN-LOCAL-ACCESS — Any local account is a full caller, no ACL setup
+
+**Decision.** The daemon socket is world-connectable (mode 0666) and the bug
+store world-writable (0777 dir, 0666 records). The client group remains only
+as organizational ownership; membership is not required to call the daemon.
+SO_PEERCRED still records exactly which uid performed every action.
+
+**What this means, plainly.** Every Unix account on this host — including
+sandboxed agent CLIs whose user namespaces map the client group to
+`nogroup` — can deploy, run tests, and administer DevCoordinator2 without
+being added to any group. The flip side, stated openly: any local process
+under any account has full local-caller authority. Public (edge) users are
+unaffected — their role checks are unchanged, and identity assertion is
+still restricted to the edge peer uid.
+
+**Alternatives.** Filesystem ACLs per account and group-mapping the sandboxes
+were rejected as exactly the "ACL hassle" the owner refused. Keeping 0660
+broke deployment from the codex CLI under an agent account (socket appeared
+as nobody:nogroup inside its namespace).
+
+**Owner context.** Verbatim: "don't restrict any permissions locally,
+deploying from any account should be possible without much ACL hassle" —
+after a real failed deployment from a sandboxed CLI. The owner operates a
+single-owner development host where every account is their own agent.
+
+## DC2-2026-08-24-ZERO-CONFIG-PROXY — The edge presents the loopback upstream as Host
+
+**Decision.** The edge proxies with `Host: 127.0.0.1:<port>` (the nginx
+default) instead of preserving the public virtual host, for HTTP and
+WebSocket upgrades alike. The public name still travels in
+`X-Forwarded-Host` (with `X-Forwarded-Proto`/`-For`) for applications that
+build absolute URLs. This supersedes the preserved-vhost behavior ported
+from the legacy edge.
+
+**Alternatives.** Requiring every repository to whitelist its domains
+(`preview.allowedHosts` in Vite, `allowedHosts` in webpack-dev-server) was
+rejected: the owner's first real deployment was blocked by exactly that, and
+per-app ceremony contradicts the zero-configuration worktree workflow. A
+per-route host-mode flag was rejected as configuration surface without a
+demonstrated second need.
+
+**Owner context.** The owner pasted Vite's "Blocked request. This host
+(…) is not allowed" from their deployed app. They were told apps needing the
+public name can read X-Forwarded-Host.

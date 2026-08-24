@@ -8,10 +8,13 @@ in `contract-commands.md`.
 
 - Unix stream socket. Default path `/run/devcoordinator2/daemon.sock`,
   overridable via instance configuration (`docs/instance-configuration.md`).
-- Socket mode 0660, owned by root and the daemon client group. The kernel
-  peer credentials (`SO_PEERCRED`: pid, uid, gid) are read on accept; the
-  **uid is the physical caller identity** for every request. Nothing in a
-  request body can assert or override identity.
+- Socket mode 0666, owned by root and the daemon client group
+  (DC2-2026-08-24-OPEN-LOCAL-ACCESS: every local Unix account is a trusted
+  caller, connectable even from sandboxes whose user namespace maps the
+  client group away; the group remains for organizational ownership only).
+  The kernel peer credentials (`SO_PEERCRED`: pid, uid, gid) are read on
+  accept; the **uid is the physical caller identity** for every request.
+  Nothing in a request body can assert or override identity.
 - One connection carries exactly one request and one response, then closes.
   UTF-8 JSON, single line, terminated by `\n`.
 - Limits: request ≤ 65536 bytes, response ≤ 262144 bytes. Server read

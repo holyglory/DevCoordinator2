@@ -72,7 +72,9 @@ def _write(path: Path, record: dict) -> None:
     try:
         os.write(fd, json.dumps(record, indent=2).encode())
         os.fsync(fd)
-        os.fchmod(fd, 0o664)
+        # Any local account may count recurrences or close (owner decision
+        # DC2-2026-08-24-OPEN-LOCAL-ACCESS).
+        os.fchmod(fd, 0o666)
     finally:
         os.close(fd)
     os.replace(tmp, path)

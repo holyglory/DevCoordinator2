@@ -65,8 +65,18 @@ def test_health_views_measure_real_workloads(world):
     assert "cpu_percent" in repos["devcoordinator"]
     assert "cpu_percent" in repos["shared_unattributed"]
 
-    detail = _call(world, "health.repository", {"path": str(world.repo)})["result"]
-    kinds = {(c["kind"], c.get("component")) for c in detail["components"]}
+    # Attribution can lag one sampling tick behind the reconciliation totals
+    # (a tick may land mid-apply, before component bindings are recorded), so
+    # poll for it like reconciliation above instead of reading once.
+    deadline = time.monotonic() + 60
+    detail = {"components": []}
+    kinds = set()
+    while time.monotonic() < deadline:
+        detail = _call(world, "health.repository", {"path": str(world.repo)})["result"]
+        kinds = {(c["kind"], c.get("component")) for c in detail["components"]}
+        if ("container", "db") in kinds and ("component", "api") in kinds:
+            break
+        time.sleep(3)
     assert ("container", "db") in kinds
     assert ("component", "api") in kinds
     db_entry = next(c for c in detail["components"] if c["id"] == db_id)
