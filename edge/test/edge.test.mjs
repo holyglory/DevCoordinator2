@@ -131,6 +131,11 @@ test('sign-in admits the invited identity via the daemon and enforces grants per
   assert.equal(api.status, 200);
   assert.equal(JSON.parse(api.body).result.identity, 'dev@example.test');
   assert.equal((await get('/api/deployment.list', { method: 'POST', body: {} })).status, 401);
+  // ping is the daemon's one dotless command and passes; other dotless words
+  // are grammar garbage and never reach the daemon.
+  const ping = await get('/api/ping', { cookie: session, method: 'POST', body: {} });
+  assert.equal(ping.status, 200);
+  assert.ok(daemonCalls.some((c) => c.command === 'ping'));
   assert.equal((await get('/api/bogus', { cookie: session, method: 'POST' })).status, 400);
   assert.ok(!daemonCalls.some((c) => c.command === 'bogus'));
 });

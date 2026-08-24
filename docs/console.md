@@ -25,10 +25,33 @@ fakes success, and no view carries fixture numbers.
    observed edits), and per-component CPU/memory charts over a selectable
    1h/24h/7d/30d window. The detail page names the repository under the
    heading.
-2. **Tests** — one current/most-recent run per worktree: result and
+2. **Plan** — the completion ledger as a per-repository Gantt-style chart
+   (picker first: every visible repository with its current release,
+   done-lines progress, open-task count, and a preview-requested badge).
+   Tasks are an arbitrary-depth tree (parents are summary rows with
+   collapse/expand) sized in estimated lines of code; the axis is
+   cumulative lines, releases group in sequence with dashed boundaries and
+   per-release progress; delivered releases link to the running app
+   ("Open the app ↗") or name the server port. Everything is plain
+   language: statuses read planned / being built / done / delivered, owner
+   feedback carries a "your request" badge, and the agent-facing
+   `technical_note` is never rendered. Owner controls (administrators):
+   drag-and-drop a task between releases or to a new position within one
+   (drop between rows or onto a release header; delivered releases refuse
+   drops), the move pop-up as the touch/accessibility path, "Request
+   preview now" (replaced by a pending notice while one is requested),
+   drop-task with confirm, and an "Ask for a change" form that files a
+   `user_feedback` task. Viewers get the same chart read-only.
+3. **Decisions** — the per-repository decision history in plain language:
+   "The story so far" (latest rolling summary), a full-text search box over
+   every decision ever recorded, an aspect filter (server-side), entries
+   newest-first with aspect badge, optional stable ref, and age; superseded
+   decisions collapse and dim; "Show older decisions" pages the permanent
+   history.
+4. **Tests** — one current/most-recent run per worktree: result and
    duration first; stdout/stderr tails load only on demand (bounded); stop
    a running test or start the declared default (administrators).
-3. **Health** — host condition first as tiles with capacity meters (CPU,
+5. **Health** — host condition first as tiles with capacity meters (CPU,
    memory, filesystem, load/swap, unhealthy count, active tests, container
    counts, critical alerts); then **Unhealthy deployments** as cards naming
    exactly which component is unhealthy and why (`reasons` from
@@ -42,9 +65,9 @@ fakes success, and no view carries fixture numbers.
    deployment/test, caller and client, CPU/memory/layer size, creation
    time, TTL; removal is offered only for orphaned-managed and managed-test
    containers (unmanaged ones say "decide manually").
-4. **Bugs** — open records with occurrence counts and correlations; report
+6. **Bugs** — open records with occurrence counts and correlations; report
    form; close.
-5. **Administration** (administrators only) — users and grants, invitations
+7. **Administration** (administrators only) — users and grants, invitations
    (invite form with optional initial grant), Telegram chats and
    subscriptions (link code, subscribe), server versions and the served
    route-document generation.
@@ -70,6 +93,14 @@ explicit permission-denied notice instead of partial data.
 | Bug report / close | `bug.report` / `bug.close` | list re-read |
 | Invite, remove user, set/remove grant | `user.invite`, `user.remove`, `grant.set`, `grant.remove` | administration re-read |
 | Telegram link / subscribe / unsubscribe | `telegram.link`, `telegram.subscribe`, `telegram.unsubscribe` | administration re-read |
+| Drag a task between rows or onto a release header (Gantt) | `task.update {task_id, position, release_id?, parent_task_id?}` | plan re-read; the bar moves |
+| Move/reorder pop-up on a task row | `task.update {task_id, release_id|null, position?}` | plan re-read; the bar moves under the chosen release |
+| Request preview now (confirm) | `release.request {repository_id}` | plan re-read; pending notice replaces the button; delivery later shows the app link/port |
+| Ask-for-a-change form | `task.create {repository_id, title, impact?, kind: user_feedback}` | plan re-read; the task appears with a "your request" badge |
+| Drop task (confirm) | `task.update {task_id, status: dropped}` | plan re-read; the task leaves the chart (history kept) |
+| Collapse/expand a parent task | — (client-side) | subtree rows hide/show |
+| Decision aspect filter / Show older | `decision.tail {repository_id, aspect?, n, before_seq?}` | list re-fetched server-side |
+| Decision search | `decision.search {repository_id, query, aspect?}` | matching decisions rendered |
 | Sign out | `/auth/logout` | session cleared |
 
 ## Browser verification
@@ -83,5 +114,11 @@ no clipped headline text, no off-canvas controls outside scroll containers,
 explicit empty/error/loading/denied states, humanized large numbers; and
 clicks through stop/start/logs/remove/test output/bug report/invite/
 container removal proving each calls the API with the expected arguments
-and re-renders. Screenshots and `report.json` are written to
-`CONSOLE_VERIFY_OUT` (not committed). Last run: 279 checks, 0 failures.
+and re-renders — including the Plan drag-and-drop (reorder and cross-release),
+move pop-up, preview request, feedback form, task drop, decision
+filter/search/paging, and a plain-language proof that the agent-facing
+technical note never renders. Screenshots and `report.json` are written to
+`CONSOLE_VERIFY_OUT` (not committed). The Administration Server line is
+asserted to render the daemon version, schema, and served route-document
+generation (the edge accepts the dotless `ping` alongside `family.name`
+commands). Last run: 455 checks, 0 failures.

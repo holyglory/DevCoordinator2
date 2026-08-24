@@ -110,6 +110,52 @@ not contradict them.
   of public deployment grants; the kernel peer UID is the caller identity
   and request bodies cannot assert identity (P1, in scope).
 
+## Planning, completion ledger, and decisions (REQ-PLAN, Schema 8)
+
+- **REQ-PLAN-01** (S8, done): DevCoordinator owns the single authoritative
+  completion ledger. Anything an agent stubs, fakes, skips, or finds
+  improvable becomes a `tasks` row at once; a daemon or database error
+  blocks the affected completion claim and never authorizes a file or
+  chat-memory fallback.
+- **REQ-PLAN-02** (S8, done): One task tree of arbitrary depth per
+  repository (parents are summary rows), sized in estimated lines of code,
+  with append-only permanent history: every mutation appends `plan_events`
+  in the same transaction and no code path deletes planning rows.
+- **REQ-PLAN-03** (S8, done): Plain language first — bounded required
+  title/outcome (and decision title/body) written for a non-technical
+  owner; `technical_note` is a separate agent-facing field the daemon never
+  substitutes for the plain account.
+- **REQ-PLAN-04** (S8, done): `plan.overview` is one bounded call carrying
+  releases with leaf-based progress, the compact active task projection
+  (unfinished tasks never truncated away), pending preview requests, and
+  decision-summary state.
+- **REQ-PLAN-05** (S8, done): The owner can move tasks between releases,
+  reorder them within a release (mutable `position`, immutable `seq`), and
+  drop them; each is an append-only transition (`release_move`, `reorder`,
+  `status`).
+- **REQ-PLAN-06** (S8, done): Delivering a release records a real
+  deployment's evidence — commit, dirty flag, fingerprint, routed URL or
+  leased host port — as a permanent snapshot that outlives generation
+  pruning and deployment removal; a delivered preview is always reachable
+  by URL or port.
+- **REQ-PLAN-07** (S8, done): Decisions are per-repository, aspect-tagged,
+  permanent, and support explicit supersession; agents load the rolling
+  summary plus the last N; at 25 unsummarized decisions every decision read
+  reports `summary_due` and the working agent stores the next summary — the
+  daemon never generates text; all summaries are kept.
+- **REQ-PLAN-08** (S8, done): Owner feedback from previews enters the same
+  ledger as `user_feedback` tasks; the independent bug store remains
+  coordinator-defect intake only.
+- **REQ-PLAN-09** (S8, done): Every decision ever recorded is full-text
+  searchable (SQLite FTS5 over title, body, technical note, ref) by both
+  the owner and agents; FTS5 absence is a refused start, not a silent
+  degrade.
+- **REQ-PLAN-10** (S8): `DecisionHistory.md` is retired in favor of the
+  database: `scripts/decision_import.py` imports the existing entries with
+  their `DC2-…` refs preserved, after which the file is a pointer stub and
+  new DC2-repository decisions are recorded only in the database
+  (owner-executed import).
+
 ## Reliability (REQ-REL)
 
 - **REQ-REL-01** (P1, in scope): `devcoordinatord` and the stable edge are

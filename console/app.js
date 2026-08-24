@@ -4,7 +4,7 @@
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const main = $('#main');
-const state = { who: null, healthRange: '24h', usageRange: '1h' };
+const state = { who: null, healthRange: '24h', usageRange: '1h', decisionAspect: 'all', decisionLimit: 25, decisionBefore: null, decisionQuery: '', collapsed: new Set() };
 const RANGES = {
   '1h': { minutes: 60, points: 60 },
   '24h': { minutes: 1440, points: 288 },
@@ -73,11 +73,12 @@ function chart(points, fmt, label) {
     <div class="chartaxis"><span>${esc(minuteLabel(points[0].minute))}</span><span class="muted">min–max band, average line</span><span>${esc(minuteLabel(last.minute))}</span></div>
   </div>`;
 }
-function seg(options, current, dataKey) {
-  return `<div class="seg" role="tablist">${options.map((o) => `<button type="button" class="${o === current ? 'active' : ''}" data-${dataKey}="${o}">${o}</button>`).join('')}</div>`;
+function seg(options, current, dataKey, label = (o) => o) {
+  return `<div class="seg" role="tablist">${options.map((o) => `<button type="button" class="${o === current ? 'active' : ''}" data-${dataKey}="${o}">${esc(label(o))}</button>`).join('')}</div>`;
 }
 function bindSeg(root, dataKey, apply) {
-  root.querySelectorAll(`[data-${dataKey}]`).forEach((btn) => btn.addEventListener('click', () => apply(btn.dataset[dataKey === 'usage-range' ? 'usageRange' : 'healthRange'])));
+  const prop = dataKey.replace(/-([a-z])/g, (_, c) => c.toUpperCase());
+  root.querySelectorAll(`[data-${dataKey}]`).forEach((btn) => btn.addEventListener('click', () => apply(btn.dataset[prop])));
 }
 function toast(text, kind = '') {
   const el = document.createElement('div');
@@ -87,11 +88,13 @@ function toast(text, kind = '') {
 }
 
 class ApiError extends Error { constructor(code, message) { super(message); this.code = code; } }
-async function api(command, args = {}) {
+let viewAbort = null; // render() aborts the previous view's pending reads so a slow stale load can never overwrite the current view
+async function api(command, args = {}, abortable = true) {
   let res;
   try {
-    res = await fetch(`/api/${command}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(args) });
+    res = await fetch(`/api/${command}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(args), signal: abortable ? viewAbort?.signal : undefined });
   } catch (error) {
+    if (error.name === 'AbortError') throw new ApiError('stale', 'superseded by navigation');
     throw new ApiError('network', `edge unreachable: ${error.message}`);
   }
   if (res.status === 401) { location.href = `/auth/login?rt=${encodeURIComponent(location.pathname + location.hash)}`; throw new ApiError('unauthenticated', 'sign in'); }
@@ -114,6 +117,7 @@ function stateBlock(kind, text) {
 function guard(fn) {
   return async (...args) => {
     try { return await fn(...args); } catch (error) {
+      if (error.code === 'stale') return null; // another view took over
       if (error.code === 'permission_denied') main.innerHTML = stateBlock('denied', error.message);
       else if (error.code !== 'unauthenticated') main.innerHTML = stateBlock('error', error.message);
       return null;
@@ -123,7 +127,7 @@ function guard(fn) {
 async function act(button, command, args, after) {
   button.disabled = true;
   try {
-    const result = await api(command, args);
+    const result = await api(command, args, false);
     toast(`${command}: ${result.state ?? result.status ?? result.domain ?? 'done'}`, 'ok');
     if (after) await after(result);
   } catch (error) {
@@ -250,7 +254,7 @@ const viewDeployment = guard(async (id) => {
   bindSeg(main, 'usage-range', (r) => { state.usageRange = r; render(); });
   main.querySelectorAll('[data-logs]').forEach((btn) => btn.addEventListener('click', async () => {
     btn.disabled = true;
-    try { const r = await api('deployment.logs', { deployment_id: id, component: btn.dataset.logs, tail_lines: 200 }); $('#logs').innerHTML = `<h2>Logs: ${esc(btn.dataset.logs)}</h2><pre class="log">${esc(r.tail || '(empty)')}</pre>${r.log_path ? `<p class="muted mono">${esc(r.log_path)}</p>` : ''}`; }
+    try { const r = await api('deployment.logs', { deployment_id: id, component: btn.dataset.logs, tail_lines: 200 }, false); $('#logs').innerHTML = `<h2>Logs: ${esc(btn.dataset.logs)}</h2><pre class="log">${esc(r.tail || '(empty)')}</pre>${r.log_path ? `<p class="muted mono">${esc(r.log_path)}</p>` : ''}`; }
     catch (e) { toast(e.message, 'bad'); } finally { btn.disabled = false; }
   }));
   try {
@@ -266,7 +270,11 @@ const viewDeployment = guard(async (id) => {
       return `<div class="chartpair"><h3>${esc(s.name)}</h3>${chart(cpu.points, pct, 'CPU')}${chart(mem.points, bytes, 'Memory')}</div>`;
     }));
     $('#usage').innerHTML = usage.length ? usage.join('') : '<p class="muted">No measured components.</p>';
-  } catch (e) { $('#usage').innerHTML = stateBlock(e.code === 'permission_denied' ? 'denied' : 'error', e.message); }
+  } catch (e) {
+    if (e.code === 'stale') return;
+    const el = $('#usage');
+    if (el) el.innerHTML = stateBlock(e.code === 'permission_denied' ? 'denied' : 'error', e.message);
+  }
 });
 
 // --- Tests ---------------------------------------------------------------
@@ -282,7 +290,7 @@ const viewTests = guard(async () => {
   bind(main);
   main.querySelectorAll('[data-out]').forEach((btn) => btn.addEventListener('click', async () => {
     btn.disabled = true;
-    try { const r = await api('test.output', { path: btn.dataset.path, stream: btn.dataset.out, tail_bytes: 16384 }); $('#logs').innerHTML = `<h2>${esc(btn.dataset.out)} tail ${r.truncated_before_tail ? '(earlier output omitted)' : ''}</h2><pre class="log">${esc(r.tail || '(empty)')}</pre><p class="muted mono">${esc(r.log_path)}</p>`; }
+    try { const r = await api('test.output', { path: btn.dataset.path, stream: btn.dataset.out, tail_bytes: 16384 }, false); $('#logs').innerHTML = `<h2>${esc(btn.dataset.out)} tail ${r.truncated_before_tail ? '(earlier output omitted)' : ''}</h2><pre class="log">${esc(r.tail || '(empty)')}</pre><p class="muted mono">${esc(r.log_path)}</p>`; }
     catch (e) { toast(e.message, 'bad'); } finally { btn.disabled = false; }
   }));
 });
@@ -389,13 +397,290 @@ const viewAdmin = guard(async () => {
   } catch (e) { $('#server').textContent = e.message; }
 });
 
+// --- Plan (completion ledger, releases, previews) ------------------------
+function locN(n) { return Number(n).toLocaleString('en-US'); }
+function loc(n) { return n == null ? '' : `~${locN(n)} lines`; }
+const PLAN_WORDS = { planned: 'planned', in_progress: 'being built', done: 'done', dropped: 'dropped', requested: 'preview requested', delivered: 'delivered' };
+const PLAN_BADGE = { done: 'ok', delivered: 'ok', in_progress: 'warn', requested: 'warn' };
+function planBadge(status) { return badge(PLAN_WORDS[status] || status, PLAN_BADGE[status] ?? ''); }
+
+const viewPlanPicker = guard(async (kind) => {
+  const title = kind === 'decisions' ? 'Decisions' : 'Plan';
+  main.innerHTML = `<h1>${title}</h1>${skeleton()}`;
+  const { repositories } = await api('plan.overview', {});
+  if (!repositories.length) { main.innerHTML = `<h1>${title}</h1>${stateBlock('empty', 'No repositories visible to you.')}`; return; }
+  main.innerHTML = `<h1>${title}</h1><p class="muted">Pick a repository.</p><div class="tablewrap"><table><thead><tr><th>Repository</th><th>Now building</th><th>Progress</th><th>Open tasks</th><th></th></tr></thead><tbody>${repositories.map((r) => `<tr>
+    <td class="wrap"><a href="#/${kind}/${esc(r.repository_id)}"><strong>${esc(r.display_name)}</strong></a></td>
+    <td class="wrap">${r.current_release ? `${esc(r.current_release.name)} ${planBadge(r.current_release.status)}` : '<span class="muted">no releases planned yet</span>'}${r.preview_requested ? ` ${badge('preview requested', 'warn')}` : ''}</td>
+    <td>${r.loc_total ? `${meter(r.loc_done / r.loc_total)}<span class="muted">done ${locN(r.loc_done)} of ${locN(r.loc_total)} lines</span>` : '<span class="muted">nothing sized yet</span>'}</td>
+    <td>${r.open_tasks}</td>
+    <td class="actions"><a class="btn btn-small" href="#/plan/${esc(r.repository_id)}">plan</a><a class="btn btn-small" href="#/decisions/${esc(r.repository_id)}">decisions</a></td></tr>`).join('')}</tbody></table></div>`;
+});
+
+// Layout is pure: leaf tasks advance a global lines-of-code cursor, parents
+// span their descendants, releases group in sequence, backlog trails.
+function computeGantt(releases, tasks, collapsed) {
+  const known = new Set(releases.map((r) => r.release_id));
+  const byId = new Map(tasks.map((t) => [t.task_id, t]));
+  const groupOf = (t) => (t.release_id && known.has(t.release_id) ? t.release_id : null);
+  const inTree = (t) => { const p = byId.get(t.parent_task_id); return !!p && groupOf(p) === groupOf(t); };
+  const order = (a, b) => (a.position - b.position) || (a.seq - b.seq);
+  const kids = new Map();
+  for (const t of tasks) {
+    if (!inTree(t)) continue;
+    if (!kids.has(t.parent_task_id)) kids.set(t.parent_task_id, []);
+    kids.get(t.parent_task_id).push(t);
+  }
+  kids.forEach((list) => list.sort(order));
+  const rows = []; const groups = []; let cursor = 0;
+  const walk = (t, depth, hidden) => {
+    const children = kids.get(t.task_id) || [];
+    const row = { task: t, depth, isParent: children.length > 0, hidden, start: cursor, width: 0, subtreeLoc: 0, collapsed: collapsed.has(t.task_id) };
+    rows.push(row);
+    if (!children.length) {
+      row.width = t.estimated_loc || 0;
+      row.subtreeLoc = row.width;
+      cursor += row.width;
+    } else {
+      for (const c of children) row.subtreeLoc += walk(c, depth + 1, hidden || row.collapsed).subtreeLoc;
+      row.width = cursor - row.start;
+    }
+    return row;
+  };
+  for (const release of [...releases, null]) {
+    const gid = release ? release.release_id : null;
+    const group = { release, start: cursor };
+    const mark = rows.length;
+    for (const t of tasks.filter((x) => groupOf(x) === gid && !inTree(x)).sort(order)) walk(t, 0, false);
+    group.rows = rows.slice(mark);
+    group.end = cursor;
+    if (release || group.rows.length) groups.push(group);
+  }
+  return { groups, total: cursor };
+}
+
+const viewPlan = guard(async (repoId) => {
+  main.innerHTML = `<h1>Plan</h1>${skeleton(6)}`;
+  const model = await api('plan.overview', { repository_id: repoId });
+  const admin = state.who?.administrator;
+  const { groups, total } = computeGantt(model.releases, model.tasks, state.collapsed);
+  const pctOf = (v) => `${((v / total) * 100).toFixed(2)}%`;
+  const requested = model.preview_requested || [];
+  const requestBlock = requested.length
+    ? `<p class="notice muted">Preview requested ${ago(requested[0].requested_at)}. The agent will put the current work online; a link appears on the preview release when it is ready.</p>`
+    : (admin ? `<p><button class="btn" data-cmd="release.request" data-args='${esc(JSON.stringify({ repository_id: repoId }))}' data-confirm="Ask the agent to put the current work online for you to try?">Request preview now</button></p>` : '');
+  const releaseHead = (g) => {
+    const r = g.release;
+    const droppable = admin && (!r || r.status !== 'delivered');
+    const span = r && total && g.end > g.start ? `<div class="grelspan" style="left:${pctOf(g.start)};width:${pctOf(g.end - g.start)}"></div>` : '';
+    const where = r?.url && /^https:\/\//.test(r.url) ? ` <a href="${esc(r.url)}" target="_blank" rel="noopener">Open the app ↗</a>`
+      : (r?.status === 'delivered' && r.port ? ` <span class="muted">runs on server port ${Number(r.port)}</span>` : '');
+    const progress = r ? (r.loc_total ? `done ${locN(r.loc_done)} of ${locN(r.loc_total)} lines` : `${r.tasks_done} of ${r.tasks_total} tasks done`) : '';
+    return `<div class="grow grel"${droppable ? ` data-drop-release="${r ? esc(r.release_id) : ''}"` : ''}>
+      <div class="glabel"><strong>${r ? esc(r.name) : 'Not scheduled yet'}</strong>${r ? ` ${planBadge(r.status)}` : ''}${r && r.kind === 'preview' && r.status !== 'requested' ? ` ${badge('preview')}` : ''}${where}</div>
+      <div class="gtrack">${span}<span class="grelmeta">${esc(progress)}</span></div></div>`;
+  };
+  const taskRow = (row) => {
+    const t = row.task;
+    const movable = admin && t.status !== 'done';
+    const actions = admin ? `<span class="actions">${movable ? `<button class="btn btn-small" data-move-task="${esc(t.task_id)}">move</button>` : ''}${t.status === 'planned' || t.status === 'in_progress' ? `<button class="btn btn-small" data-cmd="task.update" data-args='${esc(JSON.stringify({ task_id: t.task_id, status: 'dropped' }))}' data-confirm='Drop "${esc(t.title)}"? The agent will not build it. You can ask for it again later.'>drop</button>` : ''}</span>` : '';
+    const collapse = row.isParent ? `<button class="btn btn-small gcollapse" data-collapse="${esc(t.task_id)}" title="${row.collapsed ? 'show subtasks' : 'hide subtasks'}">${row.collapsed ? '▸' : '▾'}</button> ` : '';
+    const bar = !total || !row.width ? ''
+      : (row.isParent ? `<div class="gbar parent" style="left:${pctOf(row.start)};width:${pctOf(row.width)}"></div>`
+        : `<div class="gbar ${esc(t.status)}" style="left:${pctOf(row.start)};width:${pctOf(row.width)}" title="${esc(t.title)} — ${esc(loc(t.estimated_loc) || 'not sized')}"><span class="gdone"></span></div>`);
+    return `<div class="grow gtask${row.hidden ? ' ghidden' : ''}"${movable ? ` draggable="true" data-drag-task="${esc(t.task_id)}"` : ''} data-task-row="${esc(t.task_id)}">
+      <div class="glabel" style="padding-left:${8 + row.depth * 14}px">${movable ? '<span class="ghandle" title="drag to move">⠿</span> ' : ''}${collapse}${esc(t.title)} <span class="muted">${esc(row.isParent ? loc(row.subtreeLoc) : (loc(t.estimated_loc) || ''))}</span> ${planBadge(t.status)}${t.kind === 'user_feedback' ? ` ${badge('your request')}` : ''}${actions}${t.impact ? `<div class="muted gimpact">${esc(t.impact)}</div>` : ''}</div>
+      <div class="gtrack">${bar}</div></div>`;
+  };
+  const boundaries = total ? groups.slice(1).map((g) => g.start).filter((s) => s > 0 && s < total) : [];
+  const gantt = `<div class="gantt">
+    <div class="gbounds">${boundaries.map((b) => `<i style="left:${pctOf(b)}"></i>`).join('')}</div>
+    <div class="grow gaxis"><div class="glabel muted">task</div><div class="gtrack"><span>0</span><span>${total ? esc(`${locN(total)} lines planned`) : 'nothing sized yet'}</span></div></div>
+    ${groups.map((g) => releaseHead(g) + g.rows.map(taskRow).join('')).join('')}
+  </div>`;
+  const commentForm = admin ? `<h2>Ask for a change</h2><form class="inline" id="comment-form">
+    <label class="f">what you want<input name="title" required maxlength="120" placeholder="I tested it — the export button gives an error"></label>
+    <label class="f">why it matters (optional)<textarea name="impact"></textarea></label>
+    <button class="btn" type="submit">Send to the agent</button></form>
+    <p class="muted">Plain language is enough — the agent turns this into a task.</p>` : '';
+  main.innerHTML = `<h1>Plan — ${esc(model.display_name)}</h1>
+    <p class="muted">Tasks are sized by estimated lines of code. <a href="#/decisions/${esc(repoId)}">Decisions →</a></p>
+    ${requestBlock}
+    ${!model.releases.length && !model.tasks.length ? stateBlock('empty', 'No plan yet. The agent will publish tasks and releases here once planning starts.') : gantt}
+    ${model.tasks_truncated ? '<p class="muted">Only the newest finished tasks are shown; everything stays permanently recorded.</p>' : ''}
+    ${commentForm}`;
+  bind(main);
+  bindMoveButtons(main, model);
+  main.querySelectorAll('[data-collapse]').forEach((btn) => btn.addEventListener('click', () => {
+    const id = btn.dataset.collapse;
+    if (state.collapsed.has(id)) state.collapsed.delete(id); else state.collapsed.add(id);
+    render();
+  }));
+  if (admin) bindGanttDrag(main, model);
+  $('#comment-form')?.addEventListener('submit', async (ev) => {
+    ev.preventDefault();
+    const fd = new FormData(ev.target);
+    const args = { repository_id: repoId, title: fd.get('title'), kind: 'user_feedback' };
+    if (fd.get('impact')) args.impact = fd.get('impact');
+    await act(ev.target.querySelector('button[type=submit]'), 'task.create', args, () => render());
+  });
+});
+
+// Pop-up move/reorder — the touch and accessibility path beside drag-and-drop.
+function openMoveDialog(task, model) {
+  document.getElementById('move-dialog')?.remove();
+  const open = model.releases.filter((r) => r.status !== 'delivered');
+  const current = model.releases.find((r) => r.release_id === task.release_id);
+  const dlg = document.createElement('dialog');
+  dlg.id = 'move-dialog';
+  dlg.innerHTML = `<h2>Move: ${esc(task.title)}</h2>
+    <p class="muted">Now in ${esc(current ? current.name : 'not scheduled yet')}.</p>
+    <form id="move-form" class="inline">
+      <label class="f">move to<select name="release_id">${open.map((r) => `<option value="${esc(r.release_id)}"${r.release_id === task.release_id ? ' selected' : ''}>${esc(r.name)}</option>`).join('')}<option value=""${task.release_id ? '' : ' selected'}>not scheduled yet (backlog)</option></select></label>
+      <label class="f">put first<input type="checkbox" name="first"></label>
+      <div class="actions" style="flex-basis:100%">
+        <button class="btn" type="submit">Move</button>
+        <button class="btn" type="button" id="move-cancel">Cancel</button>
+      </div>
+    </form>`;
+  document.body.appendChild(dlg);
+  dlg.addEventListener('close', () => dlg.remove());
+  $('#move-cancel', dlg).addEventListener('click', () => dlg.close());
+  $('#move-form', dlg).addEventListener('submit', async (ev) => {
+    ev.preventDefault();
+    const fd = new FormData(ev.target);
+    const target = fd.get('release_id') || null;
+    const args = { task_id: task.task_id };
+    if (target !== (task.release_id || null)) args.release_id = target;
+    if (fd.get('first') === 'on') args.position = 0;
+    if (!('release_id' in args) && !('position' in args)) { dlg.close(); return; }
+    await act(ev.target.querySelector('button[type=submit]'), 'task.update', args, () => { dlg.close(); return render(); });
+  });
+  dlg.showModal();
+}
+function bindMoveButtons(root, model) {
+  root.querySelectorAll('[data-move-task]').forEach((btn) => btn.addEventListener('click', () => {
+    const t = model.tasks.find((x) => x.task_id === btn.dataset.moveTask);
+    if (t) openMoveDialog(t, model);
+  }));
+}
+
+// Native HTML5 drag-and-drop: reorder within a release, move across releases
+// (drop between rows), or drop on a release header to append to it.
+let dragTaskId = null;
+function bindGanttDrag(root, model) {
+  const known = new Set(model.releases.map((r) => r.release_id));
+  const groupOf = (t) => (t.release_id && known.has(t.release_id) ? t.release_id : null);
+  const byId = new Map(model.tasks.map((t) => [t.task_id, t]));
+  const clearMarks = () => root.querySelectorAll('.gdrop-before,.gdrop-after,.gdrop-into').forEach((el) => el.classList.remove('gdrop-before', 'gdrop-after', 'gdrop-into'));
+  const move = async (args) => {
+    try { await api('task.update', args); toast('task moved', 'ok'); render(); }
+    catch (e) { toast(`move failed: ${e.message}`, 'bad'); }
+  };
+  root.querySelectorAll('[data-drag-task]').forEach((row) => {
+    row.addEventListener('dragstart', (ev) => {
+      dragTaskId = row.dataset.dragTask;
+      ev.dataTransfer.effectAllowed = 'move';
+      ev.dataTransfer.setData('text/plain', dragTaskId);
+    });
+    row.addEventListener('dragend', () => { dragTaskId = null; clearMarks(); });
+  });
+  root.querySelectorAll('[data-task-row]').forEach((row) => {
+    row.addEventListener('dragover', (ev) => {
+      if (!dragTaskId || dragTaskId === row.dataset.taskRow) return;
+      ev.preventDefault();
+      clearMarks();
+      row.classList.add(ev.offsetY < row.offsetHeight / 2 ? 'gdrop-before' : 'gdrop-after');
+    });
+    row.addEventListener('drop', (ev) => {
+      if (!dragTaskId || dragTaskId === row.dataset.taskRow) return;
+      ev.preventDefault();
+      const before = ev.offsetY < row.offsetHeight / 2;
+      const target = byId.get(row.dataset.taskRow);
+      const dragged = byId.get(dragTaskId);
+      clearMarks(); dragTaskId = null;
+      if (!target || !dragged) return;
+      const siblings = model.tasks
+        .filter((t) => (t.parent_task_id || null) === (target.parent_task_id || null) && groupOf(t) === groupOf(target) && t.task_id !== dragged.task_id)
+        .sort((a, b) => (a.position - b.position) || (a.seq - b.seq));
+      const idx = siblings.findIndex((t) => t.task_id === target.task_id);
+      const args = { task_id: dragged.task_id, position: Math.max(0, before ? idx : idx + 1) };
+      if ((target.release_id || null) !== (dragged.release_id || null)) args.release_id = target.release_id || null;
+      if ((target.parent_task_id || null) !== (dragged.parent_task_id || null)) args.parent_task_id = target.parent_task_id || null;
+      move(args);
+    });
+  });
+  root.querySelectorAll('[data-drop-release]').forEach((head) => {
+    head.addEventListener('dragover', (ev) => { if (!dragTaskId) return; ev.preventDefault(); clearMarks(); head.classList.add('gdrop-into'); });
+    head.addEventListener('dragleave', () => head.classList.remove('gdrop-into'));
+    head.addEventListener('drop', (ev) => {
+      if (!dragTaskId) return;
+      ev.preventDefault();
+      const dragged = byId.get(dragTaskId);
+      const target = head.dataset.dropRelease || null;
+      clearMarks(); dragTaskId = null;
+      if (!dragged) return;
+      if ((dragged.release_id || null) === target && !dragged.parent_task_id) return;
+      const args = { task_id: dragged.task_id, release_id: target };
+      if (dragged.parent_task_id) args.parent_task_id = null;
+      move(args);
+    });
+  });
+}
+
+// --- Decisions -------------------------------------------------------------
+const ASPECTS = ['all', 'ui', 'architecture', 'algorithms', 'business_logic', 'data', 'testing', 'deployment', 'security', 'performance', 'process', 'other'];
+const paragraphs = (text) => String(text).split(/\n+/).filter(Boolean).map((p) => `<p>${esc(p)}</p>`).join('');
+const viewDecisions = guard(async (repoId) => {
+  main.innerHTML = `<h1>Decisions</h1>${skeleton(5)}`;
+  const aspect = state.decisionAspect !== 'all' ? { aspect: state.decisionAspect } : {};
+  const searching = !!state.decisionQuery;
+  const result = searching
+    ? await api('decision.search', { repository_id: repoId, query: state.decisionQuery, n: state.decisionLimit, ...aspect })
+    : await api('decision.tail', { repository_id: repoId, n: state.decisionLimit, ...aspect, ...(state.decisionBefore ? { before_seq: state.decisionBefore } : {}) });
+  const entries = searching ? result.decisions : [...result.decisions].reverse();
+  const card = (d) => {
+    const head = `<strong>${esc(d.title)}</strong> ${badge(d.aspect.replace('_', ' '))}${d.ref ? ` <span class="muted mono">${esc(d.ref)}</span>` : ''} <span class="muted">${ago(d.created_at)}</span>`;
+    if (d.superseded_by) return `<details class="decision superseded"><summary>${head} ${badge('superseded')}</summary>${paragraphs(d.body)}</details>`;
+    return `<div class="decision">${head}${paragraphs(d.body)}</div>`;
+  };
+  const story = !searching && !state.decisionBefore
+    ? `<div class="story"><h2>The story so far</h2>${result.summary ? paragraphs(result.summary.body) : '<p class="muted">No summary yet.</p>'}${result.summary_due ? '<p class="muted">The agent will refresh this summary soon.</p>' : ''}</div>` : '';
+  const emptyText = searching ? 'Nothing found for that search.'
+    : state.decisionAspect !== 'all' ? `No ${state.decisionAspect.replace('_', ' ')} decisions yet.`
+      : 'No decisions yet. The agent records its choices here as it works.';
+  main.innerHTML = `<h1>Decisions — ${esc(result.display_name || '')}</h1>
+    <p class="muted">Recorded choices in plain language. <a href="#/plan/${esc(repoId)}">Plan →</a></p>
+    ${story}
+    <form class="inline" id="decision-search"><label class="f">search every decision<input name="q" value="${esc(state.decisionQuery)}" placeholder="e.g. why exports are files"></label><button class="btn" type="submit">Search</button>${searching || state.decisionBefore ? '<button class="btn" type="button" id="decisions-latest">Show latest</button>' : ''}</form>
+    <div class="segwrap">${seg(ASPECTS, state.decisionAspect, 'decision-aspect', (o) => o.replace('_', ' '))}</div>
+    ${entries.length ? entries.map(card).join('') : stateBlock('empty', emptyText)}
+    ${!searching && result.has_more ? '<p><button class="btn" id="decisions-older">Show older decisions</button></p>' : ''}`;
+  bindSeg(main, 'decision-aspect', (a) => { state.decisionAspect = a; state.decisionBefore = null; render(); });
+  $('#decision-search').addEventListener('submit', (ev) => {
+    ev.preventDefault();
+    state.decisionQuery = String(new FormData(ev.target).get('q') || '').trim();
+    state.decisionBefore = null;
+    render();
+  });
+  $('#decisions-latest')?.addEventListener('click', () => { state.decisionQuery = ''; state.decisionBefore = null; render(); });
+  $('#decisions-older')?.addEventListener('click', () => {
+    if (entries.length) state.decisionBefore = entries[entries.length - 1].seq;
+    render();
+  });
+});
+
 // --- Router ----------------------------------------------------------------
 async function render() {
+  viewAbort?.abort();
+  viewAbort = new AbortController();
   const hash = location.hash || '#/deployments';
   const [, view, arg] = hash.slice(1).split('/');
   document.querySelectorAll('#nav a').forEach((a) => a.classList.toggle('active', a.dataset.view === view));
   setBanner('');
   if (view === 'deployments') return arg ? viewDeployment(arg) : viewDeployments();
+  if (view === 'plan') return arg ? viewPlan(arg) : viewPlanPicker('plan');
+  if (view === 'decisions') return arg ? viewDecisions(arg) : viewPlanPicker('decisions');
   if (view === 'tests') return viewTests();
   if (view === 'health') return viewHealth(arg);
   if (view === 'bugs') return viewBugs();

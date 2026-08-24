@@ -1,7 +1,8 @@
 """SQLite authority database: open, schema, transactions.
 
-Schema version 1; the table inventory is tracked in docs/database-ledger.md.
-Tests deliberately have no tables (repository-local files only).
+The table inventory is tracked in docs/database-ledger.md; every version bump
+updates that ledger in the same change. Tests deliberately have no tables
+(repository-local files only).
 """
 
 from __future__ import annotations
@@ -11,7 +12,7 @@ import threading
 from contextlib import contextmanager
 from pathlib import Path
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (
@@ -245,6 +246,115 @@ CREATE TABLE IF NOT EXISTS observed_routes (
 );
 """
 
+# Schema 8: planning, completion ledger, and decision history
+# (DC2-2026-08-24-PLANNING-LEDGER). The product's first append-only permanent
+# history: rows are never deleted; every task/release mutation appends
+# plan_events in the same transaction, and decisions/summaries only accumulate
+# (the single later UPDATE sets decisions.superseded_by once). Enums are
+# daemon-validated, not CHECKed — schema 7 showed CHECK changes force a
+# table rebuild. Release delivery snapshots generation evidence because
+# generations are pruned to current+previous.
+_SCHEMA_V8 = """
+CREATE TABLE IF NOT EXISTS releases (
+  release_id        TEXT PRIMARY KEY,
+  repository_id     TEXT NOT NULL REFERENCES repositories(repository_id),
+  seq               INTEGER NOT NULL,
+  name              TEXT NOT NULL,
+  kind              TEXT NOT NULL,
+  status            TEXT NOT NULL,
+  note              TEXT,
+  requested_at      TEXT,
+  delivered_at      TEXT,
+  deployment_id     TEXT,
+  generation_number INTEGER,
+  commit_hash       TEXT,
+  dirty             INTEGER,
+  fingerprint       TEXT,
+  url               TEXT,
+  port              INTEGER,
+  created_at        TEXT NOT NULL,
+  created_by        TEXT NOT NULL,
+  updated_at        TEXT NOT NULL,
+  UNIQUE(repository_id, seq)
+);
+CREATE TABLE IF NOT EXISTS tasks (
+  task_id           TEXT PRIMARY KEY,
+  repository_id     TEXT NOT NULL REFERENCES repositories(repository_id),
+  parent_task_id    TEXT REFERENCES tasks(task_id),
+  release_id        TEXT REFERENCES releases(release_id),
+  seq               INTEGER NOT NULL,
+  position          INTEGER NOT NULL,
+  title             TEXT NOT NULL,
+  outcome           TEXT NOT NULL,
+  impact            TEXT,
+  unblock_condition TEXT,
+  verification      TEXT,
+  technical_note    TEXT,
+  kind              TEXT NOT NULL,
+  status            TEXT NOT NULL,
+  estimated_loc     INTEGER,
+  created_at        TEXT NOT NULL,
+  created_by        TEXT NOT NULL,
+  updated_at        TEXT NOT NULL,
+  UNIQUE(repository_id, seq)
+);
+CREATE INDEX IF NOT EXISTS tasks_repository_status ON tasks(repository_id, status);
+CREATE INDEX IF NOT EXISTS tasks_release ON tasks(release_id);
+CREATE INDEX IF NOT EXISTS tasks_parent ON tasks(parent_task_id);
+CREATE TABLE IF NOT EXISTS plan_events (
+  event_id      INTEGER PRIMARY KEY AUTOINCREMENT,
+  repository_id TEXT NOT NULL REFERENCES repositories(repository_id),
+  subject_kind  TEXT NOT NULL,
+  subject_id    TEXT NOT NULL,
+  event         TEXT NOT NULL,
+  from_value    TEXT,
+  to_value      TEXT,
+  actor         TEXT NOT NULL,
+  at            TEXT NOT NULL,
+  note          TEXT
+);
+CREATE INDEX IF NOT EXISTS plan_events_subject ON plan_events(subject_kind, subject_id);
+CREATE TABLE IF NOT EXISTS decisions (
+  decision_id    TEXT PRIMARY KEY,
+  repository_id  TEXT NOT NULL REFERENCES repositories(repository_id),
+  seq            INTEGER NOT NULL,
+  ref            TEXT,
+  aspect         TEXT NOT NULL,
+  title          TEXT NOT NULL,
+  body           TEXT NOT NULL,
+  technical_note TEXT,
+  superseded_by  TEXT REFERENCES decisions(decision_id),
+  created_at     TEXT NOT NULL,
+  created_by     TEXT NOT NULL,
+  UNIQUE(repository_id, seq)
+);
+CREATE INDEX IF NOT EXISTS decisions_repository_aspect ON decisions(repository_id, aspect);
+CREATE UNIQUE INDEX IF NOT EXISTS decisions_ref ON decisions(repository_id, ref)
+  WHERE ref IS NOT NULL;
+CREATE TABLE IF NOT EXISTS decision_summaries (
+  repository_id      TEXT NOT NULL REFERENCES repositories(repository_id),
+  covers_through_seq INTEGER NOT NULL,
+  body               TEXT NOT NULL,
+  created_at         TEXT NOT NULL,
+  created_by         TEXT NOT NULL,
+  PRIMARY KEY(repository_id, covers_through_seq)
+);
+"""
+
+# Decision full-text search (owner and agents both search every decision).
+# Kept out of _SCHEMA_V8 so a missing FTS5 module fails with a clear message
+# instead of half-applying the script.
+_SCHEMA_V8_FTS = """
+CREATE VIRTUAL TABLE IF NOT EXISTS decisions_fts USING fts5(
+  title, body, technical_note, ref,
+  content='decisions', content_rowid='rowid'
+);
+CREATE TRIGGER IF NOT EXISTS decisions_fts_insert AFTER INSERT ON decisions BEGIN
+  INSERT INTO decisions_fts(rowid, title, body, technical_note, ref)
+  VALUES (new.rowid, new.title, new.body, new.technical_note, new.ref);
+END;
+"""
+
 
 class SchemaMismatch(Exception):
     pass
@@ -283,6 +393,14 @@ class Database:
             # the Console/CLI; the override survives re-apply until cleared.
             self._ensure_column("deployments", "domain_override", "TEXT")
             self._relax_observed_state_checks()
+            self._conn.executescript(_SCHEMA_V8)
+            try:
+                self._conn.executescript(_SCHEMA_V8_FTS)
+            except sqlite3.OperationalError as exc:
+                raise SchemaMismatch(
+                    "SQLite FTS5 is required for decision search (schema 8) and is"
+                    f" missing from this SQLite build: {exc}"
+                ) from exc
             self._conn.execute(
                 "INSERT OR REPLACE INTO meta(key, value) VALUES('schema_version', ?)",
                 (str(SCHEMA_VERSION),),

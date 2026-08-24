@@ -153,6 +153,133 @@ TOOLS += [
                      "required": ["bug_id"]}},
 ]
 
+_TASK_KIND = {"type": "string",
+              "enum": ["goal", "stub", "improvement", "user_feedback"],
+              "description": "goal = planned work; stub = something fake/empty/"
+                             "placeholder you just created or found; improvement = "
+                             "something that can and should be better; "
+                             "user_feedback = the owner asked for it"}
+_ASPECT = {"type": "string",
+           "enum": ["ui", "architecture", "algorithms", "business_logic", "data",
+                    "testing", "deployment", "security", "performance", "process",
+                    "other"]}
+_PLAIN = ("Plain language a non-technical manager understands — no hashes, ids,"
+          " file paths, or jargon (those go in technical_note).")
+TOOLS += [
+    {"name": "plan_overview",
+     "description": ("The repository's plan: releases, the task tree (sized in "
+                     "estimated lines of code), pending owner preview requests, "
+                     "and decision-summary state. Check it before starting work "
+                     "and honor preview_requested promptly."),
+     "inputSchema": {"type": "object", "properties": {"path": _PATH},
+                     "required": ["path"]}},
+    {"name": "task_create",
+     "description": ("Record a work item in the authoritative completion ledger. "
+                     "MANDATORY the moment you stub, fake, or skip anything, and "
+                     "for every improvement you notice. " + _PLAIN + " Size it in "
+                     "estimated lines of code; split large work into subtask "
+                     "trees via parent_task_id."),
+     "inputSchema": {"type": "object", "properties": {
+         "path": _PATH,
+         "title": {"type": "string", "description": "One plain sentence, e.g. "
+                                                    "'Painting the button red'"},
+         "kind": _TASK_KIND,
+         "outcome": {"type": "string", "description": "The remaining outcome in "
+                                                      "plain language (defaults "
+                                                      "to the title)"},
+         "impact": {"type": "string", "description": "What users or the product "
+                                                     "cannot do while this is open"},
+         "unblock_condition": {"type": "string"},
+         "verification": {"type": "string", "description": "Observable proof that "
+                                                           "will close the gap"},
+         "technical_note": {"type": "string", "description": "Agent-facing detail; "
+                                                             "never shown as the "
+                                                             "plain account"},
+         "parent_task_id": {"type": "string"}, "release_id": {"type": "string"},
+         "estimated_loc": {"type": "integer", "minimum": 1}},
+      "required": ["path", "title", "kind"]}},
+    {"name": "task_update",
+     "description": ("Append-only task mutation: status change (planned/"
+                     "in_progress/done/dropped), edits, new estimate, move to "
+                     "another release (release_id; null = backlog), reparent, or "
+                     "reorder (position, 0-based). Every change lands in the "
+                     "permanent event history."),
+     "inputSchema": {"type": "object", "properties": {
+         "task_id": {"type": "string"},
+         "status": {"type": "string",
+                    "enum": ["planned", "in_progress", "done", "dropped"]},
+         "title": {"type": "string"}, "outcome": {"type": "string"},
+         "impact": {"type": "string"}, "unblock_condition": {"type": "string"},
+         "verification": {"type": "string"}, "technical_note": {"type": "string"},
+         "estimated_loc": {"type": "integer", "minimum": 1},
+         "release_id": {"type": ["string", "null"]},
+         "parent_task_id": {"type": ["string", "null"]},
+         "position": {"type": "integer", "minimum": 0},
+         "note": {"type": "string", "description": "Plain note stored on the "
+                                                   "event"}},
+      "required": ["task_id"]}},
+    {"name": "task_history",
+     "description": "One task's full record plus its permanent event history.",
+     "inputSchema": {"type": "object", "properties": {"task_id": {"type": "string"}},
+                     "required": ["task_id"]}},
+    {"name": "release_create",
+     "description": ("Add a planned release or preliminary release (kind "
+                     "'preview') to the repository's chart. " + _PLAIN),
+     "inputSchema": {"type": "object", "properties": {
+         "path": _PATH, "name": {"type": "string"},
+         "kind": {"type": "string", "enum": ["preview", "release"]},
+         "note": {"type": "string"}},
+      "required": ["path", "name", "kind"]}},
+    {"name": "release_deliver",
+     "description": ("Mark a requested/planned release delivered by a REAL "
+                     "deployment: apply the deployment first (dirty work is "
+                     "fine), then call this with its deployment_id. Records "
+                     "permanent evidence (commit, dirty flag, URL or host port) "
+                     "and notifies the owner."),
+     "inputSchema": {"type": "object", "properties": {
+         "release_id": {"type": "string"}, "deployment_id": {"type": "string"},
+         "note": {"type": "string"}},
+      "required": ["release_id", "deployment_id"]}},
+    {"name": "decision_record",
+     "description": ("Record a consequential product decision in the "
+                     "repository's permanent decision history. " + _PLAIN +
+                     " body = what was decided, the options, and cost/risk in "
+                     "user terms; supersedes = id or ref of the decision this "
+                     "replaces."),
+     "inputSchema": {"type": "object", "properties": {
+         "path": _PATH, "aspect": _ASPECT, "title": {"type": "string"},
+         "body": {"type": "string"}, "technical_note": {"type": "string"},
+         "ref": {"type": "string", "description": "Optional stable citation key, "
+                                                  "e.g. DC2-2026-08-24-TOPIC"},
+         "supersedes": {"type": "string"}},
+      "required": ["path", "aspect", "title", "body"]}},
+    {"name": "decision_tail",
+     "description": ("The rolling summary plus the last N decisions (optionally "
+                     "one aspect). Load this instead of the full history. When "
+                     "summary_due is true, write and store a new rolling summary "
+                     "via decision_summarize before continuing."),
+     "inputSchema": {"type": "object", "properties": {
+         "path": _PATH, "aspect": _ASPECT,
+         "n": {"type": "integer", "minimum": 1, "maximum": 50}},
+      "required": ["path"]}},
+    {"name": "decision_search",
+     "description": ("Full-text search over every decision ever recorded "
+                     "(titles, bodies, technical notes, refs). Search before "
+                     "retrying an approach that may already have failed."),
+     "inputSchema": {"type": "object", "properties": {
+         "path": _PATH, "query": {"type": "string"}, "aspect": _ASPECT,
+         "n": {"type": "integer", "minimum": 1, "maximum": 50}},
+      "required": ["path", "query"]}},
+    {"name": "decision_summarize",
+     "description": ("Store the rolling summary you wrote, covering every "
+                     "decision up to covers_through_seq. All summaries are kept; "
+                     "the newest becomes 'the story so far'."),
+     "inputSchema": {"type": "object", "properties": {
+         "path": _PATH, "body": {"type": "string"},
+         "covers_through_seq": {"type": "integer", "minimum": 1}},
+      "required": ["path", "body", "covers_through_seq"]}},
+]
+
 _TOOL_TO_COMMAND = {
     "deployment_list": "deployment.list", "deployment_apply": "deployment.apply",
     "deployment_status": "deployment.status", "deployment_start": "deployment.start",
@@ -169,6 +296,14 @@ _TOOL_TO_COMMAND = {
     "test_stop": "test.stop",
     "test_list": "test.list",
     "repository_list": "repository.list",
+    # Planning/ledger/decisions (schema 8). release.request and release.update
+    # are owner controls: Console + CLI only, deliberately not agent tools.
+    "plan_overview": "plan.overview",
+    "task_create": "task.create", "task_update": "task.update",
+    "task_history": "task.history",
+    "release_create": "release.create", "release_deliver": "release.deliver",
+    "decision_record": "decision.record", "decision_tail": "decision.tail",
+    "decision_search": "decision.search", "decision_summarize": "decision.summarize",
 }
 
 

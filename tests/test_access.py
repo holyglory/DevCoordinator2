@@ -132,3 +132,60 @@ def test_guard_enforces_roles(world):
         handlers["deployment.start"]({"deployment_id": "d1"}, viewer)
     # Administrators (bootstrapped from instance config) may do everything.
     assert handlers["user.list"]({}, public("owner@example.test"))["owners"]
+
+
+def test_guard_plan_reads_follow_repository_grants(world):
+    with world.db.transaction() as conn:
+        conn.execute("INSERT INTO repositories VALUES('r2','/y','other','t',1,'t')")
+        conn.execute("INSERT INTO tasks(task_id, repository_id, seq, position, title,"
+                     " outcome, kind, status, created_at, created_by, updated_at)"
+                     " VALUES('p1','r1',1,1,'Some plain task','Some plain outcome.',"
+                     "'goal','planned','t','t','t')")
+
+    def record(name):
+        def handler(args, caller):
+            if name == "plan.overview" and not args.get("repository_id"):
+                return {"repositories": [{"repository_id": "r1"},
+                                         {"repository_id": "r2"}]}
+            return {"ok": name}
+        return handler
+
+    names = ["plan.overview", "task.history", "decision.tail", "decision.search",
+             "task.create", "task.update", "release.create", "release.update",
+             "release.request", "release.deliver", "decision.record",
+             "decision.summarize"]
+    handlers = guard({n: record(n) for n in names} | public_commands(world.access),
+                     world.access, world.db)
+    handlers["user.invite"]({"email": "v@example.test",
+                             "grants": [{"deployment_id": "d1", "role": "viewer"}]},
+                            local())
+    handlers["user.accept_invitation"]({"email": "v@example.test"},
+                                       public("v@example.test"))
+    viewer = public("v@example.test")
+    # The picker is filtered to repositories with a viewable deployment.
+    picker = handlers["plan.overview"]({}, viewer)
+    assert [r["repository_id"] for r in picker["repositories"]] == ["r1"]
+    assert handlers["plan.overview"]({"repository_id": "r1"}, viewer) == {
+        "ok": "plan.overview"}
+    with pytest.raises(ProtocolError, match="requires viewer"):
+        handlers["plan.overview"]({"repository_id": "r2"}, viewer)
+    # A 'path' reference would implicitly register: public callers may not.
+    with pytest.raises(ProtocolError, match="requires viewer"):
+        handlers["plan.overview"]({"path": "/x"}, viewer)
+    assert handlers["task.history"]({"task_id": "p1"}, viewer) == {
+        "ok": "task.history"}
+    with pytest.raises(ProtocolError, match="requires viewer"):
+        handlers["task.history"]({"task_id": "p" + "0" * 16}, viewer)
+    for read in ("decision.tail", "decision.search"):
+        assert handlers[read]({"repository_id": "r1"}, viewer) == {"ok": read}
+        with pytest.raises(ProtocolError, match="requires viewer"):
+            handlers[read]({"repository_id": "r2"}, viewer)
+    for mutation in ("task.create", "task.update", "release.create",
+                     "release.update", "release.request", "release.deliver",
+                     "decision.record", "decision.summarize"):
+        with pytest.raises(ProtocolError, match="requires administrator"):
+            handlers[mutation]({}, viewer)
+    # Administrators and local callers pass through untouched.
+    assert handlers["release.request"]({}, public("owner@example.test")) == {
+        "ok": "release.request"}
+    assert handlers["task.create"]({}, local()) == {"ok": "task.create"}

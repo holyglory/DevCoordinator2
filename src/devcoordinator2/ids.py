@@ -40,6 +40,19 @@ def run_id(now: datetime | None = None) -> str:
     return f"t{stamp}-{secrets.token_hex(3)}"
 
 
+def task_id() -> str:
+    """Plan task (schema 8): random at creation, like user IDs."""
+    return "p" + secrets.token_hex(8)
+
+
+def release_id() -> str:
+    return "v" + secrets.token_hex(8)
+
+
+def decision_id() -> str:
+    return "n" + secrets.token_hex(8)
+
+
 def unit_name(prefix: str, wt_id: str, suffix: str) -> str:
     return f"{prefix}-{wt_id}-{suffix}.service"
 

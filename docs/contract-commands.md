@@ -14,7 +14,7 @@ identical result JSON.
 ## ping
 
 Args: none.
-Result: `{"daemon_version": "<semver>", "schema_version": 1, "socket": "<path>"}`
+Result: `{"daemon_version": "<semver>", "schema_version": 8, "socket": "<path>"}`
 
 ## test.start
 
@@ -239,5 +239,113 @@ while the daemon, database, or edge is unavailable, then notify the daemon
 best-effort (`notified: false` when it was down). Records are bounded atomic
 text without secrets, raw logs, or private host paths; a recurrence
 increments `occurrences` instead of duplicating; closing removes the record.
+
+## plan.* / task.* / release.* / decision.* (Schema 8, implemented)
+
+DC2-owned planning, completion ledger, and decision history
+(DC2-2026-08-24-PLANNING-LEDGER). Append-only: every task/release mutation
+appends `plan_events` rows in the same transaction; nothing is ever deleted.
+A daemon or database error from these commands blocks the affected
+completion claim — there is no file fallback. Repository reference on
+repo-scoped commands: `path` (agents; implicit registration like
+`test.start`) or `repository_id` (Console). Plain-language fields (`title`,
+`outcome`, decision `body`, release `name`) are structurally bounded and
+written for a non-technical reader; `technical_note` is the separate
+agent-facing field and never substitutes for them (the daemon cannot detect
+jargon — the register rule lives in the agent instructions).
+
+- `plan.overview {}` (no repo) → `{repositories: [{repository_id,
+  display_name, open_tasks, loc_done, loc_total, current_release: {name,
+  kind, status} | null, preview_requested}]}` — the plan picker; for public
+  identities filtered to repositories with a viewable deployment.
+- `plan.overview {path | repository_id}` → `{repository_id, display_name,
+  releases: [{release_id, name, kind (preview|release), status
+  (planned|requested|delivered|dropped), seq, note, requested_at,
+  delivered_at, url, port, tasks_total, tasks_done, loc_total, loc_done}],
+  tasks: [{task_id, parent_task_id, release_id, seq, position, title,
+  impact (bounded excerpt), status, kind, estimated_loc}], tasks_truncated,
+  preview_requested: [{release_id, name, requested_at, note}], decisions:
+  {unsummarized_count, summary_due}}`. One bounded call for the Console
+  Gantt and agents; dropped tasks/releases are excluded (full row via
+  `task.history`); aggregates count leaf tasks (a parent is a summary row);
+  when the cap (500) cuts, every unfinished task is kept and
+  `tasks_truncated` is true.
+- `task.create {path|repository_id, title, kind
+  (goal|stub|improvement|user_feedback), outcome?, parent_task_id?,
+  release_id?, estimated_loc?, impact?, unblock_condition?, verification?,
+  technical_note?}` → `{task_id, repository_id, seq, position, status:
+  "planned", release_id, preview_requested}`. `outcome` defaults to the
+  title. The target release must still be open. Appends `created`.
+- `task.update {task_id, title?, outcome?, impact?, unblock_condition?,
+  verification?, technical_note?, estimated_loc?, status?, release_id?
+  (null = backlog), parent_task_id? (null = root), position? (0-based order
+  among siblings), note?}` → compact task projection + `preview_requested`.
+  Folds edits (`edited` event naming the fields), status changes (`status`;
+  reopen is `done→in_progress`), estimate changes (`estimate`), release
+  moves (`release_move`), reparenting (`reparent`; cycles rejected), and
+  reordering (`reorder`; the sibling group is renumbered transactionally).
+  `note` is stored on each appended event. Errors: `task_not_found`,
+  `release_not_found`, `args_invalid` ("nothing to change" when a no-op).
+- `task.history {task_id}` → `{task: <full row>, events: [{event, from, to,
+  actor, at, note}], events_truncated}` — the bounded permanent history
+  (last 200), loaded on concrete need.
+- `release.create {path|repository_id, name, kind (preview|release), note?,
+  seq?}` → `{release_id, repository_id, seq, name, kind, status:
+  "planned"}`; an explicit `seq` must be free.
+- `release.update {release_id, name?, seq?, note?, status?}` (administrator/
+  CLI recovery) → compact release row. `status` may only move
+  planned↔dropped; requesting and delivering are their own commands.
+- `release.request {path|repository_id, name?, note?}` — the owner's ASAP
+  button (Console-first; deliberately not an MCP tool): creates a
+  `kind=preview, status=requested` release (default name "Preview
+  (requested YYYY-MM-DD)"); a second pending request is refused. Agents see
+  it in `plan.overview.preview_requested` and as `preview_requested` on
+  every task mutation result.
+- `release.deliver {release_id, deployment_id, note?}` → `{release_id,
+  status: "delivered", delivered_at, url, port, commit_hash, dirty,
+  generation_number}`. The deployment must belong to the same repository
+  and have a current generation. Snapshots permanent reachability evidence
+  (routed-domain URL when one exists, leased host port either way) plus
+  commit/dirty/fingerprint — generations are pruned, the snapshot is not.
+  A delivered release is immutable evidence; the next preview is a new
+  release. Emits `release.delivered` (Telegram: owner gets the URL/port).
+- `decision.record {path|repository_id, aspect (ui|architecture|algorithms|
+  business_logic|data|testing|deployment|security|performance|process|
+  other), title, body, technical_note?, ref?, supersedes?}` →
+  `{decision_id, seq, ref, unsummarized_count, summary_due}`. `title`+`body`
+  are the management-facing account; `ref` is a stable citation key (unique
+  per repo); `supersedes` (id or ref) sets the old row's forward pointer —
+  the record itself is never edited or deleted.
+- `decision.tail {path|repository_id, aspect?, n? (1..50, default 10),
+  before_seq?}` → `{repository_id, display_name, summary: {body,
+  covers_through_seq, created_at} | null, decisions: [...], has_more,
+  unsummarized_count, summary_due}`. The normal context load: rolling
+  summary + last N; `before_seq` pages older windows (decisions with a
+  lower sequence).
+- `decision.search {path|repository_id, query, aspect?, n?}` →
+  `{repository_id, query, decisions: [...], has_more}` — FTS5 full-text
+  search over every decision (title, body, technical note, ref), bm25
+  ranked; user text is quoted so FTS operators are literal.
+- `decision.summarize {path|repository_id, body, covers_through_seq}` →
+  `{repository_id, covers_through_seq, unsummarized_count, summary_due}`.
+  Stores the agent-written rolling summary; all summaries are kept. When
+  `unsummarized_count` reaches 25, every decision read reports
+  `summary_due: true` and the working agent writes the next summary — the
+  daemon never generates text.
+
+Access: reads (`plan.overview`, `task.history`, `decision.tail`,
+`decision.search`) require viewer on a deployment of the repository (public
+callers reference by `repository_id`; a `path` would implicitly register
+and is refused); all mutations require administrator; local socket callers
+are unrestricted. New error codes: `task_not_found`, `release_not_found`,
+`decision_not_found`.
+
+MCP tools: `plan_overview`, `task_create`, `task_update`, `task_history`,
+`release_create`, `release_deliver`, `decision_record`, `decision_tail`,
+`decision_search`, `decision_summarize`. `release.request` and
+`release.update` are owner controls (Console + CLI only). CLI:
+`devcoordinator2 plan overview [--all]`, `task create|update|history`,
+`release create|update|request|deliver`, `decision
+record|tail|search|summarize`.
 
 All follow the same envelope, error model, and file-reference conventions.

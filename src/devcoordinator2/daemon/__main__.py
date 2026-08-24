@@ -13,6 +13,7 @@ from devcoordinator2.daemon.deploy_control import Deployments
 from devcoordinator2.daemon.handlers import build_handlers, build_notification_handlers
 from devcoordinator2.daemon.health_api import build_health_handlers
 from devcoordinator2.daemon.metrics_sampler import Sampler
+from devcoordinator2.daemon.plan_api import build_plan_handlers
 from devcoordinator2.daemon.registry import Registry
 from devcoordinator2.daemon.server import Server
 from devcoordinator2.daemon.telegram import Telegram
@@ -40,6 +41,7 @@ def main() -> int:
     sampler = Sampler(config, db)
     sampler.start()
     handlers.update(build_health_handlers(config, db, registry, sampler))
+    handlers.update(build_plan_handlers(config, db, registry))
     access = Access(config, db)
     access.republish()  # the edge always has a current document after a (re)start
     handlers.update(public_commands(access))

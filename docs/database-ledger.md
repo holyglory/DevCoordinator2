@@ -5,7 +5,9 @@ One SQLite authority database (default
 configuration). WAL mode, foreign keys on. Table count is an architectural
 budget, not a target. Tests use repository-local files — **no test tables,
 ever**. Docker/process observations are current projections plus bounded
-samples, not an append-only archive.
+samples, not an append-only archive. The planning/decision tables (schema 8)
+are the deliberate exception: the product's first append-only permanent
+history — their rows are never deleted (DC2-2026-08-24-PLANNING-LEDGER).
 
 ## Schema version 1 (Phase 1)
 
@@ -80,6 +82,23 @@ retained by an import.
 The CHECK relaxation rebuilds the two observed tables in place, preserving
 every imported row and the two indexes.
 
+## Schema version 8 (planning, completion ledger, decision history, 2026-08-24)
+
+DC2-owned agent planning, the completion ledger (same tables), and per-repo
+decision history (DC2-2026-08-24-PLANNING-LEDGER). Append-only permanent
+history: no code path deletes rows; every task/release mutation appends
+`plan_events` in the same transaction. Enums are daemon-validated, not
+CHECKed (schema 7 showed CHECK changes force a table rebuild).
+
+| Table | Fields | Status |
+|---|---|---|
+| `releases` | release_id PK, repository_id FK, seq (UNIQUE per repo), name (plain), kind (preview/release), status (planned/requested/delivered/dropped), note, requested_at, delivered_at, delivery-evidence snapshot (deployment_id without FK, generation_number, commit_hash, dirty, fingerprint, url, port — copied because generations are pruned), created_at/by, updated_at | done |
+| `tasks` | task_id PK, repository_id FK, parent_task_id self-FK (tree of arbitrary depth), release_id FK (NULL = backlog), seq (immutable per-repo identity, UNIQUE), position (mutable sibling order), title/outcome (required plain language), impact, unblock_condition, verification, technical_note (agent-facing, never substitutes the plain fields), kind (goal/stub/improvement/user_feedback), status (planned/in_progress/done/dropped), estimated_loc (size in lines of code), created_at/by, updated_at; indexes on (repository_id,status), release_id, parent_task_id | done |
+| `plan_events` | event_id PK AUTOINCREMENT, repository_id FK, subject_kind (task/release), subject_id, event (created/status/release_move/reparent/reorder/estimate/edited/requested/delivered), from_value, to_value, actor, at, note; index on (subject_kind, subject_id) | done |
+| `decisions` | decision_id PK, repository_id FK, seq (UNIQUE per repo), ref (stable citation key, UNIQUE per repo when present), aspect (daemon enum), title/body (required management-facing plain language), technical_note, superseded_by (forward pointer, set once — the only UPDATE), created_at/by | done |
+| `decisions_fts` | FTS5 external-content index over title/body/technical_note/ref, insert trigger (decision text is immutable); FTS5 availability is checked at open and refused with a clear error when missing | done |
+| `decision_summaries` | (repository_id, covers_through_seq) PK, body, created_at/by — all summaries kept; the newest is "the story so far" | done |
+
 ## Reserved ID-prefix namespace
 
 Deterministic opaque TEXT IDs; later phases never migrate existing IDs.
@@ -95,6 +114,9 @@ Deterministic opaque TEXT IDs; later phases never migrate existing IDs.
 | `g` | generation | (deployment_id, number) counter | 3 (done) |
 | `u` | public user | random at creation | 5 (done); `i` invitation |
 | `b` | bug | random at creation (independent store, not this DB) | 6 |
+| `p` | plan task | random at creation | 8 (done) |
+| `v` | release / preview release | random at creation | 8 (done) |
+| `n` | decision | random at creation | 8 (done) |
 
 ## Later-phase entities (from the handover's durable-state list)
 
@@ -116,4 +138,7 @@ Deterministic opaque TEXT IDs; later phases never migrate existing IDs.
   preserve repositories, active deployments, ports/domains,
   users/invites/grants, Telegram configuration, persistent-data identities,
   and current route state.
+- The schema 8 planning tables (`releases`, `tasks`, `plan_events`,
+  `decisions`, `decision_summaries`) are permanent history: schema changes
+  must preserve every row, and no code path may delete from them.
 - Every schema version bump updates this ledger in the same change.

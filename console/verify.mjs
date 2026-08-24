@@ -25,7 +25,14 @@ const pw = createRequire(path.join(process.env.CONSOLE_VERIFY_PLAYWRIGHT || proc
 
 const DEP = 'd0123456789abcdef';
 const OBS = 'd3333333333333333';
+const REPO = 'r0123456789abcdef';
 const LONG = 'a-very-long-deployment-name-that-keeps-going-and-going-for-quite-a-while';
+const V_EARLY = 'v0000000000000001'; const V_DONE = 'v0000000000000002';
+const V_R1 = 'v0000000000000003'; const V_R2 = 'v0000000000000004';
+const P_PAR = 'p1111111111111101'; const P_C1 = 'p1111111111111102';
+const P_C2 = 'p1111111111111103'; const P_G1 = 'p1111111111111104';
+const P_D1 = 'p1111111111111105'; const P_FB = 'p1111111111111106';
+const P_LT = 'p1111111111111107';
 const fixtures = (scenario) => {
   const running = { deployment_id: DEP, repository_id: 'r0123456789abcdef', repository_name: 'repo-one', name: 'web', source: 'worktree', state: scenario.stopped ? 'stopped' : 'running', domain: `app-dev.${BASE}`, public: false, current_generation: 17, updated_at: new Date(Date.now() - 90000).toISOString(), ttl_expires_at: null };
   const degraded = { deployment_id: 'd1111111111111111', repository_id: 'r0123456789abcdef', repository_name: 'repo-one', name: LONG, source: 'checkout', state: 'degraded', domain: `${LONG}.${BASE}`, public: false, current_generation: 2147483647, updated_at: new Date().toISOString(), ttl_expires_at: '2026-12-31T00:00:00Z' };
@@ -59,7 +66,41 @@ const fixtures = (scenario) => {
     'bug.list': { bugs: scenario.empty ? [] : [{ bug_id: 'b0123456789ab', component: 'api', summary: 'Returns 500 on /export when the report is large', expected: '200 with CSV', actual: '500', steps: '1. open /export 2. choose all-time 3. submit', opened_at: '2026-08-20T10:00:00Z', last_seen_at: new Date().toISOString(), occurrences: 42, reporter: 'dev@example.test', correlations: { deployment_id: DEP } }], store: '/bugs' },
     'user.list': { users: [{ user_id: 'u1', email: 'owner@example.test', administrator: true, grants: [], last_seen_at: new Date().toISOString() }, { user_id: 'u2', email: `${'verylongmailboxname'.repeat(3)}@example.test`, administrator: false, grants: [{ deployment_id: DEP, role: 'operator', granted_at: 't' }], last_seen_at: null }], invitations: [{ invitation_id: 'i1', email: 'new@example.test', administrator: false, grants: [{ deployment_id: DEP, role: 'viewer' }], created_at: 't', created_by: 'owner', expires_at: '2026-09-06T00:00:00Z' }], roles: ['access', 'viewer', 'operator', 'administrator'], owners: ['owner@example.test'] },
     'telegram.list': { configured: true, chats: [{ chat_id: 4242, email: 'owner@example.test', label: 'Owner', linked_at: 't', subscriptions: ['server', `deployment:${DEP}`] }], outbox_pending: 0, last_poll_at: new Date().toISOString(), last_error: null },
-    ping: { daemon_version: '0.1.0', schema_version: 5, socket: '/run/x.sock' },
+    ping: { daemon_version: '0.1.0', schema_version: 8, socket: '/run/x.sock' },
+    'plan.overview': {
+      repository_id: REPO, display_name: 'repo-one',
+      releases: scenario.empty ? [] : [
+        { release_id: V_EARLY, name: 'Early look', kind: 'preview', status: 'delivered', seq: 1, note: null, requested_at: '2026-08-20T10:00:00Z', delivered_at: '2026-08-20T12:00:00Z', url: null, port: 20005, tasks_total: 1, tasks_done: 1, loc_total: 150, loc_done: 150 },
+        { release_id: V_DONE, name: 'First look', kind: 'preview', status: 'delivered', seq: 2, note: null, requested_at: '2026-08-21T10:00:00Z', delivered_at: '2026-08-21T12:00:00Z', url: `https://app-dev.${BASE}`, port: 20002, tasks_total: 1, tasks_done: 1, loc_total: 400, loc_done: 400 },
+        { release_id: V_R1, name: 'Release 1', kind: 'release', status: 'planned', seq: 3, note: null, requested_at: null, delivered_at: null, url: null, port: null, tasks_total: 2, tasks_done: 0, loc_total: 300, loc_done: 0 },
+        { release_id: V_R2, name: 'Release 2', kind: 'release', status: 'planned', seq: 4, note: null, requested_at: null, delivered_at: null, url: null, port: null, tasks_total: 1, tasks_done: 0, loc_total: 800, loc_done: 0 }],
+      tasks: scenario.empty ? [] : [
+        { task_id: 'p1111111111111100', parent_task_id: null, release_id: V_EARLY, seq: 0, position: 1, title: 'First greeting text', impact: null, status: 'done', kind: 'goal', estimated_loc: 150 },
+        { task_id: P_D1, parent_task_id: null, release_id: V_DONE, seq: 1, position: 1, title: 'Show the welcome page', impact: null, status: 'done', kind: 'goal', estimated_loc: 400 },
+        { task_id: P_PAR, parent_task_id: null, release_id: V_R1, seq: 2, position: 1, title: 'Sign-in works', impact: 'Nobody can sign in yet.', status: 'planned', kind: 'goal', estimated_loc: null },
+        { task_id: P_C1, parent_task_id: P_PAR, release_id: V_R1, seq: 3, position: 1, title: 'Sign-in form', impact: null, status: 'in_progress', kind: 'goal', estimated_loc: 300 },
+        { task_id: P_G1, parent_task_id: P_C1, release_id: V_R1, seq: 4, position: 1, title: 'E-mail field checks its spelling', impact: null, status: 'planned', kind: 'stub', estimated_loc: 100 },
+        { task_id: P_C2, parent_task_id: P_PAR, release_id: V_R1, seq: 5, position: 2, title: 'Wrong password message', impact: null, status: 'planned', kind: 'stub', estimated_loc: 200, technical_note: 'tech-note-marker-must-not-render' },
+        { task_id: P_LT, parent_task_id: null, release_id: V_R2, seq: 6, position: 1, title: 'A very long task title that keeps going and going for quite a while so wrapping is exercised', impact: null, status: 'planned', kind: 'improvement', estimated_loc: 800 },
+        { task_id: P_FB, parent_task_id: null, release_id: null, seq: 7, position: 1, title: 'Make the export faster', impact: 'Big exports take minutes.', status: 'planned', kind: 'user_feedback', estimated_loc: 150 }],
+      tasks_truncated: false, preview_requested: [],
+      decisions: { unsummarized_count: scenario.empty ? 0 : 4, summary_due: false },
+    },
+    'plan.overview-list': { repositories: scenario.empty ? [] : [
+      { repository_id: REPO, display_name: 'repo-one', open_tasks: 4, loc_done: 550, loc_total: 1800, current_release: { name: 'Release 1', kind: 'release', status: 'planned' }, preview_requested: false },
+      { repository_id: 'r2', display_name: LONG, open_tasks: 0, loc_done: 0, loc_total: 0, current_release: null, preview_requested: true }] },
+    'decision.tail': {
+      repository_id: REPO, display_name: 'repo-one',
+      summary: scenario.empty ? null : { body: 'The story so far: the app greets people plainly and exports are files.', covers_through_seq: 40, created_at: '2026-08-20T10:00:00Z' },
+      decisions: scenario.empty ? [] : [
+        { decision_id: 'n0000000000000041', seq: 41, ref: null, aspect: 'ui', title: 'Buttons were blue', body: 'Primary buttons used the blue accent.', technical_note: null, superseded_by: 'n0000000000000044', created_at: '2026-08-21T09:00:00Z', created_by: 'uid:1000' },
+        { decision_id: 'n0000000000000042', seq: 42, ref: 'REPO-EXPORT-FILES', aspect: 'business_logic', title: 'Exports are downloadable files', body: 'People asked to keep their data, so every export produces a file they can save.', technical_note: 'csv via streaming writer', superseded_by: null, created_at: '2026-08-22T09:00:00Z', created_by: 'uid:1000' },
+        { decision_id: 'n0000000000000043', seq: 43, ref: null, aspect: 'testing', title: 'Every page gets a browser test', body: 'Each page is exercised in a real browser before a release is delivered.', technical_note: null, superseded_by: null, created_at: '2026-08-23T09:00:00Z', created_by: 'uid:1000' },
+        { decision_id: 'n0000000000000044', seq: 44, ref: null, aspect: 'ui', title: 'Buttons are green now', body: 'After trying the preview the owner preferred green buttons.', technical_note: null, superseded_by: null, created_at: '2026-08-24T09:00:00Z', created_by: 'uid:1000' }],
+      has_more: !scenario.empty, unsummarized_count: scenario.empty ? 0 : 4, summary_due: false,
+    },
+    'decision.search': { repository_id: REPO, query: 'export', decisions: scenario.empty ? [] : [
+      { decision_id: 'n0000000000000042', seq: 42, ref: 'REPO-EXPORT-FILES', aspect: 'business_logic', title: 'Exports are downloadable files', body: 'People asked to keep their data, so every export produces a file they can save.', technical_note: 'csv via streaming writer', superseded_by: null, created_at: '2026-08-22T09:00:00Z', created_by: 'uid:1000' }], has_more: false },
   };
 };
 
@@ -70,9 +111,9 @@ const SCENARIOS = {
   loading: { identity: 'owner@example.test', admin: true, delayMs: 4000 },
   denied: { identity: 'dev@example.test', admin: false, denied: true },
 };
-const VIEWS = ['#/deployments', `#/deployments/${DEP}`, '#/tests', '#/health', '#/health/containers', '#/bugs', '#/admin'];
+const VIEWS = ['#/deployments', `#/deployments/${DEP}`, '#/plan', `#/plan/${REPO}`, '#/decisions', `#/decisions/${REPO}`, '#/tests', '#/health', '#/health/containers', '#/bugs', '#/admin'];
 const VIEWPORTS = { wide: { width: 1280, height: 800 }, narrow: { width: 390, height: 844 } };
-const ADMIN_ONLY = ['health.summary', 'health.containers', 'health.container_remove', 'user.list', 'user.invite', 'user.remove', 'grant.set', 'grant.remove', 'test.list', 'test.start', 'test.stop', 'test.output', 'deployment.apply', 'deployment.rollback', 'deployment.remove', 'deployment.set_domain'];
+const ADMIN_ONLY = ['health.summary', 'health.containers', 'health.container_remove', 'user.list', 'user.invite', 'user.remove', 'grant.set', 'grant.remove', 'test.list', 'test.start', 'test.stop', 'test.output', 'deployment.apply', 'deployment.rollback', 'deployment.remove', 'deployment.set_domain', 'task.create', 'task.update', 'release.create', 'release.update', 'release.request', 'release.deliver', 'decision.record', 'decision.summarize'];
 
 async function startFakeDaemon(dir) {
   const socketPath = path.join(dir, 'daemon.sock');
@@ -91,7 +132,8 @@ async function startFakeDaemon(dir) {
       if (cmd === 'deployment.start') { mutable.stopped = false; return reply({ ok: true, result: { state: 'running' } }); }
       if (cmd === 'deployment.status' && req.args.deployment_id === OBS) return reply({ ok: true, result: fixtures({ ...scenario, stopped: mutable.stopped })['deployment.observed-status'] });
       if (cmd === 'deployment.set_domain') return reply({ ok: true, result: { deployment_id: req.args.deployment_id, domain: req.args.domain, public: !!req.args.public } });
-      if (['deployment.restart', 'deployment.apply', 'deployment.rollback', 'deployment.remove', 'bug.report', 'bug.close', 'user.invite', 'user.remove', 'grant.set', 'grant.remove', 'telegram.link', 'telegram.subscribe', 'telegram.unsubscribe', 'test.stop', 'test.start', 'health.container_remove'].includes(cmd)) return reply({ ok: true, result: { state: 'done', status: 'done' } });
+      if (['deployment.restart', 'deployment.apply', 'deployment.rollback', 'deployment.remove', 'bug.report', 'bug.close', 'user.invite', 'user.remove', 'grant.set', 'grant.remove', 'telegram.link', 'telegram.subscribe', 'telegram.unsubscribe', 'test.stop', 'test.start', 'health.container_remove', 'task.create', 'task.update', 'release.request'].includes(cmd)) return reply({ ok: true, result: { state: 'done', status: 'done' } });
+      if (cmd === 'plan.overview' && !req.args.repository_id) return reply({ ok: true, result: fixtures(scenario)['plan.overview-list'] });
       const data = fixtures({ ...scenario, stopped: mutable.stopped })[cmd];
       if (data === undefined) return reply({ ok: false, error: { code: 'command_unknown', message: cmd, detail: '' } });
       return reply({ ok: true, result: data });
@@ -136,18 +178,25 @@ async function main() {
           const clipped = [...document.querySelectorAll('.tile .v, h1, .toast')].filter((el) => el.scrollWidth > el.clientWidth + 1).map((el) => el.textContent.slice(0, 40));
           const buttons = [...document.querySelectorAll('button')].map((b) => ({ text: b.textContent.trim(), visible: b.offsetParent !== null, disabled: b.disabled, x: b.getBoundingClientRect().right, scrollable: !!b.closest('.tablewrap') }));
           const offscreen = buttons.filter((b) => b.visible && b.x > window.innerWidth + 1 && !b.scrollable);
-          return { overflow, clipped, buttons: buttons.length, offscreen: offscreen.length, text: document.body.innerText.slice(0, 4000), skeleton: !!document.querySelector('.skeleton'), notice: document.querySelector('.notice')?.textContent || '' };
+          const planControls = document.querySelectorAll('[data-move-task], [data-drag-task], #comment-form, [data-cmd="release.request"]').length;
+          return { overflow, clipped, buttons: buttons.length, offscreen: offscreen.length, text: document.body.innerText.slice(0, 4000), skeleton: !!document.querySelector('.skeleton'), notice: document.querySelector('.notice')?.textContent || '', planControls };
         });
         check(`${label}: no horizontal document overflow`, metrics.overflow <= 0, `overflow ${metrics.overflow}px`);
         check(`${label}: no clipped headline text`, metrics.clipped.length === 0, metrics.clipped.join(' | '));
         check(`${label}: no off-canvas controls outside scroll containers`, metrics.offscreen === 0, `${metrics.offscreen} off-canvas`);
         if (scenarioName === 'loading') check(`${label}: loading state visible`, metrics.skeleton || /Loading/.test(metrics.text));
-        if (scenarioName === 'empty' && !view.includes(DEP) && view !== '#/admin') check(`${label}: explicit empty state`, /No (deployments|test runs|open bugs|containers|repositories)/.test(metrics.text), metrics.text.slice(0, 120));
+        if (scenarioName === 'empty' && !view.includes(DEP) && view !== '#/admin') check(`${label}: explicit empty state`, /No (deployments|test runs|open bugs|containers|repositories|plan|decisions)/.test(metrics.text), metrics.text.slice(0, 120));
         if (scenarioName === 'error') check(`${label}: error state with retry`, /Could not load|Cannot reach/.test(metrics.text) && /Retry/.test(metrics.text), metrics.text.slice(0, 120));
         if (scenarioName === 'denied' && (view === '#/admin' || view === '#/tests' || view === '#/health/containers')) check(`${label}: permission denied shown`, /Permission denied/.test(metrics.notice), metrics.notice.slice(0, 120));
         if (scenarioName === 'denied' && view === '#/health') check(`${label}: host health denied but repositories visible`, /administrator-only/.test(metrics.text) && /repo-one/.test(metrics.text));
         if (scenarioName === 'populated' && ['#/deployments', '#/tests', '#/health'].includes(view)) check(`${label}: long names rendered`, /going-and-going/.test(metrics.text), metrics.text.slice(0, 80));
         if (scenarioName === 'populated' && ['#/tests', '#/health'].includes(view)) check(`${label}: large numbers humanized`, /MiB|GiB|TiB/.test(metrics.text), metrics.text.slice(0, 80));
+        if (scenarioName === 'populated' && view === `#/plan/${REPO}`) {
+          check(`${label}: plan shows owner controls for the administrator`, metrics.planControls >= 3, `${metrics.planControls} controls`);
+          check(`${label}: plan speaks plainly (no agent-facing technical note)`, !metrics.text.includes('tech-note-marker-must-not-render'));
+          check(`${label}: sizes are in lines, statuses in plain words`, /lines/.test(metrics.text) && /being built/.test(metrics.text), metrics.text.slice(0, 120));
+        }
+        if (scenarioName === 'denied' && view === `#/plan/${REPO}`) check(`${label}: read-only plan for viewers (no owner controls)`, metrics.planControls === 0, `${metrics.planControls} controls`);
       }
       await context.close();
     }
@@ -236,6 +285,10 @@ async function main() {
   await page.click('#invite-form button[type=submit]');
   await page.waitForTimeout(500);
   check('interaction: invite form calls user.invite', daemon.calls.some((c) => c.command === 'user.invite' && c.args.email === 'new2@example.test'));
+  await page.waitForFunction(() => /daemon 0\.1\.0/.test(document.querySelector('#server')?.textContent || ''), null, { timeout: 10000 });
+  check('admin: the Server line renders daemon version, schema, and route generation',
+    /daemon 0\.1\.0 · schema 8 · route document generation 1/.test(await page.innerText('#server')),
+    await page.innerText('#server'));
   await page.goto(`http://${HOST}:${port}/#/health/containers`);
   await page.waitForSelector('button[data-cmd="health.container_remove"]');
   const removable = await page.$$('button[data-cmd="health.container_remove"]');
@@ -263,6 +316,88 @@ async function main() {
   await page.waitForTimeout(400);
   check('interaction: the 7d range requests a downsampled week of host history',
     daemon.calls.some((c) => c.command === 'health.history' && c.args.minutes === 10080 && c.args.points > 0));
+
+  // Plan: Gantt tree, drag-and-drop, dialog move, preview request, feedback, drop.
+  await page.goto(`http://${HOST}:${port}/#/plan/${REPO}`);
+  await page.waitForSelector('.gantt');
+  check('plan: delivered preview links to the running app',
+    await page.locator(`a[href="https://app-dev.${BASE}"]`).count() === 1);
+  check('plan: a delivered preview without a domain names its server port',
+    /runs on server port 20005/.test(await page.innerText('body')));
+  const rowsBefore = await page.locator('.gtask:not(.ghidden)').count();
+  await page.click(`[data-collapse="${P_C1}"]`);
+  await page.waitForSelector('.gtask.ghidden', { state: 'attached' });
+  check('plan: collapsing a parent hides its subtree rows',
+    (await page.locator('.gtask:not(.ghidden)').count()) === rowsBefore - 1);
+  await page.click(`[data-collapse="${P_C1}"]`);
+  daemon.calls.length = 0;
+  await page.dragAndDrop(`[data-drag-task="${P_C2}"]`, `[data-task-row="${P_C1}"]`, { targetPosition: { x: 30, y: 3 } });
+  await page.waitForTimeout(400);
+  const reorderCall = daemon.calls.find((c) => c.command === 'task.update');
+  check('interaction: dragging a task above a sibling reorders it in place',
+    reorderCall && reorderCall.args.task_id === P_C2 && reorderCall.args.position === 0
+    && !('release_id' in reorderCall.args), JSON.stringify(reorderCall?.args));
+  daemon.calls.length = 0;
+  await page.dragAndDrop(`[data-drag-task="${P_LT}"]`, `[data-drop-release="${V_R1}"]`);
+  await page.waitForTimeout(400);
+  const dragMoveCall = daemon.calls.find((c) => c.command === 'task.update');
+  check('interaction: dropping a task on a release header moves it into that release',
+    dragMoveCall && dragMoveCall.args.task_id === P_LT && dragMoveCall.args.release_id === V_R1,
+    JSON.stringify(dragMoveCall?.args));
+  daemon.calls.length = 0;
+  await page.click(`[data-move-task="${P_C2}"]`);
+  await page.waitForSelector('dialog#move-dialog[open]');
+  await page.selectOption('#move-form [name=release_id]', V_R2);
+  await page.click('#move-form button[type=submit]');
+  await page.waitForTimeout(400);
+  const dialogMoveCall = daemon.calls.find((c) => c.command === 'task.update');
+  check('interaction: the move pop-up posts the chosen release',
+    dialogMoveCall && dialogMoveCall.args.task_id === P_C2 && dialogMoveCall.args.release_id === V_R2,
+    JSON.stringify(dialogMoveCall?.args));
+  daemon.calls.length = 0;
+  await page.click('button[data-cmd="release.request"]');
+  await page.waitForTimeout(400);
+  check('interaction: Request preview now calls release.request for the repository',
+    daemon.calls.some((c) => c.command === 'release.request' && c.args.repository_id === REPO));
+  daemon.calls.length = 0;
+  await page.fill('#comment-form [name=title]', 'The export button fails for me');
+  await page.click('#comment-form button[type=submit]');
+  await page.waitForTimeout(400);
+  const feedbackCall = daemon.calls.find((c) => c.command === 'task.create');
+  check('interaction: the ask-for-a-change form creates a user_feedback task',
+    feedbackCall && feedbackCall.args.title === 'The export button fails for me'
+    && feedbackCall.args.kind === 'user_feedback' && feedbackCall.args.repository_id === REPO,
+    JSON.stringify(feedbackCall?.args));
+  daemon.calls.length = 0;
+  await page.click(`.gtask[data-task-row="${P_G1}"] button[data-cmd="task.update"]`);
+  await page.waitForTimeout(400);
+  const dropCall = daemon.calls.find((c) => c.command === 'task.update');
+  check('interaction: drop asks for confirmation and marks the task dropped',
+    dropCall && dropCall.args.task_id === P_G1 && dropCall.args.status === 'dropped',
+    JSON.stringify(dropCall?.args));
+
+  // Decisions: story, aspect filter, search, paging, superseded handling.
+  await page.goto(`http://${HOST}:${port}/#/decisions/${REPO}`);
+  await page.waitForSelector('.decision');
+  check('decisions: the story so far and the plain entries render',
+    /The story so far/.test(await page.innerText('body')) && /Buttons are green now/.test(await page.innerText('body')));
+  check('decisions: superseded entries are collapsed', await page.locator('details.decision.superseded:not([open])').count() === 1);
+  daemon.calls.length = 0;
+  await page.click('#decisions-older');
+  await page.waitForTimeout(400);
+  check('interaction: Show older pages the tail with before_seq of the oldest shown decision',
+    daemon.calls.some((c) => c.command === 'decision.tail' && c.args.before_seq === 41));
+  daemon.calls.length = 0;
+  await page.click('[data-decision-aspect="ui"]');
+  await page.waitForTimeout(400);
+  check('interaction: the aspect filter is applied server-side',
+    daemon.calls.some((c) => c.command === 'decision.tail' && c.args.aspect === 'ui' && !('before_seq' in c.args)));
+  daemon.calls.length = 0;
+  await page.fill('#decision-search [name=q]', 'export');
+  await page.click('#decision-search button[type=submit]');
+  await page.waitForSelector('text=REPO-EXPORT-FILES');
+  check('interaction: search calls decision.search with the typed query',
+    daemon.calls.some((c) => c.command === 'decision.search' && c.args.query === 'export' && c.args.aspect === 'ui'));
   await context.close();
 
   await browser.close();

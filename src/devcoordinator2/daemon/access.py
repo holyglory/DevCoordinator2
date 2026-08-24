@@ -240,9 +240,15 @@ def _validate_grant(g) -> None:
 _ADMIN_ONLY_PREFIXES = ("test.", "repository.", "user.", "invitation.", "grant.",
                         "health.summary", "health.containers", "health.container_remove",
                         "deployment.apply", "deployment.set_domain",
-                        "deployment.rollback", "deployment.remove")
+                        "deployment.rollback", "deployment.remove",
+                        "task.create", "task.update",
+                        "release.create", "release.update",
+                        "release.request", "release.deliver",
+                        "decision.record", "decision.summarize")
 _OPERATOR = ("deployment.start", "deployment.stop", "deployment.restart")
 _VIEWER = ("deployment.status", "deployment.logs", "health.repository", "health.history")
+# Repository-scoped reads: viewer on any deployment of the repository.
+_REPO_VIEWER = ("plan.overview", "task.history", "decision.tail", "decision.search")
 # Commands that enforce their own scope for admitted public users.
 _SELF_GUARDED = ("telegram.link", "telegram.subscribe", "telegram.unsubscribe",
                  "telegram.list", "bug.report", "bug.list", "bug.close")
@@ -296,15 +302,7 @@ def _wrap(command: str, handler: Handler, access: Access, db: Database) -> Handl
         if command == "health.repositories":
             result = handler(args, caller)
             allowed = {d for d, r in principal.grants.items() if RANK[r] >= RANK["viewer"]}
-            repos = set()
-            for r in db.query("SELECT deployment_id, repository_id FROM deployments"):
-                if r["deployment_id"] in allowed:
-                    repos.add(r["repository_id"])
-            for r in db.query(
-                    "SELECT observed_deployment_id AS deployment_id, repository_id"
-                    " FROM observed_deployments"):
-                if r["deployment_id"] in allowed:
-                    repos.add(r["repository_id"])
+            repos = _viewable_repositories(principal, db)
             rows = []
             for row in result["repositories"]:
                 if row["repository_id"] in repos:
@@ -312,8 +310,53 @@ def _wrap(command: str, handler: Handler, access: Access, db: Database) -> Handl
                                           if d["deployment_id"] in allowed]
                     rows.append(row)
             return {"repositories": rows}
+        if command in _REPO_VIEWER:
+            repos = _viewable_repositories(principal, db)
+            if command == "plan.overview" and not args.get("repository_id") \
+                    and not args.get("path"):
+                result = handler(args, caller)
+                result["repositories"] = [r for r in result["repositories"]
+                                          if r["repository_id"] in repos]
+                return result
+            repo_id = _repository_for(command, args, db)
+            if repo_id is None or repo_id not in repos:
+                raise ProtocolError("permission_denied",
+                                    f"{command} requires viewer on a deployment of"
+                                    " the repository")
+            return handler(args, caller)
         raise ProtocolError("permission_denied", f"{command} is not available to public users")
     return wrapped
+
+
+def _viewable_repositories(principal: Principal, db: Database) -> set[str]:
+    """Repositories where the principal holds at least viewer on a managed or
+    observed deployment (the health.repositories filtering rule)."""
+    allowed = {d for d, r in principal.grants.items() if RANK[r] >= RANK["viewer"]}
+    repos: set[str] = set()
+    for r in db.query("SELECT deployment_id, repository_id FROM deployments"):
+        if r["deployment_id"] in allowed:
+            repos.add(r["repository_id"])
+    for r in db.query(
+            "SELECT observed_deployment_id AS deployment_id, repository_id"
+            " FROM observed_deployments"):
+        if r["deployment_id"] in allowed:
+            repos.add(r["repository_id"])
+    return repos
+
+
+def _repository_for(command: str, args: dict[str, Any], db: Database) -> str | None:
+    """Resolve the repository a _REPO_VIEWER command targets. Public callers
+    must reference by repository_id — a 'path' would implicitly register."""
+    if command == "task.history":
+        task_id = args.get("task_id")
+        if isinstance(task_id, str):
+            rows = db.query("SELECT repository_id FROM tasks WHERE task_id=?",
+                            (task_id,))
+            if rows:
+                return rows[0]["repository_id"]
+        return None
+    repo_id = args.get("repository_id")
+    return repo_id if isinstance(repo_id, str) else None
 
 
 def _deployment_for(command: str, args: dict[str, Any], db: Database) -> str | None:

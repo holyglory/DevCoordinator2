@@ -10,6 +10,7 @@ from devcoordinator2.client import cli
 from devcoordinator2.client.mcp_server import McpServer
 from devcoordinator2.daemon.db import Database
 from devcoordinator2.daemon.handlers import build_handlers
+from devcoordinator2.daemon.plan_api import build_plan_handlers
 from devcoordinator2.daemon.registry import Registry
 from devcoordinator2.daemon.server import Server
 from devcoordinator2.paths import InstanceConfig
@@ -28,7 +29,10 @@ def live(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("DEVCOORDINATOR2_STATE_DIR", str(config.state_dir))
     monkeypatch.setenv("DEVCOORDINATOR2_INSTANCE_ENV", "/nonexistent")
     db = Database(config.database_path)
-    server = Server(config.socket_path, build_handlers(config, Registry(db)))
+    registry = Registry(db)
+    handlers = build_handlers(config, registry)
+    handlers.update(build_plan_handlers(config, db, registry))
+    server = Server(config.socket_path, handlers)
     server.bind()
     threading.Thread(target=server.serve_forever, daemon=True).start()
     repo = tmp_path / "repo"
@@ -44,7 +48,7 @@ def test_cli_ping_and_register_roundtrip(live, capsys):
     assert rc == 0
     response = json.loads(capsys.readouterr().out)
     assert response["ok"] is True
-    assert response["result"]["schema_version"] == 7
+    assert response["result"]["schema_version"] == 8
 
     rc = cli.main(["repository", "register", str(live.repo)])
     assert rc == 0
@@ -131,6 +135,77 @@ def test_mcp_full_session(live):
     assert inner["ok"] is True
     assert replies[3]["error"]["code"] == -32602
     assert replies[4]["error"]["code"] == -32601
+
+
+def test_cli_plan_ledger_roundtrip(live, capsys):
+    def run(argv):
+        rc = cli.main(argv)
+        out = json.loads(capsys.readouterr().out)
+        return rc, out
+
+    rc, created = run(["task", "create", str(live.repo), "--title",
+                       "Painting the button red", "--kind", "user_feedback",
+                       "--estimated-loc", "10"])
+    assert rc == 0 and created["result"]["status"] == "planned"
+    task_id = created["result"]["task_id"]
+    rc, overview = run(["plan", "overview", str(live.repo)])
+    assert overview["result"]["tasks"][0]["title"] == "Painting the button red"
+    rc, done = run(["task", "update", task_id, "--status", "done",
+                    "--note", "Looks red in the app now."])
+    assert rc == 0 and done["result"]["status"] == "done"
+    rc, release = run(["release", "create", str(live.repo), "--name",
+                       "Polish release", "--kind", "release"])
+    assert rc == 0
+    rc, moved = run(["task", "update", task_id, "--release-id",
+                     release["result"]["release_id"]])
+    assert rc == 0 and moved["result"]["release_id"] == release["result"]["release_id"]
+    rc, moved = run(["task", "update", task_id, "--backlog"])
+    assert rc == 0 and moved["result"]["release_id"] is None
+    rc, history = run(["task", "history", task_id])
+    assert [e["event"] for e in history["result"]["events"]] == \
+        ["created", "status", "release_move", "release_move"]
+    # Owner controls stay reachable through the CLI recovery surface.
+    rc, requested = run(["release", "request", str(live.repo),
+                         "--note", "Show me the current state."])
+    assert rc == 0 and requested["result"]["status"] == "requested"
+    rc, renamed = run(["release", "update", "--release-id",
+                       requested["result"]["release_id"], "--name",
+                       "First look preview"])
+    assert rc == 0 and renamed["result"]["name"] == "First look preview"
+    rc, recorded = run(["decision", "record", str(live.repo), "--aspect", "ui",
+                        "--title", "The button is red", "--body",
+                        "The owner asked for a red button after testing the app.",
+                        "--ref", "REPO-BUTTON-RED"])
+    assert rc == 0 and recorded["result"]["seq"] == 1
+    rc, found = run(["decision", "search", str(live.repo), "--query", "red button"])
+    assert [d["ref"] for d in found["result"]["decisions"]] == ["REPO-BUTTON-RED"]
+    rc, tail = run(["decision", "tail", str(live.repo), "--aspect", "ui", "-n", "5"])
+    assert tail["result"]["decisions"][0]["title"] == "The button is red"
+    rc, picker = run(["plan", "overview", "--all"])
+    assert picker["result"]["repositories"][0]["open_tasks"] == 0
+
+
+def test_mcp_plan_tools_present_owner_controls_absent(live):
+    replies = _mcp_session([
+        {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+         "params": {"protocolVersion": "2025-06-18",
+                    "clientInfo": {"name": "codex-cli", "version": "1"},
+                    "capabilities": {}}},
+        {"jsonrpc": "2.0", "id": 2, "method": "tools/list"},
+        {"jsonrpc": "2.0", "id": 3, "method": "tools/call",
+         "params": {"name": "task_create",
+                    "arguments": {"path": str(live.repo),
+                                  "title": "Ledger the missing empty state",
+                                  "kind": "stub", "estimated_loc": 30}}},
+    ])
+    tools = {t["name"] for t in replies[0 + 1]["result"]["tools"]}
+    assert {"plan_overview", "task_create", "task_update", "task_history",
+            "release_create", "release_deliver", "decision_record",
+            "decision_tail", "decision_search", "decision_summarize"} <= tools
+    # The owner's ASAP button and chart reshaping are not agent tools.
+    assert "release_request" not in tools and "release_update" not in tools
+    created = json.loads(replies[2]["result"]["content"][0]["text"])
+    assert created["ok"] is True and created["result"]["status"] == "planned"
 
 
 def test_mcp_unsupported_version_negotiated_down(live):

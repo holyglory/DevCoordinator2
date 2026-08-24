@@ -415,3 +415,58 @@ demonstrated second need.
 **Owner context.** The owner pasted Vite's "Blocked request. This host
 (…) is not allowed" from their deployed app. They were told apps needing the
 public name can read X-Forwarded-Host.
+
+## DC2-2026-08-24-PLANNING-LEDGER — DB-owned planning, completion ledger, and decision history
+
+**Decision.** DevCoordinator2 owns agent planning, the completion ledger
+(one task tree of arbitrary depth per repository — the same tables), and
+per-repository decision history. Schema 8 adds `releases`, `tasks`,
+`plan_events`, `decisions` (+FTS5 index), and `decision_summaries` — the
+product's first append-only permanent history: rows are never deleted, and
+every task/release mutation appends events in the same transaction. Task
+size is estimated in lines of code, tasks carry required plain-language
+title/outcome for a non-technical owner with a separate agent-facing
+technical note, and sibling order (`position`) is distinct from the
+immutable creation identity (`seq`). Twelve commands
+(`plan.overview`, `task.*`, `release.*`, `decision.*`); ten MCP tools;
+`release.request` and `release.update` are owner controls (Console + CLI
+recovery only). A requested preview is delivered by a real deployment of
+the current dirty work; delivery permanently snapshots commit, dirty flag,
+fingerprint, and reachability (routed URL or leased host port) because
+generations are pruned. Decisions are aspect-tagged, carry a required
+management-facing account, are full-text searchable (SQLite FTS5, refused
+at open when the module is missing), support explicit supersession, and
+keep every rolling summary; at 25 unsummarized decisions every decision
+read reports `summary_due` and the working agent stores the next summary —
+the daemon never calls an LLM. This deliberately extends the "current
+projections, not an append-only archive" stance, scoped to these five
+tables. The owner further decided that `DecisionHistory.md` itself is
+retired in favor of the database once `scripts/decision_import.py` has
+imported it (refs preserved); this file then becomes a pointer stub.
+
+**Alternatives.** (a) Per-repository Markdown ledgers/plans: forbidden by
+the owner's app-wide agent policy (exactly one software-owned database
+ledger with permanent event history, no Markdown fallback) and not
+queryable or searchable. (b) A second database for planning: a second
+store, outage mode, and backup surface, with no foreign keys to
+`repositories` — pure cost. (c) Extending the bug store: bugs are
+deliberately open-only, file-based, and daemon-independent; permanent
+history contradicts that design. Bugs remain coordinator-defect intake;
+owner feedback from previews becomes `user_feedback` tasks. (d) LIKE-scan
+instead of FTS5 for decision search: rejected as shortcut plumbing against
+the owner's industry-standard policy. Cost accepted: +6 tables (one
+virtual), +12 commands, +10 tools against the architectural budgets, and
+the first append-only history in the authority database.
+
+**Owner context.** The owner's app-wide AGENTS.md already mandates this
+ledger's exact contract (single software-owned DB ledger, permanent event
+history, plain-language-first issues, bounded active projection, DB outage
+blocks completion claims). In this session the owner additionally decided,
+in plain terms: tasks sized in lines of code on a per-repository Gantt with
+MS-Project-style subtask trees; owner-movable and owner-reorderable tasks
+across and within releases (drag-and-drop plus a dialog); an ASAP preview
+button that yields a real deployment of the unfinished work with an
+openable URL or at least the fixed port; owner comments becoming ledger
+tasks; decisions readable and searchable in management language with
+agent-written rolling summaries; and retirement of the Markdown decision
+file into the database.

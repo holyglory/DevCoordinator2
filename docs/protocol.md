@@ -69,6 +69,9 @@ Stable snake_case, terminal (no retry/queue semantics):
 | `test_not_found` | no current test run for the worktree |
 | `test_start_failed` | terminal launch failure (never `queued`) |
 | `unit_stop_failed` | prior unit would not stop / cgroup not proven empty |
+| `task_not_found` | no ledger task with that id |
+| `release_not_found` | no release with that id |
+| `decision_not_found` | no decision with that id or ref |
 | `internal_error` | unexpected daemon fault (bounded diagnostic in `detail`) |
 
 ## Result conventions
@@ -80,5 +83,5 @@ Stable snake_case, terminal (no retry/queue semantics):
   that a handler ran or a row was saved.
 - Timestamps are UTC ISO-8601 with seconds. Sizes are byte integers.
 - IDs are opaque strings with stable one-letter prefixes
-  (`r` repository, `w` worktree, `t` test run; later phases reserve
-  `d` deployment, `c` component — see `database-ledger.md`).
+  (`r` repository, `w` worktree, `t` test run, `d` deployment,
+  `p` plan task, `v` release, `n` decision — see `database-ledger.md`).

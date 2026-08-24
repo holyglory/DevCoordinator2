@@ -141,6 +141,99 @@ def build_parser() -> argparse.ArgumentParser:
                 with_path=False)
     _add_common(repo_sub.add_parser("status", help="one repository"))
     _add_common(repo_sub.add_parser("register", help="register explicitly"))
+
+    plan = sub.add_parser("plan", help="planning and completion ledger")
+    plan_sub = plan.add_subparsers(dest="action", required=True)
+    po = plan_sub.add_parser("overview", help="releases, task tree, preview requests")
+    _add_common(po)
+    po.add_argument("--all", action="store_true",
+                    help="list every repository's plan summary instead of one plan")
+
+    task = sub.add_parser("task", help="completion-ledger tasks (plain language)")
+    task_sub = task.add_subparsers(dest="action", required=True)
+    tc = task_sub.add_parser("create", help="record a work item in the ledger")
+    _add_common(tc)
+    tc.add_argument("--title", required=True, help="one plain sentence, user terms")
+    tc.add_argument("--kind", required=True,
+                    choices=["goal", "stub", "improvement", "user_feedback"])
+    for field in ("outcome", "impact", "unblock-condition", "verification",
+                  "technical-note", "parent-task-id", "release-id"):
+        tc.add_argument(f"--{field}", default=None)
+    tc.add_argument("--estimated-loc", type=int, default=None,
+                    help="size in estimated lines of code")
+    tu = task_sub.add_parser("update", help="append-only task mutation")
+    _add_common(tu, with_path=False)
+    tu.add_argument("task_id")
+    tu.add_argument("--status", default=None,
+                    choices=["planned", "in_progress", "done", "dropped"])
+    for field in ("title", "outcome", "impact", "unblock-condition", "verification",
+                  "technical-note", "note", "parent-task-id", "release-id"):
+        tu.add_argument(f"--{field}", default=None)
+    tu.add_argument("--estimated-loc", type=int, default=None)
+    tu.add_argument("--position", type=int, default=None,
+                    help="0-based order among siblings")
+    tu.add_argument("--backlog", action="store_true",
+                    help="move out of every release (release_id = null)")
+    tu.add_argument("--root", action="store_true",
+                    help="detach from the parent task (parent_task_id = null)")
+    th = task_sub.add_parser("history", help="one task with its permanent history")
+    _add_common(th, with_path=False)
+    th.add_argument("task_id")
+
+    release = sub.add_parser("release", help="releases and preview releases")
+    release_sub = release.add_subparsers(dest="action", required=True)
+    rc = release_sub.add_parser("create", help="plan a release on the chart")
+    _add_common(rc)
+    rc.add_argument("--name", required=True)
+    rc.add_argument("--kind", required=True, choices=["preview", "release"])
+    rc.add_argument("--note", default=None)
+    rc.add_argument("--seq", type=int, default=None)
+    ru = release_sub.add_parser("update", help="rename/reorder/drop (administrator)")
+    _add_common(ru, with_path=False)
+    ru.add_argument("--release-id", dest="release_id", required=True)
+    ru.add_argument("--name", default=None)
+    ru.add_argument("--seq", type=int, default=None)
+    ru.add_argument("--note", default=None)
+    ru.add_argument("--status", default=None, choices=["planned", "dropped"])
+    rr = release_sub.add_parser("request",
+                                help="ask for a preview of the current work ASAP")
+    _add_common(rr)
+    rr.add_argument("--name", default=None)
+    rr.add_argument("--note", default=None)
+    rd = release_sub.add_parser("deliver",
+                                help="record the real deployment that delivered it")
+    _add_common(rd, with_path=False)
+    rd.add_argument("--release-id", dest="release_id", required=True)
+    rd.add_argument("--deployment-id", dest="deployment_id", required=True)
+    rd.add_argument("--note", default=None)
+
+    decision = sub.add_parser("decision", help="per-repository decision history")
+    decision_sub = decision.add_subparsers(dest="action", required=True)
+    aspects = ["ui", "architecture", "algorithms", "business_logic", "data",
+               "testing", "deployment", "security", "performance", "process", "other"]
+    dr = decision_sub.add_parser("record", help="record a decision (plain language)")
+    _add_common(dr)
+    dr.add_argument("--aspect", required=True, choices=aspects)
+    dr.add_argument("--title", required=True)
+    dr.add_argument("--body", required=True,
+                    help="what was decided and why, in management terms")
+    dr.add_argument("--technical-note", default=None)
+    dr.add_argument("--ref", default=None, help="stable citation key")
+    dr.add_argument("--supersedes", default=None, help="decision id or ref")
+    dt = decision_sub.add_parser("tail", help="rolling summary + last N decisions")
+    _add_common(dt)
+    dt.add_argument("--aspect", default=None, choices=aspects)
+    dt.add_argument("-n", type=int, default=None)
+    ds = decision_sub.add_parser("search", help="full-text search over decisions")
+    _add_common(ds)
+    ds.add_argument("--query", required=True)
+    ds.add_argument("--aspect", default=None, choices=aspects)
+    ds.add_argument("-n", type=int, default=None)
+    dz = decision_sub.add_parser("summarize", help="store the rolling summary")
+    _add_common(dz)
+    dz.add_argument("--body", required=True)
+    dz.add_argument("--covers-through-seq", dest="covers_through_seq", type=int,
+                    required=True)
     return parser
 
 
@@ -215,6 +308,85 @@ def _to_call(ns: argparse.Namespace) -> tuple[str, dict]:
             return "repository.status", path_args
         case ("repository", "register"):
             return "repository.register", path_args
+        case ("plan", "overview"):
+            return "plan.overview", ({} if ns.all else path_args)
+        case ("task", "create"):
+            args = {**path_args, "title": ns.title, "kind": ns.kind}
+            for key in ("outcome", "impact", "unblock_condition", "verification",
+                        "technical_note", "parent_task_id", "release_id",
+                        "estimated_loc"):
+                if getattr(ns, key) is not None:
+                    args[key] = getattr(ns, key)
+            return "task.create", args
+        case ("task", "update"):
+            args = {"task_id": ns.task_id}
+            for key in ("title", "outcome", "impact", "unblock_condition",
+                        "verification", "technical_note", "note", "status",
+                        "estimated_loc", "position"):
+                if getattr(ns, key) is not None:
+                    args[key] = getattr(ns, key)
+            if ns.backlog and ns.release_id:
+                raise SystemExit("pass --release-id or --backlog, not both")
+            if ns.backlog:
+                args["release_id"] = None
+            elif ns.release_id is not None:
+                args["release_id"] = ns.release_id
+            if ns.root and ns.parent_task_id:
+                raise SystemExit("pass --parent-task-id or --root, not both")
+            if ns.root:
+                args["parent_task_id"] = None
+            elif ns.parent_task_id is not None:
+                args["parent_task_id"] = ns.parent_task_id
+            return "task.update", args
+        case ("task", "history"):
+            return "task.history", {"task_id": ns.task_id}
+        case ("release", "create"):
+            args = {**path_args, "name": ns.name, "kind": ns.kind}
+            for key in ("note", "seq"):
+                if getattr(ns, key) is not None:
+                    args[key] = getattr(ns, key)
+            return "release.create", args
+        case ("release", "update"):
+            args = {"release_id": ns.release_id}
+            for key in ("name", "seq", "note", "status"):
+                if getattr(ns, key) is not None:
+                    args[key] = getattr(ns, key)
+            return "release.update", args
+        case ("release", "request"):
+            args = dict(path_args)
+            for key in ("name", "note"):
+                if getattr(ns, key) is not None:
+                    args[key] = getattr(ns, key)
+            return "release.request", args
+        case ("release", "deliver"):
+            args = {"release_id": ns.release_id, "deployment_id": ns.deployment_id}
+            if ns.note is not None:
+                args["note"] = ns.note
+            return "release.deliver", args
+        case ("decision", "record"):
+            args = {**path_args, "aspect": ns.aspect, "title": ns.title,
+                    "body": ns.body}
+            for key in ("technical_note", "ref", "supersedes"):
+                if getattr(ns, key) is not None:
+                    args[key] = getattr(ns, key)
+            return "decision.record", args
+        case ("decision", "tail"):
+            args = dict(path_args)
+            if ns.aspect is not None:
+                args["aspect"] = ns.aspect
+            if ns.n is not None:
+                args["n"] = ns.n
+            return "decision.tail", args
+        case ("decision", "search"):
+            args = {**path_args, "query": ns.query}
+            if ns.aspect is not None:
+                args["aspect"] = ns.aspect
+            if ns.n is not None:
+                args["n"] = ns.n
+            return "decision.search", args
+        case ("decision", "summarize"):
+            return "decision.summarize", {**path_args, "body": ns.body,
+                                          "covers_through_seq": ns.covers_through_seq}
     raise SystemExit(2)
 
 

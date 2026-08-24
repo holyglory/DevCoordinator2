@@ -33,6 +33,9 @@ ERROR_CODES = (
     "rollback_unavailable",
     "permission_denied",
     "user_not_found",
+    "task_not_found",
+    "release_not_found",
+    "decision_not_found",
     "internal_error",
 )
 

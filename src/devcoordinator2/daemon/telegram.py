@@ -289,6 +289,16 @@ def route(event: dict) -> tuple[list[str], str | None]:
         return scopes, f"component {event.get('component')} failed: {event.get('message', '')}"
     if kind == "preview.expired":
         return scopes, f"preview {name} expired and was stopped"
+    if kind == "release.requested":
+        return [SCOPE_SERVER, *scopes], (f"preview requested for"
+                                         f" {event.get('repository_name', '')}:"
+                                         f" {event.get('name', '')}")
+    if kind == "release.delivered":
+        where = event.get("url") or (f"server port {event['port']}"
+                                     if event.get("port") else "no route yet")
+        draft = " (work in progress)" if event.get("dirty") else ""
+        return [SCOPE_SERVER, *scopes], (f"preview delivered{draft}:"
+                                         f" {event.get('name', '')} — {where}")
     if kind == "test.finished":
         status = event.get("status")
         if status in ("failed", "timed-out", "superseded", "interrupted"):
