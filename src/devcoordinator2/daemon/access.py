@@ -176,7 +176,10 @@ class Access:
         if not rows:
             raise ProtocolError("user_not_found", f"no user {email}")
         if not self._db.query("SELECT 1 FROM deployments WHERE deployment_id=?",
-                              (deployment_id,)):
+                              (deployment_id,)) \
+                and not self._db.query(
+                    "SELECT 1 FROM observed_deployments WHERE observed_deployment_id=?",
+                    (deployment_id,)):
             raise ProtocolError("deployment_not_found", f"no deployment {deployment_id}")
         with self._db.transaction() as conn:
             conn.execute(
@@ -236,7 +239,7 @@ def _validate_grant(g) -> None:
 
 _ADMIN_ONLY_PREFIXES = ("test.", "repository.", "user.", "invitation.", "grant.",
                         "health.summary", "health.containers", "health.container_remove",
-                        "deployment.apply",
+                        "deployment.apply", "deployment.set_domain",
                         "deployment.rollback", "deployment.remove")
 _OPERATOR = ("deployment.start", "deployment.stop", "deployment.restart")
 _VIEWER = ("deployment.status", "deployment.logs", "health.repository", "health.history")
@@ -297,6 +300,11 @@ def _wrap(command: str, handler: Handler, access: Access, db: Database) -> Handl
             for r in db.query("SELECT deployment_id, repository_id FROM deployments"):
                 if r["deployment_id"] in allowed:
                     repos.add(r["repository_id"])
+            for r in db.query(
+                    "SELECT observed_deployment_id AS deployment_id, repository_id"
+                    " FROM observed_deployments"):
+                if r["deployment_id"] in allowed:
+                    repos.add(r["repository_id"])
             rows = []
             for row in result["repositories"]:
                 if row["repository_id"] in repos:
@@ -318,6 +326,15 @@ def _deployment_for(command: str, args: dict[str, Any], db: Database) -> str | N
             return sid
         if kind == "component" and "/" in sid:
             return sid.split("/", 1)[0]
+        if kind == "container" and isinstance(sid, str):
+            rows = db.query("SELECT deployment_id FROM components"
+                            " WHERE binding_identity=?", (sid,))
+            if rows:
+                return rows[0]["deployment_id"]
+            rows = db.query("SELECT observed_deployment_id FROM observed_containers"
+                            " WHERE container_id=?", (sid,))
+            if rows:
+                return rows[0]["observed_deployment_id"]
         return None
     dep_id = args.get("deployment_id")
     if isinstance(dep_id, str):
@@ -388,4 +405,3 @@ def _by(caller: Caller) -> str:
 
 def _is_local(caller: Caller) -> bool:
     return caller.identity is None
-

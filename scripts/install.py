@@ -3,9 +3,10 @@
 
 Creates: /opt/devcoordinator2/releases/<id> (+ `current` symlink), the
 client group and edge system user, state directories, instance
-configuration templates (only if absent), the daemon and edge units, and
-the /usr/local/bin/devcoordinator2 shim. In `--canary` mode the edge runs
-http-only on a private port and needs no TLS/OIDC credentials, so the
+configuration templates (only if absent), the daemon and edge units, the
+/usr/local/bin/devcoordinator2 shim, and Codex/Claude skill links for client
+accounts that already have those agent roots. In `--canary` mode the edge
+runs http-only on a private port and needs no TLS/OIDC credentials, so the
 legacy edge keeps 80/443 untouched. Every installation-specific value is an
 argument; nothing here names an installation.
 """
@@ -25,7 +26,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 OPT = Path("/opt/devcoordinator2")
 ETC = Path("/etc/devcoordinator2")
-RELEASE_ITEMS = ("src", "edge", "console", "deploy", "scripts", "pyproject.toml")
+RELEASE_ITEMS = ("src", "edge", "console", "deploy", "scripts", "skills",
+                 "pyproject.toml")
 
 
 def run(argv: list[str], check: bool = True) -> subprocess.CompletedProcess:
@@ -50,6 +52,35 @@ def ensure_edge_user(client_group: str) -> tuple[int, int]:
              "devcoordinator2-edge"])
         entry = pwd.getpwnam("devcoordinator2-edge")
     return entry.pw_uid, entry.pw_gid
+
+
+def install_skill_links(accounts: list[str], release_skill: Path) -> list[str]:
+    installed: list[str] = []
+    for name in accounts:
+        entry = pwd.getpwnam(name)
+        home = Path(entry.pw_dir)
+        for agent_root_name in (".codex", ".claude"):
+            agent_root = home / agent_root_name
+            if not agent_root.is_dir():
+                continue
+            skills_dir = agent_root / "skills"
+            if not skills_dir.exists():
+                skills_dir.mkdir(mode=0o755)
+                os.chown(skills_dir, entry.pw_uid, entry.pw_gid)
+            elif not skills_dir.is_dir():
+                raise RuntimeError(f"skill root is not a directory: {skills_dir}")
+            link = skills_dir / "codex-dev-coordinator"
+            if link.exists() and not link.is_symlink():
+                raise RuntimeError(f"refusing to replace non-symlink skill: {link}")
+            tmp = skills_dir / ".codex-dev-coordinator.tmp"
+            if tmp.is_symlink() or tmp.exists():
+                if not tmp.is_symlink():
+                    raise RuntimeError(f"refusing to replace non-symlink staging path: {tmp}")
+                tmp.unlink()
+            tmp.symlink_to(release_skill)
+            os.replace(tmp, link)
+            installed.append(str(link))
+    return installed
 
 
 def install_release(release_id: str) -> Path:
@@ -185,13 +216,16 @@ def main() -> int:
                     "from devcoordinator2.client.cli import main\n"
                     "sys.exit(main())\n")
     os.chmod(shim, 0o755)
+    skill_links = install_skill_links(
+        accounts, OPT / "current" / "skills" / "codex-dev-coordinator")
     run(["systemctl", "daemon-reload"])
     if ns.start:
         run(["systemctl", "enable", "--now", "devcoordinator2.service"])
         run(["systemctl", "enable", "--now", "devcoordinator2-edge.service"])
     print({"release": str(release), "edge_uid": edge_uid, "client_group": ns.client_group,
            "created_config": created, "canary": ns.canary,
-           "canary_port": ns.canary_port if ns.canary else None, "started": ns.start})
+           "canary_port": ns.canary_port if ns.canary else None, "started": ns.start,
+           "skill_links": skill_links})
     return 0
 
 

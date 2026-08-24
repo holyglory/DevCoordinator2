@@ -146,12 +146,16 @@ class Sampler:
                         if c["binding_kind"] == "container" and c["binding_identity"]}
         compose_projects = {c["binding_identity"]: c for c in components
                             if c["binding_kind"] == "compose" and c["binding_identity"]}
+        observed_containers = {r["container_id"]: dict(r) for r in self._db.query(
+            "SELECT container_id, repository_id, observed_deployment_id, compose_service"
+            " FROM observed_containers")}
         seen_now: set[str] = set()
         for container in src.running_containers():
             labels = container["labels"]
             cid = container["id"]
             seen_now.add(cid)
-            self._notice_container(container, labels, by_container, compose_projects)
+            self._notice_container(container, labels, by_container, compose_projects,
+                                   observed_containers)
             repo = None
             dep_id = labels.get(f"{LABEL_PREFIX}.deployment")
             comp = by_container.get(cid)
@@ -162,6 +166,11 @@ class Sampler:
                 comp = compose_projects[project]
                 dep_id = comp["deployment_id"]
                 repo = deployments.get(dep_id, {}).get("repository_id")
+            elif cid in observed_containers:
+                imported = observed_containers[cid]
+                dep_id = imported["observed_deployment_id"]
+                repo = imported["repository_id"]
+                comp = {"name": imported["compose_service"], "type": "observed-container"}
             cg = src.container_cgroup(cid) if container["state"] == "running" else None
             subjects.append({"kind": "container", "id": cid, "name": container["name"],
                              "repository_id": repo, "deployment_id": dep_id,
@@ -173,7 +182,7 @@ class Sampler:
         return subjects
 
     def _notice_container(self, container: dict, labels: dict, by_container: dict,
-                          compose_projects: dict) -> None:
+                          compose_projects: dict, observed_containers: dict) -> None:
         """Emit one event per newly observed unmanaged or orphaned container.
         The first tick seeds silently so a restart never floods."""
         cid = container["id"]
@@ -185,7 +194,7 @@ class Sampler:
             if labels.get(f"{LABEL_PREFIX}.purpose") != "test" and cid not in by_container:
                 events.publish("container.orphaned_seen", container_id=cid,
                                name=container["name"], image=container["image"])
-        elif project not in compose_projects:
+        elif project not in compose_projects and cid not in observed_containers:
             events.publish("container.unmanaged_seen", container_id=cid,
                            name=container["name"], image=container["image"])
 
@@ -370,6 +379,15 @@ class Sampler:
                         storage.setdefault(key, {}).update(facts)
                         for metric, value in facts.items():
                             self._record("component", key[1], metric, value)
+        for c in self._db.query(
+                "SELECT container_id, repository_id, observed_deployment_id, compose_service"
+                " FROM observed_containers"):
+            if c["container_id"] not in sizes or c["repository_id"] not in per_repo:
+                continue
+            per_repo[c["repository_id"]]["container_layers"] += sizes[c["container_id"]]
+            storage[("component", f"{c['observed_deployment_id']}/"
+                                   f"{c['compose_service']}")] = {
+                                       "container_layer": sizes[c["container_id"]]}
         shared_volumes = 0
         for vol, size in shared["volumes"].items():
             owner = volume_owner.get(vol)
@@ -384,6 +402,8 @@ class Sampler:
             self._record("repository", rid, "storage_bytes", total)
         state_size = src.directory_size(self._config.state_dir, timeout=60) or 0
         fs = src.filesystem(Path("/"))
+        # Persisted so the Console can chart storage over 24h/7d/30d windows.
+        self._record("host", "host", "storage_bytes", float(fs["used"]))
         managed_total = sum(s["total"] for k, s in storage.items() if k[0] == "repository")
         docker_shared = shared["images"] + shared["build_cache"] + shared_volumes
         storage[("host", "storage")] = {

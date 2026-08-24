@@ -9,20 +9,31 @@ fakes success, and no view carries fixture numbers.
 ## Destinations
 
 1. **Deployments** — collection first (state, domain, port, generation,
-   updated); start/stop/restart for operators, apply for administrators;
-   detail page with components (state, health, generation, port, restarts,
-   exact binding, last error), per-component controls where the declaration
-   permits, on-demand logs, rollback/remove (administrators; remove asks
-   explicitly whether persistent data should be deleted), and last-hour
-   CPU/memory per component from the bounded history.
+   updated); start/stop/restart for operators on every deployment —
+   observed ones drive the exact recorded containers
+   (DC2-2026-08-24-OBSERVED-LIFECYCLE) — apply for administrators on
+   managed ones; detail page with components (state, health, generation,
+   port, restarts, exact binding, last error), per-component controls,
+   on-demand logs (managed files or observed `docker logs`),
+   rollback/remove (managed, administrators; remove asks explicitly whether
+   persistent data should be deleted), an inline domain editor
+   (administrators; `deployment.set_domain` — for an observed deployment
+   without a route it asks for the host port, and a re-import replaces
+   observed edits), and per-component CPU/memory charts over a selectable
+   1h/24h/7d/30d window.
 2. **Tests** — one current/most-recent run per worktree: result and
    duration first; stdout/stderr tails load only on demand (bounded); stop
    a running test or start the declared default (administrators).
-3. **Health** — host condition first (CPU, memory, filesystem, load/swap,
-   unhealthy deployments, active tests, container counts by ownership,
-   critical alerts), current alerts, the reconciliation line, then one row
-   per repository with CPU/memory/storage/health/trends plus the
-   DevCoordinator and shared/unattributed rows. **Containers** view: every
+3. **Health** — host condition first as tiles with capacity meters (CPU,
+   memory, filesystem, load/swap, unhealthy count, active tests, container
+   counts, critical alerts); then **Unhealthy deployments** as cards naming
+   exactly which component is unhealthy and why (`reasons` from
+   `health.summary`) with start/stop/restart and a link to details and
+   logs; current alerts; **History** — host CPU, memory, and storage charts
+   (min–max band plus average) over a selectable 24h/7d/30d window using
+   server-side downsampling; the reconciliation line; then one row per
+   repository with CPU/memory/storage/health/trends plus the DevCoordinator
+   and shared/unattributed rows. **Containers** view: every
    container with full identity, state, classification, repository,
    deployment/test, caller and client, CPU/memory/layer size, creation
    time, TTL; removal is offered only for orphaned-managed and managed-test
@@ -42,7 +53,10 @@ explicit permission-denied notice instead of partial data.
 
 | Control | API call | Proof of state change |
 |---|---|---|
-| Deployment start/stop/restart (list, detail, component) | `deployment.start/stop/restart` | view re-fetches `deployment.status`; header/component badges change |
+| Deployment start/stop/restart (list, detail, component; managed and observed) | `deployment.start/stop/restart` | view re-fetches `deployment.status`; header/component badges change |
+| Domain edit / clear (detail page, administrators) | `deployment.set_domain {deployment_id, domain|null, port?, public?}` | status re-read; route document republished |
+| Health range switch (24h/7d/30d) and usage range (1h/24h/7d/30d) | `health.history {minutes, points}` | charts re-render from the store |
+| Unhealthy-deployment actions (health page cards) | `deployment.start/stop/restart` | summary re-read |
 | Apply / rollback | `deployment.apply` / `deployment.rollback` | status re-read |
 | Remove (confirm + explicit delete-data choice) | `deployment.remove {delete_data}` | list re-read |
 | Component logs | `deployment.logs` | tail rendered on demand |
@@ -66,4 +80,4 @@ explicit empty/error/loading/denied states, humanized large numbers; and
 clicks through stop/start/logs/remove/test output/bug report/invite/
 container removal proving each calls the API with the expected arguments
 and re-renders. Screenshots and `report.json` are written to
-`CONSOLE_VERIFY_OUT` (not committed). Last run: 275 checks, 0 failures.
+`CONSOLE_VERIFY_OUT` (not committed). Last run: 279 checks, 0 failures.

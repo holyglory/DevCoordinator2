@@ -36,6 +36,30 @@ input,select,textarea{font:inherit;padding:6px 8px;border-radius:6px;border:1px 
 textarea{min-width:240px;min-height:60px}
 pre.log{background:#0f141d;border:1px solid var(--line);border-radius:8px;padding:10px;overflow:auto;max-height:360px;font-size:12px;white-space:pre-wrap;overflow-wrap:anywhere}
 .spark{vertical-align:middle}
+h3{font-size:14px;margin:10px 0 4px}
+.meter{height:6px;border-radius:3px;background:#0f141d;border:1px solid var(--line);margin-top:8px;overflow:hidden}
+.meter span{display:block;height:100%;background:var(--accent)}
+.meter span.warn{background:var(--warn)}.meter span.bad{background:var(--bad)}
+.seg{display:inline-flex;gap:0;border:1px solid var(--line);border-radius:6px;overflow:hidden;vertical-align:middle;margin-left:8px}
+.seg button{font:inherit;font-size:12px;padding:3px 10px;border:0;background:#0f141d;color:var(--muted);cursor:pointer}
+.seg button.active{background:#1b2435;color:var(--fg)}
+.chartrow{display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(280px,1fr))}
+.chartpair{display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));margin-bottom:8px}
+.chartpair h3{grid-column:1/-1;margin:8px 0 0}
+.chartbox{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:8px 10px;min-width:0}
+.chartmeta,.chartaxis{display:flex;justify-content:space-between;gap:8px;font-size:12px;flex-wrap:wrap}
+.chartmeta{margin-bottom:4px}.chartaxis{color:var(--muted);margin-top:2px}
+svg.chart{display:block;width:100%;height:130px}
+svg.chart .gridline{stroke:var(--line);stroke-width:1}
+svg.chart .band{fill:#4c8dff2b}
+svg.chart .line{stroke:var(--accent);stroke-width:1.5;vector-effect:non-scaling-stroke}
+.cards{display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(280px,1fr))}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:10px 12px;min-width:0}
+.card.bad-edge{border-left:3px solid var(--bad)}
+.cardhead{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:6px;overflow-wrap:anywhere}
+.reasons{margin:6px 0 8px 18px}
+.reasons li{margin:2px 0;overflow-wrap:anywhere}
+a.btn{text-decoration:none}
 .toasts{position:fixed;right:12px;bottom:12px;display:flex;flex-direction:column;gap:6px;max-width:min(420px,90vw)}
 .toast{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:8px 12px;box-shadow:0 4px 16px rgba(0,0,0,.4);overflow-wrap:anywhere}
 .toast.bad{border-color:var(--bad)}.toast.ok{border-color:var(--ok)}

@@ -31,10 +31,15 @@ def _next_generation(db: Database) -> int:
 def publish(db: Database, path: Path, base_domain: str,
             access: dict | None = None) -> dict:
     """Snapshot current domain_routes with a port and write atomically."""
-    rows = db.query(
+    managed = db.query(
         "SELECT r.domain, r.deployment_id, r.component, r.port, r.generation,"
         " d.public FROM domain_routes r JOIN deployments d"
         " ON d.deployment_id = r.deployment_id WHERE r.port IS NOT NULL ORDER BY r.domain")
+    imported = db.query(
+        "SELECT r.domain, r.observed_deployment_id AS deployment_id, r.component, r.port,"
+        " NULL AS generation, r.public FROM observed_routes r"
+        " WHERE r.port IS NOT NULL ORDER BY r.domain")
+    rows = sorted([*managed, *imported], key=lambda row: row["domain"])
     routes = []
     for r in rows:
         fqdn = f"{r['domain']}.{base_domain}" if base_domain else r["domain"]

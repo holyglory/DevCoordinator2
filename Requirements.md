@@ -55,6 +55,20 @@ not contradict them.
 - **REQ-DEPLOY-05** (P3, done): Port and domain assignments are transactionally unique
   and route only to healthy selected generations via atomic route-document
   publication.
+- **REQ-DEPLOY-06** (P8, done; amended 2026-08-24): A reviewed migration may
+  import exact currently running native identities as a replaceable
+  observed-only projection. It exposes attribution, status, health, and
+  verified routes; stopped, missing, temporary, validation, test, conflicting,
+  and historical records are excluded. Per DC2-2026-08-24-OBSERVED-LIFECYCLE,
+  start/stop/restart and bounded logs act on the exact recorded containers;
+  configuration authority (apply, rollback, remove, recreation) still requires
+  adoption through repository configuration.
+- **REQ-DEPLOY-07** (2026-08-24, done): An administrator can set, change, or
+  clear the routed domain of any deployment from the Console, CLI, and MCP
+  (`deployment.set_domain`). For managed deployments the override survives
+  re-apply until cleared; for observed deployments it lives in the observed
+  projection and is replaced by the next current-state re-import. Domain
+  uniqueness is enforced across managed and observed routes.
 
 ## Accountability and health (REQ-HEALTH, P3/P4)
 
@@ -74,6 +88,12 @@ not contradict them.
   owned ephemeral work; unmanaged containers and persistent volumes are
   surfaced for explicit decisions; Docker prune is never a lifecycle
   operation.
+- **REQ-HEALTH-06** (2026-08-24, done): The health surface answers "what exactly
+  is unhealthy": every unhealthy deployment carries component-level reasons
+  (state plus recorded error/healthcheck detail) and the Console offers the
+  matching lifecycle actions next to them. Host CPU, memory, and storage
+  expose 24h/7d/30d history (`health.history` with server-side downsampling
+  via `points`; host storage is persisted every storage tick).
 
 ## Public access (REQ-ACCESS, P5)
 

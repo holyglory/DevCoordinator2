@@ -286,3 +286,68 @@ through installed surfaces").
 
 **Owner context.** "Continue towards phase 8" authorized building the
 tooling and the canary; the owner retains every irreversible step.
+
+## DC2-2026-08-23-OBSERVED-IMPORT — Current exact resources are observed, not owned
+
+**Decision.** Import exact currently running legacy container/Compose
+identities and verified reachable routes into a replaceable observed-only
+projection. Attribute them to registered repositories, expose list/status and
+health, and publish reviewed routes, but expose no lifecycle or log controls.
+Every re-import replaces the projection; stopped, removed, missing, temporary,
+validation, test, conflicting, and historical records are excluded.
+
+**Alternatives.** Directly inserting legacy rows into managed deployment tables
+would advertise controls that cannot work safely. Recreating stacks during
+import could interrupt services or persistent data. Keeping all resources
+unmanaged would discard exact current ownership evidence. Observed-only import
+preserves truthful current attribution without claiming lifecycle authority.
+
+**Owner context.** The owner requested the preserved data be imported, then
+explicitly excluded temporary and historical data and approved the proposed
+observed-only boundary. A pending access request remains ungranted because
+importing data is not authorization to grant access.
+
+## DC2-2026-08-24-OBSERVED-LIFECYCLE — Lifecycle and logs opened on observed deployments
+
+**Decision.** Observed deployments gain start/stop/restart and bounded log
+reading, acting exclusively on the exact container identities recorded at
+import (`docker start/stop/restart <full id>`, `docker logs`). Nothing is ever
+recreated, reconfigured, or removed: apply, rollback, and remove still refuse
+observed deployments until the stack is adopted through reviewed repository
+configuration. States discovered after an action (stopped, failed, missing)
+are recorded truthfully; a missing container is reported, never replaced.
+This supersedes the no-lifecycle-controls boundary of
+DC2-2026-08-23-OBSERVED-IMPORT.
+
+**Alternatives.** Keeping the boundary was rejected by the owner after using
+the deployed Console ("I should be able to start/stop/restart every
+deployment"). Full configuration authority over imported stacks was rejected
+because DevCoordinator holds no build/compose definitions for them —
+recreation could interrupt services or lose data.
+
+**Owner context.** The owner saw "No lifecycle controls" on their real
+deployments and asked for controls on every deployment. They were told the
+safe scope: controls drive only the exact recorded containers; configuration
+changes still require adoption; and a later current-state re-import replaces
+the observed projection (including any domain set on it via the Console).
+
+## DC2-2026-08-24-DOMAIN-EDIT — Routed domains editable from the Console
+
+**Decision.** New administrator-only `deployment.set_domain` (Console, CLI,
+MCP). Managed deployments store the label as a persistent override
+(`deployments.domain_override`, schema 7) that wins over the
+repository-declared domain on every apply/start/stop/rollback until cleared;
+clearing falls back to the declared domain. Observed deployments edit their
+`observed_routes` row (creating one requires the host port, since no route
+component is declared); a re-import replaces such edits. Uniqueness is checked
+across managed and observed routes and the route document republishes
+immediately.
+
+**Alternatives.** Editing `.devcoordinator.toml` from the UI was rejected —
+the daemon never writes into repositories. A route-table-only edit without a
+persisted override was rejected because the next apply would silently revert
+the owner's choice.
+
+**Owner context.** The owner asked to edit domains from the deployment page.
+They were told the precedence rule (override wins until cleared) and the
+observed-projection caveat above.

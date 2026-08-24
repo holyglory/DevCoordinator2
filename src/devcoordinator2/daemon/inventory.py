@@ -10,7 +10,7 @@ from devcoordinator2.daemon import docker_cli
 from devcoordinator2.daemon.db import Database
 
 CLASSES = ("managed-test", "managed-preview", "managed-permanent",
-           "orphaned-managed", "unmanaged")
+           "observed-current", "orphaned-managed", "unmanaged")
 
 
 def _all_containers() -> list[dict]:
@@ -45,6 +45,9 @@ def containers(db: Database, instance: str) -> list[dict]:
         "SELECT binding_identity FROM components WHERE binding_kind='compose'")}
     deployments = {r["deployment_id"]: r for r in db.query(
         "SELECT deployment_id, repository_id, name, source, ttl_expires_at FROM deployments")}
+    observed = {r["container_id"]: r for r in db.query(
+        "SELECT c.container_id, c.repository_id, c.observed_deployment_id,"
+        " c.compose_service FROM observed_containers c")}
     out = []
     for c in _all_containers():
         labels = _parse_labels(c.get("Labels", ""))
@@ -85,6 +88,13 @@ def containers(db: Database, instance: str) -> list[dict]:
                          repository_id=dep["repository_id"] if dep else None,
                          component=compose_project.rsplit("-", 1)[-1],
                          classification="managed-permanent" if dep else "orphaned-managed")
+        elif entry["id"] in observed:
+            imported = observed[entry["id"]]
+            entry.update(repository_id=imported["repository_id"],
+                         deployment_id=imported["observed_deployment_id"],
+                         component=imported["compose_service"],
+                         client="legacy-current-import", data="observed-only",
+                         classification="observed-current")
         out.append(entry)
     return out
 

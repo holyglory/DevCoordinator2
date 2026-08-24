@@ -11,7 +11,7 @@ import threading
 from contextlib import contextmanager
 from pathlib import Path
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 7
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (
@@ -192,6 +192,59 @@ CREATE TABLE IF NOT EXISTS telegram_outbox (
 );
 """
 
+# Schema 6: current observed-only resources imported from the retired
+# coordinator. This is a replaceable projection, never configuration authority
+# or history. Exact native identities disappear from these tables on the next
+# current-state import when they are no longer present.
+# Schema 7 relaxed the state constraints: the daemon may start/stop/restart
+# the exact recorded containers (DC2-2026-08-24-OBSERVED-LIFECYCLE), so
+# stopped/failed states are recordable.
+_SCHEMA_V6 = """
+CREATE TABLE IF NOT EXISTS observed_deployments (
+  observed_deployment_id TEXT PRIMARY KEY,
+  repository_id          TEXT NOT NULL REFERENCES repositories(repository_id),
+  name                   TEXT NOT NULL,
+  native_project         TEXT NOT NULL UNIQUE,
+  state                  TEXT NOT NULL
+    CHECK(state IN ('running', 'degraded', 'stopped', 'failed')),
+  health                 TEXT NOT NULL CHECK(health IN ('healthy', 'unhealthy', 'unknown')),
+  source                 TEXT NOT NULL,
+  evidence_json          TEXT NOT NULL,
+  observed_at            TEXT NOT NULL,
+  imported_at            TEXT NOT NULL,
+  UNIQUE(repository_id, native_project)
+);
+CREATE TABLE IF NOT EXISTS observed_containers (
+  container_id           TEXT PRIMARY KEY,
+  observed_deployment_id TEXT NOT NULL
+    REFERENCES observed_deployments(observed_deployment_id) ON DELETE CASCADE,
+  repository_id          TEXT NOT NULL REFERENCES repositories(repository_id),
+  name                   TEXT NOT NULL,
+  image                  TEXT NOT NULL,
+  compose_service        TEXT NOT NULL,
+  state                  TEXT NOT NULL
+    CHECK(state IN ('running', 'stopped', 'failed', 'starting', 'missing')),
+  status                 TEXT NOT NULL,
+  health                 TEXT NOT NULL
+    CHECK(health IN ('healthy', 'unhealthy', 'starting', 'unknown', 'none')),
+  observed_at            TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS observed_containers_deployment
+  ON observed_containers(observed_deployment_id);
+CREATE INDEX IF NOT EXISTS observed_containers_repository
+  ON observed_containers(repository_id);
+CREATE TABLE IF NOT EXISTS observed_routes (
+  domain                 TEXT PRIMARY KEY,
+  observed_deployment_id TEXT NOT NULL
+    REFERENCES observed_deployments(observed_deployment_id) ON DELETE CASCADE,
+  component              TEXT NOT NULL,
+  port                   INTEGER NOT NULL CHECK(port BETWEEN 1 AND 65535),
+  public                 INTEGER NOT NULL CHECK(public IN (0, 1)),
+  evidence_json          TEXT NOT NULL,
+  observed_at            TEXT NOT NULL
+);
+"""
+
 
 class SchemaMismatch(Exception):
     pass
@@ -224,7 +277,12 @@ class Database:
             self._conn.executescript(_SCHEMA_V3)
             self._conn.executescript(_SCHEMA_V4)
             self._conn.executescript(_SCHEMA_V5)
+            self._conn.executescript(_SCHEMA_V6)
             self._ensure_column("deployments", "public", "INTEGER NOT NULL DEFAULT 0")
+            # Schema 7: an administrator may override the routed domain from
+            # the Console/CLI; the override survives re-apply until cleared.
+            self._ensure_column("deployments", "domain_override", "TEXT")
+            self._relax_observed_state_checks()
             self._conn.execute(
                 "INSERT OR REPLACE INTO meta(key, value) VALUES('schema_version', ?)",
                 (str(SCHEMA_VERSION),),
@@ -235,6 +293,38 @@ class Database:
         cols = {r[1] for r in self._conn.execute(f"PRAGMA table_info({table})")}
         if column not in cols:
             self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
+
+    def _relax_observed_state_checks(self) -> None:
+        """Schema 6→7: rebuild the two observed tables whose CHECK constraints
+        only allowed 'running' states, preserving every imported row.
+        legacy_alter_table keeps observed_routes' REFERENCES pointing at the
+        table name (i.e. the rebuilt table), not the renamed original."""
+        row = self._conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table'"
+            " AND name='observed_deployments'").fetchone()
+        if row is None or "'stopped'" in row["sql"]:
+            return
+        self._conn.execute("PRAGMA foreign_keys=OFF")
+        self._conn.execute("PRAGMA legacy_alter_table=ON")
+        try:
+            self._conn.executescript(
+                "ALTER TABLE observed_deployments RENAME TO observed_deployments_v6;\n"
+                "ALTER TABLE observed_containers RENAME TO observed_containers_v6;\n"
+                + _SCHEMA_V6 +
+                "\nINSERT INTO observed_deployments SELECT * FROM observed_deployments_v6;"
+                "\nINSERT INTO observed_containers SELECT * FROM observed_containers_v6;"
+                "\nDROP TABLE observed_containers_v6;"
+                "\nDROP TABLE observed_deployments_v6;"
+                # The renames dragged the indexes to the _v6 tables (making the
+                # CREATE INDEX IF NOT EXISTS above a no-op), so the drops above
+                # removed them; recreate them on the rebuilt table.
+                "\nCREATE INDEX IF NOT EXISTS observed_containers_deployment"
+                " ON observed_containers(observed_deployment_id);"
+                "\nCREATE INDEX IF NOT EXISTS observed_containers_repository"
+                " ON observed_containers(repository_id);")
+        finally:
+            self._conn.execute("PRAGMA legacy_alter_table=OFF")
+            self._conn.execute("PRAGMA foreign_keys=ON")
 
     @contextmanager
     def transaction(self):

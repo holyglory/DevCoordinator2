@@ -117,7 +117,7 @@ class Deployments:
             spec_fp = st.fingerprint({"spec": ctx.spec.canonical(ctx.source),
                                       "commit": commit, "dirty": dirty})
             row = st.get_deployment(self._db, ctx.dep_id)
-            domain = ctx.spec.domain_for(ctx.source)
+            domain = st.effective_domain(row, ctx.spec, ctx.source)
             if domain:
                 owner = st.domain_owner(self._db, domain)
                 if owner and owner != ctx.dep_id:
@@ -174,7 +174,7 @@ class Deployments:
                               bool(gen["dirty"]), Path(gen["path"]), gen["fingerprint"])
             st.set_deployment(self._db, ctx.dep_id, spec_fingerprint=gen["fingerprint"])
             return self._converge(ctx, worktree, row, old_rows, number, Path(gen["path"]),
-                                  ctx.spec.domain_for(ctx.source),
+                                  st.effective_domain(row, ctx.spec, ctx.source),
                                   rollback=(row["current_generation"], prev))
         finally:
             lock.release()
@@ -369,8 +369,9 @@ class Deployments:
                 raise ProtocolError("deployment_action_failed",
                                     f"stop {comp.name} failed: {exc}") from exc
         if ctx.spec.route_component and any(c.route for c in comps):
-            st.set_route(self._db, ctx.spec.domain_for(ctx.source), ctx.dep_id,
-                         ctx.spec.route_component.name, None, row["current_generation"])
+            st.set_route(self._db, st.effective_domain(row, ctx.spec, ctx.source),
+                         ctx.dep_id, ctx.spec.route_component.name, None,
+                         row["current_generation"])
             eng.publish_routes(ctx)
 
     def _start(self, ctx: eng.Ctx, row: dict, worktree: Path,
@@ -417,8 +418,8 @@ class Deployments:
                                     f"component {comp.name} unhealthy after start: {note}")
         route = ctx.spec.route_component
         if route and any(c.route for c in comps):
-            st.set_route(self._db, ctx.spec.domain_for(ctx.source), ctx.dep_id, route.name,
-                         port_map.get(route.name), number)
+            st.set_route(self._db, st.effective_domain(row, ctx.spec, ctx.source),
+                         ctx.dep_id, route.name, port_map.get(route.name), number)
             eng.publish_routes(ctx)
 
     def _recompute_state(self, ctx: eng.Ctx, row: dict) -> None:

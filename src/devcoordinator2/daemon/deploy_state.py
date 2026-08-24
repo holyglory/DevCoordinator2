@@ -172,9 +172,66 @@ def set_route(db: Database, domain: str | None, dep_id: str, component: str | No
                 (domain, dep_id, component, port, generation_number, now_iso()))
 
 
+def effective_domain(row: dict | None, spec: DeploymentSpec, source: str) -> str | None:
+    """An administrator's override (deployment.set_domain) wins over the
+    repository-declared domain until cleared."""
+    if row and row.get("domain_override"):
+        return row["domain_override"]
+    return spec.domain_for(source)
+
+
+def override_domain(db: Database, dep_id: str, domain: str | None) -> dict:
+    """Persist a domain override (or clear it, falling back to the declared
+    domain) and move the live route with it. Uniqueness is the caller's check."""
+    row = get_deployment(db, dep_id)
+    if row is None:
+        raise ValueError(f"no deployment {dep_id}")
+    declared = json.loads(row["spec_json"]).get("domain")
+    effective = domain if domain is not None else declared
+    with db.transaction() as conn:
+        conn.execute("UPDATE deployments SET domain_override=?, domain=?, updated_at=?"
+                     " WHERE deployment_id=?", (domain, effective, now_iso(), dep_id))
+        route = conn.execute("SELECT * FROM domain_routes WHERE deployment_id=?",
+                             (dep_id,)).fetchone()
+        if route is not None:
+            if effective:
+                conn.execute("UPDATE domain_routes SET domain=?, published_at=?"
+                             " WHERE deployment_id=?", (effective, now_iso(), dep_id))
+            else:
+                conn.execute("DELETE FROM domain_routes WHERE deployment_id=?", (dep_id,))
+    if route is None and effective:
+        _create_route_from_spec(db, dep_id, row, effective)
+    updated = get_deployment(db, dep_id)
+    return {"deployment_id": dep_id, "domain": updated["domain"],
+            "domain_source": "override" if domain is not None else "configuration",
+            "declared_domain": declared}
+
+
+def _create_route_from_spec(db: Database, dep_id: str, row: dict,
+                            domain: str) -> None:
+    spec = json.loads(row["spec_json"])
+    route_comp = next((c["name"] for c in spec.get("components", []) if c.get("route")),
+                      None)
+    if route_comp is None:
+        raise ValueError("this deployment declares no route component; add"
+                         " route = true to the component that should receive traffic"
+                         " and apply first")
+    generation = row["current_generation"] or 0
+    port_rows = db.query(
+        "SELECT port, generation FROM port_assignments WHERE deployment_id=?"
+        " AND component=? AND generation IN (?, 0) ORDER BY generation DESC",
+        (dep_id, route_comp, generation))
+    port = port_rows[0]["port"] if port_rows else None
+    set_route(db, domain, dep_id, route_comp, port, generation or None)
+
+
 def domain_owner(db: Database, domain: str) -> str | None:
     rows = db.query("SELECT deployment_id FROM domain_routes WHERE domain=?", (domain,))
-    return rows[0]["deployment_id"] if rows else None
+    if rows:
+        return rows[0]["deployment_id"]
+    observed = db.query(
+        "SELECT observed_deployment_id FROM observed_routes WHERE domain=?", (domain,))
+    return observed[0]["observed_deployment_id"] if observed else None
 
 
 def delete_deployment_rows(db: Database, dep_id: str) -> None:

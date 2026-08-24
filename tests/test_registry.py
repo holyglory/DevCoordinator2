@@ -92,7 +92,7 @@ def test_schema_v1_upgrades_in_place_preserving_repositories(tmp_path: Path):
         conn.execute("DROP TABLE deployments")
     db.close()
     db = Database(path)
-    assert db.query("SELECT value FROM meta WHERE key='schema_version'")[0]["value"] == "5"
+    assert db.query("SELECT value FROM meta WHERE key='schema_version'")[0]["value"] == "7"
     assert db.query("SELECT repository_id FROM repositories")[0]["repository_id"] == "r1"
     assert db.query("SELECT count(*) AS n FROM deployments")[0]["n"] == 0
     db.close()

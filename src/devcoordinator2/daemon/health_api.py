@@ -7,7 +7,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from devcoordinator2.daemon import docker_cli, inventory, metrics_store
+from devcoordinator2.daemon import docker_cli, inventory, metrics_store, observed
 from devcoordinator2.daemon.db import Database
 from devcoordinator2.daemon.metrics_sampler import Sampler
 from devcoordinator2.daemon.registry import Registry
@@ -22,6 +22,53 @@ SUBJECT_KINDS = ("host", "repository", "component", "container", "test", "daemon
                  "worktree", "deployment")
 
 
+def _unhealthy_reasons(db: Database, deployment: dict) -> list[dict]:
+    """Component-level facts explaining why a deployment counts as unhealthy,
+    so the Console can show the cause and offer the matching action."""
+    dep_id = deployment["deployment_id"]
+    reasons = []
+    if deployment.get("observed_only"):
+        for c in db.query(
+                "SELECT compose_service, state, status, health FROM observed_containers"
+                " WHERE observed_deployment_id=? ORDER BY compose_service", (dep_id,)):
+            if c["state"] == "running" and c["health"] not in ("unhealthy",):
+                continue
+            detail = c["status"] if c["status"] != c["state"] else None
+            if c["health"] == "unhealthy":
+                detail = (f"container healthcheck failing ({detail})" if detail
+                          else "container healthcheck failing")
+            reasons.append({"component": c["compose_service"], "state": c["state"],
+                            "detail": detail})
+    else:
+        for c in db.query(
+                "SELECT name, state, desired_state, health, last_error FROM components"
+                " WHERE deployment_id=? ORDER BY order_index", (dep_id,)):
+            if c["state"] == "running" and c["health"] != "unhealthy":
+                continue
+            if c["desired_state"] != "running" and c["state"] == "stopped":
+                continue  # deliberately stopped, not a fault
+            reasons.append({"component": c["name"], "state": c["state"],
+                            "detail": c["last_error"]})
+    return reasons
+
+
+def _downsample(points: list[dict], target: int) -> list[dict]:
+    """Bucketed reduction preserving min/max envelopes; avg weighted by the
+    real sample counts."""
+    if len(points) <= target:
+        return points
+    bucket = -(-len(points) // target)  # ceil
+    out = []
+    for i in range(0, len(points), bucket):
+        chunk = points[i:i + bucket]
+        samples = sum(p["samples"] for p in chunk) or len(chunk)
+        avg = sum(p["avg"] * (p["samples"] or 1) for p in chunk) / samples
+        out.append({"minute": chunk[-1]["minute"],
+                    "min": min(p["min"] for p in chunk), "avg": round(avg, 3),
+                    "max": max(p["max"] for p in chunk), "samples": samples})
+    return out
+
+
 def build_health_handlers(config: InstanceConfig, db: Database, registry: Registry,
                           sampler: Sampler) -> dict[str, Handler]:
     def summary(args: dict[str, Any], caller: Caller) -> dict[str, Any]:
@@ -31,7 +78,15 @@ def build_health_handlers(config: InstanceConfig, db: Database, registry: Regist
         storage = snap["storage"].get(("host", "storage"), {})
         deployments = [dict(r) for r in db.query(
             "SELECT deployment_id, name, source, state FROM deployments")]
-        unhealthy = [d for d in deployments if d["state"] in ("degraded", "failed")]
+        deployments.extend({"deployment_id": d["deployment_id"], "name": d["name"],
+                            "source": d["source"], "state": d["state"],
+                            "health": d["health"], "observed_only": True}
+                           for d in observed.list_deployments(db))
+        unhealthy = [d for d in deployments
+                     if d["state"] in ("degraded", "failed")
+                     or d.get("health") == "unhealthy"]
+        for d in unhealthy:
+            d["reasons"] = _unhealthy_reasons(db, d)
         active_tests = [k[1] for k in snap["current"] if k[0] == "test"]
         try:
             counts = inventory.summary(inventory.containers(db, config.unit_prefix))
@@ -58,6 +113,7 @@ def build_health_handlers(config: InstanceConfig, db: Database, registry: Regist
             deployments = [dict(r) for r in db.query(
                 "SELECT deployment_id, name, source, state FROM deployments"
                 " WHERE repository_id=?", (rid,))]
+            deployments.extend(observed.list_deployments(db, rid))
             health = "healthy"
             if any(d["state"] in ("degraded", "failed") for d in deployments):
                 health = "unhealthy"
@@ -72,6 +128,8 @@ def build_health_handlers(config: InstanceConfig, db: Database, registry: Regist
                 "health": health, "deployments": deployments,
                 "trend_cpu": metrics_store.trend(db, "repository", rid, "cpu_percent"),
                 "trend_memory": metrics_store.trend(db, "repository", rid, "memory_bytes"),
+                "trend_storage": metrics_store.trend(db, "repository", rid,
+                                                     "storage_bytes", minutes=1440),
             })
         daemon = snap["current"].get(("daemon", "daemon"), {})
         other = snap["current"].get(("other", "other"), {})
@@ -114,7 +172,7 @@ def build_health_handlers(config: InstanceConfig, db: Database, registry: Regist
                 "components": components}
 
     def history(args: dict[str, Any], caller: Caller) -> dict[str, Any]:
-        unknown = set(args) - {"subject_kind", "subject_id", "metric", "minutes"}
+        unknown = set(args) - {"subject_kind", "subject_id", "metric", "minutes", "points"}
         if unknown:
             raise ProtocolError("args_invalid", f"unknown args: {sorted(unknown)}")
         kind, sid, metric = args.get("subject_kind"), args.get("subject_id"), args.get("metric")
@@ -123,7 +181,13 @@ def build_health_handlers(config: InstanceConfig, db: Database, registry: Regist
         minutes = args.get("minutes", 60)
         if not isinstance(minutes, int) or not (1 <= minutes <= 60 * 24 * 30):
             raise ProtocolError("args_invalid", "'minutes' must be 1..43200")
+        target = args.get("points")
+        if target is not None and (not isinstance(target, int)
+                                   or not (2 <= target <= 1440)):
+            raise ProtocolError("args_invalid", "'points' must be 2..1440")
         points = metrics_store.series(db, kind, sid, metric, minutes)
+        if target is not None:
+            points = _downsample(points, target)
         return {"subject_kind": kind, "subject_id": sid, "metric": metric,
                 "minutes": minutes, "points": points[-1440:],
                 "truncated": len(points) > 1440}

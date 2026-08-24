@@ -24,6 +24,9 @@ def test_prefixes_disjoint(tmp_path: Path):
     assert ids.worktree_id(tmp_path)[0] == "w"
     assert ids.run_id()[0] == "t"
     assert ids.repository_id(tmp_path)[1:] != ids.worktree_id(tmp_path)[1:]
+    observed = ids.observed_deployment_id(ids.repository_id(tmp_path), "native")
+    assert re.fullmatch(r"d[0-9a-f]{16}", observed)
+    assert observed == ids.observed_deployment_id(ids.repository_id(tmp_path), "native")
 
 
 def test_run_id_shape_and_uniqueness():

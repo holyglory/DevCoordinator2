@@ -89,7 +89,7 @@ PostgreSQL container; Docker/Compose env files now use the literal format.
 
 | Item | Result | Evidence |
 |---|---|---|
-| Deployments, Tests, Health (+Containers), Bugs, Administration destinations rendered at wide and narrow viewports in populated / empty / error / loading / permission-denied states; no overflow, clipping, or off-canvas controls | PASS | `console/verify.mjs`: 275 checks, 0 failures |
+| Deployments, Tests, Health (+Containers), Bugs, Administration destinations rendered at wide and narrow viewports in populated / empty / error / loading / permission-denied states; observed-only deployments expose no lifecycle/log controls; no overflow, clipping, or off-canvas controls | PASS | `console/verify.mjs`: 279 checks, 0 failures |
 | Every control calls the real API and re-reads state (stop→stopped, start→running, logs, remove with explicit data choice, test output, bug report, invite, container removal) | PASS | interaction proofs in the same run |
 | Non-administrators get explicit permission-denied notices; host health hidden, repositories filtered | PASS | `denied` scenario |
 
@@ -98,7 +98,7 @@ PostgreSQL container; Docker/Compose env files now use the literal format.
 | Item | Result | Evidence |
 |---|---|---|
 | Read-only legacy export (repositories, ports, server definitions, routes, owners, pending requests, Telegram config without token, open bugs) | DONE | `scripts/legacy_export.py` → `instance/legacy-export.json` (untracked) |
-| Import tool: administrators, Telegram chats/subscriptions, bugs; deployment declaration plan; dry-run | PASS | `tests/test_legacy_import.py`; dry-run against the real export |
+| Import tool: administrators, Telegram chats/subscriptions, bugs, and exact running container/Compose identities as a replaceable observed-only projection; temporary/historical exclusion; reviewed current routes; fixture cleanup; dry-run | PASS | `tests/test_legacy_import.py`, `tests/test_observed.py`; private dry-run and installed import evidence under `instance/` / the recovery root |
 | Canary installed beside legacy on private socket/port; daemon and edge active; route document served (generation ≥ 1, bootstrap owner) | PASS | `scripts/install.py --canary` on the host |
 | Installed CLI journey as a client account: test start → passed as caller uid, output, list; MCP `test_status`; bug report/close; health summary/containers | PASS | run on the host through `/usr/local/bin/devcoordinator2` |
 | Bugs found by the installed run and fixed: daemon unit `PrivateTmp` hid caller filesystems; test parser rejected files that also declare deployments; edge main-guard failed through the release symlink; installer ownership (uid used as gid) | FIXED | this commit |

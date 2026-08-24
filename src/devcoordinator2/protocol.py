@@ -29,6 +29,7 @@ ERROR_CODES = (
     "busy",
     "deployment_apply_failed",
     "deployment_action_failed",
+    "observed_only",
     "rollback_unavailable",
     "permission_denied",
     "user_not_found",

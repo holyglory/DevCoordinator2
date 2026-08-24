@@ -56,6 +56,30 @@ live in root-only 0600 files under the instance secrets directory.
 Bugs are **not** in this database: `DEVCOORDINATOR2_BUGS_DIR` holds one
 atomic JSON file per open bug.
 
+## Schema version 6 (current observed-only import)
+
+| Table | Fields | Status |
+|---|---|---|
+| `observed_deployments` | exact repository + native Compose project, current state/health, source, bounded evidence, observation/import time | done |
+| `observed_containers` | full live container ID PK, observed deployment/repository, name/image/service, current state/status/health | done |
+| `observed_routes` | domain label PK, observed deployment/component, verified live port, public flag, bounded evidence | done |
+
+This is a replaceable current projection, not configuration authority or
+history. Every current-state import atomically replaces all three tables
+(including any domain set through `deployment.set_domain`). Stopped, removed,
+missing, temporary, validation, test, and conflicting resources are not
+retained by an import.
+
+## Schema version 7 (owner-driven lifecycle and domain UX, 2026-08-24)
+
+| Change | Reason | Status |
+|---|---|---|
+| `deployments.domain_override TEXT` | administrator-set routed domain that wins over the declared one on every apply until cleared (DC2-2026-08-24-DOMAIN-EDIT) | done |
+| `observed_deployments.state` CHECK relaxed to running/degraded/stopped/failed; `observed_containers.state` to running/stopped/failed/starting/missing; `observed_containers.health` gains `none` | start/stop/restart now act on exact recorded containers, so non-running states must be recordable (DC2-2026-08-24-OBSERVED-LIFECYCLE) | done |
+
+The CHECK relaxation rebuilds the two observed tables in place, preserving
+every imported row and the two indexes.
+
 ## Reserved ID-prefix namespace
 
 Deterministic opaque TEXT IDs; later phases never migrate existing IDs.
@@ -66,6 +90,7 @@ Deterministic opaque TEXT IDs; later phases never migrate existing IDs.
 | `w` | worktree | sha256("devcoordinator2.worktree\0" + realpath(worktree root))[:16] | 1 |
 | `t` | test run | UTC timestamp + random suffix (not stored in DB) | 1 |
 | `d` | deployment | sha256("devcoordinator2.deployment\0" + worktree_id + name + source)[:16] | 3 (done) |
+| `d` | observed deployment | sha256("devcoordinator2.observed-deployment\0" + repository_id + native project)[:16] | 6 (done; disjoint namespace) |
 | `c` | component | not needed: components are keyed (deployment_id, name) | — |
 | `g` | generation | (deployment_id, number) counter | 3 (done) |
 | `u` | public user | random at creation | 5 (done); `i` invitation |

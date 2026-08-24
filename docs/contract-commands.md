@@ -124,6 +124,22 @@ Reference args on every command except `list`: `path` (required) plus
   deleted_volumes}`. Stops everything, removes containers/units/generation
   checkouts and records; named volumes and PostgreSQL data survive unless
   `delete_data` is true. Repository `persistent_paths` are never touched.
+- `deployment.set_domain {deployment_id, domain|null, port?, component?,
+  public?}` (administrator) → `{deployment_id, domain, ...}`. Sets, changes,
+  or clears the routed domain and republishes the route document. Managed:
+  the label persists as an override that wins over the declared domain on
+  every apply until cleared (clearing falls back to the declared domain);
+  `port`/`component` are rejected. Observed: edits the observed route; when
+  none exists yet, `port` is required (and `component` if several containers
+  exist); a current-state re-import replaces such edits. Uniqueness is
+  enforced across managed and observed routes.
+- Imported current deployments return `observed_only=true`. Status, list,
+  start/stop/restart, and logs work — lifecycle acts on the exact recorded
+  container IDs and never recreates anything
+  (DC2-2026-08-24-OBSERVED-LIFECYCLE); a missing container is reported, not
+  replaced. apply/rollback/remove return `observed_only`; reviewed
+  repository configuration is the explicit transition to configuration
+  authority.
 
 ## health.containers (Phase 3, implemented)
 
@@ -131,7 +147,8 @@ Args: none. Result: `{containers: [{id, name, image, state, status, created,
 repository_id, deployment_id, component, run_id, caller_uid, client,
 ttl_seconds, data, classification}], counts}` where classification is one
 of `managed-test`, `managed-preview`, `managed-permanent`,
-`orphaned-managed`, `unmanaged`. Classification uses daemon-owned labels
+`observed-current`, `orphaned-managed`, `unmanaged`. Classification uses
+daemon-owned labels or an exact current observed-import identity
 and recorded bindings only — never names, ports, images, or paths.
 
 ## health.summary | repositories | repository | history (Phase 4, implemented)
@@ -153,9 +170,16 @@ and recorded bindings only — never names, ports, images, or paths.
   (component, container, test) with live cgroup metrics and storage; dedicated
   PostgreSQL components carry `pg_connections`, `pg_wal_bytes`,
   `pg_temp_bytes`, `pg_database_bytes` (numbers only, never content).
-- `health.history {subject_kind, subject_id, metric, minutes<=43200}` →
-  one-minute `{minute, min, avg, max, samples}` points, at most 1440 per
-  call (`truncated` flag), from the 30-day bounded store.
+- `health.history {subject_kind, subject_id, metric, minutes<=43200,
+  points?}` → one-minute `{minute, min, avg, max, samples}` points, at most
+  1440 per call (`truncated` flag), from the 30-day bounded store. With
+  `points` (2..1440) the daemon downsamples server-side into that many
+  buckets preserving the min/max envelope and sample-weighted averages —
+  the Console's 24h/7d/30d charts use this. Host storage
+  (`host/host/storage_bytes`) is persisted every storage tick.
+- `health.summary.unhealthy_deployments[*]` carries `reasons:
+  [{component, state, detail}]` naming exactly which component is unhealthy
+  and why (recorded error or failing container healthcheck).
 
 Alerts (in `health.summary.alerts` and as `alert.opened`/`alert.recovered`
 events): host CPU > 90% for 5 min, host memory available < 10% for 5 min,

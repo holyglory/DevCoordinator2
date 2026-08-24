@@ -17,3 +17,6 @@ __pycache__/
 
 # Runtime state that must never enter the repository
 .devcoordinator/
+
+# Serena tool workspace (local-only)
+.serena/

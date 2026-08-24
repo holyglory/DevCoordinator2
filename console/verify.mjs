@@ -24,10 +24,13 @@ const OUT = process.env.CONSOLE_VERIFY_OUT || path.join(os.tmpdir(), 'dc2-consol
 const pw = createRequire(path.join(process.env.CONSOLE_VERIFY_PLAYWRIGHT || process.cwd(), 'package.json'))('playwright');
 
 const DEP = 'd0123456789abcdef';
+const OBS = 'd3333333333333333';
 const LONG = 'a-very-long-deployment-name-that-keeps-going-and-going-for-quite-a-while';
 const fixtures = (scenario) => {
   const running = { deployment_id: DEP, repository_id: 'r0123456789abcdef', name: 'web', source: 'worktree', state: scenario.stopped ? 'stopped' : 'running', domain: `app-dev.${BASE}`, current_generation: 17, updated_at: new Date(Date.now() - 90000).toISOString(), ttl_expires_at: null };
   const degraded = { deployment_id: 'd1111111111111111', repository_id: 'r0123456789abcdef', name: LONG, source: 'checkout', state: 'degraded', domain: `${LONG}.${BASE}`, current_generation: 2147483647, updated_at: new Date().toISOString(), ttl_expires_at: '2026-12-31T00:00:00Z' };
+  const observed = { deployment_id: OBS, repository_id: 'r0123456789abcdef', name: 'existing-compose-stack', source: 'observed', state: 'running', health: 'healthy', domain: `observed.${BASE}`, route_port: 5001, current_generation: null, updated_at: new Date().toISOString(), ttl_expires_at: null, observed_only: true };
+  const observedComponents = [{ name: 'app', display_name: 'existing-compose-stack-app-1', type: 'container', state: 'running', health: 'healthy', generation: null, binding: { kind: 'observed-container', identity: 'd'.repeat(64) }, port: 5001, restarts: null, owned: false, independent_control: false, last_error: null }];
   const components = [
     { name: 'db', type: 'postgres', state: 'running', health: 'healthy', generation: 0, binding: { kind: 'container', identity: 'c'.repeat(64) }, port: 20001, restarts: 0, owned: true, independent_control: true, last_error: null },
     { name: 'api', type: 'process', state: scenario.stopped ? 'stopped' : 'running', health: scenario.stopped ? 'none' : 'healthy', generation: 17, binding: { kind: 'unit', identity: `devcoordinator2-deploy-${DEP}-api-g17.service` }, port: 20002, restarts: 3, owned: true, independent_control: true, last_error: null },
@@ -37,20 +40,22 @@ const fixtures = (scenario) => {
   const points = Array.from({ length: 30 }, (_, i) => ({ minute: `2026-01-01T00:${String(i).padStart(2, '0')}Z`, min: i, avg: i * 1.5, max: i * 2, samples: 4 }));
   return {
     'user.whoami': { local: false, identity: scenario.identity, user_id: 'u1', administrator: scenario.admin, grants: scenario.admin ? {} : { [DEP]: 'operator' } },
-    'deployment.list': { deployments: scenario.empty ? [] : [running, degraded], declared: scenario.empty ? [] : [{ name: 'tool', source: 'worktree', deployment_id: 'd2222222222222222' }] },
+    'deployment.list': { deployments: scenario.empty ? [] : [running, degraded, observed], declared: scenario.empty ? [] : [{ name: 'tool', source: 'worktree', deployment_id: 'd2222222222222222' }] },
     'deployment.status': { ...running, previous_generation: 16, route_port: 20002, components, log_dir: '/state/logs' },
+    'deployment.observed-status': { ...observed, previous_generation: null, components: observedComponents, log_dir: null, native_project: 'existing-compose-stack', observation_source: 'legacy-current-import' },
     'deployment.logs': { component: 'api', tail: 'line 1\nline 2 ' + 'long '.repeat(60) + '\nline 3', truncated_before_tail: true, log_path: '/state/logs/api.log' },
     'health.history': { subject_kind: 'component', subject_id: `${DEP}/api`, metric: 'cpu_percent', minutes: 60, points: scenario.empty ? [] : points, truncated: false },
     'test.list': { runs: scenario.empty ? [] : [
       { run_id: 't20260101T000000Z-abc123', test: 'unit', status: 'running', started_at: new Date().toISOString(), finished_at: null, duration_seconds: null, exit_code: null, stdout_bytes_observed: 123456789, stderr_bytes_observed: 0, stdout_truncated: true, stderr_truncated: false, display_name: 'repo-one', worktree_path: '/srv/repos/repo-one', repository_id: 'r1', worktree_id: 'w1', summary_path: '/srv/repos/repo-one/.devcoordinator/test/current/summary.json' },
       { run_id: 't20260101T000100Z-def456', test: 'integration-with-a-long-name', status: 'failed', started_at: new Date(Date.now() - 3600000).toISOString(), finished_at: new Date().toISOString(), duration_seconds: 3599.123, exit_code: 1, stdout_bytes_observed: 10, stderr_bytes_observed: 4194304, stdout_truncated: false, stderr_truncated: true, display_name: LONG, worktree_path: `/srv/repos/${LONG}`, repository_id: 'r2', worktree_id: 'w2', summary_path: '/x' }] },
     'test.output': { run_id: 't1', stream: 'stdout', tail: 'ok\n'.repeat(5), tail_bytes: 15, truncated_before_tail: true, log_path: '/srv/repos/repo-one/.devcoordinator/test/current/stdout.log' },
-    'health.summary': { host: { cpu_percent: 93.4, memory_total: 264122252 * 1024, memory_used: 108579328 * 1024, memory_available: 155542924 * 1024, swap_total: 0, swap_used: 0, load_1: 8.32, load_5: 8.39, load_15: 7.69, fs_size: 2113513742336, fs_free: 148698841088, fs_used: 1964814901248, ncpu: 32, reconciliation: { managed_cpu_percent: 40.1, daemon_cpu_percent: 0.3, other_cpu_percent: 53.0, managed_memory: 50e9, daemon_memory: 120e6, other_memory: 60e9 } }, storage: { fs_used: 1964814901248, managed_repositories: 4e11, devcoordinator_state: 5e7, docker_shared: 3e10, docker_images: 2.7e10, docker_build_cache: 2.8e9, docker_shared_volumes: 1e8, other: 1.5e12 }, unhealthy_deployments: scenario.empty ? [] : [degraded], active_tests: scenario.empty ? [] : ['unit'], container_counts: { 'managed-test': 1, 'managed-preview': 0, 'managed-permanent': 3, 'orphaned-managed': 1, unmanaged: 43 }, alerts: scenario.empty ? [] : [{ alert_key: 'host/cpu', kind: 'host_cpu', severity: 'warning', message: 'host CPU 93% sustained', opened_at: new Date().toISOString() }, { alert_key: `component/${DEP}/worker/unhealthy`, kind: 'component_unhealthy', severity: 'critical', message: `component ${DEP}/worker is failed`, opened_at: new Date().toISOString() }], sampling: { retention_days: 30 } },
-    'health.repositories': { repositories: scenario.empty ? [] : [{ repository_id: 'r0123456789abcdef', display_name: 'repo-one', root_path: '/srv/repos/repo-one', cpu_percent: 40.1, memory_bytes: 5e10, storage_bytes: 4e11, storage: {}, health: 'unhealthy', deployments: [running, degraded], trend_cpu: [1, 5, 3, 8, 2, 9, 4, 7, 3, 6, 2, 5], trend_memory: [1, 1, 2, 2, 3, 3, 3, 4, 4, 4, 5, 5] }, { repository_id: 'r2', display_name: LONG, root_path: `/srv/repos/${LONG}`, cpu_percent: 0, memory_bytes: 0, storage_bytes: 1234567890123, storage: {}, health: 'none', deployments: [], trend_cpu: [], trend_memory: [] }], devcoordinator: { cpu_percent: 0.3, memory_bytes: 120e6, storage_bytes: 5e7 }, shared_unattributed: { cpu_percent: 53, memory_bytes: 60e9, storage: { docker_images: 2.7e10, other: 1.5e12 } }, host: {} },
+    'health.summary': { host: { cpu_percent: 93.4, memory_total: 264122252 * 1024, memory_used: 108579328 * 1024, memory_available: 155542924 * 1024, swap_total: 0, swap_used: 0, load_1: 8.32, load_5: 8.39, load_15: 7.69, fs_size: 2113513742336, fs_free: 148698841088, fs_used: 1964814901248, ncpu: 32, reconciliation: { managed_cpu_percent: 40.1, daemon_cpu_percent: 0.3, other_cpu_percent: 53.0, managed_memory: 50e9, daemon_memory: 120e6, other_memory: 60e9 } }, storage: { fs_used: 1964814901248, managed_repositories: 4e11, devcoordinator_state: 5e7, docker_shared: 3e10, docker_images: 2.7e10, docker_build_cache: 2.8e9, docker_shared_volumes: 1e8, other: 1.5e12 }, unhealthy_deployments: scenario.empty ? [] : [{ ...degraded, reasons: [{ component: 'worker', state: 'failed', detail: 'exited 1: boom' }, { component: 'api', state: 'stopped', detail: null }] }, { deployment_id: OBS, name: 'existing-compose-stack', source: 'observed', state: 'running', health: 'unhealthy', observed_only: true, reasons: [{ component: 'app', state: 'running', detail: 'container healthcheck failing (Up 3 days (unhealthy))' }] }], active_tests: scenario.empty ? [] : ['unit'], container_counts: { 'managed-test': 1, 'managed-preview': 0, 'managed-permanent': 3, 'orphaned-managed': 1, unmanaged: 43 }, alerts: scenario.empty ? [] : [{ alert_key: 'host/cpu', kind: 'host_cpu', severity: 'warning', message: 'host CPU 93% sustained', opened_at: new Date().toISOString() }, { alert_key: `component/${DEP}/worker/unhealthy`, kind: 'component_unhealthy', severity: 'critical', message: `component ${DEP}/worker is failed`, opened_at: new Date().toISOString() }], sampling: { retention_days: 30 } },
+    'health.repositories': { repositories: scenario.empty ? [] : [{ repository_id: 'r0123456789abcdef', display_name: 'repo-one', root_path: '/srv/repos/repo-one', cpu_percent: 40.1, memory_bytes: 5e10, storage_bytes: 4e11, storage: {}, health: 'unhealthy', deployments: [running, degraded, observed], trend_cpu: [1, 5, 3, 8, 2, 9, 4, 7, 3, 6, 2, 5], trend_memory: [1, 1, 2, 2, 3, 3, 3, 4, 4, 4, 5, 5] }, { repository_id: 'r2', display_name: LONG, root_path: `/srv/repos/${LONG}`, cpu_percent: 0, memory_bytes: 0, storage_bytes: 1234567890123, storage: {}, health: 'none', deployments: [], trend_cpu: [], trend_memory: [] }], devcoordinator: { cpu_percent: 0.3, memory_bytes: 120e6, storage_bytes: 5e7 }, shared_unattributed: { cpu_percent: 53, memory_bytes: 60e9, storage: { docker_images: 2.7e10, other: 1.5e12 } }, host: {} },
     'health.containers': { containers: scenario.empty ? [] : [
       { id: 'a'.repeat(64), name: 'devcoordinator2-deploy-x-db', image: 'postgres:16-alpine', state: 'running', status: 'Up 3 days', created: '2026-08-20 10:00:00 +0000 UTC', repository_id: 'r0123456789abcdef', deployment_id: DEP, component: 'db', run_id: null, caller_uid: 1000, client: 'claude', ttl_seconds: null, data: 'persistent', classification: 'managed-permanent', cpu_percent: 1.2, memory_bytes: 2677821440, pids: 7, container_layer_bytes: 0 },
       { id: 'b'.repeat(64), name: 'legacy-thing-1', image: 'some/image:latest', state: 'running', status: 'Up 6 weeks', created: '2026-07-01', repository_id: null, deployment_id: null, component: null, run_id: null, caller_uid: null, client: null, ttl_seconds: null, data: null, classification: 'unmanaged', cpu_percent: 12.5, memory_bytes: 9e9, pids: 100, container_layer_bytes: null },
-      { id: 'c'.repeat(64), name: 'devcoordinator2-test-old-postgres', image: 'postgres:16-alpine', state: 'exited', status: 'Exited (0)', created: '2026-08-22', repository_id: 'r1', deployment_id: null, component: null, run_id: 't-old', caller_uid: 1001, client: 'codex', ttl_seconds: 3600, data: 'disposable', classification: 'orphaned-managed', cpu_percent: null, memory_bytes: null, pids: null, container_layer_bytes: 12345 }], counts: { 'managed-test': 0, 'managed-preview': 0, 'managed-permanent': 1, 'orphaned-managed': 1, unmanaged: 1 } },
+      { id: 'c'.repeat(64), name: 'devcoordinator2-test-old-postgres', image: 'postgres:16-alpine', state: 'exited', status: 'Exited (0)', created: '2026-08-22', repository_id: 'r1', deployment_id: null, component: null, run_id: 't-old', caller_uid: 1001, client: 'codex', ttl_seconds: 3600, data: 'disposable', classification: 'orphaned-managed', cpu_percent: null, memory_bytes: null, pids: null, container_layer_bytes: 12345 },
+      { id: 'd'.repeat(64), name: 'existing-compose-stack-app-1', image: 'app:1', state: 'running', status: 'Up 3 days (healthy)', created: '2026-08-20', repository_id: 'r0123456789abcdef', deployment_id: OBS, component: 'app', run_id: null, caller_uid: null, client: 'legacy-current-import', ttl_seconds: null, data: 'observed-only', classification: 'observed-current', cpu_percent: 2.5, memory_bytes: 123456789, pids: 4, container_layer_bytes: 45678 }], counts: { 'managed-test': 0, 'managed-preview': 0, 'managed-permanent': 1, 'observed-current': 1, 'orphaned-managed': 1, unmanaged: 1 } },
     'bug.list': { bugs: scenario.empty ? [] : [{ bug_id: 'b0123456789ab', component: 'api', summary: 'Returns 500 on /export when the report is large', expected: '200 with CSV', actual: '500', steps: '1. open /export 2. choose all-time 3. submit', opened_at: '2026-08-20T10:00:00Z', last_seen_at: new Date().toISOString(), occurrences: 42, reporter: 'dev@example.test', correlations: { deployment_id: DEP } }], store: '/bugs' },
     'user.list': { users: [{ user_id: 'u1', email: 'owner@example.test', administrator: true, grants: [], last_seen_at: new Date().toISOString() }, { user_id: 'u2', email: `${'verylongmailboxname'.repeat(3)}@example.test`, administrator: false, grants: [{ deployment_id: DEP, role: 'operator', granted_at: 't' }], last_seen_at: null }], invitations: [{ invitation_id: 'i1', email: 'new@example.test', administrator: false, grants: [{ deployment_id: DEP, role: 'viewer' }], created_at: 't', created_by: 'owner', expires_at: '2026-09-06T00:00:00Z' }], roles: ['access', 'viewer', 'operator', 'administrator'], owners: ['owner@example.test'] },
     'telegram.list': { configured: true, chats: [{ chat_id: 4242, email: 'owner@example.test', label: 'Owner', linked_at: 't', subscriptions: ['server', `deployment:${DEP}`] }], outbox_pending: 0, last_poll_at: new Date().toISOString(), last_error: null },
@@ -67,7 +72,7 @@ const SCENARIOS = {
 };
 const VIEWS = ['#/deployments', `#/deployments/${DEP}`, '#/tests', '#/health', '#/health/containers', '#/bugs', '#/admin'];
 const VIEWPORTS = { wide: { width: 1280, height: 800 }, narrow: { width: 390, height: 844 } };
-const ADMIN_ONLY = ['health.summary', 'health.containers', 'health.container_remove', 'user.list', 'user.invite', 'user.remove', 'grant.set', 'grant.remove', 'test.list', 'test.start', 'test.stop', 'test.output', 'deployment.apply', 'deployment.rollback', 'deployment.remove'];
+const ADMIN_ONLY = ['health.summary', 'health.containers', 'health.container_remove', 'user.list', 'user.invite', 'user.remove', 'grant.set', 'grant.remove', 'test.list', 'test.start', 'test.stop', 'test.output', 'deployment.apply', 'deployment.rollback', 'deployment.remove', 'deployment.set_domain'];
 
 async function startFakeDaemon(dir) {
   const socketPath = path.join(dir, 'daemon.sock');
@@ -84,6 +89,8 @@ async function startFakeDaemon(dir) {
       if (scenario.denied && ADMIN_ONLY.includes(cmd)) return reply({ ok: false, error: { code: 'permission_denied', message: `${cmd} requires administrator`, detail: '' } });
       if (cmd === 'deployment.stop') { mutable.stopped = true; return reply({ ok: true, result: { state: 'stopped' } }); }
       if (cmd === 'deployment.start') { mutable.stopped = false; return reply({ ok: true, result: { state: 'running' } }); }
+      if (cmd === 'deployment.status' && req.args.deployment_id === OBS) return reply({ ok: true, result: fixtures({ ...scenario, stopped: mutable.stopped })['deployment.observed-status'] });
+      if (cmd === 'deployment.set_domain') return reply({ ok: true, result: { deployment_id: req.args.deployment_id, domain: req.args.domain, public: !!req.args.public } });
       if (['deployment.restart', 'deployment.apply', 'deployment.rollback', 'deployment.remove', 'bug.report', 'bug.close', 'user.invite', 'user.remove', 'grant.set', 'grant.remove', 'telegram.link', 'telegram.subscribe', 'telegram.unsubscribe', 'test.stop', 'test.start', 'health.container_remove'].includes(cmd)) return reply({ ok: true, result: { state: 'done', status: 'done' } });
       const data = fixtures({ ...scenario, stopped: mutable.stopped })[cmd];
       if (data === undefined) return reply({ ok: false, error: { code: 'command_unknown', message: cmd, detail: '' } });
@@ -168,6 +175,34 @@ async function main() {
   await page.waitForTimeout(500);
   const removeCall = daemon.calls.find((c) => c.command === 'deployment.remove');
   check('interaction: remove asks for confirmation and passes delete_data explicitly', removeCall && typeof removeCall.args.delete_data === 'boolean');
+  // Domain editing (DC2-2026-08-24: administrators edit the routed domain in place).
+  await page.goto(`http://${HOST}:${port}/#/deployments/${DEP}`);
+  await page.waitForSelector('#edit-domain');
+  await page.click('#edit-domain');
+  await page.fill('#domain-form [name=domain]', 'renamed-app');
+  await page.click('#domain-form button[type=submit]');
+  await page.waitForTimeout(500);
+  const domainCall = daemon.calls.find((c) => c.command === 'deployment.set_domain');
+  check('interaction: domain editor calls deployment.set_domain with the new label',
+    domainCall && domainCall.args.deployment_id === DEP && domainCall.args.domain === 'renamed-app');
+  await page.goto(`http://${HOST}:${port}/#/deployments`);
+  const observedRow = page.locator(`a[href="#/deployments/${OBS}"]`).locator('xpath=ancestor::tr');
+  await observedRow.waitFor();
+  check('observed deployment list row offers start/stop/restart',
+    await observedRow.locator('[data-cmd="deployment.restart"]').count() === 1);
+  check('observed deployment list row offers no apply',
+    await observedRow.locator('[data-cmd="deployment.apply"]').count() === 0);
+  check('observed deployment list row is explicitly labelled', /observed/i.test(await observedRow.innerText()));
+  await page.goto(`http://${HOST}:${port}/#/deployments/${OBS}`);
+  await page.waitForSelector('text=exact recorded containers');
+  check('observed deployment detail offers lifecycle and log controls but no configuration authority',
+    await page.locator('[data-cmd="deployment.restart"]').count() >= 1
+    && await page.locator('[data-logs]').count() >= 1
+    && await page.locator('[data-cmd="deployment.apply"], [data-cmd="deployment.rollback"], [data-cmd="deployment.remove"]').count() === 0);
+  await page.click('h1 ~ .actions button[data-cmd="deployment.restart"]');
+  await page.waitForTimeout(500);
+  check('interaction: observed restart calls deployment.restart on the observed id',
+    daemon.calls.some((c) => c.command === 'deployment.restart' && c.args.deployment_id === OBS));
   await page.goto(`http://${HOST}:${port}/#/tests`);
   await page.waitForSelector('button[data-out="stderr"]');
   await page.click('button[data-out="stderr"]');
@@ -189,9 +224,29 @@ async function main() {
   await page.waitForSelector('button[data-cmd="health.container_remove"]');
   const removable = await page.$$('button[data-cmd="health.container_remove"]');
   check('interaction: only orphaned/test containers offer removal', removable.length === 1);
+  const observedContainer = page.locator('tr', { hasText: 'existing-compose-stack-app-1' });
+  check('observed container is labelled and non-removable',
+    /observed-current/.test(await observedContainer.innerText()) &&
+    await observedContainer.locator('button[data-cmd="health.container_remove"]').count() === 0);
   await removable[0].click();
   await page.waitForTimeout(500);
   check('interaction: container removal calls health.container_remove with the exact id', daemon.calls.some((c) => c.command === 'health.container_remove' && c.args.container_id === 'c'.repeat(64)));
+  await page.goto(`http://${HOST}:${port}/#/health`);
+  await page.waitForSelector('.card.bad-edge');
+  const healthText = await page.innerText('body');
+  check('health names the unhealthy component and its cause',
+    /worker/.test(healthText) && /exited 1: boom/.test(healthText) && /healthcheck failing/.test(healthText));
+  check('health offers actions on unhealthy deployments',
+    await page.locator('.card.bad-edge [data-cmd="deployment.restart"]').count() >= 1);
+  await page.waitForSelector('.chartbox svg.chart');
+  check('health charts render host history with a min–max band',
+    await page.locator('.chartbox svg.chart .band').count() >= 3);
+  daemon.calls.length = 0;
+  await page.click('[data-health-range="7d"]');
+  await page.waitForSelector('.chartbox svg.chart');
+  await page.waitForTimeout(400);
+  check('interaction: the 7d range requests a downsampled week of host history',
+    daemon.calls.some((c) => c.command === 'health.history' && c.args.minutes === 10080 && c.args.points > 0));
   await context.close();
 
   await browser.close();

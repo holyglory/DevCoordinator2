@@ -14,6 +14,7 @@ from pathlib import Path
 
 _REPO_NS = b"devcoordinator2.repository\0"
 _WORKTREE_NS = b"devcoordinator2.worktree\0"
+_OBSERVED_DEPLOYMENT_NS = b"devcoordinator2.observed-deployment\0"
 
 
 def _digest(namespace: bytes, path: Path) -> str:
@@ -27,6 +28,11 @@ def repository_id(git_common_root: Path) -> str:
 
 def worktree_id(worktree_root: Path) -> str:
     return "w" + _digest(_WORKTREE_NS, worktree_root)
+
+
+def observed_deployment_id(repository_id: str, native_project: str) -> str:
+    raw = f"{repository_id}\0{native_project}".encode()
+    return "d" + hashlib.sha256(_OBSERVED_DEPLOYMENT_NS + raw).hexdigest()[:16]
 
 
 def run_id(now: datetime | None = None) -> str:

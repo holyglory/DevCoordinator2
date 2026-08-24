@@ -178,6 +178,10 @@ def build_notification_handlers(config: InstanceConfig, telegram, access) -> dic
                     allowed = {r["repository_id"] for r in access.db.query(
                         "SELECT repository_id FROM deployments WHERE deployment_id IN"
                         f" ({marks})", tuple(principal.grants))}
+                    allowed.update(r["repository_id"] for r in access.db.query(
+                        "SELECT repository_id FROM observed_deployments"
+                        " WHERE observed_deployment_id IN"
+                        f" ({marks})", tuple(principal.grants)))
                 if ident not in allowed:
                     raise ProtocolError("permission_denied",
                                         "no viewable deployment in that repository")
@@ -238,7 +242,18 @@ def _only(args: dict[str, Any], allowed: set[str]) -> None:
 
 
 def _deployment_handlers(config: InstanceConfig, deployments, db) -> dict[str, Handler]:
+    from devcoordinator2.daemon import deploy_state, events, observed, routes
+
     ref_keys = {"path", "name", "deployment_id"}
+
+    def reject_observed(dep_id: str | None) -> None:
+        if observed.exists(db, dep_id):
+            raise ProtocolError(
+                "observed_only",
+                "observed deployments have no configuration authority here (start/stop/"
+                "restart and logs work on the exact recorded containers); adopt the"
+                " resource through reviewed repository configuration first",
+            )
 
     def ref(args: dict[str, Any], extra: set[str] = frozenset()):
         unknown = set(args) - (ref_keys | extra)
@@ -260,19 +275,38 @@ def _deployment_handlers(config: InstanceConfig, deployments, db) -> dict[str, H
         return deployments.list(path, caller)
 
     def dep_apply(args, caller):
-        return deployments.apply(*ref(args), caller)
+        resolved = ref(args)
+        reject_observed(resolved[2])
+        return deployments.apply(*resolved, caller)
 
     def dep_status(args, caller):
-        return deployments.status(*ref(args), caller)
+        resolved = ref(args)
+        if resolved[2]:
+            imported = observed.status(db, resolved[2])
+            if imported is not None:
+                return imported
+        return deployments.status(*resolved, caller)
 
     def dep_rollback(args, caller):
-        return deployments.rollback(*ref(args), caller)
+        resolved = ref(args)
+        reject_observed(resolved[2])
+        return deployments.rollback(*resolved, caller)
 
     def make_control(action):
         def handler(args, caller):
             path, name, dep_id = ref(args, {"component"})
-            return deployments.control(action, path, name, dep_id,
-                                       _optional_str(args, "component"), caller)
+            component = _optional_str(args, "component")
+            if observed.exists(db, dep_id):
+                # DC2-2026-08-24-OBSERVED-LIFECYCLE: act on the exact recorded
+                # containers; never recreate or reconfigure.
+                result = observed.control(db, action, dep_id, component)
+                events.publish(f"deployment.{action}", deployment_id=dep_id,
+                               name=result["name"], source="observed",
+                               component=component,
+                               repository_id=result["repository_id"],
+                               state=result["state"], caller_uid=caller.uid)
+                return result
+            return deployments.control(action, path, name, dep_id, component, caller)
         return handler
 
     def dep_logs(args, caller):
@@ -283,10 +317,60 @@ def _deployment_handlers(config: InstanceConfig, deployments, db) -> dict[str, H
         tail = args.get("tail_lines", 200)
         if not isinstance(tail, int) or not (1 <= tail <= 5000):
             raise ProtocolError("args_invalid", "'tail_lines' must be 1..5000")
+        if observed.exists(db, dep_id):
+            return observed.logs(db, dep_id, component, tail)
         return deployments.logs(path, name, dep_id, component, tail, caller)
+
+    def dep_set_domain(args, caller):
+        unknown = set(args) - {"deployment_id", "domain", "port", "component", "public"}
+        if unknown:
+            raise ProtocolError("args_invalid", f"unknown args: {sorted(unknown)}")
+        dep_id = args.get("deployment_id")
+        if not isinstance(dep_id, str) or not dep_id.startswith("d"):
+            raise ProtocolError("args_invalid", "'deployment_id' is required")
+        domain = args.get("domain")
+        if domain is not None:
+            if not isinstance(domain, str) \
+                    or not observed.DOMAIN_LABEL_RE.fullmatch(domain):
+                raise ProtocolError("args_invalid",
+                                    "'domain' must be a lowercase DNS label"
+                                    " (a-z, 0-9, hyphen), or null to clear")
+            owner = deploy_state.domain_owner(db, domain)
+            if owner is not None and owner != dep_id:
+                raise ProtocolError("args_invalid",
+                                    f"domain {domain!r} is already routed to {owner}")
+        port = args.get("port")
+        if port is not None and (not isinstance(port, int) or isinstance(port, bool)
+                                 or not (1 <= port <= 65535)):
+            raise ProtocolError("args_invalid", "'port' must be 1..65535")
+        public = args.get("public")
+        if public is not None and not isinstance(public, bool):
+            raise ProtocolError("args_invalid", "'public' must be a boolean")
+        if observed.exists(db, dep_id):
+            result = observed.set_domain(db, dep_id, domain, port,
+                                         _optional_str(args, "component"), public)
+        else:
+            if port is not None or args.get("component") is not None:
+                raise ProtocolError("args_invalid",
+                                    "'port'/'component' apply only to observed"
+                                    " deployments; managed routes come from the"
+                                    " declared route component")
+            try:
+                result = deploy_state.override_domain(db, dep_id, domain)
+            except ValueError as exc:
+                raise ProtocolError("deployment_not_found" if "no deployment"
+                                    in str(exc) else "args_invalid", str(exc)) from exc
+            if public is not None:
+                deploy_state.set_deployment(db, dep_id, public=int(public))
+                result["public"] = public
+        routes.publish(db, config.routes_path, config.base_domain)
+        events.publish("deployment.domain_changed", deployment_id=dep_id,
+                       domain=result.get("domain"), caller_uid=caller.uid)
+        return result
 
     def dep_remove(args, caller):
         path, name, dep_id = ref(args, {"delete_data"})
+        reject_observed(dep_id)
         delete = args.get("delete_data", False)
         if not isinstance(delete, bool):
             raise ProtocolError("args_invalid", "'delete_data' must be a boolean")
@@ -306,5 +390,6 @@ def _deployment_handlers(config: InstanceConfig, deployments, db) -> dict[str, H
         "deployment.status": dep_status, "deployment.rollback": dep_rollback,
         "deployment.start": make_control("start"), "deployment.stop": make_control("stop"),
         "deployment.restart": make_control("restart"), "deployment.logs": dep_logs,
+        "deployment.set_domain": dep_set_domain,
         "deployment.remove": dep_remove, "health.containers": health_containers,
     }

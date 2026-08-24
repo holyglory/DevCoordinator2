@@ -4,7 +4,13 @@
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const main = $('#main');
-const state = { who: null };
+const state = { who: null, healthRange: '24h', usageRange: '1h' };
+const RANGES = {
+  '1h': { minutes: 60, points: 60 },
+  '24h': { minutes: 1440, points: 288 },
+  '7d': { minutes: 10080, points: 336 },
+  '30d': { minutes: 43200, points: 360 },
+};
 
 function esc(value) {
   return String(value ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -35,6 +41,44 @@ function spark(values, width = 90, height = 20) {
   const pts = values.map((v, i) => `${(i * step).toFixed(1)},${(height - (v / max) * (height - 2) - 1).toFixed(1)}`).join(' ');
   return `<svg class="spark" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" aria-label="trend"><polyline fill="none" stroke="#4c8dff" stroke-width="1.5" points="${pts}"/></svg>`;
 }
+function meter(fraction) {
+  if (fraction == null || Number.isNaN(fraction)) return '';
+  const p = Math.max(0, Math.min(100, fraction * 100));
+  const cls = fraction >= 0.9 ? 'bad' : fraction >= 0.75 ? 'warn' : '';
+  return `<div class="meter"><span class="${cls}" style="width:${p.toFixed(1)}%"></span></div>`;
+}
+function minuteLabel(minute) {
+  return minute ? `${minute.slice(5, 10)} ${minute.slice(11, 16)}` : '';
+}
+// Time-series chart: shaded min–max envelope plus the average line, with the
+// scale and window bounds as plain HTML so nothing distorts or clips.
+function chart(points, fmt, label) {
+  if (!points || points.length < 2) {
+    return `<div class="chartbox"><div class="chartmeta"><span>${esc(label)}</span></div><div class="notice muted">No history for this window yet. Samples accumulate while the coordinator runs.</div></div>`;
+  }
+  const w = 600; const h = 130; const T = 4; const B = 4;
+  const ih = h - T - B;
+  const maxV = Math.max(...points.map((p) => p.max ?? p.avg), 1e-9) * 1.05;
+  const X = (i) => ((i / (points.length - 1)) * w);
+  const Y = (v) => T + ih - (Math.min(v, maxV) / maxV) * ih;
+  const upper = points.map((p, i) => [X(i), Y(p.max ?? p.avg)]);
+  const lower = points.map((p, i) => [X(i), Y(p.min ?? p.avg)]);
+  const band = [...upper, ...lower.reverse()].map(([x, y]) => `${x.toFixed(1)},${y.toFixed(1)}`).join(' ');
+  const avg = points.map((p, i) => `${X(i).toFixed(1)},${Y(p.avg).toFixed(1)}`).join(' ');
+  const grid = [0.25, 0.5, 0.75].map((f) => `<line x1="0" x2="${w}" y1="${Y(maxV * f).toFixed(1)}" y2="${Y(maxV * f).toFixed(1)}" class="gridline"/>`).join('');
+  const last = points.at(-1);
+  return `<div class="chartbox">
+    <div class="chartmeta"><span>${esc(label)}</span><span><span class="muted">scale 0–${fmt(maxV)} · now</span> <strong>${fmt(last.avg)}</strong></span></div>
+    <svg class="chart" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" aria-label="${esc(label)} history">${grid}<polygon points="${band}" class="band"/><polyline points="${avg}" class="line" fill="none"/></svg>
+    <div class="chartaxis"><span>${esc(minuteLabel(points[0].minute))}</span><span class="muted">min–max band, average line</span><span>${esc(minuteLabel(last.minute))}</span></div>
+  </div>`;
+}
+function seg(options, current, dataKey) {
+  return `<div class="seg" role="tablist">${options.map((o) => `<button type="button" class="${o === current ? 'active' : ''}" data-${dataKey}="${o}">${o}</button>`).join('')}</div>`;
+}
+function bindSeg(root, dataKey, apply) {
+  root.querySelectorAll(`[data-${dataKey}]`).forEach((btn) => btn.addEventListener('click', () => apply(btn.dataset[dataKey === 'usage-range' ? 'usageRange' : 'healthRange'])));
+}
 function toast(text, kind = '') {
   const el = document.createElement('div');
   el.className = `toast ${kind}`; el.textContent = text;
@@ -54,6 +98,10 @@ async function api(command, args = {}) {
   const body = await res.json().catch(() => ({ ok: false, error: { code: 'bad_response', message: `HTTP ${res.status}` } }));
   if (!body.ok) throw new ApiError(body.error?.code || 'error', body.error?.message || 'request failed');
   return body.result;
+}
+async function history(kind, id, metric, rangeKey) {
+  const r = RANGES[rangeKey] || RANGES['24h'];
+  return api('health.history', { subject_kind: kind, subject_id: id, metric, minutes: r.minutes, points: r.points });
 }
 
 function setBanner(text) { const b = $('#banner'); b.hidden = !text; b.textContent = text || ''; }
@@ -76,7 +124,7 @@ async function act(button, command, args, after) {
   button.disabled = true;
   try {
     const result = await api(command, args);
-    toast(`${command}: ${result.state ?? result.status ?? 'done'}`, 'ok');
+    toast(`${command}: ${result.state ?? result.status ?? result.domain ?? 'done'}`, 'ok');
     if (after) await after(result);
   } catch (error) {
     toast(`${command} failed: ${error.message}`, 'bad');
@@ -92,6 +140,10 @@ function bind(root) {
     });
   });
 }
+function lifecycleButtons(id, component, cls = 'btn btn-small') {
+  const args = component ? { deployment_id: id, component } : { deployment_id: id };
+  return ['start', 'stop', 'restart'].map((a) => `<button class="${cls}" data-cmd="deployment.${a}" data-args='${esc(JSON.stringify(args))}'>${a}</button>`).join('');
+}
 
 // --- Deployments ---------------------------------------------------------
 const viewDeployments = guard(async () => {
@@ -101,43 +153,89 @@ const viewDeployments = guard(async () => {
   const admin = state.who?.administrator;
   main.innerHTML = `<h1>Deployments</h1><div class="tablewrap"><table><thead><tr><th>Deployment</th><th>State</th><th>Domain</th><th>Port</th><th>Generation</th><th>Updated</th><th>Actions</th></tr></thead><tbody>${deployments.map((d) => `<tr>
     <td class="wrap"><a href="#/deployments/${esc(d.deployment_id)}">${esc(d.name)}@${esc(d.source)}</a><div class="muted mono">${esc(d.deployment_id)}</div></td>
-    <td>${badge(d.state)}</td><td class="wrap">${d.domain ? esc(d.domain) : '<span class="muted">—</span>'}</td><td>${d.current_generation ?? '—'}</td><td>${d.current_generation ?? '—'}</td><td>${ago(d.updated_at)}</td>
-    <td class="actions">${['start', 'stop', 'restart'].map((a) => `<button class="btn btn-small" data-cmd="deployment.${a}" data-args='${esc(JSON.stringify({ deployment_id: d.deployment_id }))}'>${a}</button>`).join('')}
-    ${admin ? `<button class="btn btn-small" data-cmd="deployment.apply" data-args='${esc(JSON.stringify({ deployment_id: d.deployment_id }))}'>apply</button>` : ''}</td></tr>`).join('')}</tbody></table></div>
+    <td>${badge(d.state)} ${d.health && d.health !== 'unknown' && d.health !== d.state ? badge(d.health) : ''} ${d.observed_only ? badge('observed') : ''}</td>
+    <td class="wrap">${d.domain ? esc(d.domain) : '<span class="muted">—</span>'}${admin ? ` <a class="muted" href="#/deployments/${esc(d.deployment_id)}" title="edit domain on the detail page">✎</a>` : ''}</td>
+    <td>${d.route_port ?? '—'}</td><td>${d.current_generation ?? '—'}</td><td>${ago(d.updated_at)}</td>
+    <td class="actions">${lifecycleButtons(d.deployment_id)}
+    ${!d.observed_only && admin ? `<button class="btn btn-small" data-cmd="deployment.apply" data-args='${esc(JSON.stringify({ deployment_id: d.deployment_id }))}'>apply</button>` : ''}</td></tr>`).join('')}</tbody></table></div>
     ${declared?.length ? `<h2>Declared, not applied</h2><ul>${declared.map((x) => `<li class="mono">${esc(x.name)}@${esc(x.source)}</li>`).join('')}</ul>` : ''}`;
   bind(main);
 });
+
+function domainEditor(d, admin) {
+  if (!admin) return '';
+  const obs = d.observed_only;
+  const needsTarget = obs && !d.route_port;
+  const options = (d.components || []).map((c) => `<option ${c.name === d.route_component ? 'selected' : ''}>${esc(c.name)}</option>`).join('');
+  return `<form class="inline" id="domain-form" hidden>
+    <label class="f">domain label<input name="domain" value="${esc(d.domain || '')}" placeholder="my-app" pattern="[a-z0-9]([a-z0-9-]*[a-z0-9])?" title="lowercase DNS label"></label>
+    ${needsTarget ? `<label class="f">host port<input name="port" type="number" min="1" max="65535" required></label><label class="f">component<select name="component">${options}</select></label>` : ''}
+    <label class="f">public (no sign-in)<input type="checkbox" name="public" ${d.public ? 'checked' : ''}></label>
+    <button class="btn" type="submit">Save domain</button>
+    ${d.domain ? '<button class="btn" type="button" id="domain-clear">Remove domain</button>' : ''}
+    <button class="btn" type="button" id="domain-cancel">Cancel</button>
+  </form>`;
+}
+function bindDomainEditor(id, obs) {
+  const form = $('#domain-form');
+  if (!form) return;
+  $('#edit-domain')?.addEventListener('click', () => { form.hidden = !form.hidden; });
+  $('#domain-cancel')?.addEventListener('click', () => { form.hidden = true; });
+  form.addEventListener('submit', async (ev) => {
+    ev.preventDefault();
+    const fd = new FormData(form);
+    const args = { deployment_id: id, domain: fd.get('domain') || null, public: fd.get('public') === 'on' };
+    if (fd.get('port')) { args.port = Number(fd.get('port')); if (fd.get('component')) args.component = fd.get('component'); }
+    await act(form.querySelector('button[type=submit]'), 'deployment.set_domain', args, () => render());
+  });
+  $('#domain-clear')?.addEventListener('click', async (ev) => {
+    if (!window.confirm('Remove the routed domain? The service stays up; only the edge route is removed.')) return;
+    await act(ev.target, 'deployment.set_domain', { deployment_id: id, domain: null }, () => render());
+  });
+}
 
 const viewDeployment = guard(async (id) => {
   main.innerHTML = `<h1>Deployment</h1>${skeleton()}`;
   const d = await api('deployment.status', { deployment_id: id });
   const admin = state.who?.administrator;
+  const obs = !!d.observed_only;
+  const controllable = (c) => (obs ? c.binding?.kind === 'observed-container' : (c.owned && c.independent_control));
   const rows = d.components.map((c) => `<tr>
-    <td class="wrap"><strong>${esc(c.name)}</strong><div class="muted">${esc(c.type)}${c.owned ? '' : ' · observed'}</div></td>
-    <td>${badge(c.state)} ${badge(c.health)}</td><td>${c.generation ?? '—'}</td><td>${c.port ?? '—'}</td><td>${c.restarts ?? 0}</td>
-    <td class="wrap mono">${esc(c.binding?.kind || '')} ${esc(c.binding?.identity || '')}</td>
+    <td class="wrap"><strong>${esc(c.name)}</strong>${c.display_name ? `<div class="muted">${esc(c.display_name)}</div>` : ''}<div class="muted">${esc(c.type)}${obs ? ' · exact recorded container' : (c.owned ? '' : ' · external')}</div></td>
+    <td>${badge(c.state)} ${badge(c.health)}</td><td>${c.generation ?? '—'}</td><td>${c.port ?? '—'}</td><td>${c.restarts ?? '—'}</td>
+    <td class="wrap mono">${esc(c.binding?.kind || '')} ${esc((c.binding?.identity || '').slice(0, 24))}</td>
     <td class="wrap">${c.last_error ? `<span class="badge bad">${esc(c.last_error)}</span>` : ''}</td>
-    <td class="actions">${c.owned && c.independent_control ? ['start', 'stop', 'restart'].map((a) => `<button class="btn btn-small" data-cmd="deployment.${a}" data-args='${esc(JSON.stringify({ deployment_id: id, component: c.name }))}'>${a}</button>`).join('') : ''}
-      ${c.owned ? `<button class="btn btn-small" data-logs="${esc(c.name)}">logs</button>` : ''}</td></tr>`).join('');
-  main.innerHTML = `<h1>${esc(d.name)}@${esc(d.source)} ${badge(d.state)}</h1>
-    <div class="grid"><div class="tile"><div class="k">Domain</div><div class="v">${d.domain ? esc(d.domain) : '—'}</div></div><div class="tile"><div class="k">Route port</div><div class="v">${d.route_port ?? '—'}</div></div><div class="tile"><div class="k">Generation</div><div class="v">${d.current_generation ?? '—'}${d.previous_generation ? ` <span class="muted">(prev ${d.previous_generation})</span>` : ''}</div></div><div class="tile"><div class="k">Expires</div><div class="v">${d.ttl_expires_at ? esc(d.ttl_expires_at) : 'never'}</div></div></div>
-    <div class="actions" style="margin:12px 0">${['start', 'stop', 'restart'].map((a) => `<button class="btn" data-cmd="deployment.${a}" data-args='${esc(JSON.stringify({ deployment_id: id }))}'>${a}</button>`).join('')}
-      ${admin ? `<button class="btn" data-cmd="deployment.apply" data-args='${esc(JSON.stringify({ deployment_id: id }))}'>apply</button><button class="btn" data-cmd="deployment.rollback" data-args='${esc(JSON.stringify({ deployment_id: id }))}'>rollback</button><button class="btn btn-danger" data-cmd="deployment.remove" data-args='${esc(JSON.stringify({ deployment_id: id }))}' data-confirm="Remove this deployment? Persistent data is kept unless you choose otherwise next." data-delete-data="ask">remove</button>` : ''}</div>
+    <td class="actions">${controllable(c) ? lifecycleButtons(id, c.name) : ''}
+      ${c.owned || obs ? `<button class="btn btn-small" data-logs="${esc(c.name)}">logs</button>` : ''}</td></tr>`).join('');
+  main.innerHTML = `<h1>${esc(d.name)}@${esc(d.source)} ${badge(d.state)} ${d.health && d.health !== d.state ? badge(d.health) : ''}</h1>
+    <div class="grid"><div class="tile"><div class="k">Domain ${admin ? '<button class="btn btn-small" id="edit-domain">edit</button>' : ''}</div><div class="v">${d.domain ? esc(d.domain) : '—'}</div>${d.public ? '<div class="muted">public (no sign-in)</div>' : ''}</div><div class="tile"><div class="k">Route port</div><div class="v">${d.route_port ?? '—'}</div></div><div class="tile"><div class="k">Generation</div><div class="v">${d.current_generation ?? '—'}${d.previous_generation ? ` <span class="muted">(prev ${d.previous_generation})</span>` : ''}</div></div><div class="tile"><div class="k">Expires</div><div class="v">${d.ttl_expires_at ? esc(d.ttl_expires_at) : 'never'}</div></div></div>
+    ${domainEditor(d, admin)}
+    ${obs ? '<p class="notice muted">Imported from the live host. Start, stop, restart, and logs act on the exact recorded containers. Configuration changes (apply, rollback, remove) require adopting the stack through repository configuration.</p>' : ''}
+    <div class="actions" style="margin:12px 0">${lifecycleButtons(id, null, 'btn')}
+      ${!obs && admin ? `<button class="btn" data-cmd="deployment.apply" data-args='${esc(JSON.stringify({ deployment_id: id }))}'>apply</button><button class="btn" data-cmd="deployment.rollback" data-args='${esc(JSON.stringify({ deployment_id: id }))}'>rollback</button><button class="btn btn-danger" data-cmd="deployment.remove" data-args='${esc(JSON.stringify({ deployment_id: id }))}' data-confirm="Remove this deployment? Persistent data is kept unless you choose otherwise next." data-delete-data="ask">remove</button>` : ''}</div>
     <h2>Components</h2><div class="tablewrap"><table><thead><tr><th>Component</th><th>State</th><th>Gen</th><th>Port</th><th>Restarts</th><th>Binding</th><th>Error</th><th>Actions</th></tr></thead><tbody>${rows}</tbody></table></div>
-    <div id="logs"></div><h2>Usage</h2><div id="usage">${skeleton(2)}</div>`;
+    <div id="logs"></div><h2>Usage ${seg(Object.keys(RANGES), state.usageRange, 'usage-range')}</h2><div id="usage">${skeleton(2)}</div>`;
   bind(main);
+  bindDomainEditor(id, obs);
+  bindSeg(main, 'usage-range', (r) => { state.usageRange = r; render(); });
   main.querySelectorAll('[data-logs]').forEach((btn) => btn.addEventListener('click', async () => {
     btn.disabled = true;
-    try { const r = await api('deployment.logs', { deployment_id: id, component: btn.dataset.logs, tail_lines: 200 }); $('#logs').innerHTML = `<h2>Logs: ${esc(btn.dataset.logs)}</h2><pre class="log">${esc(r.tail || '(empty)')}</pre>`; }
+    try { const r = await api('deployment.logs', { deployment_id: id, component: btn.dataset.logs, tail_lines: 200 }); $('#logs').innerHTML = `<h2>Logs: ${esc(btn.dataset.logs)}</h2><pre class="log">${esc(r.tail || '(empty)')}</pre>${r.log_path ? `<p class="muted mono">${esc(r.log_path)}</p>` : ''}`; }
     catch (e) { toast(e.message, 'bad'); } finally { btn.disabled = false; }
   }));
   try {
-    const usage = await Promise.all(d.components.filter((c) => c.owned).map(async (c) => {
-      const hist = await api('health.history', { subject_kind: 'component', subject_id: `${id}/${c.name}`, metric: 'cpu_percent', minutes: 60 });
-      const mem = await api('health.history', { subject_kind: 'component', subject_id: `${id}/${c.name}`, metric: 'memory_bytes', minutes: 60 });
-      return `<tr><td>${esc(c.name)}</td><td>${hist.points.length ? pct(hist.points.at(-1).avg) : '—'} ${spark(hist.points.map((p) => p.avg))}</td><td>${mem.points.length ? bytes(mem.points.at(-1).avg) : '—'} ${spark(mem.points.map((p) => p.avg))}</td></tr>`;
+    const subjects = d.components
+      .map((c) => (c.binding?.kind === 'observed-container'
+        ? { name: c.name, kind: 'container', sid: c.binding.identity }
+        : (c.owned ? { name: c.name, kind: 'component', sid: `${id}/${c.name}` } : null)))
+      .filter(Boolean);
+    const usage = await Promise.all(subjects.map(async (s) => {
+      const [cpu, mem] = await Promise.all([
+        history(s.kind, s.sid, 'cpu_percent', state.usageRange),
+        history(s.kind, s.sid, 'memory_bytes', state.usageRange)]);
+      return `<div class="chartpair"><h3>${esc(s.name)}</h3>${chart(cpu.points, pct, 'CPU')}${chart(mem.points, bytes, 'Memory')}</div>`;
     }));
-    $('#usage').innerHTML = usage.length ? `<div class="tablewrap"><table><thead><tr><th>Component</th><th>CPU (last hour)</th><th>Memory (last hour)</th></tr></thead><tbody>${usage.join('')}</tbody></table></div>` : '<p class="muted">No owned components.</p>';
+    $('#usage').innerHTML = usage.length ? usage.join('') : '<p class="muted">No measured components.</p>';
   } catch (e) { $('#usage').innerHTML = stateBlock(e.code === 'permission_denied' ? 'denied' : 'error', e.message); }
 });
 
@@ -160,6 +258,15 @@ const viewTests = guard(async () => {
 });
 
 // --- Health --------------------------------------------------------------
+function unhealthySection(summary) {
+  const list = summary.unhealthy_deployments || [];
+  if (!list.length) return '<h2>Unhealthy deployments</h2><p class="muted">All deployments are healthy.</p>';
+  return `<h2>Unhealthy deployments</h2><div class="cards">${list.map((d) => `<div class="card bad-edge">
+    <div class="cardhead"><a href="#/deployments/${esc(d.deployment_id)}"><strong>${esc(d.name)}@${esc(d.source)}</strong></a> ${badge(d.state)} ${d.observed_only ? badge('observed') : ''}</div>
+    ${(d.reasons || []).length ? `<ul class="reasons">${d.reasons.map((r) => `<li><span class="mono">${esc(r.component)}</span> is ${badge(r.state, 'bad')}${r.detail ? ` — <span class="muted">${esc(r.detail)}</span>` : ''}</li>`).join('')}</ul>` : '<p class="muted">No component-level detail recorded.</p>'}
+    <div class="actions">${lifecycleButtons(d.deployment_id)}<a class="btn btn-small" href="#/deployments/${esc(d.deployment_id)}">details &amp; logs</a></div>
+  </div>`).join('')}</div>`;
+}
 const viewHealth = guard(async (sub) => {
   if (sub === 'containers') return viewContainers();
   main.innerHTML = `<h1>Health</h1>${skeleton(6)}`;
@@ -167,20 +274,35 @@ const viewHealth = guard(async (sub) => {
   try { summary = await api('health.summary', {}); } catch (e) { if (e.code !== 'permission_denied') throw e; denied = e.message; }
   const repos = await api('health.repositories', {});
   const h = summary?.host || {};
+  const memFrac = h.memory_total ? h.memory_used / h.memory_total : null;
+  const fsFrac = h.fs_size ? h.fs_used / h.fs_size : null;
   const tiles = summary ? `<div class="grid">
-    <div class="tile"><div class="k">CPU</div><div class="v ${h.cpu_percent > 90 ? 'bad' : ''}">${pct(h.cpu_percent)}</div></div>
-    <div class="tile"><div class="k">Memory used / available</div><div class="v">${bytes(h.memory_used)} <span class="muted">/ ${bytes(h.memory_available)}</span></div></div>
-    <div class="tile"><div class="k">Filesystem used / free</div><div class="v ${h.fs_size && h.fs_free < h.fs_size * 0.1 ? 'bad' : ''}">${bytes(h.fs_used)} <span class="muted">/ ${bytes(h.fs_free)}</span></div></div>
-    <div class="tile"><div class="k">Load 1/5/15 · swap</div><div class="v">${h.load_1 ?? '—'} / ${h.load_5 ?? '—'} / ${h.load_15 ?? '—'} <span class="muted">· ${bytes(h.swap_used)}</span></div></div>
-    <div class="tile"><div class="k">Unhealthy deployments</div><div class="v ${summary.unhealthy_deployments.length ? 'bad' : ''}">${summary.unhealthy_deployments.length}</div></div>
+    <div class="tile"><div class="k">CPU (${h.ncpu ?? '?'} cores)</div><div class="v ${h.cpu_percent > 90 ? 'bad' : ''}">${pct(h.cpu_percent)}</div>${meter((h.cpu_percent ?? 0) / 100)}</div>
+    <div class="tile"><div class="k">Memory</div><div class="v">${bytes(h.memory_used)} <span class="muted">of ${bytes(h.memory_total)}</span></div>${meter(memFrac)}</div>
+    <div class="tile"><div class="k">Storage (root filesystem)</div><div class="v ${fsFrac > 0.9 ? 'bad' : ''}">${bytes(h.fs_used)} <span class="muted">of ${bytes(h.fs_size)}</span></div>${meter(fsFrac)}</div>
+    <div class="tile"><div class="k">Load 1/5/15 · swap</div><div class="v">${h.load_1 ?? '—'} / ${h.load_5 ?? '—'} / ${h.load_15 ?? '—'}</div><div class="muted">swap ${bytes(h.swap_used)}</div></div>
+    <div class="tile"><div class="k">Unhealthy deployments</div><div class="v ${summary.unhealthy_deployments.length ? 'bad' : 'ok'}">${summary.unhealthy_deployments.length}</div></div>
     <div class="tile"><div class="k">Active tests</div><div class="v">${summary.active_tests.length}</div></div>
-    <div class="tile"><div class="k">Containers by ownership</div><div class="v" style="font-size:13px">${Object.entries(summary.container_counts || {}).map(([k, v]) => `${esc(k)}: ${v}`).join('<br>') || '—'}</div></div>
-    <div class="tile"><div class="k">Critical alerts</div><div class="v ${summary.alerts.some((a) => a.severity === 'critical') ? 'bad' : ''}">${summary.alerts.filter((a) => a.severity === 'critical').length}</div></div></div>
+    <div class="tile"><div class="k">Containers</div><div class="v" style="font-size:13px">${Object.entries(summary.container_counts || {}).map(([k, v]) => `${esc(k)}: ${v}`).join('<br>') || '—'}</div></div>
+    <div class="tile"><div class="k">Critical alerts</div><div class="v ${summary.alerts.some((a) => a.severity === 'critical') ? 'bad' : 'ok'}">${summary.alerts.filter((a) => a.severity === 'critical').length}</div></div></div>
+    ${unhealthySection(summary)}
     ${summary.alerts.length ? `<h2>Current alerts</h2><ul>${summary.alerts.map((a) => `<li>${badge(a.severity, a.severity === 'critical' ? 'bad' : 'warn')} ${esc(a.message)} <span class="muted">since ${ago(a.opened_at)}</span></li>`).join('')}</ul>` : '<p class="muted">No active alerts.</p>'}
+    <h2>History ${seg(['24h', '7d', '30d'], state.healthRange, 'health-range')}</h2><div id="host-history" class="chartrow">${skeleton(3)}</div>
     <h2>Reconciliation</h2><p class="mono muted">managed ${pct(h.reconciliation?.managed_cpu_percent)} + DevCoordinator ${pct(h.reconciliation?.daemon_cpu_percent)} + other ${pct(h.reconciliation?.other_cpu_percent)} = host ${pct(h.cpu_percent)} · memory managed ${bytes(h.reconciliation?.managed_memory)} + daemon ${bytes(h.reconciliation?.daemon_memory)} + other ${bytes(h.reconciliation?.other_memory)}</p>` : stateBlock('denied', `${denied} (server-wide health is administrator-only)`);
-  const rows = repos.repositories.map((r) => `<tr><td class="wrap"><strong>${esc(r.display_name)}</strong><div class="muted mono">${esc(r.root_path)}</div></td><td>${pct(r.cpu_percent)} ${spark(r.trend_cpu)}</td><td>${bytes(r.memory_bytes)} ${spark(r.trend_memory)}</td><td>${bytes(r.storage_bytes)}</td><td>${badge(r.health)}</td><td class="wrap">${r.deployments.map((d) => `<a href="#/deployments/${esc(d.deployment_id)}">${esc(d.name)}@${esc(d.source)}</a> ${badge(d.state)}`).join('<br>') || '<span class="muted">none</span>'}</td></tr>`).join('');
+  const rows = repos.repositories.map((r) => `<tr><td class="wrap"><strong>${esc(r.display_name)}</strong><div class="muted mono">${esc(r.root_path)}</div></td><td>${pct(r.cpu_percent)} ${spark(r.trend_cpu)}</td><td>${bytes(r.memory_bytes)} ${spark(r.trend_memory)}</td><td>${bytes(r.storage_bytes)} ${spark(r.trend_storage)}</td><td>${badge(r.health)}</td><td class="wrap">${r.deployments.map((d) => `<a href="#/deployments/${esc(d.deployment_id)}">${esc(d.name)}@${esc(d.source)}</a> ${badge(d.state)}`).join('<br>') || '<span class="muted">none</span>'}</td></tr>`).join('');
   main.innerHTML = `<h1>Health</h1><p><a href="#/health/containers">Containers view →</a></p>${tiles}<h2>Repositories</h2>${rows ? `<div class="tablewrap"><table><thead><tr><th>Repository</th><th>CPU</th><th>Memory</th><th>Storage</th><th>Health</th><th>Deployments</th></tr></thead><tbody>${rows}
     ${repos.devcoordinator ? `<tr><td><em>DevCoordinator</em></td><td>${pct(repos.devcoordinator.cpu_percent)}</td><td>${bytes(repos.devcoordinator.memory_bytes)}</td><td>${bytes(repos.devcoordinator.storage_bytes)}</td><td></td><td></td></tr><tr><td><em>Shared / unattributed</em></td><td>${pct(repos.shared_unattributed.cpu_percent)}</td><td>${bytes(repos.shared_unattributed.memory_bytes)}</td><td>${Object.entries(repos.shared_unattributed.storage || {}).map(([k, v]) => `${esc(k)} ${bytes(v)}`).join(', ') || '—'}</td><td></td><td></td></tr>` : ''}</tbody></table></div>` : stateBlock('empty', 'No repositories visible to you.')}`;
+  bind(main);
+  bindSeg(main, 'health-range', (r) => { state.healthRange = r; render(); });
+  if (summary) {
+    try {
+      const [cpu, mem, sto] = await Promise.all([
+        history('host', 'host', 'cpu_percent', state.healthRange),
+        history('host', 'host', 'memory_used', state.healthRange),
+        history('host', 'host', 'storage_bytes', state.healthRange)]);
+      $('#host-history').innerHTML = chart(cpu.points, pct, 'Host CPU') + chart(mem.points, bytes, 'Host memory used') + chart(sto.points, bytes, 'Storage used');
+    } catch (e) { const el = $('#host-history'); if (el) el.innerHTML = stateBlock('error', e.message); }
+  }
 });
 
 const viewContainers = guard(async () => {
@@ -190,7 +312,7 @@ const viewContainers = guard(async () => {
   main.innerHTML = `<h1>Containers</h1><p><a href="#/health">← Health</a> · ${Object.entries(counts).map(([k, v]) => `${esc(k)} ${v}`).join(' · ')}</p>${containers.length ? `<div class="tablewrap"><table><thead><tr><th>Name / identity</th><th>State</th><th>Class</th><th>Repository</th><th>Deployment / test</th><th>Caller</th><th>CPU</th><th>Memory</th><th>Layer</th><th>Created</th><th>TTL</th><th>Actions</th></tr></thead><tbody>${containers.map((c) => `<tr>
     <td class="wrap"><strong>${esc(c.name)}</strong><div class="muted mono">${esc(c.id)}</div><div class="muted">${esc(c.image)}</div></td><td>${badge(c.state, c.state === 'running' ? 'ok' : '')}</td><td>${badge(c.classification, c.classification === 'unmanaged' ? 'warn' : c.classification === 'orphaned-managed' ? 'bad' : 'ok')}</td>
     <td class="mono">${esc(c.repository_id || '—')}</td><td class="mono wrap">${esc(c.deployment_id ? `${c.deployment_id}/${c.component}` : c.run_id || '—')}</td><td>${c.caller_uid ?? '—'} ${esc(c.client || '')}</td><td>${pct(c.cpu_percent)}</td><td>${bytes(c.memory_bytes)}</td><td>${bytes(c.container_layer_bytes)}</td><td class="wrap">${esc(c.created)}</td><td>${c.ttl_seconds ?? '—'}</td>
-    <td class="actions">${admin && (c.classification === 'orphaned-managed' || c.classification === 'managed-test') ? `<button class="btn btn-small btn-danger" data-cmd="health.container_remove" data-args='${esc(JSON.stringify({ container_id: c.id }))}' data-confirm="Remove this ${c.classification} container? Only DevCoordinator-owned ephemeral containers can be removed here.">remove</button>` : '<span class="muted">decide manually</span>'}</td></tr>`).join('')}</tbody></table></div>` : stateBlock('empty', 'No containers on this host.')}`;
+    <td class="actions">${admin && (c.classification === 'orphaned-managed' || c.classification === 'managed-test') ? `<button class="btn btn-small btn-danger" data-cmd="health.container_remove" data-args='${esc(JSON.stringify({ container_id: c.id }))}' data-confirm="Remove this ${c.classification} container? Only DevCoordinator-owned ephemeral containers can be removed here.">remove</button>` : `<span class="muted">${c.classification === 'observed-current' ? 'controlled via its deployment' : 'decide manually'}</span>`}</td></tr>`).join('')}</tbody></table></div>` : stateBlock('empty', 'No containers on this host.')}`;
   bind(main);
 });
 

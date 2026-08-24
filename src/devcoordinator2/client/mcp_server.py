@@ -110,6 +110,17 @@ TOOLS += [
     {"name": "deployment_rollback", "description": "Return a checkout deployment to its "
                                                    "previous generation.",
      "inputSchema": {"type": "object", "properties": _DEP_REF, "required": ["path"]}},
+    {"name": "deployment_set_domain",
+     "description": "Set, change, or clear the routed domain of a deployment "
+                    "(administrator). For observed deployments without a route, pass "
+                    "port (and component when several containers exist).",
+     "inputSchema": {"type": "object", "properties": {
+         "deployment_id": _DEP_REF["deployment_id"],
+         "domain": {"type": ["string", "null"],
+                    "description": "Lowercase DNS label; null clears the domain"},
+         "port": {"type": "integer", "minimum": 1, "maximum": 65535},
+         "component": {"type": "string"}, "public": {"type": "boolean"}},
+      "required": ["deployment_id"]}},
     {"name": "health_containers", "description": "Every container on the host with "
                                                  "ownership classification.",
      "inputSchema": {"type": "object", "properties": {}}},
@@ -147,6 +158,7 @@ _TOOL_TO_COMMAND = {
     "deployment_status": "deployment.status", "deployment_start": "deployment.start",
     "deployment_stop": "deployment.stop", "deployment_restart": "deployment.restart",
     "deployment_logs": "deployment.logs", "deployment_rollback": "deployment.rollback",
+    "deployment_set_domain": "deployment.set_domain",
     "health_containers": "health.containers",
     "health_summary": "health.summary", "health_repositories": "health.repositories",
     "health_repository": "health.repository",

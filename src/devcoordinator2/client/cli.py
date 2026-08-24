@@ -77,6 +77,21 @@ def build_parser() -> argparse.ArgumentParser:
             sp.add_argument("--tail-lines", type=int, default=200)
         if action == "remove":
             sp.add_argument("--delete-data", action="store_true")
+    sd = dep_sub.add_parser("set-domain",
+                            help="set or clear the routed domain (administrator)")
+    _add_common(sd, with_path=False)
+    sd.add_argument("--deployment-id", dest="deployment_id", required=True)
+    sd.add_argument("--domain", default=None,
+                    help="lowercase DNS label; omit with --clear to remove")
+    sd.add_argument("--clear", action="store_true", help="remove the routed domain")
+    sd.add_argument("--port", type=int, default=None,
+                    help="observed deployments without a route: host port to route to")
+    sd.add_argument("--component", default=None,
+                    help="observed deployments: which service receives traffic")
+    sd.add_argument("--public", dest="public", action="store_true", default=None,
+                    help="serve without sign-in at the edge")
+    sd.add_argument("--authenticated", dest="public", action="store_false",
+                    help="require sign-in at the edge")
 
     health = sub.add_parser("health", help="host and container health")
     health_sub = health.add_subparsers(dest="action", required=True)
@@ -131,7 +146,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def _to_call(ns: argparse.Namespace) -> tuple[str, dict]:
     path_args = {}
-    if hasattr(ns, "path"):
+    if hasattr(ns, "path") and ns.path is not None:
         path_args["path"] = str(Path(ns.path).absolute())
     match (ns.group, getattr(ns, "action", None)):
         case ("ping", None):
@@ -153,6 +168,14 @@ def _to_call(ns: argparse.Namespace) -> tuple[str, dict]:
         case ("deployment", "list"):
             return "deployment.list", ({"path": str(Path(ns.path).absolute())}
                                        if ns.path else {})
+        case ("deployment", "set-domain"):
+            if bool(ns.domain) == bool(ns.clear):
+                raise SystemExit("pass exactly one of --domain <label> or --clear")
+            args = {"deployment_id": ns.deployment_id, "domain": ns.domain}
+            for key in ("port", "component", "public"):
+                if getattr(ns, key) is not None:
+                    args[key] = getattr(ns, key)
+            return "deployment.set_domain", args
         case ("deployment", action):
             args = dict(path_args)
             if ns.name:

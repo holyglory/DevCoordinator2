@@ -149,6 +149,12 @@ def start_container(container_id: str) -> None:
         raise RuntimeError_(proc.stderr.strip()[:1024] or "docker start failed")
 
 
+def restart_container(container_id: str) -> None:
+    proc = docker_cli._run(["restart", "--time", "15", container_id], timeout=90)
+    if proc.returncode != 0:
+        raise RuntimeError_(proc.stderr.strip()[:1024] or "docker restart failed")
+
+
 def stop_container(container_id: str) -> None:
     proc = docker_cli._run(["stop", "--time", "15", container_id], timeout=60)
     if proc.returncode != 0 and "No such container" not in proc.stderr:

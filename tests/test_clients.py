@@ -44,7 +44,7 @@ def test_cli_ping_and_register_roundtrip(live, capsys):
     assert rc == 0
     response = json.loads(capsys.readouterr().out)
     assert response["ok"] is True
-    assert response["result"]["schema_version"] == 5
+    assert response["result"]["schema_version"] == 7
 
     rc = cli.main(["repository", "register", str(live.repo)])
     assert rc == 0
@@ -62,6 +62,31 @@ def test_cli_error_exit_code(live, capsys, tmp_path):
     assert rc == 1
     response = json.loads(capsys.readouterr().out)
     assert response["ok"] is False
+
+
+def test_deployment_list_without_path_builds_empty_args():
+    ns = cli.build_parser().parse_args(["deployment", "list"])
+    assert cli._to_call(ns) == ("deployment.list", {})
+
+
+def test_deployment_set_domain_argument_mapping():
+    ns = cli.build_parser().parse_args(
+        ["deployment", "set-domain", "--deployment-id", "d123", "--domain", "app",
+         "--port", "8080", "--component", "web", "--public"])
+    assert cli._to_call(ns) == ("deployment.set_domain", {
+        "deployment_id": "d123", "domain": "app", "port": 8080,
+        "component": "web", "public": True})
+    ns = cli.build_parser().parse_args(
+        ["deployment", "set-domain", "--deployment-id", "d123", "--clear"])
+    assert cli._to_call(ns) == ("deployment.set_domain",
+                                {"deployment_id": "d123", "domain": None})
+    with pytest.raises(SystemExit):
+        cli._to_call(cli.build_parser().parse_args(
+            ["deployment", "set-domain", "--deployment-id", "d123"]))
+    with pytest.raises(SystemExit):
+        cli._to_call(cli.build_parser().parse_args(
+            ["deployment", "set-domain", "--deployment-id", "d123",
+             "--domain", "app", "--clear"]))
 
 
 def test_cli_daemon_unavailable(live, capsys, monkeypatch):

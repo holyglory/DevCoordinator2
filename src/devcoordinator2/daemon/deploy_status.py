@@ -7,7 +7,7 @@ from pathlib import Path
 from devcoordinator2.daemon import deploy_engine as eng
 from devcoordinator2.daemon import deploy_runtime as rt
 from devcoordinator2.daemon import deploy_state as st
-from devcoordinator2.daemon import health_checks, ports
+from devcoordinator2.daemon import health_checks, observed, ports
 from devcoordinator2.daemon.capture import tail_file
 from devcoordinator2.daemon.db import Database
 from devcoordinator2.daemon.deploy_config import (
@@ -101,12 +101,17 @@ def list_all(db: Database, registry: Registry, path: Path | None, caller: Caller
                                          reg.worktree_id, dname, source)})
         except ConfigError as exc:
             raise ProtocolError("repository_config_invalid", str(exc)) from exc
-    return {"deployments": [{
+    route_ports = {r["deployment_id"]: r["port"] for r in db.query(
+        "SELECT deployment_id, port FROM domain_routes")}
+    managed = [{
         "deployment_id": r["deployment_id"], "repository_id": r["repository_id"],
         "name": r["name"], "source": r["source"], "state": r["state"],
         "domain": r["domain"], "current_generation": r["current_generation"],
-        "updated_at": r["updated_at"], "ttl_expires_at": r["ttl_expires_at"],
-    } for r in rows], "declared": declared}
+        "route_port": route_ports.get(r["deployment_id"]), "updated_at": r["updated_at"],
+        "ttl_expires_at": r["ttl_expires_at"], "observed_only": False,
+    } for r in rows]
+    imported = observed.list_deployments(db)
+    return {"deployments": [*managed, *imported], "declared": declared}
 
 def logs(ctx: eng.Ctx, row: dict, worktree: Path, component: str,
      tail_lines: int) -> dict:
