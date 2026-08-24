@@ -76,13 +76,20 @@ def status(ctx: eng.Ctx, row: dict) -> dict:
         state = "degraded"
     routes = ctx.db.query("SELECT domain, port FROM domain_routes WHERE deployment_id=?",
                             (ctx.dep_id,))
+    repo = ctx.db.query("SELECT display_name FROM repositories WHERE repository_id=?",
+                        (row["repository_id"],))
+    route_comp = ctx.spec.route_component
     return {
         "deployment_id": ctx.dep_id, "name": ctx.spec.name, "source": ctx.source,
-        "repository_id": row["repository_id"], "state": state,
+        "repository_id": row["repository_id"],
+        "repository_name": repo[0]["display_name"] if repo else None,
+        "state": state,
         "current_generation": row["current_generation"],
         "previous_generation": row["previous_generation"],
         "domain": routes[0]["domain"] if routes else None,
         "route_port": routes[0]["port"] if routes else None,
+        "route_component": route_comp.name if route_comp else None,
+        "public": bool(row["public"]),
         "ttl_expires_at": row["ttl_expires_at"],
         "components": comps, "log_dir": str(ctx.dir / "logs"),
     }
@@ -103,10 +110,14 @@ def list_all(db: Database, registry: Registry, path: Path | None, caller: Caller
             raise ProtocolError("repository_config_invalid", str(exc)) from exc
     route_ports = {r["deployment_id"]: r["port"] for r in db.query(
         "SELECT deployment_id, port FROM domain_routes")}
+    repo_names = {r["repository_id"]: r["display_name"] for r in db.query(
+        "SELECT repository_id, display_name FROM repositories")}
     managed = [{
         "deployment_id": r["deployment_id"], "repository_id": r["repository_id"],
+        "repository_name": repo_names.get(r["repository_id"]),
         "name": r["name"], "source": r["source"], "state": r["state"],
-        "domain": r["domain"], "current_generation": r["current_generation"],
+        "domain": r["domain"], "public": bool(r["public"]),
+        "current_generation": r["current_generation"],
         "route_port": route_ports.get(r["deployment_id"]), "updated_at": r["updated_at"],
         "ttl_expires_at": r["ttl_expires_at"], "observed_only": False,
     } for r in rows]

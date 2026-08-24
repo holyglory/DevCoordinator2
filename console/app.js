@@ -146,52 +146,82 @@ function lifecycleButtons(id, component, cls = 'btn btn-small') {
 }
 
 // --- Deployments ---------------------------------------------------------
+function deploymentRow(d, admin) {
+  return `<tr>
+    <td class="wrap"><a href="#/deployments/${esc(d.deployment_id)}">${esc(d.name)}@${esc(d.source)}</a><div class="muted mono">${esc(d.deployment_id)}</div></td>
+    <td>${badge(d.state)} ${d.health && d.health !== 'unknown' && d.health !== d.state ? badge(d.health) : ''} ${d.observed_only ? badge('observed') : ''}</td>
+    <td class="wrap">${d.domain ? esc(d.domain) : '<span class="muted">—</span>'}${admin ? ` <button class="btn btn-small" data-edit-domain="${esc(d.deployment_id)}" title="edit domain">✎</button>` : ''}</td>
+    <td>${d.route_port ?? '—'}</td><td>${d.current_generation ?? '—'}</td><td>${ago(d.updated_at)}</td>
+    <td class="actions">${lifecycleButtons(d.deployment_id)}
+    ${!d.observed_only && admin ? `<button class="btn btn-small" data-cmd="deployment.apply" data-args='${esc(JSON.stringify({ deployment_id: d.deployment_id }))}'>apply</button>` : ''}</td></tr>`;
+}
 const viewDeployments = guard(async () => {
   main.innerHTML = `<h1>Deployments</h1>${skeleton()}`;
   const { deployments, declared } = await api('deployment.list', {});
   if (!deployments.length) { main.innerHTML = `<h1>Deployments</h1>${stateBlock('empty', 'No deployments have been applied yet.')}`; return; }
   const admin = state.who?.administrator;
-  main.innerHTML = `<h1>Deployments</h1><div class="tablewrap"><table><thead><tr><th>Deployment</th><th>State</th><th>Domain</th><th>Port</th><th>Generation</th><th>Updated</th><th>Actions</th></tr></thead><tbody>${deployments.map((d) => `<tr>
-    <td class="wrap"><a href="#/deployments/${esc(d.deployment_id)}">${esc(d.name)}@${esc(d.source)}</a><div class="muted mono">${esc(d.deployment_id)}</div></td>
-    <td>${badge(d.state)} ${d.health && d.health !== 'unknown' && d.health !== d.state ? badge(d.health) : ''} ${d.observed_only ? badge('observed') : ''}</td>
-    <td class="wrap">${d.domain ? esc(d.domain) : '<span class="muted">—</span>'}${admin ? ` <a class="muted" href="#/deployments/${esc(d.deployment_id)}" title="edit domain on the detail page">✎</a>` : ''}</td>
-    <td>${d.route_port ?? '—'}</td><td>${d.current_generation ?? '—'}</td><td>${ago(d.updated_at)}</td>
-    <td class="actions">${lifecycleButtons(d.deployment_id)}
-    ${!d.observed_only && admin ? `<button class="btn btn-small" data-cmd="deployment.apply" data-args='${esc(JSON.stringify({ deployment_id: d.deployment_id }))}'>apply</button>` : ''}</td></tr>`).join('')}</tbody></table></div>
+  const groups = new Map();
+  for (const d of deployments) {
+    const key = d.repository_name || d.repository_id || 'unattributed';
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(d);
+  }
+  const body = [...groups.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([repo, ds]) =>
+    `<tr class="grouphead"><td colspan="7">${esc(repo)} <span class="muted mono">${esc(ds[0].repository_id || '')}</span></td></tr>${ds.map((d) => deploymentRow(d, admin)).join('')}`).join('');
+  main.innerHTML = `<h1>Deployments</h1><div class="tablewrap"><table><thead><tr><th>Deployment</th><th>State</th><th>Domain</th><th>Port</th><th>Generation</th><th>Updated</th><th>Actions</th></tr></thead><tbody>${body}</tbody></table></div>
     ${declared?.length ? `<h2>Declared, not applied</h2><ul>${declared.map((x) => `<li class="mono">${esc(x.name)}@${esc(x.source)}</li>`).join('')}</ul>` : ''}`;
   bind(main);
+  bindDomainButtons(main, deployments);
 });
 
-function domainEditor(d, admin) {
-  if (!admin) return '';
-  const obs = d.observed_only;
-  const needsTarget = obs && !d.route_port;
-  const options = (d.components || []).map((c) => `<option ${c.name === d.route_component ? 'selected' : ''}>${esc(c.name)}</option>`).join('');
-  return `<form class="inline" id="domain-form" hidden>
-    <label class="f">domain label<input name="domain" value="${esc(d.domain || '')}" placeholder="my-app" pattern="[a-z0-9]([a-z0-9-]*[a-z0-9])?" title="lowercase DNS label"></label>
-    ${needsTarget ? `<label class="f">host port<input name="port" type="number" min="1" max="65535" required></label><label class="f">component<select name="component">${options}</select></label>` : ''}
-    <label class="f">public (no sign-in)<input type="checkbox" name="public" ${d.public ? 'checked' : ''}></label>
-    <button class="btn" type="submit">Save domain</button>
-    ${d.domain ? '<button class="btn" type="button" id="domain-clear">Remove domain</button>' : ''}
-    <button class="btn" type="button" id="domain-cancel">Cancel</button>
-  </form>`;
-}
-function bindDomainEditor(id, obs) {
-  const form = $('#domain-form');
-  if (!form) return;
-  $('#edit-domain')?.addEventListener('click', () => { form.hidden = !form.hidden; });
-  $('#domain-cancel')?.addEventListener('click', () => { form.hidden = true; });
-  form.addEventListener('submit', async (ev) => {
+// Pop-up domain editor, shared by the list rows (✎) and the detail page.
+async function openDomainDialog(d) {
+  document.getElementById('domain-dialog')?.remove();
+  const needsTarget = d.observed_only && !d.route_port;
+  let componentOptions = '';
+  if (needsTarget) {
+    let components = d.components;
+    if (!components) {
+      try { components = (await api('deployment.status', { deployment_id: d.deployment_id })).components; }
+      catch (e) { toast(e.message, 'bad'); components = []; }
+    }
+    componentOptions = (components || []).map((c) => `<option>${esc(c.name)}</option>`).join('');
+  }
+  const dlg = document.createElement('dialog');
+  dlg.id = 'domain-dialog';
+  dlg.innerHTML = `<h2>Domain: ${esc(d.name)}@${esc(d.source)}</h2>
+    ${d.repository_name ? `<p class="muted">${esc(d.repository_name)}</p>` : ''}
+    <form id="domain-form" class="inline">
+      <label class="f">domain label<input name="domain" value="${esc(d.domain || '')}" placeholder="my-app" pattern="[a-z0-9]([a-z0-9-]*[a-z0-9])?" title="lowercase DNS label" autofocus></label>
+      ${needsTarget ? `<label class="f">host port<input name="port" type="number" min="1" max="65535" required></label><label class="f">component<select name="component">${componentOptions}</select></label>` : ''}
+      <label class="f">public (no sign-in)<input type="checkbox" name="public" ${d.public ? 'checked' : ''}></label>
+      <div class="actions" style="flex-basis:100%">
+        <button class="btn" type="submit">Save domain</button>
+        ${d.domain ? '<button class="btn" type="button" id="domain-clear">Remove domain</button>' : ''}
+        <button class="btn" type="button" id="domain-cancel">Cancel</button>
+      </div>
+    </form>`;
+  document.body.appendChild(dlg);
+  dlg.addEventListener('close', () => dlg.remove());
+  $('#domain-cancel', dlg).addEventListener('click', () => dlg.close());
+  $('#domain-form', dlg).addEventListener('submit', async (ev) => {
     ev.preventDefault();
-    const fd = new FormData(form);
-    const args = { deployment_id: id, domain: fd.get('domain') || null, public: fd.get('public') === 'on' };
+    const fd = new FormData(ev.target);
+    const args = { deployment_id: d.deployment_id, domain: fd.get('domain') || null, public: fd.get('public') === 'on' };
     if (fd.get('port')) { args.port = Number(fd.get('port')); if (fd.get('component')) args.component = fd.get('component'); }
-    await act(form.querySelector('button[type=submit]'), 'deployment.set_domain', args, () => render());
+    await act(ev.target.querySelector('button[type=submit]'), 'deployment.set_domain', args, () => { dlg.close(); return render(); });
   });
-  $('#domain-clear')?.addEventListener('click', async (ev) => {
+  $('#domain-clear', dlg)?.addEventListener('click', async (ev) => {
     if (!window.confirm('Remove the routed domain? The service stays up; only the edge route is removed.')) return;
-    await act(ev.target, 'deployment.set_domain', { deployment_id: id, domain: null }, () => render());
+    await act(ev.target, 'deployment.set_domain', { deployment_id: d.deployment_id, domain: null }, () => { dlg.close(); return render(); });
   });
+  dlg.showModal();
+}
+function bindDomainButtons(root, deployments) {
+  root.querySelectorAll('[data-edit-domain]').forEach((btn) => btn.addEventListener('click', () => {
+    const d = deployments.find((x) => x.deployment_id === btn.dataset.editDomain);
+    if (d) openDomainDialog(d);
+  }));
 }
 
 const viewDeployment = guard(async (id) => {
@@ -208,15 +238,15 @@ const viewDeployment = guard(async (id) => {
     <td class="actions">${controllable(c) ? lifecycleButtons(id, c.name) : ''}
       ${c.owned || obs ? `<button class="btn btn-small" data-logs="${esc(c.name)}">logs</button>` : ''}</td></tr>`).join('');
   main.innerHTML = `<h1>${esc(d.name)}@${esc(d.source)} ${badge(d.state)} ${d.health && d.health !== d.state ? badge(d.health) : ''}</h1>
+    <p class="muted">${d.repository_name ? `Repository: <strong>${esc(d.repository_name)}</strong> ` : ''}<span class="mono">${esc(d.repository_id || '')}</span></p>
     <div class="grid"><div class="tile"><div class="k">Domain ${admin ? '<button class="btn btn-small" id="edit-domain">edit</button>' : ''}</div><div class="v">${d.domain ? esc(d.domain) : '—'}</div>${d.public ? '<div class="muted">public (no sign-in)</div>' : ''}</div><div class="tile"><div class="k">Route port</div><div class="v">${d.route_port ?? '—'}</div></div><div class="tile"><div class="k">Generation</div><div class="v">${d.current_generation ?? '—'}${d.previous_generation ? ` <span class="muted">(prev ${d.previous_generation})</span>` : ''}</div></div><div class="tile"><div class="k">Expires</div><div class="v">${d.ttl_expires_at ? esc(d.ttl_expires_at) : 'never'}</div></div></div>
-    ${domainEditor(d, admin)}
     ${obs ? '<p class="notice muted">Imported from the live host. Start, stop, restart, and logs act on the exact recorded containers. Configuration changes (apply, rollback, remove) require adopting the stack through repository configuration.</p>' : ''}
     <div class="actions" style="margin:12px 0">${lifecycleButtons(id, null, 'btn')}
       ${!obs && admin ? `<button class="btn" data-cmd="deployment.apply" data-args='${esc(JSON.stringify({ deployment_id: id }))}'>apply</button><button class="btn" data-cmd="deployment.rollback" data-args='${esc(JSON.stringify({ deployment_id: id }))}'>rollback</button><button class="btn btn-danger" data-cmd="deployment.remove" data-args='${esc(JSON.stringify({ deployment_id: id }))}' data-confirm="Remove this deployment? Persistent data is kept unless you choose otherwise next." data-delete-data="ask">remove</button>` : ''}</div>
     <h2>Components</h2><div class="tablewrap"><table><thead><tr><th>Component</th><th>State</th><th>Gen</th><th>Port</th><th>Restarts</th><th>Binding</th><th>Error</th><th>Actions</th></tr></thead><tbody>${rows}</tbody></table></div>
     <div id="logs"></div><h2>Usage ${seg(Object.keys(RANGES), state.usageRange, 'usage-range')}</h2><div id="usage">${skeleton(2)}</div>`;
   bind(main);
-  bindDomainEditor(id, obs);
+  $('#edit-domain')?.addEventListener('click', () => openDomainDialog(d));
   bindSeg(main, 'usage-range', (r) => { state.usageRange = r; render(); });
   main.querySelectorAll('[data-logs]').forEach((btn) => btn.addEventListener('click', async () => {
     btn.disabled = true;
@@ -262,7 +292,7 @@ function unhealthySection(summary) {
   const list = summary.unhealthy_deployments || [];
   if (!list.length) return '<h2>Unhealthy deployments</h2><p class="muted">All deployments are healthy.</p>';
   return `<h2>Unhealthy deployments</h2><div class="cards">${list.map((d) => `<div class="card bad-edge">
-    <div class="cardhead"><a href="#/deployments/${esc(d.deployment_id)}"><strong>${esc(d.name)}@${esc(d.source)}</strong></a> ${badge(d.state)} ${d.observed_only ? badge('observed') : ''}</div>
+    <div class="cardhead"><a href="#/deployments/${esc(d.deployment_id)}"><strong>${esc(d.name)}@${esc(d.source)}</strong></a> ${d.repository_name ? `<span class="muted">in ${esc(d.repository_name)}</span>` : ''} ${badge(d.state)} ${d.observed_only ? badge('observed') : ''}</div>
     ${(d.reasons || []).length ? `<ul class="reasons">${d.reasons.map((r) => `<li><span class="mono">${esc(r.component)}</span> is ${badge(r.state, 'bad')}${r.detail ? ` — <span class="muted">${esc(r.detail)}</span>` : ''}</li>`).join('')}</ul>` : '<p class="muted">No component-level detail recorded.</p>'}
     <div class="actions">${lifecycleButtons(d.deployment_id)}<a class="btn btn-small" href="#/deployments/${esc(d.deployment_id)}">details &amp; logs</a></div>
   </div>`).join('')}</div>`;

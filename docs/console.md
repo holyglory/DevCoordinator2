@@ -8,19 +8,23 @@ fakes success, and no view carries fixture numbers.
 
 ## Destinations
 
-1. **Deployments** — collection first (state, domain, port, generation,
-   updated); start/stop/restart for operators on every deployment —
+1. **Deployments** — collection first, grouped under repository headers
+   (display name + repository id) so `web@worktree` is always attributed
+   (state, domain, port, generation, updated); a ✎ button on every row's
+   domain opens the pop-up domain editor in place;
+   start/stop/restart for operators on every deployment —
    observed ones drive the exact recorded containers
    (DC2-2026-08-24-OBSERVED-LIFECYCLE) — apply for administrators on
    managed ones; detail page with components (state, health, generation,
    port, restarts, exact binding, last error), per-component controls,
    on-demand logs (managed files or observed `docker logs`),
    rollback/remove (managed, administrators; remove asks explicitly whether
-   persistent data should be deleted), an inline domain editor
+   persistent data should be deleted), the same pop-up domain editor
    (administrators; `deployment.set_domain` — for an observed deployment
    without a route it asks for the host port, and a re-import replaces
    observed edits), and per-component CPU/memory charts over a selectable
-   1h/24h/7d/30d window.
+   1h/24h/7d/30d window. The detail page names the repository under the
+   heading.
 2. **Tests** — one current/most-recent run per worktree: result and
    duration first; stdout/stderr tails load only on demand (bounded); stop
    a running test or start the declared default (administrators).
@@ -54,7 +58,7 @@ explicit permission-denied notice instead of partial data.
 | Control | API call | Proof of state change |
 |---|---|---|
 | Deployment start/stop/restart (list, detail, component; managed and observed) | `deployment.start/stop/restart` | view re-fetches `deployment.status`; header/component badges change |
-| Domain edit / clear (detail page, administrators) | `deployment.set_domain {deployment_id, domain|null, port?, public?}` | status re-read; route document republished |
+| Domain edit / clear (pop-up from list rows and the detail page, administrators) | `deployment.set_domain {deployment_id, domain|null, port?, public?}` | status re-read; route document republished |
 | Health range switch (24h/7d/30d) and usage range (1h/24h/7d/30d) | `health.history {minutes, points}` | charts re-render from the store |
 | Unhealthy-deployment actions (health page cards) | `deployment.start/stop/restart` | summary re-read |
 | Apply / rollback | `deployment.apply` / `deployment.rollback` | status re-read |

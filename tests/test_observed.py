@@ -236,6 +236,51 @@ def test_managed_domain_override_wins_until_cleared(db, tmp_path):
                     "'d8888888888888888'")[0]["domain"] == "declared"
 
 
+def test_managed_set_domain_routes_via_implicit_single_port_component(db, tmp_path):
+    """A deployment that never declared route = true but has exactly one
+    port-leasing process/docker component gets its route created atomically."""
+    spec_json = json.dumps({"domain": None, "components": [
+        {"name": "app", "type": "process", "wants_port": True, "route": False},
+        {"name": "worker", "type": "process", "wants_port": False, "route": False}]})
+    with db.transaction() as conn:
+        conn.execute("INSERT INTO deployments(deployment_id, repository_id, worktree_id,"
+                     " name, source, domain, spec_fingerprint, spec_json, state,"
+                     " current_generation, created_at, created_by_uid, client, updated_at)"
+                     " VALUES('d7777777777777777','r1','w1','web','worktree',NULL,"
+                     "'fp',?,'running',1,'t',1000,'human','t')", (spec_json,))
+        conn.execute("INSERT INTO port_assignments VALUES(20000,'d7777777777777777',"
+                     "'app',1,'t')")
+    handlers = _handlers(db, tmp_path)
+    result = handlers["deployment.set_domain"](
+        {"deployment_id": "d7777777777777777", "domain": "para"}, CALLER)
+    assert result["domain"] == "para"
+    route = db.query("SELECT * FROM domain_routes WHERE deployment_id="
+                     "'d7777777777777777'")[0]
+    assert route["component"] == "app" and route["port"] == 20000
+    assert route["domain"] == "para"
+
+
+def test_managed_set_domain_without_routable_component_persists_nothing(db, tmp_path):
+    spec_json = json.dumps({"domain": None, "components": [
+        {"name": "db", "type": "postgres", "wants_port": True, "route": False}]})
+    with db.transaction() as conn:
+        conn.execute("INSERT INTO deployments(deployment_id, repository_id, worktree_id,"
+                     " name, source, domain, spec_fingerprint, spec_json, state,"
+                     " created_at, created_by_uid, client, updated_at)"
+                     " VALUES('d6666666666666666','r1','w1','data','worktree',NULL,"
+                     "'fp',?,'running','t',1000,'human','t')", (spec_json,))
+    handlers = _handlers(db, tmp_path)
+    with pytest.raises(ProtocolError) as exc:
+        handlers["deployment.set_domain"](
+            {"deployment_id": "d6666666666666666", "domain": "para"}, CALLER)
+    assert "no routable component" in exc.value.message
+    row = db.query("SELECT domain, domain_override FROM deployments"
+                   " WHERE deployment_id='d6666666666666666'")[0]
+    assert row["domain"] is None and row["domain_override"] is None
+    assert not db.query("SELECT 1 FROM domain_routes WHERE deployment_id="
+                        "'d6666666666666666'")
+
+
 _V6_OBSERVED_DDL = """
 CREATE TABLE observed_deployments (
   observed_deployment_id TEXT PRIMARY KEY,

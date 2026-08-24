@@ -129,7 +129,10 @@ Reference args on every command except `list`: `path` (required) plus
   or clears the routed domain and republishes the route document. Managed:
   the label persists as an override that wins over the declared domain on
   every apply until cleared (clearing falls back to the declared domain);
-  `port`/`component` are rejected. Observed: edits the observed route; when
+  `port`/`component` are rejected. The route target is the declared
+  `route = true` component or, implicitly, the single port-leasing
+  process/docker component; the change is atomic — a refusal persists
+  nothing. Observed: edits the observed route; when
   none exists yet, `port` is required (and `component` if several containers
   exist); a current-state re-import replaces such edits. Uniqueness is
   enforced across managed and observed routes.

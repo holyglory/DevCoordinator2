@@ -35,9 +35,11 @@ def list_deployments(db: Database, repository_id: str | None = None) -> list[dic
         where = " WHERE d.repository_id=?"
         params = (repository_id,)
     rows = db.query(
-        "SELECT d.*, r.domain, r.port AS route_port, r.public"
+        "SELECT d.*, r.domain, r.port AS route_port, r.public,"
+        " rep.display_name AS repository_name"
         " FROM observed_deployments d LEFT JOIN observed_routes r"
-        " ON r.observed_deployment_id=d.observed_deployment_id" + where +
+        " ON r.observed_deployment_id=d.observed_deployment_id"
+        " LEFT JOIN repositories rep ON rep.repository_id=d.repository_id" + where +
         " ORDER BY d.repository_id, d.name, d.observed_deployment_id", params)
     return [_list_row(r) for r in rows]
 
@@ -46,6 +48,7 @@ def _list_row(row: dict) -> dict:
     return {
         "deployment_id": row["observed_deployment_id"],
         "repository_id": row["repository_id"],
+        "repository_name": row["repository_name"],
         "name": row["name"],
         "source": "observed",
         "state": row["state"],
@@ -71,8 +74,10 @@ def exists(db: Database, deployment_id: str | None) -> bool:
 def status(db: Database, deployment_id: str) -> dict | None:
     rows = db.query(
         "SELECT d.*, r.domain, r.port AS route_port, r.component AS route_component,"
-        " r.public FROM observed_deployments d LEFT JOIN observed_routes r"
+        " r.public, rep.display_name AS repository_name"
+        " FROM observed_deployments d LEFT JOIN observed_routes r"
         " ON r.observed_deployment_id=d.observed_deployment_id"
+        " LEFT JOIN repositories rep ON rep.repository_id=d.repository_id"
         " WHERE d.observed_deployment_id=?", (deployment_id,))
     if not rows:
         return None
@@ -99,6 +104,7 @@ def status(db: Database, deployment_id: str) -> dict | None:
     return {
         "deployment_id": deployment_id,
         "repository_id": row["repository_id"],
+        "repository_name": row["repository_name"],
         "name": row["name"],
         "source": "observed",
         "state": row["state"],

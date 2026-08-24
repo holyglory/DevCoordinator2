@@ -64,11 +64,15 @@ not contradict them.
   configuration authority (apply, rollback, remove, recreation) still requires
   adoption through repository configuration.
 - **REQ-DEPLOY-07** (2026-08-24, done): An administrator can set, change, or
-  clear the routed domain of any deployment from the Console, CLI, and MCP
-  (`deployment.set_domain`). For managed deployments the override survives
-  re-apply until cleared; for observed deployments it lives in the observed
-  projection and is replaced by the next current-state re-import. Domain
-  uniqueness is enforced across managed and observed routes.
+  clear the routed domain of any deployment from the Console (pop-up on the
+  list and detail pages), CLI, and MCP (`deployment.set_domain`). For managed
+  deployments the override survives re-apply until cleared; for observed
+  deployments it lives in the observed projection and is replaced by the next
+  current-state re-import. Domain uniqueness is enforced across managed and
+  observed routes; the change is atomic. A deployment with exactly one
+  port-leasing process/docker component routes implicitly without
+  `route = true` (DC2-2026-08-24-IMPLICIT-ROUTE); deployment listings and
+  status name their repository so instances are always attributable.
 
 ## Accountability and health (REQ-HEALTH, P3/P4)
 

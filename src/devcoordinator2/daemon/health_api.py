@@ -77,10 +77,14 @@ def build_health_handlers(config: InstanceConfig, db: Database, registry: Regist
         snap = sampler.snapshot()
         storage = snap["storage"].get(("host", "storage"), {})
         deployments = [dict(r) for r in db.query(
-            "SELECT deployment_id, name, source, state FROM deployments")]
+            "SELECT d.deployment_id, d.name, d.source, d.state,"
+            " r.display_name AS repository_name FROM deployments d"
+            " LEFT JOIN repositories r ON r.repository_id=d.repository_id")]
         deployments.extend({"deployment_id": d["deployment_id"], "name": d["name"],
                             "source": d["source"], "state": d["state"],
-                            "health": d["health"], "observed_only": True}
+                            "health": d["health"],
+                            "repository_name": d["repository_name"],
+                            "observed_only": True}
                            for d in observed.list_deployments(db))
         unhealthy = [d for d in deployments
                      if d["state"] in ("degraded", "failed")

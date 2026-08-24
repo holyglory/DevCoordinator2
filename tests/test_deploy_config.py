@@ -149,3 +149,31 @@ def test_unknown_deployment(tmp_path):
                                   'command = ["x"]\n')
     with pytest.raises(ConfigError, match="not defined"):
         load_deployment_spec(root, "nope")
+
+
+def test_domain_with_single_port_component_routes_implicitly(tmp_path):
+    (tmp_path / ".devcoordinator.toml").write_text(
+        'schema = 1\n[deployment.d]\ncomponents = ["app", "worker"]\n'
+        'domain = "para"\n'
+        '[deployment.d.component.app]\ntype = "process"\ncommand = ["x"]\nport = true\n'
+        '[deployment.d.component.worker]\ntype = "process"\ncommand = ["y"]\n')
+    spec = load_deployment_spec(tmp_path, "d")
+    assert spec.route_component is not None
+    assert spec.route_component.name == "app"
+
+
+def test_domain_with_two_port_components_still_requires_route(tmp_path):
+    (tmp_path / ".devcoordinator.toml").write_text(
+        'schema = 1\n[deployment.d]\ncomponents = ["a", "b"]\ndomain = "para"\n'
+        '[deployment.d.component.a]\ntype = "process"\ncommand = ["x"]\nport = true\n'
+        '[deployment.d.component.b]\ntype = "process"\ncommand = ["y"]\nport = true\n')
+    with pytest.raises(ConfigError, match="route = true"):
+        load_deployment_spec(tmp_path, "d")
+
+
+def test_postgres_port_never_becomes_the_implicit_route(tmp_path):
+    (tmp_path / ".devcoordinator.toml").write_text(
+        'schema = 1\n[deployment.d]\ncomponents = ["db"]\ndomain = "para"\n'
+        '[deployment.d.component.db]\ntype = "postgres"\n')
+    with pytest.raises(ConfigError, match="route = true"):
+        load_deployment_spec(tmp_path, "d")

@@ -368,10 +368,10 @@ class Deployments:
                                  last_error=str(exc)[:512])
                 raise ProtocolError("deployment_action_failed",
                                     f"stop {comp.name} failed: {exc}") from exc
-        if ctx.spec.route_component and any(c.route for c in comps):
+        route = ctx.spec.route_component
+        if route and any(c.name == route.name for c in comps):
             st.set_route(self._db, st.effective_domain(row, ctx.spec, ctx.source),
-                         ctx.dep_id, ctx.spec.route_component.name, None,
-                         row["current_generation"])
+                         ctx.dep_id, route.name, None, row["current_generation"])
             eng.publish_routes(ctx)
 
     def _start(self, ctx: eng.Ctx, row: dict, worktree: Path,
@@ -417,7 +417,7 @@ class Deployments:
                 raise ProtocolError("deployment_action_failed",
                                     f"component {comp.name} unhealthy after start: {note}")
         route = ctx.spec.route_component
-        if route and any(c.route for c in comps):
+        if route and any(c.name == route.name for c in comps):
             st.set_route(self._db, st.effective_domain(row, ctx.spec, ctx.source),
                          ctx.dep_id, route.name, port_map.get(route.name), number)
             eng.publish_routes(ctx)

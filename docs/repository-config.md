@@ -85,7 +85,7 @@ type = "process"
 command = ["npm", "run", "start"]   # argv only
 cwd = "."
 port = true                  # daemon leases a host port, injected as PORT
-route = true                 # the domain routes to this component (exactly one per deployment with a domain)
+route = true                 # the domain routes to this component (optional when exactly one process/docker component leases a port)
 health = { path = "/healthz", timeout_seconds = 60 }   # or { tcp = true, timeout_seconds = 30 }
 env = { NODE_ENV = "production" }
 depends_on = ["db"]          # narrow ordering within the declared order
@@ -129,8 +129,11 @@ instance may use the checkout instance's database via `shared_from`.
 
 Validation adds to the Phase 1 rules: component names `[a-z0-9][a-z0-9-]{0,31}`;
 every listed component has a table and vice versa; `depends_on` references
-earlier components only; at most one `route = true`, required when `domain`
-is set; `domain` labels `[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?`; docker images
+earlier components only; at most one `route = true`. When `domain` is set and
+no component declares `route = true`, a deployment with exactly one
+port-leasing process/docker component routes to it implicitly (2026-08-24);
+with several, `route = true` is required. `domain` labels
+`[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?`; docker images
 `name[:tag]` without privileged flags, host mounts, or socket access;
 `compose.file` inside the repository; `shared_from` is exclusive with
 `image`/`database`/`user`.

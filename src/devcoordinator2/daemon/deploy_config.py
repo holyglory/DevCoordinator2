@@ -96,7 +96,15 @@ class DeploymentSpec:
 
     @property
     def route_component(self) -> ComponentSpec | None:
-        return next((c for c in self.components if c.route), None)
+        """Explicit route = true wins; otherwise a deployment with exactly one
+        port-leasing process/docker component routes to it implicitly, so a
+        single-service deployment can receive a domain without ceremony."""
+        explicit = next((c for c in self.components if c.route), None)
+        if explicit is not None:
+            return explicit
+        candidates = [c for c in self.components
+                      if c.wants_port and c.type in ("process", "docker")]
+        return candidates[0] if len(candidates) == 1 else None
 
     def canonical(self, source: str) -> dict:
         """Secret-free, order-stable representation for fingerprinting one
@@ -197,7 +205,13 @@ def _validate_deployment(root: Path, name: str, body: dict) -> DeploymentSpec:
     if len(routes) > 1:
         raise ConfigError(f"{prefix} at most one component may set route = true")
     if domains and not routes:
-        raise ConfigError(f"{prefix} domain requires one component with route = true")
+        implicit = [c for c in components
+                    if c.wants_port and c.type in ("process", "docker")]
+        if len(implicit) != 1:
+            raise ConfigError(
+                f"{prefix} domain requires one component with route = true"
+                " (implicit only when exactly one process/docker component"
+                " leases a port)")
     if routes and not routes[0].wants_port:
         raise ConfigError(f"{prefix} the route component must lease a port")
     return DeploymentSpec(name=name, sources=sources, domains=domains,

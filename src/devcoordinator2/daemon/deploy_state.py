@@ -182,47 +182,62 @@ def effective_domain(row: dict | None, spec: DeploymentSpec, source: str) -> str
 
 def override_domain(db: Database, dep_id: str, domain: str | None) -> dict:
     """Persist a domain override (or clear it, falling back to the declared
-    domain) and move the live route with it. Uniqueness is the caller's check."""
+    domain) and move the live route with it, in one transaction. Uniqueness
+    is the caller's check."""
     row = get_deployment(db, dep_id)
     if row is None:
         raise ValueError(f"no deployment {dep_id}")
     declared = json.loads(row["spec_json"]).get("domain")
     effective = domain if domain is not None else declared
+    has_route = bool(db.query("SELECT 1 FROM domain_routes WHERE deployment_id=?",
+                              (dep_id,)))
+    new_route = None
+    if not has_route and effective:
+        new_route = _route_target_from_spec(db, dep_id, row)  # raises when impossible
     with db.transaction() as conn:
         conn.execute("UPDATE deployments SET domain_override=?, domain=?, updated_at=?"
                      " WHERE deployment_id=?", (domain, effective, now_iso(), dep_id))
-        route = conn.execute("SELECT * FROM domain_routes WHERE deployment_id=?",
-                             (dep_id,)).fetchone()
-        if route is not None:
+        if has_route:
             if effective:
                 conn.execute("UPDATE domain_routes SET domain=?, published_at=?"
                              " WHERE deployment_id=?", (effective, now_iso(), dep_id))
             else:
                 conn.execute("DELETE FROM domain_routes WHERE deployment_id=?", (dep_id,))
-    if route is None and effective:
-        _create_route_from_spec(db, dep_id, row, effective)
+        elif new_route is not None:
+            component, port, generation = new_route
+            conn.execute(
+                "INSERT OR REPLACE INTO domain_routes(domain, deployment_id, component,"
+                " port, generation, published_at) VALUES(?,?,?,?,?,?)",
+                (effective, dep_id, component, port, generation, now_iso()))
     updated = get_deployment(db, dep_id)
     return {"deployment_id": dep_id, "domain": updated["domain"],
             "domain_source": "override" if domain is not None else "configuration",
             "declared_domain": declared}
 
 
-def _create_route_from_spec(db: Database, dep_id: str, row: dict,
-                            domain: str) -> None:
-    spec = json.loads(row["spec_json"])
-    route_comp = next((c["name"] for c in spec.get("components", []) if c.get("route")),
-                      None)
+def _route_target_from_spec(db: Database, dep_id: str,
+                            row: dict) -> tuple[str, int | None, int | None]:
+    """(component, port, generation) for a deployment that has no route row
+    yet: the declared route component, or the implicit single port-leasing
+    process/docker component (mirrors DeploymentSpec.route_component)."""
+    comps = json.loads(row["spec_json"]).get("components", [])
+    route_comp = next((c["name"] for c in comps if c.get("route")), None)
     if route_comp is None:
-        raise ValueError("this deployment declares no route component; add"
-                         " route = true to the component that should receive traffic"
-                         " and apply first")
+        implicit = [c["name"] for c in comps
+                    if c.get("wants_port") and c.get("type") in ("process", "docker")]
+        if len(implicit) == 1:
+            route_comp = implicit[0]
+    if route_comp is None:
+        raise ValueError("this deployment has no routable component: mark one"
+                         " process/docker component with route = true (several"
+                         " lease ports) and apply")
     generation = row["current_generation"] or 0
     port_rows = db.query(
         "SELECT port, generation FROM port_assignments WHERE deployment_id=?"
         " AND component=? AND generation IN (?, 0) ORDER BY generation DESC",
         (dep_id, route_comp, generation))
     port = port_rows[0]["port"] if port_rows else None
-    set_route(db, domain, dep_id, route_comp, port, generation or None)
+    return route_comp, port, generation or None
 
 
 def domain_owner(db: Database, domain: str) -> str | None:

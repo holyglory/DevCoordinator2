@@ -351,3 +351,22 @@ the owner's choice.
 **Owner context.** The owner asked to edit domains from the deployment page.
 They were told the precedence rule (override wins until cleared) and the
 observed-projection caveat above.
+
+## DC2-2026-08-24-IMPLICIT-ROUTE — Single-service deployments route without ceremony
+
+**Decision.** When a deployment declares a domain (or receives one via
+`deployment.set_domain`) and no component sets `route = true`, the route
+target defaults to the single port-leasing process/docker component. With
+several port-leasing components, `route = true` remains required; postgres
+ports are never an implicit route target. `deployment.set_domain` is atomic:
+a refusal persists nothing.
+
+**Alternatives.** Keeping `route = true` mandatory was rejected: the owner's
+first real domain edit failed on a one-component deployment where the target
+is unambiguous, and the earlier non-atomic implementation had already stored
+the override while reporting failure — the worst of both.
+
+**Owner context.** The owner reported the failed edit verbatim
+("deployment.set_domain failed: this deployment declares no route
+component…") on `web@worktree`, which has exactly one port-leasing
+component.
