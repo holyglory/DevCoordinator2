@@ -1,6 +1,6 @@
 # Security Assumptions
 
-Last reviewed: 2026-08-22
+Last reviewed: 2026-08-25 (Docker authoritative cutover)
 
 Installation-specific values (the concrete accounts, groups, domain, and
 owner identity) are deliberately not in this file. They live in the
@@ -47,23 +47,29 @@ untracked `instance/` directory and in the installed instance configuration
   transient units (`--uid`/`--gid` + explicit supplementary groups).
 - Local API calls use a Unix socket. The kernel peer UID (`SO_PEERCRED`) is
   the physical caller identity; request bodies cannot assert identity.
-  Socket access is gated by a dedicated client group (named in instance
-  configuration), socket mode 0660.
+  The socket is mode 0666: every local account is a full caller by owner
+  decision (DC2-2026-08-24-OPEN-LOCAL-ACCESS); the client group remains
+  only as the repository-access mechanism.
 - No local per-repository or per-agent permissions are consulted. Any
   trusted local account may invoke any local command.
 - The public edge authenticates users and enforces per-deployment grants.
   Public authority never derives from the local trust boundary.
 
-## Docker: observational mode (current, explicit)
+## Docker: authoritative mode (since the 2026-08-25 cutover)
 
-- Some agent accounts currently retain direct Docker socket access
-  (enumerated in `instance/local-accounts.md`). DevCoordinator2 therefore
-  runs in observational mode: containers it did not create are visible and
-  honestly classified as `unmanaged/unknown`.
-- The authoritative mode — only the daemon touches the Docker socket, agent
-  accounts lose direct access — is a consequential host permission change.
-  It happens only as an explicit reviewed cutover step during migration,
-  never silently during development.
+- No agent account is a member of the `docker` group
+  (DC2-2026-08-22-DOCKER-MODE, executed 2026-08-25 on explicit owner
+  approval). The root daemon is the Docker authority: unprivileged
+  container work goes through DevCoordinator2's commands, and every
+  container it creates is attributed to a repository, deployment or test,
+  and caller.
+- Containers that predate the cutover and were not created by the daemon
+  remain visible and honestly classified (`observed-current` for adopted
+  legacy stacks, `unmanaged` otherwise) until adopted through reviewed
+  repository configuration or removed.
+- Root/sudo held by the owner's accounts remains inside the single-owner
+  trust boundary above; this section governs the unprivileged path, not
+  root.
 
 ## Root daemon hardening obligations
 
@@ -82,5 +88,5 @@ Review this file before: adding an account not controlled by the same
 owner; making local accounts mutually distrusting; changing the repository
 or client group model; placing credentials or private runtime state in the
 checkout; exposing the daemon socket beyond the local trust boundary;
-performing the Docker authoritative-mode cutover; or exposing the
-repository through any network service.
+re-granting any account direct Docker access (reversing the authoritative
+cutover); or exposing the repository through any network service.
