@@ -124,3 +124,17 @@ def test_ensure_env_value_appends_once_and_refuses_conflict(tmp_path):
     assert target.read_text() == "A=1\nB=2\n"
     with pytest.raises(RuntimeError, match="different installed value"):
         install.ensure_env_value(target, "B", "3")
+
+
+def test_install_restart_path_activates_the_new_release(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        install, "run",
+        lambda argv, check=True: calls.append((argv, check)) or SimpleNamespace())
+    install.enable_and_restart_units()
+    assert calls == [
+        (["systemctl", "enable", "devcoordinator2.service"], True),
+        (["systemctl", "restart", "devcoordinator2.service"], True),
+        (["systemctl", "enable", "devcoordinator2-edge.service"], True),
+        (["systemctl", "restart", "devcoordinator2-edge.service"], True),
+    ]

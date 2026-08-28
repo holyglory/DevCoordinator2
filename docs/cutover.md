@@ -56,6 +56,9 @@ accounts, legacy unit names, paths) are instance data kept in the untracked
    `/etc/devcoordinator2/edge/`, `EDGE_HTTP_ONLY=0`, ports 80/443), then
    `scripts/edge_switch.py --to devcoordinator2 --legacy-units <legacy edge
    units> --yes`. Rollback at any time: `--to legacy --yes`.
+   Subsequent `scripts/install.py --start` upgrades enable and explicitly
+   restart both units after atomically changing the release symlink; an active
+   old process is never treated as proof that the new release is running.
 10. **Docker authoritative mode** (owner decision DC2-…-DOCKER-MODE): remove
     agent accounts from the `docker` group, restart their sessions, verify
     `devcoordinator2 health containers` attributions; the observational

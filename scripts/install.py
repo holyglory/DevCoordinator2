@@ -237,6 +237,12 @@ def unit_edge(release: Path, canary: bool) -> str:
     return text
 
 
+def enable_and_restart_units() -> None:
+    for unit in ("devcoordinator2.service", "devcoordinator2-edge.service"):
+        run(["systemctl", "enable", unit])
+        run(["systemctl", "restart", unit])
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--release-id", default=None, help="default: git HEAD short id")
@@ -328,8 +334,7 @@ def main() -> int:
         accounts, OPT / "current" / "skills" / "codex-dev-coordinator")
     run(["systemctl", "daemon-reload"])
     if ns.start:
-        run(["systemctl", "enable", "--now", "devcoordinator2.service"])
-        run(["systemctl", "enable", "--now", "devcoordinator2-edge.service"])
+        enable_and_restart_units()
     print({"release": str(release), "edge_uid": edge_uid, "client_group": ns.client_group,
            "created_config": created, "canary": ns.canary,
            "canary_port": ns.canary_port if ns.canary else None, "started": ns.start,
