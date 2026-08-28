@@ -200,7 +200,7 @@ class Deployments:
                 binding = self._bring_up(ctx, comp, number, gen_path, port_map, old_rows)
                 if st.is_generation_scoped(comp) and binding[0] != "none":
                     started.append((comp, binding))
-                ok, note = eng.prove_health(ctx, comp, binding, port_map)
+                ok, note = eng.prove_health(ctx, comp, binding, port_map, number)
                 generation = number if st.is_generation_scoped(comp) else 0
                 st.set_component(db, ctx.dep_id, comp.name, state="running" if ok else "failed",
                                  health="healthy" if ok else "unhealthy",
@@ -327,6 +327,10 @@ class Deployments:
             row = self._existing(ctx)
             comps = list(ctx.spec.components)
             if component is not None:
+                service_target = self._compose_service_target(ctx, component)
+                if service_target is not None:
+                    return self._control_compose_service(
+                        action, ctx, service_target, caller, component)
                 spec = ctx.spec.component(component)
                 if spec is None:
                     raise ProtocolError("args_invalid", f"no component {component!r}")
@@ -349,6 +353,66 @@ class Deployments:
         finally:
             lock.release()
 
+    @staticmethod
+    def _compose_service_target(ctx: eng.Ctx,
+                                component: str) -> tuple[ComponentSpec, str] | None:
+        if "/" not in component:
+            return None
+        parent, service = component.split("/", 1)
+        spec = ctx.spec.component(parent)
+        if spec is None or spec.type != "compose":
+            raise ProtocolError("args_invalid", f"no Compose component {parent!r}")
+        if service not in spec.independent_services:
+            raise ProtocolError(
+                "deployment_action_failed",
+                f"Compose service {component!r} is not independently controllable")
+        return spec, service
+
+    def _control_compose_service(self, action: str, ctx: eng.Ctx,
+                                 target: tuple[ComponentSpec, str],
+                                 caller: Caller, component_ref: str) -> dict:
+        spec, service = target
+        rows = {item["name"]: item for item in st.components(self._db, ctx.dep_id)}
+        binding = rows.get(spec.name)
+        if not binding or binding["binding_kind"] != "compose" \
+                or not binding["binding_identity"]:
+            raise ProtocolError(
+                "deployment_action_failed",
+                f"Compose component {spec.name!r} has no managed project")
+        project = binding["binding_identity"]
+        try:
+            if action in ("stop", "restart"):
+                rt.compose_stop_exact_services(project, (service,))
+                if action == "stop":
+                    st.set_compose_service_desired(
+                        self._db, ctx.dep_id, spec.name, service, "stopped")
+            if action in ("start", "restart"):
+                st.set_compose_service_desired(
+                    self._db, ctx.dep_id, spec.name, service, "running")
+                rt.compose_start_exact_services(project, (service,))
+                ok, note = rt.compose_service_ready(
+                    project, service, spec.compose_timeout_seconds)
+                if not ok:
+                    raise rt.RuntimeError_(note)
+        except rt.RuntimeError_ as exc:
+            st.set_component(self._db, ctx.dep_id, spec.name,
+                             last_error=str(exc)[:512])
+            st.set_deployment(self._db, ctx.dep_id, state="degraded")
+            raise ProtocolError(
+                "deployment_action_failed",
+                f"{action} {component_ref} failed: {exc}") from exc
+
+        st.set_component(self._db, ctx.dep_id, spec.name, last_error=None)
+        status = self._status(ctx, st.get_deployment(self._db, ctx.dep_id))
+        st.set_deployment(self._db, ctx.dep_id, state=status["state"])
+        status = self._status(ctx, st.get_deployment(self._db, ctx.dep_id))
+        events.publish(f"deployment.{action}", deployment_id=ctx.dep_id,
+                       name=ctx.spec.name, source=ctx.source,
+                       component=component_ref,
+                       repository_id=status["repository_id"], state=status["state"],
+                       caller_uid=caller.uid)
+        return status
+
     def _stop(self, ctx: eng.Ctx, row: dict, worktree: Path,
               comps: list[ComponentSpec]) -> None:
         gen = st.generation(self._db, ctx.dep_id, row["current_generation"] or 0)
@@ -360,7 +424,13 @@ class Deployments:
                 continue
             try:
                 eng.stop_component_binding(old["binding_kind"], old["binding_identity"], comp,
-                                           gen_path, None)
+                                           gen_path,
+                                           ctx.env_path(comp.name,
+                                                        row["current_generation"] or 0)
+                                           if ctx.env_path(
+                                               comp.name,
+                                               row["current_generation"] or 0).exists()
+                                           else None)
                 st.set_component(self._db, ctx.dep_id, comp.name, state="stopped",
                                  health="none", desired_state="stopped", last_error=None)
             except rt.RuntimeError_ as exc:
@@ -392,14 +462,20 @@ class Deployments:
                     rt.start_container(old["binding_identity"])
                     binding = ("container", old["binding_identity"])
                 elif old and old["binding_kind"] == "compose":
-                    rt.compose_up(old["binding_identity"], gen_path / comp.compose_file,
-                                  gen_path, ctx.env_path(comp.name, number)
-                                  if ctx.env_path(comp.name, number).exists() else None,
-                                  comp.services)
+                    long_running = tuple(service for service in comp.services
+                                         if service not in comp.finite_services)
+                    if comp.finite_services:
+                        rt.compose_start_exact_services(old["binding_identity"],
+                                                        long_running)
+                    else:
+                        rt.compose_start(old["binding_identity"],
+                                         ctx.compose_files(comp, gen_path), gen_path,
+                                         ctx.compose_env_files(comp, gen_path, number),
+                                         long_running)
                     binding = ("compose", old["binding_identity"])
                 else:
                     binding = eng.start_component(ctx, comp, number, gen_path, port_map)
-                ok, note = eng.prove_health(ctx, comp, binding, port_map)
+                ok, note = eng.prove_health(ctx, comp, binding, port_map, number)
             except (rt.RuntimeError_, ProtocolError) as exc:
                 st.set_component(self._db, ctx.dep_id, comp.name, state="failed",
                                  health="unhealthy", desired_state="running",
@@ -478,7 +554,9 @@ class Deployments:
                 elif c["binding_kind"] == "compose" and spec is not None:
                     gen = st.generation(self._db, ctx.dep_id, row["current_generation"] or 0)
                     gp = Path(gen["path"]) if gen else worktree
-                    rt.compose_down(c["binding_identity"], gp / spec.compose_file, gp, None,
+                    rt.compose_down(c["binding_identity"], ctx.compose_files(spec, gp), gp,
+                                    ctx.compose_env_files(
+                                        spec, gp, row["current_generation"] or 0),
                                     delete_volumes=delete_data)
             for gen in self._db.query("SELECT path FROM generations WHERE deployment_id=?",
                                       (ctx.dep_id,)):

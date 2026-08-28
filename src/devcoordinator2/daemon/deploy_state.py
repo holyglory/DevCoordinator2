@@ -107,7 +107,30 @@ def upsert_deployment(db: Database, *, dep_id: str, reg, name: str, source: str,
                 " order_index=excluded.order_index, updated_at=excluded.updated_at",
                 (dep_id, cspec.name, cspec.type, cspec.order,
                  component_fingerprint(cspec), now))
+            if cspec.type == "compose":
+                for service in cspec.independent_services:
+                    conn.execute(
+                        "INSERT INTO compose_service_desires(deployment_id, component,"
+                        " service, desired_state, updated_at) VALUES(?,?,?,'running',?)"
+                        " ON CONFLICT(deployment_id, component, service) DO UPDATE SET"
+                        " desired_state='running', updated_at=excluded.updated_at",
+                        (dep_id, cspec.name, service, now))
+                keep = list(cspec.independent_services)
+                if keep:
+                    conn.execute(
+                        f"DELETE FROM compose_service_desires WHERE deployment_id=?"
+                        f" AND component=? AND service NOT IN"
+                        f" ({','.join('?' * len(keep))})",
+                        (dep_id, cspec.name, *keep))
+                else:
+                    conn.execute(
+                        "DELETE FROM compose_service_desires WHERE deployment_id=?"
+                        " AND component=?", (dep_id, cspec.name))
         names = [c.name for c in spec.components]
+        conn.execute(
+            f"DELETE FROM compose_service_desires WHERE deployment_id=?"
+            f" AND component NOT IN ({','.join('?' * len(names))})",
+            (dep_id, *names))
         conn.execute(
             f"DELETE FROM components WHERE deployment_id=? AND name NOT IN"
             f" ({','.join('?' * len(names))})", (dep_id, *names))
@@ -156,6 +179,8 @@ def prune_generations(db: Database, dep_id: str, keep: set[int]) -> list[dict]:
     stale = [r for r in rows if r["number"] not in keep]
     with db.transaction() as conn:
         for r in stale:
+            conn.execute("DELETE FROM compose_completions WHERE deployment_id=?"
+                         " AND generation=?", (dep_id, r["number"]))
             conn.execute("DELETE FROM generations WHERE deployment_id=? AND number=?",
                          (dep_id, r["number"]))
     return stale
@@ -251,9 +276,57 @@ def domain_owner(db: Database, domain: str) -> str | None:
 
 def delete_deployment_rows(db: Database, dep_id: str) -> None:
     with db.transaction() as conn:
-        for table in ("domain_routes", "port_assignments", "components", "generations"):
+        for table in ("domain_routes", "port_assignments", "compose_completions",
+                      "compose_service_desires", "components", "generations"):
             conn.execute(f"DELETE FROM {table} WHERE deployment_id=?", (dep_id,))
         conn.execute("DELETE FROM deployments WHERE deployment_id=?", (dep_id,))
+
+
+def record_compose_completions(db: Database, dep_id: str, component: str,
+                               generation_number: int,
+                               candidates: list[dict]) -> None:
+    if not candidates:
+        return
+    with db.transaction() as conn:
+        for item in candidates:
+            conn.execute(
+                "INSERT OR REPLACE INTO compose_completions(deployment_id, component,"
+                " service, generation, container_id, image_id, exit_code, started_at,"
+                " finished_at, recorded_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                (dep_id, component, item["service"], generation_number,
+                 item["container_id"], item.get("image_id"), item.get("exit_code", 0),
+                 item.get("started_at"), item.get("finished_at"), now_iso()))
+
+
+def compose_completions(db: Database, dep_id: str, component: str,
+                        generation_number: int) -> dict[str, dict]:
+    rows = db.query(
+        "SELECT service, generation, container_id, image_id, exit_code, started_at,"
+        " finished_at, recorded_at FROM compose_completions WHERE deployment_id=?"
+        " AND component=? AND generation=? ORDER BY service",
+        (dep_id, component, generation_number))
+    return {row["service"]: dict(row) for row in rows}
+
+
+def set_compose_service_desired(db: Database, dep_id: str, component: str,
+                                service: str, desired_state: str) -> None:
+    if desired_state not in ("running", "stopped"):
+        raise ValueError(f"invalid Compose service desired state {desired_state!r}")
+    with db.transaction() as conn:
+        conn.execute(
+            "INSERT INTO compose_service_desires(deployment_id, component, service,"
+            " desired_state, updated_at) VALUES(?,?,?,?,?)"
+            " ON CONFLICT(deployment_id, component, service) DO UPDATE SET"
+            " desired_state=excluded.desired_state, updated_at=excluded.updated_at",
+            (dep_id, component, service, desired_state, now_iso()))
+
+
+def compose_service_desires(db: Database, dep_id: str,
+                            component: str) -> dict[str, str]:
+    return {row["service"]: row["desired_state"] for row in db.query(
+        "SELECT service, desired_state FROM compose_service_desires"
+        " WHERE deployment_id=? AND component=? ORDER BY service",
+        (dep_id, component))}
 
 
 # -- private secrets and environment files ----------------------------------

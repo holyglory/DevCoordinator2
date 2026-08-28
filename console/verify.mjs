@@ -19,7 +19,7 @@ import { createSessionManager } from '../edge/lib/session.mjs';
 import { canonicalJson } from '../edge/lib/routes-store.mjs';
 
 const BASE = 'example.test';
-const HOST = `console.${BASE}`;
+const HOST = process.env.CONSOLE_VERIFY_HOST || `console.${BASE}`;
 const OUT = process.env.CONSOLE_VERIFY_OUT || path.join(os.tmpdir(), 'dc2-console-verify');
 const pw = createRequire(path.join(process.env.CONSOLE_VERIFY_PLAYWRIGHT || process.cwd(), 'package.json'))('playwright');
 
@@ -34,7 +34,8 @@ const P_C2 = 'p1111111111111103'; const P_G1 = 'p1111111111111104';
 const P_D1 = 'p1111111111111105'; const P_FB = 'p1111111111111106';
 const P_LT = 'p1111111111111107';
 const fixtures = (scenario) => {
-  const running = { deployment_id: DEP, repository_id: 'r0123456789abcdef', repository_name: 'repo-one', name: 'web', source: 'worktree', state: scenario.stopped ? 'stopped' : 'running', domain: `app-dev.${BASE}`, public: false, current_generation: 17, updated_at: new Date(Date.now() - 90000).toISOString(), ttl_expires_at: null };
+  const runningState = scenario.applying ? 'applying' : (scenario.stopped ? 'stopped' : (scenario.serviceStopped ? 'degraded' : 'running'));
+  const running = { deployment_id: DEP, repository_id: 'r0123456789abcdef', repository_name: 'repo-one', name: 'web', source: 'worktree', state: runningState, domain: `app-dev.${BASE}`, public: false, current_generation: 17, updated_at: new Date(Date.now() - 90000).toISOString(), ttl_expires_at: null };
   const degraded = { deployment_id: 'd1111111111111111', repository_id: 'r0123456789abcdef', repository_name: 'repo-one', name: LONG, source: 'checkout', state: 'degraded', domain: `${LONG}.${BASE}`, public: false, current_generation: 2147483647, updated_at: new Date().toISOString(), ttl_expires_at: '2026-12-31T00:00:00Z' };
   const observed = { deployment_id: OBS, repository_id: 'r9999999999999999', repository_name: 'legacy-repo', name: 'existing-compose-stack', source: 'observed', state: 'running', health: 'healthy', domain: `observed.${BASE}`, public: true, route_port: 5001, current_generation: null, updated_at: new Date().toISOString(), ttl_expires_at: null, observed_only: true };
   const observedComponents = [{ name: 'app', display_name: 'existing-compose-stack-app-1', type: 'container', state: 'running', health: 'healthy', generation: null, binding: { kind: 'observed-container', identity: 'd'.repeat(64) }, port: 5001, restarts: null, owned: false, independent_control: false, last_error: null }];
@@ -42,6 +43,11 @@ const fixtures = (scenario) => {
     { name: 'db', type: 'postgres', state: 'running', health: 'healthy', generation: 0, binding: { kind: 'container', identity: 'c'.repeat(64) }, port: 20001, restarts: 0, owned: true, independent_control: true, last_error: null },
     { name: 'api', type: 'process', state: scenario.stopped ? 'stopped' : 'running', health: scenario.stopped ? 'none' : 'healthy', generation: 17, binding: { kind: 'unit', identity: `devcoordinator2-deploy-${DEP}-api-g17.service` }, port: 20002, restarts: 3, owned: true, independent_control: true, last_error: null },
     { name: 'worker', type: 'process', state: 'failed', health: 'unhealthy', generation: 17, binding: { kind: 'unit', identity: `devcoordinator2-deploy-${DEP}-worker-g17.service` }, port: null, restarts: 9999999, owned: true, independent_control: false, last_error: 'exited 1: ' + 'x'.repeat(120) },
+    { name: 'stack', type: 'compose', state: scenario.serviceStopped ? 'failed' : 'running', health: scenario.serviceStopped ? 'unhealthy' : 'healthy', generation: 17, binding: { kind: 'compose', identity: `dc2-${DEP}-stack` }, port: null, restarts: 0, owned: true, independent_control: true, last_error: null, services: [
+      { name: 'bootstrap', role: 'finite', state: 'completed', containers: 1, independent: false },
+      { name: 'stream-capture', role: 'running', state: 'running', containers: 1, independent: false },
+      { name: 'projection-worker', role: 'running', state: scenario.serviceStopped ? 'stopped' : 'running', containers: 1, independent: true },
+    ], completed_services: [{ service: 'bootstrap', generation: 17, exit_code: 0, recorded_at: '2026-08-28T00:00:00Z' }] },
     { name: 'smtp', type: 'external', state: 'running', health: 'healthy', generation: null, binding: { kind: null, identity: null }, port: null, restarts: 0, owned: false, independent_control: true, last_error: null },
   ];
   const points = Array.from({ length: 30 }, (_, i) => ({ minute: `2026-01-01T00:${String(i).padStart(2, '0')}Z`, min: i, avg: i * 1.5, max: i * 2, samples: 4 }));
@@ -66,7 +72,7 @@ const fixtures = (scenario) => {
     'bug.list': { bugs: scenario.empty ? [] : [{ bug_id: 'b0123456789ab', component: 'api', summary: 'Returns 500 on /export when the report is large', expected: '200 with CSV', actual: '500', steps: '1. open /export 2. choose all-time 3. submit', opened_at: '2026-08-20T10:00:00Z', last_seen_at: new Date().toISOString(), occurrences: 42, reporter: 'dev@example.test', correlations: { deployment_id: DEP } }], store: '/bugs' },
     'user.list': { users: [{ user_id: 'u1', email: 'owner@example.test', administrator: true, grants: [], last_seen_at: new Date().toISOString() }, { user_id: 'u2', email: `${'verylongmailboxname'.repeat(3)}@example.test`, administrator: false, grants: [{ deployment_id: DEP, role: 'operator', granted_at: 't' }], last_seen_at: null }], invitations: [{ invitation_id: 'i1', email: 'new@example.test', administrator: false, grants: [{ deployment_id: DEP, role: 'viewer' }], created_at: 't', created_by: 'owner', expires_at: '2026-09-06T00:00:00Z' }], roles: ['access', 'viewer', 'operator', 'administrator'], owners: ['owner@example.test'] },
     'telegram.list': { configured: true, chats: [{ chat_id: 4242, email: 'owner@example.test', label: 'Owner', linked_at: 't', subscriptions: ['server', `deployment:${DEP}`] }], outbox_pending: 0, last_poll_at: new Date().toISOString(), last_error: null },
-    ping: { daemon_version: '0.1.0', schema_version: 8, socket: '/run/x.sock' },
+    ping: { daemon_version: '0.1.0', schema_version: 9, socket: '/run/x.sock' },
     'plan.overview': {
       repository_id: REPO, display_name: 'repo-one',
       releases: scenario.empty ? [] : [
@@ -110,6 +116,7 @@ const SCENARIOS = {
   error: { identity: 'owner@example.test', admin: true, error: true },
   loading: { identity: 'owner@example.test', admin: true, delayMs: 4000 },
   denied: { identity: 'dev@example.test', admin: false, denied: true },
+  applying: { identity: 'owner@example.test', admin: true, applying: true },
 };
 const VIEWS = ['#/deployments', `#/deployments/${DEP}`, '#/plan', `#/plan/${REPO}`, '#/decisions', `#/decisions/${REPO}`, '#/tests', '#/health', '#/health/containers', '#/bugs', '#/admin'];
 const VIEWPORTS = { wide: { width: 1280, height: 800 }, narrow: { width: 390, height: 844 } };
@@ -117,7 +124,7 @@ const ADMIN_ONLY = ['health.summary', 'health.containers', 'health.container_rem
 
 async function startFakeDaemon(dir) {
   const socketPath = path.join(dir, 'daemon.sock');
-  let scenario = SCENARIOS.populated; const calls = []; const mutable = { stopped: false };
+  let scenario = SCENARIOS.populated; const calls = []; const mutable = { stopped: false, serviceStopped: false };
   const server = net.createServer({ allowHalfOpen: true }, (socket) => {
     let buf = '';
     socket.on('data', async (c) => {
@@ -128,19 +135,21 @@ async function startFakeDaemon(dir) {
       const cmd = req.command;
       if (scenario.error && cmd !== 'user.whoami') return reply({ ok: false, error: { code: 'internal_error', message: 'simulated daemon fault', detail: '' } });
       if (scenario.denied && ADMIN_ONLY.includes(cmd)) return reply({ ok: false, error: { code: 'permission_denied', message: `${cmd} requires administrator`, detail: '' } });
+      if (cmd === 'deployment.stop' && req.args.component === 'stack/projection-worker') { mutable.serviceStopped = true; return reply({ ok: true, result: { state: 'degraded' } }); }
+      if (cmd === 'deployment.start' && req.args.component === 'stack/projection-worker') { mutable.serviceStopped = false; return reply({ ok: true, result: { state: 'running' } }); }
       if (cmd === 'deployment.stop') { mutable.stopped = true; return reply({ ok: true, result: { state: 'stopped' } }); }
       if (cmd === 'deployment.start') { mutable.stopped = false; return reply({ ok: true, result: { state: 'running' } }); }
-      if (cmd === 'deployment.status' && req.args.deployment_id === OBS) return reply({ ok: true, result: fixtures({ ...scenario, stopped: mutable.stopped })['deployment.observed-status'] });
+      if (cmd === 'deployment.status' && req.args.deployment_id === OBS) return reply({ ok: true, result: fixtures({ ...scenario, stopped: mutable.stopped, serviceStopped: mutable.serviceStopped })['deployment.observed-status'] });
       if (cmd === 'deployment.set_domain') return reply({ ok: true, result: { deployment_id: req.args.deployment_id, domain: req.args.domain, public: !!req.args.public } });
       if (['deployment.restart', 'deployment.apply', 'deployment.rollback', 'deployment.remove', 'bug.report', 'bug.close', 'user.invite', 'user.remove', 'grant.set', 'grant.remove', 'telegram.link', 'telegram.subscribe', 'telegram.unsubscribe', 'test.stop', 'test.start', 'health.container_remove', 'task.create', 'task.update', 'release.request'].includes(cmd)) return reply({ ok: true, result: { state: 'done', status: 'done' } });
       if (cmd === 'plan.overview' && !req.args.repository_id) return reply({ ok: true, result: fixtures(scenario)['plan.overview-list'] });
-      const data = fixtures({ ...scenario, stopped: mutable.stopped })[cmd];
+      const data = fixtures({ ...scenario, stopped: mutable.stopped, serviceStopped: mutable.serviceStopped })[cmd];
       if (data === undefined) return reply({ ok: false, error: { code: 'command_unknown', message: cmd, detail: '' } });
       return reply({ ok: true, result: data });
     });
   });
   await new Promise((r) => server.listen(socketPath, r));
-  return { socketPath, calls, setScenario: (s) => { scenario = s; mutable.stopped = false; calls.length = 0; }, close: () => new Promise((r) => server.close(r)) };
+  return { socketPath, calls, setScenario: (s) => { scenario = s; mutable.stopped = false; mutable.serviceStopped = false; calls.length = 0; }, close: () => new Promise((r) => server.close(r)) };
 }
 
 async function main() {
@@ -153,6 +162,28 @@ async function main() {
   const edge = await createEdge({ baseDomain: BASE, consoleHost: HOST, httpPort: 0, httpOnly: true, sessionSecret: secret, oidcIssuer: 'http://127.0.0.1:1/', oidcClientId: '', oidcClientSecret: '', routesFile: path.join(tmp, 'routes.json'), stateDir: path.join(tmp, 'edge-state'), daemonSocket: daemon.socketPath, consoleDir: path.resolve(path.dirname(new URL(import.meta.url).pathname)) }, { log: { info() {}, warn() {}, error: (...a) => console.error('edge', ...a), debug() {} } });
   const [port] = await edge.listen();
   const sessions = createSessionManager({ secret, ttlMs: 3600000, cookieName: 'dc2_session', cookieDomain: `.${BASE}`, secure: false });
+  const holdFile = process.env.CONSOLE_VERIFY_HOLD_FILE;
+  if (holdFile) {
+    const scenarioName = process.env.CONSOLE_VERIFY_HOLD_SCENARIO || 'populated';
+    const scenario = SCENARIOS[scenarioName];
+    if (!scenario) throw new Error(`unknown hold scenario ${scenarioName}`);
+    daemon.setScenario(scenario);
+    const { cookie } = sessions.issue({ sub: 'sub', email: scenario.identity, name: 'Verifier' });
+    const receipt = {
+      url: `http://${HOST}:${port}/#/deployments/${DEP}`,
+      cookie: cookie.split(';')[0],
+      scenario: scenarioName,
+    };
+    await fs.writeFile(holdFile, JSON.stringify(receipt));
+    console.log(JSON.stringify({ fixture: holdFile, ...receipt, cookie: 'redacted' }));
+    await new Promise((resolve) => {
+      process.once('SIGINT', resolve);
+      process.once('SIGTERM', resolve);
+    });
+    await edge.close();
+    await daemon.close();
+    return;
+  }
   const browser = await pw.chromium.launch({ args: [`--host-resolver-rules=MAP *.${BASE} 127.0.0.1`] });
   const report = { checks: [], failures: [] };
   const check = (name, ok, detail = '') => { report.checks.push({ name, ok, detail }); if (!ok) report.failures.push(`${name}: ${detail}`); };
@@ -189,6 +220,14 @@ async function main() {
         if (scenarioName === 'error') check(`${label}: error state with retry`, /Could not load|Cannot reach/.test(metrics.text) && /Retry/.test(metrics.text), metrics.text.slice(0, 120));
         if (scenarioName === 'denied' && (view === '#/admin' || view === '#/tests' || view === '#/health/containers')) check(`${label}: permission denied shown`, /Permission denied/.test(metrics.notice), metrics.notice.slice(0, 120));
         if (scenarioName === 'denied' && view === '#/health') check(`${label}: host health denied but repositories visible`, /administrator-only/.test(metrics.text) && /repo-one/.test(metrics.text));
+        if (scenarioName === 'applying' && (view === '#/deployments' || view === `#/deployments/${DEP}`)) {
+          const surface = view === '#/deployments'
+            ? page.locator(`a[href="#/deployments/${DEP}"]`).locator('xpath=ancestor::tr')
+            : page.locator('main');
+          const enabledMutation = await surface.locator('[data-cmd^="deployment."]:not(:disabled)').count();
+          check(`${label}: applying deployment has no enabled conflicting mutation`, enabledMutation === 0, `${enabledMutation} enabled`);
+          if (view === `#/deployments/${DEP}`) check(`${label}: applying journey explains lost replies`, /Closing this page does not cancel/.test(metrics.text));
+        }
         if (scenarioName === 'populated' && ['#/deployments', '#/tests', '#/health'].includes(view)) check(`${label}: long names rendered`, /going-and-going/.test(metrics.text), metrics.text.slice(0, 80));
         if (scenarioName === 'populated' && ['#/tests', '#/health'].includes(view)) check(`${label}: large numbers humanized`, /MiB|GiB|TiB/.test(metrics.text), metrics.text.slice(0, 80));
         if (scenarioName === 'populated' && view === `#/plan/${REPO}`) {
@@ -217,6 +256,19 @@ async function main() {
   await page.click('h1 ~ .actions button[data-cmd="deployment.start"]');
   await page.waitForFunction(() => [...document.querySelectorAll('h1 .badge')].some((b) => b.textContent === 'running'), null, { timeout: 10000 });
   check('interaction: start restores running', true);
+  daemon.calls.length = 0;
+  const projectionRow = page.locator('[data-compose-service="stack/projection-worker"]');
+  await projectionRow.locator('[data-cmd="deployment.stop"]').click();
+  await page.waitForFunction(() => [...document.querySelectorAll('h1 .badge')].some((b) => b.textContent === 'degraded'), null, { timeout: 10000 });
+  check('interaction: independent Compose stop targets only the reviewed service',
+    daemon.calls.some((c) => c.command === 'deployment.stop' && c.args.component === 'stack/projection-worker'));
+  check('interaction: stopped Compose service remains visible and the route stays published',
+    /stopped/.test(await projectionRow.innerText()) && /20002/.test(await page.innerText('main')));
+  await projectionRow.locator('[data-cmd="deployment.start"]').click();
+  await page.waitForFunction(() => [...document.querySelectorAll('h1 .badge')].some((b) => b.textContent === 'running'), null, { timeout: 10000 });
+  check('interaction: independent Compose start restores running without a stack apply',
+    daemon.calls.some((c) => c.command === 'deployment.start' && c.args.component === 'stack/projection-worker')
+    && !daemon.calls.some((c) => c.command === 'deployment.apply'));
   await page.click('button[data-logs="api"]');
   await page.waitForSelector('pre.log');
   check('interaction: logs load on demand', daemon.calls.some((c) => c.command === 'deployment.logs' && c.args.component === 'api'));
@@ -287,7 +339,7 @@ async function main() {
   check('interaction: invite form calls user.invite', daemon.calls.some((c) => c.command === 'user.invite' && c.args.email === 'new2@example.test'));
   await page.waitForFunction(() => /daemon 0\.1\.0/.test(document.querySelector('#server')?.textContent || ''), null, { timeout: 10000 });
   check('admin: the Server line renders daemon version, schema, and route generation',
-    /daemon 0\.1\.0 · schema 8 · route document generation 1/.test(await page.innerText('#server')),
+    /daemon 0\.1\.0 · schema 9 · route document generation 1/.test(await page.innerText('#server')),
     await page.innerText('#server'));
   await page.goto(`http://${HOST}:${port}/#/health/containers`);
   await page.waitForSelector('button[data-cmd="health.container_remove"]');

@@ -14,7 +14,7 @@ identical result JSON.
 ## ping
 
 Args: none.
-Result: `{"daemon_version": "<semver>", "schema_version": 8, "socket": "<path>"}`
+Result: `{"daemon_version": "<semver>", "schema_version": 9, "socket": "<path>"}`
 
 ## test.start
 
@@ -108,14 +108,26 @@ Reference args on every command except `list`: `path` (required) plus
   components are stopped and removed; nothing is routed), `busy`,
   `repository_config_invalid`. An identical running specification returns
   the status with `unchanged: true`.
+  Native Compose applies validate every declared service. Finite services are
+  recreated for a changed candidate, must exit 0, and produce bounded
+  generation receipts; long-running services must be running/healthy. An
+  instance-authorized ignored `env_file` is passed by validated path only.
 - `deployment.status` → `{deployment_id, name, source, repository_id, state
   (running|stopped|degraded|applying|failed), current_generation,
   previous_generation, domain, route_port, ttl_expires_at, components:
   [{name, type, state, health, generation, binding{kind, identity}, port,
-  restarts, owned, independent_control, last_error}], log_dir}`.
+  restarts, owned, independent_control, last_error, services?: [{name, role
+  (`finite|running`), state, desired_state, containers, independent}],
+  completed_services?: [{service, generation, container_id, image_id,
+  exit_code, started_at, finished_at, recorded_at}]}], log_dir}`.
 - `deployment.start | stop | restart {component?}` → status. Whole
   deployment in declared/reverse order, or one component whose declaration
-  permits independent control. Stop withdraws the route, never deletes data.
+  permits independent control. A declared independent Compose service is
+  addressed as `<component>/<service>`; only exact containers carrying the
+  recorded project+service identity are controlled, dependencies and finite
+  setup are not started, and unrelated services/routes remain. Stop withdraws
+  the route for a whole routed component, never for an unrelated Compose
+  worker, and never deletes data.
 - `deployment.logs {component, tail_lines<=5000}` → `{component, tail,
   log_path | container_id}`.
 - `deployment.rollback` → status with `rolled_back_from`/`rolled_back_to`;

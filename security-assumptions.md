@@ -1,6 +1,6 @@
 # Security Assumptions
 
-Last reviewed: 2026-08-25 (Docker authoritative cutover)
+Last reviewed: 2026-08-28 (digest fixtures and reviewed Compose environment path)
 
 Installation-specific values (the concrete accounts, groups, domain, and
 owner identity) are deliberately not in this file. They live in the
@@ -34,6 +34,18 @@ untracked `instance/` directory and in the installed instance configuration
   upstream secrets must not enter source, ordinary metadata, logs, metrics,
   or agent-facing results. They live only in instance configuration files
   outside the repository, systemd credentials, or private mode-0600 state.
+- A repository declaration alone never authorizes an ignored Compose
+  interpolation environment file. Private root-owned instance configuration
+  must separately allow the deterministic repository identity and exact
+  relative path, after that repository's confirmed assumptions deliberately
+  accept disposable development credentials inside the same-owner checkout
+  boundary. The daemon validates the authorization, ignored-file state, and
+  realpath on every use; it passes only the path to Compose and never copies
+  values into configuration metadata, results, logs, metrics, or argv. This
+  narrow exception does not permit committed credentials, symlinks/path escape,
+  unrelated-account access, or production secrets, and must be re-reviewed when
+  the repository trust boundary changes
+  (DC2-2026-08-28-COMPOSE-REPOSITORY-ENV).
 - Runaway processes, containers, storage growth, stale work, malformed
   input, path escape, and lost replies are credible operational failures and
   are handled as such, not as security incidents.

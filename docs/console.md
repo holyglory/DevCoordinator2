@@ -16,7 +16,9 @@ fakes success, and no view carries fixture numbers.
    observed ones drive the exact recorded containers
    (DC2-2026-08-24-OBSERVED-LIFECYCLE) — apply for administrators on
    managed ones; detail page with components (state, health, generation,
-   port, restarts, exact binding, last error), per-component controls,
+   port, restarts, exact binding, last error), per-component controls and
+   nested Compose-service state; only explicitly independent long-running
+   services receive exact start/stop/restart controls,
    on-demand logs (managed files or observed `docker logs`),
    rollback/remove (managed, administrators; remove asks explicitly whether
    persistent data should be deleted), the same pop-up domain editor
@@ -24,7 +26,9 @@ fakes success, and no view carries fixture numbers.
    without a route it asks for the host port, and a re-import replaces
    observed edits), and per-component CPU/memory charts over a selectable
    1h/24h/7d/30d window. The detail page names the repository under the
-   heading.
+   heading. While a deployment is applying, conflicting mutations are disabled
+   and a notice explains that closing the page does not cancel the accepted
+   operation; the caller refreshes status after it finishes.
 2. **Plan** — the completion ledger as a per-repository Gantt-style chart
    (picker first: every visible repository with its current release,
    done-lines progress, open-task count, and a preview-requested badge).
@@ -81,6 +85,7 @@ explicit permission-denied notice instead of partial data.
 | Control | API call | Proof of state change |
 |---|---|---|
 | Deployment start/stop/restart (list, detail, component; managed and observed) | `deployment.start/stop/restart` | view re-fetches `deployment.status`; header/component badges change |
+| Independent Compose-service start/stop/restart (detail only; explicitly declared services) | `deployment.start/stop/restart {component: "stack/service"}` | service badge and aggregate header change; unrelated service and route remain |
 | Domain edit / clear (pop-up from list rows and the detail page, administrators) | `deployment.set_domain {deployment_id, domain|null, port?, public?}` | status re-read; route document republished |
 | Health range switch (24h/7d/30d) and usage range (1h/24h/7d/30d) | `health.history {minutes, points}` | charts re-render from the store |
 | Unhealthy-deployment actions (health page cards) | `deployment.start/stop/restart` | summary re-read |

@@ -12,7 +12,7 @@ import threading
 from contextlib import contextmanager
 from pathlib import Path
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (
@@ -355,6 +355,34 @@ CREATE TRIGGER IF NOT EXISTS decisions_fts_insert AFTER INSERT ON decisions BEGI
 END;
 """
 
+# Schema 9: bounded receipts for successful finite Compose services. These are
+# control evidence for the current/previous deployment generations, not logs.
+_SCHEMA_V9 = """
+CREATE TABLE IF NOT EXISTS compose_completions (
+  deployment_id TEXT NOT NULL REFERENCES deployments(deployment_id),
+  component     TEXT NOT NULL,
+  service       TEXT NOT NULL,
+  generation    INTEGER NOT NULL,
+  container_id  TEXT NOT NULL,
+  image_id      TEXT,
+  exit_code     INTEGER NOT NULL,
+  started_at    TEXT,
+  finished_at   TEXT,
+  recorded_at   TEXT NOT NULL,
+  PRIMARY KEY(deployment_id, component, service, generation)
+);
+CREATE INDEX IF NOT EXISTS compose_completions_generation
+  ON compose_completions(deployment_id, generation);
+CREATE TABLE IF NOT EXISTS compose_service_desires (
+  deployment_id TEXT NOT NULL REFERENCES deployments(deployment_id),
+  component     TEXT NOT NULL,
+  service       TEXT NOT NULL,
+  desired_state TEXT NOT NULL,
+  updated_at    TEXT NOT NULL,
+  PRIMARY KEY(deployment_id, component, service)
+);
+"""
+
 
 class SchemaMismatch(Exception):
     pass
@@ -401,6 +429,7 @@ class Database:
                     "SQLite FTS5 is required for decision search (schema 8) and is"
                     f" missing from this SQLite build: {exc}"
                 ) from exc
+            self._conn.executescript(_SCHEMA_V9)
             self._conn.execute(
                 "INSERT OR REPLACE INTO meta(key, value) VALUES('schema_version', ?)",
                 (str(SCHEMA_VERSION),),

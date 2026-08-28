@@ -29,8 +29,23 @@ def component_states(ctx: eng.Ctx) -> list[dict]:
         port_map.update(ports.assigned(ctx.db, ctx.dep_id, current))
     for c in st.components(ctx.db, ctx.dep_id):
         spec = ctx.spec.component(c["name"])
-        live = _live(c, spec)
-        out.append({
+        receipts = st.compose_completions(
+            ctx.db, ctx.dep_id, c["name"], current or 0) \
+            if spec is not None and spec.type == "compose" else {}
+        desires = st.compose_service_desires(ctx.db, ctx.dep_id, c["name"]) \
+            if spec is not None and spec.type == "compose" else {}
+        if spec is not None and spec.type == "compose" \
+                and c["desired_state"] == "stopped":
+            desires.update({service: "stopped" for service in spec.services
+                            if service not in spec.finite_services})
+        live = _live(c, spec, receipts, desires)
+        if live.get("services") and spec is not None:
+            live["services"] = [
+                {**service,
+                 "independent": service["name"] in spec.independent_services}
+                for service in live["services"]
+            ]
+        item = {
             "name": c["name"], "type": c["type"], "state": live["state"],
             "health": live["health"], "generation": c["generation"],
             "binding": {"kind": c["binding_kind"], "identity": c["binding_identity"]},
@@ -38,10 +53,17 @@ def component_states(ctx: eng.Ctx) -> list[dict]:
             "owned": bool(spec and st.is_owned(spec)),
             "independent_control": bool(spec and spec.independent_control),
             "last_error": c["last_error"],
-        })
+        }
+        if live.get("services"):
+            item["services"] = live["services"]
+        if receipts:
+            item["completed_services"] = list(receipts.values())
+        out.append(item)
     return out
 
-def _live(c: dict, spec: ComponentSpec | None) -> dict:
+def _live(c: dict, spec: ComponentSpec | None,
+          receipts: dict[str, dict] | None = None,
+          desires: dict[str, str] | None = None) -> dict:
     kind, identity = c["binding_kind"], c["binding_identity"]
     if spec is not None and spec.type == "external":
         host, port = spec.tcp.rsplit(":", 1)
@@ -55,13 +77,15 @@ def _live(c: dict, spec: ComponentSpec | None) -> dict:
     elif kind == "container":
         s = rt.container_state(identity)
     elif kind == "compose":
-        s = rt.compose_state(identity)
+        s = rt.compose_state(identity, spec.services if spec else (),
+                             spec.finite_services if spec else (), receipts, desires)
     else:
         s = {"state": c["state"]}
     health = c["health"] if s["state"] == "running" else "none"
     if s["state"] != "running" and c["state"] == "running":
         health = "unhealthy"
-    return {"state": s["state"], "health": health, "restarts": s.get("restarts", 0)}
+    return {"state": s["state"], "health": health, "restarts": s.get("restarts", 0),
+            "services": s.get("services")}
 
 def status(ctx: eng.Ctx, row: dict) -> dict:
     comps = component_states(ctx)
@@ -144,5 +168,7 @@ def logs(ctx: eng.Ctx, row: dict, worktree: Path, component: str,
         gen = st.generation(ctx.db, ctx.dep_id, row["current_generation"] or 0)
         gp = Path(gen["path"]) if gen else worktree
         return {"component": component, "tail": rt.compose_logs(
-            c["binding_identity"], gp / spec.compose_file, gp, tail_lines)}
+            c["binding_identity"], ctx.compose_files(spec, gp), gp,
+            ctx.compose_env_files(spec, gp, row["current_generation"] or 0),
+            tail_lines)}
     return {"component": component, "tail": "", "note": "component has no logs"}

@@ -17,6 +17,11 @@ MAX_CONFIG_BYTES = 262144
 TEST_NAME_RE = re.compile(r"[a-z0-9][a-z0-9-]{0,31}$")
 TIMEOUT_MIN, TIMEOUT_MAX, TIMEOUT_DEFAULT = 1, 21600, 600
 POSTGRES_IMAGE_RE = re.compile(r"postgres:[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+POSTGRES_DIGEST_IMAGE_RE = re.compile(
+    r"[a-z0-9][a-z0-9._/-]{0,200}"
+    r"(?::[A-Za-z0-9][A-Za-z0-9._-]{0,127})?"
+    r"@sha256:[0-9a-f]{64}$"
+)
 PG_IDENT_RE = re.compile(r"[a-z_][a-z0-9_]{0,62}$")
 POSTGRES_IMAGE_DEFAULT = "postgres:16-alpine"
 _SECRET_KEY_RE = re.compile(r"(token|secret|password|passwd|credential|api_?key)",
@@ -153,9 +158,12 @@ def _validate_postgres(name: str, section) -> PostgresSpec:
     if unknown:
         raise ConfigError(f"[test.{name}.postgres] unknown keys: {sorted(unknown)}")
     image = section.get("image", POSTGRES_IMAGE_DEFAULT)
-    if not isinstance(image, str) or not POSTGRES_IMAGE_RE.fullmatch(image):
-        raise ConfigError(f"[test.{name}.postgres] image must be an official "
-                          "'postgres:<tag>' reference")
+    if not isinstance(image, str) or not (
+            POSTGRES_IMAGE_RE.fullmatch(image)
+            or POSTGRES_DIGEST_IMAGE_RE.fullmatch(image)):
+        raise ConfigError(
+            f"[test.{name}.postgres] image must be an official 'postgres:<tag>'"
+            " reference or a PostgreSQL-compatible image pinned by sha256 digest")
     database = section.get("database", "test")
     user = section.get("user", "test")
     for key, value in (("database", database), ("user", user)):

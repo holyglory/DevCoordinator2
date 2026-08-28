@@ -102,4 +102,16 @@ PostgreSQL container; Docker/Compose env files now use the literal format.
 | Canary installed beside legacy on private socket/port; daemon and edge active; route document served (generation ≥ 1, bootstrap owner) | PASS | `scripts/install.py --canary` on the host |
 | Installed CLI journey as a client account: test start → passed as caller uid, output, list; MCP `test_status`; bug report/close; health summary/containers | PASS | run on the host through `/usr/local/bin/devcoordinator2` |
 | Bugs found by the installed run and fixed: daemon unit `PrivateTmp` hid caller filesystems; test parser rejected files that also declare deployments; edge main-guard failed through the release symlink; installer ownership (uid used as gid) | FIXED | this commit |
+
+## Schema 9 lifecycle addendum (2026-08-28)
+
+| Item | Result | Evidence |
+|---|---|---|
+| Digest-pinned PostgreSQL-compatible fixture pulls/verifies the exact PostGIS image, injects private generated PG credentials, executes a real extension query, and removes the container | PASS | root integration `test_digest_pinned_postgis_fixture_is_pulled_injected_and_removed`; validator/Docker unit must-catches |
+| Native Compose uses multiple reviewed files plus an instance-authorized ignored interpolation file; missing/malformed/writable/wrong-repository/path/symlink/committed-file authority fails closed | PASS | path, installer, engine unit tests; root native-Compose integration through the private allowlist |
+| Finite bootstrap exits 0 with a generation receipt; unchanged apply and ordinary stop/start do not rerun it; changed apply reruns exactly once | PASS | root integration `test_native_compose_finite_service_receipt_and_start_semantics` |
+| Reviewed independent worker stop/start affects exact service containers only, preserves other services, route, volume state, and bootstrap receipt, reports degraded while stopped, and restores running | PASS | same root integration; CLI/MCP shared control contract; Console interaction proof |
+| Endpoint readiness preserves recoverable systemd restarts but aborts a terminal binding before a long health deadline | PASS | root integrations `test_failed_component_is_degraded_and_busy_is_immediate` and `test_readiness_allows_process_to_recover_within_restart_policy` |
+| Applying-state controls and independent Compose-service controls work truthfully across required Console states and representative wide/narrow constraints | PASS | `console/verify.mjs`: 530 checks, 0 failures; formal verifier: populated + applying at 390×844 and 1440×900, 4 checked pages, 0 criticals/warnings, coverage passed (`/tmp/devcoordinator2-formal-*-report.{json,md}`) |
+| Complete source and real-service acceptance after batch fixes | PASS | `ruff check src tests scripts`; full unit suite; complete root integration suite; instance-data scan clean |
 | Edge switch / legacy fence / Docker authoritative mode / live import | OWNER-EXECUTED | `docs/cutover.md`, `scripts/edge_switch.py` |

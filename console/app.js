@@ -144,9 +144,10 @@ function bind(root) {
     });
   });
 }
-function lifecycleButtons(id, component, cls = 'btn btn-small') {
+function lifecycleButtons(id, component, cls = 'btn btn-small', state = null) {
   const args = component ? { deployment_id: id, component } : { deployment_id: id };
-  return ['start', 'stop', 'restart'].map((a) => `<button class="${cls}" data-cmd="deployment.${a}" data-args='${esc(JSON.stringify(args))}'>${a}</button>`).join('');
+  const blocked = state === 'applying' ? ' disabled aria-disabled="true" title="Apply in progress; refresh status before another lifecycle action"' : '';
+  return ['start', 'stop', 'restart'].map((a) => `<button class="${cls}" data-cmd="deployment.${a}" data-args='${esc(JSON.stringify(args))}'${blocked}>${a}</button>`).join('');
 }
 
 // --- Deployments ---------------------------------------------------------
@@ -156,8 +157,8 @@ function deploymentRow(d, admin) {
     <td>${badge(d.state)} ${d.health && d.health !== 'unknown' && d.health !== d.state ? badge(d.health) : ''} ${d.observed_only ? badge('observed') : ''}</td>
     <td class="wrap">${d.domain ? esc(d.domain) : '<span class="muted">—</span>'}${admin ? ` <button class="btn btn-small" data-edit-domain="${esc(d.deployment_id)}" title="edit domain">✎</button>` : ''}</td>
     <td>${d.route_port ?? '—'}</td><td>${d.current_generation ?? '—'}</td><td>${ago(d.updated_at)}</td>
-    <td class="actions">${lifecycleButtons(d.deployment_id)}
-    ${!d.observed_only && admin ? `<button class="btn btn-small" data-cmd="deployment.apply" data-args='${esc(JSON.stringify({ deployment_id: d.deployment_id }))}'>apply</button>` : ''}</td></tr>`;
+    <td class="actions">${lifecycleButtons(d.deployment_id, null, 'btn btn-small', d.state)}
+    ${!d.observed_only && admin ? `<button class="btn btn-small" data-cmd="deployment.apply" data-args='${esc(JSON.stringify({ deployment_id: d.deployment_id }))}'${d.state === 'applying' ? ' disabled aria-disabled="true" title="Apply already in progress"' : ''}>apply</button>` : ''}</td></tr>`;
 }
 const viewDeployments = guard(async () => {
   main.innerHTML = `<h1>Deployments</h1>${skeleton()}`;
@@ -234,19 +235,28 @@ const viewDeployment = guard(async (id) => {
   const admin = state.who?.administrator;
   const obs = !!d.observed_only;
   const controllable = (c) => (obs ? c.binding?.kind === 'observed-container' : (c.owned && c.independent_control));
-  const rows = d.components.map((c) => `<tr>
-    <td class="wrap"><strong>${esc(c.name)}</strong>${c.display_name ? `<div class="muted">${esc(c.display_name)}</div>` : ''}<div class="muted">${esc(c.type)}${obs ? ' · exact recorded container' : (c.owned ? '' : ' · external')}</div></td>
-    <td>${badge(c.state)} ${badge(c.health)}</td><td>${c.generation ?? '—'}</td><td>${c.port ?? '—'}</td><td>${c.restarts ?? '—'}</td>
-    <td class="wrap mono">${esc(c.binding?.kind || '')} ${esc((c.binding?.identity || '').slice(0, 24))}</td>
-    <td class="wrap">${c.last_error ? `<span class="badge bad">${esc(c.last_error)}</span>` : ''}</td>
-    <td class="actions">${controllable(c) ? lifecycleButtons(id, c.name) : ''}
-      ${c.owned || obs ? `<button class="btn btn-small" data-logs="${esc(c.name)}">logs</button>` : ''}</td></tr>`).join('');
+  const rows = d.components.flatMap((c) => {
+    const componentRow = `<tr>
+      <td class="wrap"><strong>${esc(c.name)}</strong>${c.display_name ? `<div class="muted">${esc(c.display_name)}</div>` : ''}<div class="muted">${esc(c.type)}${obs ? ' · exact recorded container' : (c.owned ? '' : ' · external')}</div></td>
+      <td>${badge(c.state)} ${badge(c.health)}</td><td>${c.generation ?? '—'}</td><td>${c.port ?? '—'}</td><td>${c.restarts ?? '—'}</td>
+      <td class="wrap mono">${esc(c.binding?.kind || '')} ${esc((c.binding?.identity || '').slice(0, 24))}</td>
+      <td class="wrap">${c.last_error ? `<span class="badge bad">${esc(c.last_error)}</span>` : ''}</td>
+      <td class="actions">${controllable(c) ? lifecycleButtons(id, c.name, 'btn btn-small', d.state) : ''}
+        ${c.owned || obs ? `<button class="btn btn-small" data-logs="${esc(c.name)}">logs</button>` : ''}</td></tr>`;
+    const serviceRows = (c.services || []).map((service) => `<tr class="service-row" data-compose-service="${esc(`${c.name}/${service.name}`)}">
+      <td class="wrap"><strong>↳ ${esc(service.name)}</strong><div class="muted">Compose ${esc(service.role)} service</div></td>
+      <td>${badge(service.state)}</td><td>${c.generation ?? '—'}</td><td>—</td><td>—</td>
+      <td class="muted">${service.containers ?? 0} container${service.containers === 1 ? '' : 's'}</td><td>—</td>
+      <td class="actions">${service.independent ? lifecycleButtons(id, `${c.name}/${service.name}`, 'btn btn-small', d.state) : ''}</td></tr>`);
+    return [componentRow, ...serviceRows];
+  }).join('');
   main.innerHTML = `<h1>${esc(d.name)}@${esc(d.source)} ${badge(d.state)} ${d.health && d.health !== d.state ? badge(d.health) : ''}</h1>
     <p class="muted">${d.repository_name ? `Repository: <strong>${esc(d.repository_name)}</strong> ` : ''}<span class="mono">${esc(d.repository_id || '')}</span></p>
     <div class="grid"><div class="tile"><div class="k">Domain ${admin ? '<button class="btn btn-small" id="edit-domain">edit</button>' : ''}</div><div class="v">${d.domain ? esc(d.domain) : '—'}</div>${d.public ? '<div class="muted">public (no sign-in)</div>' : ''}</div><div class="tile"><div class="k">Route port</div><div class="v">${d.route_port ?? '—'}</div></div><div class="tile"><div class="k">Generation</div><div class="v">${d.current_generation ?? '—'}${d.previous_generation ? ` <span class="muted">(prev ${d.previous_generation})</span>` : ''}</div></div><div class="tile"><div class="k">Expires</div><div class="v">${d.ttl_expires_at ? esc(d.ttl_expires_at) : 'never'}</div></div></div>
     ${obs ? '<p class="notice muted">Imported from the live host. Start, stop, restart, and logs act on the exact recorded containers. Configuration changes (apply, rollback, remove) require adopting the stack through repository configuration.</p>' : ''}
-    <div class="actions" style="margin:12px 0">${lifecycleButtons(id, null, 'btn')}
-      ${!obs && admin ? `<button class="btn" data-cmd="deployment.apply" data-args='${esc(JSON.stringify({ deployment_id: id }))}'>apply</button><button class="btn" data-cmd="deployment.rollback" data-args='${esc(JSON.stringify({ deployment_id: id }))}'>rollback</button><button class="btn btn-danger" data-cmd="deployment.remove" data-args='${esc(JSON.stringify({ deployment_id: id }))}' data-confirm="Remove this deployment? Persistent data is kept unless you choose otherwise next." data-delete-data="ask">remove</button>` : ''}</div>
+    ${d.state === 'applying' ? '<p class="notice">Apply is still running. Closing this page does not cancel it. Refresh status after it finishes; other lifecycle actions stay unavailable meanwhile.</p>' : ''}
+    <div class="actions" style="margin:12px 0">${lifecycleButtons(id, null, 'btn', d.state)}
+      ${!obs && admin ? `<button class="btn" data-cmd="deployment.apply" data-args='${esc(JSON.stringify({ deployment_id: id }))}'${d.state === 'applying' ? ' disabled aria-disabled="true" title="Apply already in progress"' : ''}>apply</button><button class="btn" data-cmd="deployment.rollback" data-args='${esc(JSON.stringify({ deployment_id: id }))}'${d.state === 'applying' ? ' disabled aria-disabled="true" title="Apply in progress"' : ''}>rollback</button><button class="btn btn-danger" data-cmd="deployment.remove" data-args='${esc(JSON.stringify({ deployment_id: id }))}' data-confirm="Remove this deployment? Persistent data is kept unless you choose otherwise next." data-delete-data="ask"${d.state === 'applying' ? ' disabled aria-disabled="true" title="Apply in progress"' : ''}>remove</button>` : ''}</div>
     <h2>Components</h2><div class="tablewrap"><table><thead><tr><th>Component</th><th>State</th><th>Gen</th><th>Port</th><th>Restarts</th><th>Binding</th><th>Error</th><th>Actions</th></tr></thead><tbody>${rows}</tbody></table></div>
     <div id="logs"></div><h2>Usage ${seg(Object.keys(RANGES), state.usageRange, 'usage-range')}</h2><div id="usage">${skeleton(2)}</div>`;
   bind(main);
@@ -302,7 +312,7 @@ function unhealthySection(summary) {
   return `<h2>Unhealthy deployments</h2><div class="cards">${list.map((d) => `<div class="card bad-edge">
     <div class="cardhead"><a href="#/deployments/${esc(d.deployment_id)}"><strong>${esc(d.name)}@${esc(d.source)}</strong></a> ${d.repository_name ? `<span class="muted">in ${esc(d.repository_name)}</span>` : ''} ${badge(d.state)} ${d.observed_only ? badge('observed') : ''}</div>
     ${(d.reasons || []).length ? `<ul class="reasons">${d.reasons.map((r) => `<li><span class="mono">${esc(r.component)}</span> is ${badge(r.state, 'bad')}${r.detail ? ` — <span class="muted">${esc(r.detail)}</span>` : ''}</li>`).join('')}</ul>` : '<p class="muted">No component-level detail recorded.</p>'}
-    <div class="actions">${lifecycleButtons(d.deployment_id)}<a class="btn btn-small" href="#/deployments/${esc(d.deployment_id)}">details &amp; logs</a></div>
+    <div class="actions">${lifecycleButtons(d.deployment_id, null, 'btn btn-small', d.state)}<a class="btn btn-small" href="#/deployments/${esc(d.deployment_id)}">details &amp; logs</a></div>
   </div>`).join('')}</div>`;
 }
 const viewHealth = guard(async (sub) => {

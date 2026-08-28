@@ -25,6 +25,8 @@ from pathlib import Path
 
 import pytest
 
+from devcoordinator2.ids import repository_id
+
 ROOT_ONLY = pytest.mark.skipif(
     os.geteuid() != 0 or not os.environ.get("DEVCOORDINATOR2_ROOT_TESTS"),
     reason="requires root and DEVCOORDINATOR2_ROOT_TESTS=1",
@@ -87,7 +89,7 @@ def _request(command: str, args: dict | None = None) -> dict:
 
 
 class Daemon:
-    def __init__(self, base: Path):
+    def __init__(self, base: Path, compose_allowlist: Path | None = None):
         self.base = base
         self.socket_path = base / "daemon.sock"
         # Strip sudo markers: git special-cases SUDO_UID, which masked the
@@ -105,6 +107,9 @@ class Daemon:
             "DEVCOORDINATOR2_CLIENT_GROUP": "",
             "DEVCOORDINATOR2_INSTANCE_ENV": "/nonexistent",
         }
+        if compose_allowlist is not None:
+            self.env["DEVCOORDINATOR2_COMPOSE_ENV_ALLOWLIST_FILE"] = str(
+                compose_allowlist)
         self.proc: subprocess.Popen | None = None
 
     def start(self):
@@ -157,7 +162,16 @@ def make_world(tmp_path: Path):
     repo.mkdir()
     subprocess.run(["git", "init", "-q"], cwd=repo, check=True,
                    env={"PATH": "/usr/bin:/bin", "HOME": str(base)})
-    daemon = Daemon(base)
+    allowlist = base / "compose-env-allowlist.json"
+    allowlist.write_text(json.dumps({
+        "schema": 1,
+        "authorizations": [{
+            "repository_id": repository_id(repo),
+            "path": "compose.env",
+        }],
+    }))
+    os.chmod(allowlist, 0o600)
+    daemon = Daemon(base, allowlist)
     daemon.start()
     yield type("World", (), {
         "caller": caller, "repo": repo, "daemon": daemon, "base": base,
@@ -208,5 +222,4 @@ def _units() -> list[str]:
          f"{UNIT_PREFIX}-*.service"],
         capture_output=True, text=True).stdout
     return [line.split()[0] for line in out.splitlines() if line.split()]
-
 

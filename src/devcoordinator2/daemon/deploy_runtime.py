@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import time
 from pathlib import Path
 
 from devcoordinator2.daemon import docker_cli, systemd_unit
@@ -173,8 +174,17 @@ def container_state(container_id: str) -> dict:
              "dead": "failed"}.get(status, "failed")
     if status == "exited" and st.get("ExitCode", 0) not in (0, None):
         state = "failed"
+    health = (st.get("Health") or {}).get("Status")
+    if status == "running" and health == "starting":
+        state = "starting"
+    elif status == "running" and health == "unhealthy":
+        state = "failed"
+    labels = (info.get("Config") or {}).get("Labels") or {}
     return {"state": state, "status": status, "restarts": info.get("RestartCount", 0),
-            "exit_code": st.get("ExitCode"), "started_at": st.get("StartedAt")}
+            "exit_code": st.get("ExitCode"), "health": health,
+            "started_at": st.get("StartedAt"), "finished_at": st.get("FinishedAt"),
+            "image_id": info.get("Image"),
+            "compose_service": labels.get("com.docker.compose.service")}
 
 
 def remove_container(container_id: str, delete_volumes: bool) -> None:
@@ -204,10 +214,13 @@ def compose_project(deployment_id: str, component: str) -> str:
     return f"dc2-{deployment_id}-{component}"
 
 
-def _compose(project: str, file: Path, cwd: Path, env_file: Path | None,
+def _compose(project: str, files: tuple[Path, ...], cwd: Path,
+             env_files: tuple[Path, ...],
              args: list[str], timeout: int = 600) -> subprocess.CompletedProcess:
-    argv = ["docker", "compose", "--project-name", project, "--file", str(file)]
-    if env_file is not None:
+    argv = ["docker", "compose", "--project-name", project]
+    for file in files:
+        argv += ["--file", str(file)]
+    for env_file in env_files:
         argv += ["--env-file", str(env_file)]
     argv += args
     try:
@@ -217,32 +230,112 @@ def _compose(project: str, file: Path, cwd: Path, env_file: Path | None,
         raise RuntimeError_(f"docker compose failed: {exc}") from exc
 
 
-def compose_up(project: str, file: Path, cwd: Path, env_file: Path | None,
-               services: tuple[str, ...]) -> None:
-    proc = _compose(project, file, cwd, env_file, ["up", "--detach", "--remove-orphans",
-                                                   *services])
+def compose_config_services(project: str, files: tuple[Path, ...], cwd: Path,
+                            env_files: tuple[Path, ...]) -> tuple[str, ...]:
+    proc = _compose(project, files, cwd, env_files, ["config", "--services"], timeout=120)
+    if proc.returncode != 0:
+        raise RuntimeError_(proc.stderr.strip()[-1024:] or
+                            "compose configuration could not list services")
+    return tuple(line.strip() for line in proc.stdout.splitlines() if line.strip())
+
+
+def compose_up(project: str, files: tuple[Path, ...], cwd: Path,
+               env_files: tuple[Path, ...], services: tuple[str, ...],
+               finite_services: tuple[str, ...], build: bool) -> None:
+    actual = set(compose_config_services(project, files, cwd, env_files))
+    missing = sorted(set(services) - actual)
+    if missing:
+        raise RuntimeError_(f"compose services not found: {missing}")
+    if finite_services:
+        remove = _compose(project, files, cwd, env_files,
+                          ["rm", "--stop", "--force", *finite_services], timeout=120)
+        if remove.returncode != 0:
+            raise RuntimeError_(remove.stderr.strip()[-1024:] or
+                                "compose finite-service reset failed")
+    args = ["up", "--detach", "--remove-orphans"]
+    if build:
+        args += ["--build", "--quiet-build", "--quiet-pull"]
+    args += list(services)
+    proc = _compose(project, files, cwd, env_files, args, timeout=1800)
     if proc.returncode != 0:
         raise RuntimeError_(proc.stderr.strip()[-1024:] or "compose up failed")
 
 
-def compose_stop(project: str, file: Path, cwd: Path, env_file: Path | None) -> None:
-    proc = _compose(project, file, cwd, env_file, ["stop"])
+def compose_stop(project: str, files: tuple[Path, ...], cwd: Path,
+                 env_files: tuple[Path, ...]) -> None:
+    proc = _compose(project, files, cwd, env_files, ["stop"])
     if proc.returncode != 0:
         raise RuntimeError_(proc.stderr.strip()[-1024:] or "compose stop failed")
 
 
-def compose_start(project: str, file: Path, cwd: Path, env_file: Path | None) -> None:
-    proc = _compose(project, file, cwd, env_file, ["start"])
+def compose_start(project: str, files: tuple[Path, ...], cwd: Path,
+                  env_files: tuple[Path, ...], services: tuple[str, ...]) -> None:
+    proc = _compose(project, files, cwd, env_files, ["start", *services])
     if proc.returncode != 0:
         raise RuntimeError_(proc.stderr.strip()[-1024:] or "compose start failed")
 
 
-def compose_down(project: str, file: Path, cwd: Path, env_file: Path | None,
+def compose_start_exact_services(project: str, services: tuple[str, ...]) -> None:
+    """Start only existing long-running service containers by exact ID.
+
+    ``docker compose start <service>`` also follows dependencies and can rerun
+    a successfully completed finite prerequisite. Exact daemon-owned bindings
+    preserve the completed receipt and make ordinary start non-mutating.
+    """
+    found = compose_service_container_ids(project, services)
+    for service in services:
+        for container_id in found[service]:
+            start_container(container_id)
+
+
+def compose_stop_exact_services(project: str, services: tuple[str, ...]) -> None:
+    found = compose_service_container_ids(project, services)
+    for service in services:
+        for container_id in found[service]:
+            stop_container(container_id)
+
+
+def compose_service_container_ids(project: str,
+                                  services: tuple[str, ...]) -> dict[str, list[str]]:
+    wanted = set(services)
+    found: dict[str, list[str]] = {service: [] for service in services}
+    for container_id in compose_container_ids(project):
+        service = container_state(container_id).get("compose_service")
+        if service in wanted:
+            found[service].append(container_id)
+    missing = sorted(service for service, ids in found.items() if not ids)
+    if missing:
+        raise RuntimeError_(f"compose service containers not found: {missing}")
+    return found
+
+
+def compose_service_ready(project: str, service: str,
+                          timeout_seconds: int) -> tuple[bool, str]:
+    deadline = time.monotonic() + timeout_seconds
+    last = "service container missing"
+    while time.monotonic() < deadline:
+        try:
+            found = compose_service_container_ids(project, (service,))[service]
+        except RuntimeError_ as exc:
+            return False, str(exc)
+        states = [container_state(container_id) for container_id in found]
+        if all(item["state"] == "running" for item in states):
+            return True, f"{service} running"
+        if any(item["state"] in ("failed", "stopped", "missing") for item in states):
+            last = ", ".join(item.get("status", item["state"]) for item in states)
+            return False, f"{service} became terminal: {last}"
+        last = ", ".join(item["state"] for item in states)
+        time.sleep(0.5)
+    return False, f"{service} did not become ready: {last}"
+
+
+def compose_down(project: str, files: tuple[Path, ...], cwd: Path,
+                 env_files: tuple[Path, ...],
                  delete_volumes: bool) -> None:
     args = ["down", "--remove-orphans"]
     if delete_volumes:
         args.append("--volumes")
-    proc = _compose(project, file, cwd, env_file, args)
+    proc = _compose(project, files, cwd, env_files, args)
     if proc.returncode != 0:
         raise RuntimeError_(proc.stderr.strip()[-1024:] or "compose down failed")
 
@@ -251,23 +344,96 @@ def compose_container_ids(project: str) -> list[str]:
     return docker_cli.list_ids_by_labels({"com.docker.compose.project": project})
 
 
-def compose_state(project: str) -> dict:
+def compose_state(project: str, services: tuple[str, ...] = (),
+                  finite_services: tuple[str, ...] = (),
+                  completions: dict[str, dict] | None = None,
+                  desired_states: dict[str, str] | None = None) -> dict:
     ids = compose_container_ids(project)
-    if not ids:
+    if not ids and not completions:
         return {"state": "stopped", "containers": 0, "running": 0}
-    running = sum(1 for cid in ids if container_state(cid)["state"] == "running")
-    if running == len(ids):
+    by_service: dict[str, list[dict]] = {}
+    for cid in ids:
+        item = {"container_id": cid, **container_state(cid)}
+        name = item.get("compose_service")
+        if name:
+            by_service.setdefault(name, []).append(item)
+    expected = tuple(services) if services else tuple(sorted(by_service))
+    finite = set(finite_services)
+    completion_rows = completions or {}
+    desired = desired_states or {}
+    details = []
+    candidates = []
+    for name in expected:
+        items = by_service.get(name, [])
+        if name in finite:
+            failed = [item for item in items if item["state"] == "failed"]
+            completed = [item for item in items
+                         if item["status"] == "exited" and item.get("exit_code") == 0]
+            if failed:
+                service_state = "failed"
+            elif completed and len(completed) == len(items):
+                service_state = "completed"
+                candidates.extend({"service": name, **item} for item in completed)
+            elif any(item["state"] in ("running", "starting") for item in items):
+                service_state = "starting"
+            elif name in completion_rows:
+                service_state = "completed"
+            else:
+                service_state = "missing"
+        elif not items:
+            service_state = "missing"
+        elif desired.get(name) == "stopped" and all(
+                item["state"] in ("failed", "stopped") for item in items):
+            service_state = "stopped"
+        elif all(item["state"] == "running" for item in items):
+            service_state = "running"
+        elif any(item["state"] == "failed" for item in items):
+            service_state = "failed"
+        elif any(item["state"] == "starting" for item in items):
+            service_state = "starting"
+        elif all(item["state"] == "stopped" for item in items):
+            service_state = "stopped"
+        else:
+            service_state = "failed"
+        details.append({"name": name, "role": "finite" if name in finite else "running",
+                        "state": service_state, "desired_state": desired.get(name, "running"),
+                        "containers": len(items)})
+    finite_states = [item["state"] for item in details if item["role"] == "finite"]
+    running_states = [item["state"] for item in details if item["role"] == "running"]
+    if any(value in ("failed", "missing") for value in finite_states + running_states):
+        state = "failed"
+    elif any(value == "starting" for value in finite_states + running_states):
+        state = "starting"
+    elif running_states and all(value == "running" for value in running_states) \
+            and all(value == "completed" for value in finite_states):
         state = "running"
-    elif running == 0:
+    elif running_states and all(value == "stopped" for value in running_states) \
+            and all(value == "completed" for value in finite_states):
         state = "stopped"
     else:
         state = "failed"
-    return {"state": state, "containers": len(ids), "running": running}
+    running = sum(1 for item in by_service.values()
+                  for container in item if container["state"] == "running")
+    return {"state": state, "containers": len(ids), "running": running,
+            "services": details, "completion_candidates": candidates}
 
 
-def compose_logs(project: str, file: Path, cwd: Path, tail_lines: int) -> str:
-    proc = _compose(project, file, cwd, None, ["logs", "--no-color", "--tail",
-                                               str(tail_lines)], timeout=60)
+def compose_ready(project: str, services: tuple[str, ...],
+                  finite_services: tuple[str, ...], completions: dict[str, dict],
+                  timeout_seconds: int) -> tuple[bool, str, dict]:
+    deadline = time.monotonic() + timeout_seconds
+    state = compose_state(project, services, finite_services, completions)
+    while state["state"] == "starting" and time.monotonic() < deadline:
+        time.sleep(0.5)
+        state = compose_state(project, services, finite_services, completions)
+    detail = ", ".join(f"{item['name']}={item['state']}" for item in state.get("services", []))
+    return state["state"] == "running", detail or state["state"], state
+
+
+def compose_logs(project: str, files: tuple[Path, ...], cwd: Path,
+                 env_files: tuple[Path, ...], tail_lines: int) -> str:
+    proc = _compose(project, files, cwd, env_files,
+                    ["logs", "--no-color", "--tail", str(tail_lines)], timeout=60)
     return (proc.stdout + proc.stderr)[-65536:]
 
 

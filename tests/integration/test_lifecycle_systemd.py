@@ -152,6 +152,15 @@ PG_TOML = ('schema = 1\n[test.unit]\n'
            'timeout_seconds = 120\n[test.unit.postgres]\n'
            'image = "postgres:16-alpine"\ndatabase = "app_test"\nuser = "app"\n')
 
+POSTGIS_IMAGE = (
+    "postgis/postgis@sha256:"
+    "993c1a5fed969dab3974deaa8a5dcd768151725490be0579ef421333dccd6341")
+POSTGIS_TOML = ('schema = 1\n[test.unit]\n'
+                'command = ["psql", "-v", "ON_ERROR_STOP=1", "-c",'
+                ' "create extension if not exists postgis; select postgis_version()"]\n'
+                'timeout_seconds = 180\n[test.unit.postgres]\n'
+                f'image = "{POSTGIS_IMAGE}"\ndatabase = "app_test"\nuser = "app"\n')
+
 
 def test_postgres_real_query_labels_secrecy_and_cleanup(world):
     _write_config(world.repo, world.caller, PG_TOML)
@@ -185,6 +194,21 @@ def test_postgres_real_query_labels_secrecy_and_cleanup(world):
     assert "42" in out
     # Summary and status carry no credentials; container is gone.
     assert "PGPASSWORD" not in json.dumps(final)
+    assert _containers_with_label("run", run_id) == []
+
+
+def test_digest_pinned_postgis_fixture_is_pulled_injected_and_removed(world):
+    _write_config(world.repo, world.caller, POSTGIS_TOML)
+    resp = _call(world, "test.start", {"path": str(world.repo)})
+    assert resp["ok"], resp
+    run_id = resp["result"]["run_id"]
+    final = _wait_status(world, world.repo, {"passed", "failed"}, timeout=180)
+    out = _call(world, "test.output", {"path": str(world.repo),
+                                       "stream": "stdout"})["result"]["tail"]
+    err = _call(world, "test.output", {"path": str(world.repo),
+                                       "stream": "stderr"})["result"]["tail"]
+    assert final["status"] == "passed", (final, out, err)
+    assert "postgis_version" in out and "USE_GEOS=1" in out
     assert _containers_with_label("run", run_id) == []
 
 

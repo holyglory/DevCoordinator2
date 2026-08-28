@@ -48,7 +48,7 @@ def test_cli_ping_and_register_roundtrip(live, capsys):
     assert rc == 0
     response = json.loads(capsys.readouterr().out)
     assert response["ok"] is True
-    assert response["result"]["schema_version"] == 8
+    assert response["result"]["schema_version"] == 9
 
     rc = cli.main(["repository", "register", str(live.repo)])
     assert rc == 0

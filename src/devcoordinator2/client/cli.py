@@ -71,8 +71,12 @@ def build_parser() -> argparse.ArgumentParser:
         _add_common(sp)
         sp.add_argument("--name", default=None, help="deployment name[@source]")
         sp.add_argument("--deployment-id", dest="deployment_id", default=None)
-        if action in ("start", "stop", "restart", "logs"):
-            sp.add_argument("--component", default=None)
+        if action in ("start", "stop", "restart"):
+            sp.add_argument(
+                "--component", default=None,
+                help="component name; lifecycle also accepts reviewed component/service")
+        elif action == "logs":
+            sp.add_argument("--component", default=None, help="component name")
         if action == "logs":
             sp.add_argument("--tail-lines", type=int, default=200)
         if action == "remove":

@@ -6,15 +6,20 @@ import socket
 import time
 import urllib.error
 import urllib.request
+from collections.abc import Callable
 
 from devcoordinator2.daemon import docker_cli
 
 
-def http_ready(port: int, path: str, timeout_seconds: int) -> tuple[bool, str]:
+def http_ready(port: int, path: str, timeout_seconds: int,
+               abort: Callable[[], str | None] | None = None) -> tuple[bool, str]:
     deadline = time.monotonic() + timeout_seconds
     last = "no response"
     url = f"http://127.0.0.1:{port}{path}"
     while time.monotonic() < deadline:
+        reason = abort() if abort else None
+        if reason:
+            return False, reason
         try:
             with urllib.request.urlopen(url, timeout=5) as resp:
                 if 200 <= resp.status < 400:
@@ -28,10 +33,14 @@ def http_ready(port: int, path: str, timeout_seconds: int) -> tuple[bool, str]:
     return False, last
 
 
-def tcp_ready(host: str, port: int, timeout_seconds: int) -> tuple[bool, str]:
+def tcp_ready(host: str, port: int, timeout_seconds: int,
+              abort: Callable[[], str | None] | None = None) -> tuple[bool, str]:
     deadline = time.monotonic() + timeout_seconds
     last = "connection refused"
     while time.monotonic() < deadline:
+        reason = abort() if abort else None
+        if reason:
+            return False, reason
         try:
             with socket.create_connection((host, port), timeout=3):
                 return True, "tcp open"

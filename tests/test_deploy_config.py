@@ -84,6 +84,9 @@ def test_full_spec(tmp_path):
     assert spec.component("cache").owns_persistent_data
     assert not spec.component("worker").owns_persistent_data
     assert not spec.component("worker").independent_control
+    stack = spec.component("stack")
+    assert stack.compose_files == ("docker-compose.yml",)
+    assert stack.finite_services == ()
     canon_a = spec.canonical("checkout")
     canon_b = spec.canonical("worktree")
     assert canon_a != canon_b and canon_a["domain"] == "app"
@@ -176,4 +179,57 @@ def test_postgres_port_never_becomes_the_implicit_route(tmp_path):
         'schema = 1\n[deployment.d]\ncomponents = ["db"]\ndomain = "para"\n'
         '[deployment.d.component.db]\ntype = "postgres"\n')
     with pytest.raises(ConfigError, match="route = true"):
+        load_deployment_spec(tmp_path, "d")
+
+
+def test_compose_files_finite_services_and_route(tmp_path):
+    for name in ("compose.yml", "compose.build.yml", "dev.env"):
+        (tmp_path / name).write_text("")
+    (tmp_path / ".devcoordinator.toml").write_text(
+        'schema = 1\n[deployment.d]\ncomponents = ["stack"]\ndomain = "app"\n'
+        '[deployment.d.component.stack]\ntype = "compose"\n'
+        'files = ["compose.yml", "compose.build.yml"]\n'
+        'env_file = "dev.env"\nservices = ["db", "bootstrap", "api"]\n'
+        'finite_services = ["bootstrap"]\nindependent_services = ["api"]\n'
+        'build = true\nport = true\nroute = true\n'
+        'timeout_seconds = 900\n')
+    stack = load_deployment_spec(tmp_path, "d").component("stack")
+    assert stack.compose_files == ("compose.yml", "compose.build.yml")
+    assert stack.compose_env_file == "dev.env"
+    assert stack.services == ("db", "bootstrap", "api")
+    assert stack.finite_services == ("bootstrap",)
+    assert stack.independent_services == ("api",)
+    assert stack.compose_build
+    assert stack.wants_port and stack.route
+    assert stack.compose_timeout_seconds == 900
+
+
+@pytest.mark.parametrize("extra,fragment", [
+    ('file = "compose.yml"\nfiles = ["compose.yml"]\n', "mutually exclusive"),
+    ('files = ["../compose.yml"]\n', "escapes"),
+    ('env_file = "../dev.env"\n', "escapes"),
+    ('finite_services = ["bootstrap"]\n', "explicit services"),
+    ('services = ["bootstrap"]\nfinite_services = ["bootstrap"]\n', "running service"),
+    ('services = ["api"]\nfinite_services = ["bootstrap"]\n', "included"),
+    ('independent_services = ["api"]\n', "explicit services"),
+    ('services = ["api"]\nindependent_services = ["worker"]\n', "included"),
+    ('services = ["bootstrap", "api"]\nfinite_services = ["bootstrap"]\n'
+     'independent_services = ["bootstrap"]\n', "cannot be independently"),
+    ('build = "yes"\n', "boolean"),
+    ('route = true\n', "requires port"),
+    ('timeout_seconds = 901\n', "[1, 900]"),
+])
+def test_compose_lifecycle_rejections(tmp_path, extra, fragment):
+    (tmp_path / ".devcoordinator.toml").write_text(
+        'schema = 1\n[deployment.d]\ncomponents = ["stack"]\n'
+        '[deployment.d.component.stack]\ntype = "compose"\n' + extra)
+    with pytest.raises(ConfigError, match=fragment):
+        load_deployment_spec(tmp_path, "d")
+
+
+def test_compose_ignored_env_file_rejects_checkout_source(tmp_path):
+    (tmp_path / ".devcoordinator.toml").write_text(
+        'schema = 1\n[deployment.d]\nsource = "checkout"\ncomponents = ["stack"]\n'
+        '[deployment.d.component.stack]\ntype = "compose"\nenv_file = "dev.env"\n')
+    with pytest.raises(ConfigError, match="worktree-only"):
         load_deployment_spec(tmp_path, "d")

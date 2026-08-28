@@ -101,9 +101,22 @@ def test_postgres_section_defaults_and_overrides(tmp_path):
     assert spec.postgres.database == "app_db"
 
 
+@pytest.mark.parametrize("image", [
+    "postgres@sha256:" + "1" * 64,
+    "postgis/postgis@sha256:" + "a" * 64,
+    "registry.example.test/team/postgres:16-postgis@sha256:" + "f" * 64,
+])
+def test_postgres_section_accepts_immutable_compatible_images(tmp_path, image):
+    root = write(tmp_path, 'schema = 1\n[test.u]\ncommand = ["x"]\n'
+                           f'[test.u.postgres]\nimage = "{image}"\n')
+    assert load_test_spec(root, None).postgres.image == image
+
+
 @pytest.mark.parametrize("body,fragment", [
-    ('image = "mysql:8"', "official 'postgres:<tag>'"),
-    ('image = "evil/postgres:16"', "official 'postgres:<tag>'"),
+    ('image = "mysql:8"', "pinned by sha256 digest"),
+    ('image = "postgis/postgis:16-3.5"', "pinned by sha256 digest"),
+    ('image = "evil/postgres:16"', "pinned by sha256 digest"),
+    ('image = "postgis/postgis@sha256:abc"', "pinned by sha256 digest"),
     ('database = "Bad-Name"', "database must match"),
     ('user = "1abc"', "user must match"),
     ('persistent = true', "unknown keys"),

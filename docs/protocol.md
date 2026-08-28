@@ -17,6 +17,10 @@ in `contract-commands.md`.
   Nothing in a request body can assert or override identity.
 - One connection carries exactly one request and one response, then closes.
   UTF-8 JSON, single line, terminated by `\n`.
+- Once the daemon accepts and begins a mutation, client disconnect or a lost
+  response does not cancel it. The daemon completes the observable operation;
+  the client re-queries status. Deployment mutations remain mutually exclusive
+  and conflicting actions return `busy` while the original operation runs.
 - Limits: request ≤ 65536 bytes, response ≤ 262144 bytes. Server read
   timeout 5 s, write timeout 10 s. No streaming, sessions, or pipelining.
 

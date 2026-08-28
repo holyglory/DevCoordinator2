@@ -89,17 +89,21 @@ TOOLS += [
                     "start components in order, prove health, switch the route, retire the "
                     "previous generation. Concurrent mutation returns busy.",
      "inputSchema": {"type": "object", "properties": _DEP_REF, "required": ["path"]}},
-    {"name": "deployment_status", "description": "Live per-component state, health, "
-                                                 "bindings, ports, and generation.",
+    {"name": "deployment_status", "description": "Live per-component and declared "
+                                                 "Compose-service state, health, bindings, "
+                                                 "ports, completions, and generation.",
      "inputSchema": {"type": "object", "properties": _DEP_REF, "required": ["path"]}},
-    {"name": "deployment_start", "description": "Start a deployment or one component.",
+    {"name": "deployment_start", "description": "Start a deployment, one component, or "
+                                                   "a reviewed component/service.",
      "inputSchema": {"type": "object", "properties": {**_DEP_REF, "component":
                      {"type": "string"}}, "required": ["path"]}},
-    {"name": "deployment_stop", "description": "Stop a deployment or one component "
+    {"name": "deployment_stop", "description": "Stop a deployment, component, or reviewed "
+                                               "component/service "
                                                "(never deletes data).",
      "inputSchema": {"type": "object", "properties": {**_DEP_REF, "component":
                      {"type": "string"}}, "required": ["path"]}},
-    {"name": "deployment_restart", "description": "Restart a deployment or one component.",
+    {"name": "deployment_restart", "description": "Restart a deployment, one component, "
+                                                     "or a reviewed component/service.",
      "inputSchema": {"type": "object", "properties": {**_DEP_REF, "component":
                      {"type": "string"}}, "required": ["path"]}},
     {"name": "deployment_logs", "description": "Bounded tail of one component's logs.",

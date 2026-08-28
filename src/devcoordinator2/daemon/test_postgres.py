@@ -45,6 +45,7 @@ def provision(spec: PostgresSpec, *, run_id: str,
     """Create and wait for readiness; on any failure remove what was made."""
     if not docker_cli.available():
         raise docker_cli.DockerError("docker is unavailable to the daemon")
+    docker_cli.ensure_digest_image(spec.image)
     password = secrets.token_urlsafe(24)
     name = f"devcoordinator2-test-{run_id[1:]}-postgres"
     container_id = docker_cli.run_detached(

@@ -13,6 +13,7 @@ import subprocess
 
 LABEL_PREFIX = "devcoordinator2"
 _TIMEOUT = 120
+_IMAGE_PULL_TIMEOUT = 600
 
 
 class DockerError(Exception):
@@ -36,6 +37,42 @@ def available() -> bool:
                     timeout=15).returncode == 0
     except DockerError:
         return False
+
+
+def ensure_digest_image(image: str) -> None:
+    """Ensure one immutable image reference exists and resolves to its digest.
+
+    Mutable tags deliberately stay on the established preloaded-image path.
+    Compatible database fixtures use this before ``docker run --pull never``
+    so the daemon, rather than repository code, owns the only network pull.
+    """
+    if "@sha256:" not in image:
+        return
+    requested = image.rsplit("@", 1)[1]
+    if _image_has_digest(image, requested):
+        return
+    pull = _run(["pull", "--quiet", image], timeout=_IMAGE_PULL_TIMEOUT)
+    if pull.returncode != 0:
+        raise DockerError(pull.stderr.strip()[:1024] or
+                          "cannot pull the pinned database fixture image")
+    if not _image_has_digest(image, requested):
+        raise DockerError("pulled database fixture image did not resolve to the"
+                          " requested sha256 digest")
+
+
+def _image_has_digest(image: str, requested: str) -> bool:
+    proc = _run(["image", "inspect", "--format", "{{json .RepoDigests}}", image],
+                timeout=30)
+    if proc.returncode != 0:
+        return False
+    try:
+        digests = json.loads(proc.stdout)
+    except json.JSONDecodeError:
+        return False
+    return isinstance(digests, list) and any(
+        isinstance(value, str) and value.rsplit("@", 1)[-1] == requested
+        for value in digests
+    )
 
 
 def managed_labels(*, instance: str, repository_id: str, worktree_id: str,

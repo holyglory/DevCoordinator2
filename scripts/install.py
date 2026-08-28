@@ -15,6 +15,8 @@ from __future__ import annotations
 
 import argparse
 import grp
+import hashlib
+import json
 import os
 import pwd
 import secrets
@@ -28,6 +30,8 @@ OPT = Path("/opt/devcoordinator2")
 ETC = Path("/etc/devcoordinator2")
 RELEASE_ITEMS = ("src", "edge", "console", "deploy", "scripts", "skills",
                  "pyproject.toml")
+COMPOSE_ENV_ALLOWLIST = ETC / "compose-env-allowlist.json"
+_REPOSITORY_NAMESPACE = b"devcoordinator2.repository\0"
 
 
 def run(argv: list[str], check: bool = True) -> subprocess.CompletedProcess:
@@ -123,6 +127,96 @@ def write_if_absent(path: Path, content: str, mode: int,
     return True
 
 
+def ensure_env_value(path: Path, key: str, value: str) -> bool:
+    text = path.read_text() if path.exists() else ""
+    prefix = f"{key}="
+    matches = [line for line in text.splitlines() if line.strip().startswith(prefix)]
+    if matches:
+        if matches != [f"{key}={value}"]:
+            raise RuntimeError(f"{key} already has a different installed value")
+        return False
+    suffix = "" if not text or text.endswith("\n") else "\n"
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(text + suffix + f"{key}={value}\n")
+    if path.exists():
+        info = path.stat()
+        os.chmod(tmp, info.st_mode & 0o777)
+        os.chown(tmp, info.st_uid, info.st_gid)
+    os.replace(tmp, path)
+    return True
+
+
+def compose_env_authorizations(specs: list[str]) -> list[dict[str, str]]:
+    entries = []
+    for spec in specs:
+        repository_text, separator, relative = spec.partition("=")
+        if not separator or not repository_text or not relative:
+            raise ValueError(
+                "--compose-env-authorization must be REPOSITORY=RELATIVE_PATH")
+        repository = Path(repository_text).resolve()
+        git = run([
+            "git", "-c", "safe.directory=*", "-C", str(repository), "rev-parse",
+            "--path-format=absolute", "--show-toplevel", "--git-common-dir",
+        ])
+        lines = git.stdout.splitlines()
+        if len(lines) != 2 or Path(lines[1]).name != ".git":
+            raise ValueError(f"unsupported repository layout: {repository}")
+        worktree = Path(lines[0]).resolve()
+        common_root = Path(lines[1]).resolve().parent
+        parsed = Path(relative)
+        if parsed.is_absolute() or "\\" in relative or "\0" in relative \
+                or any(part in ("", ".", "..") for part in parsed.parts) \
+                or parsed.as_posix() != relative:
+            raise ValueError(
+                "Compose environment authorization path must be normalized relative")
+        candidate = worktree / relative
+        candidate.lstat()
+        resolved = candidate.resolve(strict=True)
+        if candidate.is_symlink() or not candidate.is_file() \
+                or (resolved != worktree and worktree not in resolved.parents):
+            raise ValueError(f"unsafe Compose environment file: {candidate}")
+        ignored = run([
+            "git", "-c", "safe.directory=*", "-C", str(worktree),
+            "check-ignore", "--quiet", "--", relative,
+        ], check=False)
+        if ignored.returncode != 0:
+            raise ValueError(f"Compose environment file must be ignored: {candidate}")
+        repository_id = "r" + hashlib.sha256(
+            _REPOSITORY_NAMESPACE + str(common_root).encode("utf-8")
+        ).hexdigest()[:16]
+        entries.append({"repository_id": repository_id, "path": relative})
+    unique = {(entry["repository_id"], entry["path"]): entry for entry in entries}
+    if len(unique) != len(entries):
+        raise ValueError("duplicate Compose environment authorization")
+    return [unique[key] for key in sorted(unique)]
+
+
+def merge_compose_env_allowlist(path: Path, entries: list[dict[str, str]],
+                                owner: tuple[int, int]) -> bool:
+    existing = []
+    if path.exists():
+        try:
+            document = json.loads(path.read_text())
+            if document.get("schema") != 1 \
+                    or not isinstance(document.get("authorizations"), list):
+                raise ValueError("wrong schema")
+            existing = document["authorizations"]
+        except (OSError, json.JSONDecodeError, AttributeError, ValueError) as exc:
+            raise RuntimeError(f"cannot preserve Compose environment allowlist: {exc}") from exc
+    merged = {(item["repository_id"], item["path"]): item
+              for item in [*existing, *entries]}
+    payload = {"schema": 1,
+               "authorizations": [merged[key] for key in sorted(merged)]}
+    if path.exists() and json.loads(path.read_text()) == payload:
+        return False
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+    os.chmod(tmp, 0o640)
+    os.chown(tmp, *owner)
+    os.replace(tmp, path)
+    return True
+
+
 def unit_daemon(release: Path) -> str:
     text = (release / "deploy" / "devcoordinator2.service").read_text()
     return text.replace("Environment=PYTHONPATH=/opt/devcoordinator2/src",
@@ -154,6 +248,10 @@ def main() -> int:
                     help="edge http-only on --canary-port; no TLS/OIDC credentials needed")
     ap.add_argument("--canary-port", type=int, default=28080)
     ap.add_argument("--start", action="store_true", help="enable and start the units")
+    ap.add_argument(
+        "--compose-env-authorization", action="append", default=[],
+        metavar="REPOSITORY=RELATIVE_PATH",
+        help="authorize one ignored repository Compose interpolation file")
     ns = ap.parse_args()
     if os.geteuid() != 0:
         print("run as root", file=sys.stderr)
@@ -191,6 +289,13 @@ def main() -> int:
         "DEVCOORDINATOR2_PORT_RANGE=20000-29999\n"
         "# DEVCOORDINATOR2_TELEGRAM_TOKEN_FILE=/etc/devcoordinator2/telegram.token\n"),
         0o640, (0, gid)))
+    compose_authorizations = compose_env_authorizations(ns.compose_env_authorization)
+    if compose_authorizations or COMPOSE_ENV_ALLOWLIST.exists():
+        created.append(merge_compose_env_allowlist(
+            COMPOSE_ENV_ALLOWLIST, compose_authorizations, (0, gid)))
+        created.append(ensure_env_value(
+            ETC / "instance.env", "DEVCOORDINATOR2_COMPOSE_ENV_ALLOWLIST_FILE",
+            str(COMPOSE_ENV_ALLOWLIST)))
     edge_env = [f"EDGE_BASE_DOMAIN={ns.base_domain}",
                 "EDGE_ROUTES_FILE=/var/lib/devcoordinator2/public/routes.json",
                 "EDGE_DAEMON_SOCKET=/run/devcoordinator2/daemon.sock",
@@ -228,7 +333,8 @@ def main() -> int:
     print({"release": str(release), "edge_uid": edge_uid, "client_group": ns.client_group,
            "created_config": created, "canary": ns.canary,
            "canary_port": ns.canary_port if ns.canary else None, "started": ns.start,
-           "skill_links": skill_links})
+           "skill_links": skill_links,
+           "compose_env_authorizations": compose_authorizations})
     return 0
 
 

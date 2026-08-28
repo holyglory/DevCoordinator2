@@ -99,6 +99,19 @@ CHECKed (schema 7 showed CHECK changes force a table rebuild).
 | `decisions_fts` | FTS5 external-content index over title/body/technical_note/ref, insert trigger (decision text is immutable); FTS5 availability is checked at open and refused with a clear error when missing | done |
 | `decision_summaries` | (repository_id, covers_through_seq) PK, body, created_at/by — all summaries kept; the newest is "the story so far" | done |
 
+## Schema version 9 (finite and independently controlled Compose services, 2026-08-28)
+
+Bounded lifecycle evidence and current desired state for declared Compose
+services (DC2-2026-08-28-COMPOSE-FINITE-SERVICES and
+DC2-2026-08-28-COMPOSE-INDEPENDENT-SERVICES). Completion receipts follow the
+same current/previous-generation pruning boundary as `generations`; they are
+not logs or permanent test history.
+
+| Table | Fields | Status |
+|---|---|---|
+| `compose_completions` | (deployment_id, component, service, generation) PK, exact container ID, image ID, exit code, start/finish/record times; index on deployment+generation | done |
+| `compose_service_desires` | (deployment_id, component, service) PK, current desired state (`running`/`stopped`), updated_at; distinguishes an intentional exact stop from a crash exit | done |
+
 ## Reserved ID-prefix namespace
 
 Deterministic opaque TEXT IDs; later phases never migrate existing IDs.

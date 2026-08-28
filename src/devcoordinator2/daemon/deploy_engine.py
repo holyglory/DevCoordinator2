@@ -6,6 +6,7 @@ from __future__ import annotations
 import logging
 import os
 import pwd
+import stat
 import subprocess
 import threading
 import time
@@ -49,6 +50,48 @@ class Ctx:
 
     def log_path(self, component: str) -> Path:
         return self.dir / "logs" / f"{component}.log"
+
+    def compose_files(self, comp: ComponentSpec, path: Path) -> tuple[Path, ...]:
+        return tuple(path / file for file in comp.compose_files)
+
+    def compose_env_files(self, comp: ComponentSpec, path: Path,
+                          generation: int) -> tuple[Path, ...]:
+        files = []
+        if comp.compose_env_file:
+            row = st.get_deployment(self.db, self.dep_id)
+            repository_id = row.get("repository_id") if row else None
+            if not repository_id or not self.config.compose_env_authorized(
+                    repository_id, comp.compose_env_file):
+                raise ProtocolError(
+                    "repository_config_invalid",
+                    f"Compose env_file {comp.compose_env_file!r} is not authorized"
+                    " by private instance configuration")
+            candidate = path / comp.compose_env_file
+            try:
+                info = candidate.lstat()
+                resolved_root = path.resolve(strict=True)
+                resolved = candidate.resolve(strict=True)
+            except OSError as exc:
+                raise ProtocolError(
+                    "repository_config_invalid",
+                    f"Compose env_file {comp.compose_env_file!r} is unavailable") from exc
+            if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode) \
+                    or (resolved != resolved_root and resolved_root not in resolved.parents):
+                raise ProtocolError(
+                    "repository_config_invalid",
+                    f"Compose env_file {comp.compose_env_file!r} is unsafe")
+            ignored = _as_caller(
+                self, ["git", "check-ignore", "--quiet", "--", comp.compose_env_file],
+                path, 30)
+            if ignored.returncode != 0:
+                raise ProtocolError(
+                    "repository_config_invalid",
+                    f"Compose env_file {comp.compose_env_file!r} must remain ignored")
+            files.append(resolved)
+        generated = self.env_path(comp.name, generation)
+        if generated.exists():
+            files.append(generated)
+        return tuple(files)
 
     def labels(self, component: str, generation: int, data_class: str) -> dict[str, str]:
         row = st.get_deployment(self.db, self.dep_id) or {}
@@ -224,7 +267,9 @@ def start_component(ctx: Ctx, comp: ComponentSpec, generation: int, path: Path,
                                                             env_path)
         if comp.type == "compose":
             project = rt.compose_project(ctx.dep_id, comp.name)
-            rt.compose_up(project, path / comp.compose_file, path, env_path, comp.services)
+            rt.compose_up(project, ctx.compose_files(comp, path), path,
+                          ctx.compose_env_files(comp, path, generation), comp.services,
+                          comp.finite_services, comp.compose_build)
             return "compose", project
     except rt.RuntimeError_ as exc:
         raise ProtocolError("deployment_apply_failed",
@@ -273,7 +318,7 @@ def _start_container_component(ctx: Ctx, comp: ComponentSpec, generation: int,
 
 
 def prove_health(ctx: Ctx, comp: ComponentSpec, binding: tuple[str, str],
-                 port_map: dict[str, int]) -> tuple[bool, str]:
+                 port_map: dict[str, int], generation: int) -> tuple[bool, str]:
     kind, identity = binding
     if comp.type == "external":
         host, port = comp.tcp.rsplit(":", 1)
@@ -292,10 +337,13 @@ def prove_health(ctx: Ctx, comp: ComponentSpec, binding: tuple[str, str],
         return health_checks.postgres_ready(identity, creds.get("user", "app"),
                                             creds.get("database", "app"), 120)
     timeout = comp.health.timeout_seconds if comp.health else 30
+    terminal = _terminal_binding_check(kind, identity)
     if comp.health and comp.health.kind == "http" and comp.name in port_map:
-        return health_checks.http_ready(port_map[comp.name], comp.health.path, timeout)
+        return health_checks.http_ready(port_map[comp.name], comp.health.path, timeout,
+                                        terminal)
     if comp.health and comp.health.kind == "tcp" and comp.name in port_map:
-        return health_checks.tcp_ready("127.0.0.1", port_map[comp.name], timeout)
+        return health_checks.tcp_ready("127.0.0.1", port_map[comp.name], timeout,
+                                       terminal)
     if kind == "unit":
         time.sleep(1.0)  # let a crash-at-start surface
         state = rt.process_state(identity)
@@ -303,9 +351,41 @@ def prove_health(ctx: Ctx, comp: ComponentSpec, binding: tuple[str, str],
     if kind == "container":
         return health_checks.container_running(identity)
     if kind == "compose":
-        state = rt.compose_state(identity)
-        return state["state"] == "running", f"{state['running']}/{state['containers']} running"
+        receipts = st.compose_completions(ctx.db, ctx.dep_id, comp.name, generation)
+        ok, note, state = rt.compose_ready(
+            identity, comp.services, comp.finite_services, receipts,
+            comp.compose_timeout_seconds)
+        st.record_compose_completions(ctx.db, ctx.dep_id, comp.name, generation,
+                                      state.get("completion_candidates", []))
+        return ok, note
     return True, "no check"
+
+
+def _terminal_binding_check(kind: str, identity: str):
+    """Return a readiness abort probe after a short launch grace period.
+
+    Systemd's auto-restart state is ``starting`` and remains eligible to
+    recover. ``failed`` or an inactive/stopped long-running unit is terminal.
+    Containers have equivalent terminal states. Compose has its own service
+    role-aware readiness loop.
+    """
+    grace_until = time.monotonic() + 1.0
+
+    def check() -> str | None:
+        if time.monotonic() < grace_until:
+            return None
+        if kind == "unit":
+            state = rt.process_state(identity)
+            if state["state"] in ("failed", "stopped"):
+                return (f"unit became terminal: {state['active_state']}"
+                        f"/{state['sub_state']} ({state['result'] or 'no result'})")
+        elif kind == "container":
+            state = rt.container_state(identity)
+            if state["state"] in ("failed", "stopped", "missing"):
+                return f"container became terminal: {state.get('status', state['state'])}"
+        return None
+
+    return check
 
 
 def stop_component_binding(kind: str, identity: str, spec: ComponentSpec | None,
@@ -315,7 +395,12 @@ def stop_component_binding(kind: str, identity: str, spec: ComponentSpec | None,
     elif kind == "container":
         rt.stop_container(identity)
     elif kind == "compose" and spec is not None and path is not None:
-        rt.compose_stop(identity, path / spec.compose_file, path, env_file)
+        env_files = tuple(filter(None, (
+            path / spec.compose_env_file if spec.compose_env_file else None,
+            env_file,
+        )))
+        rt.compose_stop(identity, tuple(path / file for file in spec.compose_files),
+                        path, env_files)
 
 
 def resolve_registration(registry: Registry, path: Path, caller: Caller):

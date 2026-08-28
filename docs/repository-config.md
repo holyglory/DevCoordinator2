@@ -19,7 +19,8 @@ timeout_seconds = 600       # optional, 1..21600, default 600
 env = { CI = "1" }          # optional, string→string; additive only
 
 [test.unit.postgres]        # optional: test-scoped ephemeral PostgreSQL
-image = "postgres:16-alpine"   # official postgres:<tag> only (default shown)
+image = "postgres:16-alpine"   # official postgres:<tag> (default), or a compatible
+                                # image pinned as name@sha256:<64 lowercase hex>
 database = "test"              # [a-z_][a-z0-9_]{0,62}
 user = "test"
 ```
@@ -33,6 +34,13 @@ argv or the unit's public environment). The container is removed on
 completion, timeout, cancellation, supersession, daemon recovery, or the
 next start. Declared and injected environment values never appear in
 summaries, logs, metrics, or agent results.
+
+Official PostgreSQL tags use the established preloaded-image path. A compatible
+image outside that namespace must be immutable: the daemon pulls the exact
+digest when absent, verifies the local repository digest, and then runs with
+`--pull never`. Mutable derived-image tags are rejected. The image must honor
+the standard `POSTGRES_USER`, `POSTGRES_PASSWORD`, and `POSTGRES_DB` entrypoint
+contract and provide `pg_isready`; extensions remain repository-specific.
 
 Validation rules:
 
@@ -107,8 +115,16 @@ volumes = ["data:/data"]     # named persistent volumes (daemon-owned names), ne
 
 [deployment.web.component.stack]
 type = "compose"
-file = "docker-compose.yml"  # repo-relative; project name derived from the deployment identity
-services = []                # optional subset
+files = ["compose.yml", "compose.dev.yml"]  # or singular file = "compose.yml"
+env_file = "deploy/dev.env"  # optional ignored repo-relative interpolation file;
+                             # requires separate private instance authorization
+services = ["bootstrap", "api", "worker"]  # optional subset; required with roles below
+finite_services = ["bootstrap"]             # must exit 0 once per changed apply
+independent_services = ["worker"]           # reviewed long-running service controls
+build = true                 # build on apply; ordinary start never builds
+port = true                  # leases PORT for Compose interpolation
+route = true
+timeout_seconds = 300        # finite + long-running readiness, 1..900
 
 [deployment.web.component.smtp]
 type = "external"            # observed only, never owned or controlled
@@ -135,8 +151,21 @@ port-leasing process/docker component routes to it implicitly (2026-08-24);
 with several, `route = true` is required. `domain` labels
 `[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?`; docker images
 `name[:tag]` without privileged flags, host mounts, or socket access;
-`compose.file` inside the repository; `shared_from` is exclusive with
-`image`/`database`/`user`.
+every `compose.files`/`compose.env_file` path stays inside the repository;
+`finite_services` and `independent_services` are duplicate-free subsets of an
+explicit `services` list and never overlap; at least one long-running service
+remains. A changed apply removes/recreates the finite service containers,
+requires successful completion, and retains bounded generation receipts.
+Unchanged convergence and ordinary start do not rerun finite services. An
+independent service is addressed as `<component>/<service>` and exact-container
+start/stop/restart never follows dependencies or touches unrelated services.
+`env_file` remains inert unless private instance configuration separately
+authorizes the exact deterministic repository ID and normalized relative path;
+the file must remain ignored, regular, and non-symlink on every use. Its values
+never enter repository configuration, Coordinator metadata, results, logs, or
+argv. Because ignored files are deliberately absent from immutable checkout
+generations, this exception is available only to worktree deployments.
+`shared_from` is exclusive with `image`/`database`/`user`.
 
 ## Reserved (later phases)
 

@@ -39,6 +39,11 @@ not contradict them.
   timeout, supersession, or the next start. Declared shared/permanent
   database dependencies are never stopped and their data never deleted by
   test cleanup.
+- **REQ-TEST-10** (2026-08-28, done): An extension-dependent test may use a
+  reviewed PostgreSQL-compatible image pinned by immutable SHA-256 digest.
+  The root daemon alone pulls and verifies the exact digest; generated
+  credentials, loopback publication, disposable storage, attribution, and
+  exact cleanup remain identical to the official-image fixture.
 
 ## Deployments (REQ-DEPLOY, P3)
 
@@ -73,6 +78,18 @@ not contradict them.
   port-leasing process/docker component routes implicitly without
   `route = true` (DC2-2026-08-24-IMPLICIT-ROUTE); deployment listings and
   status name their repository so instances are always attributable.
+- **REQ-DEPLOY-08** (2026-08-28, done): A native Compose component may use a
+  reviewed file set, an instance-authorized ignored interpolation file, and
+  explicit finite services. A changed apply reruns finite services and
+  requires exit 0 with a bounded generation receipt; unchanged convergence
+  and ordinary start never rerun them. Every declared long-running service
+  must remain running/healthy.
+- **REQ-DEPLOY-09** (2026-08-28, done): A Compose declaration may explicitly
+  permit exact start/stop/restart of selected long-running services. Finite
+  and undeclared services are refused; unrelated services, completion
+  receipts, volumes, and routes remain untouched. Live service and aggregate
+  state distinguish an intentional stop from failure, and CLI, MCP, and
+  Console expose the same reviewed controls.
 
 ## Accountability and health (REQ-HEALTH, P3/P4)
 
@@ -174,6 +191,11 @@ not contradict them.
 - **REQ-REL-06** (P1, in scope): One shared protocol and result schema
   across CLI, MCP, and Console; model-facing responses stay small and
   reference files for detail.
+- **REQ-REL-07** (2026-08-28, done): A lost client reply never cancels an
+  accepted deployment mutation; callers re-query observable status. HTTP/TCP
+  readiness aborts promptly when the underlying unit or container becomes
+  irrecoverably terminal after its restart policy, while recoverable restarts
+  retain the configured readiness window.
 
 ## Phase 1 acceptance checklist (executed in this delivery)
 

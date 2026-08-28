@@ -236,12 +236,16 @@ def test_checkout_generations_and_rollback(world):
 
 
 def test_failed_component_is_degraded_and_busy_is_immediate(world):
-    broken = TOML.replace('command = ["python3", "server.py"]', 'command = ["false"]')
+    broken = TOML.replace('command = ["python3", "server.py"]', 'command = ["false"]') \
+        .replace('timeout_seconds = 30', 'timeout_seconds = 120')
     (world.repo / "server.py").write_text(SERVER)
     _write_config(world.repo, world.caller, broken)
+    started_at = time.monotonic()
     resp = _call(world, "deployment.apply", {"path": str(world.repo), "name": "web@worktree"})
+    elapsed = time.monotonic() - started_at
     assert resp["ok"] is False
     assert resp["error"]["code"] == "deployment_apply_failed"
+    assert elapsed < 30, f"terminal unit consumed {elapsed:.1f}s of a 120s readiness deadline"
     detail = json.loads(resp["error"]["detail"])
     assert any(c["name"] == "api" and c["state"] != "running" for c in detail["components"])
     status = _call(world, "deployment.status",
@@ -268,3 +272,164 @@ def test_failed_component_is_degraded_and_busy_is_immediate(world):
     assert codes == ["busy", "ok"], results
     _call(world, "deployment.remove", {"path": str(world.repo), "name": "web@worktree",
                                        "delete_data": True})
+
+
+def test_readiness_allows_process_to_recover_within_restart_policy(world):
+    restart_server = '''from pathlib import Path
+import sys
+counter = Path(".restart-count")
+attempt = int(counter.read_text()) + 1 if counter.exists() else 1
+counter.write_text(str(attempt))
+if attempt < 3:
+    sys.exit(1)
+''' + SERVER
+    (world.repo / "server.py").write_text(restart_server)
+    _write_config(world.repo, world.caller, TOML)
+    _git(world, "add", ".")
+    _git(world, "commit", "-qm", "restart fixture")
+    resp = _call(world, "deployment.apply",
+                 {"path": str(world.repo), "name": "web@worktree"})
+    assert resp["ok"], resp
+    api = _comp(resp["result"], "api")
+    assert api["state"] == "running" and api["restarts"] >= 2
+    _call(world, "deployment.remove", {"path": str(world.repo), "name": "web@worktree",
+                                       "delete_data": True})
+
+
+COMPOSE_TOML = '''schema = 1
+[deployment.stack]
+source = "worktree"
+domain = "stack"
+components = ["compose"]
+
+[deployment.stack.component.compose]
+type = "compose"
+files = ["compose.yml", "compose.route.yml"]
+env_file = "compose.env"
+services = ["bootstrap", "cache", "worker"]
+finite_services = ["bootstrap"]
+independent_services = ["worker"]
+port = true
+route = true
+timeout_seconds = 90
+'''
+
+COMPOSE_YAML = '''services:
+  bootstrap:
+    image: postgres:16-alpine
+    entrypoint: ["/bin/sh", "-c"]
+    command: ["n=$$(cat /state/count 2>/dev/null || echo 0); expr $$n + 1 > /state/count"]
+    restart: "no"
+    volumes: ["state:/state"]
+    labels: ["fixture=${FIXTURE_LABEL:?set fixture label}"]
+  cache:
+    image: valkey/valkey:9.1.0-alpine
+    depends_on:
+      bootstrap:
+        condition: service_completed_successfully
+    volumes: ["state:/state"]
+  worker:
+    image: postgres:16-alpine
+    entrypoint: ["/bin/sh", "-c"]
+    command: ["while :; do sleep 60; done"]
+    depends_on:
+      bootstrap:
+        condition: service_completed_successfully
+    volumes: ["state:/state"]
+volumes:
+  state:
+'''
+
+COMPOSE_ROUTE_YAML = '''services:
+  cache:
+    ports: ["127.0.0.1:${PORT:?Coordinator must lease PORT}:6379"]
+'''
+
+
+def _compose_service_id(project: str, service: str) -> str:
+    proc = subprocess.run(
+        ["docker", "ps", "--all", "--no-trunc", "--quiet",
+         "--filter", f"label=com.docker.compose.project={project}",
+         "--filter", f"label=com.docker.compose.service={service}"],
+        capture_output=True, text=True, check=True)
+    ids = [line for line in proc.stdout.splitlines() if line]
+    assert len(ids) == 1, ids
+    return ids[0]
+
+
+def _compose_counter(container_id: str) -> str:
+    return subprocess.run(["docker", "exec", container_id, "cat", "/state/count"],
+                          capture_output=True, text=True, check=True).stdout.strip()
+
+
+def test_native_compose_finite_service_receipt_and_start_semantics(world):
+    _write_config(world.repo, world.caller, COMPOSE_TOML)
+    (world.repo / "compose.yml").write_text(COMPOSE_YAML)
+    (world.repo / "compose.route.yml").write_text(COMPOSE_ROUTE_YAML)
+    (world.repo / ".gitignore").write_text("compose.env\n")
+    (world.repo / "compose.env").write_text("FIXTURE_LABEL=ready\n")
+    (world.repo / "marker.txt").write_text("v1\n")
+    _git(world, "add", ".")
+    _git(world, "commit", "-qm", "compose fixture")
+
+    first = _call(world, "deployment.apply",
+                  {"path": str(world.repo), "name": "stack@worktree"})
+    assert first["ok"], first
+    result = first["result"]
+    component = _comp(result, "compose")
+    assert result["state"] == "running"
+    assert {item["name"]: item["state"] for item in component["services"]} == {
+        "bootstrap": "completed", "cache": "running", "worker": "running"}
+    assert component["completed_services"][0]["service"] == "bootstrap"
+    assert component["completed_services"][0]["exit_code"] == 0
+    project = component["binding"]["identity"]
+    cache = _compose_service_id(project, "cache")
+    assert _compose_counter(cache) == "1"
+
+    unchanged = _call(world, "deployment.apply",
+                      {"path": str(world.repo), "name": "stack@worktree"})
+    assert unchanged["ok"] and unchanged["result"]["unchanged"] is True
+    assert _compose_counter(cache) == "1"
+
+    worker_stopped = _call(
+        world, "deployment.stop",
+        {"path": str(world.repo), "name": "stack@worktree",
+         "component": "compose/worker"})
+    assert worker_stopped["ok"] and worker_stopped["result"]["state"] == "degraded"
+    stopped_component = _comp(worker_stopped["result"], "compose")
+    stopped_services = {item["name"]: item for item in stopped_component["services"]}
+    assert stopped_services["worker"]["state"] == "stopped"
+    assert stopped_services["worker"]["independent"] is True
+    assert stopped_services["cache"]["state"] == "running"
+    assert worker_stopped["result"]["route_port"] == result["route_port"]
+    assert _compose_counter(cache) == "1"
+    worker_started = _call(
+        world, "deployment.start",
+        {"path": str(world.repo), "name": "stack@worktree",
+         "component": "compose/worker"})
+    assert worker_started["ok"] and worker_started["result"]["state"] == "running"
+    assert _compose_counter(cache) == "1"
+
+    stopped = _call(world, "deployment.stop",
+                    {"path": str(world.repo), "name": "stack@worktree"})
+    assert stopped["ok"] and stopped["result"]["state"] == "stopped"
+    started = _call(world, "deployment.start",
+                    {"path": str(world.repo), "name": "stack@worktree"})
+    assert started["ok"] and started["result"]["state"] == "running"
+    assert _compose_counter(cache) == "1"  # ordinary start did not rerun bootstrap
+
+    (world.repo / "marker.txt").write_text("v2\n")
+    changed = _call(world, "deployment.apply",
+                    {"path": str(world.repo), "name": "stack@worktree"})
+    assert changed["ok"], changed
+    assert _compose_counter(_compose_service_id(project, "cache")) == "2"
+    route_port = changed["result"]["route_port"]
+    pong = subprocess.run(
+        ["docker", "exec", _compose_service_id(project, "cache"),
+         "valkey-cli", "PING"], capture_output=True, text=True, check=True)
+    assert pong.stdout.strip() == "PONG" and route_port
+
+    removed = _call(world, "deployment.remove",
+                    {"path": str(world.repo), "name": "stack@worktree",
+                     "delete_data": True})
+    assert removed["ok"], removed

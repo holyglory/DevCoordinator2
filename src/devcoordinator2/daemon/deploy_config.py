@@ -21,6 +21,7 @@ from devcoordinator2.daemon.repoconfig import (
 )
 
 NAME_RE = re.compile(r"[a-z0-9][a-z0-9-]{0,31}$")
+COMPOSE_SERVICE_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 DOMAIN_LABEL_RE = re.compile(r"[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$")
 IMAGE_RE = re.compile(r"[a-z0-9][a-z0-9._/-]{0,200}(:[A-Za-z0-9][A-Za-z0-9._-]{0,127})?"
                       r"(@sha256:[0-9a-f]{64})?$")
@@ -32,6 +33,7 @@ _SECRET_KEY_RE = re.compile(r"(token|secret|password|passwd|credential|api_?key)
 COMPONENT_TYPES = ("process", "docker", "compose", "postgres", "external")
 SOURCE_MODES = ("worktree", "checkout")
 HEALTH_TIMEOUT_DEFAULT = 60
+COMPOSE_READINESS_TIMEOUT_DEFAULT = 300
 
 
 @dataclass(frozen=True)
@@ -61,8 +63,13 @@ class ComponentSpec:
     container_port: int | None = None
     volumes: tuple[str, ...] = ()
     # compose
-    compose_file: str | None = None
+    compose_files: tuple[str, ...] = ()
+    compose_env_file: str | None = None
+    compose_build: bool = False
     services: tuple[str, ...] = ()
+    finite_services: tuple[str, ...] = ()
+    independent_services: tuple[str, ...] = ()
+    compose_timeout_seconds: int = COMPOSE_READINESS_TIMEOUT_DEFAULT
     # postgres
     database: str | None = None
     user: str | None = None
@@ -97,13 +104,13 @@ class DeploymentSpec:
     @property
     def route_component(self) -> ComponentSpec | None:
         """Explicit route = true wins; otherwise a deployment with exactly one
-        port-leasing process/docker component routes to it implicitly, so a
+        port-leasing process/docker/compose component routes to it implicitly, so a
         single-service deployment can receive a domain without ceremony."""
         explicit = next((c for c in self.components if c.route), None)
         if explicit is not None:
             return explicit
         candidates = [c for c in self.components
-                      if c.wants_port and c.type in ("process", "docker")]
+                      if c.wants_port and c.type in ("process", "docker", "compose")]
         return candidates[0] if len(candidates) == 1 else None
 
     def canonical(self, source: str) -> dict:
@@ -201,16 +208,21 @@ def _validate_deployment(root: Path, name: str, body: dict) -> DeploymentSpec:
     for index, cname in enumerate(order):
         components.append(_validate_component(root, name, cname, index,
                                               tables[cname], order[:index]))
+    if "checkout" in sources and any(
+            component.type == "compose" and component.compose_env_file
+            for component in components):
+        raise ConfigError(
+            f"{prefix} ignored Compose env_file requires worktree-only source")
     routes = [c for c in components if c.route]
     if len(routes) > 1:
         raise ConfigError(f"{prefix} at most one component may set route = true")
     if domains and not routes:
         implicit = [c for c in components
-                    if c.wants_port and c.type in ("process", "docker")]
+                    if c.wants_port and c.type in ("process", "docker", "compose")]
         if len(implicit) != 1:
             raise ConfigError(
                 f"{prefix} domain requires one component with route = true"
-                " (implicit only when exactly one process/docker component"
+                " (implicit only when exactly one process/docker/compose component"
                 " leases a port)")
     if routes and not routes[0].wants_port:
         raise ConfigError(f"{prefix} the route component must lease a port")
@@ -264,7 +276,9 @@ def _validate_component(root: Path, dname: str, cname: str, index: int,
         "process": common | {"command", "cwd", "port", "route", "health",
                              "persistent_paths"},
         "docker": common | {"image", "command", "port", "volumes", "health"},
-        "compose": common | {"file", "services"},
+        "compose": common | {"file", "files", "env_file", "services",
+                             "finite_services", "independent_services", "build",
+                             "port", "route", "timeout_seconds"},
         "postgres": common | {"image", "database", "user", "shared_from"},
         "external": common | {"tcp"},
     }[ctype]
@@ -334,16 +348,79 @@ def _validate_component(root: Path, dname: str, cname: str, index: int,
                     wants_port=cport is not None, volumes=tuple(volumes),
                     health=_validate_health(prefix, body.get("health")))
     elif ctype == "compose":
-        file = body.get("file", "docker-compose.yml")
-        if not isinstance(file, str) or Path(file).is_absolute():
-            raise ConfigError(f"{prefix} file must be repository-relative")
-        resolved = (root.resolve() / file).resolve()
-        if root.resolve() not in resolved.parents:
-            raise ConfigError(f"{prefix} file escapes the repository")
+        if "file" in body and "files" in body:
+            raise ConfigError(f"{prefix} file and files are mutually exclusive")
+        files = body.get("files", [body.get("file", "docker-compose.yml")])
+        if not isinstance(files, list) or not files \
+                or not all(isinstance(file, str) and file for file in files):
+            raise ConfigError(f"{prefix} files must be a non-empty list")
+        if len(set(files)) != len(files):
+            raise ConfigError(f"{prefix} files contains duplicates")
+        for file in files:
+            if Path(file).is_absolute():
+                raise ConfigError(f"{prefix} files must be repository-relative")
+            resolved = (root.resolve() / file).resolve()
+            if resolved != root.resolve() and root.resolve() not in resolved.parents:
+                raise ConfigError(f"{prefix} file escapes the repository")
+        env_file = body.get("env_file")
+        if env_file is not None:
+            if not isinstance(env_file, str) or not env_file \
+                    or Path(env_file).is_absolute():
+                raise ConfigError(f"{prefix} env_file must be repository-relative")
+            resolved = (root.resolve() / env_file).resolve()
+            if resolved != root.resolve() and root.resolve() not in resolved.parents:
+                raise ConfigError(f"{prefix} env_file escapes the repository")
         services = body.get("services", [])
-        if not isinstance(services, list) or not all(isinstance(s, str) for s in services):
+        if not isinstance(services, list) or not all(
+                isinstance(s, str) and COMPOSE_SERVICE_RE.fullmatch(s)
+                for s in services):
             raise ConfigError(f"{prefix} services must be a list of names")
-        spec.update(compose_file=file, services=tuple(services))
+        if len(set(services)) != len(services):
+            raise ConfigError(f"{prefix} services contains duplicates")
+        finite = body.get("finite_services", [])
+        if not isinstance(finite, list) or not all(
+                isinstance(s, str) and COMPOSE_SERVICE_RE.fullmatch(s)
+                for s in finite):
+            raise ConfigError(f"{prefix} finite_services must be a list of names")
+        if len(set(finite)) != len(finite):
+            raise ConfigError(f"{prefix} finite_services contains duplicates")
+        if finite and (not services or not set(finite).issubset(services)):
+            raise ConfigError(f"{prefix} finite_services must be included in explicit services")
+        if finite and len(finite) == len(services):
+            raise ConfigError(f"{prefix} finite_services must leave a running service")
+        independent = body.get("independent_services", [])
+        if not isinstance(independent, list) or not all(
+                isinstance(s, str) and COMPOSE_SERVICE_RE.fullmatch(s)
+                for s in independent):
+            raise ConfigError(f"{prefix} independent_services must be a list of names")
+        if len(set(independent)) != len(independent):
+            raise ConfigError(f"{prefix} independent_services contains duplicates")
+        if independent and (not services or not set(independent).issubset(services)):
+            raise ConfigError(
+                f"{prefix} independent_services must be included in explicit services")
+        overlap = sorted(set(independent) & set(finite))
+        if overlap:
+            raise ConfigError(
+                f"{prefix} finite services cannot be independently controlled: {overlap}")
+        build = body.get("build", False)
+        if not isinstance(build, bool):
+            raise ConfigError(f"{prefix} build must be a boolean")
+        port = body.get("port", False)
+        route = body.get("route", False)
+        if not isinstance(port, bool) or not isinstance(route, bool):
+            raise ConfigError(f"{prefix} port and route must be booleans")
+        if route and not port:
+            raise ConfigError(f"{prefix} route = true requires port = true")
+        timeout = body.get("timeout_seconds", COMPOSE_READINESS_TIMEOUT_DEFAULT)
+        if not isinstance(timeout, int) or isinstance(timeout, bool) \
+                or not (1 <= timeout <= 900):
+            raise ConfigError(f"{prefix} timeout_seconds must be in [1, 900]")
+        spec.update(compose_files=tuple(files), compose_env_file=env_file,
+                    compose_build=build, services=tuple(services),
+                    finite_services=tuple(finite),
+                    independent_services=tuple(independent),
+                    wants_port=port, route=route,
+                    compose_timeout_seconds=timeout)
     elif ctype == "postgres":
         shared = body.get("shared_from")
         if shared is not None:

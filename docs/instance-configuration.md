@@ -29,13 +29,36 @@ stripping one pair of surrounding quotes.
 | `DEVCOORDINATOR2_TELEGRAM_TOKEN_FILE` | (unset) | private 0600 file holding the single server-owned bot token; unset disables notifications |
 | `DEVCOORDINATOR2_TELEGRAM_API` | `https://api.telegram.org` | API base (tests point it at a fixture) |
 | `DEVCOORDINATOR2_BUGS_DIR` | `/var/lib/devcoordinator2-bugs` | independent open-bug store; world-writable so any local account reports bugs (DC2-2026-08-24-OPEN-LOCAL-ACCESS) |
+| `DEVCOORDINATOR2_COMPOSE_ENV_ALLOWLIST_FILE` | (unset) | absolute private schema-1 JSON file authorizing exact repository-ID/relative-path Compose interpolation files |
 
 Edge configuration lives in `/etc/devcoordinator2/edge.env` (`docs/edge.md`).
 
-## Reserved for later phases
+## Compose environment-file authorization
 
-None. Secrets are referenced (systemd credentials, private files),
-never placed in the repository or the database.
+Repository `env_file` declarations grant no authority by themselves. The
+allowlist is root-owned, regular, non-symlink, at most 64 KiB, and not
+group/world writable:
+
+```json
+{
+  "schema": 1,
+  "authorizations": [
+    {"repository_id": "r0123456789abcdef", "path": "deploy/dev.env"}
+  ]
+}
+```
+
+Each path is normalized, relative, and exact. Runtime use additionally proves
+that the current file is regular, non-symlink, stays inside the worktree, and
+remains Git-ignored. Missing or malformed policy refuses daemon startup;
+missing authorization refuses the repository operation. Values are never read
+into Coordinator metadata or results.
+
+The installer accepts repeatable
+`--compose-env-authorization REPOSITORY=RELATIVE_PATH`; it resolves the Git
+common-root identity, proves the existing file is ignored and safe, merges the
+private allowlist atomically, and adds the instance-file pointer without
+removing prior authorizations.
 
 ## Enforcement
 
