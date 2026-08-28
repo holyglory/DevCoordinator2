@@ -254,7 +254,7 @@ def compose_up(project: str, files: tuple[Path, ...], cwd: Path,
                                 "compose finite-service reset failed")
     args = ["up", "--detach", "--remove-orphans"]
     if build:
-        args += ["--build", "--quiet-build", "--quiet-pull"]
+        args.append("--build")
     args += list(services)
     proc = _compose(project, files, cwd, env_files, args, timeout=1800)
     if proc.returncode != 0:

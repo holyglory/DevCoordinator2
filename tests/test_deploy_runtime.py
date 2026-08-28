@@ -101,8 +101,7 @@ def test_compose_up_resets_finite_service_and_builds(monkeypatch, tmp_path):
     assert calls == [
         (["config", "--services"], 120),
         (["rm", "--stop", "--force", "bootstrap"], 120),
-        (["up", "--detach", "--remove-orphans", "--build", "--quiet-build",
-          "--quiet-pull", "bootstrap", "api"], 1800),
+        (["up", "--detach", "--remove-orphans", "--build", "bootstrap", "api"], 1800),
     ]
 
 

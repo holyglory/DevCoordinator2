@@ -309,6 +309,7 @@ env_file = "compose.env"
 services = ["bootstrap", "cache", "worker"]
 finite_services = ["bootstrap"]
 independent_services = ["worker"]
+build = true
 port = true
 route = true
 timeout_seconds = 90
