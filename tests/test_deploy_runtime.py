@@ -1,6 +1,8 @@
 import subprocess
 from pathlib import Path
 
+import pytest
+
 from devcoordinator2.daemon import deploy_runtime as runtime
 
 
@@ -103,6 +105,19 @@ def test_compose_up_resets_finite_service_and_builds(monkeypatch, tmp_path):
         (["rm", "--stop", "--force", "bootstrap"], 120),
         (["up", "--detach", "--remove-orphans", "--build", "bootstrap", "api"], 1800),
     ]
+
+
+def test_compose_up_failure_retains_bounded_stdout_and_stderr(monkeypatch, tmp_path):
+    responses = iter([
+        _result(stdout="bootstrap\napi\n"),
+        _result(),
+        _result(returncode=1, stdout="build command failed", stderr="solver detail"),
+    ])
+    monkeypatch.setattr(runtime, "_compose", lambda *_args, **_kwargs: next(responses))
+    with pytest.raises(runtime.RuntimeError_, match="build command failed\nsolver detail"):
+        runtime.compose_up(
+            "project", (tmp_path / "compose.yml",), tmp_path, (),
+            ("bootstrap", "api"), ("bootstrap",), True)
 
 
 def test_compose_start_can_exclude_finite_service(monkeypatch, tmp_path):

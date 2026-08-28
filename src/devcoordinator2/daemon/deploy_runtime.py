@@ -18,6 +18,12 @@ class RuntimeError_(Exception):
     """Bounded runtime failure."""
 
 
+def _bounded_process_error(proc: subprocess.CompletedProcess,
+                           fallback: str) -> str:
+    detail = (proc.stdout + "\n" + proc.stderr).strip()
+    return detail[-4096:] if detail else fallback
+
+
 # -- process components (fixed-name transient systemd units) ----------------
 
 def process_unit_name(prefix: str, deployment_id: str, component: str,
@@ -258,7 +264,7 @@ def compose_up(project: str, files: tuple[Path, ...], cwd: Path,
     args += list(services)
     proc = _compose(project, files, cwd, env_files, args, timeout=1800)
     if proc.returncode != 0:
-        raise RuntimeError_(proc.stderr.strip()[-1024:] or "compose up failed")
+        raise RuntimeError_(_bounded_process_error(proc, "compose up failed"))
 
 
 def compose_stop(project: str, files: tuple[Path, ...], cwd: Path,
