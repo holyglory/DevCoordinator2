@@ -158,7 +158,12 @@ class InstanceConfig:
         return (repository_id, relative_path) in self.compose_env_authorizations
 
 
-def load_instance_config() -> InstanceConfig:
+def load_instance_config(*, load_compose_authorizations: bool = False) -> InstanceConfig:
+    """Load shared instance values and, for the root daemon only, private policy.
+
+    Thin CLI/MCP clients need the socket path and ordinary attribution values;
+    they must not parse or require read access to daemon-owned authorization.
+    """
     file_values = _instance_file_values()
 
     def get(key: str) -> str:
@@ -190,7 +195,10 @@ def load_instance_config() -> InstanceConfig:
         telegram_api=get("DEVCOORDINATOR2_TELEGRAM_API").rstrip("/"),
         bugs_dir=Path(get("DEVCOORDINATOR2_BUGS_DIR")),
         compose_env_allowlist_file=allowlist_path,
-        compose_env_authorizations=_compose_env_authorizations(allowlist_path),
+        compose_env_authorizations=(
+            _compose_env_authorizations(allowlist_path)
+            if load_compose_authorizations else frozenset()
+        ),
     )
 
 

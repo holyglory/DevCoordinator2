@@ -26,7 +26,7 @@ log = logging.getLogger("devcoordinator2")
 def main() -> int:
     logging.basicConfig(level=logging.INFO,
                         format="%(asctime)s %(name)s %(levelname)s %(message)s")
-    config = load_instance_config()
+    config = load_instance_config(load_compose_authorizations=True)
     try:
         db = Database(config.database_path)
     except SchemaMismatch as exc:

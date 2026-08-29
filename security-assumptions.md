@@ -42,9 +42,11 @@ untracked `instance/` directory and in the installed instance configuration
   boundary. The daemon validates the authorization, ignored-file state, and
   realpath on every use; it passes only the path to Compose and never copies
   values into configuration metadata, results, logs, metrics, or argv. This
-  narrow exception does not permit committed credentials, symlinks/path escape,
-  unrelated-account access, or production secrets, and must be re-reviewed when
-  the repository trust boundary changes
+  policy is loaded only by the root daemon; thin CLI/MCP clients and deployed
+  application APIs receive neither its contents nor filesystem authority. This
+  narrow exception does not permit committed credentials, symlinks/path
+  escape, unrelated-account access, or production secrets, and must be
+  re-reviewed when the repository trust boundary changes
   (DC2-2026-08-28-COMPOSE-REPOSITORY-ENV).
 - Runaway processes, containers, storage growth, stale work, malformed
   input, path escape, and lost replies are credible operational failures and

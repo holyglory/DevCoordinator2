@@ -49,7 +49,7 @@ def test_compose_env_allowlist_loads_exact_repository_path_pairs(monkeypatch, tm
     os.chmod(allowlist, 0o600)
     monkeypatch.setenv("DEVCOORDINATOR2_INSTANCE_ENV", "/nonexistent")
     monkeypatch.setenv("DEVCOORDINATOR2_COMPOSE_ENV_ALLOWLIST_FILE", str(allowlist))
-    cfg = paths.load_instance_config()
+    cfg = paths.load_instance_config(load_compose_authorizations=True)
     assert cfg.compose_env_authorized(
         "r" + "a" * 16, "deploy/v3/env/dev.env")
     assert not cfg.compose_env_authorized(
@@ -76,7 +76,7 @@ def test_compose_env_allowlist_rejects_malformed_authority(monkeypatch, tmp_path
     monkeypatch.setenv("DEVCOORDINATOR2_INSTANCE_ENV", "/nonexistent")
     monkeypatch.setenv("DEVCOORDINATOR2_COMPOSE_ENV_ALLOWLIST_FILE", str(allowlist))
     with pytest.raises(ValueError, match="Compose environment"):
-        paths.load_instance_config()
+        paths.load_instance_config(load_compose_authorizations=True)
 
 
 def test_compose_env_allowlist_rejects_writable_policy(monkeypatch, tmp_path):
@@ -86,4 +86,20 @@ def test_compose_env_allowlist_rejects_writable_policy(monkeypatch, tmp_path):
     monkeypatch.setenv("DEVCOORDINATOR2_INSTANCE_ENV", "/nonexistent")
     monkeypatch.setenv("DEVCOORDINATOR2_COMPOSE_ENV_ALLOWLIST_FILE", str(allowlist))
     with pytest.raises(ValueError, match="writable"):
-        paths.load_instance_config()
+        paths.load_instance_config(load_compose_authorizations=True)
+
+
+def test_thin_client_does_not_load_daemon_private_policy(monkeypatch):
+    monkeypatch.setenv("DEVCOORDINATOR2_INSTANCE_ENV", "/nonexistent")
+    monkeypatch.setenv(
+        "DEVCOORDINATOR2_COMPOSE_ENV_ALLOWLIST_FILE", "/root/private-policy.json")
+    monkeypatch.setattr(
+        paths, "_compose_env_authorizations",
+        lambda _path: (_ for _ in ()).throw(PermissionError("daemon policy")))
+
+    client = paths.load_instance_config()
+
+    assert client.compose_env_allowlist_file == Path("/root/private-policy.json")
+    assert client.compose_env_authorizations == frozenset()
+    with pytest.raises(PermissionError, match="daemon policy"):
+        paths.load_instance_config(load_compose_authorizations=True)

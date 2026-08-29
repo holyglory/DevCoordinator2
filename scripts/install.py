@@ -21,6 +21,7 @@ import os
 import pwd
 import secrets
 import shutil
+import stat
 import subprocess
 import sys
 from pathlib import Path
@@ -196,6 +197,9 @@ def merge_compose_env_allowlist(path: Path, entries: list[dict[str, str]],
     existing = []
     if path.exists():
         try:
+            details = path.lstat()
+            if not stat.S_ISREG(details.st_mode) or stat.S_ISLNK(details.st_mode):
+                raise ValueError("policy must be a regular non-symlink file")
             document = json.loads(path.read_text())
             if document.get("schema") != 1 \
                     or not isinstance(document.get("authorizations"), list):
@@ -208,11 +212,17 @@ def merge_compose_env_allowlist(path: Path, entries: list[dict[str, str]],
     payload = {"schema": 1,
                "authorizations": [merged[key] for key in sorted(merged)]}
     if path.exists() and json.loads(path.read_text()) == payload:
-        return False
+        details = path.lstat()
+        changed = (details.st_uid, details.st_gid) != owner \
+            or stat.S_IMODE(details.st_mode) != 0o640
+        if changed:
+            os.chown(path, *owner)
+            os.chmod(path, 0o640)
+        return changed
     tmp = path.with_name(path.name + ".tmp")
     tmp.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
-    os.chmod(tmp, 0o640)
     os.chown(tmp, *owner)
+    os.chmod(tmp, 0o640)
     os.replace(tmp, path)
     return True
 
@@ -298,7 +308,7 @@ def main() -> int:
     compose_authorizations = compose_env_authorizations(ns.compose_env_authorization)
     if compose_authorizations or COMPOSE_ENV_ALLOWLIST.exists():
         created.append(merge_compose_env_allowlist(
-            COMPOSE_ENV_ALLOWLIST, compose_authorizations, (0, gid)))
+            COMPOSE_ENV_ALLOWLIST, compose_authorizations, (0, 0)))
         created.append(ensure_env_value(
             ETC / "instance.env", "DEVCOORDINATOR2_COMPOSE_ENV_ALLOWLIST_FILE",
             str(COMPOSE_ENV_ALLOWLIST)))

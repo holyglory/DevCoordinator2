@@ -115,6 +115,24 @@ def test_compose_env_allowlist_merge_is_atomic_and_preserves_entries(
     assert allowlist.stat().st_mode & 0o777 == 0o640
 
 
+def test_unchanged_compose_allowlist_restores_private_owner_and_mode(
+    tmp_path, monkeypatch,
+):
+    allowlist = tmp_path / "allowlist.json"
+    entry = {"repository_id": "r" + "a" * 16, "path": "a.env"}
+    allowlist.write_text(json.dumps({"schema": 1, "authorizations": [entry]}))
+    os.chmod(allowlist, 0o660)
+    chowns = []
+    monkeypatch.setattr(
+        install.os, "chown", lambda path, uid, gid: chowns.append((path, uid, gid)))
+
+    changed = install.merge_compose_env_allowlist(allowlist, [], (0, 0))
+
+    assert changed is True
+    assert chowns == [(allowlist, 0, 0)]
+    assert allowlist.stat().st_mode & 0o777 == 0o640
+
+
 def test_ensure_env_value_appends_once_and_refuses_conflict(tmp_path):
     target = tmp_path / "instance.env"
     target.write_text("A=1\n")

@@ -36,8 +36,8 @@ Edge configuration lives in `/etc/devcoordinator2/edge.env` (`docs/edge.md`).
 ## Compose environment-file authorization
 
 Repository `env_file` declarations grant no authority by themselves. The
-allowlist is root-owned, regular, non-symlink, at most 64 KiB, and not
-group/world writable:
+allowlist is `root:root` mode 0640, regular, non-symlink, at most 64 KiB, and
+not group/world writable:
 
 ```json
 {
@@ -53,6 +53,11 @@ that the current file is regular, non-symlink, stays inside the worktree, and
 remains Git-ignored. Missing or malformed policy refuses daemon startup;
 missing authorization refuses the repository operation. Values are never read
 into Coordinator metadata or results.
+
+Only the root daemon loads and validates this policy. Thin CLI/MCP clients load
+the socket and ordinary instance values, then submit requests to the daemon;
+they need neither read nor write permission on the allowlist. Application
+services and their APIs never receive the policy path or authorization data.
 
 The installer accepts repeatable
 `--compose-env-authorization REPOSITORY=RELATIVE_PATH`; it resolves the Git
