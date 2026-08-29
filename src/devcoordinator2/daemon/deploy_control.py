@@ -197,9 +197,38 @@ class Deployments:
         started: list[tuple[ComponentSpec, tuple[str, str]]] = []
         try:
             for comp in spec.components:
-                binding = self._bring_up(ctx, comp, number, gen_path, port_map, old_rows)
-                if st.is_generation_scoped(comp) and binding[0] != "none":
+                try:
+                    binding = self._bring_up(
+                        ctx, comp, number, gen_path, port_map, old_rows
+                    )
+                except ProtocolError as exc:
+                    if st.is_owned(comp) and comp.type == "compose":
+                        binding = ("compose", rt.compose_project(ctx.dep_id, comp.name))
+                        started.append((comp, binding))
+                        st.set_component(
+                            db, ctx.dep_id, comp.name,
+                            state="failed", health="unhealthy", generation=number,
+                            binding_kind=binding[0], binding_identity=binding[1],
+                            spec_fingerprint=st.component_fingerprint(comp),
+                            last_error=exc.message[:512],
+                        )
+                    raise
+                old = old_rows.get(comp.name)
+                new_binding = binding[0] != "none" and (
+                    st.is_generation_scoped(comp)
+                    or old is None
+                    or old["binding_kind"] != binding[0]
+                    or old["binding_identity"] != binding[1]
+                )
+                if new_binding:
                     started.append((comp, binding))
+                    st.set_component(
+                        db, ctx.dep_id, comp.name,
+                        state="starting", health="unknown", generation=number,
+                        binding_kind=binding[0], binding_identity=binding[1],
+                        spec_fingerprint=st.component_fingerprint(comp),
+                        last_error=None,
+                    )
                 ok, note = eng.prove_health(ctx, comp, binding, port_map, number)
                 generation = number if st.is_generation_scoped(comp) else 0
                 st.set_component(db, ctx.dep_id, comp.name, state="running" if ok else "failed",
@@ -274,17 +303,38 @@ class Deployments:
     def _abort_candidate(self, ctx, worktree, number, gen_path, started, old_rows) -> None:
         for comp, (kind, identity) in reversed(started):
             try:
-                eng.stop_component_binding(kind, identity, comp, gen_path, None)
-                if kind == "container":
+                generated = ctx.env_path(comp.name, number)
+                eng.stop_component_binding(
+                    kind, identity, comp, gen_path,
+                    generated if generated.is_file() else None,
+                )
+                if kind == "container" and st.is_generation_scoped(comp):
                     rt.remove_container(identity, delete_volumes=False)
             except rt.RuntimeError_ as exc:
                 log.error("abort cleanup failed for %s: %s", comp.name, exc)
             old = old_rows.get(comp.name)
-            st.set_component(self._db, ctx.dep_id, comp.name,
-                             state=old["state"] if old else "stopped",
-                             generation=old["generation"] if old else None,
-                             binding_kind=old["binding_kind"] if old else None,
-                             binding_identity=old["binding_identity"] if old else None)
+            if old is not None:
+                st.set_component(
+                    self._db, ctx.dep_id, comp.name,
+                    state=old["state"], health=old["health"],
+                    generation=old["generation"],
+                    binding_kind=old["binding_kind"],
+                    binding_identity=old["binding_identity"],
+                    spec_fingerprint=old["spec_fingerprint"],
+                    last_error=old["last_error"],
+                )
+            elif st.is_generation_scoped(comp):
+                st.set_component(
+                    self._db, ctx.dep_id, comp.name,
+                    state="stopped", health="none", generation=None,
+                    binding_kind=None, binding_identity=None,
+                )
+            else:
+                st.set_component(
+                    self._db, ctx.dep_id, comp.name,
+                    state="stopped", health="none", generation=number,
+                    binding_kind=kind, binding_identity=identity,
+                )
         ports.release(self._db, ctx.dep_id, generation=number)
         eng.remove_generation_path(ctx, worktree, gen_path)
         st.set_generation_state(self._db, ctx.dep_id, number, "failed")
@@ -423,14 +473,12 @@ class Deployments:
             if not st.is_owned(comp) or not old or not old["binding_identity"]:
                 continue
             try:
-                eng.stop_component_binding(old["binding_kind"], old["binding_identity"], comp,
-                                           gen_path,
-                                           ctx.env_path(comp.name,
-                                                        row["current_generation"] or 0)
-                                           if ctx.env_path(
-                                               comp.name,
-                                               row["current_generation"] or 0).exists()
-                                           else None)
+                runtime_generation = eng.runtime_generation(ctx, row, old)
+                generated = ctx.env_path(comp.name, runtime_generation)
+                eng.stop_component_binding(
+                    old["binding_kind"], old["binding_identity"], comp, gen_path,
+                    generated if generated.exists() else None,
+                )
                 st.set_component(self._db, ctx.dep_id, comp.name, state="stopped",
                                  health="none", desired_state="stopped", last_error=None)
             except rt.RuntimeError_ as exc:
@@ -551,12 +599,16 @@ class Deployments:
                             vol = rt.volume_name(ctx.dep_id, c["name"], v)
                             rt.remove_volume(vol)
                             deleted_volumes.append(vol)
-                elif c["binding_kind"] == "compose" and spec is not None:
-                    gen = st.generation(self._db, ctx.dep_id, row["current_generation"] or 0)
+                elif spec is not None and spec.type == "compose":
+                    runtime_generation = eng.runtime_generation(ctx, row, c)
+                    gen = st.generation(self._db, ctx.dep_id, runtime_generation)
                     gp = Path(gen["path"]) if gen else worktree
-                    rt.compose_down(c["binding_identity"], ctx.compose_files(spec, gp), gp,
+                    project = c["binding_identity"] \
+                        if c["binding_kind"] == "compose" and c["binding_identity"] \
+                        else rt.compose_project(ctx.dep_id, spec.name)
+                    rt.compose_down(project, ctx.compose_files(spec, gp), gp,
                                     ctx.compose_env_files(
-                                        spec, gp, row["current_generation"] or 0),
+                                        spec, gp, runtime_generation),
                                     delete_volumes=delete_data)
             for gen in self._db.query("SELECT path FROM generations WHERE deployment_id=?",
                                       (ctx.dep_id,)):

@@ -165,10 +165,11 @@ def logs(ctx: eng.Ctx, row: dict, worktree: Path, component: str,
                 "tail": rt.container_logs(c["binding_identity"], tail_lines),
                 "container_id": c["binding_identity"]}
     if c["binding_kind"] == "compose" and c["binding_identity"]:
-        gen = st.generation(ctx.db, ctx.dep_id, row["current_generation"] or 0)
+        runtime_generation = eng.runtime_generation(ctx, row, c)
+        gen = st.generation(ctx.db, ctx.dep_id, runtime_generation)
         gp = Path(gen["path"]) if gen else worktree
         return {"component": component, "tail": rt.compose_logs(
             c["binding_identity"], ctx.compose_files(spec, gp), gp,
-            ctx.compose_env_files(spec, gp, row["current_generation"] or 0),
+            ctx.compose_env_files(spec, gp, runtime_generation),
             tail_lines)}
     return {"component": component, "tail": "", "note": "component has no logs"}

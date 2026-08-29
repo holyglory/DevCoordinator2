@@ -434,3 +434,92 @@ def test_native_compose_finite_service_receipt_and_start_semantics(world):
                     {"path": str(world.repo), "name": "stack@worktree",
                      "delete_data": True})
     assert removed["ok"], removed
+
+
+FAILED_COMPOSE_TOML = '''schema = 1
+[deployment.failed-stack]
+source = "worktree"
+domain = "failed-stack"
+components = ["compose"]
+
+[deployment.failed-stack.component.compose]
+type = "compose"
+files = ["failed-compose.yml", "failed-compose.route.yml"]
+services = ["worker"]
+port = true
+route = true
+timeout_seconds = 30
+'''
+
+FAILED_COMPOSE_YAML = '''services:
+  worker:
+    image: postgres:16-alpine
+    entrypoint: ["/bin/sh", "-c"]
+    command: ["echo coordinator-candidate-failed >&2; exit 23"]
+    restart: "no"
+    volumes: ["state:/state"]
+volumes:
+  state:
+'''
+
+FAILED_COMPOSE_ROUTE_YAML = '''services:
+  worker:
+    ports: ["127.0.0.1:${PORT:?Coordinator must lease PORT}:5432"]
+'''
+
+
+def test_failed_first_compose_candidate_remains_managed_and_removable(world):
+    _write_config(world.repo, world.caller, FAILED_COMPOSE_TOML)
+    (world.repo / "failed-compose.yml").write_text(FAILED_COMPOSE_YAML)
+    (world.repo / "failed-compose.route.yml").write_text(
+        FAILED_COMPOSE_ROUTE_YAML
+    )
+    _git(world, "add", ".")
+    _git(world, "commit", "-qm", "failed compose fixture")
+
+    failed = _call(
+        world, "deployment.apply",
+        {"path": str(world.repo), "name": "failed-stack@worktree"},
+    )
+    assert failed["ok"] is False
+    assert failed["error"]["code"] == "deployment_apply_failed"
+
+    status = _call(
+        world, "deployment.status",
+        {"path": str(world.repo), "name": "failed-stack@worktree"},
+    )
+    assert status["ok"], status
+    component = _comp(status["result"], "compose")
+    assert component["state"] == "failed"
+    assert component["binding"]["kind"] == "compose"
+    project = component["binding"]["identity"]
+    assert project
+
+    logs = _call(
+        world, "deployment.logs",
+        {
+            "path": str(world.repo),
+            "name": "failed-stack@worktree",
+            "component": "compose",
+            "tail_lines": 20,
+        },
+    )
+    assert logs["ok"], logs
+    assert "coordinator-candidate-failed" in logs["result"]["tail"]
+
+    volume = f"{project}_state"
+    assert subprocess.run(
+        ["docker", "volume", "inspect", volume], capture_output=True
+    ).returncode == 0
+    removed = _call(
+        world, "deployment.remove",
+        {
+            "path": str(world.repo),
+            "name": "failed-stack@worktree",
+            "delete_data": True,
+        },
+    )
+    assert removed["ok"], removed
+    assert subprocess.run(
+        ["docker", "volume", "inspect", volume], capture_output=True
+    ).returncode != 0

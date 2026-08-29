@@ -118,6 +118,23 @@ class Ctx:
         self.dir.chmod(0o755)
 
 
+def runtime_generation(ctx: Ctx, row: dict, component: dict) -> int:
+    """Resolve the environment generation for a live or failed binding."""
+
+    for value in (row.get("current_generation"), component.get("generation")):
+        if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+            return value
+    env_dir = ctx.dir / "env"
+    prefix = f"{component['name']}-g"
+    candidates = []
+    if env_dir.is_dir():
+        for path in env_dir.glob(f"{prefix}*.env"):
+            suffix = path.name.removeprefix(prefix).removesuffix(".env")
+            if suffix.isdigit():
+                candidates.append(int(suffix))
+    return max(candidates, default=0)
+
+
 class Busy:
     def __init__(self):
         self._locks: dict[str, threading.Lock] = {}
