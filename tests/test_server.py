@@ -59,7 +59,7 @@ def test_ping(running_server):
     resp = _call(running_server.socket_path, _request("ping"))
     assert resp["ok"] is True
     assert resp["id"] == "req-1"
-    assert resp["result"]["schema_version"] == 9
+    assert resp["result"]["schema_version"] == 11
 
 
 def test_malformed_json(running_server):

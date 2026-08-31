@@ -92,12 +92,26 @@ def test_schema_v1_upgrades_in_place_preserving_repositories(tmp_path: Path):
         conn.execute("DROP TABLE deployments")
     db.close()
     db = Database(path)
-    assert db.query("SELECT value FROM meta WHERE key='schema_version'")[0]["value"] == "9"
+    assert db.query("SELECT value FROM meta WHERE key='schema_version'")[0]["value"] == "11"
     assert db.query("SELECT repository_id FROM repositories")[0]["repository_id"] == "r1"
     assert db.query("SELECT count(*) AS n FROM deployments")[0]["n"] == 0
     tables = {row["name"] for row in db.query(
         "SELECT name FROM sqlite_master WHERE type='table'")}
     assert {"compose_completions", "compose_service_desires"}.issubset(tables)
+    db.close()
+
+
+def test_schema_v10_adds_persistent_elaboration_requests(tmp_path: Path):
+    path = tmp_path / "db.sqlite3"
+    db = Database(path)
+    with db.transaction() as conn:
+        conn.execute("ALTER TABLE tasks DROP COLUMN elaboration_needed")
+        conn.execute("UPDATE meta SET value='10' WHERE key='schema_version'")
+    db.close()
+    db = Database(path)
+    columns = {row["name"] for row in db.query("PRAGMA table_info(tasks)")}
+    assert "elaboration_needed" in columns
+    assert db.query("SELECT value FROM meta WHERE key='schema_version'")[0]["value"] == "11"
     db.close()
 
 

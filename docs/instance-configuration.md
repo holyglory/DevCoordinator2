@@ -30,6 +30,7 @@ stripping one pair of surrounding quotes.
 | `DEVCOORDINATOR2_TELEGRAM_API` | `https://api.telegram.org` | API base (tests point it at a fixture) |
 | `DEVCOORDINATOR2_BUGS_DIR` | `/var/lib/devcoordinator2-bugs` | independent open-bug store; world-writable so any local account reports bugs (DC2-2026-08-24-OPEN-LOCAL-ACCESS) |
 | `DEVCOORDINATOR2_COMPOSE_ENV_ALLOWLIST_FILE` | (unset) | absolute private schema-1 JSON file authorizing exact repository-ID/relative-path Compose interpolation files |
+| `DEVCOORDINATOR2_CODEX_USAGE_SOURCES_FILE` | (unset) | absolute root-only schema-1 JSON file listing the same-owner Codex collectors that may contribute combined repository analytics |
 
 Edge configuration lives in `/etc/devcoordinator2/edge.env` (`docs/edge.md`).
 
@@ -64,6 +65,39 @@ The installer accepts repeatable
 common-root identity, proves the existing file is ignored and safe, merges the
 private allowlist atomically, and adds the instance-file pointer without
 removing prior authorizations.
+
+## Codex usage sources
+
+The source policy is a root-owned mode-0600 regular non-symlink file. Each
+entry explicitly binds one non-root Unix UID to that account's private
+`CODEX_HOME` and installed Codex executable:
+
+```json
+{
+  "schema": 1,
+  "sources": [
+    {
+      "uid": 1000,
+      "codex_home": "/home/developer/.codex",
+      "executable": "/home/developer/.local/bin/codex"
+    }
+  ]
+}
+```
+
+The daemon invokes the executable as that UID only to resolve the collector's
+opaque repository key, then opens `usage/usage.sqlite3` read-only. Missing or
+unsupported sources become partial coverage; they never block unrelated
+Coordinator functions and never contribute zeroes. Paths, UIDs, account
+aliases, and per-source values are not returned by the API.
+Missing repository links are resolved only when an operator opens that
+repository. Until then the collection says "Open repository to index usage";
+successful links are persisted, so later collection reads and restarts stay
+fast without launching unused Codex processes.
+
+The installer accepts repeatable `--codex-usage-account UNIX_ACCOUNT` for the
+default `~/.codex` and `~/.local/bin/codex` locations, merges the private policy
+atomically, and preserves previously configured sources.
 
 ## Enforcement
 

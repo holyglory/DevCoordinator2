@@ -21,6 +21,7 @@ HISTORY_EVENT_CAP = 200
 TAIL_DEFAULT = 10
 TAIL_MAX = 50
 IMPACT_CLIP = 160             # overview carries a bounded excerpt; full via task.history
+ELABORATION_OUTCOME_CLIP = 600
 
 
 def _clip(text: str | None, limit: int) -> str | None:
@@ -145,7 +146,8 @@ def _compact_task(row: dict) -> dict:
             "release_id": row["release_id"], "seq": row["seq"],
             "position": row["position"], "title": row["title"],
             "impact": _clip(row["impact"], IMPACT_CLIP), "status": row["status"],
-            "kind": row["kind"], "estimated_loc": row["estimated_loc"]}
+            "kind": row["kind"], "estimated_loc": row["estimated_loc"],
+            "elaboration_needed": bool(row["elaboration_needed"])}
 
 
 def _release_public(row: dict, aggregates: dict[str | None, dict]) -> dict:
@@ -174,6 +176,24 @@ def has_requested(db: Database, repository_id: str) -> bool:
         (repository_id,)))
 
 
+def elaboration_requests(db: Database, repository_id: str) -> list[dict]:
+    """Outstanding owner requests, independent of the overview task cap."""
+    rows = db.query(
+        "SELECT t.task_id, t.title, t.outcome, t.status, t.kind,"
+        " (SELECT e.at FROM plan_events e"
+        "  WHERE e.subject_kind='task' AND e.subject_id=t.task_id"
+        "    AND e.event='elaboration_requested'"
+        "  ORDER BY e.event_id DESC LIMIT 1) AS requested_at"
+        " FROM tasks t WHERE t.repository_id=? AND t.elaboration_needed=1"
+        " ORDER BY t.seq",
+        (repository_id,))
+    return [{"task_id": row["task_id"], "title": row["title"],
+             "outcome": _clip(row["outcome"], ELABORATION_OUTCOME_CLIP),
+             "status": row["status"], "kind": row["kind"],
+             "requested_at": row["requested_at"]}
+            for row in rows]
+
+
 def overview(db: Database, repository: dict) -> dict:
     repository_id = repository["repository_id"]
     releases = [dict(r) for r in db.query(
@@ -181,7 +201,8 @@ def overview(db: Database, repository: dict) -> dict:
         " ORDER BY seq", (repository_id,))]
     tasks = [dict(r) for r in db.query(
         "SELECT task_id, parent_task_id, release_id, seq, position, title, impact,"
-        " status, kind, estimated_loc FROM tasks WHERE repository_id=?"
+        " status, kind, estimated_loc, elaboration_needed"
+        " FROM tasks WHERE repository_id=?"
         " AND status != 'dropped' ORDER BY seq", (repository_id,))]
     aggregates, _parents = _leaf_aggregates(tasks)
     truncated = len(tasks) > OVERVIEW_TASK_CAP
@@ -198,6 +219,7 @@ def overview(db: Database, repository: dict) -> dict:
         "releases": [_release_public(r, aggregates) for r in releases],
         "tasks": [_compact_task(t) for t in tasks],
         "tasks_truncated": truncated,
+        "elaboration_requests": elaboration_requests(db, repository_id),
         "preview_requested": preview_requested_rows(db, repository_id),
         "decisions": {"unsummarized_count": unsummarized_count(db, repository_id),
                       "summary_due": summary_due(db, repository_id)},
@@ -226,6 +248,10 @@ def picker(db: Database) -> list[dict]:
             " AND status != 'dropped' ORDER BY seq", (repository_id,))]
         current = next((r for r in releases if r["status"] in ("planned", "requested")),
                        releases[-1] if releases else None)
+        elaboration_count = db.query(
+            "SELECT COUNT(*) AS count FROM tasks"
+            " WHERE repository_id=? AND elaboration_needed=1",
+            (repository_id,))[0]["count"]
         rows.append({
             "repository_id": repository_id,
             "display_name": repo["display_name"],
@@ -234,6 +260,7 @@ def picker(db: Database) -> list[dict]:
             "current_release": ({"name": current["name"], "kind": current["kind"],
                                  "status": current["status"]} if current else None),
             "preview_requested": has_requested(db, repository_id),
+            "elaboration_request_count": elaboration_count,
         })
     return rows
 

@@ -318,6 +318,12 @@ class TestLifecycle:
                     stat = summary_path.stat()
                     summary.write_atomic(summary_path, doc,
                                          owner=(stat.st_uid, stat.st_gid))
+                    try:
+                        tests_support.record_history(
+                            worktree_path, doc, (stat.st_uid, stat.st_gid))
+                    except securefs.SecureFsError as exc:
+                        log.warning("recovery: cannot record test history for %s: %s",
+                                    worktree_path, exc)
                 except OSError:
                     pass
 
@@ -482,6 +488,13 @@ class TestLifecycle:
                         owner=(handle.caller_uid, handle.caller_gid))
             except OSError:
                 pass  # directory superseded underneath us; successor owns the slot
+            try:
+                tests_support.record_history(
+                    handle.worktree_root, doc,
+                    (handle.caller_uid, handle.caller_gid))
+            except securefs.SecureFsError as exc:
+                log.warning("cannot record test history for %s: %s",
+                            handle.worktree_root, exc)
             events.publish("test.finished", run_id=handle.run_id, test=handle.test,
                            status=status, exit_code=exit_code,
                            repository_id=handle.repository_id,
@@ -489,4 +502,3 @@ class TestLifecycle:
                            client=handle.client, worktree=str(handle.worktree_root))
         finally:
             handle.finalized.set()
-

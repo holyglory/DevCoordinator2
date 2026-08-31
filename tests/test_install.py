@@ -20,6 +20,24 @@ install = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(install)
 
 
+def test_install_release_excludes_local_design_references(tmp_path, monkeypatch):
+    root = tmp_path / "source"
+    console = root / "console"
+    references = console / "design-reference"
+    references.mkdir(parents=True)
+    (console / "app.js").write_text("console")
+    (references / "private-mock.png").write_bytes(b"private")
+    opt = tmp_path / "opt"
+    monkeypatch.setattr(install, "ROOT", root)
+    monkeypatch.setattr(install, "OPT", opt)
+    monkeypatch.setattr(install, "RELEASE_ITEMS", ("console",))
+
+    release = install.install_release("test-release")
+
+    assert (release / "console" / "app.js").read_text() == "console"
+    assert not (release / "console" / "design-reference").exists()
+
+
 def test_install_skill_links_replaces_only_existing_agent_roots(tmp_path, monkeypatch):
     home = tmp_path / "home"
     codex = home / ".codex"
@@ -131,6 +149,51 @@ def test_unchanged_compose_allowlist_restores_private_owner_and_mode(
     assert changed is True
     assert chowns == [(allowlist, 0, 0)]
     assert allowlist.stat().st_mode & 0o777 == 0o640
+
+
+def test_codex_usage_source_policy_is_private_and_preserves_accounts(
+    tmp_path, monkeypatch,
+):
+    policy = tmp_path / "codex-usage-sources.json"
+    policy.write_text(json.dumps({
+        "schema": 1,
+        "sources": [{"uid": 1000, "codex_home": "/home/one/.codex",
+                     "executable": "/home/one/.local/bin/codex"}],
+    }))
+    os.chmod(policy, 0o640)
+    monkeypatch.setattr(install.os, "chown", lambda *_args: None)
+
+    changed = install.merge_codex_usage_sources(
+        policy,
+        [{"uid": 1001, "codex_home": "/home/two/.codex",
+          "executable": "/home/two/.local/bin/codex"}],
+        (0, 0),
+    )
+
+    assert changed is True
+    assert json.loads(policy.read_text())["sources"] == [
+        {"uid": 1000, "codex_home": "/home/one/.codex",
+         "executable": "/home/one/.local/bin/codex"},
+        {"uid": 1001, "codex_home": "/home/two/.codex",
+         "executable": "/home/two/.local/bin/codex"},
+    ]
+    assert policy.stat().st_mode & 0o777 == 0o600
+
+
+def test_codex_usage_account_resolves_default_private_collector(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    (home / ".codex").mkdir(parents=True)
+    executable = home / ".local" / "bin" / "codex"
+    executable.parent.mkdir(parents=True)
+    executable.write_text("binary")
+    monkeypatch.setattr(install.pwd, "getpwnam", lambda _name: SimpleNamespace(
+        pw_dir=str(home), pw_uid=1234, pw_gid=1234))
+
+    assert install.codex_usage_sources(["developer"]) == [{
+        "uid": 1234,
+        "codex_home": str(home / ".codex"),
+        "executable": str(executable),
+    }]
 
 
 def test_ensure_env_value_appends_once_and_refuses_conflict(tmp_path):

@@ -249,6 +249,10 @@ _OPERATOR = ("deployment.start", "deployment.stop", "deployment.restart")
 _VIEWER = ("deployment.status", "deployment.logs", "health.repository", "health.history")
 # Repository-scoped reads: viewer on any deployment of the repository.
 _REPO_VIEWER = ("plan.overview", "task.history", "decision.tail", "decision.search")
+# Repository usage exposes combined private collector analytics and therefore
+# requires operator access even though it is read-only.
+_REPO_OPERATOR = ("usage.repositories", "usage.repository",
+                  "progress.repositories", "progress.repository")
 # Commands that enforce their own scope for admitted public users.
 _SELF_GUARDED = ("telegram.link", "telegram.subscribe", "telegram.unsubscribe",
                  "telegram.list", "bug.report", "bug.list", "bug.close")
@@ -310,6 +314,22 @@ def _wrap(command: str, handler: Handler, access: Access, db: Database) -> Handl
                                           if d["deployment_id"] in allowed]
                     rows.append(row)
             return {"repositories": rows}
+        if command in _REPO_OPERATOR:
+            repos = _repositories_at_least(principal, db, "operator")
+            if command in ("usage.repositories", "progress.repositories"):
+                if not repos:
+                    raise ProtocolError("permission_denied",
+                                        f"{command} requires operator on a"
+                                        " repository deployment")
+                if "_repository_ids" in args:
+                    raise ProtocolError("args_invalid", "unknown private scope argument")
+                return handler({**args, "_repository_ids": sorted(repos)}, caller)
+            repo_id = _repository_for(command, args, db)
+            if repo_id is None or repo_id not in repos:
+                raise ProtocolError("permission_denied",
+                                    f"{command} requires operator on a deployment of"
+                                    " the repository")
+            return handler(args, caller)
         if command in _REPO_VIEWER:
             repos = _viewable_repositories(principal, db)
             if command == "plan.overview" and not args.get("repository_id") \
@@ -331,7 +351,12 @@ def _wrap(command: str, handler: Handler, access: Access, db: Database) -> Handl
 def _viewable_repositories(principal: Principal, db: Database) -> set[str]:
     """Repositories where the principal holds at least viewer on a managed or
     observed deployment (the health.repositories filtering rule)."""
-    allowed = {d for d, r in principal.grants.items() if RANK[r] >= RANK["viewer"]}
+    return _repositories_at_least(principal, db, "viewer")
+
+
+def _repositories_at_least(principal: Principal, db: Database, role: str) -> set[str]:
+    allowed = {d for d, granted in principal.grants.items()
+               if RANK[granted] >= RANK[role]}
     repos: set[str] = set()
     for r in db.query("SELECT deployment_id, repository_id FROM deployments"):
         if r["deployment_id"] in allowed:

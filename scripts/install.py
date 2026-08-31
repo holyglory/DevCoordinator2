@@ -32,6 +32,7 @@ ETC = Path("/etc/devcoordinator2")
 RELEASE_ITEMS = ("src", "edge", "console", "deploy", "scripts", "skills",
                  "pyproject.toml")
 COMPOSE_ENV_ALLOWLIST = ETC / "compose-env-allowlist.json"
+CODEX_USAGE_SOURCES = ETC / "codex-usage-sources.json"
 _REPOSITORY_NAMESPACE = b"devcoordinator2.repository\0"
 
 
@@ -97,7 +98,7 @@ def install_release(release_id: str) -> Path:
         src = ROOT / item
         if src.is_dir():
             shutil.copytree(src, target / item, ignore=shutil.ignore_patterns(
-                "__pycache__", ".pytest_cache", "test", "tests"))
+                "__pycache__", ".pytest_cache", "test", "tests", "design-reference"))
         else:
             shutil.copy2(src, target / item)
     # World-readable release: the edge user and every client account read it.
@@ -227,6 +228,55 @@ def merge_compose_env_allowlist(path: Path, entries: list[dict[str, str]],
     return True
 
 
+def codex_usage_sources(accounts: list[str]) -> list[dict[str, object]]:
+    sources = []
+    for name in accounts:
+        entry = pwd.getpwnam(name)
+        home = Path(entry.pw_dir)
+        codex_home = home / ".codex"
+        executable = home / ".local" / "bin" / "codex"
+        if not codex_home.is_dir() or not executable.is_file():
+            raise ValueError(f"Codex usage source is not installed for {name}")
+        sources.append({
+            "uid": entry.pw_uid,
+            "codex_home": str(codex_home),
+            "executable": str(executable),
+        })
+    return sources
+
+
+def merge_codex_usage_sources(path: Path, entries: list[dict[str, object]],
+                              owner: tuple[int, int]) -> bool:
+    existing = []
+    if path.exists():
+        try:
+            details = path.lstat()
+            if not stat.S_ISREG(details.st_mode) or stat.S_ISLNK(details.st_mode):
+                raise ValueError("policy must be a regular non-symlink file")
+            document = json.loads(path.read_text())
+            if document.get("schema") != 1 or not isinstance(document.get("sources"), list):
+                raise ValueError("wrong schema")
+            existing = document["sources"]
+        except (OSError, json.JSONDecodeError, AttributeError, ValueError) as exc:
+            raise RuntimeError(f"cannot preserve Codex usage source policy: {exc}") from exc
+    merged = {int(item["uid"]): item for item in [*existing, *entries]}
+    payload = {"schema": 1, "sources": [merged[uid] for uid in sorted(merged)]}
+    if path.exists() and json.loads(path.read_text()) == payload:
+        details = path.lstat()
+        changed = (details.st_uid, details.st_gid) != owner \
+            or stat.S_IMODE(details.st_mode) != 0o600
+        if changed:
+            os.chown(path, *owner)
+            os.chmod(path, 0o600)
+        return changed
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+    os.chown(tmp, *owner)
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, path)
+    return True
+
+
 def unit_daemon(release: Path) -> str:
     text = (release / "deploy" / "devcoordinator2.service").read_text()
     return text.replace("Environment=PYTHONPATH=/opt/devcoordinator2/src",
@@ -268,6 +318,9 @@ def main() -> int:
         "--compose-env-authorization", action="append", default=[],
         metavar="REPOSITORY=RELATIVE_PATH",
         help="authorize one ignored repository Compose interpolation file")
+    ap.add_argument(
+        "--codex-usage-account", action="append", default=[], metavar="UNIX_ACCOUNT",
+        help="aggregate the account's default ~/.codex usage collector")
     ns = ap.parse_args()
     if os.geteuid() != 0:
         print("run as root", file=sys.stderr)
@@ -312,6 +365,13 @@ def main() -> int:
         created.append(ensure_env_value(
             ETC / "instance.env", "DEVCOORDINATOR2_COMPOSE_ENV_ALLOWLIST_FILE",
             str(COMPOSE_ENV_ALLOWLIST)))
+    usage_sources = codex_usage_sources(ns.codex_usage_account)
+    if usage_sources or CODEX_USAGE_SOURCES.exists():
+        created.append(merge_codex_usage_sources(
+            CODEX_USAGE_SOURCES, usage_sources, (0, 0)))
+        created.append(ensure_env_value(
+            ETC / "instance.env", "DEVCOORDINATOR2_CODEX_USAGE_SOURCES_FILE",
+            str(CODEX_USAGE_SOURCES)))
     edge_env = [f"EDGE_BASE_DOMAIN={ns.base_domain}",
                 "EDGE_ROUTES_FILE=/var/lib/devcoordinator2/public/routes.json",
                 "EDGE_DAEMON_SOCKET=/run/devcoordinator2/daemon.sock",
@@ -349,7 +409,8 @@ def main() -> int:
            "created_config": created, "canary": ns.canary,
            "canary_port": ns.canary_port if ns.canary else None, "started": ns.start,
            "skill_links": skill_links,
-           "compose_env_authorizations": compose_authorizations})
+           "compose_env_authorizations": compose_authorizations,
+           "codex_usage_source_count": len(usage_sources)})
     return 0
 
 

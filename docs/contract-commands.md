@@ -14,7 +14,7 @@ identical result JSON.
 ## ping
 
 Args: none.
-Result: `{"daemon_version": "<semver>", "schema_version": 9, "socket": "<path>"}`
+Result: `{"daemon_version": "<semver>", "schema_version": 11, "socket": "<path>"}`
 
 ## test.start
 
@@ -202,6 +202,49 @@ root filesystem < 10% free, component not running for 2 min while desired
 running, ≥ 3 restarts in 10 min (crash loop), test scratch > 10 GiB.
 Deduplicated while active; one recovery each.
 
+## usage.repositories | repository (implemented)
+
+- `usage.repositories {range?}` returns the registered repositories visible to
+  the caller with compact combined Codex totals. `range` is exactly `24h`,
+  `7d`, or `30d` and defaults to `24h`.
+- `usage.repository {repository_id, range?}` returns one content-free combined
+  report: coverage/source counts, provider-native top-level token categories,
+  fixed UTC phase buckets, activity totals, separate timing unions, tool
+  outcomes/families, and measurement semantics.
+- Administrators may read every repository. Public operators may read only a
+  repository where they hold operator-or-higher deployment access; viewers are
+  denied. Results never include collector identity, paths, per-user values,
+  raw Codex entity IDs, prompts, model output, source, commands, or payloads.
+- `total_tokens` alone is the stacked/activity basis. Cached input and
+  reasoning remain labelled subsets; missing collectors and unsupported source
+  versions are partial/unavailable coverage, never synthetic zeroes.
+
+## progress.repositories | repository (implemented)
+
+- `progress.repositories {}` returns compact operator-visible repository rows:
+  `{repository_id, display_name, open_tasks, tasks_done, planned_lines_done,
+  planned_lines_total, next_release}`. Public scope is injected by the access
+  guard; callers cannot pass `_repository_ids` themselves.
+- `progress.repository {repository_id, period?}` accepts `period` exactly
+  `hour`, `day`, or `week` (default `day`). Hour uses 24 one-hour buckets, day
+  uses seven one-day buckets, and week uses eight Monday-aligned seven-day
+  buckets; each response also compares the immediately preceding matching
+  period.
+- The result carries `series` buckets with task completions/arrivals/reopens,
+  current planned lines completed and scope movement, terminal test counts and
+  pass rate, provider `total_tokens`, and per-bucket token coverage. It also
+  carries current/previous totals, current scope, source-specific coverage,
+  a deterministic release forecast, ranked open work, local defer scenarios,
+  and explicit counting semantics.
+- “Planned lines completed” means the current estimates attached to tasks whose
+  permanent status event reached `done`; it is not measured Git churn. Test
+  history is bounded repository-local terminal metadata. Missing histories,
+  unestimated tasks, no release, zero pace, and missing target dates remain
+  explicit. No scenario mutates task order or release scope.
+- Administrators may read every repository. Public operators may read only a
+  repository where they hold operator-or-higher deployment access; viewers are
+  denied because the result includes combined private token analytics.
+
 ## Public identities and roles (Phase 5, implemented)
 
 A request carries `client.identity` only when the configured edge uid sends
@@ -252,7 +295,7 @@ best-effort (`notified: false` when it was down). Records are bounded atomic
 text without secrets, raw logs, or private host paths; a recurrence
 increments `occurrences` instead of duplicating; closing removes the record.
 
-## plan.* / task.* / release.* / decision.* (Schema 8, implemented)
+## plan.* / task.* / release.* / decision.* (Schemas 8 and 11, implemented)
 
 DC2-owned planning, completion ledger, and decision history
 (DC2-2026-08-24-PLANNING-LEDGER). Append-only: every task/release mutation
@@ -268,38 +311,47 @@ jargon — the register rule lives in the agent instructions).
 
 - `plan.overview {}` (no repo) → `{repositories: [{repository_id,
   display_name, open_tasks, loc_done, loc_total, current_release: {name,
-  kind, status} | null, preview_requested}]}` — the plan picker; for public
+  kind, status} | null, preview_requested, elaboration_request_count}]}` — the plan picker; for public
   identities filtered to repositories with a viewable deployment.
 - `plan.overview {path | repository_id}` → `{repository_id, display_name,
   releases: [{release_id, name, kind (preview|release), status
   (planned|requested|delivered|dropped), seq, note, requested_at,
   delivered_at, url, port, tasks_total, tasks_done, loc_total, loc_done}],
   tasks: [{task_id, parent_task_id, release_id, seq, position, title,
-  impact (bounded excerpt), status, kind, estimated_loc}], tasks_truncated,
+  impact (bounded excerpt), status, kind, estimated_loc,
+  elaboration_needed}], tasks_truncated, elaboration_requests: [{task_id,
+  title, outcome (bounded excerpt), status, kind, requested_at}],
   preview_requested: [{release_id, name, requested_at, note}], decisions:
   {unsummarized_count, summary_due}}`. One bounded call for the Console
   Gantt and agents; dropped tasks/releases are excluded (full row via
   `task.history`); aggregates count leaf tasks (a parent is a summary row);
   when the cap (500) cuts, every unfinished task is kept and
-  `tasks_truncated` is true.
+  `tasks_truncated` is true. `elaboration_requests` is independent of that
+  cap, so a completed task's request cannot disappear with older chart rows.
 - `task.create {path|repository_id, title, kind
   (goal|stub|improvement|user_feedback), outcome?, parent_task_id?,
   release_id?, estimated_loc?, impact?, unblock_condition?, verification?,
   technical_note?}` → `{task_id, repository_id, seq, position, status:
-  "planned", release_id, preview_requested}`. `outcome` defaults to the
+  "planned", release_id, elaboration_needed: false, preview_requested,
+  elaboration_requests}`. `outcome` defaults to the
   title. The target release must still be open. Appends `created`.
 - `task.update {task_id, title?, outcome?, impact?, unblock_condition?,
   verification?, technical_note?, estimated_loc?, status?, release_id?
   (null = backlog), parent_task_id? (null = root), position? (0-based order
-  among siblings), note?}` → compact task projection + `preview_requested`.
+  among siblings), elaboration_needed?, note?}` → compact task projection +
+  `preview_requested` + repository `elaboration_requests`.
   Folds edits (`edited` event naming the fields), status changes (`status`;
   reopen is `done→in_progress`), estimate changes (`estimate`), release
   moves (`release_move`), reparenting (`reparent`; cycles rejected), and
   reordering (`reorder`; the sibling group is renumbered transactionally).
+  `elaboration_needed: true` appends `elaboration_requested`.
+  `elaboration_needed: false` is accepted only when the same update changes
+  `title` or `outcome`, and appends `elaboration_completed` atomically with
+  the `edited` event.
   `note` is stored on each appended event. Errors: `task_not_found`,
   `release_not_found`, `args_invalid` ("nothing to change" when a no-op).
 - `task.history {task_id}` → `{task: <full row>, events: [{event, from, to,
-  actor, at, note}], events_truncated}` — the bounded permanent history
+  actor, at, note}], events_truncated, elaboration_requests}` — the bounded permanent history
   (last 200), loaded on concrete need.
 - `release.create {path|repository_id, name, kind (preview|release), note?,
   seq?}` → `{release_id, repository_id, seq, name, kind, status:
@@ -344,6 +396,12 @@ jargon — the register rule lives in the agent instructions).
   `unsummarized_count` reaches 25, every decision read reports
   `summary_due: true` and the working agent writes the next summary — the
   daemon never generates text.
+
+Every repository-scoped task, release, and decision result also includes
+`elaboration_requests`. Agents treat a non-empty list as owner input: load
+each task, rewrite its title and/or outcome in everyday language, and clear
+the flag in the same update. No automatic text generator or stand-in success
+is implied.
 
 Access: reads (`plan.overview`, `task.history`, `decision.tail`,
 `decision.search`) require viewer on a deployment of the repository (public

@@ -61,6 +61,14 @@ is no file fallback.
   deployment from the current work (dirty is expected), then
   `release_deliver` so the owner gets the URL or port. The owner's comments
   arrive as `user_feedback` tasks.
+- Treat every non-empty `elaboration_requests` list in a planning, task,
+  release, or decision result as an owner request that must not be silently
+  skipped. Read each named task with `task_history`, rewrite its title and/or
+  outcome in short everyday language that explains the user-visible result,
+  and set `elaboration_needed: false` in that same `task_update`. The daemon
+  rejects clearing the request without changed owner-facing wording. Keep the
+  request open when you cannot yet make the wording genuinely clearer, and do
+  not claim the related work complete while its request remains outstanding.
 - Record consequential product choices with `decision_record`
   (aspect-tagged, management-facing body; `supersedes` when replacing one).
   Load context with `decision_tail`; `decision_search` before retrying an

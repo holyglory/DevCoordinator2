@@ -7,6 +7,7 @@ import subprocess
 import time
 from pathlib import Path
 
+from devcoordinator2.daemon import tests_support
 from integration.helpers import (
     ROOT_ONLY,
     UNIT_PREFIX,
@@ -41,6 +42,9 @@ def test_pass_uid_and_bounded_output(world):
     sp = Path(final["summary_path"])
     assert sp.stat().st_uid == world.caller.pw_uid
     assert json.loads(sp.read_text())["status"] == "passed"
+    history = tests_support.read_history(world.repo)
+    assert history[-1]["run_id"] == final["run_id"]
+    assert history[-1]["status"] == "passed"
 
 
 def test_broken_command_terminal_failure(world):

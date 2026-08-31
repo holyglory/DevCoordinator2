@@ -52,6 +52,26 @@ untracked `instance/` directory and in the installed instance configuration
   input, path escape, and lost replies are credible operational failures and
   are handled as such, not as security incidents.
 
+## Codex usage analytics boundary
+
+- The owner explicitly authorizes the root daemon to read the content-free
+  usage databases of every same-owner Unix account listed in a private,
+  explicitly configured source policy and to combine those measurements by
+  registered repository (DC2-2026-08-29-CODEX-USAGE-ACCESS).
+- Public Console access to these combined measurements requires
+  administrator access or an operator-or-higher grant on a deployment of the
+  repository. Viewer grants are insufficient. Local Unix-socket callers keep
+  the existing trusted local authority.
+- Results never identify the contributing Unix account or Codex account and
+  never return source paths, repository HMAC material, credentials, prompts,
+  model output, source, commands, tool payloads, raw errors, thread or agent
+  identifiers, or per-user values. Missing, incompatible, or unmapped
+  collectors are disclosed as partial coverage rather than zero usage.
+- Each Codex usage database remains the only writable accounting truth.
+  DevCoordinator opens it read-only and stores only the privacy-preserving
+  link between its registered repository and that collector's repository key
+  (DC2-2026-08-29-CODEX-USAGE-SOURCE).
+
 ## Operating mode
 
 - `devcoordinatord` (the DevCoordinator2 daemon) runs as root in a hardened
@@ -104,3 +124,7 @@ or client group model; placing credentials or private runtime state in the
 checkout; exposing the daemon socket beyond the local trust boundary;
 re-granting any account direct Docker access (reversing the authoritative
 cutover); or exposing the repository through any network service.
+Also review it before exposing Codex usage to viewers, returning per-user or
+raw collector detail, adding an exporter or network collector, supporting a
+Codex usage schema or taxonomy beyond the explicitly reviewed versions, or
+configuring a usage source owned outside the confirmed same-owner boundary.

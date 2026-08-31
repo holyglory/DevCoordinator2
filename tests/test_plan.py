@@ -66,6 +66,7 @@ def test_task_tree_create_positions_and_overview(world):
     assert (parent["seq"], child1["seq"], child2["seq"], backlog["seq"]) == (1, 2, 3, 4)
     assert child1["position"] == 1 and child2["position"] == 2
     assert parent["status"] == "planned" and parent["preview_requested"] is False
+    assert parent["elaboration_needed"] is False
 
     overview = call(world, "plan.overview", repository_id="r1")
     assert overview["display_name"] == "repo-one"
@@ -78,11 +79,13 @@ def test_task_tree_create_positions_and_overview(world):
     assert len(tasks[child1["task_id"]]["impact"]) <= plan_state.IMPACT_CLIP
     assert "outcome" not in tasks[parent["task_id"]]  # compact projection
     assert overview["tasks_truncated"] is False
+    assert overview["elaboration_requests"] == []
     assert overview["decisions"] == {"unsummarized_count": 0, "summary_due": False}
 
     picker = call(world, "plan.overview")
     row = next(r for r in picker["repositories"] if r["repository_id"] == "r1")
     assert row["open_tasks"] == 3 and row["loc_total"] == 500
+    assert row["elaboration_request_count"] == 0
     assert row["current_release"]["name"] == "First release"
 
 
@@ -146,6 +149,61 @@ def test_task_update_fields_status_and_events(world):
     assert any(e["note"] == "Verified in the app." for e in history["events"])
     assert history["task"]["outcome"].startswith("Exporting")
     assert history["events_truncated"] is False
+
+
+def test_task_elaboration_request_requires_an_atomic_plain_language_rewrite(world):
+    task = call(world, "task.create", repository_id="r1",
+                title="Complete downstream compatibility merge", kind="goal",
+                outcome="The downstream compatibility merge is complete.")
+    requested = call(world, "task.update", task_id=task["task_id"],
+                     elaboration_needed=True)
+    assert requested["elaboration_needed"] is True
+    assert [row["task_id"] for row in requested["elaboration_requests"]] == \
+        [task["task_id"]]
+
+    overview = call(world, "plan.overview", repository_id="r1")
+    projected = next(row for row in overview["tasks"]
+                     if row["task_id"] == task["task_id"])
+    assert projected["elaboration_needed"] is True
+    assert overview["elaboration_requests"][0]["requested_at"] is not None
+    assert call(world, "plan.overview")["repositories"][0][
+        "elaboration_request_count"] == 1
+
+    history = call(world, "task.history", task_id=task["task_id"])
+    assert history["task"]["elaboration_needed"] is True
+    assert history["elaboration_requests"][0]["task_id"] == task["task_id"]
+    with pytest.raises(ProtocolError, match="changed title or outcome"):
+        call(world, "task.update", task_id=task["task_id"],
+             elaboration_needed=False)
+    with pytest.raises(ProtocolError, match="true or false"):
+        call(world, "task.update", task_id=task["task_id"],
+             elaboration_needed=1)
+    release_while_open = call(world, "release.create", repository_id="r1",
+                              name="Current release", kind="release")
+    assert release_while_open["elaboration_requests"][0]["task_id"] == \
+        task["task_id"]
+    decisions_while_open = call(world, "decision.tail", repository_id="r1")
+    assert decisions_while_open["elaboration_requests"][0]["task_id"] == \
+        task["task_id"]
+
+    completed = call(
+        world, "task.update", task_id=task["task_id"],
+        title="Keep the new version working with connected tools",
+        outcome=("The new version works with every connected tool that still"
+                 " depends on the earlier format."),
+        elaboration_needed=False)
+    assert completed["elaboration_needed"] is False
+    assert completed["elaboration_requests"] == []
+    kinds = [event["event"] for event in
+             call(world, "task.history", task_id=task["task_id"])["events"]]
+    assert kinds == ["created", "elaboration_requested", "edited",
+                     "elaboration_completed"]
+
+    release = call(world, "release.create", repository_id="r1",
+                   name="Later release", kind="release")
+    assert release["elaboration_requests"] == []
+    decisions = call(world, "decision.tail", repository_id="r1")
+    assert decisions["elaboration_requests"] == []
 
 
 def test_task_move_reorder_reparent(world):
@@ -220,11 +278,14 @@ def test_overview_truncation_keeps_open_tasks(world, monkeypatch):
                 kind="goal", estimated_loc=10)["task_id"] for i in range(8)]
     for tid in ids[:6]:
         call(world, "task.update", task_id=tid, status="done")
+    call(world, "task.update", task_id=ids[0], elaboration_needed=True)
     overview = call(world, "plan.overview", repository_id="r1")
     assert overview["tasks_truncated"] is True
     kept = {t["task_id"] for t in overview["tasks"]}
     assert set(ids[6:]) <= kept  # every open task survives the cut
     assert len(overview["tasks"]) == 5
+    assert ids[0] not in kept
+    assert [row["task_id"] for row in overview["elaboration_requests"]] == [ids[0]]
     assert overview["releases"] == []
 
 

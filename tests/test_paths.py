@@ -103,3 +103,57 @@ def test_thin_client_does_not_load_daemon_private_policy(monkeypatch):
     assert client.compose_env_authorizations == frozenset()
     with pytest.raises(PermissionError, match="daemon policy"):
         paths.load_instance_config(load_compose_authorizations=True)
+
+
+def test_codex_usage_sources_load_only_for_daemon(monkeypatch, tmp_path):
+    policy = tmp_path / "codex-usage-sources.json"
+    policy.write_text(json.dumps({
+        "schema": 1,
+        "sources": [{
+            "uid": os.getuid(),
+            "codex_home": str(tmp_path / "codex-home"),
+            "executable": str(tmp_path / "bin" / "codex"),
+        }],
+    }))
+    os.chmod(policy, 0o600)
+    monkeypatch.setenv("DEVCOORDINATOR2_INSTANCE_ENV", "/nonexistent")
+    monkeypatch.setenv("DEVCOORDINATOR2_CODEX_USAGE_SOURCES_FILE", str(policy))
+
+    client = paths.load_instance_config()
+    assert client.codex_usage_sources_file == policy
+    assert client.codex_usage_sources == ()
+
+    daemon = paths.load_instance_config(load_codex_usage_sources=True)
+    assert daemon.codex_usage_sources == (
+        paths.CodexUsageSource(
+            uid=os.getuid(), codex_home=tmp_path / "codex-home",
+            executable=tmp_path / "bin" / "codex"),
+    )
+
+
+@pytest.mark.parametrize("document", [
+    {"schema": 2, "sources": []},
+    {"schema": 1, "sources": [{"uid": 0, "codex_home": "/x", "executable": "/y"}]},
+    {"schema": 1, "sources": [{"uid": 99999999, "codex_home": "/x",
+                                "executable": "/y"}]},
+    {"schema": 1, "sources": [{"uid": os.getuid(), "codex_home": "relative",
+                                "executable": "/y"}]},
+])
+def test_codex_usage_sources_reject_malformed_policy(monkeypatch, tmp_path, document):
+    policy = tmp_path / "codex-usage-sources.json"
+    policy.write_text(json.dumps(document))
+    os.chmod(policy, 0o600)
+    monkeypatch.setenv("DEVCOORDINATOR2_INSTANCE_ENV", "/nonexistent")
+    monkeypatch.setenv("DEVCOORDINATOR2_CODEX_USAGE_SOURCES_FILE", str(policy))
+    with pytest.raises(ValueError, match="Codex usage source"):
+        paths.load_instance_config(load_codex_usage_sources=True)
+
+
+def test_codex_usage_sources_reject_writable_policy(monkeypatch, tmp_path):
+    policy = tmp_path / "codex-usage-sources.json"
+    policy.write_text('{"schema":1,"sources":[]}')
+    os.chmod(policy, 0o622)
+    monkeypatch.setenv("DEVCOORDINATOR2_INSTANCE_ENV", "/nonexistent")
+    monkeypatch.setenv("DEVCOORDINATOR2_CODEX_USAGE_SOURCES_FILE", str(policy))
+    with pytest.raises(ValueError, match="writable"):
+        paths.load_instance_config(load_codex_usage_sources=True)

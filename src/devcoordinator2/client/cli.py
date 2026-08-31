@@ -180,6 +180,15 @@ def build_parser() -> argparse.ArgumentParser:
                     help="move out of every release (release_id = null)")
     tu.add_argument("--root", action="store_true",
                     help="detach from the parent task (parent_task_id = null)")
+    elaboration = tu.add_mutually_exclusive_group()
+    elaboration.add_argument(
+        "--elaboration-needed", dest="elaboration_needed", action="store_const",
+        const=True, default=None,
+        help="record that the owner needs clearer task wording")
+    elaboration.add_argument(
+        "--elaboration-complete", dest="elaboration_needed", action="store_const",
+        const=False,
+        help="clear the request; also pass a changed --title or --outcome")
     th = task_sub.add_parser("history", help="one task with its permanent history")
     _add_common(th, with_path=False)
     th.add_argument("task_id")
@@ -326,7 +335,7 @@ def _to_call(ns: argparse.Namespace) -> tuple[str, dict]:
             args = {"task_id": ns.task_id}
             for key in ("title", "outcome", "impact", "unblock_condition",
                         "verification", "technical_note", "note", "status",
-                        "estimated_loc", "position"):
+                        "estimated_loc", "position", "elaboration_needed"):
                 if getattr(ns, key) is not None:
                     args[key] = getattr(ns, key)
             if ns.backlog and ns.release_id:

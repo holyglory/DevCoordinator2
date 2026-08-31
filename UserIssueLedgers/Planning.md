@@ -1,0 +1,5 @@
+# User Issue Ledger: Planning
+
+| ID | Applies to | Mistake pattern | Required behavior | Prevention and verification |
+| --- | --- | --- | --- | --- |
+| UIL-PLANNING-001 | Capacity diagnostics and DevCoordinator planning tasks | The agent attempted to create a generic server-storage task merely because free space was low, without first establishing that DevCoordinator failed an agreed prevention, warning, or cleanup duty. | Do not adjust the DevCoordinator repository ledger for an environmental capacity condition unless evidence identifies an exact DevCoordinator defect against a requirement or recorded decision. If no such duty exists, report the storage finding without a DevCoordinator task. If it exists, record the specific product defect rather than the environmental symptom. | Before `task_create`, compare requirements, decisions, thresholds, alert timing, attribution, and supported prevention actions. Verify whether the condition was detectable early enough and whether DevCoordinator was responsible for preventing or escalating it. Confirm the proposed task names the violated product behavior and observable regression proof. |

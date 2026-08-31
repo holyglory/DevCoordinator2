@@ -95,12 +95,25 @@ def _int_arg(args: dict[str, Any], key: str, lo: int, hi: int) -> int | None:
     return value
 
 
+def _bool_arg(args: dict[str, Any], key: str) -> bool | None:
+    value = args.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, bool):
+        raise ProtocolError("args_invalid", f"'{key}' must be true or false")
+    return value
+
+
 def _actor(caller: Caller) -> str:
     return caller.identity or f"uid:{caller.uid}"
 
 
 def build_plan_handlers(config: InstanceConfig, db: Database,
                         registry: Registry) -> dict[str, Handler]:
+    def _with_elaboration(repo_id: str, result: dict[str, Any]) -> dict[str, Any]:
+        result["elaboration_requests"] = plan_state.elaboration_requests(db, repo_id)
+        return result
+
     def _repository(args: dict[str, Any], caller: Caller) -> dict:
         """Resolve {repository_id} (Console) or {path} (agents; implicit
         registration like test.start) to a repositories row."""
@@ -153,8 +166,11 @@ def build_plan_handlers(config: InstanceConfig, db: Database,
     def task_history(args: dict[str, Any], caller: Caller) -> dict[str, Any]:
         _only(args, {"task_id"})
         task = _task(args)
+        task["elaboration_needed"] = bool(task["elaboration_needed"])
         event_rows, truncated = plan_state.task_events(db, task["task_id"])
-        return {"task": task, "events": event_rows, "events_truncated": truncated}
+        return _with_elaboration(
+            task["repository_id"],
+            {"task": task, "events": event_rows, "events_truncated": truncated})
 
     def _task(args: dict[str, Any]) -> dict:
         tid = args.get("task_id")
@@ -211,14 +227,17 @@ def build_plan_handlers(config: InstanceConfig, db: Database,
                                              task_id, None)
             plan_state.append_event(conn, repo_id, "task", task_id, "created",
                                     None, kind, _actor(caller))
-        return {"task_id": task_id, "repository_id": repo_id, "seq": seq,
-                "position": position, "status": "planned", "release_id": release_id,
-                "preview_requested": plan_state.has_requested(db, repo_id)}
+        return _with_elaboration(repo_id, {
+            "task_id": task_id, "repository_id": repo_id, "seq": seq,
+            "position": position, "status": "planned", "release_id": release_id,
+            "elaboration_needed": False,
+            "preview_requested": plan_state.has_requested(db, repo_id)})
 
     def task_update(args: dict[str, Any], caller: Caller) -> dict[str, Any]:
         _only(args, {"task_id", "title", "outcome", "impact", "unblock_condition",
                      "verification", "technical_note", "estimated_loc", "status",
-                     "release_id", "parent_task_id", "position", "note"})
+                     "release_id", "parent_task_id", "position", "note",
+                     "elaboration_needed"})
         task = _task(args)
         repo_id = task["repository_id"]
         actor = _actor(caller)
@@ -235,6 +254,19 @@ def build_plan_handlers(config: InstanceConfig, db: Database,
             if value is not None and value != task[key]:
                 changes[key] = value
                 edited.append(key)
+        elaboration = _bool_arg(args, "elaboration_needed")
+        elaboration_event: tuple[str, str, str] | None = None
+        current_elaboration = bool(task["elaboration_needed"])
+        if elaboration is not None and elaboration != current_elaboration:
+            if not elaboration and not ({"title", "outcome"} & changes.keys()):
+                raise ProtocolError(
+                    "args_invalid",
+                    "clearing 'elaboration_needed' requires a changed title or"
+                    " outcome in the same update")
+            changes["elaboration_needed"] = int(elaboration)
+            elaboration_event = (
+                "elaboration_requested" if elaboration else "elaboration_completed",
+                str(current_elaboration).lower(), str(elaboration).lower())
         loc = _int_arg(args, "estimated_loc", 1, 1_000_000)
         if loc is not None and loc != task["estimated_loc"]:
             changes["estimated_loc"] = loc
@@ -284,6 +316,8 @@ def build_plan_handlers(config: InstanceConfig, db: Database,
             raise ProtocolError("args_invalid", "nothing to change")
         if edited:
             pending.append(("edited", None, ",".join(sorted(edited))))
+        if elaboration_event is not None:
+            pending.append(elaboration_event)
         with db.transaction() as conn:
             if changes:
                 plan_state.set_fields(conn, "tasks", "task_id", task["task_id"],
@@ -300,13 +334,15 @@ def build_plan_handlers(config: InstanceConfig, db: Database,
                 plan_state.append_event(conn, repo_id, "task", task["task_id"],
                                         event, from_value, to_value, actor, note)
         updated = plan_state.get_task(db, task["task_id"])
-        return {"task_id": updated["task_id"], "repository_id": repo_id,
-                "seq": updated["seq"], "position": updated["position"],
-                "title": updated["title"], "status": updated["status"],
-                "kind": updated["kind"], "release_id": updated["release_id"],
-                "parent_task_id": updated["parent_task_id"],
-                "estimated_loc": updated["estimated_loc"],
-                "preview_requested": plan_state.has_requested(db, repo_id)}
+        return _with_elaboration(repo_id, {
+            "task_id": updated["task_id"], "repository_id": repo_id,
+            "seq": updated["seq"], "position": updated["position"],
+            "title": updated["title"], "status": updated["status"],
+            "kind": updated["kind"], "release_id": updated["release_id"],
+            "parent_task_id": updated["parent_task_id"],
+            "estimated_loc": updated["estimated_loc"],
+            "elaboration_needed": bool(updated["elaboration_needed"]),
+            "preview_requested": plan_state.has_requested(db, repo_id)})
 
     # -- releases ------------------------------------------------------------
 
@@ -345,9 +381,10 @@ def build_plan_handlers(config: InstanceConfig, db: Database,
                 plan_state.append_event(conn, repo_id, "release", release_id,
                                         "requested", "planned", "requested", actor,
                                         note)
-        return {"release_id": release_id, "repository_id": repo_id, "seq": final_seq,
-                "name": name, "kind": kind, "status": status,
-                "requested_at": requested_at}
+        return _with_elaboration(repo_id, {
+            "release_id": release_id, "repository_id": repo_id, "seq": final_seq,
+            "name": name, "kind": kind, "status": status,
+            "requested_at": requested_at})
 
     def release_update(args: dict[str, Any], caller: Caller) -> dict[str, Any]:
         _only(args, {"release_id", "name", "seq", "note", "status"})
@@ -394,9 +431,10 @@ def build_plan_handlers(config: InstanceConfig, db: Database,
                                         release["release_id"], event, from_value,
                                         to_value, actor)
         updated = plan_state.get_release(db, release["release_id"])
-        return {"release_id": updated["release_id"], "seq": updated["seq"],
-                "name": updated["name"], "kind": updated["kind"],
-                "status": updated["status"], "note": updated["note"]}
+        return _with_elaboration(release["repository_id"], {
+            "release_id": updated["release_id"], "seq": updated["seq"],
+            "name": updated["name"], "kind": updated["kind"],
+            "status": updated["status"], "note": updated["note"]})
 
     def _release(args: dict[str, Any]) -> dict:
         rid = args.get("release_id")
@@ -484,10 +522,11 @@ def build_plan_handlers(config: InstanceConfig, db: Database,
         events.publish("release.delivered", repository_id=release["repository_id"],
                        release_id=release["release_id"], name=release["name"],
                        url=url, port=port, dirty=evidence["dirty"])
-        return {"release_id": release["release_id"], "status": "delivered",
-                "delivered_at": now, "url": url, "port": port,
-                "commit_hash": evidence["commit_hash"], "dirty": evidence["dirty"],
-                "generation_number": evidence["generation_number"]}
+        return _with_elaboration(release["repository_id"], {
+            "release_id": release["release_id"], "status": "delivered",
+            "delivered_at": now, "url": url, "port": port,
+            "commit_hash": evidence["commit_hash"], "dirty": evidence["dirty"],
+            "generation_number": evidence["generation_number"]})
 
     # -- decisions -----------------------------------------------------------
 
@@ -544,9 +583,10 @@ def build_plan_handlers(config: InstanceConfig, db: Database,
                 conn.execute("UPDATE decisions SET superseded_by=? WHERE decision_id=?"
                              " AND superseded_by IS NULL",
                              (decision_id, superseded["decision_id"]))
-        return {"decision_id": decision_id, "seq": seq, "ref": ref,
-                "unsummarized_count": plan_state.unsummarized_count(db, repo_id),
-                "summary_due": plan_state.summary_due(db, repo_id)}
+        return _with_elaboration(repo_id, {
+            "decision_id": decision_id, "seq": seq, "ref": ref,
+            "unsummarized_count": plan_state.unsummarized_count(db, repo_id),
+            "summary_due": plan_state.summary_due(db, repo_id)})
 
     def decision_tail(args: dict[str, Any], caller: Caller) -> dict[str, Any]:
         _only(args, {"path", "repository_id", "aspect", "n", "before_seq"})
@@ -556,11 +596,12 @@ def build_plan_handlers(config: InstanceConfig, db: Database,
         n = _int_arg(args, "n", 1, plan_state.TAIL_MAX) or plan_state.TAIL_DEFAULT
         before = _int_arg(args, "before_seq", 1, 1_000_000_000)
         decisions, has_more = plan_state.decision_tail(db, repo_id, aspect, n, before)
-        return {"repository_id": repo_id, "display_name": repo["display_name"],
-                "summary": plan_state.latest_summary(db, repo_id),
-                "decisions": decisions, "has_more": has_more,
-                "unsummarized_count": plan_state.unsummarized_count(db, repo_id),
-                "summary_due": plan_state.summary_due(db, repo_id)}
+        return _with_elaboration(repo_id, {
+            "repository_id": repo_id, "display_name": repo["display_name"],
+            "summary": plan_state.latest_summary(db, repo_id),
+            "decisions": decisions, "has_more": has_more,
+            "unsummarized_count": plan_state.unsummarized_count(db, repo_id),
+            "summary_due": plan_state.summary_due(db, repo_id)})
 
     def decision_search(args: dict[str, Any], caller: Caller) -> dict[str, Any]:
         _only(args, {"path", "repository_id", "query", "aspect", "n"})
@@ -570,8 +611,9 @@ def build_plan_handlers(config: InstanceConfig, db: Database,
         n = _int_arg(args, "n", 1, plan_state.TAIL_MAX) or plan_state.TAIL_DEFAULT
         decisions, has_more = plan_state.decision_search(
             db, repo["repository_id"], query, aspect, n)
-        return {"repository_id": repo["repository_id"], "query": query,
-                "decisions": decisions, "has_more": has_more}
+        return _with_elaboration(repo["repository_id"], {
+            "repository_id": repo["repository_id"], "query": query,
+            "decisions": decisions, "has_more": has_more})
 
     def decision_summarize(args: dict[str, Any], caller: Caller) -> dict[str, Any]:
         _only(args, {"path", "repository_id", "body", "covers_through_seq"})
@@ -597,9 +639,10 @@ def build_plan_handlers(config: InstanceConfig, db: Database,
                 "INSERT INTO decision_summaries(repository_id, covers_through_seq,"
                 " body, created_at, created_by) VALUES(?,?,?,?,?)",
                 (repo_id, covers, body, now_iso(), _actor(caller)))
-        return {"repository_id": repo_id, "covers_through_seq": covers,
-                "unsummarized_count": plan_state.unsummarized_count(db, repo_id),
-                "summary_due": plan_state.summary_due(db, repo_id)}
+        return _with_elaboration(repo_id, {
+            "repository_id": repo_id, "covers_through_seq": covers,
+            "unsummarized_count": plan_state.unsummarized_count(db, repo_id),
+            "summary_due": plan_state.summary_due(db, repo_id)})
 
     return {
         "plan.overview": plan_overview,

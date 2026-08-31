@@ -12,7 +12,7 @@ import threading
 from contextlib import contextmanager
 from pathlib import Path
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 11
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (
@@ -293,6 +293,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   kind              TEXT NOT NULL,
   status            TEXT NOT NULL,
   estimated_loc     INTEGER,
+  elaboration_needed INTEGER NOT NULL DEFAULT 0,
   created_at        TEXT NOT NULL,
   created_by        TEXT NOT NULL,
   updated_at        TEXT NOT NULL,
@@ -383,6 +384,23 @@ CREATE TABLE IF NOT EXISTS compose_service_desires (
 );
 """
 
+# Schema 10: rebuildable links from a Coordinator repository to the
+# privacy-preserving repository key in one configured Codex usage collector.
+# The usage facts stay canonical in that collector and are never copied here.
+_SCHEMA_V10 = """
+CREATE TABLE IF NOT EXISTS codex_usage_repository_links (
+  source_uid          INTEGER NOT NULL,
+  repository_id       TEXT NOT NULL REFERENCES repositories(repository_id),
+  codex_repository_id TEXT NOT NULL CHECK(length(codex_repository_id) = 64),
+  source_schema       INTEGER NOT NULL,
+  taxonomy_version    INTEGER NOT NULL,
+  resolved_at         TEXT NOT NULL,
+  PRIMARY KEY(source_uid, repository_id)
+);
+CREATE INDEX IF NOT EXISTS codex_usage_links_repository
+  ON codex_usage_repository_links(repository_id);
+"""
+
 
 class SchemaMismatch(Exception):
     pass
@@ -430,6 +448,11 @@ class Database:
                     f" missing from this SQLite build: {exc}"
                 ) from exc
             self._conn.executescript(_SCHEMA_V9)
+            self._conn.executescript(_SCHEMA_V10)
+            # Schema 11: owner clarification requests stay attached to tasks
+            # until an agent saves clearer owner-facing wording.
+            self._ensure_column(
+                "tasks", "elaboration_needed", "INTEGER NOT NULL DEFAULT 0")
             self._conn.execute(
                 "INSERT OR REPLACE INTO meta(key, value) VALUES('schema_version', ?)",
                 (str(SCHEMA_VERSION),),

@@ -89,11 +89,19 @@ def test_guard_enforces_roles(world):
                     {"deployment_id": "d1"}, {"deployment_id": "d2"}]},
                     {"repository_id": "r9", "deployments": []}],
                     "host": {"secret": 1}}
+            if name in ("usage.repositories", "progress.repositories"):
+                rows = [{"repository_id": "r1"}, {"repository_id": "r9"}]
+                if args.get("_repository_ids") is not None:
+                    rows = [row for row in rows
+                            if row["repository_id"] in args["_repository_ids"]]
+                return {"range": "24h", "repositories": rows}
             return {"ok": name}
         return handler
 
     names = ["deployment.list", "deployment.status", "deployment.start", "deployment.apply",
-             "health.summary", "health.repositories", "test.start", "user.list"]
+             "health.summary", "health.repositories", "test.start", "user.list",
+             "usage.repositories", "usage.repository",
+             "progress.repositories", "progress.repository"]
     handlers = guard({n: record(n) for n in names} | public_commands(world.access),
                      world.access, world.db)
     # Local callers are unrestricted.
@@ -115,6 +123,14 @@ def test_guard_enforces_roles(world):
         handlers["deployment.status"]({"deployment_id": "d2"}, viewer)
     with pytest.raises(ProtocolError, match="requires operator"):
         handlers["deployment.start"]({"deployment_id": "d1"}, viewer)
+    with pytest.raises(ProtocolError, match="requires operator"):
+        handlers["usage.repositories"]({}, viewer)
+    with pytest.raises(ProtocolError, match="requires operator"):
+        handlers["usage.repository"]({"repository_id": "r1"}, viewer)
+    with pytest.raises(ProtocolError, match="requires operator"):
+        handlers["progress.repositories"]({}, viewer)
+    with pytest.raises(ProtocolError, match="requires operator"):
+        handlers["progress.repository"]({"repository_id": "r1"}, viewer)
     for admin_only in ("deployment.apply", "health.summary", "test.start", "user.list"):
         with pytest.raises(ProtocolError, match="requires administrator"):
             handlers[admin_only]({}, viewer)
@@ -127,6 +143,22 @@ def test_guard_enforces_roles(world):
                            "role": "operator"}, local())
     assert handlers["deployment.start"]({"deployment_id": "d1"}, viewer) == {
         "ok": "deployment.start"}
+    usage_repositories = handlers["usage.repositories"]({}, viewer)
+    assert usage_repositories["repositories"] == [{"repository_id": "r1"}]
+    with pytest.raises(ProtocolError, match="private scope"):
+        handlers["usage.repositories"]({"_repository_ids": ["r9"]}, viewer)
+    assert handlers["usage.repository"]({"repository_id": "r1"}, viewer) == {
+        "ok": "usage.repository"}
+    progress_repositories = handlers["progress.repositories"]({}, viewer)
+    assert progress_repositories["repositories"] == [{"repository_id": "r1"}]
+    with pytest.raises(ProtocolError, match="private scope"):
+        handlers["progress.repositories"]({"_repository_ids": ["r9"]}, viewer)
+    assert handlers["progress.repository"]({"repository_id": "r1"}, viewer) == {
+        "ok": "progress.repository"}
+    with pytest.raises(ProtocolError, match="requires operator"):
+        handlers["usage.repository"]({"repository_id": "r9"}, viewer)
+    with pytest.raises(ProtocolError, match="requires operator"):
+        handlers["progress.repository"]({"repository_id": "r9"}, viewer)
     handlers["user.remove"]({"email": "v@example.test"}, local())
     with pytest.raises(ProtocolError, match="not an admitted user"):
         handlers["deployment.start"]({"deployment_id": "d1"}, viewer)

@@ -48,7 +48,7 @@ def test_cli_ping_and_register_roundtrip(live, capsys):
     assert rc == 0
     response = json.loads(capsys.readouterr().out)
     assert response["ok"] is True
-    assert response["result"]["schema_version"] == 9
+    assert response["result"]["schema_version"] == 11
 
     rc = cli.main(["repository", "register", str(live.repo)])
     assert rc == 0
@@ -148,8 +148,17 @@ def test_cli_plan_ledger_roundtrip(live, capsys):
                        "--estimated-loc", "10"])
     assert rc == 0 and created["result"]["status"] == "planned"
     task_id = created["result"]["task_id"]
+    rc, requested = run(["task", "update", task_id, "--elaboration-needed"])
+    assert rc == 0 and requested["result"]["elaboration_needed"] is True
+    rc, rejected = run(["task", "update", task_id, "--elaboration-complete"])
+    assert rc == 1 and rejected["error"]["code"] == "args_invalid"
+    rc, clarified = run([
+        "task", "update", task_id, "--title", "Make the button red",
+        "--outcome", "People can clearly see the red button.",
+        "--elaboration-complete"])
+    assert rc == 0 and clarified["result"]["elaboration_needed"] is False
     rc, overview = run(["plan", "overview", str(live.repo)])
-    assert overview["result"]["tasks"][0]["title"] == "Painting the button red"
+    assert overview["result"]["tasks"][0]["title"] == "Make the button red"
     rc, done = run(["task", "update", task_id, "--status", "done",
                     "--note", "Looks red in the app now."])
     assert rc == 0 and done["result"]["status"] == "done"
@@ -163,7 +172,8 @@ def test_cli_plan_ledger_roundtrip(live, capsys):
     assert rc == 0 and moved["result"]["release_id"] is None
     rc, history = run(["task", "history", task_id])
     assert [e["event"] for e in history["result"]["events"]] == \
-        ["created", "status", "release_move", "release_move"]
+        ["created", "elaboration_requested", "edited", "elaboration_completed",
+         "status", "release_move", "release_move"]
     # Owner controls stay reachable through the CLI recovery surface.
     rc, requested = run(["release", "request", str(live.repo),
                          "--note", "Show me the current state."])
@@ -198,12 +208,15 @@ def test_mcp_plan_tools_present_owner_controls_absent(live):
                                   "title": "Ledger the missing empty state",
                                   "kind": "stub", "estimated_loc": 30}}},
     ])
-    tools = {t["name"] for t in replies[0 + 1]["result"]["tools"]}
+    listed = {t["name"]: t for t in replies[0 + 1]["result"]["tools"]}
+    tools = set(listed)
     assert {"plan_overview", "task_create", "task_update", "task_history",
             "release_create", "release_deliver", "decision_record",
             "decision_tail", "decision_search", "decision_summarize"} <= tools
     # The owner's ASAP button and chart reshaping are not agent tools.
     assert "release_request" not in tools and "release_update" not in tools
+    assert listed["task_update"]["inputSchema"]["properties"][
+        "elaboration_needed"]["type"] == "boolean"
     created = json.loads(replies[2]["result"]["content"][0]["text"])
     assert created["ok"] is True and created["result"]["status"] == "planned"
 

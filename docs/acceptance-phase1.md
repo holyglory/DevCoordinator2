@@ -115,3 +115,63 @@ PostgreSQL container; Docker/Compose env files now use the literal format.
 | Applying-state controls and independent Compose-service controls work truthfully across required Console states and representative wide/narrow constraints | PASS | `console/verify.mjs`: 530 checks, 0 failures; formal verifier: populated + applying at 390×844 and 1440×900, 4 checked pages, 0 criticals/warnings, coverage passed (`/tmp/devcoordinator2-formal-*-report.{json,md}`) |
 | Complete source and real-service acceptance after batch fixes | PASS | `ruff check src tests scripts`; full unit suite; complete root integration suite; instance-data scan clean |
 | Edge switch / legacy fence / Docker authoritative mode / live import | OWNER-EXECUTED | `docs/cutover.md`, `scripts/edge_switch.py` |
+
+## Schema 10 Codex usage addendum (2026-08-29)
+
+| Item | Result | Evidence |
+|---|---|---|
+| Private source policy validates explicit same-owner UIDs, Codex homes, and executables while thin clients never load it | PASS | `tests/test_paths.py`, `tests/test_install.py` |
+| Repository mapping uses a fixed JSON command under the source UID and persists only opaque source/repository links | PASS | `tests/test_codex_usage.py`; schema-10 database and installer tests |
+| Schema-4/taxonomy-1 databases are queried read-only; merged identities, provider categories, UTC buckets, interval unions, tool outcomes, and unsupported sources remain truthful | PASS | `tests/test_codex_usage.py`; live read-only DevCoordinator2 repository smoke returned 24 points and measured activity |
+| Administrators and repository operators receive combined results; viewers and ungranted repositories are denied before private data is read | PASS | `tests/test_access.py`, `tests/test_usage_api.py` |
+| Selected trend-first Console design works across populated, dense 30-day, empty, loading, error, denied, desktop, mobile, and breakpoint states | PASS | `console/verify.mjs`: 652 checks, 0 failures, including large-scale SVG label geometry; formal verifier: 18/18 cells, 0 criticals, manual review passed; `design-qa.md` passed |
+| Complete source acceptance | PASS | `ruff check src scripts tests`; full pytest suite; `node --check` for Console sources; instance-data scan clean |
+| Live installation preserves a dated root-only database/config backup and prior releases; schema 10, private two-source policy, database integrity, authenticated real-data chart, linked navigation, 7-day focus restoration, privacy scan, and clean browser console all pass | PASS | repository installer and external browser acceptance on 2026-08-30; final daemon restart: 42 MiB peak, six tasks, no automatic Codex child process |
+
+## Shared Console navigation addendum (2026-08-30)
+
+| Item | Result | Evidence |
+|---|---|---|
+| Every destination title is a real collection link in populated, empty, loading, error, denied, and applying states | PASS | `console/verify.mjs`: all 15 routes at 1280×800 and 390×844 |
+| Plan, Progress, Decisions, and Codex Usage details use keyboard-operable custom DOM project menus with real same-destination links and no native select | PASS | mouse, Arrow-key, Escape/focus-return, route-change, and visible-project interaction proofs in `console/verify.mjs` |
+| Global header stays on one row and swaps the original navigation links into a hamburger before wrapping | PASS | `console/verify.mjs`: 799×964 interaction plus current 1240/1241 px boundary; complete run 1,397 checks, 0 failures |
+| Rendered hierarchy, contrast, theme, responsive geometry, scroll regions, headline wrapping, and final visual review | PASS | formal verifier: 29/29 cells checked, 0 criticals; 58 final images reviewed; 29 pass decisions finalized in manual-review manifest |
+| Live authenticated release matches the verified source and preserves real navigation behavior | PASS | `nav-20260830T094006Z-5793a92`: both services active on schema 10; source/release hashes match; 1440 header 54 px and 799 header 55 px with zero overflow; 11-project Usage menu, Plan/Decisions menus, all eight destination links, switching, keyboard focus, and Escape passed with no browser errors; verified backup at `/var/backups/devcoordinator2/20260830T093742Z-pre-console-navigation` |
+
+## Health layout addendum (2026-08-30)
+
+| Item | Result | Evidence |
+|---|---|---|
+| Host capacity and operational status lead as aligned groups; incident cards keep their natural height | PASS | Health-specific rendered checks at 390×844, the user-marked 856×915, 959/960/961×900, and 1440×1024; current focused interaction run: 138 checks, 0 failures |
+| Shared storage labels and values remain complete without cropped text or horizontal discovery; repository rows become labelled cards at 960 px and below | PASS | exact long-content fixture with all five shared-storage categories; formal verifier checked 9/9 cells including 960 and 1200 breakpoint profiles, 0 critical findings |
+| Health ranges, unhealthy start/stop/restart, container navigation, deployment details, permission failure, load failure, and Retry work through the rendered interface | PASS | `console/verify.mjs` Health interaction inventory; 24h/7d/30d reads and all destination/action assertions pass |
+| Final visual review at mobile, marked, desktop, and both responsive boundaries | PASS | 18 current-source formal viewport/full-page images reviewed; 9 pass decisions finalized in `/tmp/formal-web-ui-verification-6BqOQb/manual-review.json` |
+
+## Codex Usage completeness wording addendum (2026-08-31)
+
+| Item | Result | Evidence |
+|---|---|---|
+| Missing input data leads with “Some usage may be missing,” states how many configured Codex environments supplied data, defines an environment as a separate local Codex setup with its own usage history, and explains that absent values are excluded rather than counted as zero | PASS | focused partial-state interaction assertions and rendered 390×844 / 856×915 / 1440×900 evidence |
+| Complete, no-measurement, and unavailable states use the same plain-language model; repository and exact-bucket tables say “Data included” / “Data status” | PASS | targeted fixture state transitions in `console/verify.mjs`; no visible `collector`, `Partial coverage`, `Complete coverage`, or `measured values only` copy remains |
+| Complete current Console regression cycle | PASS | `console/verify.mjs`: 1,397 checks, 0 failures; full pytest suite passed; Console/edge syntax and diff checks passed |
+| Formal hierarchy, contrast, scroll, clipping, and manual visual review | PASS | 9/9 cells, 0 critical findings; all 18 final viewport/full-page images reviewed; 9 pass decisions in `/tmp/dc2-usage-environment-formal-manual-review.json` |
+
+## Repository Progress dashboard addendum (2026-08-30)
+
+| Item | Result | Evidence |
+|---|---|---|
+| Hourly, daily, and Monday-aligned weekly buckets combine permanent task events, current planned-line estimates, bounded terminal test summaries, and provider total tokens without converting missing evidence to zero | PASS | `tests/test_progress_api.py`, `tests/test_test_history.py`, `tests/test_codex_usage.py`; focused 25-test pass |
+| Real terminal test completion enters symlink-safe repository-local history and remains outside the authority database | PASS | root systemd integration `test_pass_uid_and_bounded_output`; secure filesystem and malformed-history must-catches |
+| Release forecasts expose range, confidence, evidence, assumptions, unknown estimates, missing target date, zero-pace/no-release states, and truthful non-mutating priority scenarios | PASS | deterministic populated, no-release, no-history, and insufficient-pace contract tests; rendered exact-counting disclosure |
+| Both owner-selected Product Design directions work as Delivery pulse and Priorities modes with repository, period, task, scenario, exact-value, and exact Plan-continuation interactions | PASS | `console/verify.mjs`: complete 1,397-check Console matrix, 0 failures; focused interaction inventory 147/147 |
+| Selected visual target matches at desktop and remains usable at the reported 799×964 and narrow 390×844 sizes | PASS | `design-qa.md`: passed after one P2 density/hierarchy iteration; formal verifier 9/9 cells, 0 critical findings, all 18 images reviewed and 9 pass decisions finalized in `/tmp/dc2-progress-formal-final3/manual-review.json` |
+| Complete source and relevant host-level validation | PASS | full pytest suite; ruff; JavaScript syntax; diff check; root test-history integration |
+
+## Combined current-source release gate (2026-08-31)
+
+| Item | Result | Evidence |
+|---|---|---|
+| Every Console route, state, and enabled interaction remains intact after combining lifecycle, Plan, Progress, Usage, navigation, and Health work | PASS | `console/verify.mjs`: 1,397 checks, 0 failures in `/tmp/devcoordinator2-release-console-final/report.json` |
+| Plan task actions stay visible across the shared responsive transition and Progress no longer widens the page at 801 px | PASS | formal samples at Plan 1049/1050/1051, 1179/1180/1181, 1239/1240/1241 and Progress 799/800/801; zero critical findings |
+| Current-source hierarchy, contrast, clipping, scroll topology, responsive geometry, and final visual evidence pass across the four changed primary destinations | PASS | formal verifier: 50/50 cells, 0 critical findings; all 100 viewport/full-page images reviewed; 50 pass decisions finalized in `/tmp/formal-web-ui-verification-xjNar4/manual-review.json` |
+| Complete source and real-system acceptance passes before installation | PASS | ruff; 230 unit tests; public-edge suite; 18 root systemd/Docker/PostgreSQL/Compose integrations; instance-data scan; syntax and diff checks |

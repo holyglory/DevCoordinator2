@@ -173,8 +173,11 @@ TOOLS += [
     {"name": "plan_overview",
      "description": ("The repository's plan: releases, the task tree (sized in "
                      "estimated lines of code), pending owner preview requests, "
-                     "and decision-summary state. Check it before starting work "
-                     "and honor preview_requested promptly."),
+                     "owner elaboration requests, and decision-summary state. "
+                     "Check it before starting work. Honor preview_requested "
+                     "promptly. If elaboration_requests is non-empty, read each "
+                     "task, rewrite its title and/or outcome in plain everyday "
+                     "language, and clear elaboration_needed in that same update."),
      "inputSchema": {"type": "object", "properties": {"path": _PATH},
                      "required": ["path"]}},
     {"name": "task_create",
@@ -206,8 +209,11 @@ TOOLS += [
      "description": ("Append-only task mutation: status change (planned/"
                      "in_progress/done/dropped), edits, new estimate, move to "
                      "another release (release_id; null = backlog), reparent, or "
-                     "reorder (position, 0-based). Every change lands in the "
-                     "permanent event history."),
+                     "reorder (position, 0-based), or record/complete an owner "
+                     "elaboration request. Every change lands in the permanent "
+                     "event history. Every planning response can include "
+                     "elaboration_requests; act on them before claiming the "
+                     "related work complete."),
      "inputSchema": {"type": "object", "properties": {
          "task_id": {"type": "string"},
          "status": {"type": "string",
@@ -219,11 +225,19 @@ TOOLS += [
          "release_id": {"type": ["string", "null"]},
          "parent_task_id": {"type": ["string", "null"]},
          "position": {"type": "integer", "minimum": 0},
+         "elaboration_needed": {
+             "type": "boolean",
+             "description": ("true records the owner's request for clearer "
+                             "wording. false completes it and is accepted only "
+                             "with a changed title or outcome in this update")},
          "note": {"type": "string", "description": "Plain note stored on the "
                                                    "event"}},
       "required": ["task_id"]}},
     {"name": "task_history",
-     "description": "One task's full record plus its permanent event history.",
+     "description": ("One task's full record plus its permanent event history "
+                     "and all outstanding elaboration requests for its repository. "
+                     "When this task needs elaboration, save clearer owner-facing "
+                     "wording and clear the flag atomically."),
      "inputSchema": {"type": "object", "properties": {"task_id": {"type": "string"}},
                      "required": ["task_id"]}},
     {"name": "release_create",

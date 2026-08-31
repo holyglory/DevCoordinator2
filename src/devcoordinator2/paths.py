@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import pwd
 import re
 import stat
 from dataclasses import dataclass
@@ -30,11 +31,19 @@ _DEFAULTS = {
     "DEVCOORDINATOR2_TELEGRAM_API": "https://api.telegram.org",
     "DEVCOORDINATOR2_BUGS_DIR": "/var/lib/devcoordinator2-bugs",
     "DEVCOORDINATOR2_COMPOSE_ENV_ALLOWLIST_FILE": "",
+    "DEVCOORDINATOR2_CODEX_USAGE_SOURCES_FILE": "",
 }
 
 INSTALLED_ENV_PATH = Path("/etc/devcoordinator2/instance.env")
 _REPOSITORY_ID_RE = re.compile(r"r[0-9a-f]{16}$")
 _MAX_ALLOWLIST_BYTES = 65536
+
+
+@dataclass(frozen=True)
+class CodexUsageSource:
+    uid: int
+    codex_home: Path
+    executable: Path
 
 
 def _parse_env_file(path: Path) -> dict[str, str]:
@@ -115,6 +124,59 @@ def _compose_env_authorizations(path: Path | None) -> frozenset[tuple[str, str]]
     return frozenset(result)
 
 
+def _codex_usage_sources(path: Path | None) -> tuple[CodexUsageSource, ...]:
+    if path is None:
+        return ()
+    if not path.is_absolute():
+        raise ValueError("DEVCOORDINATOR2_CODEX_USAGE_SOURCES_FILE must be absolute")
+    try:
+        info = path.lstat()
+        if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
+            raise ValueError("Codex usage source policy must be a regular non-symlink file")
+        if info.st_size > _MAX_ALLOWLIST_BYTES:
+            raise ValueError("Codex usage source policy exceeds 65536 bytes")
+        if info.st_mode & 0o022:
+            raise ValueError("Codex usage source policy must not be group/world writable")
+        if info.st_uid not in (0, os.geteuid()):
+            raise ValueError("Codex usage source policy has an unexpected owner")
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError as exc:
+        raise ValueError(f"Codex usage source policy not found: {path}") from exc
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"cannot read Codex usage source policy: {exc}") from exc
+    if not isinstance(raw, dict) or set(raw) != {"schema", "sources"} \
+            or raw.get("schema") != 1 or not isinstance(raw.get("sources"), list):
+        raise ValueError("Codex usage source policy must be schema 1 sources")
+    if len(raw["sources"]) > 32:
+        raise ValueError("Codex usage source policy has more than 32 entries")
+    seen: set[int] = set()
+    result = []
+    for entry in raw["sources"]:
+        if not isinstance(entry, dict) or set(entry) != {"uid", "codex_home", "executable"}:
+            raise ValueError("Codex usage source has unknown or missing keys")
+        uid = entry["uid"]
+        if not isinstance(uid, int) or isinstance(uid, bool) or uid <= 0 or uid in seen:
+            raise ValueError("Codex usage source uid is invalid or duplicated")
+        try:
+            pwd.getpwuid(uid)
+        except KeyError as exc:
+            raise ValueError(f"Codex usage source uid {uid} does not exist") from exc
+        paths = []
+        for key in ("codex_home", "executable"):
+            value = entry[key]
+            if not isinstance(value, str) or not value or len(value) > 4096 \
+                    or "\0" in value or any(ord(character) < 32 or ord(character) == 127
+                                              for character in value):
+                raise ValueError(f"Codex usage source {key} is invalid")
+            parsed = Path(value)
+            if not parsed.is_absolute():
+                raise ValueError(f"Codex usage source {key} must be absolute")
+            paths.append(parsed)
+        seen.add(uid)
+        result.append(CodexUsageSource(uid=uid, codex_home=paths[0], executable=paths[1]))
+    return tuple(result)
+
+
 @dataclass(frozen=True)
 class InstanceConfig:
     socket_path: Path
@@ -131,6 +193,8 @@ class InstanceConfig:
     bugs_dir: Path = Path("/var/lib/devcoordinator2-bugs")
     compose_env_allowlist_file: Path | None = None
     compose_env_authorizations: frozenset[tuple[str, str]] = frozenset()
+    codex_usage_sources_file: Path | None = None
+    codex_usage_sources: tuple[CodexUsageSource, ...] = ()
 
     @property
     def database_path(self) -> Path:
@@ -158,7 +222,8 @@ class InstanceConfig:
         return (repository_id, relative_path) in self.compose_env_authorizations
 
 
-def load_instance_config(*, load_compose_authorizations: bool = False) -> InstanceConfig:
+def load_instance_config(*, load_compose_authorizations: bool = False,
+                         load_codex_usage_sources: bool = False) -> InstanceConfig:
     """Load shared instance values and, for the root daemon only, private policy.
 
     Thin CLI/MCP clients need the socket path and ordinary attribution values;
@@ -178,6 +243,8 @@ def load_instance_config(*, load_compose_authorizations: bool = False) -> Instan
         raise ValueError("DEVCOORDINATOR2_PORT_RANGE must lie within 1024-65535")
     allowlist_value = get("DEVCOORDINATOR2_COMPOSE_ENV_ALLOWLIST_FILE")
     allowlist_path = Path(allowlist_value) if allowlist_value else None
+    usage_sources_value = get("DEVCOORDINATOR2_CODEX_USAGE_SOURCES_FILE")
+    usage_sources_path = Path(usage_sources_value) if usage_sources_value else None
     return InstanceConfig(
         socket_path=Path(get("DEVCOORDINATOR2_SOCKET")),
         state_dir=Path(get("DEVCOORDINATOR2_STATE_DIR")),
@@ -198,6 +265,11 @@ def load_instance_config(*, load_compose_authorizations: bool = False) -> Instan
         compose_env_authorizations=(
             _compose_env_authorizations(allowlist_path)
             if load_compose_authorizations else frozenset()
+        ),
+        codex_usage_sources_file=usage_sources_path,
+        codex_usage_sources=(
+            _codex_usage_sources(usage_sources_path)
+            if load_codex_usage_sources else ()
         ),
     )
 

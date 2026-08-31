@@ -8,14 +8,63 @@ import logging
 import os
 from pathlib import Path
 
-from devcoordinator2.daemon import docker_cli, summary
+from devcoordinator2.daemon import docker_cli, securefs, summary
 from devcoordinator2.daemon.db import Database
 from devcoordinator2.paths import test_dir
 from devcoordinator2.protocol import ProtocolError
 
 CONTAINERS_FILE = "containers.json"
 ENV_FILE = "env"
+HISTORY_SCHEMA = 1
+HISTORY_CAP = 1000
+HISTORY_FIELDS = (
+    "run_id", "test", "status", "started_at", "finished_at",
+    "duration_seconds", "exit_code",
+)
 log = logging.getLogger("devcoordinator2.tests")
+
+
+def history_entry(doc: dict) -> dict:
+    return {field: doc.get(field) for field in HISTORY_FIELDS}
+
+
+def read_history(worktree_root: Path) -> list[dict]:
+    """Read the bounded repository-local terminal test history."""
+    payload = securefs.read_test_history(worktree_root)
+    if payload is None:
+        return []
+    try:
+        document = json.loads(payload)
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise securefs.SecureFsError("test history is not valid JSON") from exc
+    if not isinstance(document, dict) or document.get("schema") != HISTORY_SCHEMA \
+            or not isinstance(document.get("runs"), list):
+        raise securefs.SecureFsError("test history has the wrong schema")
+    runs = document["runs"]
+    if len(runs) > HISTORY_CAP or any(
+            not isinstance(run, dict)
+            or set(run) != set(HISTORY_FIELDS)
+            or not isinstance(run.get("run_id"), str)
+            or run.get("status") not in summary.TERMINAL_STATUSES
+            for run in runs):
+        raise securefs.SecureFsError("test history contains invalid runs")
+    return runs
+
+
+def record_history(worktree_root: Path, doc: dict,
+                   owner: tuple[int, int]) -> None:
+    """Record one terminal result, deduplicated and bounded to 1,000 runs."""
+    if doc.get("status") not in summary.TERMINAL_STATUSES:
+        return
+    runs = read_history(worktree_root)
+    entry = history_entry(doc)
+    runs = [run for run in runs if run["run_id"] != entry["run_id"]]
+    runs.append(entry)
+    document = {"schema": HISTORY_SCHEMA, "runs": runs[-HISTORY_CAP:]}
+    securefs.write_test_history(
+        worktree_root,
+        (json.dumps(document, separators=(",", ":"), sort_keys=True) + "\n").encode(),
+        owner)
 
 
 def list_current(db: Database, runs: dict) -> list[dict]:

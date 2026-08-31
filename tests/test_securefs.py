@@ -62,3 +62,27 @@ def test_symlink_inside_current_not_followed(tmp_path: Path):
 
 def test_remove_missing_is_noop(tmp_path: Path):
     securefs.remove_test_dir(tmp_path)  # nothing exists; no error
+
+
+def test_test_history_is_atomic_bounded_metadata_outside_current(tmp_path: Path):
+    securefs.create_test_dir(tmp_path, os.getuid(), os.getgid())
+    payload = b'{"schema":1,"runs":[]}\n'
+    securefs.write_test_history(tmp_path, payload, (os.getuid(), os.getgid()))
+    assert securefs.read_test_history(tmp_path) == payload
+    securefs.remove_test_dir(tmp_path)
+    assert securefs.read_test_history(tmp_path) == payload
+
+
+def test_test_history_refuses_symlink(tmp_path: Path):
+    securefs.create_test_dir(tmp_path, os.getuid(), os.getgid())
+    victim = tmp_path / "victim.json"
+    victim.write_text("keep me")
+    history = tmp_path / ".devcoordinator" / "test" / "history.json"
+    history.symlink_to(victim)
+    with pytest.raises(securefs.SecureFsError):
+        securefs.read_test_history(tmp_path)
+    securefs.write_test_history(
+        tmp_path, b'{"schema":1,"runs":[]}\n',
+        (os.getuid(), os.getgid()))
+    assert history.is_file() and not history.is_symlink()
+    assert victim.read_text() == "keep me"

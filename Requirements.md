@@ -115,6 +115,66 @@ not contradict them.
   matching lifecycle actions next to them. Host CPU, memory, and storage
   expose 24h/7d/30d history (`health.history` with server-side downsampling
   via `points`; host storage is persisted every storage tick).
+- **REQ-HEALTH-07** (2026-08-29): The Console exposes combined, content-free
+  Codex usage by registered repository for fixed 24h/7d/30d windows. Every
+  explicitly configured same-owner collector is read in place and contributes
+  only measured facts; missing, unmapped, or unsupported collectors produce
+  a visible warning that some usage may be missing. The Console calls these
+  inputs configured Codex environments, explains that each environment is a
+  separate local Codex setup with its own usage history, and says environments
+  that supplied no data and unmeasured values are excluded rather than counted as zero,
+  and never exposes internal collector terminology. Administrators see every repository and operators
+  see only repositories where they hold operator-or-higher deployment access;
+  viewers and individual collector identities remain excluded.
+
+## Repository progress and forecasting (REQ-PROGRESS)
+
+- **REQ-PROGRESS-01** (2026-08-30, done): An operator or administrator can
+  choose a repository and view aligned hourly, daily, or Monday-aligned weekly
+  buckets for terminal task completions, current planned task lines completed,
+  terminal test outcomes, and provider-reported total tokens. Missing test or
+  token evidence remains visibly missing and is never converted to zero.
+- **REQ-PROGRESS-02** (2026-08-30, done): Terminal test summaries are copied
+  into a symlink-safe, repository-local metadata history bounded to the latest
+  1,000 runs. It contains no output, caller identity, private path, or command;
+  malformed history makes test coverage partial/unavailable without changing
+  the authoritative current test result.
+- **REQ-PROGRESS-03** (2026-08-30, done): The next open release receives a
+  deterministic likely-date range and confidence only when completion pace is
+  measurable. The result exposes remaining sized and unsized work, recent
+  velocity, test stability, scope movement, assumptions, and the absence of a
+  target date. No release or insufficient pace produces an honest unavailable
+  state instead of a guessed date.
+- **REQ-PROGRESS-04** (2026-08-30, done): Priority ranking uses recorded task
+  outcomes, status, kind, estimate coverage, and estimated contribution to
+  remaining work. It never invents task dependencies or test-to-task
+  attribution. “Move first” truthfully keeps the central forecast unchanged;
+  deferring selected work is a local comparison and never mutates the Plan.
+- **REQ-PROGRESS-05** (2026-08-30, done): One responsive Progress destination
+  implements the selected Delivery pulse and Priorities views. Repository,
+  period, mode, priority, exact-value, project-menu, and Plan-continuation
+  controls all work through the rendered UI; the named collection and selected
+  repository remain primary across loading, empty, partial, denied, error,
+  populated, long-content, desktop, 799 px, and narrow states.
+
+## Console navigation (REQ-CONSOLE)
+
+- **REQ-CONSOLE-01** (2026-08-30, done): The global Console header remains one
+  row at every supported width. Primary destinations remain ordinary links;
+  at 1240 px and below those same links move into an accessible custom DOM
+  hamburger menu with truthful expanded state, keyboard dismissal, and focus
+  restoration instead of wrapping the shell.
+- **REQ-CONSOLE-02** (2026-08-30, done): Every destination heading is a real
+  link back to that destination's collection. Repository-scoped Plan,
+  Progress, Decisions, and Codex Usage details show the current project beside a compact
+  button that opens a custom DOM menu of every visible project, supports arrow
+  keys and Escape, and navigates through real same-destination project links.
+- **REQ-CONSOLE-03** (2026-08-30, done): Health leads with one aligned host
+  capacity group and a separate compact operational-status group before
+  incidents, history, and repository attribution. Unhealthy cards keep their
+  natural height. Repository attribution becomes a labelled stacked layout at
+  960 px and below, and every shared-storage category keeps its label and value
+  visible without document-level horizontal scrolling.
 
 ## Public access (REQ-ACCESS, P5)
 
@@ -127,7 +187,7 @@ not contradict them.
   of public deployment grants; the kernel peer UID is the caller identity
   and request bodies cannot assert identity (P1, in scope).
 
-## Planning, completion ledger, and decisions (REQ-PLAN, Schema 8)
+## Planning, completion ledger, and decisions (REQ-PLAN, Schemas 8 and 11)
 
 - **REQ-PLAN-01** (S8, done): DevCoordinator owns the single authoritative
   completion ledger. Anything an agent stubs, fakes, skips, or finds
@@ -172,6 +232,13 @@ not contradict them.
   their `DC2-…` refs preserved, after which the file is a pointer stub and
   new DC2-repository decisions are recorded only in the database
   (owner-executed import).
+- **REQ-PLAN-11** (S11, done): An administrator can mark any task as needing
+  elaboration. The mark persists with the task and appends a permanent
+  request event. Every repository-scoped planning, task, release, and
+  decision response carries the complete outstanding request projection,
+  independent of the compact task cap. An agent may clear the mark only in
+  the same update that changes the task title or outcome into clearer
+  owner-facing language; completion appends its own event.
 
 ## Reliability (REQ-REL)
 

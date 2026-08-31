@@ -18,5 +18,8 @@ __pycache__/
 # Runtime state that must never enter the repository
 .devcoordinator/
 
+# Local Product Design visual targets may contain fixture or supplied identity data.
+console/design-reference/
+
 # Serena tool workspace (local-only)
 .serena/

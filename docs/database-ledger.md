@@ -9,6 +9,13 @@ samples, not an append-only archive. The planning/decision tables (schema 8)
 are the deliberate exception: the product's first append-only permanent
 history — their rows are never deleted (DC2-2026-08-24-PLANNING-LEDGER).
 
+Terminal test trend metadata remains repository-local rather than becoming a
+database table: `.devcoordinator/test/history.json` keeps at most 1,000 safe
+result summaries (run id/name, terminal status, start/finish, duration, exit
+code). It is symlink-safe and atomically replaced, contains no test output,
+caller identity, private path, or command, and may be rebuilt or lost without
+affecting the authoritative current test result.
+
 ## Schema version 1 (Phase 1)
 
 | Table | Fields | Status |
@@ -93,8 +100,8 @@ CHECKed (schema 7 showed CHECK changes force a table rebuild).
 | Table | Fields | Status |
 |---|---|---|
 | `releases` | release_id PK, repository_id FK, seq (UNIQUE per repo), name (plain), kind (preview/release), status (planned/requested/delivered/dropped), note, requested_at, delivered_at, delivery-evidence snapshot (deployment_id without FK, generation_number, commit_hash, dirty, fingerprint, url, port — copied because generations are pruned), created_at/by, updated_at | done |
-| `tasks` | task_id PK, repository_id FK, parent_task_id self-FK (tree of arbitrary depth), release_id FK (NULL = backlog), seq (immutable per-repo identity, UNIQUE), position (mutable sibling order), title/outcome (required plain language), impact, unblock_condition, verification, technical_note (agent-facing, never substitutes the plain fields), kind (goal/stub/improvement/user_feedback), status (planned/in_progress/done/dropped), estimated_loc (size in lines of code), created_at/by, updated_at; indexes on (repository_id,status), release_id, parent_task_id | done |
-| `plan_events` | event_id PK AUTOINCREMENT, repository_id FK, subject_kind (task/release), subject_id, event (created/status/release_move/reparent/reorder/estimate/edited/requested/delivered), from_value, to_value, actor, at, note; index on (subject_kind, subject_id) | done |
+| `tasks` | task_id PK, repository_id FK, parent_task_id self-FK (tree of arbitrary depth), release_id FK (NULL = backlog), seq (immutable per-repo identity, UNIQUE), position (mutable sibling order), title/outcome (required plain language), impact, unblock_condition, verification, technical_note (agent-facing, never substitutes the plain fields), kind (goal/stub/improvement/user_feedback), status (planned/in_progress/done/dropped), estimated_loc (size in lines of code), elaboration_needed (schema 11 durable owner request, default false), created_at/by, updated_at; indexes on (repository_id,status), release_id, parent_task_id | done |
+| `plan_events` | event_id PK AUTOINCREMENT, repository_id FK, subject_kind (task/release), subject_id, event (created/status/release_move/reparent/reorder/estimate/edited/elaboration_requested/elaboration_completed/requested/delivered), from_value, to_value, actor, at, note; index on (subject_kind, subject_id) | done |
 | `decisions` | decision_id PK, repository_id FK, seq (UNIQUE per repo), ref (stable citation key, UNIQUE per repo when present), aspect (daemon enum), title/body (required management-facing plain language), technical_note, superseded_by (forward pointer, set once — the only UPDATE), created_at/by | done |
 | `decisions_fts` | FTS5 external-content index over title/body/technical_note/ref, insert trigger (decision text is immutable); FTS5 availability is checked at open and refused with a clear error when missing | done |
 | `decision_summaries` | (repository_id, covers_through_seq) PK, body, created_at/by — all summaries kept; the newest is "the story so far" | done |
@@ -111,6 +118,25 @@ not logs or permanent test history.
 |---|---|---|
 | `compose_completions` | (deployment_id, component, service, generation) PK, exact container ID, image ID, exit code, start/finish/record times; index on deployment+generation | done |
 | `compose_service_desires` | (deployment_id, component, service) PK, current desired state (`running`/`stopped`), updated_at; distinguishes an intentional exact stop from a crash exit | done |
+
+## Schema version 10 (Codex usage repository links, 2026-08-29)
+
+The accounting facts remain canonical in each configured user's private Codex
+database. This is a rebuildable projection that stores only the opaque
+repository-key association needed to query that source
+(DC2-2026-08-29-CODEX-USAGE-SOURCE).
+
+| Table | Fields | Status |
+|---|---|---|
+| `codex_usage_repository_links` | (source_uid, repository_id) PK, privacy-preserving Codex repository ID, reviewed source schema/taxonomy, resolution time; index on repository_id | done |
+
+## Schema version 11 (durable task elaboration requests, 2026-08-30)
+
+An additive `tasks.elaboration_needed` flag stores the owner's request for a
+clearer task caption or explanation. Request and completion are permanent
+`plan_events`; completing a request is accepted only in the same transaction
+as a changed title or outcome. The task rows and all earlier history are
+preserved during the version 10→11 upgrade.
 
 ## Reserved ID-prefix namespace
 
