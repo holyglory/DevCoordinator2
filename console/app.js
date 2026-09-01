@@ -614,7 +614,7 @@ const viewDeployment = guard(async (id) => {
 // --- Tests ---------------------------------------------------------------
 const TEST_TIERS = ['development', 'pre-merge', 'release'];
 function testTierLabel(tier) {
-  return tier === 'pre-merge' ? 'Pre-merge' : tier[0].toUpperCase() + tier.slice(1);
+  return { development: 'Development', 'pre-merge': 'Pre-merge', release: 'Release' }[tier] || 'Unavailable';
 }
 function testCapacityAdjustment(adjustment) {
   if (!adjustment) return '<p class="muted">No adjustment recorded.</p>';
@@ -653,22 +653,27 @@ function openTestCapacityDialog(capacity, opener) {
     </form>`;
   document.body.appendChild(dlg);
   const close = () => { dlg.close(); dlg.remove(); if (opener?.isConnected) opener.focus(); };
+  const saveAndReturn = async () => {
+    dlg.close(); dlg.remove(); await render(); $('#test-capacity-open', main)?.focus();
+  };
   $('.dialog-close', dlg).addEventListener('click', close);
   $('#test-capacity-cancel', dlg).addEventListener('click', close);
   dlg.addEventListener('cancel', (event) => { event.preventDefault(); close(); });
   $('#test-capacity-form', dlg).addEventListener('submit', async (event) => {
     event.preventDefault();
+    const input = event.target.querySelector('[name=cap]');
+    input.setCustomValidity('');
     const raw = new FormData(event.target).get('cap')?.trim();
     const cap = raw ? Number(raw) : null;
     if (cap != null && (!Number.isSafeInteger(cap) || cap < 1)) {
-      event.target.querySelector('[name=cap]').setCustomValidity('Enter a whole number of at least 1.');
+      input.setCustomValidity('Enter a whole number of at least 1.');
       event.target.reportValidity(); return;
     }
-    const button = event.submitter;
-    await act(button, 'test.capacity.set', { cap }, () => { dlg.close(); dlg.remove(); return render(); });
+    const button = event.submitter || event.target.querySelector('button[type=submit]');
+    await act(button, 'test.capacity.set', { cap }, saveAndReturn);
   });
   $('#test-capacity-clear', dlg)?.addEventListener('click', async (event) => {
-    await act(event.target, 'test.capacity.set', { cap: null }, () => { dlg.close(); dlg.remove(); return render(); });
+    await act(event.target, 'test.capacity.set', { cap: null }, saveAndReturn);
   });
   dlg.showModal();
   requestAnimationFrame(() => $('#test-capacity-form [name=cap]', dlg)?.focus());
@@ -679,7 +684,7 @@ const viewTests = guard(async () => {
   const [{ runs }, capacity] = await Promise.all([api('test.list', {}), api('test.capacity.get', {})]);
   const heading = `<div class="tests-heading">${pageHeading('Tests', '#/tests')}<button class="btn" type="button" id="test-capacity-open">Capacity · ${esc(capacity.effective_capacity)}</button></div>`;
   const collection = runs.length ? `<div class="tablewrap tests-tablewrap"><table><thead><tr><th>Repository / worktree</th><th>Test</th><th>Tier</th><th>Result</th><th>Duration</th><th>Started</th><th>Exit</th><th>Output</th><th>Actions</th></tr></thead><tbody>${runs.map((r) => `<tr>
-    <td class="wrap"><strong>${esc(r.display_name)}</strong><div class="muted mono">${esc(r.worktree_path)}</div></td><td>${esc(r.test)}</td><td>${badge(testTierLabel(r.tier || 'release'), r.readiness_eligible === false ? '' : 'ok')}</td><td>${badge(r.status)}</td><td>${r.duration_seconds != null ? `${r.duration_seconds}s` : '—'}</td><td>${ago(r.started_at)}</td><td>${r.exit_code ?? '—'}</td>
+    <td class="wrap"><strong>${esc(r.display_name)}</strong><div class="muted mono">${esc(r.worktree_path)}</div></td><td>${esc(r.test)}</td><td>${badge(testTierLabel(r.requested_tier), r.readiness_eligible ? 'ok' : '')}<div class="muted">${r.readiness_eligible ? 'Readiness proof' : 'Diagnostic only'}</div></td><td>${badge(r.status)}</td><td>${r.duration_seconds != null ? `${r.duration_seconds}s` : '—'}</td><td>${ago(r.started_at)}</td><td>${r.exit_code ?? '—'}</td>
     <td>${bytes(r.stdout_bytes_observed)}${r.stdout_truncated ? ' <span class="badge warn">truncated</span>' : ''} / ${bytes(r.stderr_bytes_observed)}</td>
     <td class="actions"><button class="btn btn-small" data-out="stdout" data-path="${esc(r.worktree_path)}">stdout</button><button class="btn btn-small" data-out="stderr" data-path="${esc(r.worktree_path)}">stderr</button>
       ${r.status === 'running' ? `<button class="btn btn-small" data-cmd="test.stop" data-args='${esc(JSON.stringify({ path: r.worktree_path }))}'>stop</button>` : `<label class="test-tier-control"><span>Tier</span><select data-test-tier data-path="${esc(r.worktree_path)}" aria-label="Validation tier for ${esc(r.display_name)}">${TEST_TIERS.map((tier) => `<option value="${tier}"${tier === 'release' ? ' selected' : ''}>${testTierLabel(tier)}</option>`).join('')}</select></label><button class="btn btn-small" type="button" data-test-start data-path="${esc(r.worktree_path)}">start</button>`}</td></tr>`).join('')}</tbody></table></div>` : stateBlock('empty', 'No test runs yet.');

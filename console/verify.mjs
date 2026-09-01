@@ -244,8 +244,8 @@ const fixtures = (scenario) => {
     'deployment.logs': { component: 'api', tail: 'line 1\nline 2 ' + 'long '.repeat(60) + '\nline 3', truncated_before_tail: true, log_path: '/state/logs/api.log' },
     'health.history': { subject_kind: 'component', subject_id: `${DEP}/api`, metric: 'cpu_percent', minutes: 60, points: scenario.empty ? [] : points, truncated: false },
     'test.list': { runs: scenario.empty ? [] : [
-      { run_id: 't20260101T000000Z-abc123', test: 'unit', tier: 'pre-merge', readiness_eligible: false, status: 'running', started_at: new Date().toISOString(), finished_at: null, duration_seconds: null, exit_code: null, stdout_bytes_observed: 123456789, stderr_bytes_observed: 0, stdout_truncated: true, stderr_truncated: false, display_name: 'repo-one', worktree_path: '/srv/repos/repo-one', repository_id: REPO, worktree_id: 'w1', summary_path: '/srv/repos/repo-one/.devcoordinator/test/current/summary.json' },
-      { run_id: 't20260101T000100Z-def456', test: 'integration-with-a-long-name', tier: 'release', readiness_eligible: true, status: 'failed', started_at: new Date(Date.now() - 3600000).toISOString(), finished_at: new Date().toISOString(), duration_seconds: 3599.123, exit_code: 1, stdout_bytes_observed: 10, stderr_bytes_observed: 4194304, stdout_truncated: false, stderr_truncated: true, display_name: LONG, worktree_path: `/srv/repos/${LONG}`, repository_id: 'r2', worktree_id: 'w2', summary_path: '/x' }] },
+      { run_id: 't20260101T000000Z-abc123', test: 'unit', requested_tier: 'pre-merge', readiness_eligible: false, status: 'running', started_at: new Date().toISOString(), finished_at: null, duration_seconds: null, exit_code: null, stdout_bytes_observed: 123456789, stderr_bytes_observed: 0, stdout_truncated: true, stderr_truncated: false, display_name: 'repo-one', worktree_path: '/srv/repos/repo-one', repository_id: REPO, worktree_id: 'w1', summary_path: '/srv/repos/repo-one/.devcoordinator/test/current/summary.json' },
+      { run_id: 't20260101T000100Z-def456', test: 'integration-with-a-long-name', requested_tier: 'release', readiness_eligible: true, status: 'failed', started_at: new Date(Date.now() - 3600000).toISOString(), finished_at: new Date().toISOString(), duration_seconds: 3599.123, exit_code: 1, stdout_bytes_observed: 10, stderr_bytes_observed: 4194304, stdout_truncated: false, stderr_truncated: true, display_name: LONG, worktree_path: `/srv/repos/${LONG}`, repository_id: 'r2', worktree_id: 'w2', summary_path: '/x' }] },
     'test.capacity.get': {
       learned_capacity: 96, effective_capacity: 80, cap: 80, active: scenario.empty ? 0 : 52,
       waiting: scenario.empty ? 0 : 11, paused: false,
@@ -282,7 +282,7 @@ const fixtures = (scenario) => {
     'bug.list': { bugs: scenario.empty ? [] : [{ bug_id: 'b0123456789ab', component: 'api', summary: 'Returns 500 on /export when the report is large', expected: '200 with CSV', actual: '500', steps: '1. open /export 2. choose all-time 3. submit', opened_at: '2026-08-20T10:00:00Z', last_seen_at: new Date().toISOString(), occurrences: 42, reporter: 'dev@example.test', correlations: { deployment_id: DEP } }], store: '/bugs' },
     'user.list': { users: [{ user_id: 'u1', email: 'owner@example.test', administrator: true, grants: [], last_seen_at: new Date().toISOString() }, { user_id: 'u2', email: `${'verylongmailboxname'.repeat(3)}@example.test`, administrator: false, grants: [{ deployment_id: DEP, role: 'operator', granted_at: 't' }], last_seen_at: null }], invitations: [{ invitation_id: 'i1', email: 'new@example.test', administrator: false, grants: [{ deployment_id: DEP, role: 'viewer' }], created_at: 't', created_by: 'owner', expires_at: '2026-09-06T00:00:00Z' }], roles: ['access', 'viewer', 'operator', 'administrator'], owners: ['owner@example.test'] },
     'telegram.list': { configured: true, chats: [{ chat_id: 4242, email: 'owner@example.test', label: 'Owner', linked_at: 't', subscriptions: ['server', `deployment:${DEP}`] }], outbox_pending: 0, last_poll_at: new Date().toISOString(), last_error: null },
-    ping: { daemon_version: '0.1.0', schema_version: 11, socket: '/run/x.sock' },
+    ping: { daemon_version: '0.1.0', schema_version: 13, socket: '/run/x.sock' },
     'plan.overview': {
       repository_id: REPO, display_name: 'repo-one',
       releases: scenario.empty ? [] : [
@@ -917,7 +917,9 @@ async function main() {
   check('tests: the run collection remains primary and capacity details stay in the action dialog',
     await page.locator('#test-runs-heading').count() === 1
     && await page.locator('.tests-tablewrap').count() === 1
-    && await page.locator('#test-capacity-dialog').count() === 0);
+    && await page.locator('#test-capacity-dialog').count() === 0
+    && /Diagnostic only/.test(await page.locator('.tests-tablewrap tbody tr').first().innerText())
+    && /Readiness proof/.test(await page.locator('.tests-tablewrap tbody tr').nth(1).innerText()));
   await page.click('#test-capacity-open');
   await page.waitForSelector('dialog#test-capacity-dialog[open]');
   const capacityText = await page.innerText('#test-capacity-dialog');
@@ -936,6 +938,8 @@ async function main() {
   check('interaction: saving the administrator maximum calls test.capacity.set directly',
     daemon.calls.some((call) => call.command === 'test.capacity.set' && call.args.cap === 72));
   await page.waitForSelector('#test-capacity-open');
+  check('interaction: saving capacity returns focus to the Capacity action',
+    await page.locator('#test-capacity-open:focus').count() === 1);
   await page.click('#test-capacity-open');
   await page.waitForSelector('dialog#test-capacity-dialog[open]');
   daemon.calls.length = 0;
@@ -944,6 +948,8 @@ async function main() {
   check('interaction: clearing the administrator maximum sends an explicit null cap',
     daemon.calls.some((call) => call.command === 'test.capacity.set' && call.args.cap === null));
   await page.waitForSelector('[data-test-start]');
+  check('interaction: clearing capacity returns focus to the Capacity action',
+    await page.locator('#test-capacity-open:focus').count() === 1);
   const tierControl = page.locator('[data-test-tier]');
   check('tests: restart offers all three tiers with release as the default',
     JSON.stringify(await tierControl.locator('option').allTextContents()) === JSON.stringify(['Development', 'Pre-merge', 'Release'])
@@ -968,7 +974,7 @@ async function main() {
   check('interaction: invite form calls user.invite', daemon.calls.some((c) => c.command === 'user.invite' && c.args.email === 'new2@example.test'));
   await page.waitForFunction(() => /daemon 0\.1\.0/.test(document.querySelector('#server')?.textContent || ''), null, { timeout: 10000 });
   check('admin: the Server line renders daemon version, schema, and route generation',
-    /daemon 0\.1\.0 · schema 11 · route document generation 1/.test(await page.innerText('#server')),
+    /daemon 0\.1\.0 · schema 13 · route document generation 1/.test(await page.innerText('#server')),
     await page.innerText('#server'));
   await page.goto(`http://${HOST}:${port}/#/health/containers`);
   await page.waitForSelector('button[data-cmd="health.container_remove"]');
