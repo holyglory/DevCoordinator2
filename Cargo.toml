@@ -1,0 +1,26 @@
+[workspace]
+members = [
+    "rust/executor-protocol",
+    "rust/executor-core",
+    "rust/devcoordinator2-executor",
+]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+publish = false
+license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+serde = { version = "=1.0.228", features = ["derive"] }
+serde_json = "=1.0.149"
+sha2 = "=0.11.0"
+tokio = { version = "=1.52.3", features = ["fs", "io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }
+toml = "=0.9.11"
+rustix = { version = "=1.1.4", features = ["fs", "pipe", "process"] }
+
+[profile.release]
+lto = "thin"
+strip = "debuginfo"
