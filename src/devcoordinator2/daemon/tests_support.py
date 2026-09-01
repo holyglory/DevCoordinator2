@@ -19,7 +19,7 @@ CONTAINERS_FILE = "containers.json"
 ENV_FILE = "env"
 PLAN_FILE = "check-plan.json"
 REPORT_FILE = "check-report.json"
-HISTORY_SCHEMA = 1
+HISTORY_SCHEMA = 2
 HISTORY_CAP = 1000
 EVIDENCE_SCHEMA = 2
 EVIDENCE_CAP = 50
@@ -94,7 +94,7 @@ def write_check_plan(dir_fd: int, document: dict,
 def read_check_report(dir_fd: int) -> dict | None:
     document = _read_json_at(dir_fd, REPORT_FILE)
     if document is None or document.get("schema") != 2 \
-            or document.get("proof") not in ("complete", "diagnostic") \
+            or document.get("proof") not in ("complete", "selected", "retry") \
             or document.get("status") not in ("running", "passed", "failed") \
             or not isinstance(document.get("run_id"), str) \
             or not isinstance(document.get("test"), str) \
@@ -128,6 +128,17 @@ def read_check_report(dir_fd: int) -> dict | None:
     if not isinstance(capacity["capacity_wait_count"], int) \
             or isinstance(capacity["capacity_wait_count"], bool) \
             or capacity["capacity_wait_count"] < 0:
+        return None
+    origin_run_id = document.get("origin_run_id")
+    if origin_run_id is not None and not isinstance(origin_run_id, str):
+        return None
+    proof = document["proof"]
+    selection = document["selection"]
+    if (proof == "complete" and (selection or origin_run_id is not None)) \
+            or (proof == "selected" and (not selection or origin_run_id is not None)) \
+            or (proof == "retry" and (len(selection) != 1
+                                       or not isinstance(origin_run_id, str)
+                                       or not origin_run_id)):
         return None
     checks = document.get("checks")
     counts = document["counts"]
@@ -202,9 +213,10 @@ def read_history(worktree_root: Path) -> list[dict]:
         document = json.loads(payload)
     except (json.JSONDecodeError, UnicodeDecodeError) as exc:
         raise securefs.SecureFsError("test history is not valid JSON") from exc
-    if not isinstance(document, dict) or document.get("schema") != HISTORY_SCHEMA \
-            or not isinstance(document.get("runs"), list):
-        raise securefs.SecureFsError("test history has the wrong schema")
+    if not isinstance(document, dict) or document.get("schema") != HISTORY_SCHEMA:
+        return []  # strict cutover: old history is unavailable, never translated
+    if not isinstance(document.get("runs"), list):
+        raise securefs.SecureFsError("test history contains invalid runs")
     runs = document["runs"]
     if len(runs) > HISTORY_CAP or any(
             not isinstance(run, dict)
@@ -272,14 +284,15 @@ def read_evidence(worktree_root: Path) -> list[dict]:
         document = json.loads(payload)
     except (json.JSONDecodeError, UnicodeDecodeError) as exc:
         raise securefs.SecureFsError("test evidence is not valid JSON") from exc
-    if not isinstance(document, dict) or document.get("schema") != EVIDENCE_SCHEMA \
-            or not isinstance(document.get("runs"), list):
-        raise securefs.SecureFsError("test evidence has the wrong schema")
+    if not isinstance(document, dict) or document.get("schema") != EVIDENCE_SCHEMA:
+        return []  # strict cutover: old evidence cannot authorize a retry
+    if not isinstance(document.get("runs"), list):
+        raise securefs.SecureFsError("test evidence contains invalid runs")
     runs = document["runs"]
     if len(runs) > EVIDENCE_CAP or any(
             not isinstance(run, dict)
             or not isinstance(run.get("run_id"), str)
-            or run.get("proof") not in ("complete", "diagnostic")
+            or run.get("proof") not in ("complete", "selected", "retry")
             or run.get("status") not in ("passed", "failed")
             or run.get("requested_tier") not in (
                 "development", "pre-merge", "release")
@@ -296,7 +309,7 @@ def record_evidence(worktree_root: Path, report: dict,
         return
     row = _evidence_row(report)
     if not isinstance(row["run_id"], str) or row["proof"] not in (
-            "complete", "diagnostic"):
+            "complete", "selected", "retry"):
         return
     runs = [run for run in read_evidence(worktree_root)
             if run["run_id"] != row["run_id"]]

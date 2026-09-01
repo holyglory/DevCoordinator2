@@ -1,4 +1,4 @@
-"""summary.json: result schema 1 and atomic replacement.
+"""summary.json: strict result schema 2 and atomic replacement.
 
 The summary is the single authoritative record of a test run. Every write is
 a complete document replaced atomically (temp file + fsync + os.replace), so
@@ -14,7 +14,7 @@ import threading
 from pathlib import Path
 from typing import Any
 
-RESULT_SCHEMA_VERSION = 1
+RESULT_SCHEMA_VERSION = 2
 
 TERMINAL_STATUSES = frozenset(
     {"passed", "failed", "timed-out", "cancelled", "interrupted", "superseded"}

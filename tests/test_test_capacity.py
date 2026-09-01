@@ -111,9 +111,60 @@ def test_socket_rejects_wrong_run_identity(running):
     client.close()
 
 
+def test_lowering_cap_never_kills_active_permits(running):
+    broker, _db = running
+    broker.register_run("trun", os.getuid())
+    first = _request(broker.socket_path, "trun", "one")
+    second = _request(broker.socket_path, "trun", "two")
+    assert _response(first)["status"] == "granted"
+    assert _response(second)["status"] == "granted"
+    changed = broker.set_cap(1, "uid:1000")
+    assert changed["effective_capacity"] == 1 and changed["active"] == 2
+    third = _request(broker.socket_path, "trun", "three")
+    _eventually(lambda: broker.snapshot()["waiting"] == 1)
+    first.close()
+    _eventually(lambda: broker.snapshot()["active"] == 1)
+    assert broker.snapshot()["waiting"] == 1
+    second.close()
+    assert _response(third)["status"] == "granted"
+    third.close()
+
+
 def _pending(run_id: str, leaf_id: str):
     client, server = socket.socketpair()
     return _Pending(server, run_id, leaf_id), client
+
+
+def test_fifo_within_run_and_round_robin_across_runs(tmp_path):
+    db = Database(tmp_path / "authority.sqlite3")
+    broker = CapacityBroker(db, tmp_path / "capacity.sock", logical_cpus=1)
+    broker.set_cap(1, "fixture")
+    broker.register_run("ta", os.getuid())
+    broker.register_run("tb", os.getuid())
+    first, first_client = _pending("ta", "a0")
+    queued = [_pending(run, leaf) for run, leaf in (
+        ("ta", "a1"), ("ta", "a2"), ("tb", "b1"), ("tb", "b2"))]
+    with broker._condition:
+        broker._enqueue_locked(first)
+        broker._grant_ready_locked()
+        for pending, _client in queued:
+            broker._enqueue_locked(pending)
+        broker._grant_ready_locked()
+    order = []
+    current = first
+    for _ in range(4):
+        broker._release(current.permit_id)
+        current = next(pending for pending, _client in queued
+                       if pending.permit_id is not None and pending.leaf_id not in order)
+        order.append(current.leaf_id)
+    assert order == ["a1", "b1", "a2", "b2"]
+    broker._release(current.permit_id)
+    first_client.close()
+    first.connection.close()
+    for pending, client in queued:
+        client.close()
+        pending.connection.close()
+    db.close()
 
 
 def test_run_end_learning_increases_then_decreases(tmp_path):
@@ -184,3 +235,28 @@ def test_missing_measurements_never_adjust(tmp_path):
     assert broker.snapshot()["last_adjustment"] is None
     db.close()
 
+
+def test_one_measured_resource_can_prove_sustained_pressure(tmp_path):
+    clock = Clock()
+    db = Database(tmp_path / "authority.sqlite3")
+    broker = CapacityBroker(
+        db, tmp_path / "capacity.sock", logical_cpus=2, clock=clock,
+        sample_interval=3600, min_epoch_seconds=600)
+    broker.register_run("tmemory", os.getuid())
+    leaves = [_pending("tmemory", str(index)) for index in range(4)]
+    with broker._condition:
+        for pending, _client in leaves:
+            broker._enqueue_locked(pending)
+        broker._grant_ready_locked()
+    for _ in range(4):
+        broker.record_sample(None, 99.0)
+    clock.value = 601.0
+    for pending, client in leaves:
+        broker._release(pending.permit_id)
+        client.close()
+        pending.connection.close()
+    state = broker.snapshot()
+    assert state["learned_capacity"] == 3
+    assert state["last_adjustment"]["p95_cpu_percent"] is None
+    assert state["last_adjustment"]["p95_memory_percent"] == 99.0
+    db.close()

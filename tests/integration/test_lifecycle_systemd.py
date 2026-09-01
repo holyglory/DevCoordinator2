@@ -39,7 +39,7 @@ _INSTALL_SPEC.loader.exec_module(install)
 
 def test_pass_uid_and_bounded_output(world):
     _write_config(world.repo, world.caller,
-                  'schema = 1\n[test.unit]\ncommand = ["id"]\n'
+                  'schema = 2\n[test.unit]\ntier = "release"\ncommand = ["id"]\n'
                   'timeout_seconds = 60\n')
     resp = _call(world, "test.start", {"path": str(world.repo)})
     assert resp["ok"], resp
@@ -64,7 +64,8 @@ def test_pass_uid_and_bounded_output(world):
 
 def test_broken_command_terminal_failure(world):
     _write_config(world.repo, world.caller,
-                  'schema = 1\n[test.unit]\ncommand = ["/nonexistent/prog"]\n')
+                  'schema = 2\n[test.unit]\ntier = "release"\n'
+                  'command = ["/nonexistent/prog"]\n')
     resp = _call(world, "test.start", {"path": str(world.repo)})
     assert resp["ok"] is False
     assert resp["error"]["code"] == "test_start_failed"
@@ -73,7 +74,7 @@ def test_broken_command_terminal_failure(world):
 
 def test_timeout_kills_whole_cgroup(world):
     _write_config(world.repo, world.caller,
-                  'schema = 1\n[test.unit]\n'
+                  'schema = 2\n[test.unit]\ntier = "release"\n'
                   'command = ["sleep", "120"]\ntimeout_seconds = 2\n')
     resp = _call(world, "test.start", {"path": str(world.repo)})
     assert resp["ok"], resp
@@ -84,7 +85,7 @@ def test_timeout_kills_whole_cgroup(world):
 
 def test_cancel(world):
     _write_config(world.repo, world.caller,
-                  'schema = 1\n[test.unit]\ncommand = ["sleep", "120"]\n')
+                  'schema = 2\n[test.unit]\ntier = "release"\ncommand = ["sleep", "120"]\n')
     resp = _call(world, "test.start", {"path": str(world.repo)})
     assert resp["ok"], resp
     stop = _call(world, "test.stop", {"path": str(world.repo)})
@@ -95,7 +96,7 @@ def test_cancel(world):
 
 def test_supersession_latest_start_wins(world):
     _write_config(world.repo, world.caller,
-                  'schema = 1\n[test.unit]\ncommand = ["sleep", "120"]\n')
+                  'schema = 2\n[test.unit]\ntier = "release"\ncommand = ["sleep", "120"]\n')
     first = _call(world, "test.start", {"path": str(world.repo)})
     assert first["ok"], first
     second = _call(world, "test.start", {"path": str(world.repo)})
@@ -111,7 +112,7 @@ def test_supersession_latest_start_wins(world):
 
 def test_flooder_capped_but_counted(world):
     _write_config(world.repo, world.caller,
-                  'schema = 1\n[test.unit]\n'
+                  'schema = 2\n[test.unit]\ntier = "release"\n'
                   'command = ["dd", "if=/dev/zero", "bs=64k", "count=128",'
                   ' "status=none"]\n')
     resp = _call(world, "test.start", {"path": str(world.repo)})
@@ -125,7 +126,7 @@ def test_flooder_capped_but_counted(world):
 
 def test_daemon_restart_marks_interrupted(world):
     _write_config(world.repo, world.caller,
-                  'schema = 1\n[test.unit]\ncommand = ["sleep", "120"]\n')
+                  'schema = 2\n[test.unit]\ntier = "release"\ncommand = ["sleep", "120"]\n')
     resp = _call(world, "test.start", {"path": str(world.repo)})
     assert resp["ok"], resp
     summary_path = Path(resp["result"]["summary_path"])
@@ -141,7 +142,7 @@ def test_daemon_restart_marks_interrupted(world):
 
 def test_root_caller_rejected(world):
     _write_config(world.repo, world.caller,
-                  'schema = 1\n[test.unit]\ncommand = ["id"]\n')
+                  'schema = 2\n[test.unit]\ntier = "release"\ncommand = ["id"]\n')
     resp = call_as(0, 0, world.daemon.socket_path,
                    _request("test.start", {"path": str(world.repo)}))
     assert resp["ok"] is False
@@ -159,7 +160,7 @@ def _containers_with_label(key: str, value: str) -> list[str]:
     return [ln.strip() for ln in out.splitlines() if ln.strip()]
 
 
-PG_TOML = ('schema = 1\n[test.unit]\n'
+PG_TOML = ('schema = 2\n[test.unit]\ntier = "release"\n'
            'command = ["psql", "-v", "ON_ERROR_STOP=1", "-c",'
            ' "create table t(x int); insert into t values (42); select x from t"]\n'
            'timeout_seconds = 120\n[test.unit.postgres]\n'
@@ -168,7 +169,7 @@ PG_TOML = ('schema = 1\n[test.unit]\n'
 POSTGIS_IMAGE = (
     "postgis/postgis@sha256:"
     "993c1a5fed969dab3974deaa8a5dcd768151725490be0579ef421333dccd6341")
-POSTGIS_TOML = ('schema = 1\n[test.unit]\n'
+POSTGIS_TOML = ('schema = 2\n[test.unit]\ntier = "release"\n'
                 'command = ["psql", "-v", "ON_ERROR_STOP=1", "-c",'
                 ' "create extension if not exists postgis; select postgis_version()"]\n'
                 'timeout_seconds = 180\n[test.unit.postgres]\n'
@@ -226,7 +227,7 @@ def test_digest_pinned_postgis_fixture_is_pulled_injected_and_removed(world):
 
 
 def test_postgres_removed_on_supersession_and_recovery(world):
-    slow = ('schema = 1\n[test.unit]\ncommand = ["sleep", "120"]\n'
+    slow = ('schema = 2\n[test.unit]\ntier = "release"\ncommand = ["sleep", "120"]\n'
             '[test.unit.postgres]\nimage = "postgres:16-alpine"\n')
     _write_config(world.repo, world.caller, slow)
     first = _call(world, "test.start", {"path": str(world.repo)})
@@ -252,6 +253,7 @@ def _check_toml(name: str, code: str, *, after=(), requires=(),
     rows = [
         "[[test.complete.check]]",
         f"name = {json.dumps(name)}",
+        'tier = "release"',
         f"command = {json.dumps(['/usr/bin/python3', '-c', code])}",
     ]
     if after:
@@ -302,7 +304,7 @@ def test_governed_graph_runs_all_ready_checks_and_collects_safe_failures(world):
 
     thread = threading.Thread(target=barrier)
     thread.start()
-    config = "schema = 1\n[test.complete]\ntimeout_seconds = 120\n"
+    config = "schema = 2\n[test.complete]\ntimeout_seconds = 120\n"
     for name in ("one", "two"):
         code = (
             "import os;"
@@ -348,7 +350,7 @@ def test_event_completed_setup_stays_alive_for_dependent_check(world):
     dependent = (
         "import os;from pathlib import Path;"
         f"Path({artifact!r}).write_text('ready')")
-    config = "schema = 1\n[test.complete]\ntimeout_seconds = 120\n"
+    config = "schema = 2\n[test.complete]\ntimeout_seconds = 120\n"
     config += _check_toml("service", setup, completion="event")
     config += _check_toml(
         "browser", dependent, requires=("service",), produces=(artifact,))
@@ -364,7 +366,7 @@ def test_event_completed_setup_stays_alive_for_dependent_check(world):
     assert _units() == []
 
 
-def test_selection_and_failed_check_retry_remain_diagnostic(world):
+def test_selection_and_failed_check_retry_remain_non_readiness_proof(world):
     ignore = world.repo / ".gitignore"
     ignore.write_text(".devcoordinator/\nbuild.bin\n")
     subprocess.run(["chown", f"{world.caller.pw_uid}:{world.caller.pw_gid}", ignore],
@@ -374,7 +376,7 @@ def test_selection_and_failed_check_retry_remain_diagnostic(world):
     unrelated = (
         "from pathlib import Path;import os;"
         "Path(os.environ['DEVCOORDINATOR_CHECK_SCRATCH'],'ran').write_text('yes')")
-    config = "schema = 1\n[test.complete]\ntimeout_seconds = 120\n"
+    config = "schema = 2\n[test.complete]\ntimeout_seconds = 120\n"
     config += _check_toml("build", build, produces=("build.bin",))
     config += _check_toml("verify", verify, requires=("build",))
     config += _check_toml("unrelated", unrelated)
@@ -390,7 +392,7 @@ def test_selection_and_failed_check_retry_remain_diagnostic(world):
     retry_final = _wait_status(world, world.repo, {"failed"}, timeout=120)
     retry_states = {row["name"]: row["status"] for row in retry_final["checks"]}
     assert retry_states == {"build": "reused", "verify": "failed"}
-    assert retry_final["proof"] == "diagnostic"
+    assert retry_final["proof"] == "retry"
     assert retry_final["origin_run_id"] == origin
 
     fix = world.repo / "fix.flag"
@@ -409,7 +411,7 @@ def test_selection_and_failed_check_retry_remain_diagnostic(world):
     assert selected["ok"], selected
     selected_final = _wait_status(world, world.repo, {"passed", "failed"}, timeout=120)
     assert selected_final["status"] == "passed", selected_final
-    assert selected_final["proof"] == "diagnostic"
+    assert selected_final["proof"] == "selected"
     assert selected_final["selection"] == ["verify"]
     assert {row["name"] for row in selected_final["checks"]} == {"build", "verify"}
 
@@ -424,7 +426,7 @@ def test_selection_and_failed_check_retry_remain_diagnostic(world):
 
 def test_upgrade_drain_rejects_new_starts_and_stop_reason_is_operational(world):
     _write_config(world.repo, world.caller,
-                  'schema = 1\n[test.unit]\ncommand = ["sleep", "120"]\n')
+                  'schema = 2\n[test.unit]\ntier = "release"\ncommand = ["sleep", "120"]\n')
     started = _call(world, "test.start", {"path": str(world.repo)})
     assert started["ok"], started
     activity = read_activity(world.base)
@@ -458,7 +460,7 @@ def test_repository_installer_drain_waits_then_restarts_and_reconnects(world):
         "assert os.read(fd,1)==b'1';os.close(fd)")
     _write_config(
         world.repo, world.caller,
-        "schema = 1\n[test.unit]\n"
+        'schema = 2\n[test.unit]\ntier = "release"\n'
         f"command = {json.dumps(['/usr/bin/python3', '-c', command])}\n")
     started = _call(world, "test.start", {"path": str(world.repo)})
     assert started["ok"], started
@@ -499,7 +501,7 @@ def test_repository_installer_drain_waits_then_restarts_and_reconnects(world):
     reconnected = _call(world, "test.status", {"path": str(world.repo)})
     assert reconnected["ok"] and reconnected["result"]["run_id"] == final["run_id"]
     _write_config(world.repo, world.caller,
-                  'schema = 1\n[test.unit]\ncommand = ["true"]\n')
+                  'schema = 2\n[test.unit]\ntier = "release"\ncommand = ["true"]\n')
     after_upgrade = _call(world, "test.start", {"path": str(world.repo)})
     assert after_upgrade["ok"], after_upgrade
     final_after_upgrade = _wait_status(

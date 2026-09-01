@@ -507,19 +507,19 @@ class CapacityBroker:
                          if memory is not None]
         complete_metrics = bool(self._samples) and len(cpu_values) == len(self._samples) \
             and len(memory_values) == len(self._samples)
-        cpu = _percentile95(cpu_values) if complete_metrics else None
-        memory = _percentile95(memory_values) if complete_metrics else None
+        cpu = _percentile95(cpu_values)
+        memory = _percentile95(memory_values)
         saturation = (sum(1 for _cpu, _memory, value in self._samples if value)
                       / len(self._samples)) if self._samples else None
 
         previous = self._learned
         new = previous
         reason = None
-        if longest_run >= self._min_epoch_seconds and complete_metrics:
+        if longest_run >= self._min_epoch_seconds:
             if self._pending_decrease and previous > 1:
                 new = max(1, min(previous - 1, math.floor(previous * 0.75)))
                 reason = "sustained_pressure"
-            elif self._cap is None or self._cap > previous:
+            elif complete_metrics and (self._cap is None or self._cap > previous):
                 if saturation is not None and saturation >= 0.5 \
                         and cpu is not None and cpu < UNDERUSED_PERCENT \
                         and memory is not None and memory < UNDERUSED_PERCENT:

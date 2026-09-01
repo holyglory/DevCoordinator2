@@ -18,6 +18,7 @@ def test_build_and_roundtrip(tmp_path: Path):
     summary.write_atomic(path, doc)
     loaded = summary.read(path)
     assert loaded == doc
+    assert loaded["schema_version"] == 2
     assert loaded["stdout_truncated"] is False
 
 
@@ -59,6 +60,10 @@ def test_read_rejects_corrupt(tmp_path: Path):
     path.write_text("{not json")
     assert summary.read(path) is None
     path.write_text(json.dumps({"schema_version": 1, "status": "running"}))
+    assert summary.read(path) is None
+    old = _running()
+    old["schema_version"] = 1
+    path.write_text(json.dumps(old))
     assert summary.read(path) is None
     assert summary.read(tmp_path / "missing.json") is None
 

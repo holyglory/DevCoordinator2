@@ -32,7 +32,7 @@ class H(BaseHTTPRequestHandler):
 HTTPServer(("127.0.0.1", int(os.environ["PORT"])), H).serve_forever()
 '''
 
-TOML = '''schema = 1
+TOML = '''schema = 2
 [deployment.web]
 source = ["checkout", "worktree"]
 domain = { checkout = "app", worktree = "app-dev" }
@@ -298,7 +298,7 @@ if attempt < 3:
                                        "delete_data": True})
 
 
-COMPOSE_TOML = '''schema = 1
+COMPOSE_TOML = '''schema = 2
 [deployment.stack]
 source = "worktree"
 domain = "stack"
@@ -438,7 +438,7 @@ def test_native_compose_finite_service_receipt_and_start_semantics(world):
     assert removed["ok"], removed
 
 
-FAILED_COMPOSE_TOML = '''schema = 1
+FAILED_COMPOSE_TOML = '''schema = 2
 [deployment.failed-stack]
 source = "worktree"
 domain = "failed-stack"

@@ -22,7 +22,7 @@ class H(BaseHTTPRequestHandler):
 HTTPServer(("127.0.0.1", int(os.environ["PORT"])), H).serve_forever()
 '''
 
-TOML = '''schema = 1
+TOML = '''schema = 2
 [deployment.app]
 source = ["worktree"]
 domain = { worktree = "planflow" }

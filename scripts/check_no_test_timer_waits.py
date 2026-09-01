@@ -9,7 +9,6 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 PYTHON_TARGETS = (
-    "src/devcoordinator2/check_runner.py",
     "src/devcoordinator2/daemon/test_admission.py",
     "src/devcoordinator2/daemon/test_postgres.py",
     "src/devcoordinator2/daemon/tests_lifecycle.py",

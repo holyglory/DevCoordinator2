@@ -15,7 +15,7 @@ def test_detector_catches_slow_python_sleep_and_allows_bounded_fallback(tmp_path
     slow = tmp_path / "slow.py"
     slow.write_text("import time\ntime.sleep(0.5)\n")
     assert "not completion evidence" in detector.scan_python(
-        slow, "src/check_runner.py")[0]
+        slow, "src/example.py")[0]
     fast = tmp_path / "fast.py"
     fast.write_text("import time\ntime.sleep(0.05)\n")
     assert detector.scan_python(

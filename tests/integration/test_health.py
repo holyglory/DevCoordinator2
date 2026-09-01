@@ -9,7 +9,7 @@ from integration.helpers import ROOT_ONLY, _call, _write_config
 
 pytestmark = ROOT_ONLY
 
-TOML = '''schema = 1
+TOML = '''schema = 2
 [deployment.svc]
 components = ["db", "api"]
 [deployment.svc.component.db]

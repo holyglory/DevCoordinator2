@@ -1,8 +1,6 @@
 import os
 from pathlib import Path
 
-import pytest
-
 from devcoordinator2.daemon import securefs, summary, tests_support
 
 
@@ -40,10 +38,9 @@ def test_history_ignores_running_and_enforces_retention(
         "t-two", "t-three"]
 
 
-def test_history_refuses_malformed_existing_data(tmp_path: Path):
+def test_history_ignores_schema_one_without_translating_it(tmp_path: Path):
     securefs.create_test_dir(tmp_path, os.getuid(), os.getgid())
     securefs.write_test_history(
         tmp_path, b'{"schema":1,"runs":[{"run_id":"broken"}]}',
         (os.getuid(), os.getgid()))
-    with pytest.raises(securefs.SecureFsError, match="invalid runs"):
-        tests_support.read_history(tmp_path)
+    assert tests_support.read_history(tmp_path) == []

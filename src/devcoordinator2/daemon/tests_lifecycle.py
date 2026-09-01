@@ -51,7 +51,8 @@ _START_LOCK_WAIT = 10.0
 _LAUNCH_VERIFY_WAIT = 10.0
 _ENV_FILE = tests_support.ENV_FILE
 _PLAN_FILE = tests_support.PLAN_FILE
-_RUNNER_SCRIPT = Path(__file__).resolve().parents[3] / "scripts/governed_check_runner.py"
+_EXECUTOR_BINARY = (Path(__file__).resolve().parents[3] / "target" / "release"
+                    / "devcoordinator2-executor")
 _CHECK_PATH = "/usr/local/bin:/usr/bin:/bin"
 log = logging.getLogger("devcoordinator2.tests")
 
@@ -170,6 +171,11 @@ class TestLifecycle:
         selected = self._selected_closure(configured, requested, tier)
         self._validate_executables(configured, selected, spec.env,
                                    caller.uid, caller.gid)
+        if not _EXECUTOR_BINARY.is_file() or not os.access(_EXECUTOR_BINARY, os.X_OK):
+            raise ProtocolError(
+                "test_start_failed",
+                "Rust governed-test executor is unavailable; build the locked release"
+                " target before starting tests")
 
         lock = self._worktree_lock(reg.worktree_id)
         if not lock.acquire(timeout=_START_LOCK_WAIT):
@@ -202,7 +208,8 @@ class TestLifecycle:
             try:
                 initial = summary.build(run, spec.name, "running", started_at,
                                         caller.uid, client)
-                proof = "diagnostic" if requested else "complete"
+                proof = "retry" if retry_run_id is not None \
+                    else ("selected" if requested else "complete")
                 readiness_eligible = proof == "complete" and tier == "release"
                 initial.update(
                     proof=proof,
@@ -258,7 +265,7 @@ class TestLifecycle:
                     uid=caller.uid, gid=caller.gid,
                     timeout_seconds=spec.timeout_seconds, cwd=worktree_root,
                     env_file=env_file,
-                    command=("/usr/bin/python3", str(_RUNNER_SCRIPT),
+                    command=(str(_EXECUTOR_BINARY), "run",
                              str(current / _PLAN_FILE)),
                     scratch_dir=current / "scratch",
                 )
@@ -456,8 +463,12 @@ class TestLifecycle:
                 f"checks are outside requested {tier} tier: "
                 f"{', '.join(sorted(excluded))}")
         if not requested:
-            return tuple(check for check in configured
-                         if VALIDATION_TIERS.index(check.tier) <= tier_rank)
+            selected = tuple(check for check in configured
+                             if VALIDATION_TIERS.index(check.tier) <= tier_rank)
+            if not selected:
+                raise ProtocolError(
+                    "args_invalid", f"no checks are configured for the {tier} tier")
+            return selected
         included = set(requested)
         pending = list(requested)
         while pending:
@@ -572,11 +583,12 @@ class TestLifecycle:
                 "name": check.name,
                 "tier": check.tier,
                 "role": check.role,
-                "cwd": str(check.cwd),
+                "cwd": check.cwd.relative_to(worktree_root).as_posix(),
                 "env": check.env,
                 "after": list(check.after),
                 "requires": list(check.requires),
-                "invalidates": list(check.invalidates),
+                "invalidates": [name for name in check.invalidates
+                                if name in selected_names],
                 "completion": check.completion,
                 "on_failure": check.on_failure,
                 "produces": list(check.produces),
@@ -592,7 +604,8 @@ class TestLifecycle:
                     {"id": case.id, "args": list(case.args)} for case in check.cases]
                 row["case_command"] = list(check.case_command or ())
             rows.append(row)
-        proof = "diagnostic" if requested else "complete"
+        proof = "retry" if origin_run_id is not None \
+            else ("selected" if requested else "complete")
         return {
             "schema": 2,
             "run_id": run_id,

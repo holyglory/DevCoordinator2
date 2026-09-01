@@ -10,7 +10,7 @@ from integration.helpers import ROOT_ONLY, _call, _request, _write_config, call_
 
 pytestmark = ROOT_ONLY
 
-TOML = '''schema = 1
+TOML = '''schema = 2
 [deployment.svc]
 components = ["api"]
 domain = "svc"

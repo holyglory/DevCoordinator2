@@ -2,7 +2,12 @@ from pathlib import Path
 
 import pytest
 
-from devcoordinator2.daemon.repoconfig import ConfigError, load_test_spec
+from devcoordinator2.daemon.repoconfig import (
+    ConfigError,
+    load_test_spec,
+    validate_test_config,
+)
+from devcoordinator2.daemon.tests_lifecycle import TestLifecycle as GovernedTestLifecycle
 
 GOOD = """
 schema = 2
@@ -36,6 +41,11 @@ def test_good_default_and_named(tmp_path):
     slow = load_test_spec(root, "slow")
     assert slow.cwd == (tmp_path / "sub").resolve()
     assert slow.timeout_seconds == 600
+    assert [(row.name, row.tiers, row.default)
+            for row in validate_test_config(root)] == [
+        ("unit", ("release",), True),
+        ("slow", ("development",), False),
+    ]
 
 
 def test_single_test_needs_no_default(tmp_path):
@@ -43,6 +53,23 @@ def test_single_test_needs_no_default(tmp_path):
         tmp_path,
         'schema = 2\n[test.only]\ntier = "release"\ncommand = ["true"]\n')
     assert load_test_spec(root, None).name == "only"
+
+
+def test_invalid_nondefault_target_blocks_the_valid_default(tmp_path):
+    root = write(tmp_path, '''
+schema=2
+[test]
+default="unit"
+[test.unit]
+tier="release"
+command=["true"]
+[test.hidden]
+command=["false"]
+''')
+    with pytest.raises(ConfigError, match=r"hidden.*tier"):
+        load_test_spec(root, "unit")
+    with pytest.raises(ConfigError, match=r"hidden.*tier"):
+        validate_test_config(root)
 
 
 @pytest.mark.parametrize("text,fragment", [
@@ -265,6 +292,13 @@ requires=["browser"]
     assert checks["source"].invalidates == ("browser", "release")
     assert checks["browser"].requires == ("unit", "source")
     assert checks["release"].requires == ("browser", "source")
+    selected = GovernedTestLifecycle._selected_closure(
+        spec.checks, (), "development")
+    plan = GovernedTestLifecycle._build_plan(
+        spec, spec.checks, selected, "trun", tmp_path, tmp_path / "current",
+        "a" * 64, (), None, None, "development")
+    assert [row["name"] for row in plan["checks"]] == ["source", "unit"]
+    assert plan["checks"][0]["invalidates"] == []
 
 
 @pytest.mark.parametrize("body,fragment", [

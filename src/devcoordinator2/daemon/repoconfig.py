@@ -10,7 +10,7 @@ from __future__ import annotations
 import hashlib
 import re
 import tomllib
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 CONFIG_NAME = ".devcoordinator.toml"
@@ -88,7 +88,16 @@ class TestSpec:
     config_digest: str = ""
 
 
-def load_test_spec(worktree_root: Path, test_name: str | None) -> TestSpec:
+@dataclass(frozen=True)
+class TestConfigSummary:
+    """Command-free installation preflight result for one named test."""
+
+    name: str
+    tiers: tuple[str, ...]
+    default: bool
+
+
+def _load_all_test_specs(worktree_root: Path) -> tuple[str | None, dict[str, TestSpec]]:
     config_path = worktree_root / CONFIG_NAME
     try:
         if config_path.stat().st_size > MAX_CONFIG_BYTES:
@@ -112,8 +121,8 @@ def load_test_spec(worktree_root: Path, test_name: str | None) -> TestSpec:
     if not isinstance(tests_raw, dict) or not tests_raw:
         raise ConfigError("a [test.<name>] section is required")
 
-    default = tests_raw.pop("default", None)
-    named = dict(tests_raw)
+    default = tests_raw.get("default")
+    named = {name: section for name, section in tests_raw.items() if name != "default"}
     for name in named:
         if not TEST_NAME_RE.fullmatch(name):
             raise ConfigError(f"invalid test name {name!r}")
@@ -122,10 +131,35 @@ def load_test_spec(worktree_root: Path, test_name: str | None) -> TestSpec:
     if not named:
         raise ConfigError("at least one [test.<name>] section is required")
 
+    if default is not None and default not in named:
+        raise ConfigError(f"test.default {default!r} is not defined")
+
+    digest = hashlib.sha256(raw).hexdigest()
+    specs = {
+        name: _validate_test(
+            worktree_root, name, named[name], config_digest=digest)
+        for name in named
+    }
+    return default, specs
+
+
+def validate_test_config(worktree_root: Path) -> tuple[TestConfigSummary, ...]:
+    """Validate every named test; never return commands or environment values."""
+    default, specs = _load_all_test_specs(worktree_root)
+    summaries = []
+    for name, spec in specs.items():
+        tiers = (spec.tier,) if spec.tier is not None else tuple(
+            tier for tier in VALIDATION_TIERS
+            if any(check.tier == tier for check in spec.checks))
+        summaries.append(TestConfigSummary(
+            name=name, tiers=tiers, default=name == default))
+    return tuple(summaries)
+
+
+def load_test_spec(worktree_root: Path, test_name: str | None) -> TestSpec:
+    default, named = _load_all_test_specs(worktree_root)
     if test_name is None:
         if default is not None:
-            if default not in named:
-                raise ConfigError(f"test.default {default!r} is not defined")
             test_name = default
         elif len(named) == 1:
             test_name = next(iter(named))
@@ -135,10 +169,7 @@ def load_test_spec(worktree_root: Path, test_name: str | None) -> TestSpec:
         raise ConfigError(f"test {test_name!r} is not defined "
                           f"(available: {sorted(named)})")
 
-    return _validate_test(
-        worktree_root, test_name, named[test_name],
-        config_digest=hashlib.sha256(raw).hexdigest(),
-    )
+    return named[test_name]
 
 
 def _validate_test(worktree_root: Path, name: str, section: dict,
@@ -416,7 +447,6 @@ def _validate_checks(worktree_root: Path, test_name: str, default_cwd: Path,
 
     compiled: list[CheckSpec] = list(checks)
     indexes = {check.name: index for index, check in enumerate(compiled)}
-    from dataclasses import replace
     for preflight in checks:
         for target_name in preflight.invalidates:
             target = compiled[indexes[target_name]]
