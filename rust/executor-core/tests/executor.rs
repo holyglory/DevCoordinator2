@@ -81,6 +81,14 @@ fn python(script: &str) -> Vec<String> {
     vec!["python3".into(), "-c".into(), script.into()]
 }
 
+fn dynamic_fanout(name: &str, discovery_script: &str) -> CheckPlan {
+    let mut fanout = direct(name, python("raise SystemExit(0)"));
+    fanout.discover = Some(python(discovery_script));
+    fanout.command = None;
+    fanout.case_command = Some(python("raise SystemExit(0)"));
+    fanout
+}
+
 fn plan(repository: &Repository, run_id: &str, checks: Vec<CheckPlan>) -> ExecutionPlan {
     ExecutionPlan {
         schema: Schema2,
@@ -196,12 +204,10 @@ async fn static_fanout_is_all_settled_and_case_reports_are_sorted() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn oversized_dynamic_manifest_fails_without_starting_cases() {
     let repository = Repository::new("manifest");
-    let mut fanout = direct(
+    let fanout = dynamic_fanout(
         "cases",
-        python("import sys; sys.stdout.write('x' * (2 * 1024 * 1024 + 1))"),
+        "import os; os.write(int(os.environ['DEVCOORDINATOR_CASE_MANIFEST_FD']), b'x' * (2 * 1024 * 1024 + 1))",
     );
-    fanout.discover = fanout.command.take();
-    fanout.case_command = Some(python("raise SystemExit(0)"));
     let report = execute(plan(&repository, "run-manifest", vec![fanout])).await;
     assert_eq!(report.checks[0].status, LeafStatus::Failed);
     assert!(
@@ -211,6 +217,101 @@ async fn oversized_dynamic_manifest_fails_without_starting_cases() {
             .is_some_and(|reason| reason.contains("2 MiB"))
     );
     assert!(report.checks[0].cases.is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn discovery_stdout_is_log_noise_and_manifest_comes_only_from_descriptor() {
+    let repository = Repository::new("manifest-descriptor");
+    let script = r#"
+import os, sys
+sys.stdout.write("ordinary discovery noise")
+payload = b'{"schema":2,"cases":[{"id":"one","args":[]}]}'
+os.write(int(os.environ["DEVCOORDINATOR_CASE_MANIFEST_FD"]), payload)
+"#;
+    let fanout = dynamic_fanout("cases", script);
+    let report = execute(plan(&repository, "run-manifest-descriptor", vec![fanout])).await;
+    assert_eq!(report.status, RunStatus::Passed);
+    assert_eq!(report.checks[0].case_count, 1);
+    assert_eq!(report.checks[0].cases[0].id, "one");
+    assert_eq!(
+        fs::read_to_string(
+            repository
+                .current("run-manifest-descriptor")
+                .join("checks/cases/discovery-stdout.log")
+        )
+        .expect("discovery stdout"),
+        "ordinary discovery noise"
+    );
+    let saved = fs::read_to_string(
+        repository
+            .current("run-manifest-descriptor")
+            .join("checks/cases/manifest.json"),
+    )
+    .expect("saved manifest");
+    assert!(saved.starts_with("{\"schema\":2"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn missing_invalid_and_trailing_descriptor_manifests_are_rejected() {
+    let cases = [
+        ("missing", "raise SystemExit(0)"),
+        (
+            "invalid",
+            "import os; os.write(int(os.environ['DEVCOORDINATOR_CASE_MANIFEST_FD']), b'not-json')",
+        ),
+        (
+            "trailing",
+            "import os; os.write(int(os.environ['DEVCOORDINATOR_CASE_MANIFEST_FD']), b'{\"schema\":2,\"cases\":[]} {\"schema\":2,\"cases\":[]}')",
+        ),
+    ];
+    for (name, script) in cases {
+        let repository = Repository::new(name);
+        let report = execute(plan(
+            &repository,
+            &format!("run-{name}"),
+            vec![dynamic_fanout("cases", script)],
+        ))
+        .await;
+        assert_eq!(report.status, RunStatus::Failed, "{name}");
+        assert_eq!(report.checks[0].status, LeafStatus::Failed, "{name}");
+        assert!(report.checks[0].cases.is_empty(), "{name}");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn invalid_manifest_cleanup_terminates_discovery_descendants() {
+    let repository = Repository::new("manifest-cleanup");
+    let script = r#"
+import os, pathlib, subprocess
+child = subprocess.Popen(["python3", "-c", "import time; time.sleep(30)"])
+pathlib.Path(os.environ["DEVCOORDINATOR_CHECK_SCRATCH"]).joinpath("child.pid").write_text(str(child.pid))
+os.write(int(os.environ["DEVCOORDINATOR_CASE_MANIFEST_FD"]), b'not-json')
+"#;
+    let report = execute(plan(
+        &repository,
+        "run-manifest-cleanup",
+        vec![dynamic_fanout("cases", script)],
+    ))
+    .await;
+    assert_eq!(report.status, RunStatus::Failed);
+    let pid: u32 = fs::read_to_string(
+        repository
+            .current("run-manifest-cleanup")
+            .join("scratch/cases/child.pid"),
+    )
+    .expect("child pid")
+    .parse()
+    .expect("pid number");
+    for _ in 0..100 {
+        if !PathBuf::from(format!("/proc/{pid}")).exists() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(
+        !PathBuf::from(format!("/proc/{pid}")).exists(),
+        "discovery descendant survived cleanup"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

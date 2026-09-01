@@ -507,6 +507,7 @@ async fn execute_check(
             &check.name,
             command.clone(),
             check.completion,
+            false,
             CHECK_LOG_CAP_BYTES,
             "stdout.log",
             "stderr.log",
@@ -596,21 +597,40 @@ async fn execute_fanout(
             &format!("{}/discovery", check.name),
             check.discover.clone().unwrap_or_default(),
             CompletionMode::Process,
-            MAX_MANIFEST_BYTES,
-            "manifest.json",
+            true,
+            CHECK_LOG_CAP_BYTES,
+            "discovery-stdout.log",
             "discovery-stderr.log",
         );
-        let discovery = run_process(request, permits.clone(), cancellation.clone()).await;
+        let mut discovery = run_process(request, permits.clone(), cancellation.clone()).await;
         observe_capacity(&capacity, discovery.capacity);
         add_output(&mut aggregate, &discovery.output);
         if discovery.status != ProcessStatus::Passed {
             return fanout_setup_failure(check, discovery, aggregate, started.elapsed());
         }
-        if discovery.output.stdout_bytes_observed > MAX_MANIFEST_BYTES as u64 {
+        let Some(manifest_capture) = discovery.manifest.take() else {
             return simple_outcome(
                 check,
                 LeafStatus::Failed,
-                "case manifest exceeds 2 MiB",
+                "case discovery closed without a descriptor manifest",
+                aggregate,
+                started.elapsed(),
+            );
+        };
+        if manifest_capture.truncated || manifest_capture.observed > MAX_MANIFEST_BYTES as u64 {
+            return simple_outcome(
+                check,
+                LeafStatus::Failed,
+                "case manifest descriptor exceeds 2 MiB",
+                aggregate,
+                started.elapsed(),
+            );
+        }
+        if manifest_capture.payload.is_empty() {
+            return simple_outcome(
+                check,
+                LeafStatus::Failed,
+                "case discovery descriptor closed without a manifest",
                 aggregate,
                 started.elapsed(),
             );
@@ -619,19 +639,17 @@ async fn execute_fanout(
             .join("checks")
             .join(&check.name)
             .join("manifest.json");
-        let payload = match tokio::fs::read(&path).await {
-            Ok(payload) => payload,
-            Err(error) => {
-                return simple_outcome(
-                    check,
-                    LeafStatus::Failed,
-                    &format!("cannot read case manifest: {error}"),
-                    aggregate,
-                    started.elapsed(),
-                );
-            }
-        };
-        match CaseManifest::from_json(&payload) {
+        if let Err(error) = write_bytes_atomic(&path, &manifest_capture.payload, MAX_MANIFEST_BYTES)
+        {
+            return simple_outcome(
+                check,
+                LeafStatus::Unsafe,
+                &error.to_string(),
+                aggregate,
+                started.elapsed(),
+            );
+        }
+        match CaseManifest::from_json(&manifest_capture.payload) {
             Ok(manifest) => manifest.cases,
             Err(error) => {
                 return simple_outcome(
@@ -830,6 +848,7 @@ async fn run_case(
         &leaf,
         command,
         CompletionMode::Process,
+        false,
         CHECK_LOG_CAP_BYTES,
         "stdout.log",
         "stderr.log",
@@ -858,6 +877,7 @@ fn process_request(
     leaf: &str,
     command: Vec<String>,
     completion: CompletionMode,
+    capture_manifest: bool,
     stdout_cap: usize,
     stdout_filename: &str,
     stderr_filename: &str,
@@ -897,6 +917,7 @@ fn process_request(
         stderr_cap: CHECK_LOG_CAP_BYTES,
         timeout_seconds: check.timeout_seconds,
         completion,
+        capture_manifest,
     }
 }
 

@@ -115,3 +115,20 @@ fn worktree_path_must_be_absolute() {
     assert_eq!(output.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&output.stderr).contains("must be absolute"));
 }
+
+#[test]
+fn governed_run_fails_closed_without_capacity_broker() {
+    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../executor-protocol/tests/fixtures/backend-plan.json");
+    let output = Command::new(binary())
+        .arg("run")
+        .arg(fixture)
+        .env_remove("DEVCOORDINATOR_CAPACITY_SOCKET")
+        .output()
+        .expect("governed run");
+    assert_eq!(output.status.code(), Some(2));
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("DEVCOORDINATOR_CAPACITY_SOCKET is required")
+    );
+}

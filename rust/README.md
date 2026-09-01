@@ -14,11 +14,13 @@ Run or validate a JSON/TOML plan:
 
 ```text
 cargo run -p devcoordinator2-executor -- run PLAN.json
+cargo run -p devcoordinator2-executor -- run-local PLAN.json
 cargo run -p devcoordinator2-executor -- validate PLAN.json
 ```
 
-`run` uses the host broker when `DEVCOORDINATOR_CAPACITY_SOCKET` is present.
-Without it, direct validation mode admits all dependency-ready leaves locally.
+`run` requires the host broker in `DEVCOORDINATOR_CAPACITY_SOCKET` and fails
+closed when it is absent. Explicit `run-local` is the direct self-validation
+mode and admits all dependency-ready leaves locally.
 Repository commands remain argv arrays; the executor never invokes a shell.
 
 The Python control plane can request bounded content-free evidence without

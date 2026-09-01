@@ -61,7 +61,8 @@ async fn dispatch(args: Vec<std::ffi::OsString>) -> Result<i32, String> {
             );
             Ok(0)
         }
-        "run" if args.len() == 2 => run(Path::new(&args[1])).await,
+        "run" if args.len() == 2 => run(Path::new(&args[1]), false).await,
+        "run-local" if args.len() == 2 => run(Path::new(&args[1]), true).await,
         "source-digest" => source_digest_command(&args[1..]),
         "receipts-match" => receipts_match_command(&args[1..]),
         "emit-event" => emit_event_command(&args[1..]),
@@ -69,15 +70,16 @@ async fn dispatch(args: Vec<std::ffi::OsString>) -> Result<i32, String> {
     }
 }
 
-async fn run(path: &Path) -> Result<i32, String> {
+async fn run(path: &Path, local: bool) -> Result<i32, String> {
     let plan = load_plan(path)?;
     let report_path = PathBuf::from(&plan.current_dir).join("check-report.json");
-    let permits: Arc<dyn PermitProvider> = if let Some(socket) =
-        env::var_os("DEVCOORDINATOR_CAPACITY_SOCKET")
-    {
-        Arc::new(UnixPermitProvider::new(PathBuf::from(socket)).map_err(|error| error.to_string())?)
-    } else {
+    let permits: Arc<dyn PermitProvider> = if local {
         Arc::new(LocalPermitProvider::unbounded())
+    } else {
+        let socket = env::var_os("DEVCOORDINATOR_CAPACITY_SOCKET").ok_or_else(|| {
+            "DEVCOORDINATOR_CAPACITY_SOCKET is required for governed run; use run-local only for direct self-validation".to_owned()
+        })?;
+        Arc::new(UnixPermitProvider::new(PathBuf::from(socket)).map_err(|error| error.to_string())?)
     };
     let cancellation = Cancellation::default();
     let signal_cancellation = cancellation.clone();
@@ -210,6 +212,7 @@ fn usage() -> String {
     [
         "usage:",
         "  devcoordinator2-executor run PLAN.json",
+        "  devcoordinator2-executor run-local PLAN.json",
         "  devcoordinator2-executor validate PLAN.json",
         "  devcoordinator2-executor source-digest --worktree PATH",
         "  devcoordinator2-executor receipts-match --worktree PATH --receipts FILE_OR_-",

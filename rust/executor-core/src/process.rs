@@ -10,25 +10,29 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use devcoordinator2_executor_protocol::{
-    CompletionEvent, CompletionMode, EventStatus, LeafStatus, MAX_EVENT_BYTES, OutputStats,
+    CompletionEvent, CompletionMode, EventStatus, LeafStatus, MAX_EVENT_BYTES, MAX_MANIFEST_BYTES,
+    OutputStats,
 };
 use rustix::fd::AsFd;
 use rustix::io::{FdFlags, fcntl_setfd};
 use rustix::pipe::{PipeFlags, pipe_with};
+use rustix::process::test_kill_process_group;
 use rustix::process::{Pid, Signal, kill_process_group};
 use tokio::fs::File;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::process::{Child, Command};
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
-use tokio::time::timeout;
+use tokio::time::{Instant, timeout};
 
 use crate::ExecutorError;
 use crate::capacity::{AcquiredPermit, PermitProvider, PermitRequest};
 
 pub(crate) const CHECK_LOG_CAP_BYTES: usize = 4 * 1024 * 1024;
 const EVENT_FD: i32 = 198;
+const MANIFEST_FD: i32 = 199;
 const TERMINATION_GRACE: Duration = Duration::from_secs(2);
+const GROUP_OBSERVATION_INTERVAL: Duration = Duration::from_millis(50);
 
 #[derive(Clone)]
 pub struct Cancellation {
@@ -76,6 +80,7 @@ pub(crate) struct ProcessRequest {
     pub stderr_cap: usize,
     pub timeout_seconds: Option<u64>,
     pub completion: CompletionMode,
+    pub capture_manifest: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -105,7 +110,14 @@ pub(crate) struct ProcessResult {
     pub reason: Option<String>,
     pub output: OutputStats,
     pub service: Option<EventService>,
+    pub manifest: Option<ManifestCapture>,
     pub capacity: crate::capacity::CapacityObservation,
+}
+
+pub(crate) struct ManifestCapture {
+    pub payload: Vec<u8>,
+    pub observed: u64,
+    pub truncated: bool,
 }
 
 pub(crate) struct EventService {
@@ -124,6 +136,7 @@ struct SpawnedProcess {
     stdout: JoinHandle<Result<StreamStats, ExecutorError>>,
     stderr: JoinHandle<Result<StreamStats, ExecutorError>>,
     event_reader: Option<File>,
+    manifest: Option<JoinHandle<Result<ManifestCapture, ExecutorError>>>,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -245,11 +258,36 @@ async fn spawn_process(request: &ProcessRequest) -> Result<SpawnedProcess, Execu
         event_read = Some(read);
         event_write = Some(write);
     }
+    let mut manifest_read = None;
+    let mut manifest_write = None;
+    if request.capture_manifest {
+        let (read, write) = pipe_with(PipeFlags::CLOEXEC)
+            .map_err(|error| ExecutorError::new(format!("cannot create manifest pipe: {error}")))?;
+        let write_raw = write.as_raw_fd();
+        command.env("DEVCOORDINATOR_CASE_MANIFEST_FD", MANIFEST_FD.to_string());
+        // SAFETY: see the event descriptor setup above. This is a distinct
+        // inherited descriptor and uses only async-signal-safe operations.
+        unsafe {
+            command.pre_exec(move || {
+                let source = BorrowedFd::borrow_raw(write_raw);
+                let mut target = OwnedFd::from_raw_fd(MANIFEST_FD);
+                if write_raw != MANIFEST_FD {
+                    rustix::io::dup2(source, &mut target)?;
+                }
+                fcntl_setfd(target.as_fd(), FdFlags::empty())?;
+                std::mem::forget(target);
+                Ok(())
+            });
+        }
+        manifest_read = Some(read);
+        manifest_write = Some(write);
+    }
 
     let mut child = command
         .spawn()
         .map_err(|error| ExecutorError::new(error.to_string()))?;
     drop(event_write);
+    drop(manifest_write);
     let pgid = child
         .id()
         .and_then(|id| i32::try_from(id).ok())
@@ -269,12 +307,16 @@ async fn spawn_process(request: &ProcessRequest) -> Result<SpawnedProcess, Execu
     let stdout = tokio::spawn(async move { pump(stdout, &stdout_path, stdout_cap).await });
     let stderr = tokio::spawn(async move { pump(stderr, &stderr_path, stderr_cap).await });
     let event_reader = event_read.map(|fd| File::from_std(std::fs::File::from(fd)));
+    let manifest = manifest_read.map(|fd| {
+        tokio::spawn(async move { capture_manifest(File::from_std(std::fs::File::from(fd))).await })
+    });
     Ok(SpawnedProcess {
         child,
         pgid,
         stdout,
         stderr,
         event_reader,
+        manifest,
     })
 }
 
@@ -310,20 +352,30 @@ async fn run_to_exit(
              Some(detail.unwrap_or_else(|| "run cancelled".into())))
         },
     };
+    let cleanup_error = cleanup_process_group(process.pgid).await.err();
     let output = finish_pumps(process.stdout, process.stderr).await;
-    match output {
-        Ok(output) => ProcessResult {
+    let manifest = finish_manifest(process.manifest).await;
+    match (output, manifest, cleanup_error) {
+        (Ok(output), Ok(manifest), None) => ProcessResult {
             status: outcome.0,
             exit_code: outcome.1,
             reason: outcome.2,
             output,
             service: None,
+            manifest,
             capacity,
         },
-        Err(error) => ProcessResult {
-            capacity,
-            ..failure(ProcessStatus::Unsafe, outcome.1, error.to_string())
-        },
+        (output, manifest, cleanup_error) => {
+            let detail = cleanup_error
+                .map(|error| error.to_string())
+                .or_else(|| output.err().map(|error| error.to_string()))
+                .or_else(|| manifest.err().map(|error| error.to_string()))
+                .unwrap_or_else(|| "leaf cleanup failed".into());
+            ProcessResult {
+                capacity,
+                ..failure(ProcessStatus::Unsafe, outcome.1, detail)
+            }
+        }
     }
 }
 
@@ -373,6 +425,7 @@ async fn run_to_event(
                 ),
                 Err(error) => (None, format!("cannot wait for event leaf: {error}")),
             };
+            let _ = cleanup_process_group(process.pgid).await;
             let output = finish_pumps(process.stdout, process.stderr)
                 .await
                 .unwrap_or_default();
@@ -382,6 +435,7 @@ async fn run_to_event(
                 reason: Some(reason),
                 output,
                 service: None,
+                manifest: None,
                 capacity,
             }
         }
@@ -396,6 +450,7 @@ async fn run_to_event(
                 reason: Some(deadline_reason(timeout_seconds, "event leaf")),
                 output,
                 service: None,
+                manifest: None,
                 capacity,
             }
         }
@@ -410,6 +465,7 @@ async fn run_to_event(
                 reason: Some("run cancelled".into()),
                 output,
                 service: None,
+                manifest: None,
                 capacity,
             }
         }
@@ -424,6 +480,7 @@ async fn run_to_event(
                 reason: Some(error.to_string()),
                 output,
                 service: None,
+                manifest: None,
                 capacity,
             }
         }
@@ -439,6 +496,7 @@ async fn run_to_event(
                     reason: Some("completion event carried the wrong run or check identity".into()),
                     output,
                     service: None,
+                    manifest: None,
                     capacity,
                 };
             }
@@ -461,11 +519,13 @@ async fn run_to_event(
                     ),
                     output,
                     service: None,
+                    manifest: None,
                     capacity,
                 };
             }
             match process.child.try_wait() {
                 Ok(Some(status)) => {
+                    let _ = cleanup_process_group(process.pgid).await;
                     let output = finish_pumps(process.stdout, process.stderr)
                         .await
                         .unwrap_or_default();
@@ -480,6 +540,7 @@ async fn run_to_event(
                             .then(|| format!("event process exited {}", display_exit(status))),
                         output,
                         service: None,
+                        manifest: None,
                         capacity,
                     }
                 }
@@ -499,6 +560,7 @@ async fn run_to_event(
                         reason: None,
                         output: OutputStats::default(),
                         service: Some(EventService { pgid, future }),
+                        manifest: None,
                         capacity,
                     }
                 }
@@ -513,6 +575,7 @@ async fn run_to_event(
                         reason: Some(format!("cannot inspect event process: {error}")),
                         output,
                         service: None,
+                        manifest: None,
                         capacity,
                     }
                 }
@@ -535,14 +598,41 @@ pub(crate) fn signal_group(pgid: i32, signal: Signal) -> Result<(), ExecutorErro
 
 async fn terminate(child: &mut Child, pgid: i32) -> Result<(), ExecutorError> {
     if child.try_wait()?.is_some() {
-        return Ok(());
+        return cleanup_process_group(pgid).await;
     }
     signal_group(pgid, Signal::TERM)?;
     if timeout(TERMINATION_GRACE, child.wait()).await.is_err() {
         signal_group(pgid, Signal::KILL)?;
         child.wait().await?;
     }
+    cleanup_process_group(pgid).await
+}
+
+async fn cleanup_process_group(pgid: i32) -> Result<(), ExecutorError> {
+    if !process_group_exists(pgid)? {
+        return Ok(());
+    }
+    signal_group(pgid, Signal::TERM)?;
+    let deadline = Instant::now() + TERMINATION_GRACE;
+    while process_group_exists(pgid)? && Instant::now() < deadline {
+        tokio::time::sleep(GROUP_OBSERVATION_INTERVAL).await;
+    }
+    if process_group_exists(pgid)? {
+        signal_group(pgid, Signal::KILL)?;
+    }
     Ok(())
+}
+
+fn process_group_exists(pgid: i32) -> Result<bool, ExecutorError> {
+    let pid =
+        Pid::from_raw(pgid).ok_or_else(|| ExecutorError::new("process group id is invalid"))?;
+    match test_kill_process_group(pid) {
+        Ok(()) => Ok(true),
+        Err(error) if error == rustix::io::Errno::SRCH => Ok(false),
+        Err(error) => Err(ExecutorError::new(format!(
+            "cannot inspect process group {pgid}: {error}"
+        ))),
+    }
 }
 
 async fn pump<R: AsyncRead + Unpin>(
@@ -606,6 +696,42 @@ async fn finish_pumps(
     })
 }
 
+async fn capture_manifest(mut reader: File) -> Result<ManifestCapture, ExecutorError> {
+    let mut payload = Vec::new();
+    let mut observed = 0_u64;
+    let mut block = vec![0_u8; 64 * 1024];
+    loop {
+        let read = reader.read(&mut block).await.map_err(|error| {
+            ExecutorError::new(format!("cannot read case manifest descriptor: {error}"))
+        })?;
+        if read == 0 {
+            break;
+        }
+        observed = observed.saturating_add(read as u64);
+        let remaining = (MAX_MANIFEST_BYTES + 1).saturating_sub(payload.len());
+        if remaining > 0 {
+            payload.extend_from_slice(&block[..read.min(remaining)]);
+        }
+    }
+    Ok(ManifestCapture {
+        truncated: observed > MAX_MANIFEST_BYTES as u64,
+        observed,
+        payload,
+    })
+}
+
+async fn finish_manifest(
+    manifest: Option<JoinHandle<Result<ManifestCapture, ExecutorError>>>,
+) -> Result<Option<ManifestCapture>, ExecutorError> {
+    match manifest {
+        Some(task) => task
+            .await
+            .map_err(|error| ExecutorError::new(format!("manifest task failed: {error}")))?
+            .map(Some),
+        None => Ok(None),
+    }
+}
+
 async fn read_event(reader: &mut File) -> Result<CompletionEvent, ExecutorError> {
     let mut payload = Vec::new();
     let mut block = [0_u8; 512];
@@ -650,6 +776,7 @@ fn failure(
         reason: Some(reason.into()),
         output: OutputStats::default(),
         service: None,
+        manifest: None,
         capacity: Default::default(),
     }
 }
