@@ -1,6 +1,6 @@
 ---
 name: codex-dev-coordinator
-description: Coordinate host-visible local development tests, deployments, services, ports, containers, PostgreSQL components, health, and runtime cleanup through the installed DevCoordinator2 CLI or MCP server, and use its authoritative planning/completion ledger and decision history (tasks, releases, previews, decisions). Use for shared runtime observation or mutation and for all ledger/decision work; do not use for ordinary source inspection, editing, Git work, formatting, or static checks.
+description: Coordinate host-visible local development tests and governed check graphs, deployments, services, ports, containers, PostgreSQL components, health, and runtime cleanup through the installed DevCoordinator2 CLI or MCP server, and use its authoritative planning/completion ledger and decision history. Use for shared runtime observation or mutation and for all ledger/decision work; do not use for ordinary source inspection, editing, Git work, formatting, or static checks.
 ---
 
 # DevCoordinator2
@@ -18,7 +18,7 @@ devcoordinator2 health --help
 
 ## Choose the product-owned surface
 
-- Use `test start|status|output|stop` for repository tests.
+- Use `test start|retry|status|output|stop|event|list` for repository tests.
 - Use `deployment list|apply|status|start|stop|restart|rollback|logs|remove`
   for declared permanent or preview deployments.
 - Use `health summary|repositories|containers` for host and ownership
@@ -39,6 +39,47 @@ mutation.
 
 Keep secrets out of argv, ordinary environment metadata, results, and logs.
 Use only the installed instance configuration and private credential files.
+
+## Governed tests
+
+Before a consequential complete run, read the current `test --help`, inspect
+the named test declaration in `.devcoordinator.toml`, and query `test list`.
+Do not start a duplicate for a worktree that already has the intended run.
+
+Distinguish the execution model before describing or starting it:
+
+- A graph test declares named checks. Every check whose `after` and `requires`
+  dependencies are satisfied starts concurrently; `requires` also requires a
+  successful predecessor. Process exit or the check's exact `test event`
+  advances the graph. `timeout_seconds` is only the outer runaway watchdog.
+- A legacy test is one opaque command, even when that command internally runs
+  many builds, locales, browser sessions, or formal phases. DevCoordinator
+  cannot parallelize, time, select, or retry those hidden phases. State this
+  limitation when it materially affects a requested long run. Do not infer a
+  defect from timeout length alone or attempt to parse shell source as a graph.
+- When evidence or known structure shows that a legacy target serializes
+  independent work, create or reuse one specifically scoped graph-migration
+  task. Do not add worker budgets, fixed concurrency counts, or timeout
+  heuristics; express real ordering and isolation needs as graph dependencies.
+
+The process is owned by its systemd unit, not by the agent that started or
+observes it. If an observer exits, query `test status` or `test list` and read a
+bounded `test output` tail before deciding the workload is stale. A `running`
+summary plus a live unit/output growth is active work; do not cancel, restart,
+or submit a duplicate merely because the original agent disappeared.
+
+Use status as the compact authority: graph runs expose per-check state,
+durations, bounded failure index, proof kind, and output references without log
+text. Use `test output --check <name>` only for the check under diagnosis. Let a
+finite complete pass collect every safe failure and cleanup result before batch
+repair; begin independent read-only diagnosis without modifying its source or
+artifacts.
+
+`test start --check <name>` and `test retry --run-id <run> --check <name>` are
+diagnostic shortcuts. Retry only after the originating complete run finishes
+and only while its source, configuration, prerequisites, and declared artifact
+receipts still match. Neither selection nor retry is release proof; readiness
+still requires one fresh complete passing graph.
 
 ## Plan, ledger, and decisions
 
