@@ -147,6 +147,33 @@ def test_install_policy_links_use_universal_source(tmp_path, monkeypatch):
     assert (home / ".claude" / "CLAUDE.md").readlink() == policy
 
 
+def test_edge_source_acl_is_read_only_and_narrow(tmp_path, monkeypatch):
+    root = tmp_path / "source"
+    for relative in ("edge/lib/module.mjs", "console/app.js"):
+        path = root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("source")
+    calls = []
+    monkeypatch.setattr(
+        install,
+        "run",
+        lambda argv, check=True: calls.append(argv) or SimpleNamespace(),
+    )
+
+    install.ensure_edge_source_access(root)
+
+    assert ["setfacl", "-m", "u:devcoordinator2-edge:--x", str(root)] in calls
+    assert [
+        "setfacl", "-m", "u:devcoordinator2-edge:r-x", str(root / "edge")
+    ] in calls
+    assert [
+        "setfacl", "-m", "u:devcoordinator2-edge:r--",
+        str(root / "edge/lib/module.mjs"),
+    ] in calls
+    assert not any(".git" in item for call in calls for item in call)
+    assert not any("rwx" in item for call in calls for item in call)
+
+
 def test_compose_env_authorization_binds_ignored_path_to_repository(tmp_path):
     repo = tmp_path / "repo"
     repo.mkdir()

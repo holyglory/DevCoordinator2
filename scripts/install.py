@@ -76,6 +76,26 @@ def ensure_edge_user(client_group: str) -> tuple[int, int]:
     return entry.pw_uid, entry.pw_gid
 
 
+def ensure_edge_source_access(source_root: Path,
+                              edge_user: str = "devcoordinator2-edge") -> None:
+    """Grant the public edge read-only access to only its source and Console."""
+    source_root = source_root.resolve(strict=True)
+    trees = (source_root / "edge", source_root / "console")
+    for tree in trees:
+        if not tree.is_dir() or tree.is_symlink():
+            raise RuntimeError(f"required edge source tree is unavailable: {tree}")
+    run(["setfacl", "-m", f"u:{edge_user}:--x", str(source_root)])
+    for tree in trees:
+        for directory, directories, files in os.walk(tree):
+            path = Path(directory)
+            run(["setfacl", "-m", f"u:{edge_user}:r-x", str(path)])
+            run(["setfacl", "-m", f"d:u:{edge_user}:r-x", str(path)])
+            for name in files:
+                run(["setfacl", "-m", f"u:{edge_user}:r--", str(path / name)])
+            directories.sort()
+            files.sort()
+
+
 def _replace_direct_link(destination: Path, source: Path) -> None:
     if (destination.exists() or destination.is_symlink()) and not destination.is_symlink():
         raise RuntimeError(f"refusing to replace non-symlink managed path: {destination}")
@@ -598,6 +618,7 @@ def main() -> int:
     accounts = [a.strip() for a in ns.client_accounts.split(",") if a.strip()]
     ensure_group(ns.client_group, accounts)
     edge_uid, edge_gid = ensure_edge_user(ns.client_group)
+    ensure_edge_source_access(source_root)
     gid = grp.getgrnam(ns.client_group).gr_gid
 
     for path, mode, owner in ((Path("/run/devcoordinator2"), 0o755, (0, 0)),

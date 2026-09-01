@@ -19,7 +19,11 @@ untracked `instance/` directory and in the installed instance configuration
   permissions and no named per-user ACL entries. New directories inherit the
   shared group and group `rwx`; new files inherit group read/write while
   preserving executable intent.
-- No unrelated local users require access. World access is unnecessary.
+- No unrelated local users require access. World access is unnecessary. The
+  edge service account is the sole named-ACL exception: it receives traverse
+  on the checkout root and inherited read/traverse only on `edge/` and
+  `console/`, never write access or Git metadata access
+  (DC2-2026-09-01-EDGE-LIVE-SOURCE-READ).
 - `/home/DevCoordinator2` is the one live source checkout. It stays on a clean
   `main` exactly fast-forwarded to `origin/main`; development mutations occur
   only in linked worktrees.
@@ -158,7 +162,8 @@ re-granting any account direct Docker access (reversing the authoritative
 cutover); or exposing the repository through any network service.
 Also review it before allowing another writer to `/home/DevCoordinator2`,
 running the root daemon from a different checkout, or weakening the clean-main
-fast-forward operating rule.
+fast-forward operating rule. Review it before broadening the edge ACL beyond
+the two source trees or granting that service write access.
 Also review it before exposing Codex usage to viewers, returning per-user or
 raw collector detail, adding an exporter or network collector, supporting a
 Codex usage schema or taxonomy beyond the explicitly reviewed versions, or
