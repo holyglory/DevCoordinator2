@@ -2,14 +2,40 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import socket
+import subprocess
+import sys
 import threading
 import time
+from pathlib import Path
 
 import pytest
 
 from devcoordinator2.daemon.db import Database
 from devcoordinator2.daemon.test_capacity import CapacityBroker, _Pending
+
+ROOT = Path(__file__).resolve().parents[1]
+_WAIT_FOR_SIGNAL = """
+import json
+import os
+import signal
+import sys
+
+events, label = sys.argv[1:]
+signal.signal(signal.SIGUSR1, lambda _signum, _frame: sys.exit(0))
+payload = json.dumps({
+    "run": label,
+    "check": os.environ["DEVCOORDINATOR_CHECK_NAME"],
+    "pid": os.getpid(),
+}, separators=(",", ":")).encode() + b"\\n"
+descriptor = os.open(events, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+try:
+    os.write(descriptor, payload)
+finally:
+    os.close(descriptor)
+signal.pause()
+"""
 
 
 class Clock:
@@ -56,6 +82,116 @@ def _eventually(predicate, timeout=2.0):
             return
         threading.Event().wait(0.01)
     raise AssertionError("condition did not become true")
+
+
+@pytest.fixture(scope="module")
+def rust_executor():
+    build = subprocess.run(
+        ["/usr/bin/cargo", "build", "--locked", "--package",
+         "devcoordinator2-executor"],
+        cwd=ROOT, capture_output=True, text=True, timeout=300, check=False,
+    )
+    assert build.returncode == 0, (
+        f"Rust executor build failed: {build.stderr[-4096:]}")
+    binary = ROOT / "target" / "debug" / "devcoordinator2-executor"
+    assert binary.is_file() and os.access(binary, os.X_OK)
+    return binary
+
+
+def _source_digest(executor: Path, repository: Path) -> str:
+    result = subprocess.run(
+        [str(executor), "source-digest", "--worktree", str(repository)],
+        capture_output=True, text=True, timeout=10, check=False,
+    )
+    assert result.returncode == 0, result.stderr[-2048:]
+    return json.loads(result.stdout)["sha256"]
+
+
+def _write_plan(repository: Path, run_id: str, commands: list[list[str]],
+                source_digest: str) -> Path:
+    current = repository / ".devcoordinator" / run_id
+    plan_path = repository / ".devcoordinator" / "plans" / f"{run_id}.json"
+    plan_path.parent.mkdir(parents=True, exist_ok=True)
+    checks = []
+    for index, command in enumerate(commands):
+        checks.append({
+            "name": f"check-{index}",
+            "tier": "development",
+            "role": "work",
+            "after": [],
+            "requires": [],
+            "invalidates": [],
+            "cwd": ".",
+            "env": {},
+            "timeout_seconds": 15,
+            "completion": "process",
+            "on_failure": "continue",
+            "produces": [],
+            "command": command,
+            "discover": None,
+            "case_command": None,
+            "cases": None,
+        })
+    plan_path.write_text(json.dumps({
+        "schema": 2,
+        "run_id": run_id,
+        "test": "capacity",
+        "worktree_root": str(repository),
+        "current_dir": str(current),
+        "requested_tier": "development",
+        "readiness_eligible": False,
+        "proof": "complete",
+        "selection": [],
+        "origin_run_id": None,
+        "source_digest": source_digest,
+        "config_digest": "c" * 64,
+        "reused": {},
+        "checks": checks,
+    }), encoding="utf-8")
+    return plan_path
+
+
+def _start_executor(executor: Path, plan: Path, socket_path: Path) \
+        -> subprocess.Popen:
+    return subprocess.Popen(
+        [str(executor), "run", str(plan)],
+        env={**os.environ, "DEVCOORDINATOR_CAPACITY_SOCKET": str(socket_path)},
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+    )
+
+
+def _event_rows(path: Path) -> list[dict]:
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except FileNotFoundError:
+        return []
+    rows = []
+    for line in lines:
+        try:
+            rows.append(json.loads(line))
+        except json.JSONDecodeError:
+            break
+    return rows
+
+
+def _wait_for_rows(path: Path, count: int) -> list[dict]:
+    _eventually(lambda: len(_event_rows(path)) >= count, timeout=10)
+    return _event_rows(path)
+
+
+def _finish_executor(process: subprocess.Popen, expected: int = 0) -> None:
+    stdout, stderr = process.communicate(timeout=15)
+    assert process.returncode == expected, (
+        f"executor exited {process.returncode}; stdout={stdout[-2048:]!r}; "
+        f"stderr={stderr[-2048:]!r}")
+
+
+def _pid_is_gone(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return True
+    return False
 
 
 def test_initial_capacity_cap_and_persistence(tmp_path):
@@ -336,3 +472,147 @@ def test_alternating_cpu_and_memory_pressure_never_counts_as_sustained(tmp_path)
     assert state["learned_capacity"] == 4
     assert state["last_adjustment"] is None
     db.close()
+
+
+def test_real_rust_executor_obeys_fair_capacity_and_disconnects_without_leaks(
+        tmp_path, rust_executor):
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=repository, check=True)
+    (repository / "README.md").write_text("capacity integration\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README.md"], cwd=repository, check=True)
+    digest = _source_digest(rust_executor, repository)
+    events = repository / ".devcoordinator" / "capacity-events.jsonl"
+
+    def waiting_command(label: str) -> list[str]:
+        return [sys.executable, "-c", _WAIT_FOR_SIGNAL, str(events), label]
+
+    plans = {
+        "run-a": _write_plan(
+            repository, "run-a", [waiting_command("A") for _ in range(3)], digest),
+        "run-b": _write_plan(
+            repository, "run-b", [waiting_command("B") for _ in range(2)], digest),
+        "run-active-crash": _write_plan(
+            repository, "run-active-crash", [waiting_command("C")], digest),
+        "run-waiting-crash": _write_plan(
+            repository, "run-waiting-crash", [waiting_command("E")], digest),
+        "run-probe": _write_plan(
+            repository, "run-probe", [["/bin/true"]], digest),
+    }
+    db = Database(tmp_path / "authority.sqlite3")
+    broker = CapacityBroker(
+        db, tmp_path / "capacity.sock", logical_cpus=1, sample_interval=3600)
+    broker.set_cap(1, "integration")
+    processes: list[subprocess.Popen] = []
+    leaf_pids: set[int] = set()
+    registered = list(plans)
+    for run_id in registered:
+        broker.register_run(run_id, os.getuid())
+
+    try:
+        broker.start()
+        run_a = _start_executor(rust_executor, plans["run-a"], broker.socket_path)
+        processes.append(run_a)
+        _eventually(
+            lambda: broker.snapshot()["active"] == 1
+            and broker.snapshot()["waiting"] == 2,
+            timeout=10,
+        )
+        assert [row["run"] for row in _wait_for_rows(events, 1)] == ["A"]
+
+        run_b = _start_executor(rust_executor, plans["run-b"], broker.socket_path)
+        processes.append(run_b)
+        _eventually(
+            lambda: broker.snapshot()["active"] == 1
+            and broker.snapshot()["waiting"] == 4,
+            timeout=10,
+        )
+
+        expected_order = ["A", "A", "B", "A", "B"]
+        for completed, expected in enumerate(expected_order, start=1):
+            rows = _wait_for_rows(events, completed)
+            assert [row["run"] for row in rows] == expected_order[:completed]
+            assert rows[-1]["run"] == expected
+            assert broker.snapshot()["active"] == 1
+            leaf_pid = rows[-1]["pid"]
+            leaf_pids.add(leaf_pid)
+            os.kill(leaf_pid, signal.SIGUSR1)
+            _eventually(lambda pid=leaf_pid: _pid_is_gone(pid), timeout=10)
+            leaf_pids.discard(leaf_pid)
+
+        _finish_executor(run_a)
+        _finish_executor(run_b)
+        processes.remove(run_a)
+        processes.remove(run_b)
+        _eventually(
+            lambda: broker.snapshot()["active"] == 0
+            and broker.snapshot()["waiting"] == 0,
+            timeout=10,
+        )
+        reports = [
+            json.loads((repository / ".devcoordinator" / run_id
+                        / "check-report.json").read_text(encoding="utf-8"))
+            for run_id in ("run-a", "run-b")
+        ]
+        assert sum(report["capacity"]["capacity_wait_count"]
+                   for report in reports) == 4
+        assert all(report["capacity"]["effective_capacity"] == 1
+                   for report in reports)
+
+        active_crash = _start_executor(
+            rust_executor, plans["run-active-crash"], broker.socket_path)
+        processes.append(active_crash)
+        active_row = _wait_for_rows(events, 6)[-1]
+        leaf_pids.add(active_row["pid"])
+        _eventually(lambda: broker.snapshot()["active"] == 1, timeout=10)
+
+        waiting_crash = _start_executor(
+            rust_executor, plans["run-waiting-crash"], broker.socket_path)
+        processes.append(waiting_crash)
+        _eventually(lambda: broker.snapshot()["waiting"] == 1, timeout=10)
+        waiting_crash.kill()
+        _finish_executor(waiting_crash, expected=-signal.SIGKILL)
+        processes.remove(waiting_crash)
+        _eventually(
+            lambda: broker.snapshot()["active"] == 1
+            and broker.snapshot()["waiting"] == 0,
+            timeout=10,
+        )
+
+        active_crash.kill()
+        _finish_executor(active_crash, expected=-signal.SIGKILL)
+        processes.remove(active_crash)
+        _eventually(
+            lambda: broker.snapshot()["active"] == 0
+            and broker.snapshot()["waiting"] == 0,
+            timeout=10,
+        )
+        try:
+            os.killpg(active_row["pid"], signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        leaf_pids.discard(active_row["pid"])
+
+        probe = _start_executor(rust_executor, plans["run-probe"], broker.socket_path)
+        processes.append(probe)
+        _finish_executor(probe)
+        processes.remove(probe)
+        _eventually(
+            lambda: broker.snapshot()["active"] == 0
+            and broker.snapshot()["waiting"] == 0,
+            timeout=10,
+        )
+    finally:
+        for process in processes:
+            if process.poll() is None:
+                process.kill()
+            process.communicate(timeout=5)
+        for pid in leaf_pids:
+            try:
+                os.killpg(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        for run_id in registered:
+            broker.unregister_run(run_id)
+        broker.shutdown()
+        db.close()
