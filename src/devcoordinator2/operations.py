@@ -63,7 +63,7 @@ OPERATIONS: dict[str, OperationPolicy] = {
 
     "repository.register": _policy("server", "administrator", "append", idempotent=True),
     "repository.list": _policy("server", "administrator", "read", idempotent=True),
-    "repository.status": _policy("repository", "viewer", "read", idempotent=True),
+    "repository.status": _policy("repository", "administrator", "read", idempotent=True),
     "repository.archive": _policy("server", "administrator", "reversible", idempotent=True),
     "repository.unarchive": _policy("server", "administrator", "reversible", idempotent=True),
 

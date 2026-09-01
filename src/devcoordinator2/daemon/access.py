@@ -18,6 +18,7 @@ from typing import Any
 from devcoordinator2.daemon import events, routes
 from devcoordinator2.daemon.db import Database
 from devcoordinator2.daemon.server import Caller, Handler
+from devcoordinator2.operations import OPERATIONS, policy_for
 from devcoordinator2.paths import InstanceConfig
 from devcoordinator2.protocol import ProtocolError
 
@@ -237,31 +238,14 @@ def _validate_grant(g) -> None:
 
 # -- policy: wrap handlers for public principals ----------------------------
 
-_ADMIN_ONLY_PREFIXES = ("test.", "repository.", "user.", "invitation.", "grant.",
-                        "health.summary", "health.containers", "health.container_remove",
-                        "deployment.apply", "deployment.set_domain",
-                        "deployment.rollback", "deployment.remove",
-                        "task.create", "task.update",
-                        "release.create", "release.update",
-                        "release.request", "release.deliver",
-                        "decision.record", "decision.summarize")
-_OPERATOR = ("deployment.start", "deployment.stop", "deployment.restart")
-_VIEWER = ("deployment.status", "deployment.logs", "health.repository", "health.history")
-# Repository-scoped reads: viewer on any deployment of the repository.
-_REPO_VIEWER = ("plan.overview", "task.history", "decision.tail", "decision.search")
-# Repository usage exposes combined private collector analytics and therefore
-# requires operator access even though it is read-only.
-_REPO_OPERATOR = ("usage.repositories", "usage.repository",
-                  "progress.repositories", "progress.repository")
-# Commands that enforce their own scope for admitted public users.
-_SELF_GUARDED = ("telegram.link", "telegram.subscribe", "telegram.unsubscribe",
-                 "telegram.list", "bug.report", "bug.list", "bug.close")
-
 
 def guard(handlers: dict[str, Handler], access: Access,
           db: Database) -> dict[str, Handler]:
     """Return handlers that enforce roles for public identities and pass
     local callers through untouched."""
+    missing = sorted(set(handlers) - set(OPERATIONS))
+    if missing:
+        raise RuntimeError(f"handlers lack operation authority/effect policy: {missing}")
     guarded: dict[str, Handler] = {}
     for command, handler in handlers.items():
         guarded[command] = _wrap(command, handler, access, db)
@@ -273,7 +257,8 @@ def _wrap(command: str, handler: Handler, access: Access, db: Database) -> Handl
         principal = access.principal(caller)
         if principal.local or principal.administrator:
             return handler(args, caller)
-        if command in ("user.whoami", "ping"):
+        policy = policy_for(command)
+        if policy.role == "anonymous":
             return handler(args, caller)
         if command == "user.accept_invitation":
             # Only the signed-in identity itself can accept, via the edge.
@@ -285,16 +270,7 @@ def _wrap(command: str, handler: Handler, access: Access, db: Database) -> Handl
             return handler(args, caller)
         if principal.user_id is None:
             raise ProtocolError("permission_denied", "identity is not an admitted user")
-        if command in _SELF_GUARDED:
-            return handler(args, caller)
-        if command.startswith(_ADMIN_ONLY_PREFIXES):
-            raise ProtocolError("permission_denied", f"{command} requires administrator")
-        if command in _OPERATOR or command in _VIEWER:
-            dep_id = _deployment_for(command, args, db)
-            needed = "operator" if command in _OPERATOR else "viewer"
-            if dep_id is None or not principal.at_least(dep_id, needed):
-                raise ProtocolError("permission_denied", f"{command} requires {needed} on "
-                                                         "the deployment")
+        if policy.role == "self":
             return handler(args, caller)
         if command == "deployment.list":
             result = handler({}, caller)
@@ -314,7 +290,7 @@ def _wrap(command: str, handler: Handler, access: Access, db: Database) -> Handl
                                           if d["deployment_id"] in allowed]
                     rows.append(row)
             return {"repositories": rows}
-        if command in _REPO_OPERATOR:
+        if policy.scope == "repository" and policy.role == "operator":
             repos = _repositories_at_least(principal, db, "operator")
             if command in ("usage.repositories", "progress.repositories"):
                 if not repos:
@@ -330,7 +306,7 @@ def _wrap(command: str, handler: Handler, access: Access, db: Database) -> Handl
                                     f"{command} requires operator on a deployment of"
                                     " the repository")
             return handler(args, caller)
-        if command in _REPO_VIEWER:
+        if policy.scope == "repository" and policy.role == "viewer":
             repos = _viewable_repositories(principal, db)
             if command == "plan.overview" and not args.get("repository_id") \
                     and not args.get("path"):
@@ -344,6 +320,16 @@ def _wrap(command: str, handler: Handler, access: Access, db: Database) -> Handl
                                     f"{command} requires viewer on a deployment of"
                                     " the repository")
             return handler(args, caller)
+        if policy.scope == "deployment" and policy.role in ("operator", "viewer"):
+            dep_id = _deployment_for(command, args, db)
+            if dep_id is None or not principal.at_least(dep_id, policy.role):
+                raise ProtocolError(
+                    "permission_denied",
+                    f"{command} requires {policy.role} on the deployment",
+                )
+            return handler(args, caller)
+        if policy.role == "administrator":
+            raise ProtocolError("permission_denied", f"{command} requires administrator")
         raise ProtocolError("permission_denied", f"{command} is not available to public users")
     return wrapped
 
