@@ -11,6 +11,10 @@ This exhaustive workflow is explicit-only. Run it only when the user invokes
 `$full-repo-audit`; ordinary implementation, review, testing, or gap-finding
 requests must not activate it implicitly.
 
+The installed skill must be a direct link into the canonical DevCoordinator2
+checkout. Its scripts resolve that link and import the one root
+`full_repo_harness`; copied standalone skill packages are unsupported.
+
 Run a multi-level audit: the lead agent performs the architectural, product-flow, implementation, and interface review; low-effort subagents manually inspect every source file in deterministic batches; separate UI journey workers inspect source-level journeys and visual testability. Use the harness script to create a coverage manifest and worker prompts, then reconcile file traces into complete feature and entry-point traces before producing the final implementation plan.
 
 Treat documented product intent, confirmed user journeys, source-backed feature promises, visible UI elements, and expected tests as one complete product contract. Every intended journey, feature, route, control, state, handler, persistence path, permission path, error path, and verification path must be present, implemented, and tested; otherwise report the gap.
@@ -186,7 +190,8 @@ unrecognized UI toolkit.
    - For large repos, first consolidate findings mechanically instead of merging
      hundreds of reports by hand:
      ```bash
-     python3 "$FULL_REPO_AUDIT_SKILL_DIR/scripts/_vendor/full_repo_harness/merge_findings.py" \
+     CANONICAL_SKILL_ROOT="$(dirname "$(dirname "$(realpath "$FULL_REPO_AUDIT_SKILL_DIR")")")"
+     python3 "$CANONICAL_SKILL_ROOT/full_repo_harness/merge_findings.py" \
        --reports <audit-output>/reports \
        --manifest <audit-output>/manifest.json \
        --markdown-out <audit-output>/consolidated-findings.md \
@@ -205,7 +210,8 @@ unrecognized UI toolkit.
 7. **Import confirmed findings into the database completion ledger**
    - After `verify_audit_results.py` passes, create the consolidated findings and a lead-review projection outside the audited repo:
      ```bash
-     python3 "$FULL_REPO_AUDIT_SKILL_DIR/scripts/_vendor/full_repo_harness/merge_findings.py" \
+     CANONICAL_SKILL_ROOT="$(dirname "$(dirname "$(realpath "$FULL_REPO_AUDIT_SKILL_DIR")")")"
+     python3 "$CANONICAL_SKILL_ROOT/full_repo_harness/merge_findings.py" \
        --reports <audit-output>/reports \
        --manifest <audit-output>/manifest.json \
        --markdown-out <audit-output>/consolidated-findings.md \

@@ -55,8 +55,10 @@ def main() -> int:
 
             validate_source = SCRIPT.read_text(encoding="utf-8")
             check(
-                'copied / "scripts" / "standalone_smoke.py"' in validate_source,
-                "formal standalone validation must use the focused copied-package smoke",
+                "check_canonical_harness_ownership" in validate_source
+                and "check_standalone_skill" not in validate_source
+                and "sync_vendored_harness.py" not in validate_source,
+                "validation must require one canonical harness without standalone package checks",
             )
             check(
                 'run([sys.executable, str(skill.relative_to(ROOT) / "scripts" / "self_test.py")])' in validate_source,

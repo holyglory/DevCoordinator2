@@ -507,7 +507,7 @@ This operational skill guide mentions user journeys, workflow, product, overview
 This is a local curation repository for Codex skills.
 
 - `skills/user-journey-docs-audit/`: checks whether docs describe app idea, users, journeys, UI priorities, edge cases, and acceptance criteria.
-- `scripts/validate.py`: validates standalone skill-copy execution.
+- `scripts/validate.py`: validates the canonical linked skill set.
 """,
         )
         skill_readme_inventory = run_inventory(skill_readme_repo)

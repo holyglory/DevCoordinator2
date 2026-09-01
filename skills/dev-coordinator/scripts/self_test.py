@@ -34,7 +34,12 @@ def main() -> int:
     required_contract = (
         "name: dev-coordinator",
         "devcoordinator2",
-        "test start|retry|status|output|stop|event|list",
+        "test start|retry|status|output|stop|event|list|capacity",
+        "schema-2",
+        "Development runs development checks",
+        "preflight",
+        "host-wide adaptive scheduler",
+        "do not ask the user for another approval",
         "deployment list|apply|status|start|stop|restart|rollback|logs|remove",
         "plan overview",
         "decision record|tail|search|summarize",
@@ -50,6 +55,8 @@ def main() -> int:
     for command in ("test", "deployment", "decision"):
         if "--help" not in command_help(command):
             raise AssertionError(f"{command} help is unavailable")
+    if "capacity" not in command_help("test"):
+        raise AssertionError("test help is missing capacity administration")
 
     print("dev-coordinator skill self-test ok")
     return 0

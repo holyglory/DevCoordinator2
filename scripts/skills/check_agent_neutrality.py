@@ -45,7 +45,6 @@ def shared_markup(root: Path) -> list[Path]:
 def prompt_sources(root: Path) -> list[Path]:
     candidates = [root / "full_repo_harness" / "queue.py"]
     candidates.extend((root / "skills").glob("*/scripts/build*.py"))
-    candidates.extend((root / "skills").glob("*/scripts/_vendor/full_repo_harness/queue.py"))
     return sorted(path for path in candidates if path.is_file())
 
 

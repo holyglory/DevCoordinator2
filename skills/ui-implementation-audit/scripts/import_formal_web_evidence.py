@@ -14,13 +14,10 @@ from pathlib import Path
 SCRIPT_DIR = Path(__file__).resolve().parent
 SKILL_DIR = SCRIPT_DIR.parent
 REPO_ROOT = Path(__file__).resolve().parents[3]
-VENDOR_ROOT = SCRIPT_DIR / "_vendor"
-DEV_SKILL_DIR = (REPO_ROOT / "skills" / "ui-implementation-audit").resolve()
-running_in_dev_repo = DEV_SKILL_DIR == SKILL_DIR.resolve() and (REPO_ROOT / "full_repo_harness" / "evidence.py").is_file()
-for root in reversed([item for item in ([REPO_ROOT, VENDOR_ROOT] if running_in_dev_repo else [VENDOR_ROOT]) if item.is_dir()]):
-    root_text = str(root)
-    if root_text not in sys.path:
-        sys.path.insert(0, root_text)
+if not (REPO_ROOT / "full_repo_harness" / "evidence.py").is_file():
+    raise RuntimeError("ui-implementation-audit must resolve from the canonical DevCoordinator2 skill link")
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 from full_repo_harness import evidence as audit_evidence
 

@@ -11,6 +11,10 @@ This exhaustive workflow is explicit-only. Run it only when the user invokes
 `$full-repo-test-coverage-audit`; ordinary implementation, review, testing, or
 gap-finding requests must not activate it implicitly.
 
+The installed skill must be a direct link into the canonical DevCoordinator2
+checkout. Its scripts resolve that link and import the one root
+`full_repo_harness`; copied standalone skill packages are unsupported.
+
 Run a read-only, manifest-verified audit of test coverage. The lead agent reviews the repo architecture, test strategy, UI/user journeys, intended feature set, UI element set, and high-level behavior. Low-effort workers inspect deterministic file batches and manually identify reasonable test targets, existing test evidence, missing scenarios, boundary cases, failure paths, and recommended test types.
 
 This is an empirical coverage audit only when the user supplies a supported runtime coverage report. Without one, label results `structural/manual test assurance`; the presence of a test file is structural evidence, not proof that it ran or covered a line.
@@ -64,7 +68,8 @@ Treat documented product intent, confirmed user journeys, source-backed feature 
 8. Reconcile findings, inspect suspicious high-impact gaps directly as lead, and produce a prioritized implementation plan. For large audits, consolidate first:
 
    ```bash
-   python3 "$FULL_REPO_TEST_COVERAGE_AUDIT_SKILL_DIR/scripts/_vendor/full_repo_harness/merge_findings.py" \
+   CANONICAL_SKILL_ROOT="$(dirname "$(dirname "$(realpath "$FULL_REPO_TEST_COVERAGE_AUDIT_SKILL_DIR")")")"
+   python3 "$CANONICAL_SKILL_ROOT/full_repo_harness/merge_findings.py" \
      --reports <audit-output>/reports \
      --markdown-out <audit-output>/consolidated-findings.md
    ```

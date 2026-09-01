@@ -4,19 +4,23 @@ One small reviewed file at the repository root. Configuration is canonical
 for commands and component meaning; the coordinator database is canonical
 for live assignments, identities, state, users, grants, and observations.
 
-## Phase 1 schema (implemented)
+## Governed-test schema 2
 
 ```toml
-schema = 1
+schema = 2
 
 [test]
 default = "unit"            # optional; required if more than one test
 
 [test.unit]
-command = ["python3", "-m", "pytest", "-q"]   # argv array; one-check form
-cwd = "."                   # optional, repo-relative, default "."
-timeout_seconds = 600       # outer runaway watchdog only; never readiness
-env = { CI = "1" }          # optional, string→string; additive only
+timeout_seconds = 600       # outer systemd containment watchdog
+cwd = "."                   # optional default for checks, repo-relative
+env = { CI = "1" }          # optional default, string→string; additive only
+
+[[test.unit.check]]
+name = "unit"
+tier = "development"
+command = ["python3", "-m", "pytest", "-q"]
 
 [test.unit.postgres]        # optional: test-scoped ephemeral PostgreSQL
 image = "postgres:16-alpine"   # official postgres:<tag> (default), or a compatible
@@ -24,36 +28,51 @@ image = "postgres:16-alpine"   # official postgres:<tag> (default), or a compati
 database = "test"              # [a-z_][a-z0-9_]{0,62}
 user = "test"
 
-[test.complete]             # graph form: use check tables instead of command
+[test.complete]
 timeout_seconds = 21600
 
 [[test.complete.check]]
 name = "build"
+tier = "development"
 command = ["npm", "run", "build"]
 produces = ["dist/app.js"]  # immutable regular-file receipts, repo-relative
 
 [[test.complete.check]]
+name = "source-preflight"
+tier = "development"
+role = "preflight"
+command = ["./scripts/check-source-integrity"]
+invalidates = ["server", "browser"]
+timeout_seconds = 60        # failure ceiling for this leaf
+
+[[test.complete.check]]
 name = "server"
+tier = "pre-merge"
 command = ["./scripts/start-test-server"]
-requires = ["build"]        # waits for build and requires it to pass
+requires = ["build"]
 completion = "event"        # emits its exact event, then may stay alive
 on_failure = "stop"         # only for evidence-invalidating/unsafe failure
 
 [[test.complete.check]]
 name = "browser"
+tier = "release"
 command = ["node", "verify.mjs"]
 requires = ["server"]
+timeout_seconds = 900
 
 [[test.complete.check]]
-name = "package-report"
-command = ["./scripts/package-report"]
-after = ["browser"]         # runs after browser even when browser failed
+name = "locale-cases"
+tier = "pre-merge"
+discover = ["./scripts/list-locales"]
+case_command = ["./scripts/check-locale"]
+requires = ["build"]
 ```
 
-In graph form every ready check starts concurrently. There is deliberately no
-`max_parallel`, worker-budget, resource-lock, CPU, memory, or client-override
-field. If two checks cannot safely overlap, declare their real completion or
-success dependency. Every check receives an isolated
+Every dependency-ready check or expanded case enters the host-wide adaptive
+admission queue immediately. Repository configuration has no `max_parallel`,
+worker-budget, resource-lock, CPU, memory, or client-override field. If two
+checks cannot safely overlap for correctness, declare their real completion or
+success dependency. Every leaf receives an isolated
 `DEVCOORDINATOR_CHECK_SCRATCH`, the shared
 `DEVCOORDINATOR_SHARED_ARTIFACTS`, and its exact run/check identity.
 
@@ -64,6 +83,20 @@ not elapsed time, binds the event to that check. A passed long-lived process
 stays available to dependents and is terminated during final cleanup. If it
 exits early, downstream evidence is unsafe. `produces` paths are content-hashed
 regular files; symlinks, missing files, path escape, and mutable receipts fail.
+
+Every check declares its minimum `tier`: `development`, `pre-merge`, or
+`release`. Tier selection is cumulative; only a fresh complete release run is
+readiness evidence. `role = "preflight"` permits `invalidates` targets, which
+compile to success dependencies and become `invalidated` when the preflight
+fails. `timeout_seconds` on a check or expanded case is only a failure ceiling;
+it never means success.
+
+One-level case expansion uses either static `cases` plus `case_command`, or one
+terminating `discover` command plus `case_command`. Discovery writes a single
+JSON manifest to the inherited descriptor (maximum 2 MiB and 4,096 unique
+bounded case IDs). Each case contributes only an argument array appended to the
+reviewed `case_command`; it cannot replace the command, cwd, environment, or
+expand recursively.
 
 An ephemeral PostgreSQL is one throwaway instance per run: a Docker
 container carrying the exact run identity in daemon-owned labels, data on
@@ -84,13 +117,15 @@ contract and provide `pg_isready`; extensions remain repository-specific.
 
 Validation rules:
 
-- `schema` must be `1`.
-- A test declares either one `command` or one or more `[[test.<name>.check]]`
-  tables, never both. Every check command is a non-empty argv array. Shell
-  strings are forbidden everywhere.
+- `schema` must be `2`. Schema 1, direct test commands, translation, and
+  compatibility fallback are rejected.
+- Every test declares one or more `[[test.<name>.check]]` tables. Every direct,
+  discovery, and case command is a non-empty argv array. Shell strings are
+  forbidden everywhere.
 - `cwd` must resolve (realpath, after joining) inside the repository; `..`
   or symlink escape is rejected.
-- `timeout_seconds` integer in [1, 21600].
+- Test and leaf `timeout_seconds` values are integers in [1, 21600]. The test
+  value is outer containment; a leaf value is a failure ceiling.
 - `env` values must not look like secrets (no key names matching
   token/secret/password/key patterns with literal values — reference
   secrets held outside the repository instead).
@@ -98,6 +133,14 @@ Validation rules:
 - Check names: `[a-z0-9][a-z0-9-]{0,63}`; names are unique, dependencies must
   exist, self-dependency and cycles are rejected, and `after`/`requires` may
   not repeat the same edge.
+- Check `tier` is required and is `development|pre-merge|release`; a dependency
+  cannot require a check excluded from its selected tier closure.
+- Check `role` is `work|preflight` (default `work`). Only a preflight may
+  declare non-empty `invalidates`; targets must exist, cannot invert tier
+  closure, and become success-dependency edges before cycle validation.
+- A check declares exactly one of `command`, `discover`+`case_command`, or
+  static `cases`+`case_command`. Fan-out manifests and cases are finite,
+  bounded, uniquely named, argument-only, and non-recursive.
 - Check `completion` is `process|event`; `on_failure` is `continue|stop`.
 - `DEVCOORDINATOR_*` environment names are reserved for exact runner identity,
   scratch, artifact, and event delivery.

@@ -1,7 +1,6 @@
 ---
 name: ui-implementation-audit
 description: Run an explicit exhaustive audit of an existing substantive product UI against product journeys, mockups, source wiring, rendered evidence, and tests. Use only through the active runtime's explicit skill-invocation mechanism after manually confirming at least one repo-owned executable screen/component/view. Do not use for ordinary implementation or review, pre-implementation plans, mockups, screenshots, stories/tests, styles/assets alone, scaffolding, or backend-only repositories.
-disable-model-invocation: true
 ---
 
 # UI Implementation Audit
@@ -11,6 +10,10 @@ disable-model-invocation: true
 This is an explicit-only, read-only assurance workflow. Invocation authorizes
 the audit, its isolated workers, and external audit artifacts—not product
 implementation or unrelated repository changes.
+
+The installed skill must be a direct link into the canonical DevCoordinator2
+checkout. Its scripts resolve that link and import the one root
+`full_repo_harness`; copied standalone skill packages are unsupported.
 
 Use it to determine whether an implemented product UI is complete and faithful
 to its journeys and design target:

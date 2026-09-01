@@ -18,7 +18,7 @@ devcoordinator2 health --help
 
 ## Choose the product-owned surface
 
-- Use `test start|retry|status|output|stop|event|list` for repository tests.
+- Use `test start|retry|status|output|stop|event|list|capacity` for repository tests.
 - Use `deployment list|apply|status|start|stop|restart|rollback|logs|remove`
   for declared permanent or preview deployments.
 - Use `health summary|repositories|containers` for host and ownership
@@ -37,30 +37,42 @@ not success. On a typed failure, follow its stated recovery and exact identity.
 Do not bypass it with direct Docker, database, process, port, or systemd
 mutation.
 
+When the user has requested an in-scope write and the authenticated caller is
+authorized for it, invoke the command directly. Do not interrupt for another
+DevCoordinator confirmation or chat approval. Preserve server authorization,
+exact-target validation, permanent history, and any approval mechanism owned by
+the host or calling tool.
+
 Keep secrets out of argv, ordinary environment metadata, results, and logs.
 Use only the installed instance configuration and private credential files.
 
 ## Governed tests
 
-Before a consequential complete run, read the current `test --help`, inspect
-the named test declaration in `.devcoordinator.toml`, and query `test list`.
-Do not start a duplicate for a worktree that already has the intended run.
+Before a consequential run, read the current `test --help`, inspect the named
+schema-2 declaration in `.devcoordinator.toml`, and query `test list`. Schema 1,
+legacy translation, and fallback are unsupported. Do not start a duplicate for
+a worktree that already has the intended run.
 
-Distinguish the execution model before describing or starting it:
+Every check declares a minimum tier. Development runs development checks;
+pre-merge adds pre-merge checks; release runs all checks and is the default.
+Only a fresh, unselected, complete release run is readiness evidence. Use
+development and pre-merge tiers for repair feedback instead of repeatedly
+running release proof.
 
-- A graph test declares named checks. Every check whose `after` and `requires`
-  dependencies are satisfied starts concurrently; `requires` also requires a
-  successful predecessor. Process exit or the check's exact `test event`
-  advances the graph. `timeout_seconds` is only the outer runaway watchdog.
-- A legacy test is one opaque command, even when that command internally runs
-  many builds, locales, browser sessions, or formal phases. DevCoordinator
-  cannot parallelize, time, select, or retry those hidden phases. State this
-  limitation when it materially affects a requested long run. Do not infer a
-  defect from timeout length alone or attempt to parse shell source as a graph.
-- When evidence or known structure shows that a legacy target serializes
-  independent work, create or reuse one specifically scoped graph-migration
-  task. Do not add worker budgets, fixed concurrency counts, or timeout
-  heuristics; express real ordering and isolation needs as graph dependencies.
+`after` waits for terminal completion; `requires` additionally requires
+success. A preflight's `invalidates` targets are real success dependencies: a
+failed preflight marks its targets `invalidated` without stopping unrelated
+branches. One reviewed discovery command may expand bounded cases; the Rust
+executor owns each case's admission, process group, deadline, logs, result, and
+cleanup. A check/case `timeout_seconds` is a failure ceiling that produces
+`timed_out`, never timer-based success. The test-level systemd deadline remains
+the outer containment watchdog.
+
+Submit every dependency-ready leaf immediately. DevCoordinator's host-wide
+adaptive scheduler owns capacity admission; repositories must not encode host
+capacity as fake dependency chains or add their own fixed worker budget. Use
+`test capacity show|set|clear` when the owner asks to inspect, cap, or restore
+Auto admission. A lower cap delays new grants and never kills active work.
 
 The process is owned by its systemd unit, not by the agent that started or
 observes it. If an observer exits, query `test status` or `test list` and read a
@@ -76,7 +88,8 @@ repair; begin independent read-only diagnosis without modifying its source or
 artifacts.
 
 `test start --check <name>` and `test retry --run-id <run> --check <name>` are
-diagnostic shortcuts. Retry only after the originating complete run finishes
+diagnostic shortcuts with proof `selected` and `retry`, respectively. Retry
+only after the originating complete run finishes
 and only while its source, configuration, prerequisites, and declared artifact
 receipts still match. Neither selection nor retry is release proof; readiness
 still requires one fresh complete passing graph.
@@ -115,7 +128,8 @@ is no file fallback.
   Load context with `decision_tail`; `decision_search` before retrying an
   approach that may already have been tried and rejected. When any decision
   read reports `summary_due`, write and store the rolling summary via
-  `decision_summarize` before continuing.
+  `decision_summarize` before continuing. This append-only maintenance write
+  is direct: do not ask the user for another approval.
 
 ## Preserve the self-hosting boundary
 

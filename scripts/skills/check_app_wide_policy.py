@@ -292,6 +292,11 @@ def find_policy_violations(text: str) -> list[str]:
                 "do not relay its internals through chat",
                 "within the approved boundaries do not trigger another approval",
                 "one updated bundled decision",
+                "do not request a second confirmation for an in-scope administrative write",
+                "authenticated caller is authorized",
+                "server authorization",
+                "exact-target validation",
+                "host/tool-owned approval control",
                 "evidence-backed boundary",
                 "possible or imagined edge case",
                 "not by itself a project need",
@@ -570,6 +575,8 @@ def find_policy_violations(text: str) -> list[str]:
                 "confirmed user decisions",
                 "inferred patterns",
                 "decision refs cited",
+                "append-only maintenance write is direct",
+                "does not require another user approval",
             ),
         )
 
@@ -639,7 +646,11 @@ def find_policy_violations(text: str) -> list[str]:
                 "start every ready",
                 "concurrently",
                 "available runtime or tool support",
-                "do not invent CPU, memory, API, cost, or fixed-worker budgets",
+                "configured coordinator",
+                "measured host-wide adaptive admission",
+                "do not add repository-local worker counts",
+                "fake dependency chains",
+                "second capacity controller",
                 "serialize only",
                 "concrete dependency",
                 "shared mutable-state conflict",
@@ -657,6 +668,10 @@ def find_policy_violations(text: str) -> list[str]:
                 "event-driven readiness",
                 "100 ms",
                 "failure deadline",
+                "invalidate expensive downstream evidence",
+                "real success dependencies",
+                "independent preflights",
+                "unrelated safe branches",
             ),
         )
         _require_pattern(
@@ -697,6 +712,12 @@ def find_policy_violations(text: str) -> list[str]:
                 "deploy it",
                 "tell the user what remains",
                 "incomplete test deployment",
+                "explicit validation tiers",
+                "development",
+                "pre-merge",
+                "fresh complete release pass",
+                "frozen candidate",
+                "do not rerun release proof after every intermediate",
             ),
         )
         _require_pattern(

@@ -8,13 +8,14 @@ behavior exists.
 
 The CLI maps `devcoordinator2 test start …` to command `test.start`; the MCP
 server exposes the same commands as tools `test_start`, `test_retry`,
-`test_status`, `test_output`, `test_stop`, `repository_list`. All three
+`test_status`, `test_output`, `test_stop`, `test_capacity_get`,
+`test_capacity_set`, `repository_list`. All three
 surfaces return the identical result JSON.
 
 ## ping
 
 Args: none.
-Result: `{"daemon_version": "<semver>", "schema_version": 12, "socket": "<path>"}`
+Result: `{"daemon_version": "<semver>", "schema_version": 13, "socket": "<path>"}`
 
 ## test.start
 
@@ -24,6 +25,11 @@ Args:
   defaults to the file's declared default.
 - `checks` (array of unique check names, optional) — diagnostic selection plus
   its transitive prerequisites. Omit for the complete graph.
+- `tier` (`development|pre-merge|release`, optional; default `release`) — the
+  cumulative validation tier to run.
+
+Omitting `checks` produces proof `complete`; supplying it produces proof
+`selected` and always sets `readiness_eligible` false.
 
 Result (only after the process exists):
 
@@ -32,6 +38,8 @@ Result (only after the process exists):
   "run_id": "t20260822T120000Z-1a2b3c",
   "repository_id": "r…", "worktree_id": "w…",
   "test": "unit",
+  "requested_tier": "release",
+  "readiness_eligible": true,
   "status": "running",
   "proof": "complete",
   "selection": [],
@@ -46,16 +54,18 @@ Errors: `repository_not_found`, `repository_config_invalid`,
 Never `queued`.
 Latest-start-wins: a concurrent earlier run ends `superseded`.
 
-Every ready graph check starts concurrently. `after` requires terminal
-completion; `requires` requires success. Process exit or an inherited exact
-completion event advances the graph. `timeout_seconds` is only the outer
-runaway watchdog and can never produce readiness or success.
+Every dependency-ready leaf enters host-wide adaptive admission immediately.
+`after` requires terminal completion; `requires` requires success. Failed
+preflights mark their declared targets `invalidated`; unrelated branches
+continue. Process exit or an inherited exact completion event advances the
+graph. A leaf `timeout_seconds` is a failure ceiling and produces `timed_out`;
+the test-level value is the outer watchdog. Neither can produce success.
 
 ## test.retry
 
 Args: `path`, optional `test`, `run_id` of an original completed full run, and
 one failed `check`. Result has the same running shape as `test.start`, with
-`proof: "diagnostic"`, `selection: [check]`, and `origin_run_id` set. The
+`proof: "retry"`, `selection: [check]`, and `origin_run_id` set. The
 target's prerequisite closure runs; a matching process-completed prerequisite
 with declared artifact receipts may be `reused`. Missing, unfinished,
 diagnostic, non-failed, source/config-changed, or artifact-stale origins fail
@@ -67,19 +77,40 @@ Args: `path` (required).
 Result: the current `summary.json` fields (see below) plus `summary_path`.
 Successful runs carry **no log text**. Error: `test_not_found`.
 
-Graph status additionally carries `proof` (`complete|diagnostic`), `selection`,
+Graph status additionally carries `requested_tier`, `readiness_eligible`, `proof`
+(`complete|selected|retry`), `selection`,
 `origin_run_id`, `check_summary`, ordered `checks` (state, monotonic duration,
 exit code, bounded reason, declared artifact receipts, output reference), a
 bounded `failure_index`, `source_changed`, `unsafe_reason`, and
-`check_report_path`. States are `pending|running|passed|failed|reused|`
-`not_meaningful|cancelled|unsafe`. Measurements never control progression.
+`check_report_path`. The referenced Rust check report is schema 2 only; schema
+1/Python reports are rejected rather than translated. It includes
+`capacity {learned_capacity, effective_capacity, capacity_wait_count}` plus
+bounded preflight/check/case counts. States are `pending|running|passed|failed|reused|`
+`timed_out|invalidated|not_meaningful|cancelled|unsafe`. Capacity-wait counts,
+expanded-case totals, and preflight totals remain bounded summary fields.
+Measurements never control success progression.
 
-summary.json fields (result schema 1): `schema_version`, `run_id`, `test`,
+summary.json fields (result schema 2; schema 1 is not read or translated):
+`schema_version`, `run_id`, `test`, `requested_tier`, `readiness_eligible`,
+`proof`, `selection`, `origin_run_id`,
 `status` (`running|passed|failed|timed-out|cancelled|interrupted|superseded`),
 `started_at`, `finished_at` (null while running), `duration_seconds`,
 `exit_code` (null unless exited), `stdout_bytes_observed`,
 `stdout_bytes_retained`, `stderr_bytes_observed`, `stderr_bytes_retained`,
 `stdout_truncated`, `stderr_truncated`, `caller_uid`, `client`.
+
+## test.capacity.get | test.capacity.set
+
+- `test.capacity.get` takes no arguments.
+- `test.capacity.set` takes `{cap: integer|null}`. An integer sets the
+  administrator maximum; `null` restores uncapped Auto admission. Lowering a
+  cap never kills active work.
+
+Both return `{learned_capacity, effective_capacity, cap, active, waiting,
+paused, last_adjustment}`. `last_adjustment` is null or `{event_id, at, actor,
+reason, previous_capacity, new_capacity, cap, p95_cpu_percent,
+p95_memory_percent, saturation_fraction, epoch_seconds}`. Evidence values may
+be null when unavailable. CLI equivalents are `test capacity show|set|clear`.
 
 ## test.output
 
@@ -449,7 +480,8 @@ jargon — the register rule lives in the agent instructions).
   Stores the agent-written rolling summary; all summaries are kept. When
   `unsummarized_count` reaches 25, every decision read reports
   `summary_due: true` and the working agent writes the next summary — the
-  daemon never generates text.
+  daemon never generates text. This authorized append-only maintenance acts
+  directly and does not require a separate user confirmation.
 
 Every repository-scoped task, release, and decision result also includes
 `elaboration_requests`. Agents treat a non-empty list as owner input: load

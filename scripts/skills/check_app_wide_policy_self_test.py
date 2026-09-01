@@ -366,6 +366,24 @@ def main() -> int:
             "do not begin the addition until the user approves it",
         ),
         (
+            "redundant administrator confirmation restored",
+            policy.replace(
+                "Do not request a second confirmation",
+                "Request another confirmation",
+                1,
+            ),
+            "relevant-context contract",
+        ),
+        (
+            "decision summarization approval restored",
+            policy.replace(
+                "append-only maintenance write is direct",
+                "append-only maintenance write waits for approval",
+                1,
+            ),
+            "decision-memory contract",
+        ),
+        (
             "missing complete-cycle behavior",
             replace_section(
                 policy,
@@ -382,6 +400,24 @@ def main() -> int:
                 "- Run work serially and wait for the suite to finish before investigating.",
             ),
             "parallel-work contract",
+        ),
+        (
+            "missing adaptive admission ownership",
+            policy.replace(
+                "measured host-wide adaptive admission",
+                "repository-selected fixed admission",
+                1,
+            ),
+            "parallel-work contract",
+        ),
+        (
+            "missing validation tiers",
+            policy.replace(
+                "Use explicit validation tiers",
+                "Use one validation mode",
+                1,
+            ),
+            "complete-cycle contract",
         ),
         (
             "missing database-only completion ledger",

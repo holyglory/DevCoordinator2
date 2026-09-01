@@ -21,7 +21,7 @@ from shutil import rmtree, which
 ROOT = Path(__file__).resolve().parents[1]
 BUILD = ROOT / "scripts" / "build_audit_batches.py"
 VERIFY = ROOT / "scripts" / "verify_audit_results.py"
-MERGE_FINDINGS = ROOT / "scripts" / "_vendor" / "full_repo_harness" / "merge_findings.py"
+MERGE_FINDINGS = ROOT.parents[1] / "full_repo_harness" / "merge_findings.py"
 MARKER_FREE_EVAL_SELF_TEST = ROOT / "evals" / "marker-free" / "self_test.py"
 SELF_TEST_CACHE_SCHEMA = 1
 SELF_TEST_CACHE_SKIP_PARTS = {".git", "__pycache__"}

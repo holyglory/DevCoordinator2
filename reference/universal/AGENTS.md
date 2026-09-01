@@ -44,6 +44,12 @@
   Implementation details within the approved boundaries do not trigger another
   approval. If later evidence materially changes the outcome or boundaries,
   stop and present one updated bundled decision before proceeding.
+- Do not request a second confirmation for an in-scope administrative write
+  the user already requested when the authenticated caller is authorized for
+  that product action. Invoke it directly and rely on server authorization,
+  exact-target validation, and permanent history. This does not authorize an
+  addition outside the agreed scope, bypass a host/tool-owned approval control,
+  or weaken a destructive action's explicit target and effect.
 - For a third-party service, repository, library, framework, or project, give
   its exact name and role and verify material claims with current authoritative
   sources. Distinguish facts, inferences, and unknowns; cover relevant
@@ -140,7 +146,9 @@
 - When any decision read reports `summary_due`, write and store the rolling
   summary with `decision_summarize` before continuing. Give the summary the
   Direction synthesis's job: durable intent and quality bar, confirmed user
-  decisions distinguished from inferred patterns, decision refs cited.
+  decisions distinguished from inferred patterns, decision refs cited. This
+  append-only maintenance write is direct and does not require another user
+  approval.
 
 ## Deliver the complete agreed scope
 
@@ -193,10 +201,16 @@
 - Before substantive multi-step work, identify the dependencies and
   mutable-state ownership needed to distinguish ready work from conflicts.
   Start every ready, non-conflicting item concurrently using the available
-  runtime or tool support, and start newly ready work as prior work finishes.
-  Do not invent CPU, memory, API, cost, or fixed-worker budgets. Serialize only
-  for a concrete dependency, a shared mutable-state conflict, or an actual
-  runtime/tool limitation, and state that reason.
+  runtime or tool support, and submit newly ready work as prior work finishes.
+  For governed checks, submit every dependency-ready leaf immediately and let
+  the configured coordinator's measured host-wide adaptive admission decide
+  when it starts. Do not add repository-local worker counts, fake dependency
+  chains, or a second capacity controller. Serialize only for a concrete
+  dependency, a shared mutable-state conflict, or an actual runtime/tool
+  limitation, and state that reason.
+- Make cheap checks that can invalidate expensive downstream evidence real
+  success dependencies. Run independent preflights together; when one fails,
+  do not start its invalidated targets, but continue unrelated safe branches.
 - Use all-settled sibling behavior: an ordinary failure does not cancel other
   safe work. If the harness cannot express required safe concurrency, record
   that missing capability as improvement work and continue with the best
@@ -228,6 +242,10 @@
   and fix the batch, and rerun the complete relevant cycle. Focused checks may
   accelerate development between the two full passes, but do not replace the
   final full pass.
+- Use explicit validation tiers when the project declares them: development
+  for fast changed-work feedback, pre-merge for broader integration, and one
+  fresh complete release pass over a frozen candidate for readiness. Do not
+  rerun release proof after every intermediate verifier or harness repair.
 - During a deployment already included in the agreed task, if a test server or
   other non-production target can be deployed safely and is useful despite
   known gaps, deploy it, tell the user what remains, and let their testing

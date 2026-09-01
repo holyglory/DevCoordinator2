@@ -1635,11 +1635,12 @@ def main() -> int:
         skill_contract = (ROOT / "SKILL.md").read_text(encoding="utf-8")
         folded_skill_contract = " ".join(skill_contract.split()).casefold()
         skill_frontmatter = skill_contract.split("---", 2)[1]
+        skill_adapter = (ROOT / "agents" / "openai.yaml").read_text(encoding="utf-8")
         check(
             "this is an explicit-only" in folded_skill_contract
             and "active runtime's explicit skill-invocation mechanism"
             in folded_skill_contract,
-            "ui-implementation-audit contract must require portable explicit invocation",
+            "ui-implementation-audit contract must require runtime-neutral explicit invocation",
         )
         check(
             "do not use for ordinary implementation or review"
@@ -1647,8 +1648,9 @@ def main() -> int:
             "ordinary UI work must not trigger ui-implementation-audit implicitly",
         )
         check(
-            "disable-model-invocation: true" in skill_frontmatter,
-            "ui-implementation-audit frontmatter must disable implicit model invocation",
+            "allow_implicit_invocation: false" in skill_adapter
+            and "description:" in skill_frontmatter,
+            "ui-implementation-audit adapter must disable implicit invocation",
         )
         check("fresh isolated workers" in skill_contract, "skill must require isolated workers")
         check('reasoning_effort="low"' not in skill_contract and "Light-effort" not in skill_contract, "skill must not prescribe worker effort")

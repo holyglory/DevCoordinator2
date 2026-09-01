@@ -49,8 +49,9 @@ require fresh isolated workers, complete prompt delivery, bounded artifacts,
 and honest fallback without naming a runtime's private controls. Provider and
 installation adapters may retain factual runtime-specific identifiers.
 
-`full_repo_harness/` is canonical. The three audit skills carry synchronized
-vendored copies so each portable directory remains independently usable.
+`full_repo_harness/` is the only shared harness source. The three audit skills
+resolve their installed direct links to this checkout and import it from the
+root; copied standalone skill directories are unsupported.
 
 ## Verification expectation
 
@@ -61,8 +62,8 @@ vendored copies so each portable directory remains independently usable.
 | Universal policy | Semantic policy checker and realistic self-tests pass |
 | Issue ledgers | All scoped ledgers pass path, title, namespace, and table checks |
 | Repository boundary | No live dependency on retired checkout, remote, paths, names, or release copies |
-| Shared harness | Root and all three vendored copies have identical trees |
-| Portable skills | Five complete in-repository and standalone-package test passes |
+| Shared harness | One root harness; no audit-skill vendored copies or fallback imports |
+| Canonical skills | Six complete in-repository self-tests through the live linked layout |
 | Coordinator skill | Current CLI, MCP, metadata, and skill contract agree |
 | Browser runtime | Locked Playwright/Chromium fixtures pass |
 | Link managers | Plan/apply/verify/rollback and source/target drift tests pass |

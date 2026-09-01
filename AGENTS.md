@@ -46,16 +46,17 @@ The universal cross-repository policy is `reference/universal/AGENTS.md`.
 - Keep each `SKILL.md` authoritative and mirror enforceable behavior in its
   self-tests.
 - Detector changes need realistic must-catch cases and false-positive guards.
-- Keep `full_repo_harness/` synchronized with all three vendored copies using
-  `scripts/skills/sync_vendored_harness.py`.
+- Keep `full_repo_harness/` as the one shared source. Audit-skill scripts
+  resolve their installed direct links back to this checkout; do not create
+  vendored or standalone copies.
 - Do not edit installed skill copies; change this repository and verify the
   direct links.
 
 ## Validation
 
 - Run product lint/tests directly from this repository.
-- Run `python3 scripts/skills/validate.py` for the six-skill, policy, ownership,
-  standalone-package, and browser matrix.
+- Run `python3 scripts/skills/validate.py` for the six-skill, policy, canonical
+  ownership, and browser matrix.
 - Keep complete verbose output in cold logs and report bounded failure indexes.
 - Finish finite diagnostic passes after ordinary failures, batch fixes, then
   rerun the complete relevant pass.

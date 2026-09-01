@@ -332,10 +332,9 @@ def verify(out: Path, *, expect: int = 0) -> subprocess.CompletedProcess[str]:
 def main() -> int:
     tmp = Path(tempfile.mkdtemp(prefix="full-repo-test-coverage-audit-self-test-"))
     try:
-        vendor_root = ROOT / "scripts" / "_vendor"
-        for import_root in (ROOT.parents[1], vendor_root):
-            if import_root.exists() and str(import_root) not in sys.path:
-                sys.path.insert(0, str(import_root))
+        repository_root = ROOT.parents[1]
+        if str(repository_root) not in sys.path:
+            sys.path.insert(0, str(repository_root))
         from full_repo_harness import verify_common
         from full_repo_harness import test_targets as target_tools
 

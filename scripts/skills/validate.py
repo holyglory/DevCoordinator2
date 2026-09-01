@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import atexit
-import hashlib
 import json
 import os
 import shlex
@@ -28,10 +27,8 @@ SKILL_NAMES = (
     "ui-implementation-audit",
     "user-journey-docs-audit",
 )
-PORTABLE_SKILL_NAMES = tuple(name for name in SKILL_NAMES if name != "dev-coordinator")
 SKILLS_WITH_REQUIRED_README = set(SKILL_NAMES)
 SKILLS = tuple(ROOT / "skills" / name for name in SKILL_NAMES)
-PORTABLE_SKILLS = tuple(ROOT / "skills" / name for name in PORTABLE_SKILL_NAMES)
 HARNESS_SKILL_NAMES = (
     "full-repo-audit",
     "full-repo-test-coverage-audit",
@@ -82,21 +79,6 @@ def print_failure_summary() -> None:
         print(f"  {index}. {failure}", flush=True)
 
 
-def tree_digest(path: Path) -> str:
-    digest = hashlib.sha256()
-    files = sorted(
-        item
-        for item in path.rglob("*")
-        if item.is_file() and "__pycache__" not in item.parts and item.suffix != ".pyc"
-    )
-    for file_path in files:
-        digest.update(file_path.relative_to(path).as_posix().encode("utf-8"))
-        digest.update(b"\0")
-        digest.update(file_path.read_bytes())
-        digest.update(b"\0")
-    return digest.hexdigest()
-
-
 def check_repository_layout() -> None:
     skills_root = ROOT / "skills"
     actual = {
@@ -122,49 +104,20 @@ def check_repository_layout() -> None:
             raise SystemExit(f"Incomplete skill {skill.name}: {', '.join(absent)}")
 
 
-def check_vendor_sync() -> None:
-    expected = tree_digest(HARNESS)
+def check_canonical_harness_ownership() -> None:
+    required_modules = ("queue.py", "verify_common.py", "evidence.py", "merge_findings.py")
+    missing = [name for name in required_modules if not (HARNESS / name).is_file()]
+    if missing:
+        raise SystemExit(f"Canonical full_repo_harness is incomplete: {missing}")
     for skill_name in HARNESS_SKILL_NAMES:
         vendor = ROOT / "skills" / skill_name / "scripts" / "_vendor" / "full_repo_harness"
-        if not vendor.is_dir() or tree_digest(vendor) != expected:
-            raise SystemExit(f"Vendored harness is stale: {vendor}")
-
-
-def check_standalone_skill(skill: Path) -> None:
-    temporary = Path(tempfile.mkdtemp(prefix=f"{skill.name}-standalone-"))
-    try:
-        if skill.name in HARNESS_SKILL_NAMES:
-            stale_parent = temporary / "full_repo_harness"
-            stale_parent.mkdir()
-            (stale_parent / "__init__.py").write_text("", encoding="utf-8")
-            (stale_parent / "queue.py").write_text(
-                "raise RuntimeError('stale parent harness imported')\n",
-                encoding="utf-8",
-            )
-        copied = temporary / skill.name
-        shutil.copytree(skill, copied)
-        extra_env = None
-        if skill.name == "formal-web-ui-verification":
-            playwright_modules = ROOT / "ci" / "playwright" / "node_modules"
-            if not (playwright_modules / "playwright" / "package.json").is_file():
-                raise RuntimeError(
-                    "standalone formal UI validation requires the locked Playwright dependency; "
-                    "run `npm ci --ignore-scripts --prefix ci/playwright`"
-                )
-            extra_env = {
-                "FORMAL_WEB_UI_PLAYWRIGHT_NODE_MODULES": str(playwright_modules.resolve()),
-            }
-        standalone_script = (
-            copied / "scripts" / "standalone_smoke.py"
-            if skill.name == "formal-web-ui-verification"
-            else copied / "scripts" / "self_test.py"
-        )
-        run(
-            [sys.executable, str(standalone_script)],
-            extra_env=extra_env,
-        )
-    finally:
-        shutil.rmtree(temporary, ignore_errors=True)
+        if vendor.exists():
+            raise SystemExit(f"Shared harness copy must not exist: {vendor}")
+        scripts = ROOT / "skills" / skill_name / "scripts"
+        for script in scripts.glob("*.py"):
+            source = script.read_text(encoding="utf-8")
+            if "_vendor/full_repo_harness" in source or "VENDOR_ROOT" in source:
+                raise SystemExit(f"Skill still contains a shared-harness fallback: {script}")
 
 
 def check_include_glob_exclusions() -> None:
@@ -298,8 +251,7 @@ def main() -> int:
     run([sys.executable, "scripts/skills/check_repository_boundaries.py", "--repo", str(ROOT)])
     run([sys.executable, "scripts/skills/check_ci_security_self_test.py"])
     run([sys.executable, "scripts/skills/check_ci_security.py"])
-    run([sys.executable, "scripts/skills/sync_vendored_harness.py", "--check"])
-    attempt("vendored harness sync", check_vendor_sync)
+    attempt("canonical harness ownership", check_canonical_harness_ownership)
     attempt("interaction label parity", check_interaction_label_parity)
     attempt("changed visual-review parity", check_changed_visual_review_parity)
     attempt("include-glob exclusions", check_include_glob_exclusions)
@@ -322,15 +274,12 @@ def main() -> int:
         ]
     )
 
-    for skill in PORTABLE_SKILLS:
-        attempt(f"standalone skill {skill.name}", lambda skill=skill: check_standalone_skill(skill))
     if FAILURES:
         print_failure_summary()
         return 1
 
     print(
-        f"validation ok ({len(SKILL_NAMES)} canonical skills; "
-        f"{len(PORTABLE_SKILLS)} portable standalone packages passed)"
+        f"validation ok ({len(SKILL_NAMES)} canonical linked skills; one shared harness)"
     )
     return 0
 

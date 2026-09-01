@@ -146,7 +146,8 @@ python3 scripts/verify_audit_results.py \
 After verifier success, create and review the exact ledger projection:
 
 ```bash
-python3 scripts/_vendor/full_repo_harness/merge_findings.py \
+CANONICAL_SKILL_ROOT="$(dirname "$(dirname "$(realpath .)")")"
+python3 "$CANONICAL_SKILL_ROOT/full_repo_harness/merge_findings.py" \
   --reports /tmp/full-repo-audit-run/reports \
   --manifest /tmp/full-repo-audit-run/manifest.json \
   --json-out /tmp/full-repo-audit-run/consolidated-findings.json \

@@ -44,21 +44,22 @@ not contradict them.
   The root daemon alone pulls and verifies the exact digest; generated
   credentials, loopback publication, disposable storage, attribution, and
   exact cleanup remain identical to the official-image fixture.
-- **REQ-TEST-11** (2026-09-01, done): A named test may declare a finite
-  acyclic graph of checks. Every check whose declared prerequisites are
-  satisfied starts concurrently; `after` waits for terminal completion and
-  `requires` additionally requires success. A real correctness dependency is
-  an edge. No concurrency budget, host ceiling, per-repository limit, quota,
-  or client override exists. Existing single-command tests behave as one-check
-  complete graphs (DC2-2026-09-01-INDEPENDENT-CHECKS-NO-BUDGET).
-- **REQ-TEST-12** (2026-09-01, done): Normal check progression comes only
+- **REQ-TEST-11** (2026-09-01, in scope; supersedes
+  DC2-2026-09-01-INDEPENDENT-CHECKS-NO-BUDGET): A repository test declaration
+  uses schema 2 and a finite acyclic graph. Schema 1, legacy single-command
+  declarations, translation, and fallback are rejected. Every dependency-ready
+  leaf enters DevCoordinator's host-wide adaptive admission queue immediately;
+  `after` waits for terminal completion and `requires` additionally requires
+  success. Repositories do not encode host capacity as fake dependencies or
+  run a second worker-budget system.
+- **REQ-TEST-12** (2026-09-01, in scope; supersedes
+  DC2-2026-09-01-DETERMINISTIC-CHECK-COMPLETION): Normal check progression comes only
   from the exact process exit or a dedicated inherited completion event bound
-  to the run and check identity. Elapsed time is never readiness. The test's
-  `timeout_seconds` remains one outer systemd containment watchdog; per-check
-  timeouts and timer-success states do not exist. Governed runner, fixture,
-  integration, and browser-verification code rejects fixed timer waits, with
-  only the bounded 50 ms systemd launch probe retained as an explicit fallback
-  (DC2-2026-09-01-DETERMINISTIC-CHECK-COMPLETION).
+  to the run and check identity. Elapsed time is never success or readiness.
+  A check or expanded case may declare `timeout_seconds` only as a failure
+  ceiling; expiration records `timed_out`, terminates its complete process
+  group, and never advances as success. The test-level systemd deadline remains
+  the outer containment watchdog.
 - **REQ-TEST-13** (2026-09-01, done): Live and terminal status includes a
   bounded, atomically replaced check report: proof kind, selection, exact
   state and monotonic duration per check, declared artifact receipts, and one
@@ -84,6 +85,33 @@ not contradict them.
   and never reconnects or resurrects work
   (DC2-2026-09-01-UPGRADE-TEST-DRAIN,
   DC2-2026-09-01-TRUSTED-LIVE-CHECKOUT).
+- **REQ-TEST-16** (2026-09-01, in scope): Host-wide Auto capacity begins at
+  twice the online logical CPU count and remains stable during one workload
+  epoch. After an epoch containing a run of at least ten minutes, it increases
+  25% when admission was saturated for at least half the samples and CPU and
+  memory p95 were both below 90%; it decreases 25% when CPU or memory stayed at
+  or above 98% for four 15-second samples spanning at least 45 seconds. Memory
+  uses `MemAvailable`. Sustained pressure pauses new grants without killing
+  active work until two samples put both measures below 95%. Missing evidence
+  causes no adjustment. An administrator may set or clear one host-wide
+  maximum; lowering it never kills active work. Learned/effective capacity,
+  the cap, active/waiting counts, pause state, and append-only adjustment
+  evidence are available through CLI, MCP, and Console.
+- **REQ-TEST-17** (2026-09-01, in scope): Every schema-2 check declares its
+  minimum validation tier: `development`, `pre-merge`, or `release`.
+  Development runs development checks; pre-merge adds pre-merge checks; release
+  runs all three. `test.start` defaults to release when the caller omits the
+  tier. Selected checks and development/pre-merge runs are diagnostic; only a
+  fresh complete passing release run is readiness evidence.
+- **REQ-TEST-18** (2026-09-01, in scope): A check may be a preflight whose
+  declared invalidation targets become real success dependencies. All safe
+  independent preflights finish; a failed preflight prevents each target from
+  launching and reports it as `invalidated`, while unrelated branches continue.
+  One bounded discovery step may expand a reviewed command into at most 4,096
+  cases from a 2 MiB inherited-descriptor JSON manifest. Cases may append only
+  bounded IDs and arguments to that command, cannot replace cwd/environment or
+  recursively expand, and each receives central admission, process ownership,
+  deadline, logs, result, and cleanup.
 
 ## Deployments (REQ-DEPLOY, P3)
 
@@ -231,6 +259,15 @@ not contradict them.
   natural height. Repository attribution becomes a labelled stacked layout at
   960 px and below, and every shared-storage category keeps its label and value
   visible without document-level horizontal scrolling.
+- **REQ-CONSOLE-04** (2026-09-01, in scope): Tests keeps the run collection as
+  its primary content, lets an administrator start development, pre-merge, or
+  release validation with release selected by default, and places host-wide
+  Capacity in a focused dialog showing learned/effective capacity, cap,
+  active/waiting work, pause state, and last-adjustment evidence. Saving or
+  clearing the cap acts immediately. Every authorized administrator action
+  acts without a second confirmation dialog; destructive controls name their
+  target and effect, and deployment removal has separate keep-data and
+  delete-data actions.
 
 ## Public access (REQ-ACCESS, P5)
 
@@ -243,7 +280,7 @@ not contradict them.
   of public deployment grants; the kernel peer UID is the caller identity
   and request bodies cannot assert identity (P1, in scope).
 
-## Planning, completion ledger, and decisions (REQ-PLAN, Schemas 8 and 11)
+## Planning, completion ledger, and decisions (REQ-PLAN, Schemas 8, 11, and 13)
 
 - **REQ-PLAN-01** (S8, done): DevCoordinator owns the single authoritative
   completion ledger. Anything an agent stubs, fakes, skips, or finds
@@ -295,6 +332,10 @@ not contradict them.
   independent of the compact task cap. An agent may clear the mark only in
   the same update that changes the task title or outcome into clearer
   owner-facing language; completion appends its own event.
+- **REQ-PLAN-12** (2026-09-01, in scope): A due rolling decision summary is
+  append-only administrative maintenance. An authorized working agent stores
+  it directly without requesting another user approval; every decision and
+  prior summary remains permanent.
 
 ## Reliability (REQ-REL)
 
@@ -319,6 +360,11 @@ not contradict them.
   readiness aborts promptly when the underlying unit or container becomes
   irrecoverably terminal after its restart policy, while recoverable restarts
   retain the configured readiness window.
+- **REQ-REL-08** (2026-09-01, in scope): The three exhaustive audit skills
+  resolve their installed direct links to the one root `full_repo_harness` in
+  the canonical live checkout. No vendored harness tree, synchronization tool,
+  standalone skill package, fallback import, or standalone-package validation
+  remains.
 
 ## Phase 1 acceptance checklist (executed in this delivery)
 
