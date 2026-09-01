@@ -206,17 +206,14 @@ class TestLifecycle:
             capacity_registered = False
             proc = None
             try:
-                initial = summary.build(run, spec.name, "running", started_at,
-                                        caller.uid, client)
                 proof = "retry" if retry_run_id is not None \
                     else ("selected" if requested else "complete")
                 readiness_eligible = proof == "complete" and tier == "release"
+                initial = summary.build(
+                    run, spec.name, "running", started_at, caller.uid, client,
+                    proof=proof, selection=requested,
+                    origin_run_id=retry_run_id, requested_tier=tier)
                 initial.update(
-                    proof=proof,
-                    selection=list(requested),
-                    origin_run_id=retry_run_id,
-                    requested_tier=tier,
-                    readiness_eligible=readiness_eligible,
                     check_report_path=str(current / tests_support.REPORT_FILE),
                 )
                 summary.write_atomic_at(dir_fd, initial,
@@ -868,13 +865,11 @@ class TestLifecycle:
                 duration_seconds=duration, exit_code=exit_code,
                 stdout_observed=out.observed, stdout_retained=out.retained,
                 stderr_observed=err.observed, stderr_retained=err.retained,
-            )
-            doc.update(
-                proof=handle.proof,
-                selection=list(handle.selection),
+                proof=handle.proof, selection=handle.selection,
                 origin_run_id=handle.origin_run_id,
                 requested_tier=handle.requested_tier,
-                readiness_eligible=handle.readiness_eligible,
+            )
+            doc.update(
                 termination_reason=handle.stop_detail,
                 check_report_path=str(
                     handle.worktree_root / ".devcoordinator" / "test" / "current"

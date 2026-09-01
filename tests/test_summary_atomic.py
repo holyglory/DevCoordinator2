@@ -65,6 +65,10 @@ def test_read_rejects_corrupt(tmp_path: Path):
     old["schema_version"] = 1
     path.write_text(json.dumps(old))
     assert summary.read(path) is None
+    incoherent = _running()
+    incoherent.update(proof="selected", selection=[], readiness_eligible=False)
+    path.write_text(json.dumps(incoherent))
+    assert summary.read(path) is None
     assert summary.read(tmp_path / "missing.json") is None
 
 

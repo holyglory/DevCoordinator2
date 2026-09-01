@@ -26,6 +26,7 @@ _FIELDS = (
     "duration_seconds", "exit_code", "stdout_bytes_observed",
     "stdout_bytes_retained", "stderr_bytes_observed", "stderr_bytes_retained",
     "stdout_truncated", "stderr_truncated", "caller_uid", "client",
+    "proof", "selection", "origin_run_id", "requested_tier", "readiness_eligible",
 )
 
 
@@ -33,8 +34,13 @@ def build(run_id: str, test: str, status: str, started_at: str,
           caller_uid: int, client: str, *, finished_at: str | None = None,
           duration_seconds: float | None = None, exit_code: int | None = None,
           stdout_observed: int = 0, stdout_retained: int = 0,
-          stderr_observed: int = 0, stderr_retained: int = 0) -> dict[str, Any]:
+          stderr_observed: int = 0, stderr_retained: int = 0,
+          proof: str = "complete", selection: tuple[str, ...] = (),
+          origin_run_id: str | None = None,
+          requested_tier: str = "release") -> dict[str, Any]:
     assert status in STATUSES, status
+    assert proof in ("complete", "selected", "retry"), proof
+    assert requested_tier in ("development", "pre-merge", "release"), requested_tier
     return {
         "schema_version": RESULT_SCHEMA_VERSION,
         "run_id": run_id,
@@ -52,6 +58,11 @@ def build(run_id: str, test: str, status: str, started_at: str,
         "stderr_truncated": stderr_observed > stderr_retained,
         "caller_uid": caller_uid,
         "client": client,
+        "proof": proof,
+        "selection": list(selection),
+        "origin_run_id": origin_run_id,
+        "requested_tier": requested_tier,
+        "readiness_eligible": proof == "complete" and requested_tier == "release",
     }
 
 
@@ -116,5 +127,22 @@ def read(path: Path) -> dict[str, Any] | None:
     if any(f not in data for f in _FIELDS):
         return None
     if data.get("status") not in STATUSES:
+        return None
+    if data.get("proof") not in ("complete", "selected", "retry") \
+            or data.get("requested_tier") not in (
+                "development", "pre-merge", "release") \
+            or not isinstance(data.get("selection"), list) \
+            or not all(isinstance(name, str) for name in data["selection"]) \
+            or not isinstance(data.get("readiness_eligible"), bool) \
+            or data["readiness_eligible"] != (
+                data["proof"] == "complete" and data["requested_tier"] == "release"):
+        return None
+    origin = data.get("origin_run_id")
+    if (data["proof"] == "complete" and (data["selection"] or origin is not None)) \
+            or (data["proof"] == "selected"
+                and (not data["selection"] or origin is not None)) \
+            or (data["proof"] == "retry"
+                and (len(data["selection"]) != 1
+                     or not isinstance(origin, str) or not origin)):
         return None
     return data
