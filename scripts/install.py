@@ -524,23 +524,20 @@ def validate_live_checkout(root: Path, *, fetch: bool) -> str:
     root = lexical.resolve(strict=True)
     if lexical != root or lexical.is_symlink():
         raise RuntimeError(f"live checkout must be a real absolute directory: {lexical}")
-    top = Path(run(["git", "-C", str(root), "rev-parse", "--show-toplevel"]).stdout.strip())
+    git = ["git", "-c", "safe.directory=*", "-C", str(root)]
+    top = Path(run([*git, "rev-parse", "--show-toplevel"]).stdout.strip())
     if top.resolve() != root:
         raise RuntimeError(f"live checkout must be the Git worktree root: {root}")
     if fetch:
-        run(["git", "-C", str(root), "fetch", "origin", "main"])
-    branch = run(["git", "-C", str(root), "branch", "--show-current"]).stdout.strip()
+        run([*git, "fetch", "origin", "main"])
+    branch = run([*git, "branch", "--show-current"]).stdout.strip()
     if branch != "main":
         raise RuntimeError(f"live checkout must be on main, found {branch or 'detached HEAD'}")
-    status = run([
-        "git", "-C", str(root), "status", "--porcelain", "--untracked-files=all",
-    ]).stdout.strip()
+    status = run([*git, "status", "--porcelain", "--untracked-files=all"]).stdout.strip()
     if status:
         raise RuntimeError("live checkout must be clean")
-    head = run(["git", "-C", str(root), "rev-parse", "HEAD"]).stdout.strip()
-    upstream = run([
-        "git", "-C", str(root), "rev-parse", "refs/remotes/origin/main",
-    ]).stdout.strip()
+    head = run([*git, "rev-parse", "HEAD"]).stdout.strip()
+    upstream = run([*git, "rev-parse", "refs/remotes/origin/main"]).stdout.strip()
     if head != upstream:
         raise RuntimeError("live checkout must exactly match fetched origin/main")
     return head
