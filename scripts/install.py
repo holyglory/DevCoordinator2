@@ -591,7 +591,10 @@ def main() -> int:
         print("run as root", file=sys.stderr)
         return 2
     source_root = ROOT.resolve(strict=True)
-    source_commit = validate_live_checkout(source_root, fetch=True)
+    # The owning non-root account fetches and fast-forwards the live checkout
+    # before installation. Root verifies that already-fetched identity without
+    # requiring repository hosting credentials.
+    source_commit = validate_live_checkout(source_root, fetch=False)
     accounts = [a.strip() for a in ns.client_accounts.split(",") if a.strip()]
     ensure_group(ns.client_group, accounts)
     edge_uid, edge_gid = ensure_edge_user(ns.client_group)
