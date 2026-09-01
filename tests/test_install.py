@@ -305,6 +305,13 @@ def test_unit_files_and_cli_source_resolve_the_checkout(tmp_path):
     assert f"{root}/edge/devcoordinator2-edge.mjs" in install.unit_edge(root, False)
 
 
+def test_live_edge_can_read_but_not_write_the_canonical_checkout():
+    unit = install.unit_edge(ROOT, False)
+    assert "ProtectHome=read-only" in unit
+    assert "ReadOnlyPaths=/home/DevCoordinator2" in unit
+    assert "ProtectHome=yes" not in unit
+
+
 def test_set_env_value_replaces_live_source_path(tmp_path):
     target = tmp_path / "edge.env"
     target.write_text("EDGE_CONSOLE_DIR=/opt/devcoordinator2/current/console\n")

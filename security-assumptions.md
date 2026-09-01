@@ -105,6 +105,9 @@ untracked `instance/` directory and in the installed instance configuration
   checkout is controlled by the same owner and is trusted to affect code that
   executes as root on daemon restart. A dirty, stale, or non-`main` canonical
   checkout blocks restart and readiness.
+- The non-root edge service receives read-only visibility of the canonical
+  checkout and cannot write it. Other home content remains inaccessible to the
+  edge except for the systemd path required to reach that source.
 - Repository commands managed for other projects never run as root or as the
   daemon identity. The daemon launches them as the physical non-root caller via
   systemd transient units (`--uid`/`--gid` + explicit supplementary groups).
