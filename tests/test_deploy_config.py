@@ -9,7 +9,7 @@ from devcoordinator2.daemon.deploy_config import (
 from devcoordinator2.daemon.repoconfig import ConfigError
 
 FULL = '''
-schema = 1
+schema = 2
 [test.unit]
 command = ["true"]
 
@@ -95,7 +95,7 @@ def test_full_spec(tmp_path):
     assert tool.domain_for("worktree") == "tool"
 
 
-BASE = 'schema = 1\n[deployment.d]\ncomponents = ["a"]\n'
+BASE = 'schema = 2\n[deployment.d]\ncomponents = ["a"]\n'
 
 
 @pytest.mark.parametrize("body,fragment", [
@@ -156,7 +156,7 @@ def test_unknown_deployment(tmp_path):
 
 def test_domain_with_single_port_component_routes_implicitly(tmp_path):
     (tmp_path / ".devcoordinator.toml").write_text(
-        'schema = 1\n[deployment.d]\ncomponents = ["app", "worker"]\n'
+        'schema = 2\n[deployment.d]\ncomponents = ["app", "worker"]\n'
         'domain = "para"\n'
         '[deployment.d.component.app]\ntype = "process"\ncommand = ["x"]\nport = true\n'
         '[deployment.d.component.worker]\ntype = "process"\ncommand = ["y"]\n')
@@ -167,7 +167,7 @@ def test_domain_with_single_port_component_routes_implicitly(tmp_path):
 
 def test_domain_with_two_port_components_still_requires_route(tmp_path):
     (tmp_path / ".devcoordinator.toml").write_text(
-        'schema = 1\n[deployment.d]\ncomponents = ["a", "b"]\ndomain = "para"\n'
+        'schema = 2\n[deployment.d]\ncomponents = ["a", "b"]\ndomain = "para"\n'
         '[deployment.d.component.a]\ntype = "process"\ncommand = ["x"]\nport = true\n'
         '[deployment.d.component.b]\ntype = "process"\ncommand = ["y"]\nport = true\n')
     with pytest.raises(ConfigError, match="route = true"):
@@ -176,7 +176,7 @@ def test_domain_with_two_port_components_still_requires_route(tmp_path):
 
 def test_postgres_port_never_becomes_the_implicit_route(tmp_path):
     (tmp_path / ".devcoordinator.toml").write_text(
-        'schema = 1\n[deployment.d]\ncomponents = ["db"]\ndomain = "para"\n'
+        'schema = 2\n[deployment.d]\ncomponents = ["db"]\ndomain = "para"\n'
         '[deployment.d.component.db]\ntype = "postgres"\n')
     with pytest.raises(ConfigError, match="route = true"):
         load_deployment_spec(tmp_path, "d")
@@ -186,7 +186,7 @@ def test_compose_files_finite_services_and_route(tmp_path):
     for name in ("compose.yml", "compose.build.yml", "dev.env"):
         (tmp_path / name).write_text("")
     (tmp_path / ".devcoordinator.toml").write_text(
-        'schema = 1\n[deployment.d]\ncomponents = ["stack"]\ndomain = "app"\n'
+        'schema = 2\n[deployment.d]\ncomponents = ["stack"]\ndomain = "app"\n'
         '[deployment.d.component.stack]\ntype = "compose"\n'
         'files = ["compose.yml", "compose.build.yml"]\n'
         'env_file = "dev.env"\nservices = ["db", "bootstrap", "api"]\n'
@@ -221,7 +221,7 @@ def test_compose_files_finite_services_and_route(tmp_path):
 ])
 def test_compose_lifecycle_rejections(tmp_path, extra, fragment):
     (tmp_path / ".devcoordinator.toml").write_text(
-        'schema = 1\n[deployment.d]\ncomponents = ["stack"]\n'
+        'schema = 2\n[deployment.d]\ncomponents = ["stack"]\n'
         '[deployment.d.component.stack]\ntype = "compose"\n' + extra)
     with pytest.raises(ConfigError, match=fragment):
         load_deployment_spec(tmp_path, "d")
@@ -229,7 +229,7 @@ def test_compose_lifecycle_rejections(tmp_path, extra, fragment):
 
 def test_compose_ignored_env_file_rejects_checkout_source(tmp_path):
     (tmp_path / ".devcoordinator.toml").write_text(
-        'schema = 1\n[deployment.d]\nsource = "checkout"\ncomponents = ["stack"]\n'
+        'schema = 2\n[deployment.d]\nsource = "checkout"\ncomponents = ["stack"]\n'
         '[deployment.d.component.stack]\ntype = "compose"\nenv_file = "dev.env"\n')
     with pytest.raises(ConfigError, match="worktree-only"):
         load_deployment_spec(tmp_path, "d")
