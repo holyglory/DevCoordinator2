@@ -106,9 +106,13 @@ TOOLS = [
     {
         "name": "test_capacity_set",
         "description": "Set the administrator maximum parallel test-leaf count.",
-        "inputSchema": {"type": "object", "properties": {
-            "cap": {"type": "integer", "minimum": 1, "maximum": 65535}},
-            "required": ["cap"]},
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "cap": {"type": "integer", "minimum": 1, "maximum": 65535},
+            },
+            "required": ["cap"],
+        },
     },
     {
         "name": "test_capacity_clear",

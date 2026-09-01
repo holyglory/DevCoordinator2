@@ -135,10 +135,12 @@ class CapacityBroker:
         self._round_robin: deque[str] = deque()
         self._active: dict[str, _Pending] = {}
         self._paused = False
-        self._pressure_streak = 0
+        self._cpu_pressure_streak = 0
+        self._memory_pressure_streak = 0
         self._recovery_streak = 0
         self._pending_decrease = False
         self._epoch_started: float | None = None
+        self._epoch_runs: set[str] = set()
         self._samples: list[tuple[float | None, float | None, bool]] = []
         self._run_started: dict[str, float] = {}
         self._run_durations: list[float] = []
@@ -253,6 +255,8 @@ class CapacityBroker:
                 or not CAP_MIN <= cap <= CAP_MAX):
             raise ValueError(f"cap must be null or an integer in {CAP_MIN}..{CAP_MAX}")
         with self._condition:
+            if self._cap == cap:
+                return self._snapshot_locked()
             previous_effective = self._effective_locked()
             self._cap = cap
             new_effective = self._effective_locked()
@@ -286,13 +290,16 @@ class CapacityBroker:
             saturated = self._waiting_locked() > 0 or (
                 bool(self._active) and len(self._active) >= self._effective_locked())
             self._samples.append((cpu, memory, saturated))
-            pressure = (cpu is not None and cpu >= PRESSURE_PERCENT) or (
-                memory is not None and memory >= PRESSURE_PERCENT)
-            if pressure:
-                self._pressure_streak += 1
+            if cpu is not None and cpu >= PRESSURE_PERCENT:
+                self._cpu_pressure_streak += 1
             else:
-                self._pressure_streak = 0
-            if self._pressure_streak >= 4:
+                self._cpu_pressure_streak = 0
+            if memory is not None and memory >= PRESSURE_PERCENT:
+                self._memory_pressure_streak += 1
+            else:
+                self._memory_pressure_streak = 0
+            if self._cpu_pressure_streak >= 4 \
+                    or self._memory_pressure_streak >= 4:
                 self._paused = True
                 self._pending_decrease = True
             if self._paused and cpu is not None and memory is not None \
@@ -302,7 +309,8 @@ class CapacityBroker:
                 self._recovery_streak = 0
             if self._paused and self._recovery_streak >= 2:
                 self._paused = False
-                self._pressure_streak = 0
+                self._cpu_pressure_streak = 0
+                self._memory_pressure_streak = 0
                 self._recovery_streak = 0
                 self._grant_ready_locked()
 
@@ -441,6 +449,8 @@ class CapacityBroker:
             self._samples = []
             self._run_durations = []
             self._pending_decrease = False
+            self._epoch_runs = set()
+        self._epoch_runs.add(pending.run_id)
         self._run_started.setdefault(pending.run_id, now)
 
     def _grant_ready_locked(self) -> None:
@@ -493,10 +503,14 @@ class CapacityBroker:
         if self._queues.get(run_id) or any(
                 lease.run_id == run_id for lease in self._active.values()):
             return
+        if run_id in self._registered_runs:
+            return
         self._run_durations.append(self._clock() - self._run_started.pop(run_id))
 
     def _maybe_finish_epoch_locked(self) -> None:
         if self._epoch_started is None or self._active or self._waiting_locked():
+            return
+        if any(run_id in self._registered_runs for run_id in self._epoch_runs):
             return
         finished = self._clock()
         epoch_duration = finished - self._epoch_started
@@ -534,11 +548,13 @@ class CapacityBroker:
                 duration=epoch_duration)
 
         self._epoch_started = None
+        self._epoch_runs = set()
         self._samples = []
         self._run_started = {}
         self._run_durations = []
         self._pending_decrease = False
-        self._pressure_streak = 0
+        self._cpu_pressure_streak = 0
+        self._memory_pressure_streak = 0
         self._recovery_streak = 0
         self._paused = False
 

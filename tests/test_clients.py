@@ -311,6 +311,9 @@ def test_mcp_plan_tools_present_owner_controls_absent(live):
     assert "release_request" not in tools and "release_update" not in tools
     assert listed["task_update"]["inputSchema"]["properties"][
         "elaboration_needed"]["type"] == "boolean"
+    capacity_schema = listed["test_capacity_set"]["inputSchema"]
+    assert capacity_schema["required"] == ["cap"]
+    assert "required" not in capacity_schema["properties"]
     created = json.loads(replies[2]["result"]["content"][0]["text"])
     assert created["ok"] is True and created["result"]["status"] == "planned"
 

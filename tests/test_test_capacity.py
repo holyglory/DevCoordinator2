@@ -82,6 +82,36 @@ def test_initial_capacity_cap_and_persistence(tmp_path):
     db.close()
 
 
+def test_repeated_cap_and_already_clear_are_true_noops(tmp_path):
+    db = Database(tmp_path / "authority.sqlite3")
+    broker = CapacityBroker(db, tmp_path / "capacity.sock", logical_cpus=4)
+    initial_updated = db.query(
+        "SELECT updated_at FROM test_capacity_state WHERE singleton=1")[0]["updated_at"]
+    assert broker.set_cap(None, "first")["last_adjustment"] is None
+    assert db.query("SELECT COUNT(*) AS count FROM test_capacity_events")[0]["count"] == 0
+    assert db.query(
+        "SELECT updated_at FROM test_capacity_state WHERE singleton=1")[0]["updated_at"] \
+        == initial_updated
+
+    first = broker.set_cap(3, "first")
+    first_event = first["last_adjustment"]
+    updated = db.query(
+        "SELECT updated_at FROM test_capacity_state WHERE singleton=1")[0]["updated_at"]
+    repeated = broker.set_cap(3, "second")
+    assert repeated["last_adjustment"] == first_event
+    assert db.query("SELECT COUNT(*) AS count FROM test_capacity_events")[0]["count"] == 1
+    assert db.query(
+        "SELECT updated_at FROM test_capacity_state WHERE singleton=1")[0]["updated_at"] \
+        == updated
+
+    cleared = broker.set_cap(None, "first")
+    clear_event = cleared["last_adjustment"]
+    repeated_clear = broker.set_cap(None, "second")
+    assert repeated_clear["last_adjustment"] == clear_event
+    assert db.query("SELECT COUNT(*) AS count FROM test_capacity_events")[0]["count"] == 2
+    db.close()
+
+
 def test_socket_permit_waits_and_disconnect_releases(running):
     broker, _db = running
     broker.set_cap(1, "uid:1000")
@@ -164,6 +194,8 @@ def test_fifo_within_run_and_round_robin_across_runs(tmp_path):
     for pending, client in queued:
         client.close()
         pending.connection.close()
+    broker.unregister_run("ta")
+    broker.unregister_run("tb")
     db.close()
 
 
@@ -186,6 +218,19 @@ def test_run_end_learning_increases_then_decreases(tmp_path):
         broker._release(pending.permit_id)
         client.close()
         pending.connection.close()
+    # Dependency waves may temporarily leave a live run with no permit. That
+    # gap is still part of one workload epoch and cannot trigger learning.
+    assert broker.snapshot()["learned_capacity"] == 2
+    next_wave, next_client = _pending("tlow", "next-wave")
+    with broker._condition:
+        broker._enqueue_locked(next_wave)
+        broker._grant_ready_locked()
+    clock.value = 700.0
+    broker._release(next_wave.permit_id)
+    next_client.close()
+    next_wave.connection.close()
+    assert broker.snapshot()["learned_capacity"] == 2
+    broker.unregister_run("tlow")
     assert broker.snapshot()["learned_capacity"] == 3
     assert broker.snapshot()["last_adjustment"]["reason"] == \
         "underused_saturated_epoch"
@@ -202,11 +247,12 @@ def test_run_end_learning_increases_then_decreases(tmp_path):
     broker.record_sample(20.0, 20.0)
     broker.record_sample(20.0, 20.0)
     assert broker.snapshot()["paused"] is False
-    clock.value = 1202.0
+    clock.value = 1301.0
     for pending, client in leaves:
         broker._release(pending.permit_id)
         client.close()
         pending.connection.close()
+    broker.unregister_run("thigh")
     assert broker.snapshot()["learned_capacity"] == 2
     assert broker.snapshot()["last_adjustment"]["reason"] == "sustained_pressure"
     db.close()
@@ -231,6 +277,7 @@ def test_missing_measurements_never_adjust(tmp_path):
         broker._release(pending.permit_id)
         client.close()
         pending.connection.close()
+    broker.unregister_run("tmissing")
     assert broker.snapshot()["learned_capacity"] == 2
     assert broker.snapshot()["last_adjustment"] is None
     db.close()
@@ -255,8 +302,37 @@ def test_one_measured_resource_can_prove_sustained_pressure(tmp_path):
         broker._release(pending.permit_id)
         client.close()
         pending.connection.close()
+    broker.unregister_run("tmemory")
     state = broker.snapshot()
     assert state["learned_capacity"] == 3
     assert state["last_adjustment"]["p95_cpu_percent"] is None
     assert state["last_adjustment"]["p95_memory_percent"] == 99.0
+    db.close()
+
+
+def test_alternating_cpu_and_memory_pressure_never_counts_as_sustained(tmp_path):
+    clock = Clock()
+    db = Database(tmp_path / "authority.sqlite3")
+    broker = CapacityBroker(
+        db, tmp_path / "capacity.sock", logical_cpus=2, clock=clock,
+        sample_interval=3600, min_epoch_seconds=600)
+    broker.register_run("talternating", os.getuid())
+    leaves = [_pending("talternating", str(index)) for index in range(4)]
+    with broker._condition:
+        for pending, _client in leaves:
+            broker._enqueue_locked(pending)
+        broker._grant_ready_locked()
+    for index in range(8):
+        broker.record_sample(99.0, 20.0) if index % 2 == 0 \
+            else broker.record_sample(20.0, 99.0)
+    assert broker.snapshot()["paused"] is False
+    clock.value = 601.0
+    for pending, client in leaves:
+        broker._release(pending.permit_id)
+        client.close()
+        pending.connection.close()
+    broker.unregister_run("talternating")
+    state = broker.snapshot()
+    assert state["learned_capacity"] == 4
+    assert state["last_adjustment"] is None
     db.close()
