@@ -79,6 +79,59 @@ def test_live_checkout_requires_clean_current_main(tmp_path):
         install.validate_live_checkout(root, fetch=True)
 
 
+def test_rust_executor_build_runs_as_checkout_owner_and_proves_binary(
+        tmp_path, monkeypatch):
+    root = tmp_path / "source"
+    root.mkdir()
+    (root / "Cargo.toml").write_text("[workspace]\n", encoding="utf-8")
+    binary = root / "target/release/devcoordinator2-executor"
+    calls = []
+
+    def fake_run(argv, check=True):
+        calls.append((argv, check))
+        binary.parent.mkdir(parents=True)
+        binary.write_text("binary", encoding="utf-8")
+        binary.chmod(0o755)
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(install, "run", fake_run)
+    monkeypatch.setattr(install.Path, "is_file", lambda self: True)
+    monkeypatch.setattr(install.Path, "is_symlink", lambda self: False)
+
+    assert install.build_rust_executor(root) == binary
+    command, check = calls[0]
+    assert check is False
+    assert command[:6] == [
+        "/usr/bin/setpriv",
+        f"--reuid={root.stat().st_uid}",
+        f"--regid={root.stat().st_gid}",
+        "--init-groups",
+        "--reset-env",
+        "--",
+    ]
+    assert command[-5:] == [
+        "--release", "--manifest-path", str(root / "Cargo.toml"),
+        "--package", "devcoordinator2-executor",
+    ]
+
+
+def test_rust_executor_build_failure_happens_before_runtime_mutation(
+        tmp_path, monkeypatch):
+    root = tmp_path / "source"
+    root.mkdir()
+    monkeypatch.setattr(install.Path, "is_file", lambda self: True)
+    monkeypatch.setattr(install.Path, "is_symlink", lambda self: False)
+    monkeypatch.setattr(
+        install,
+        "run",
+        lambda argv, check=True: SimpleNamespace(
+            returncode=1, stdout="", stderr="compiler unavailable"),
+    )
+
+    with pytest.raises(RuntimeError, match="Rust executor build failed"):
+        install.build_rust_executor(root)
+
+
 def test_install_skill_links_replaces_only_existing_agent_roots(tmp_path, monkeypatch):
     home = tmp_path / "home"
     codex = home / ".codex"

@@ -563,6 +563,50 @@ def validate_live_checkout(root: Path, *, fetch: bool) -> str:
     return head
 
 
+def build_rust_executor(source_root: Path) -> Path:
+    """Build and prove the executor before test admission is closed.
+
+    The canonical checkout owner runs Cargo so ignored build artifacts never
+    become root-owned obstacles to ordinary worktree development.
+    """
+
+    cargo = Path("/usr/bin/cargo")
+    setpriv = Path("/usr/bin/setpriv")
+    for required in (cargo, setpriv):
+        if not required.is_file() or required.is_symlink():
+            raise RuntimeError(f"required Rust build tool is unavailable: {required}")
+    owner = source_root.stat()
+    command = [
+        str(setpriv),
+        f"--reuid={owner.st_uid}",
+        f"--regid={owner.st_gid}",
+        "--init-groups",
+        "--reset-env",
+        "--",
+        str(cargo),
+        "build",
+        "--locked",
+        "--release",
+        "--manifest-path",
+        str(source_root / "Cargo.toml"),
+        "--package",
+        "devcoordinator2-executor",
+    ]
+    completed = run(command, check=False)
+    if completed.returncode != 0:
+        detail = (completed.stderr or completed.stdout).strip()[-2000:]
+        raise RuntimeError(f"Rust executor build failed: {detail or 'cargo exited nonzero'}")
+    binary = source_root / "target" / "release" / "devcoordinator2-executor"
+    try:
+        details = binary.lstat()
+    except FileNotFoundError as exc:
+        raise RuntimeError("Rust executor build did not produce its release binary") from exc
+    if binary.is_symlink() or not stat.S_ISREG(details.st_mode) \
+            or not details.st_mode & stat.S_IXUSR:
+        raise RuntimeError("Rust executor release binary is not a regular executable")
+    return binary
+
+
 def unit_daemon(source_root: Path) -> str:
     text = (source_root / "deploy" / "devcoordinator2.service").read_text()
     return text.replace("Environment=PYTHONPATH=/home/DevCoordinator2/src",
@@ -615,6 +659,7 @@ def main() -> int:
     # before installation. Root verifies that already-fetched identity without
     # requiring repository hosting credentials.
     source_commit = validate_live_checkout(source_root, fetch=False)
+    executor_binary = build_rust_executor(source_root)
     accounts = [a.strip() for a in ns.client_accounts.split(",") if a.strip()]
     ensure_group(ns.client_group, accounts)
     edge_uid, edge_gid = ensure_edge_user(ns.client_group)
@@ -712,6 +757,7 @@ def main() -> int:
         if ns.start:
             enable_and_restart_units()
     print({"source_root": str(source_root), "source_commit": source_commit,
+           "executor_binary": str(executor_binary),
            "edge_uid": edge_uid, "client_group": ns.client_group,
            "created_config": created, "canary": ns.canary,
            "canary_port": ns.canary_port if ns.canary else None, "started": ns.start,
