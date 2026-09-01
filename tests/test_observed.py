@@ -15,7 +15,10 @@ from devcoordinator2.protocol import ProtocolError
 def db(tmp_path: Path):
     database = Database(tmp_path / "authority.sqlite3")
     with database.transaction() as conn:
-        conn.execute("INSERT INTO repositories VALUES('r1','/repo','repo','t',1000,'t')")
+        conn.execute(
+            "INSERT INTO repositories(repository_id,root_path,display_name,"
+            " registered_at,registered_by_uid,last_seen_at)"
+            " VALUES('r1','/repo','repo','t',1000,'t')")
         conn.execute("INSERT INTO worktrees VALUES('w1','r1','/repo','t','t')")
     yield database
     database.close()
@@ -326,7 +329,9 @@ def test_schema7_relaxes_observed_checks_preserving_rows(tmp_path):
         "CREATE TABLE repositories (repository_id TEXT PRIMARY KEY, root_path TEXT NOT"
         " NULL UNIQUE, display_name TEXT NOT NULL, registered_at TEXT NOT NULL,"
         " registered_by_uid INTEGER NOT NULL, last_seen_at TEXT NOT NULL);"
-        "INSERT INTO repositories VALUES('r1','/repo','repo','t',1000,'t');"
+        "INSERT INTO repositories(repository_id,root_path,display_name,"
+        "registered_at,registered_by_uid,last_seen_at)"
+        " VALUES('r1','/repo','repo','t',1000,'t');"
         + _V6_OBSERVED_DDL +
         "INSERT INTO observed_deployments VALUES('d1111111111111111','r1','s','s',"
         "'running','healthy','import','{}','t','t');"

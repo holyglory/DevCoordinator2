@@ -79,13 +79,18 @@ def build_health_handlers(config: InstanceConfig, db: Database, registry: Regist
         deployments = [dict(r) for r in db.query(
             "SELECT d.deployment_id, d.name, d.source, d.state,"
             " r.display_name AS repository_name FROM deployments d"
-            " LEFT JOIN repositories r ON r.repository_id=d.repository_id")]
+            " JOIN repositories r ON r.repository_id=d.repository_id"
+            " WHERE r.archived_at IS NULL")]
+        active_repository_ids = {
+            repository["repository_id"] for repository in registry.list_repositories()
+        }
         deployments.extend({"deployment_id": d["deployment_id"], "name": d["name"],
                             "source": d["source"], "state": d["state"],
                             "health": d["health"],
                             "repository_name": d["repository_name"],
                             "observed_only": True}
-                           for d in observed.list_deployments(db))
+                           for d in observed.list_deployments(db)
+                           if d["repository_id"] in active_repository_ids)
         unhealthy = [d for d in deployments
                      if d["state"] in ("degraded", "failed")
                      or d.get("health") == "unhealthy"]

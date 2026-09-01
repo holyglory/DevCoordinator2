@@ -53,11 +53,15 @@ def test_import_current_state_excludes_historical_resources(tmp_path: Path):
     db = Database(state / "authority.sqlite3")
     repo_id = ids.repository_id(repo)
     with db.transaction() as conn:
-        conn.execute("INSERT INTO repositories VALUES(?,?,?,?,?,?)",
+        conn.execute("INSERT INTO repositories(repository_id,root_path,display_name,"
+                     " registered_at,registered_by_uid,last_seen_at)"
+                     " VALUES(?,?,?,?,?,?)",
                      (repo_id, str(repo), "repo", "t", 1000, "t"))
         conn.execute("INSERT INTO worktrees VALUES(?,?,?,?,?)",
                      (ids.worktree_id(repo), repo_id, str(repo), "t", "t"))
-        conn.execute("INSERT INTO repositories VALUES(?,?,?,?,?,?)",
+        conn.execute("INSERT INTO repositories(repository_id,root_path,display_name,"
+                     " registered_at,registered_by_uid,last_seen_at)"
+                     " VALUES(?,?,?,?,?,?)",
                      ("rfixture", "/tmp/dc2-installed-missing-import-fixture", "fixture",
                       "t", 1000, "t"))
         conn.execute("INSERT INTO worktrees VALUES(?,?,?,?,?)",

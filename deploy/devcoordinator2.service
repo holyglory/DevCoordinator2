@@ -12,7 +12,7 @@ After=network.target
 Type=exec
 User=root
 ExecStart=/usr/bin/python3 -m devcoordinator2.daemon
-Environment=PYTHONPATH=/opt/devcoordinator2/src
+Environment=PYTHONPATH=/home/DevCoordinator2/src
 EnvironmentFile=-/etc/devcoordinator2/instance.env
 NoNewPrivileges=yes
 ProtectSystem=full

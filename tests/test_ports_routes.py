@@ -12,7 +12,10 @@ from devcoordinator2.daemon.db import Database
 def db(tmp_path: Path):
     database = Database(tmp_path / "db.sqlite3")
     with database.transaction() as conn:
-        conn.execute("INSERT INTO repositories VALUES('r1','/x','x','t',1,'t')")
+        conn.execute(
+            "INSERT INTO repositories(repository_id,root_path,display_name,"
+            " registered_at,registered_by_uid,last_seen_at)"
+            " VALUES('r1','/x','x','t',1,'t')")
         conn.execute("INSERT INTO worktrees VALUES('w1','r1','/x','t','t')")
         conn.execute(
             "INSERT INTO deployments(deployment_id, repository_id, worktree_id, name, source,"

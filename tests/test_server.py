@@ -59,7 +59,7 @@ def test_ping(running_server):
     resp = _call(running_server.socket_path, _request("ping"))
     assert resp["ok"] is True
     assert resp["id"] == "req-1"
-    assert resp["result"]["schema_version"] == 11
+    assert resp["result"]["schema_version"] == 12
 
 
 def test_malformed_json(running_server):
@@ -88,6 +88,79 @@ def test_repository_not_found(running_server, tmp_path):
     resp = _call(running_server.socket_path,
                  _request("repository.register", {"path": str(tmp_path)}))
     assert resp["error"]["code"] == "repository_not_found"
+
+
+def test_repository_archive_filters_lists_and_preserves_history(running_server, tmp_path):
+    def create_repo(name):
+        root = tmp_path / name
+        root.mkdir()
+        subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+        subprocess.run(["git", "config", "user.name", "fixture"], cwd=root, check=True)
+        subprocess.run(
+            ["git", "config", "user.email", "fixture@example.invalid"],
+            cwd=root,
+            check=True,
+        )
+        (root / "f.txt").write_text(name)
+        subprocess.run(["git", "add", "f.txt"], cwd=root, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", name], cwd=root, check=True)
+        return root
+
+    source = create_repo("source")
+    target = create_repo("target")
+    source_id = _call(
+        running_server.socket_path,
+        _request("repository.register", {"path": str(source)}),
+    )["result"]["repository_id"]
+    target_id = _call(
+        running_server.socket_path,
+        _request("repository.register", {"path": str(target)}),
+    )["result"]["repository_id"]
+
+    archived = _call(
+        running_server.socket_path,
+        _request(
+            "repository.archive",
+            {
+                "repository_id": source_id,
+                "merged_into_repository_id": target_id,
+                "note": "Merged into target",
+            },
+        ),
+    )
+    assert archived["ok"] and archived["result"]["archived_at"]
+    active = _call(running_server.socket_path, _request("repository.list"))
+    assert [row["repository_id"] for row in active["result"]["repositories"]] == [
+        target_id
+    ]
+    all_rows = _call(
+        running_server.socket_path,
+        _request("repository.list", {"include_archived": True}),
+    )
+    assert {row["repository_id"] for row in all_rows["result"]["repositories"]} == {
+        source_id,
+        target_id,
+    }
+    refused = _call(
+        running_server.socket_path,
+        _request("repository.register", {"path": str(source)}),
+    )
+    assert refused["error"]["code"] == "repository_archived"
+
+    restored = _call(
+        running_server.socket_path,
+        _request(
+            "repository.unarchive",
+            {"repository_id": source_id, "note": "Restore for rollback"},
+        ),
+    )
+    assert restored["ok"] and restored["result"]["archived_at"] is None
+    db = Database(running_server.database_path)
+    assert [row["event"] for row in db.query(
+        "SELECT event FROM repository_events WHERE repository_id=? ORDER BY event_id",
+        (source_id,),
+    )] == ["archived", "unarchived"]
+    db.close()
 
 
 def test_peercred_recorded_and_body_identity_ignored(running_server, tmp_path):

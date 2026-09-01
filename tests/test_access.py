@@ -18,7 +18,10 @@ def world(tmp_path: Path):
                             admin_emails=("owner@example.test",))
     db = Database(config.database_path)
     with db.transaction() as conn:
-        conn.execute("INSERT INTO repositories VALUES('r1','/x','x','t',1,'t')")
+        conn.execute(
+            "INSERT INTO repositories(repository_id,root_path,display_name,"
+            " registered_at,registered_by_uid,last_seen_at)"
+            " VALUES('r1','/x','x','t',1,'t')")
         conn.execute("INSERT INTO worktrees VALUES('w1','r1','/x','t','t')")
         for dep in ("d1", "d2"):
             conn.execute(
@@ -168,7 +171,10 @@ def test_guard_enforces_roles(world):
 
 def test_guard_plan_reads_follow_repository_grants(world):
     with world.db.transaction() as conn:
-        conn.execute("INSERT INTO repositories VALUES('r2','/y','other','t',1,'t')")
+        conn.execute(
+            "INSERT INTO repositories(repository_id,root_path,display_name,"
+            " registered_at,registered_by_uid,last_seen_at)"
+            " VALUES('r2','/y','other','t',1,'t')")
         conn.execute("INSERT INTO tasks(task_id, repository_id, seq, position, title,"
                      " outcome, kind, status, created_at, created_by, updated_at)"
                      " VALUES('p1','r1',1,1,'Some plain task','Some plain outcome.',"

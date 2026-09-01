@@ -56,24 +56,26 @@ accounts, legacy unit names, paths) are instance data kept in the untracked
    `/etc/devcoordinator2/edge/`, `EDGE_HTTP_ONLY=0`, ports 80/443), then
    `scripts/edge_switch.py --to devcoordinator2 --legacy-units <legacy edge
    units> --yes`. Rollback at any time: `--to legacy --yes`.
-   Subsequent `scripts/install.py --start` upgrades stage an immutable release,
-   atomically close test admission, wait on exact activity receipts until every
-   active test and cleanup finishes, then change the release symlink and
-   explicitly restart both units. Abort restores admission and keeps the old
-   release; an active old process is never treated as proof that the new release
-   is running.
+   Subsequent source updates are developed and validated in worktrees, merged
+   to `origin/main`, then fetched and fast-forwarded into the clean
+   `/home/DevCoordinator2` checkout. `scripts/install.py --start` verifies that
+   exact state, closes test admission, waits on exact activity receipts until
+   every active test and cleanup finishes, and restarts both units directly
+   from the checkout. Abort restores admission and leaves the existing process
+   running.
 10. **Docker authoritative mode** (owner decision DC2-…-DOCKER-MODE): remove
     agent accounts from the `docker` group, restart their sessions, verify
     `devcoordinator2 health containers` attributions; the observational
     label disappears from the security assumptions.
-11. **Rollback window**: keep the stopped legacy release and its backup
-    until the new Console and agent journeys are verified through their
-    installed surfaces; only then decommission (`docs/legacy-deletion-map.md`).
+11. **Rollback**: prepare a revert in a worktree, merge it to `origin/main`,
+    fast-forward the live checkout, and repeat the verified restart. Never
+    rewrite or detach the live `main` checkout.
 
 ## Uninstalling the canary
 
 `systemctl disable --now devcoordinator2 devcoordinator2-edge`, remove
 `/etc/systemd/system/devcoordinator2*.service`, `/etc/tmpfiles.d/devcoordinator2.conf`,
-`/usr/local/bin/devcoordinator2`, `/opt/devcoordinator2`, and — only if the
+`/usr/local/bin/devcoordinator2`, any inactive historical `/opt/devcoordinator2`
+source copies, and — only if the
 state is not wanted — `/var/lib/devcoordinator2*`, `/etc/devcoordinator2`,
 the `devcoordinator2-edge` user and `devcoordinator2-clients` group.

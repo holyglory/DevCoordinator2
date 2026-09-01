@@ -21,7 +21,7 @@ affecting the authoritative current test result.
 | Table | Fields | Status |
 |---|---|---|
 | `meta` | key PK, value (`schema_version`, `route_generation`) | done |
-| `repositories` | repository_id PK, root_path UNIQUE, display_name, registered_at, registered_by_uid, last_seen_at | done |
+| `repositories` | repository_id PK, root_path UNIQUE, display_name, registered_at, registered_by_uid, last_seen_at, schema-12 archive time/actor/note/replacement | done |
 | `worktrees` | worktree_id PK, repository_id FK, worktree_path UNIQUE, registered_at, last_seen_at | done |
 
 ## Schema version 2 (Phase 3) — additive upgrade, schema 1 rows preserved
@@ -129,6 +129,13 @@ repository-key association needed to query that source
 | Table | Fields | Status |
 |---|---|---|
 | `codex_usage_repository_links` | (source_uid, repository_id) PK, privacy-preserving Codex repository ID, reviewed source schema/taxonomy, resolution time; index on repository_id | done |
+
+## Schema version 12 (repository archival)
+
+Repositories may be archived after open work and live resources are cleared.
+Normal project collections exclude them, while explicit historical planning and
+decision reads remain available. `repository_events` permanently records each
+archive or unarchive transition, actor, replacement repository, time, and note.
 
 ## Schema version 11 (durable task elaboration requests, 2026-08-30)
 

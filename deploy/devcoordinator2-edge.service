@@ -26,7 +26,7 @@ Environment=EDGE_SESSION_SECRET_FILE=%d/session.secret
 Environment=EDGE_OIDC_CLIENT_ID_FILE=%d/oidc.client_id
 Environment=EDGE_OIDC_CLIENT_SECRET_FILE=%d/oidc.client_secret
 Environment=EDGE_STATE_DIR=/var/lib/devcoordinator2-edge
-ExecStart=/usr/bin/node /opt/devcoordinator2/edge/devcoordinator2-edge.mjs
+ExecStart=/usr/bin/node /home/DevCoordinator2/edge/devcoordinator2-edge.mjs
 StateDirectory=devcoordinator2-edge
 NoNewPrivileges=yes
 ProtectSystem=strict

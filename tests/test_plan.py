@@ -28,8 +28,14 @@ def world(tmp_path: Path):
                             admin_emails=("owner@example.test",))
     db = Database(config.database_path)
     with db.transaction() as conn:
-        conn.execute("INSERT INTO repositories VALUES('r1','/x','repo-one','t',1,'t')")
-        conn.execute("INSERT INTO repositories VALUES('r2','/y','repo-two','t',1,'t')")
+        conn.execute(
+            "INSERT INTO repositories(repository_id,root_path,display_name,"
+            " registered_at,registered_by_uid,last_seen_at)"
+            " VALUES('r1','/x','repo-one','t',1,'t')")
+        conn.execute(
+            "INSERT INTO repositories(repository_id,root_path,display_name,"
+            " registered_at,registered_by_uid,last_seen_at)"
+            " VALUES('r2','/y','repo-two','t',1,'t')")
         conn.execute("INSERT INTO worktrees VALUES('w1','r1','/x','t','t')")
     handlers = build_plan_handlers(config, db, Registry(db))
     yield type("W", (), {"config": config, "db": db, "handlers": handlers})
@@ -367,6 +373,55 @@ def test_release_deliver_snapshots_evidence(world):
     overview = call(world, "plan.overview", repository_id="r1")
     assert overview["releases"][0]["url"] == "https://app.example.test"
     assert overview["preview_requested"] == []
+
+
+def test_archived_repository_allows_history_and_rejects_new_work(world):
+    task = call(
+        world,
+        "task.create",
+        repository_id="r1",
+        title="Historical task",
+        kind="improvement",
+    )
+    call(world, "task.update", task_id=task["task_id"], status="done")
+    call(
+        world,
+        "decision.record",
+        repository_id="r1",
+        aspect="architecture",
+        title="Historical decision",
+        body="This decision remains readable after repository archival.",
+    )
+    with world.db.transaction() as conn:
+        conn.execute(
+            "UPDATE repositories SET archived_at='t', archived_by_uid=1,"
+            " archive_note='merged', merged_into_repository_id='r2'"
+            " WHERE repository_id='r1'"
+        )
+
+    overview = call(world, "plan.overview", repository_id="r1")
+    assert overview["archived"] is True
+    assert overview["merged_into_repository_id"] == "r2"
+    assert call(world, "task.history", task_id=task["task_id"])["task"]["title"] \
+        == "Historical task"
+    assert call(world, "decision.tail", repository_id="r1")["decisions"]
+    with pytest.raises(ProtocolError, match="archived"):
+        call(
+            world,
+            "task.create",
+            repository_id="r1",
+            title="New work",
+            kind="improvement",
+        )
+    with pytest.raises(ProtocolError, match="archived"):
+        call(
+            world,
+            "decision.record",
+            repository_id="r1",
+            aspect="architecture",
+            title="New decision",
+            body="This must not be recorded against an archived repository.",
+        )
 
 
 def test_release_deliver_port_fallback_and_cross_repo(world):

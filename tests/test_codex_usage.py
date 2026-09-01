@@ -112,7 +112,9 @@ def _world(tmp_path: Path, source: CodexUsageSource) -> tuple[CodexUsage, Databa
     }
     Path(repository["root_path"]).mkdir()
     with db.transaction() as conn:
-        conn.execute("INSERT INTO repositories VALUES(?,?,?,?,?,?)", (
+        conn.execute("INSERT INTO repositories(repository_id,root_path,display_name,"
+                     " registered_at,registered_by_uid,last_seen_at)"
+                     " VALUES(?,?,?,?,?,?)", (
             repository["repository_id"], repository["root_path"],
             repository["display_name"], "t", os.getuid(), "t"))
     return CodexUsage(config, db), db, repository
@@ -278,7 +280,9 @@ def test_collection_reads_each_source_once_and_preserves_compact_totals(
                 "root_path": str(tmp_path / f"repo-{index}"),
             }
             repositories.append(repository)
-            conn.execute("INSERT INTO repositories VALUES(?,?,?,?,?,?)", (
+            conn.execute("INSERT INTO repositories(repository_id,root_path,display_name,"
+                         " registered_at,registered_by_uid,last_seen_at)"
+                         " VALUES(?,?,?,?,?,?)", (
                 repository["repository_id"], repository["root_path"],
                 repository["display_name"], "t", os.getuid(), "t"))
             conn.execute(

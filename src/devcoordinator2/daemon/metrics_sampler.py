@@ -330,7 +330,8 @@ class Sampler:
     def storage_tick(self) -> None:
         storage: dict[tuple[str, str], dict] = {}
         repos = {r["repository_id"]: dict(r) for r in self._db.query(
-            "SELECT repository_id, root_path FROM repositories")}
+            "SELECT repository_id, root_path FROM repositories"
+            " WHERE archived_at IS NULL")}
         worktrees = [dict(r) for r in self._db.query(
             "SELECT worktree_id, repository_id, worktree_path FROM worktrees")]
         deployments = {r["deployment_id"]: dict(r) for r in self._db.query(

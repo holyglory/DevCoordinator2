@@ -119,7 +119,13 @@ def status(ctx: eng.Ctx, row: dict) -> dict:
     }
 
 def list_all(db: Database, registry: Registry, path: Path | None, caller: Caller) -> dict:
-    rows = st.list_deployments(db)
+    active_repositories = {
+        repository["repository_id"] for repository in registry.list_repositories()
+    }
+    rows = [
+        row for row in st.list_deployments(db)
+        if row["repository_id"] in active_repositories
+    ]
     declared = []
     if path is not None:
         reg = eng.resolve_registration(registry, path, caller)
@@ -134,8 +140,10 @@ def list_all(db: Database, registry: Registry, path: Path | None, caller: Caller
             raise ProtocolError("repository_config_invalid", str(exc)) from exc
     route_ports = {r["deployment_id"]: r["port"] for r in db.query(
         "SELECT deployment_id, port FROM domain_routes")}
-    repo_names = {r["repository_id"]: r["display_name"] for r in db.query(
-        "SELECT repository_id, display_name FROM repositories")}
+    repo_names = {
+        repository["repository_id"]: repository["display_name"]
+        for repository in registry.list_repositories()
+    }
     managed = [{
         "deployment_id": r["deployment_id"], "repository_id": r["repository_id"],
         "repository_name": repo_names.get(r["repository_id"]),
@@ -145,7 +153,10 @@ def list_all(db: Database, registry: Registry, path: Path | None, caller: Caller
         "route_port": route_ports.get(r["deployment_id"]), "updated_at": r["updated_at"],
         "ttl_expires_at": r["ttl_expires_at"], "observed_only": False,
     } for r in rows]
-    imported = observed.list_deployments(db)
+    imported = [
+        row for row in observed.list_deployments(db)
+        if row["repository_id"] in active_repositories
+    ]
     return {"deployments": [*managed, *imported], "declared": declared}
 
 def logs(ctx: eng.Ctx, row: dict, worktree: Path, component: str,

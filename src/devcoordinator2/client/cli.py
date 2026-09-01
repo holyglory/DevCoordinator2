@@ -155,10 +155,21 @@ def build_parser() -> argparse.ArgumentParser:
 
     repo = sub.add_parser("repository", help="repository registry")
     repo_sub = repo.add_subparsers(dest="action", required=True)
-    _add_common(repo_sub.add_parser("list", help="all repositories"),
-                with_path=False)
+    repo_list = repo_sub.add_parser("list", help="active repositories")
+    _add_common(repo_list, with_path=False)
+    repo_list.add_argument("--all", action="store_true", help="include archived repositories")
     _add_common(repo_sub.add_parser("status", help="one repository"))
     _add_common(repo_sub.add_parser("register", help="register explicitly"))
+    repo_archive = repo_sub.add_parser(
+        "archive", help="retire a repository and preserve history")
+    _add_common(repo_archive, with_path=False)
+    repo_archive.add_argument("repository_id")
+    repo_archive.add_argument("--into", dest="merged_into_repository_id", required=True)
+    repo_archive.add_argument("--note", required=True)
+    repo_unarchive = repo_sub.add_parser("unarchive", help="restore an archived repository")
+    _add_common(repo_unarchive, with_path=False)
+    repo_unarchive.add_argument("repository_id")
+    repo_unarchive.add_argument("--note", required=True)
 
     plan = sub.add_parser("plan", help="planning and completion ledger")
     plan_sub = plan.add_subparsers(dest="action", required=True)
@@ -341,11 +352,22 @@ def _to_call(ns: argparse.Namespace) -> tuple[str, dict]:
                                       "subject_id": ns.subject_id, "metric": ns.metric,
                                       "minutes": ns.minutes}
         case ("repository", "list"):
-            return "repository.list", {}
+            return "repository.list", ({"include_archived": True} if ns.all else {})
         case ("repository", "status"):
             return "repository.status", path_args
         case ("repository", "register"):
             return "repository.register", path_args
+        case ("repository", "archive"):
+            return "repository.archive", {
+                "repository_id": ns.repository_id,
+                "merged_into_repository_id": ns.merged_into_repository_id,
+                "note": ns.note,
+            }
+        case ("repository", "unarchive"):
+            return "repository.unarchive", {
+                "repository_id": ns.repository_id,
+                "note": ns.note,
+            }
         case ("plan", "overview"):
             return "plan.overview", ({} if ns.all else path_args)
         case ("task", "create"):

@@ -58,7 +58,9 @@ def world(tmp_path: Path):
                             admin_emails=("owner@example.test",))
     db = Database(config.database_path)
     with db.transaction() as conn:
-        conn.execute("INSERT INTO repositories VALUES('r1',?,'repo-one','t',1,'t')",
+        conn.execute("INSERT INTO repositories(repository_id,root_path,display_name,"
+                     " registered_at,registered_by_uid,last_seen_at)"
+                     " VALUES('r1',?,'repo-one','t',1,'t')",
                      (str(repo),))
         conn.execute("INSERT INTO worktrees VALUES('w1','r1',?,'t','t')",
                      (str(repo),))

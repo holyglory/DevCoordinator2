@@ -1,14 +1,11 @@
 #!/usr/bin/env python3
-"""Install a DevCoordinator2 release beside the legacy system (run as root).
+"""Install DevCoordinator2 directly from its canonical checkout (run as root).
 
-Creates: /opt/devcoordinator2/releases/<id> (+ `current` symlink), the
-client group and edge system user, state directories, instance
-configuration templates (only if absent), the daemon and edge units, the
-/usr/local/bin/devcoordinator2 shim, and Codex/Claude skill links for client
-accounts that already have those agent roots. In `--canary` mode the edge
-runs http-only on a private port and needs no TLS/OIDC credentials, so the
-legacy edge keeps 80/443 untouched. Every installation-specific value is an
-argument; nothing here names an installation.
+Creates the client group and edge system user, state directories, instance
+configuration templates (only if absent), daemon and edge units, the
+command-line shim, and direct policy/skill links for configured agent roots.
+The repository remains the only source tree; this installer never copies or
+activates an immutable release.
 """
 
 from __future__ import annotations
@@ -20,7 +17,6 @@ import hashlib
 import json
 import os
 import pwd
-import re
 import secrets
 import select
 import shutil
@@ -31,14 +27,18 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-OPT = Path("/opt/devcoordinator2")
 ETC = Path("/etc/devcoordinator2")
-RELEASE_ITEMS = ("src", "edge", "console", "deploy", "scripts", "skills",
-                 "pyproject.toml")
+MANAGED_SKILLS = (
+    "dev-coordinator",
+    "formal-web-ui-verification",
+    "full-repo-audit",
+    "full-repo-test-coverage-audit",
+    "ui-implementation-audit",
+    "user-journey-docs-audit",
+)
 COMPOSE_ENV_ALLOWLIST = ETC / "compose-env-allowlist.json"
 CODEX_USAGE_SOURCES = ETC / "codex-usage-sources.json"
 _REPOSITORY_NAMESPACE = b"devcoordinator2.repository\0"
-_RELEASE_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 _LEGACY_FENCE_GUARD = """
 import os
 import sys
@@ -49,31 +49,6 @@ if os.path.exists(fence_path):
         os.unlink(fence_path)
     else:
         os.replace(fence_path, socket_path)
-"""
-_ACTIVATION_GUARD = """
-import os
-import subprocess
-import sys
-current, previous, activated, restart_services = sys.argv[1:5]
-command = sys.stdin.buffer.read().strip()
-if command == b'commit':
-    raise SystemExit(0)
-if previous:
-    tmp = current + '.rollback-guard'
-    try:
-        os.unlink(tmp)
-    except FileNotFoundError:
-        pass
-    os.symlink(previous, tmp)
-    os.replace(tmp, current)
-elif os.path.islink(current) and os.path.realpath(current) == os.path.realpath(activated):
-    os.unlink(current)
-if previous and restart_services == '1':
-    subprocess.run(['systemctl', 'daemon-reload'], check=False,
-                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    for unit in ('devcoordinator2.service', 'devcoordinator2-edge.service'):
-        subprocess.run(['systemctl', 'restart', unit], check=False,
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 """
 
 
@@ -101,8 +76,32 @@ def ensure_edge_user(client_group: str) -> tuple[int, int]:
     return entry.pw_uid, entry.pw_gid
 
 
-def install_skill_links(accounts: list[str], release_skill: Path) -> list[str]:
+def _replace_direct_link(destination: Path, source: Path) -> None:
+    if (destination.exists() or destination.is_symlink()) and not destination.is_symlink():
+        raise RuntimeError(f"refusing to replace non-symlink managed path: {destination}")
+    temporary = destination.with_name(f".{destination.name}.tmp")
+    if temporary.exists() or temporary.is_symlink():
+        if not temporary.is_symlink():
+            raise RuntimeError(f"refusing to replace non-symlink staging path: {temporary}")
+        temporary.unlink()
+    temporary.symlink_to(source)
+    os.replace(temporary, destination)
+
+
+def _managed_legacy_link(path: Path) -> bool:
+    if not path.is_symlink():
+        return False
+    raw = Path(os.readlink(path))
+    return len(raw.parts) >= 2 and raw.parts[-2:] == ("skills", "codex-dev-coordinator")
+
+
+def install_skill_links(accounts: list[str], skills_root: Path) -> tuple[list[str], list[str]]:
     installed: list[str] = []
+    retired: list[str] = []
+    for skill in MANAGED_SKILLS:
+        source = skills_root / skill
+        if not source.is_dir() or source.is_symlink():
+            raise RuntimeError(f"canonical skill is unavailable: {source}")
     for name in accounts:
         entry = pwd.getpwnam(name)
         home = Path(entry.pw_dir)
@@ -116,66 +115,32 @@ def install_skill_links(accounts: list[str], release_skill: Path) -> list[str]:
                 os.chown(skills_dir, entry.pw_uid, entry.pw_gid)
             elif not skills_dir.is_dir():
                 raise RuntimeError(f"skill root is not a directory: {skills_dir}")
-            link = skills_dir / "codex-dev-coordinator"
-            if link.exists() and not link.is_symlink():
-                raise RuntimeError(f"refusing to replace non-symlink skill: {link}")
-            tmp = skills_dir / ".codex-dev-coordinator.tmp"
-            if tmp.is_symlink() or tmp.exists():
-                if not tmp.is_symlink():
-                    raise RuntimeError(f"refusing to replace non-symlink staging path: {tmp}")
-                tmp.unlink()
-            tmp.symlink_to(release_skill)
-            os.replace(tmp, link)
-            installed.append(str(link))
+            for skill in MANAGED_SKILLS:
+                link = skills_dir / skill
+                _replace_direct_link(link, skills_root / skill)
+                installed.append(str(link))
+            legacy = skills_dir / "codex-dev-coordinator"
+            if _managed_legacy_link(legacy):
+                legacy.unlink()
+                retired.append(str(legacy))
+    return installed, retired
+
+
+def install_policy_links(accounts: list[str], policy: Path) -> list[str]:
+    if not policy.is_file() or policy.is_symlink():
+        raise RuntimeError(f"canonical universal policy is unavailable: {policy}")
+    installed: list[str] = []
+    for name in accounts:
+        entry = pwd.getpwnam(name)
+        home = Path(entry.pw_dir)
+        for agent_root_name, filename in ((".codex", "AGENTS.md"), (".claude", "CLAUDE.md")):
+            agent_root = home / agent_root_name
+            if not agent_root.is_dir():
+                continue
+            destination = agent_root / filename
+            _replace_direct_link(destination, policy)
+            installed.append(str(destination))
     return installed
-
-
-def install_release(release_id: str, *, activate: bool = True) -> Path:
-    if not _RELEASE_ID_RE.fullmatch(release_id):
-        raise ValueError("release id must be 1..128 path-safe characters")
-    target = OPT / "releases" / release_id
-    if target.exists():
-        raise RuntimeError(f"immutable release already exists: {target}")
-    staging = OPT / "releases" / f".{release_id}.staging-{os.getpid()}"
-    if staging.exists():
-        shutil.rmtree(staging)
-    staging.mkdir(parents=True)
-    try:
-        for item in RELEASE_ITEMS:
-            src = ROOT / item
-            if src.is_dir():
-                shutil.copytree(src, staging / item, ignore=shutil.ignore_patterns(
-                    "__pycache__", ".pytest_cache", "test", "tests",
-                    "design-reference"))
-            else:
-                shutil.copy2(src, staging / item)
-        # World-readable release: edge and client accounts read exact immutable files.
-        for dirpath, _dirnames, filenames in os.walk(staging):
-            os.chmod(dirpath, 0o755)
-            for name in filenames:
-                path = Path(dirpath) / name
-                os.chmod(path, 0o755 if os.access(path, os.X_OK) else 0o644)
-        os.replace(staging, target)
-    except BaseException:
-        if staging.exists():
-            shutil.rmtree(staging)
-        raise
-    os.chmod(OPT, 0o755)
-    os.chmod(OPT / "releases", 0o755)
-    if activate:
-        activate_release(target)
-    return target
-
-
-def activate_release(target: Path) -> Path | None:
-    current = OPT / "current"
-    previous = current.resolve() if current.is_symlink() else None
-    tmp = OPT / "current.tmp"
-    if tmp.is_symlink() or tmp.exists():
-        tmp.unlink()
-    tmp.symlink_to(target)
-    os.replace(tmp, current)
-    return previous
 
 
 def _coordinator_runtime():
@@ -371,39 +336,6 @@ def drain_active_tests(*, socket_path: Path, runtime_dir: Path,
             fence.unlink(missing_ok=True)
 
 
-def restore_release(previous: Path | None, activated: Path) -> None:
-    if previous is not None:
-        activate_release(previous)
-        return
-    current = OPT / "current"
-    if current.is_symlink() and current.resolve() == activated.resolve():
-        current.unlink()
-
-
-def start_activation_guard(previous: Path | None, activated: Path,
-                           *, restart_services: bool) -> subprocess.Popen:
-    return subprocess.Popen(
-        ["/usr/bin/python3", "-c", _ACTIVATION_GUARD,
-         str(OPT / "current"), str(previous or ""), str(activated),
-         "1" if restart_services else "0"],
-        stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL, start_new_session=True,
-    )
-
-
-def finish_activation_guard(guard: subprocess.Popen, *, commit: bool) -> None:
-    assert guard.stdin is not None
-    if commit:
-        guard.stdin.write(b"commit\n")
-        guard.stdin.flush()
-    guard.stdin.close()
-    try:
-        guard.wait(timeout=10)
-    except subprocess.TimeoutExpired:
-        guard.kill()
-        guard.wait()
-
-
 def write_if_absent(path: Path, content: str, mode: int,
                     owner: tuple[int, int] = (0, 0)) -> bool:
     if path.exists():
@@ -426,6 +358,30 @@ def ensure_env_value(path: Path, key: str, value: str) -> bool:
     suffix = "" if not text or text.endswith("\n") else "\n"
     tmp = path.with_name(path.name + ".tmp")
     tmp.write_text(text + suffix + f"{key}={value}\n")
+    if path.exists():
+        info = path.stat()
+        os.chmod(tmp, info.st_mode & 0o777)
+        os.chown(tmp, info.st_uid, info.st_gid)
+    os.replace(tmp, path)
+    return True
+
+
+def set_env_value(path: Path, key: str, value: str) -> bool:
+    text = path.read_text() if path.exists() else ""
+    prefix = f"{key}="
+    lines = text.splitlines()
+    indexes = [index for index, line in enumerate(lines) if line.strip().startswith(prefix)]
+    if len(indexes) > 1:
+        raise RuntimeError(f"{key} appears more than once in {path}")
+    desired = f"{key}={value}"
+    if indexes and lines[indexes[0]] == desired:
+        return False
+    if indexes:
+        lines[indexes[0]] = desired
+    else:
+        lines.append(desired)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text("\n".join(lines) + "\n")
     if path.exists():
         info = path.stat()
         os.chmod(tmp, info.st_mode & 0o777)
@@ -563,16 +519,43 @@ def merge_codex_usage_sources(path: Path, entries: list[dict[str, object]],
     return True
 
 
-def unit_daemon(release: Path) -> str:
-    text = (release / "deploy" / "devcoordinator2.service").read_text()
-    return text.replace("Environment=PYTHONPATH=/opt/devcoordinator2/src",
-                        f"Environment=PYTHONPATH={OPT}/current/src")
+def validate_live_checkout(root: Path, *, fetch: bool) -> str:
+    lexical = Path(os.path.abspath(root))
+    root = lexical.resolve(strict=True)
+    if lexical != root or lexical.is_symlink():
+        raise RuntimeError(f"live checkout must be a real absolute directory: {lexical}")
+    top = Path(run(["git", "-C", str(root), "rev-parse", "--show-toplevel"]).stdout.strip())
+    if top.resolve() != root:
+        raise RuntimeError(f"live checkout must be the Git worktree root: {root}")
+    if fetch:
+        run(["git", "-C", str(root), "fetch", "origin", "main"])
+    branch = run(["git", "-C", str(root), "branch", "--show-current"]).stdout.strip()
+    if branch != "main":
+        raise RuntimeError(f"live checkout must be on main, found {branch or 'detached HEAD'}")
+    status = run([
+        "git", "-C", str(root), "status", "--porcelain", "--untracked-files=all",
+    ]).stdout.strip()
+    if status:
+        raise RuntimeError("live checkout must be clean")
+    head = run(["git", "-C", str(root), "rev-parse", "HEAD"]).stdout.strip()
+    upstream = run([
+        "git", "-C", str(root), "rev-parse", "refs/remotes/origin/main",
+    ]).stdout.strip()
+    if head != upstream:
+        raise RuntimeError("live checkout must exactly match fetched origin/main")
+    return head
 
 
-def unit_edge(release: Path, canary: bool) -> str:
-    text = (release / "deploy" / "devcoordinator2-edge.service").read_text()
-    text = text.replace("/opt/devcoordinator2/edge/devcoordinator2-edge.mjs",
-                        f"{OPT}/current/edge/devcoordinator2-edge.mjs")
+def unit_daemon(source_root: Path) -> str:
+    text = (source_root / "deploy" / "devcoordinator2.service").read_text()
+    return text.replace("Environment=PYTHONPATH=/home/DevCoordinator2/src",
+                        f"Environment=PYTHONPATH={source_root}/src")
+
+
+def unit_edge(source_root: Path, canary: bool) -> str:
+    text = (source_root / "deploy" / "devcoordinator2-edge.service").read_text()
+    text = text.replace("/home/DevCoordinator2/edge/devcoordinator2-edge.mjs",
+                        f"{source_root}/edge/devcoordinator2-edge.mjs")
     if canary:
         lines = [ln for ln in text.splitlines()
                  if not ln.startswith(("LoadCredential=tls", "LoadCredential=oidc",
@@ -591,7 +574,6 @@ def enable_and_restart_units() -> None:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("--release-id", default=None, help="default: git HEAD short id")
     ap.add_argument("--base-domain", required=True)
     ap.add_argument("--admin-emails", required=True, help="comma-separated")
     ap.add_argument("--client-accounts", required=True, help="comma-separated Unix accounts")
@@ -611,12 +593,11 @@ def main() -> int:
     if os.geteuid() != 0:
         print("run as root", file=sys.stderr)
         return 2
-    release_id = ns.release_id or run(["git", "-C", str(ROOT), "rev-parse", "--short",
-                                       "HEAD"]).stdout.strip()
+    source_root = ROOT.resolve(strict=True)
+    source_commit = validate_live_checkout(source_root, fetch=True)
     accounts = [a.strip() for a in ns.client_accounts.split(",") if a.strip()]
     ensure_group(ns.client_group, accounts)
     edge_uid, edge_gid = ensure_edge_user(ns.client_group)
-    release = install_release(release_id, activate=False)
     gid = grp.getgrnam(ns.client_group).gr_gid
 
     for path, mode, owner in ((Path("/run/devcoordinator2"), 0o755, (0, 0)),
@@ -632,7 +613,7 @@ def main() -> int:
         os.chmod(path, mode)
         os.chown(path, *owner)
     # tmpfiles so /run survives reboots
-    shutil.copy2(release / "deploy" / "devcoordinator2.tmpfiles.conf",
+    shutil.copy2(source_root / "deploy" / "devcoordinator2.tmpfiles.conf",
                  "/etc/tmpfiles.d/devcoordinator2.conf")
 
     created = []
@@ -661,7 +642,7 @@ def main() -> int:
     edge_env = [f"EDGE_BASE_DOMAIN={ns.base_domain}",
                 "EDGE_ROUTES_FILE=/var/lib/devcoordinator2/public/routes.json",
                 "EDGE_DAEMON_SOCKET=/run/devcoordinator2/daemon.sock",
-                f"EDGE_CONSOLE_DIR={OPT}/current/console"]
+                f"EDGE_CONSOLE_DIR={source_root}/console"]
     if ns.canary:
         edge_env += ["EDGE_HTTP_ONLY=1", f"EDGE_HTTP_PORT={ns.canary_port}",
                      "EDGE_SESSION_SECRET_FILE=/etc/devcoordinator2/edge/session.secret",
@@ -669,6 +650,8 @@ def main() -> int:
                      " EDGE_OIDC_CLIENT_SECRET_FILE once the redirect URI is registered"]
     created.append(write_if_absent(ETC / "edge.env", "\n".join(edge_env) + "\n", 0o640,
                                    (0, edge_gid)))
+    created.append(set_env_value(ETC / "edge.env", "EDGE_CONSOLE_DIR",
+                                 str(source_root / "console")))
     secret_dir = ETC / "edge"
     secret_dir.mkdir(parents=True, exist_ok=True)
     os.chmod(secret_dir, 0o750)
@@ -681,53 +664,39 @@ def main() -> int:
     daemon_running = instance_config.socket_path.exists()
     if daemon_running and not ns.start:
         raise RuntimeError("--start is required to activate an upgrade over a running daemon")
-    previous = None
-    activation_guard = None
     skill_links: list[str] = []
+    retired_skill_links: list[str] = []
+    policy_links: list[str] = []
     with drain_active_tests(
             socket_path=instance_config.socket_path,
             runtime_dir=instance_config.socket_path.parent,
             unit_prefix=instance_config.unit_prefix,
             daemon_running=daemon_running):
-        try:
-            Path("/etc/systemd/system/devcoordinator2.service").write_text(
-                unit_daemon(release))
-            Path("/etc/systemd/system/devcoordinator2-edge.service").write_text(
-                unit_edge(release, ns.canary))
-            shim = Path("/usr/local/bin/devcoordinator2")
-            shim.write_text("#!/usr/bin/python3\n"
-                            "import sys\n"
-                            f"sys.path.insert(0, '{OPT}/current/src')\n"
-                            "from devcoordinator2.client.cli import main\n"
-                            "sys.exit(main())\n")
-            os.chmod(shim, 0o755)
-            skill_links = install_skill_links(
-                accounts, release / "skills" / "codex-dev-coordinator")
-            run(["systemctl", "daemon-reload"])
-            current = OPT / "current"
-            previous = current.resolve() if current.is_symlink() else None
-            activation_guard = start_activation_guard(
-                previous, release, restart_services=daemon_running)
-            activate_release(release)
-            if ns.start:
-                enable_and_restart_units()
-            finish_activation_guard(activation_guard, commit=True)
-            activation_guard = None
-        except BaseException:
-            if activation_guard is not None:
-                finish_activation_guard(activation_guard, commit=False)
-                activation_guard = None
-            else:
-                restore_release(previous, release)
-            if daemon_running and previous is not None:
-                run(["systemctl", "daemon-reload"], check=False)
-                for unit in ("devcoordinator2.service", "devcoordinator2-edge.service"):
-                    run(["systemctl", "restart", unit], check=False)
-            raise
-    print({"release": str(release), "edge_uid": edge_uid, "client_group": ns.client_group,
+        Path("/etc/systemd/system/devcoordinator2.service").write_text(
+            unit_daemon(source_root))
+        Path("/etc/systemd/system/devcoordinator2-edge.service").write_text(
+            unit_edge(source_root, ns.canary))
+        shim = Path("/usr/local/bin/devcoordinator2")
+        shim.write_text("#!/usr/bin/python3\n"
+                        "import sys\n"
+                        f"sys.path.insert(0, '{source_root}/src')\n"
+                        "from devcoordinator2.client.cli import main\n"
+                        "sys.exit(main())\n")
+        os.chmod(shim, 0o755)
+        skill_links, retired_skill_links = install_skill_links(
+            accounts, source_root / "skills")
+        policy_links = install_policy_links(
+            accounts, source_root / "reference" / "universal" / "AGENTS.md")
+        run(["systemctl", "daemon-reload"])
+        if ns.start:
+            enable_and_restart_units()
+    print({"source_root": str(source_root), "source_commit": source_commit,
+           "edge_uid": edge_uid, "client_group": ns.client_group,
            "created_config": created, "canary": ns.canary,
            "canary_port": ns.canary_port if ns.canary else None, "started": ns.start,
            "skill_links": skill_links,
+           "retired_skill_links": retired_skill_links,
+           "policy_links": policy_links,
            "compose_env_authorizations": compose_authorizations,
            "codex_usage_source_count": len(usage_sources)})
     return 0

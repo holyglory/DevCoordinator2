@@ -14,7 +14,7 @@ surfaces return the identical result JSON.
 ## ping
 
 Args: none.
-Result: `{"daemon_version": "<semver>", "schema_version": 11, "socket": "<path>"}`
+Result: `{"daemon_version": "<semver>", "schema_version": 12, "socket": "<path>"}`
 
 ## test.start
 
@@ -110,10 +110,24 @@ Result: `{"repository_id", "worktree_id", "root_path", "worktree_path",
 
 ## repository.list
 
-Args: none.
+Args: optional `include_archived` (boolean, default false).
 Result: `{"repositories": [{"repository_id", "root_path", "display_name",
-"registered_at", "last_seen_at", "worktrees": [{"worktree_id",
-"worktree_path"}]}]}`
+"registered_at", "last_seen_at", "archived_at", "archive_note",
+"merged_into_repository_id", "worktrees": [{"worktree_id",
+"worktree_path"}]}]}`. Normal collections exclude archived repositories.
+
+## repository.archive / repository.unarchive
+
+- `repository.archive {repository_id, merged_into_repository_id, note}` retires
+  an inactive repository while preserving its permanent task and decision
+  history. It refuses open tasks, elaboration requests, open releases, active
+  deployments, or an active test.
+- `repository.unarchive {repository_id, note}` restores an archived repository
+  only while its original checkout exists.
+
+Both transitions append `repository_events`. New mutations against an archived
+repository return `repository_archived` and name its replacement; explicit
+historical plan, task-history, and decision reads remain available.
 
 ## repository.status
 
@@ -334,7 +348,7 @@ best-effort (`notified: false` when it was down). Records are bounded atomic
 text without secrets, raw logs, or private host paths; a recurrence
 increments `occurrences` instead of duplicating; closing removes the record.
 
-## plan.* / task.* / release.* / decision.* (Schemas 8 and 11, implemented)
+## plan.* / task.* / release.* / decision.* (Schemas 8, 11, and 12, implemented)
 
 DC2-owned planning, completion ledger, and decision history
 (DC2-2026-08-24-PLANNING-LEDGER). Append-only: every task/release mutation
@@ -353,6 +367,7 @@ jargon — the register rule lives in the agent instructions).
   kind, status} | null, preview_requested, elaboration_request_count}]}` — the plan picker; for public
   identities filtered to repositories with a viewable deployment.
 - `plan.overview {path | repository_id}` → `{repository_id, display_name,
+  archived, merged_into_repository_id,
   releases: [{release_id, name, kind (preview|release), status
   (planned|requested|delivered|dropped), seq, note, requested_at,
   delivered_at, url, port, tasks_total, tasks_done, loc_total, loc_done}],

@@ -1,6 +1,6 @@
 # Security Assumptions
 
-Last reviewed: 2026-08-28 (digest fixtures and reviewed Compose environment path)
+Last reviewed: 2026-09-01 (trusted live-checkout execution and unified agent assets)
 
 Installation-specific values (the concrete accounts, groups, domain, and
 owner identity) are deliberately not in this file. They live in the
@@ -20,6 +20,9 @@ untracked `instance/` directory and in the installed instance configuration
   shared group and group `rwx`; new files inherit group read/write while
   preserving executable intent.
 - No unrelated local users require access. World access is unnecessary.
+- `/home/DevCoordinator2` is the one live source checkout. It stays on a clean
+  `main` exactly fast-forwarded to `origin/main`; development mutations occur
+  only in linked worktrees.
 
 ## Runtime trust boundary
 
@@ -72,13 +75,39 @@ untracked `instance/` directory and in the installed instance configuration
   link between its registered repository and that collector's repository key
   (DC2-2026-08-29-CODEX-USAGE-SOURCE).
 
+## Formal UI verification evidence
+
+- Formal verification runs only against an in-scope safe local, fixture,
+  preview, or explicitly authorized target.
+- Each checked route, state, and viewport may retain an initial-viewport and a
+  full-page screenshot. Callers mask sensitive regions explicitly.
+- Reports never retain entered control values, action payloads, placeholder
+  text, selected labels, credentials, or private source content. Privacy-safe
+  control findings may retain control kind, selector, measured width,
+  available width, and clipping amount.
+- Review fingerprints contain only declared repository-relative UI input paths
+  and SHA-256 digests. They never read outside the declared repository root or
+  follow symlinked inputs.
+- Manual-review state is caller-supplied and opt-in. The verifier never
+  discovers a hidden latest baseline. Screenshot hashes prove artifact
+  integrity but do not decide whether visual review repeats.
+- A source/deployment binding is successful only when a value observed from
+  the rendered deployment matches the declared source value. Missing or stale
+  evidence remains a coverage failure.
+
 ## Operating mode
 
 - `devcoordinatord` (the DevCoordinator2 daemon) runs as root in a hardened
   systemd unit. It is the only component that changes system state.
-- Repository code never runs as root or as the daemon identity. The daemon
-  launches repository commands as the physical non-root caller via systemd
-  transient units (`--uid`/`--gid` + explicit supplementary groups).
+- By explicit owner decision, the daemon, edge, and command-line source are
+  loaded directly from the shared `/home/DevCoordinator2` checkout
+  (DC2-2026-09-01-TRUSTED-LIVE-CHECKOUT). Every account allowed to write that
+  checkout is controlled by the same owner and is trusted to affect code that
+  executes as root on daemon restart. A dirty, stale, or non-`main` canonical
+  checkout blocks restart and readiness.
+- Repository commands managed for other projects never run as root or as the
+  daemon identity. The daemon launches them as the physical non-root caller via
+  systemd transient units (`--uid`/`--gid` + explicit supplementary groups).
 - Local API calls use a Unix socket. The kernel peer UID (`SO_PEERCRED`) is
   the physical caller identity; request bodies cannot assert identity.
   The socket is mode 0666: every local account is a full caller by owner
@@ -124,6 +153,9 @@ or client group model; placing credentials or private runtime state in the
 checkout; exposing the daemon socket beyond the local trust boundary;
 re-granting any account direct Docker access (reversing the authoritative
 cutover); or exposing the repository through any network service.
+Also review it before allowing another writer to `/home/DevCoordinator2`,
+running the root daemon from a different checkout, or weakening the clean-main
+fast-forward operating rule.
 Also review it before exposing Codex usage to viewers, returning per-user or
 raw collector detail, adding an exporter or network collector, supporting a
 Codex usage schema or taxonomy beyond the explicitly reviewed versions, or

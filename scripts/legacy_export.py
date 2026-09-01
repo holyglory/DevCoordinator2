@@ -120,7 +120,7 @@ def export_telegram(path: Path) -> dict:
         bots.append({"label": bot.get("label"), "username": bot.get("username"),
                      "owner": bot.get("ownerEmail"), "enabled": bot.get("enabled"),
                      "projects": bot.get("projects", []),
-                     "token": "<omitted: migrate manually into the token file>"})
+                     "token": "<redacted>"})
     auths = data.get("authorizationRequests") or {}
     auth_list = list(auths.values()) if isinstance(auths, dict) else auths
     return {"bots": bots, "authorizations": [

@@ -69,6 +69,8 @@ Stable snake_case, terminal (no retry/queue semantics):
 | `args_invalid` | args fail the command schema |
 | `repository_not_found` | path is not inside a registered/registerable Git repository |
 | `repository_config_invalid` | `.devcoordinator.toml` fails validation |
+| `repository_archived` | repository is historical; response names its active replacement when present |
+| `repository_archive_blocked` | open work, live resources, or invalid replacement prevents archival |
 | `worktree_busy` | per-worktree start lock not acquired within the bounded wait |
 | `test_not_found` | no current test run for the worktree |
 | `test_start_failed` | terminal launch failure (never `queued`) |

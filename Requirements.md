@@ -74,14 +74,16 @@ not contradict them.
   state. Bounded evidence stores no source, commands, environment values,
   credentials, raw output, or caller identity. Only a fresh complete passing
   graph is release-quality proof (DC2-2026-09-01-DIAGNOSTIC-CHECK-EVIDENCE).
-- **REQ-TEST-15** (2026-09-01, done): A normal DevCoordinator2 upgrade
-  atomically closes test admission, waits on exact active-run receipt events
-  until every current test and cleanup finishes under the old release, and
-  only then switches and restarts. Abort restores admission and keeps the old
-  release. A stale installer lease recovers. Explicit cancellation records a
+- **REQ-TEST-15** (2026-09-01, done): A normal DevCoordinator2 source restart
+  requires the canonical checkout to be a clean `main` exactly matching the
+  fetched `origin/main`, atomically closes test admission, waits on exact
+  active-run receipt events until every current test and cleanup finishes, and
+  only then restarts from that checkout. Abort restores admission and leaves
+  the existing process running. A stale installer lease recovers. Explicit cancellation records a
   bounded operational reason; unexpected daemon restart retains REQ-TEST-08
   and never reconnects or resurrects work
-  (DC2-2026-09-01-UPGRADE-TEST-DRAIN).
+  (DC2-2026-09-01-UPGRADE-TEST-DRAIN,
+  DC2-2026-09-01-TRUSTED-LIVE-CHECKOUT).
 
 ## Deployments (REQ-DEPLOY, P3)
 

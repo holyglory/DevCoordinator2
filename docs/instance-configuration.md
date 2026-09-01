@@ -39,7 +39,7 @@ files. `test-admission.lock` closes the start-versus-upgrade race;
 `test-drain.json` is a root-owned live installer lease; and
 `test-activity.json` is an atomic receipt containing only active run and unit
 identities. A normal source-owned installer waits on receipt replacement
-events before switching releases. A dead lease is removed on the next start,
+events before restarting services from the verified live checkout. A dead lease is removed on the next start,
 and the first upgrade from an older daemon temporarily fences its socket with a
 parent-death guard so an interrupted installer restores connectivity. None of
 these files is completion evidence for a check, contains a command, output,

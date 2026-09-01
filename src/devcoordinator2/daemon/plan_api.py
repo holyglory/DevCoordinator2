@@ -19,7 +19,7 @@ from devcoordinator2.daemon import deploy_state, events, plan_state
 from devcoordinator2.daemon.db import Database
 from devcoordinator2.daemon.deploy_state import now_iso
 from devcoordinator2.daemon.gitinfo import GitResolveError
-from devcoordinator2.daemon.registry import Registry
+from devcoordinator2.daemon.registry import Registry, RepositoryArchived
 from devcoordinator2.daemon.server import Caller, Handler
 from devcoordinator2.paths import InstanceConfig
 from devcoordinator2.protocol import ProtocolError
@@ -114,18 +114,26 @@ def build_plan_handlers(config: InstanceConfig, db: Database,
         result["elaboration_requests"] = plan_state.elaboration_requests(db, repo_id)
         return result
 
-    def _repository(args: dict[str, Any], caller: Caller) -> dict:
+    def _repository(args: dict[str, Any], caller: Caller,
+                    *, allow_archived: bool = False) -> dict:
         """Resolve {repository_id} (Console) or {path} (agents; implicit
         registration like test.start) to a repositories row."""
         rid = args.get("repository_id")
         if rid is not None:
             if not isinstance(rid, str) or not rid.startswith("r"):
                 raise ProtocolError("args_invalid", "'repository_id' must be an 'r…' id")
-            rows = db.query("SELECT repository_id, display_name FROM repositories"
+            rows = db.query("SELECT repository_id, display_name, archived_at,"
+                            " merged_into_repository_id FROM repositories"
                             " WHERE repository_id=?", (rid,))
             if not rows:
                 raise ProtocolError("repository_not_found", f"no repository {rid}")
-            return dict(rows[0])
+            repository = dict(rows[0])
+            if repository["archived_at"] is not None and not allow_archived:
+                replacement = repository["merged_into_repository_id"]
+                suffix = f"; use {replacement}" if replacement else ""
+                raise ProtocolError(
+                    "repository_archived", f"repository {rid} is archived{suffix}")
+            return repository
         raw = args.get("path")
         if not isinstance(raw, str) or not raw:
             raise ProtocolError("args_invalid",
@@ -133,11 +141,31 @@ def build_plan_handlers(config: InstanceConfig, db: Database,
         path = Path(raw)
         if not path.is_absolute():
             raise ProtocolError("args_invalid", "'path' must be absolute")
+        if allow_archived:
+            status = registry.repository_status(path, run_as=(caller.uid, caller.gid))
+            if status is not None:
+                return status
         try:
             reg = registry.register(path, caller_uid=caller.uid, caller_gid=caller.gid)
         except GitResolveError as exc:
             raise ProtocolError("repository_not_found", str(exc)) from exc
+        except RepositoryArchived as exc:
+            raise ProtocolError("repository_archived", str(exc)) from exc
         return {"repository_id": reg.repository_id, "display_name": reg.display_name}
+
+    def _require_active_repository(repository_id: str) -> None:
+        row = db.query(
+            "SELECT archived_at, merged_into_repository_id FROM repositories"
+            " WHERE repository_id=?",
+            (repository_id,),
+        )
+        if row and row[0]["archived_at"] is not None:
+            replacement = row[0]["merged_into_repository_id"]
+            suffix = f"; use {replacement}" if replacement else ""
+            raise ProtocolError(
+                "repository_archived",
+                f"repository {repository_id} is archived{suffix}",
+            )
 
     def _release_in(repo_id: str, release_id: Any, *, open_only: bool) -> dict:
         if not isinstance(release_id, str) or not release_id.startswith("v"):
@@ -161,7 +189,7 @@ def build_plan_handlers(config: InstanceConfig, db: Database,
         _only(args, {"path", "repository_id"})
         if args.get("path") is None and args.get("repository_id") is None:
             return {"repositories": plan_state.picker(db)}
-        return plan_state.overview(db, _repository(args, caller))
+        return plan_state.overview(db, _repository(args, caller, allow_archived=True))
 
     def task_history(args: dict[str, Any], caller: Caller) -> dict[str, Any]:
         _only(args, {"task_id"})
@@ -239,6 +267,7 @@ def build_plan_handlers(config: InstanceConfig, db: Database,
                      "release_id", "parent_task_id", "position", "note",
                      "elaboration_needed"})
         task = _task(args)
+        _require_active_repository(task["repository_id"])
         repo_id = task["repository_id"]
         actor = _actor(caller)
         note = _plain_text(args, "note", required=False, lo=1, hi=500)
@@ -389,6 +418,7 @@ def build_plan_handlers(config: InstanceConfig, db: Database,
     def release_update(args: dict[str, Any], caller: Caller) -> dict[str, Any]:
         _only(args, {"release_id", "name", "seq", "note", "status"})
         release = _release(args)
+        _require_active_repository(release["repository_id"])
         actor = _actor(caller)
         changes: dict[str, Any] = {}
         edited: list[str] = []
@@ -464,6 +494,7 @@ def build_plan_handlers(config: InstanceConfig, db: Database,
     def release_deliver(args: dict[str, Any], caller: Caller) -> dict[str, Any]:
         _only(args, {"release_id", "deployment_id", "note"})
         release = _release(args)
+        _require_active_repository(release["repository_id"])
         if release["status"] not in ("planned", "requested"):
             raise ProtocolError("args_invalid",
                                 f"release {release['name']!r} is already"
@@ -590,7 +621,7 @@ def build_plan_handlers(config: InstanceConfig, db: Database,
 
     def decision_tail(args: dict[str, Any], caller: Caller) -> dict[str, Any]:
         _only(args, {"path", "repository_id", "aspect", "n", "before_seq"})
-        repo = _repository(args, caller)
+        repo = _repository(args, caller, allow_archived=True)
         repo_id = repo["repository_id"]
         aspect = _enum(args, "aspect", ASPECTS, required=False)
         n = _int_arg(args, "n", 1, plan_state.TAIL_MAX) or plan_state.TAIL_DEFAULT
@@ -605,7 +636,7 @@ def build_plan_handlers(config: InstanceConfig, db: Database,
 
     def decision_search(args: dict[str, Any], caller: Caller) -> dict[str, Any]:
         _only(args, {"path", "repository_id", "query", "aspect", "n"})
-        repo = _repository(args, caller)
+        repo = _repository(args, caller, allow_archived=True)
         query = _plain_text(args, "query", required=True, lo=1, hi=200)
         aspect = _enum(args, "aspect", ASPECTS, required=False)
         n = _int_arg(args, "n", 1, plan_state.TAIL_MAX) or plan_state.TAIL_DEFAULT

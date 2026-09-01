@@ -21,7 +21,9 @@ def test_usage_handlers_return_truthful_unavailable_rows(tmp_path: Path):
     )
     db = Database(config.database_path)
     with db.transaction() as conn:
-        conn.execute("INSERT INTO repositories VALUES(?,?,?,?,?,?)", (
+        conn.execute("INSERT INTO repositories(repository_id,root_path,display_name,"
+                     " registered_at,registered_by_uid,last_seen_at)"
+                     " VALUES(?,?,?,?,?,?)", (
             "r0123456789abcdef", str(tmp_path / "repo"), "Example", "t", 1000, "t"))
     handlers = build_usage_handlers(config, db, Registry(db))
 

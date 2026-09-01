@@ -49,7 +49,7 @@ def test_cli_ping_and_register_roundtrip(live, capsys):
     assert rc == 0
     response = json.loads(capsys.readouterr().out)
     assert response["ok"] is True
-    assert response["result"]["schema_version"] == 11
+    assert response["result"]["schema_version"] == 12
 
     rc = cli.main(["repository", "register", str(live.repo)])
     assert rc == 0
@@ -72,6 +72,27 @@ def test_cli_error_exit_code(live, capsys, tmp_path):
 def test_deployment_list_without_path_builds_empty_args():
     ns = cli.build_parser().parse_args(["deployment", "list"])
     assert cli._to_call(ns) == ("deployment.list", {})
+
+
+def test_repository_archive_cli_argument_mapping():
+    archive = cli.build_parser().parse_args([
+        "repository", "archive", "rsource", "--into", "rtarget",
+        "--note", "Merged into target",
+    ])
+    assert cli._to_call(archive) == ("repository.archive", {
+        "repository_id": "rsource",
+        "merged_into_repository_id": "rtarget",
+        "note": "Merged into target",
+    })
+    unarchive = cli.build_parser().parse_args([
+        "repository", "unarchive", "rsource", "--note", "Rollback merge",
+    ])
+    assert cli._to_call(unarchive) == ("repository.unarchive", {
+        "repository_id": "rsource",
+        "note": "Rollback merge",
+    })
+    listing = cli.build_parser().parse_args(["repository", "list", "--all"])
+    assert cli._to_call(listing) == ("repository.list", {"include_archived": True})
 
 
 def test_governed_check_cli_argument_mapping(tmp_path):
@@ -168,7 +189,7 @@ def test_mcp_full_session(live):
     assert init["serverInfo"]["name"] == "devcoordinator2"
     tools = {t["name"] for t in replies[1]["result"]["tools"]}
     assert {"test_start", "test_retry", "test_status", "test_output", "test_stop",
-            "repository_list",
+            "repository_list", "repository_archive", "repository_unarchive",
             "deployment_apply", "deployment_status", "deployment_stop", "deployment_logs",
             "health_containers"} <= tools
     call_result = replies[2]["result"]

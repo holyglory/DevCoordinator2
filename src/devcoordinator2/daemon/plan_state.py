@@ -216,6 +216,8 @@ def overview(db: Database, repository: dict) -> dict:
     return {
         "repository_id": repository_id,
         "display_name": repository["display_name"],
+        "archived": bool(repository.get("archived_at")),
+        "merged_into_repository_id": repository.get("merged_into_repository_id"),
         "releases": [_release_public(r, aggregates) for r in releases],
         "tasks": [_compact_task(t) for t in tasks],
         "tasks_truncated": truncated,
@@ -230,6 +232,7 @@ def picker(db: Database) -> list[dict]:
     """One row per registered repository with plan aggregates; the access
     layer filters rows for public identities."""
     repos = db.query("SELECT repository_id, display_name FROM repositories"
+                     " WHERE archived_at IS NULL"
                      " ORDER BY display_name, repository_id")
     rows = []
     for repo in repos:

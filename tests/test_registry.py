@@ -6,7 +6,11 @@ import pytest
 
 from devcoordinator2.daemon.db import Database, SchemaMismatch
 from devcoordinator2.daemon.gitinfo import GitResolveError, resolve_worktree
-from devcoordinator2.daemon.registry import Registry
+from devcoordinator2.daemon.registry import (
+    Registry,
+    RepositoryArchiveBlocked,
+    RepositoryArchived,
+)
 
 
 def _git(*args: str, cwd: Path):
@@ -73,6 +77,72 @@ def test_register_idempotent_and_worktree_shares_repo(repo: Path, tmp_path: Path
     db.close()
 
 
+def test_archive_hides_repository_preserves_history_and_can_restore(repo: Path, tmp_path: Path):
+    target_root = tmp_path / "target"
+    target_root.mkdir()
+    _git("init", "-q", cwd=target_root)
+    (target_root / "f.txt").write_text("target")
+    _git("add", ".", cwd=target_root)
+    _git("commit", "-qm", "target", cwd=target_root)
+    db = Database(tmp_path / "archive.sqlite3")
+    registry = Registry(db)
+    uid, gid = os.getuid(), os.getgid()
+    source = registry.register(repo, caller_uid=uid, caller_gid=gid)
+    target = registry.register(target_root, caller_uid=uid, caller_gid=gid)
+
+    archived = registry.archive(
+        source.repository_id, target.repository_id, "Merged skills", uid)
+
+    assert archived["archived_at"]
+    assert archived["merged_into_repository_id"] == target.repository_id
+    assert [row["repository_id"] for row in registry.list_repositories()] == [
+        target.repository_id
+    ]
+    all_rows = registry.list_repositories(include_archived=True)
+    assert {row["repository_id"] for row in all_rows} == {
+        source.repository_id,
+        target.repository_id,
+    }
+    assert registry.repository_status(repo)["archived_at"]
+    with pytest.raises(RepositoryArchived):
+        registry.register(repo, caller_uid=uid, caller_gid=gid)
+    assert db.query("SELECT event FROM repository_events")[0]["event"] == "archived"
+
+    restored = registry.unarchive(source.repository_id, "Rollback consolidation", uid)
+    assert restored["archived_at"] is None
+    assert len(registry.list_repositories()) == 2
+    assert [row["event"] for row in db.query(
+        "SELECT event FROM repository_events ORDER BY event_id"
+    )] == ["archived", "unarchived"]
+    db.close()
+
+
+def test_archive_refuses_open_work(repo: Path, tmp_path: Path):
+    target_root = tmp_path / "target"
+    target_root.mkdir()
+    _git("init", "-q", cwd=target_root)
+    (target_root / "f.txt").write_text("target")
+    _git("add", ".", cwd=target_root)
+    _git("commit", "-qm", "target", cwd=target_root)
+    db = Database(tmp_path / "blocked.sqlite3")
+    registry = Registry(db)
+    uid, gid = os.getuid(), os.getgid()
+    source = registry.register(repo, caller_uid=uid, caller_gid=gid)
+    target = registry.register(target_root, caller_uid=uid, caller_gid=gid)
+    with db.transaction() as conn:
+        conn.execute(
+            "INSERT INTO tasks(task_id,repository_id,seq,position,title,outcome,"
+            " kind,status,created_at,created_by,updated_at)"
+            " VALUES('p1',?,1,1,'Open work','Open work','improvement','planned',"
+            " 't','fixture','t')",
+            (source.repository_id,),
+        )
+
+    with pytest.raises(RepositoryArchiveBlocked, match="open planning work"):
+        registry.archive(source.repository_id, target.repository_id, "Too early", uid)
+    db.close()
+
+
 def test_schema_newer_than_daemon_refused(tmp_path: Path):
     path = tmp_path / "db.sqlite3"
     db = Database(path)
@@ -87,12 +157,16 @@ def test_schema_v1_upgrades_in_place_preserving_repositories(tmp_path: Path):
     path = tmp_path / "db.sqlite3"
     db = Database(path)
     with db.transaction() as conn:
-        conn.execute("INSERT INTO repositories VALUES('r1','/x','x','t',1,'t')")
+        conn.execute(
+            "INSERT INTO repositories(repository_id,root_path,display_name,"
+            " registered_at,registered_by_uid,last_seen_at)"
+            " VALUES('r1','/x','x','t',1,'t')"
+        )
         conn.execute("UPDATE meta SET value='1' WHERE key='schema_version'")
         conn.execute("DROP TABLE deployments")
     db.close()
     db = Database(path)
-    assert db.query("SELECT value FROM meta WHERE key='schema_version'")[0]["value"] == "11"
+    assert db.query("SELECT value FROM meta WHERE key='schema_version'")[0]["value"] == "12"
     assert db.query("SELECT repository_id FROM repositories")[0]["repository_id"] == "r1"
     assert db.query("SELECT count(*) AS n FROM deployments")[0]["n"] == 0
     tables = {row["name"] for row in db.query(
@@ -111,7 +185,7 @@ def test_schema_v10_adds_persistent_elaboration_requests(tmp_path: Path):
     db = Database(path)
     columns = {row["name"] for row in db.query("PRAGMA table_info(tasks)")}
     assert "elaboration_needed" in columns
-    assert db.query("SELECT value FROM meta WHERE key='schema_version'")[0]["value"] == "11"
+    assert db.query("SELECT value FROM meta WHERE key='schema_version'")[0]["value"] == "12"
     db.close()
 
 

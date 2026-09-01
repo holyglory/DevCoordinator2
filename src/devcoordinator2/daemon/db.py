@@ -12,7 +12,7 @@ import threading
 from contextlib import contextmanager
 from pathlib import Path
 
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 12
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (
@@ -401,6 +401,22 @@ CREATE INDEX IF NOT EXISTS codex_usage_links_repository
   ON codex_usage_repository_links(repository_id);
 """
 
+# Schema 12: preserve retired repository history while removing obsolete
+# repositories from normal product collections.
+_SCHEMA_V12 = """
+CREATE TABLE IF NOT EXISTS repository_events (
+  event_id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+  repository_id             TEXT NOT NULL REFERENCES repositories(repository_id),
+  event                     TEXT NOT NULL CHECK(event IN ('archived','unarchived')),
+  merged_into_repository_id TEXT,
+  actor_uid                 INTEGER NOT NULL,
+  at                        TEXT NOT NULL,
+  note                      TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS repository_events_repository
+  ON repository_events(repository_id, event_id);
+"""
+
 
 class SchemaMismatch(Exception):
     pass
@@ -453,6 +469,15 @@ class Database:
             # until an agent saves clearer owner-facing wording.
             self._ensure_column(
                 "tasks", "elaboration_needed", "INTEGER NOT NULL DEFAULT 0")
+            # Schema 12: archival is reversible and every transition remains
+            # in repository_events. The replacement id is deliberately a
+            # nullable scalar because SQLite cannot add a foreign key with an
+            # additive ALTER TABLE migration.
+            self._ensure_column("repositories", "archived_at", "TEXT")
+            self._ensure_column("repositories", "archived_by_uid", "INTEGER")
+            self._ensure_column("repositories", "archive_note", "TEXT")
+            self._ensure_column("repositories", "merged_into_repository_id", "TEXT")
+            self._conn.executescript(_SCHEMA_V12)
             self._conn.execute(
                 "INSERT OR REPLACE INTO meta(key, value) VALUES('schema_version', ?)",
                 (str(SCHEMA_VERSION),),

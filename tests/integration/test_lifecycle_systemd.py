@@ -448,8 +448,7 @@ def test_upgrade_drain_rejects_new_starts_and_stop_reason_is_operational(world):
     assert _units() == []
 
 
-def test_repository_installer_drain_waits_then_switches_and_reconnects(
-        world, monkeypatch):
+def test_repository_installer_drain_waits_then_restarts_and_reconnects(world):
     release_fifo = world.base / "release-test"
     os.mkfifo(release_fifo)
     os.chmod(release_fifo, 0o666)
@@ -463,13 +462,6 @@ def test_repository_installer_drain_waits_then_switches_and_reconnects(
         f"command = {json.dumps(['/usr/bin/python3', '-c', command])}\n")
     started = _call(world, "test.start", {"path": str(world.repo)})
     assert started["ok"], started
-    opt = world.base / "opt"
-    old_release = opt / "releases" / "old"
-    new_release = opt / "releases" / "new"
-    old_release.mkdir(parents=True)
-    new_release.mkdir()
-    (opt / "current").symlink_to(old_release)
-    monkeypatch.setattr(install, "OPT", opt)
     entered = threading.Event()
     completed = threading.Event()
     failures = []
@@ -480,8 +472,6 @@ def test_repository_installer_drain_waits_then_switches_and_reconnects(
                     socket_path=world.daemon.socket_path,
                     runtime_dir=world.base, unit_prefix=UNIT_PREFIX,
                     daemon_running=True):
-                previous = install.activate_release(new_release)
-                assert previous == old_release
                 world.daemon.stop()
                 world.daemon.start()
                 entered.set()
@@ -503,7 +493,6 @@ def test_repository_installer_drain_waits_then_switches_and_reconnects(
     thread.join(120)
     assert not failures and entered.is_set() and completed.is_set()
     assert not (world.base / "test-drain.json").exists()
-    assert (opt / "current").resolve() == new_release
     summary_path = world.repo / ".devcoordinator" / "test" / "current" / "summary.json"
     final = json.loads(summary_path.read_text())
     assert final["status"] == "passed", final

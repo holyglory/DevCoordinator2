@@ -294,6 +294,7 @@ def list_current(db: Database, runs: dict) -> list[dict]:
     rows = db.query(
         "SELECT w.worktree_id, w.worktree_path, w.repository_id, r.display_name"
         " FROM worktrees w JOIN repositories r ON r.repository_id = w.repository_id"
+        " WHERE r.archived_at IS NULL"
         " ORDER BY r.display_name, w.worktree_path")
     for row in rows:
         path = test_dir(Path(row["worktree_path"])) / "summary.json"

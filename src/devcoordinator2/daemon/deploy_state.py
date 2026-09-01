@@ -342,7 +342,7 @@ def postgres_credentials(config: InstanceConfig, dep_id: str, component: str,
         if data.get("user") == user and data.get("database") == database:
             return data
     data = {"user": user, "database": database,
-            "password": pysecrets.token_urlsafe(24)}
+            "password": pysecrets.token_urlsafe(24)}  # public-artifact-guard: allow text-secret
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     try:
         os.write(fd, json.dumps(data).encode())

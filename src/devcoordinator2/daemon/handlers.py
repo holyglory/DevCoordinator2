@@ -8,7 +8,11 @@ from typing import Any
 from devcoordinator2 import __version__
 from devcoordinator2.daemon.db import SCHEMA_VERSION
 from devcoordinator2.daemon.gitinfo import GitResolveError
-from devcoordinator2.daemon.registry import Registry
+from devcoordinator2.daemon.registry import (
+    Registry,
+    RepositoryArchiveBlocked,
+    RepositoryArchived,
+)
 from devcoordinator2.daemon.server import Caller, Handler
 from devcoordinator2.paths import InstanceConfig
 from devcoordinator2.protocol import ProtocolError
@@ -53,6 +57,8 @@ def build_handlers(config: InstanceConfig, registry: Registry,
                                     caller_gid=caller.gid)
         except GitResolveError as exc:
             raise ProtocolError("repository_not_found", str(exc)) from exc
+        except RepositoryArchived as exc:
+            raise ProtocolError("repository_archived", str(exc)) from exc
         return {
             "repository_id": reg.repository_id,
             "worktree_id": reg.worktree_id,
@@ -63,8 +69,14 @@ def build_handlers(config: InstanceConfig, registry: Registry,
         }
 
     def repository_list(args: dict[str, Any], caller: Caller) -> dict[str, Any]:
-        _no_args(args)
-        return {"repositories": registry.list_repositories()}
+        unknown = set(args) - {"include_archived"}
+        if unknown:
+            raise ProtocolError("args_invalid", f"unknown args: {sorted(unknown)}")
+        include_archived = args.get("include_archived", False)
+        if not isinstance(include_archived, bool):
+            raise ProtocolError("args_invalid", "'include_archived' must be true or false")
+        return {"repositories": registry.list_repositories(
+            include_archived=include_archived)}
 
     def repository_status(args: dict[str, Any], caller: Caller) -> dict[str, Any]:
         path = _require_path(args, {"path"})
@@ -78,11 +90,47 @@ def build_handlers(config: InstanceConfig, registry: Registry,
                 status["current_test"] = summary_ref
         return status
 
+    def repository_archive(args: dict[str, Any], caller: Caller) -> dict[str, Any]:
+        unknown = set(args) - {"repository_id", "merged_into_repository_id", "note"}
+        if unknown:
+            raise ProtocolError("args_invalid", f"unknown args: {sorted(unknown)}")
+        repository_id = args.get("repository_id")
+        target_id = args.get("merged_into_repository_id")
+        note = args.get("note")
+        if not isinstance(repository_id, str) or not repository_id.startswith("r"):
+            raise ProtocolError("args_invalid", "'repository_id' must be an 'r…' id")
+        if not isinstance(target_id, str) or not target_id.startswith("r"):
+            raise ProtocolError(
+                "args_invalid", "'merged_into_repository_id' must be an 'r…' id")
+        if not isinstance(note, str) or not 3 <= len(note) <= 500 or "\n" in note:
+            raise ProtocolError("args_invalid", "'note' must be one 3..500 character line")
+        try:
+            return registry.archive(repository_id, target_id, note, caller.uid)
+        except RepositoryArchiveBlocked as exc:
+            raise ProtocolError("repository_archive_blocked", str(exc)) from exc
+
+    def repository_unarchive(args: dict[str, Any], caller: Caller) -> dict[str, Any]:
+        unknown = set(args) - {"repository_id", "note"}
+        if unknown:
+            raise ProtocolError("args_invalid", f"unknown args: {sorted(unknown)}")
+        repository_id = args.get("repository_id")
+        note = args.get("note")
+        if not isinstance(repository_id, str) or not repository_id.startswith("r"):
+            raise ProtocolError("args_invalid", "'repository_id' must be an 'r…' id")
+        if not isinstance(note, str) or not 3 <= len(note) <= 500 or "\n" in note:
+            raise ProtocolError("args_invalid", "'note' must be one 3..500 character line")
+        try:
+            return registry.unarchive(repository_id, note, caller.uid)
+        except RepositoryArchiveBlocked as exc:
+            raise ProtocolError("repository_archive_blocked", str(exc)) from exc
+
     handlers: dict[str, Handler] = {
         "ping": ping,
         "repository.register": repository_register,
         "repository.list": repository_list,
         "repository.status": repository_status,
+        "repository.archive": repository_archive,
+        "repository.unarchive": repository_unarchive,
     }
 
     if lifecycle is not None:

@@ -20,6 +20,8 @@ ERROR_CODES = (
     "command_unknown",
     "args_invalid",
     "repository_not_found",
+    "repository_archived",
+    "repository_archive_blocked",
     "repository_config_invalid",
     "worktree_busy",
     "test_not_found",

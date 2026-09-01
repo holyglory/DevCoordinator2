@@ -91,8 +91,28 @@ TOOLS = [
     },
     {
         "name": "repository_list",
-        "description": "All registered repositories and their worktrees.",
-        "inputSchema": {"type": "object", "properties": {}},
+        "description": "Active registered repositories and their worktrees.",
+        "inputSchema": {"type": "object", "properties": {
+            "include_archived": {"type": "boolean"},
+        }},
+    },
+    {
+        "name": "repository_archive",
+        "description": (
+            "Archive a repository after its open work and live resources are cleared."),
+        "inputSchema": {"type": "object", "properties": {
+            "repository_id": {"type": "string"},
+            "merged_into_repository_id": {"type": "string"},
+            "note": {"type": "string", "minLength": 3, "maxLength": 500},
+        }, "required": ["repository_id", "merged_into_repository_id", "note"]},
+    },
+    {
+        "name": "repository_unarchive",
+        "description": "Restore an archived repository whose checkout exists.",
+        "inputSchema": {"type": "object", "properties": {
+            "repository_id": {"type": "string"},
+            "note": {"type": "string", "minLength": 3, "maxLength": 500},
+        }, "required": ["repository_id", "note"]},
     },
 ]
 
@@ -337,6 +357,8 @@ _TOOL_TO_COMMAND = {
     "test_stop": "test.stop",
     "test_list": "test.list",
     "repository_list": "repository.list",
+    "repository_archive": "repository.archive",
+    "repository_unarchive": "repository.unarchive",
     # Planning/ledger/decisions (schema 8). release.request and release.update
     # are owner controls: Console + CLI only, deliberately not agent tools.
     "plan_overview": "plan.overview",

@@ -22,30 +22,61 @@ install = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(install)
 
 
-def test_install_release_excludes_local_design_references(tmp_path, monkeypatch):
-    root = tmp_path / "source"
-    console = root / "console"
-    references = console / "design-reference"
-    references.mkdir(parents=True)
-    (console / "app.js").write_text("console")
-    (references / "private-mock.png").write_bytes(b"private")
-    opt = tmp_path / "opt"
-    monkeypatch.setattr(install, "ROOT", root)
-    monkeypatch.setattr(install, "OPT", opt)
-    monkeypatch.setattr(install, "RELEASE_ITEMS", ("console",))
-
-    release = install.install_release("test-release")
-
-    assert (release / "console" / "app.js").read_text() == "console"
-    assert not (release / "console" / "design-reference").exists()
-    with pytest.raises(RuntimeError, match="immutable release already exists"):
-        install.install_release("test-release")
+def git(repo: Path, *args: str) -> str:
+    result = subprocess.run(
+        ["git", "-C", str(repo), *args],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return result.stdout.strip()
 
 
-def test_install_release_rejects_path_escape_identifier(tmp_path, monkeypatch):
-    monkeypatch.setattr(install, "OPT", tmp_path / "opt")
-    with pytest.raises(ValueError, match="path-safe"):
-        install.install_release("../escape", activate=False)
+def make_live_checkout(tmp_path: Path) -> tuple[Path, Path]:
+    remote = tmp_path / "remote.git"
+    subprocess.run(["git", "init", "--bare", "-q", str(remote)], check=True)
+    root = tmp_path / "live"
+    subprocess.run(["git", "init", "-q", str(root)], check=True)
+    git(root, "config", "user.name", "fixture")
+    git(root, "config", "user.email", "fixture@example.invalid")
+    (root / "tracked.txt").write_text("one\n")
+    git(root, "add", "tracked.txt")
+    git(root, "commit", "-q", "-m", "initial")
+    git(root, "branch", "-M", "main")
+    git(root, "remote", "add", "origin", str(remote))
+    git(root, "push", "-q", "-u", "origin", "main")
+    subprocess.run(
+        ["git", "-C", str(remote), "symbolic-ref", "HEAD", "refs/heads/main"],
+        check=True,
+    )
+    return root, remote
+
+
+def test_live_checkout_requires_clean_current_main(tmp_path):
+    root, remote = make_live_checkout(tmp_path)
+    head = git(root, "rev-parse", "HEAD")
+    assert install.validate_live_checkout(root, fetch=True) == head
+
+    (root / "dirty.txt").write_text("dirty\n")
+    with pytest.raises(RuntimeError, match="must be clean"):
+        install.validate_live_checkout(root, fetch=False)
+    (root / "dirty.txt").unlink()
+
+    git(root, "checkout", "-q", "-b", "feature")
+    with pytest.raises(RuntimeError, match="must be on main"):
+        install.validate_live_checkout(root, fetch=False)
+    git(root, "checkout", "-q", "main")
+
+    other = tmp_path / "other"
+    subprocess.run(["git", "clone", "-q", str(remote), str(other)], check=True)
+    git(other, "config", "user.name", "fixture")
+    git(other, "config", "user.email", "fixture@example.invalid")
+    (other / "tracked.txt").write_text("two\n")
+    git(other, "add", "tracked.txt")
+    git(other, "commit", "-q", "-m", "advance")
+    git(other, "push", "-q", "origin", "main")
+    with pytest.raises(RuntimeError, match="must exactly match fetched origin/main"):
+        install.validate_live_checkout(root, fetch=True)
 
 
 def test_install_skill_links_replaces_only_existing_agent_roots(tmp_path, monkeypatch):
@@ -54,39 +85,66 @@ def test_install_skill_links_replaces_only_existing_agent_roots(tmp_path, monkey
     claude = home / ".claude"
     codex.mkdir(parents=True)
     claude.mkdir()
-    old = tmp_path / "old-skill"
-    old.mkdir()
+    old = tmp_path / "releases" / "old" / "skills" / "codex-dev-coordinator"
+    old.mkdir(parents=True)
     (codex / "skills").mkdir()
     (codex / "skills" / "codex-dev-coordinator").symlink_to(old)
-    release_skill = tmp_path / "release" / "skills" / "codex-dev-coordinator"
-    release_skill.mkdir(parents=True)
+    skills_root = tmp_path / "source" / "skills"
+    for skill in install.MANAGED_SKILLS:
+        (skills_root / skill).mkdir(parents=True)
     monkeypatch.setattr(install.pwd, "getpwnam", lambda _name: SimpleNamespace(
         pw_dir=str(home), pw_uid=1000, pw_gid=1000))
     monkeypatch.setattr(install.os, "chown", lambda *_args: None)
 
-    links = install.install_skill_links(["developer"], release_skill)
+    links, retired = install.install_skill_links(["developer"], skills_root)
 
     expected = {
-        str(codex / "skills" / "codex-dev-coordinator"),
-        str(claude / "skills" / "codex-dev-coordinator"),
+        str(root / "skills" / skill)
+        for root in (codex, claude)
+        for skill in install.MANAGED_SKILLS
     }
     assert set(links) == expected
+    assert retired == [str(codex / "skills" / "codex-dev-coordinator")]
     for link in expected:
         assert Path(link).is_symlink()
-        assert Path(link).readlink() == release_skill
+        assert Path(link).readlink() == skills_root / Path(link).name
 
 
 def test_install_skill_links_refuses_non_symlink(tmp_path, monkeypatch):
     home = tmp_path / "home"
-    skill = home / ".codex" / "skills" / "codex-dev-coordinator"
+    skill = home / ".codex" / "skills" / "dev-coordinator"
     skill.mkdir(parents=True)
-    release_skill = tmp_path / "release-skill"
-    release_skill.mkdir()
+    skills_root = tmp_path / "source" / "skills"
+    for name in install.MANAGED_SKILLS:
+        (skills_root / name).mkdir(parents=True)
     monkeypatch.setattr(install.pwd, "getpwnam", lambda _name: SimpleNamespace(
         pw_dir=str(home), pw_uid=1000, pw_gid=1000))
 
     with pytest.raises(RuntimeError, match="refusing to replace non-symlink"):
-        install.install_skill_links(["developer"], release_skill)
+        install.install_skill_links(["developer"], skills_root)
+
+
+def test_install_policy_links_use_universal_source(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    (home / ".codex").mkdir(parents=True)
+    (home / ".claude").mkdir()
+    policy = tmp_path / "source" / "reference" / "universal" / "AGENTS.md"
+    policy.parent.mkdir(parents=True)
+    policy.write_text("# Universal\n")
+    monkeypatch.setattr(
+        install.pwd,
+        "getpwnam",
+        lambda _name: SimpleNamespace(pw_dir=str(home), pw_uid=1000, pw_gid=1000),
+    )
+
+    links = install.install_policy_links(["developer"], policy)
+
+    assert set(links) == {
+        str(home / ".codex" / "AGENTS.md"),
+        str(home / ".claude" / "CLAUDE.md"),
+    }
+    assert (home / ".codex" / "AGENTS.md").readlink() == policy
+    assert (home / ".claude" / "CLAUDE.md").readlink() == policy
 
 
 def test_compose_env_authorization_binds_ignored_path_to_repository(tmp_path):
@@ -95,7 +153,8 @@ def test_compose_env_authorization_binds_ignored_path_to_repository(tmp_path):
     subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
     (repo / ".gitignore").write_text("private/dev.env\n")
     (repo / "private").mkdir()
-    (repo / "private" / "dev.env").write_text("PASSWORD=not-read-by-installer\n")
+    (repo / "private" / "dev.env").write_text(
+        "PASSWORD=not-read-by-installer\n")  # public-artifact-guard: allow text-secret
 
     entries = install.compose_env_authorizations([
         f"{repo}=private/dev.env",
@@ -217,7 +276,7 @@ def test_ensure_env_value_appends_once_and_refuses_conflict(tmp_path):
         install.ensure_env_value(target, "B", "3")
 
 
-def test_install_restart_path_activates_the_new_release(monkeypatch):
+def test_install_restart_path_restarts_live_checkout_services(monkeypatch):
     calls = []
     monkeypatch.setattr(
         install, "run",
@@ -231,43 +290,28 @@ def test_install_restart_path_activates_the_new_release(monkeypatch):
     ]
 
 
-def test_release_can_stage_without_switch_and_activate_atomically(tmp_path, monkeypatch):
+def test_unit_files_and_cli_source_resolve_the_checkout(tmp_path):
     root = tmp_path / "source"
-    (root / "console").mkdir(parents=True)
-    (root / "console" / "app.js").write_text("new")
-    opt = tmp_path / "opt"
-    monkeypatch.setattr(install, "ROOT", root)
-    monkeypatch.setattr(install, "OPT", opt)
-    monkeypatch.setattr(install, "RELEASE_ITEMS", ("console",))
+    deploy = root / "deploy"
+    deploy.mkdir(parents=True)
+    (deploy / "devcoordinator2.service").write_text(
+        "Environment=PYTHONPATH=/home/DevCoordinator2/src\n"
+    )
+    (deploy / "devcoordinator2-edge.service").write_text(
+        "ExecStart=/usr/bin/node /home/DevCoordinator2/edge/devcoordinator2-edge.mjs\n"
+    )
 
-    staged = install.install_release("next", activate=False)
-    assert staged.exists()
-    assert not (opt / "current").exists()
-    assert install.activate_release(staged) is None
-    assert (opt / "current").resolve() == staged
+    assert f"PYTHONPATH={root}/src" in install.unit_daemon(root)
+    assert f"{root}/edge/devcoordinator2-edge.mjs" in install.unit_edge(root, False)
 
 
-def test_activation_guard_rolls_back_on_parent_failure_and_commits_on_success(
-        tmp_path, monkeypatch):
-    opt = tmp_path / "opt"
-    old = opt / "releases" / "old"
-    new = opt / "releases" / "new"
-    old.mkdir(parents=True)
-    new.mkdir()
-    (opt / "current").symlink_to(old)
-    monkeypatch.setattr(install, "OPT", opt)
-
-    rollback_guard = install.start_activation_guard(
-        old, new, restart_services=False)
-    install.activate_release(new)
-    install.finish_activation_guard(rollback_guard, commit=False)
-    assert (opt / "current").resolve() == old
-
-    commit_guard = install.start_activation_guard(
-        old, new, restart_services=False)
-    install.activate_release(new)
-    install.finish_activation_guard(commit_guard, commit=True)
-    assert (opt / "current").resolve() == new
+def test_set_env_value_replaces_live_source_path(tmp_path):
+    target = tmp_path / "edge.env"
+    target.write_text("EDGE_CONSOLE_DIR=/opt/devcoordinator2/current/console\n")
+    assert install.set_env_value(target, "EDGE_CONSOLE_DIR", "/home/DevCoordinator2/console")
+    assert target.read_text() == "EDGE_CONSOLE_DIR=/home/DevCoordinator2/console\n"
+    assert not install.set_env_value(
+        target, "EDGE_CONSOLE_DIR", "/home/DevCoordinator2/console")
 
 
 def test_new_daemon_drain_uses_activity_receipt_without_fencing_socket(
