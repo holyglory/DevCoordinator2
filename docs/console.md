@@ -43,8 +43,8 @@ a native select.
    nested Compose-service state; only explicitly independent long-running
    services receive exact start/stop/restart controls,
    on-demand logs (managed files or observed `docker logs`),
-   rollback/remove (managed, administrators; remove asks explicitly whether
-   persistent data should be deleted), the same pop-up domain editor
+   rollback/remove (managed, administrators; separate immediate controls keep
+   persistent data or delete it), the same pop-up domain editor
    (administrators; `deployment.set_domain` — for an observed deployment
    without a route it asks for the host port, and a re-import replaces
    observed edits), and per-component CPU/memory charts over a selectable
@@ -79,7 +79,7 @@ a native select.
    (drop between rows or onto a release header; delivered releases refuse
    drops), the move pop-up as the touch/accessibility path, "Request
    preview now" (replaced by a pending notice while one is requested),
-   drop-task with confirm, and an "Ask for a change" form that files a
+   explicitly labelled immediate drop-task action, and an "Ask for a change" form that files a
    `user_feedback` task. Viewers get the same chart read-only.
 3. **Progress** — an operator/administrator repository dashboard that aligns
    terminal task completions, current planned task lines completed, terminal
@@ -104,9 +104,14 @@ a native select.
    newest-first with aspect badge, optional stable ref, and age; superseded
    decisions collapse and dim; "Show older decisions" pages the permanent
    history.
-5. **Tests** — one current/most-recent run per worktree: result and
-   duration first; stdout/stderr tails load only on demand (bounded); stop
-   a running test or start the declared default (administrators).
+5. **Tests** — the current/most-recent run collection remains first: result,
+   requested development/pre-merge/release tier, readiness eligibility, and
+   duration; stdout/stderr tails load only on demand (bounded). Administrators
+   stop a running test or start a prior worktree at a selected tier, with
+   release selected by default. The adjacent **Capacity** action opens a
+   focused dialog showing learned/effective capacity, the optional maximum,
+   active/waiting leaves, admission pause state, and the last adjustment's
+   measured evidence. Saving or clearing the host-wide maximum acts directly.
 6. **Health** — host condition first as one aligned capacity group (CPU,
    memory, root filesystem, load/swap) beside a separate operational-status
    group (unhealthy deployments, critical alerts, active tests, total
@@ -178,10 +183,11 @@ explicit permission-denied notice instead of partial data.
 | Responsive hamburger | — (client-side) | the original navigation links open in a DOM menu; Escape closes it and restores focus; link activation navigates and closes it |
 | Unhealthy-deployment actions (health page cards) | `deployment.start/stop/restart` | summary re-read |
 | Apply / rollback | `deployment.apply` / `deployment.rollback` | status re-read |
-| Remove (confirm + explicit delete-data choice) | `deployment.remove {delete_data}` | list re-read |
+| Remove deployment — keep data / Remove deployment and delete data | `deployment.remove {delete_data: false|true}` | list re-read |
 | Component logs | `deployment.logs` | tail rendered on demand |
 | Test stdout/stderr | `test.output {tail_bytes: 16384}` | bounded tail rendered |
-| Test start/stop | `test.start` / `test.stop` | list re-read |
+| Test start/stop | `test.start {tier}` / `test.stop` | list re-read; the selected tier is recorded |
+| Test capacity | `test.capacity.get` / `test.capacity.set {cap: integer|null}` | dialog and Tests action re-read learned/effective capacity and the administrator maximum |
 | Container remove (orphaned/test only) | `health.container_remove {container_id}` | inventory re-read |
 | Bug report / close | `bug.report` / `bug.close` | list re-read |
 | Invite, remove user, set/remove grant | `user.invite`, `user.remove`, `grant.set`, `grant.remove` | administration re-read |
@@ -194,9 +200,9 @@ explicit permission-denied notice instead of partial data.
 | Select a row/bar and hover a bar | — (client-side) | row and bar highlight together; the bottom tray and anchored hover badge reveal the same task |
 | Pan, zoom, fit, horizontal scroll, and minimap navigation | — (client-side) | the cumulative-lines viewport and minimap stay synchronized |
 | Select, collapse/expand a task, collapse the selected tray, or collapse the navigator | — (client-side) | only affected DOM state changes; no `plan.overview`, loading state, whole-workspace replacement, or page flash |
-| Request preview now (confirm) | `release.request {repository_id}` | plan re-read; pending notice replaces the button; delivery later shows the app link/port |
+| Request preview now | `release.request {repository_id}` | plan re-read; pending notice replaces the button; delivery later shows the app link/port |
 | Ask-for-a-change form | `task.create {repository_id, title, impact?, kind: user_feedback}` | plan re-read; the task appears with a "your request" badge |
-| Drop task (confirm) | `task.update {task_id, status: dropped}` | plan re-read; the task leaves the chart (history kept) |
+| Drop task | `task.update {task_id, status: dropped}` | plan re-read; the task leaves the chart (history kept) |
 | Collapse/expand a parent task | — (client-side) | subtree rows hide/show |
 | Decision aspect filter / Show older | `decision.tail {repository_id, aspect?, n, before_seq?}` | list re-fetched server-side |
 | Decision search | `decision.search {repository_id, query, aspect?}` | matching decisions rendered |

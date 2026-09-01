@@ -244,8 +244,18 @@ const fixtures = (scenario) => {
     'deployment.logs': { component: 'api', tail: 'line 1\nline 2 ' + 'long '.repeat(60) + '\nline 3', truncated_before_tail: true, log_path: '/state/logs/api.log' },
     'health.history': { subject_kind: 'component', subject_id: `${DEP}/api`, metric: 'cpu_percent', minutes: 60, points: scenario.empty ? [] : points, truncated: false },
     'test.list': { runs: scenario.empty ? [] : [
-      { run_id: 't20260101T000000Z-abc123', test: 'unit', status: 'running', started_at: new Date().toISOString(), finished_at: null, duration_seconds: null, exit_code: null, stdout_bytes_observed: 123456789, stderr_bytes_observed: 0, stdout_truncated: true, stderr_truncated: false, display_name: 'repo-one', worktree_path: '/srv/repos/repo-one', repository_id: REPO, worktree_id: 'w1', summary_path: '/srv/repos/repo-one/.devcoordinator/test/current/summary.json' },
-      { run_id: 't20260101T000100Z-def456', test: 'integration-with-a-long-name', status: 'failed', started_at: new Date(Date.now() - 3600000).toISOString(), finished_at: new Date().toISOString(), duration_seconds: 3599.123, exit_code: 1, stdout_bytes_observed: 10, stderr_bytes_observed: 4194304, stdout_truncated: false, stderr_truncated: true, display_name: LONG, worktree_path: `/srv/repos/${LONG}`, repository_id: 'r2', worktree_id: 'w2', summary_path: '/x' }] },
+      { run_id: 't20260101T000000Z-abc123', test: 'unit', tier: 'pre-merge', readiness_eligible: false, status: 'running', started_at: new Date().toISOString(), finished_at: null, duration_seconds: null, exit_code: null, stdout_bytes_observed: 123456789, stderr_bytes_observed: 0, stdout_truncated: true, stderr_truncated: false, display_name: 'repo-one', worktree_path: '/srv/repos/repo-one', repository_id: REPO, worktree_id: 'w1', summary_path: '/srv/repos/repo-one/.devcoordinator/test/current/summary.json' },
+      { run_id: 't20260101T000100Z-def456', test: 'integration-with-a-long-name', tier: 'release', readiness_eligible: true, status: 'failed', started_at: new Date(Date.now() - 3600000).toISOString(), finished_at: new Date().toISOString(), duration_seconds: 3599.123, exit_code: 1, stdout_bytes_observed: 10, stderr_bytes_observed: 4194304, stdout_truncated: false, stderr_truncated: true, display_name: LONG, worktree_path: `/srv/repos/${LONG}`, repository_id: 'r2', worktree_id: 'w2', summary_path: '/x' }] },
+    'test.capacity.get': {
+      learned_capacity: 96, effective_capacity: 80, cap: 80, active: scenario.empty ? 0 : 52,
+      waiting: scenario.empty ? 0 : 11, paused: false,
+      last_adjustment: scenario.empty ? null : {
+        event_id: 'e1', at: new Date(Date.now() - 300000).toISOString(), actor: 'scheduler',
+        reason: 'underused_saturated_epoch', previous_capacity: 77, new_capacity: 96, cap: 80,
+        p95_cpu_percent: 72.4, p95_memory_percent: 61.8, saturation_fraction: .84,
+        epoch_seconds: 1840,
+      },
+    },
     'test.output': { run_id: 't1', stream: 'stdout', tail: 'ok\n'.repeat(5), tail_bytes: 15, truncated_before_tail: true, log_path: '/srv/repos/repo-one/.devcoordinator/test/current/stdout.log' },
     'health.summary': { host: { cpu_percent: 93.4, memory_total: 264122252 * 1024, memory_used: 108579328 * 1024, memory_available: 155542924 * 1024, swap_total: 0, swap_used: 0, load_1: 8.32, load_5: 8.39, load_15: 7.69, fs_size: 2113513742336, fs_free: 148698841088, fs_used: 1964814901248, ncpu: 32, reconciliation: { managed_cpu_percent: 40.1, daemon_cpu_percent: 0.3, other_cpu_percent: 53.0, managed_memory: 50e9, daemon_memory: 120e6, other_memory: 60e9 } }, storage: { fs_used: 1964814901248, managed_repositories: 4e11, devcoordinator_state: 5e7, docker_shared: 3e10, docker_images: 2.7e10, docker_build_cache: 2.8e9, docker_shared_volumes: 1e8, other: 1.5e12 }, unhealthy_deployments: scenario.empty ? [] : [{ ...degraded, reasons: [{ component: 'worker', state: 'failed', detail: 'exited 1: boom' }, { component: 'api', state: 'stopped', detail: null }] }, { deployment_id: OBS, name: 'existing-compose-stack', source: 'observed', state: 'running', health: 'unhealthy', repository_name: 'legacy-repo', observed_only: true, reasons: [{ component: 'app', state: 'running', detail: 'container healthcheck failing (Up 3 days (unhealthy))' }] }], active_tests: scenario.empty ? [] : ['unit'], container_counts: { 'managed-test': 1, 'managed-preview': 0, 'managed-permanent': 3, 'orphaned-managed': 1, unmanaged: 43 }, alerts: scenario.empty ? [] : [{ alert_key: 'host/cpu', kind: 'host_cpu', severity: 'warning', message: 'host CPU 93% sustained', opened_at: new Date().toISOString() }, { alert_key: `component/${DEP}/worker/unhealthy`, kind: 'component_unhealthy', severity: 'critical', message: `component ${DEP}/worker is failed`, opened_at: new Date().toISOString() }], sampling: { retention_days: 30 } },
     'health.repositories': { repositories: scenario.empty ? [] : [{ repository_id: 'r9999999999999999', display_name: 'legacy-repo', root_path: '/srv/repos/legacy-repo', cpu_percent: 2.5, memory_bytes: 123456789, storage_bytes: 45678, storage: {}, health: 'healthy', deployments: [observed], trend_cpu: [2, 2, 3, 2, 2, 3, 2, 2, 3, 2, 2, 3], trend_memory: [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1] }, { repository_id: 'r0123456789abcdef', display_name: 'repo-one', root_path: '/srv/repos/repo-one', cpu_percent: 40.1, memory_bytes: 5e10, storage_bytes: 4e11, storage: {}, health: 'unhealthy', deployments: [running, degraded], trend_cpu: [1, 5, 3, 8, 2, 9, 4, 7, 3, 6, 2, 5], trend_memory: [1, 1, 2, 2, 3, 3, 3, 4, 4, 4, 5, 5] }, { repository_id: 'r2', display_name: LONG, root_path: `/srv/repos/${LONG}`, cpu_percent: 0, memory_bytes: 0, storage_bytes: 1234567890123, storage: {}, health: 'none', deployments: [], trend_cpu: [], trend_memory: [] }], devcoordinator: { cpu_percent: 0.3, memory_bytes: 120e6, storage_bytes: 5e7 }, shared_unattributed: { cpu_percent: 53, memory_bytes: 60e9, storage: { docker_shared: 3e10, docker_images: 2.7e10, docker_build_cache: 2.8e9, docker_shared_volumes: 1e8, other: 1.5e12 } }, host: {} },
@@ -341,7 +351,7 @@ const destinationHref = (view) => {
   return '#/admin';
 };
 const PROJECT_DETAIL_VIEWS = new Set([`#/plan/${REPO}`, `#/progress/${REPO}`, `#/usage/${REPO}`, `#/decisions/${REPO}`]);
-const ADMIN_ONLY = ['health.summary', 'health.containers', 'health.container_remove', 'user.list', 'user.invite', 'user.remove', 'grant.set', 'grant.remove', 'test.list', 'test.start', 'test.stop', 'test.output', 'deployment.apply', 'deployment.rollback', 'deployment.remove', 'deployment.set_domain', 'task.create', 'task.update', 'release.create', 'release.update', 'release.request', 'release.deliver', 'decision.record', 'decision.summarize'];
+const ADMIN_ONLY = ['health.summary', 'health.containers', 'health.container_remove', 'user.list', 'user.invite', 'user.remove', 'grant.set', 'grant.remove', 'test.list', 'test.start', 'test.stop', 'test.output', 'test.capacity.get', 'test.capacity.set', 'deployment.apply', 'deployment.rollback', 'deployment.remove', 'deployment.set_domain', 'task.create', 'task.update', 'release.create', 'release.update', 'release.request', 'release.deliver', 'decision.record', 'decision.summarize'];
 const OPERATOR_ONLY = ['usage.repositories', 'usage.repository', 'progress.repositories', 'progress.repository'];
 
 async function startFakeDaemon(dir) {
@@ -352,7 +362,7 @@ async function startFakeDaemon(dir) {
   const settledWaiters = new Set();
   const receivedWaiters = new Set();
   const delayedReplies = new Set();
-  const mutable = { stopped: false, serviceStopped: false, taskUpdates: new Map(), createdTasks: [], previewRequested: false, failNextTaskUpdate: false, usageCollectionReads: 0 };
+  const mutable = { stopped: false, serviceStopped: false, taskUpdates: new Map(), createdTasks: [], previewRequested: false, failNextTaskUpdate: false, usageCollectionReads: 0, capacityCap: 80 };
   const planOverview = () => {
     const result = fixtures(scenario)['plan.overview'];
     result.tasks = result.tasks
@@ -416,6 +426,15 @@ async function startFakeDaemon(dir) {
         return reply({ ok: true, result: { task_id: task.task_id, status: task.status } });
       }
       if (cmd === 'release.request') { mutable.previewRequested = true; return reply({ ok: true, result: { status: 'requested' } }); }
+      if (cmd === 'test.capacity.set') {
+        mutable.capacityCap = req.args.cap;
+        const learned = 96;
+        return reply({ ok: true, result: {
+          ...fixtures(scenario)['test.capacity.get'], cap: mutable.capacityCap,
+          effective_capacity: mutable.capacityCap == null ? learned : Math.min(learned, mutable.capacityCap),
+          last_adjustment: { event_id: 'e2', at: new Date().toISOString(), actor: 'administrator', reason: 'administrator_cap_changed', previous_capacity: learned, new_capacity: learned, cap: mutable.capacityCap, p95_cpu_percent: null, p95_memory_percent: null, saturation_fraction: null, epoch_seconds: null },
+        } });
+      }
       if (['deployment.restart', 'deployment.apply', 'deployment.rollback', 'deployment.remove', 'bug.report', 'bug.close', 'user.invite', 'user.remove', 'grant.set', 'grant.remove', 'telegram.link', 'telegram.subscribe', 'telegram.unsubscribe', 'test.stop', 'test.start', 'health.container_remove'].includes(cmd)) return reply({ ok: true, result: { state: 'done', status: 'done' } });
       if (cmd === 'plan.overview' && !req.args.repository_id) return reply({ ok: true, result: fixtures(scenario)['plan.overview-list'] });
       if (cmd === 'plan.overview') return reply({ ok: true, result: planOverview() });
@@ -442,6 +461,12 @@ async function startFakeDaemon(dir) {
         result.range = req.args.range || '24h';
         return reply({ ok: true, result });
       }
+      if (cmd === 'test.capacity.get') {
+        const result = structuredClone(fixtures(scenario)['test.capacity.get']);
+        result.cap = mutable.capacityCap;
+        result.effective_capacity = mutable.capacityCap == null ? result.learned_capacity : Math.min(result.learned_capacity, mutable.capacityCap);
+        return reply({ ok: true, result });
+      }
       if (cmd === 'decision.tail' && req.args.repository_id === 'r9999999999999999') {
         return reply({ ok: true, result: { repository_id: req.args.repository_id, display_name: 'legacy-repo', summary: null, decisions: [], has_more: false, unsummarized_count: 0, summary_due: false } });
       }
@@ -454,7 +479,7 @@ async function startFakeDaemon(dir) {
   return {
     socketPath,
     calls,
-    setScenario: (s) => { for (const release of delayedReplies) release(); delayedReplies.clear(); scenario = s; mutable.stopped = false; mutable.serviceStopped = false; mutable.taskUpdates.clear(); mutable.createdTasks.length = 0; mutable.previewRequested = false; mutable.failNextTaskUpdate = false; mutable.usageCollectionReads = 0; calls.length = 0; },
+    setScenario: (s) => { for (const release of delayedReplies) release(); delayedReplies.clear(); scenario = s; mutable.stopped = false; mutable.serviceStopped = false; mutable.taskUpdates.clear(); mutable.createdTasks.length = 0; mutable.previewRequested = false; mutable.failNextTaskUpdate = false; mutable.usageCollectionReads = 0; mutable.capacityCap = 80; calls.length = 0; },
     failNextTaskUpdate: () => { mutable.failNextTaskUpdate = true; },
     releaseDelayed: () => { for (const release of delayedReplies) release(); delayedReplies.clear(); },
     waitForReceivedAfter: (after) => {
@@ -537,6 +562,9 @@ async function main() {
   const browser = await pw.chromium.launch({ args: [`--host-resolver-rules=MAP *.${BASE} 127.0.0.1`] });
   const report = { checks: [], failures: [] };
   const check = (name, ok, detail = '') => { report.checks.push({ name, ok, detail }); if (!ok) report.failures.push(`${name}: ${detail}`); };
+  const appSource = await fs.readFile(new URL('./app.js', import.meta.url), 'utf8');
+  check('administrator controls have no native or data-driven confirmation path',
+    !/window\.confirm|data-confirm|data-delete-data/.test(appSource));
 
   if (!process.env.CONSOLE_VERIFY_INTERACTIONS_ONLY) for (const [scenarioName, scenario] of Object.entries(SCENARIOS).filter(([, scenario]) => !scenario.targetedOnly)) {
     daemon.setScenario(scenario);
@@ -766,7 +794,8 @@ async function main() {
   const { cookie } = sessions.issue({ sub: 'sub', email: 'owner@example.test' });
   await context.addCookies([{ name: 'dc2_session', value: cookie.split(';')[0].split('=')[1], domain: `.${BASE}`, path: '/' }]);
   const page = await context.newPage();
-  page.on('dialog', (d) => d.accept());
+  let nativeDialogCount = 0;
+  page.on('dialog', (dialog) => { nativeDialogCount += 1; dialog.accept(); });
   const pointerDrag = async (sourceSelector, targetSelector, targetPosition = {}) => {
     const source = page.locator(sourceSelector);
     const target = page.locator(targetSelector);
@@ -807,10 +836,19 @@ async function main() {
   await page.click('button[data-logs="api"]');
   await page.waitForSelector('pre.log');
   check('interaction: logs load on demand', daemon.calls.some((c) => c.command === 'deployment.logs' && c.args.component === 'api'));
-  await page.click('button[data-cmd="deployment.remove"]');
+  await page.getByRole('button', { name: 'Remove deployment — keep data' }).click();
   await waitForSettledCall(daemon, page, 'deployment.remove');
-  const removeCall = daemon.calls.find((c) => c.command === 'deployment.remove');
-  check('interaction: remove asks for confirmation and passes delete_data explicitly', removeCall && typeof removeCall.args.delete_data === 'boolean');
+  const keepDataCall = daemon.calls.find((c) => c.command === 'deployment.remove');
+  check('interaction: keep-data removal is an explicit immediate action',
+    keepDataCall && keepDataCall.args.deployment_id === DEP && keepDataCall.args.delete_data === false);
+  await page.goto(`http://${HOST}:${port}/#/deployments/${DEP}`);
+  await page.waitForSelector('button[data-cmd="deployment.remove"]');
+  daemon.calls.length = 0;
+  await page.getByRole('button', { name: 'Remove deployment and delete data' }).click();
+  await waitForSettledCall(daemon, page, 'deployment.remove');
+  const deleteDataCall = daemon.calls.find((c) => c.command === 'deployment.remove');
+  check('interaction: delete-data removal is a separate explicit immediate action',
+    deleteDataCall && deleteDataCall.args.deployment_id === DEP && deleteDataCall.args.delete_data === true);
   // Domain editing (DC2-2026-08-24: administrators edit the routed domain in place).
   await page.goto(`http://${HOST}:${port}/#/deployments/${DEP}`);
   await page.waitForSelector('#edit-domain');
@@ -876,6 +914,46 @@ async function main() {
   await page.click('button[data-out="stderr"]');
   await page.waitForSelector('pre.log');
   check('interaction: test output loads on demand with bounded tail', daemon.calls.some((c) => c.command === 'test.output' && c.args.tail_bytes === 16384));
+  check('tests: the run collection remains primary and capacity details stay in the action dialog',
+    await page.locator('#test-runs-heading').count() === 1
+    && await page.locator('.tests-tablewrap').count() === 1
+    && await page.locator('#test-capacity-dialog').count() === 0);
+  await page.click('#test-capacity-open');
+  await page.waitForSelector('dialog#test-capacity-dialog[open]');
+  const capacityText = await page.innerText('#test-capacity-dialog');
+  check('tests: capacity dialog shows measured scheduler state and the last adjustment',
+    /Auto capacity\s+96/.test(capacityText)
+    && /Effective\s+80/.test(capacityText)
+    && /Maximum\s+80/.test(capacityText)
+    && /Active\s+52/.test(capacityText)
+    && /Waiting\s+11/.test(capacityText)
+    && /Admission\s+open/.test(capacityText)
+    && /Increased after a saturated, underused epoch/.test(capacityText), capacityText);
+  daemon.calls.length = 0;
+  await page.fill('#test-capacity-form [name=cap]', '72');
+  await page.click('#test-capacity-form button[type=submit]');
+  await waitForSettledCall(daemon, page, 'test.capacity.set');
+  check('interaction: saving the administrator maximum calls test.capacity.set directly',
+    daemon.calls.some((call) => call.command === 'test.capacity.set' && call.args.cap === 72));
+  await page.waitForSelector('#test-capacity-open');
+  await page.click('#test-capacity-open');
+  await page.waitForSelector('dialog#test-capacity-dialog[open]');
+  daemon.calls.length = 0;
+  await page.click('#test-capacity-clear');
+  await waitForSettledCall(daemon, page, 'test.capacity.set');
+  check('interaction: clearing the administrator maximum sends an explicit null cap',
+    daemon.calls.some((call) => call.command === 'test.capacity.set' && call.args.cap === null));
+  await page.waitForSelector('[data-test-start]');
+  const tierControl = page.locator('[data-test-tier]');
+  check('tests: restart offers all three tiers with release as the default',
+    JSON.stringify(await tierControl.locator('option').allTextContents()) === JSON.stringify(['Development', 'Pre-merge', 'Release'])
+    && await tierControl.inputValue() === 'release');
+  daemon.calls.length = 0;
+  await tierControl.selectOption('pre-merge');
+  await page.click('[data-test-start]');
+  await waitForSettledCall(daemon, page, 'test.start');
+  check('interaction: starting a test sends the selected validation tier',
+    daemon.calls.some((call) => call.command === 'test.start' && call.args.tier === 'pre-merge'));
   await page.goto(`http://${HOST}:${port}/#/bugs`);
   await page.waitForSelector('#bug-form');
   for (const [f, v] of [['component', 'api'], ['summary', 'verify'], ['expected', 'a'], ['actual', 'b'], ['steps', 'c']]) await page.fill(`#bug-form [name=${f}]`, v);
@@ -1538,7 +1616,7 @@ async function main() {
   await page.click(`.plan-selection [data-cmd="task.update"]`);
   await waitForSettledCall(daemon, page, 'task.update');
   const dropCall = daemon.calls.find((c) => c.command === 'task.update');
-  check('interaction: drop asks for confirmation and marks the task dropped',
+  check('interaction: the explicitly labelled drop action marks the task dropped immediately',
     dropCall && dropCall.args.task_id === P_G1 && dropCall.args.status === 'dropped',
     JSON.stringify(dropCall?.args));
   check('interaction: dropped task leaves the current plan after the state re-read', await page.locator(`[data-task-row="${P_G1}"]`).count() === 0);
@@ -1585,6 +1663,7 @@ async function main() {
   await page.waitForSelector('text=REPO-EXPORT-FILES');
   check('interaction: search calls decision.search with the typed query',
     daemon.calls.some((c) => c.command === 'decision.search' && c.args.query === 'export' && c.args.aspect === 'ui'));
+  check('administrator actions never open a native confirmation dialog', nativeDialogCount === 0, `${nativeDialogCount} native dialogs`);
   await context.close();
 
   // Deployments dashboard: repository attribution, every responsive grid

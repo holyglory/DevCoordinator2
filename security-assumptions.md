@@ -35,6 +35,13 @@ untracked `instance/` directory and in the installed instance configuration
   distrusting tenants.
 - Public Console users and Internet clients are untrusted until
   authenticated at the edge and granted access to specific deployments.
+- The owner explicitly confirms that an authenticated Console administrator
+  has authority to execute every administrator command exposed by the
+  Console. DevCoordinator does not add a second confirmation dialog or chat
+  approval after authentication and server-side authorization. Destructive
+  controls must still name their exact target and effect, and the server keeps
+  exact-target validation, authorization, and permanent history. A host or
+  tool-owned approval mechanism remains outside this Console rule.
 - Repository source and permanent deployment/database data may be valuable.
   Test results and test scratch data are disposable and reproducible.
 - Credentials, bot tokens, identity assertions, database passwords, and
@@ -124,6 +131,10 @@ untracked `instance/` directory and in the installed instance configuration
   trusted local account may invoke any local command.
 - The public edge authenticates users and enforces per-deployment grants.
   Public authority never derives from the local trust boundary.
+- Decision summarization is an append-only maintenance write over existing
+  repository decisions. An authorized local caller or Console administrator
+  may store a due summary directly without a separate user-approval step; the
+  decision records and every prior summary remain permanent.
 
 ## Docker: authoritative mode (since the 2026-08-25 cutover)
 

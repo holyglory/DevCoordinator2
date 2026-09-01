@@ -262,8 +262,6 @@ function bind(root) {
     btn.dataset.commandBound = 'true';
     btn.addEventListener('click', () => {
       const args = JSON.parse(btn.dataset.args || '{}');
-      if (btn.dataset.confirm && !window.confirm(btn.dataset.confirm)) return;
-      if (btn.dataset.deleteData === 'ask') args.delete_data = window.confirm('Also delete persistent data (volumes, database)? Cancel keeps data.');
       act(btn, btn.dataset.cmd, args, () => render());
     });
   });
@@ -529,7 +527,7 @@ async function openDomainDialog(d) {
       <label class="f">public (no sign-in)<input type="checkbox" name="public" ${d.public ? 'checked' : ''}></label>
       <div class="actions" style="flex-basis:100%">
         <button class="btn" type="submit">Save domain</button>
-        ${d.domain ? '<button class="btn" type="button" id="domain-clear">Remove domain</button>' : ''}
+        ${d.domain ? '<button class="btn" type="button" id="domain-clear">Remove routed domain</button>' : ''}
         <button class="btn" type="button" id="domain-cancel">Cancel</button>
       </div>
     </form>`;
@@ -544,7 +542,6 @@ async function openDomainDialog(d) {
     await act(ev.target.querySelector('button[type=submit]'), 'deployment.set_domain', args, () => { dlg.close(); return render(); });
   });
   $('#domain-clear', dlg)?.addEventListener('click', async (ev) => {
-    if (!window.confirm('Remove the routed domain? The service stays up; only the edge route is removed.')) return;
     await act(ev.target, 'deployment.set_domain', { deployment_id: d.deployment_id, domain: null }, () => { dlg.close(); return render(); });
   });
   dlg.showModal();
@@ -583,7 +580,7 @@ const viewDeployment = guard(async (id) => {
     ${obs ? '<p class="notice muted">Imported from the live host. Start, stop, restart, and logs act on the exact recorded containers. Configuration changes (apply, rollback, remove) require adopting the stack through repository configuration.</p>' : ''}
     ${d.state === 'applying' ? '<p class="notice">Apply is still running. Closing this page does not cancel it. Refresh status after it finishes; other lifecycle actions stay unavailable meanwhile.</p>' : ''}
     <div class="actions" style="margin:12px 0">${lifecycleButtons(id, null, 'btn', d.state)}
-      ${!obs && admin ? `<button class="btn" data-cmd="deployment.apply" data-args='${esc(JSON.stringify({ deployment_id: id }))}'${d.state === 'applying' ? ' disabled aria-disabled="true" title="Apply already in progress"' : ''}>apply</button><button class="btn" data-cmd="deployment.rollback" data-args='${esc(JSON.stringify({ deployment_id: id }))}'${d.state === 'applying' ? ' disabled aria-disabled="true" title="Apply in progress"' : ''}>rollback</button><button class="btn btn-danger" data-cmd="deployment.remove" data-args='${esc(JSON.stringify({ deployment_id: id }))}' data-confirm="Remove this deployment? Persistent data is kept unless you choose otherwise next." data-delete-data="ask"${d.state === 'applying' ? ' disabled aria-disabled="true" title="Apply in progress"' : ''}>remove</button>` : ''}</div>
+      ${!obs && admin ? `<button class="btn" data-cmd="deployment.apply" data-args='${esc(JSON.stringify({ deployment_id: id }))}'${d.state === 'applying' ? ' disabled aria-disabled="true" title="Apply already in progress"' : ''}>apply</button><button class="btn" data-cmd="deployment.rollback" data-args='${esc(JSON.stringify({ deployment_id: id }))}'${d.state === 'applying' ? ' disabled aria-disabled="true" title="Apply in progress"' : ''}>rollback</button><button class="btn btn-danger" data-cmd="deployment.remove" data-args='${esc(JSON.stringify({ deployment_id: id, delete_data: false }))}'${d.state === 'applying' ? ' disabled aria-disabled="true" title="Apply in progress"' : ''}>Remove deployment — keep data</button><button class="btn btn-danger" data-cmd="deployment.remove" data-args='${esc(JSON.stringify({ deployment_id: id, delete_data: true }))}'${d.state === 'applying' ? ' disabled aria-disabled="true" title="Apply in progress"' : ''}>Remove deployment and delete data</button>` : ''}</div>
     <h2>Components</h2><div class="tablewrap"><table><thead><tr><th>Component</th><th>State</th><th>Gen</th><th>Port</th><th>Restarts</th><th>Binding</th><th>Error</th><th>Actions</th></tr></thead><tbody>${rows}</tbody></table></div>
     <div id="logs"></div><h2>Usage ${seg(Object.keys(RANGES), state.usageRange, 'usage-range')}</h2><div id="usage">${skeleton(2)}</div>`;
   bind(main);
@@ -615,16 +612,84 @@ const viewDeployment = guard(async (id) => {
 });
 
 // --- Tests ---------------------------------------------------------------
+const TEST_TIERS = ['development', 'pre-merge', 'release'];
+function testTierLabel(tier) {
+  return tier === 'pre-merge' ? 'Pre-merge' : tier[0].toUpperCase() + tier.slice(1);
+}
+function testCapacityAdjustment(adjustment) {
+  if (!adjustment) return '<p class="muted">No adjustment recorded.</p>';
+  const reason = {
+    underused_saturated_epoch: 'Increased after a saturated, underused epoch',
+    sustained_pressure: 'Decreased after sustained host pressure',
+    administrator_cap_changed: 'Administrator maximum changed',
+  }[adjustment.reason] || healthLabel(adjustment.reason, {});
+  return `<dl class="test-capacity-adjustment">
+    <div><dt>Reason</dt><dd>${esc(reason)}</dd></div>
+    <div><dt>Change</dt><dd>${esc(adjustment.previous_capacity)} → ${esc(adjustment.new_capacity)}</dd></div>
+    <div><dt>CPU p95</dt><dd>${pct(adjustment.p95_cpu_percent)}</dd></div>
+    <div><dt>Memory p95</dt><dd>${pct(adjustment.p95_memory_percent)}</dd></div>
+    <div><dt>Saturated</dt><dd>${adjustment.saturation_fraction == null ? '—' : pct(Number(adjustment.saturation_fraction) * 100)}</dd></div>
+    <div><dt>Epoch</dt><dd>${adjustment.epoch_seconds == null ? '—' : `${esc(adjustment.epoch_seconds)}s`}</dd></div>
+    <div><dt>Recorded</dt><dd>${adjustment.at ? esc(ago(adjustment.at)) : '—'}</dd></div>
+  </dl>`;
+}
+function openTestCapacityDialog(capacity, opener) {
+  document.getElementById('test-capacity-dialog')?.remove();
+  const dlg = document.createElement('dialog');
+  dlg.id = 'test-capacity-dialog';
+  dlg.innerHTML = `<div class="dialog-head"><h2>Test capacity</h2><button class="dialog-close" type="button" aria-label="Close capacity settings">×</button></div>
+    <dl class="test-capacity-facts">
+      <div><dt>Auto capacity</dt><dd>${esc(capacity.learned_capacity)}</dd></div>
+      <div><dt>Effective</dt><dd>${esc(capacity.effective_capacity)}</dd></div>
+      <div><dt>Maximum</dt><dd>${capacity.cap == null ? 'None' : esc(capacity.cap)}</dd></div>
+      <div><dt>Active</dt><dd>${esc(capacity.active)}</dd></div>
+      <div><dt>Waiting</dt><dd>${esc(capacity.waiting)}</dd></div>
+      <div><dt>Admission</dt><dd>${capacity.paused ? badge('paused', 'warn') : badge('open', 'ok')}</dd></div>
+    </dl>
+    <h3>Last adjustment</h3>${testCapacityAdjustment(capacity.last_adjustment)}
+    <form id="test-capacity-form" class="dialog-form">
+      <label class="f">Maximum parallel checks<input name="cap" type="number" min="1" step="1" inputmode="numeric" value="${capacity.cap == null ? '' : esc(capacity.cap)}" placeholder="No maximum"></label>
+      <div class="dialog-actions"><button class="btn" type="button" id="test-capacity-cancel">Cancel</button>${capacity.cap == null ? '' : '<button class="btn" type="button" id="test-capacity-clear">Clear maximum</button>'}<button class="btn btn-primary" type="submit">Save maximum</button></div>
+    </form>`;
+  document.body.appendChild(dlg);
+  const close = () => { dlg.close(); dlg.remove(); if (opener?.isConnected) opener.focus(); };
+  $('.dialog-close', dlg).addEventListener('click', close);
+  $('#test-capacity-cancel', dlg).addEventListener('click', close);
+  dlg.addEventListener('cancel', (event) => { event.preventDefault(); close(); });
+  $('#test-capacity-form', dlg).addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const raw = new FormData(event.target).get('cap')?.trim();
+    const cap = raw ? Number(raw) : null;
+    if (cap != null && (!Number.isSafeInteger(cap) || cap < 1)) {
+      event.target.querySelector('[name=cap]').setCustomValidity('Enter a whole number of at least 1.');
+      event.target.reportValidity(); return;
+    }
+    const button = event.submitter;
+    await act(button, 'test.capacity.set', { cap }, () => { dlg.close(); dlg.remove(); return render(); });
+  });
+  $('#test-capacity-clear', dlg)?.addEventListener('click', async (event) => {
+    await act(event.target, 'test.capacity.set', { cap: null }, () => { dlg.close(); dlg.remove(); return render(); });
+  });
+  dlg.showModal();
+  requestAnimationFrame(() => $('#test-capacity-form [name=cap]', dlg)?.focus());
+}
+
 const viewTests = guard(async () => {
   main.innerHTML = `${pageHeading('Tests', '#/tests')}${skeleton()}`;
-  const { runs } = await api('test.list', {});
-  if (!runs.length) { main.innerHTML = `${pageHeading('Tests', '#/tests')}${stateBlock('empty', 'No test runs yet. Start one from a repository with `devcoordinator2 test start`.')}`; return; }
-  main.innerHTML = `${pageHeading('Tests', '#/tests')}<p class="muted">One current run per worktree. Logs load only on demand.</p><div class="tablewrap"><table><thead><tr><th>Repository / worktree</th><th>Test</th><th>Result</th><th>Duration</th><th>Started</th><th>Exit</th><th>Output</th><th>Actions</th></tr></thead><tbody>${runs.map((r) => `<tr>
-    <td class="wrap"><strong>${esc(r.display_name)}</strong><div class="muted mono">${esc(r.worktree_path)}</div></td><td>${esc(r.test)}</td><td>${badge(r.status)}</td><td>${r.duration_seconds != null ? `${r.duration_seconds}s` : '—'}</td><td>${ago(r.started_at)}</td><td>${r.exit_code ?? '—'}</td>
+  const [{ runs }, capacity] = await Promise.all([api('test.list', {}), api('test.capacity.get', {})]);
+  const heading = `<div class="tests-heading">${pageHeading('Tests', '#/tests')}<button class="btn" type="button" id="test-capacity-open">Capacity · ${esc(capacity.effective_capacity)}</button></div>`;
+  const collection = runs.length ? `<div class="tablewrap tests-tablewrap"><table><thead><tr><th>Repository / worktree</th><th>Test</th><th>Tier</th><th>Result</th><th>Duration</th><th>Started</th><th>Exit</th><th>Output</th><th>Actions</th></tr></thead><tbody>${runs.map((r) => `<tr>
+    <td class="wrap"><strong>${esc(r.display_name)}</strong><div class="muted mono">${esc(r.worktree_path)}</div></td><td>${esc(r.test)}</td><td>${badge(testTierLabel(r.tier || 'release'), r.readiness_eligible === false ? '' : 'ok')}</td><td>${badge(r.status)}</td><td>${r.duration_seconds != null ? `${r.duration_seconds}s` : '—'}</td><td>${ago(r.started_at)}</td><td>${r.exit_code ?? '—'}</td>
     <td>${bytes(r.stdout_bytes_observed)}${r.stdout_truncated ? ' <span class="badge warn">truncated</span>' : ''} / ${bytes(r.stderr_bytes_observed)}</td>
     <td class="actions"><button class="btn btn-small" data-out="stdout" data-path="${esc(r.worktree_path)}">stdout</button><button class="btn btn-small" data-out="stderr" data-path="${esc(r.worktree_path)}">stderr</button>
-      ${r.status === 'running' ? `<button class="btn btn-small" data-cmd="test.stop" data-args='${esc(JSON.stringify({ path: r.worktree_path }))}'>stop</button>` : `<button class="btn btn-small" data-cmd="test.start" data-args='${esc(JSON.stringify({ path: r.worktree_path }))}'>start</button>`}</td></tr>`).join('')}</tbody></table></div><div id="logs"></div>`;
+      ${r.status === 'running' ? `<button class="btn btn-small" data-cmd="test.stop" data-args='${esc(JSON.stringify({ path: r.worktree_path }))}'>stop</button>` : `<label class="test-tier-control"><span>Tier</span><select data-test-tier data-path="${esc(r.worktree_path)}" aria-label="Validation tier for ${esc(r.display_name)}">${TEST_TIERS.map((tier) => `<option value="${tier}"${tier === 'release' ? ' selected' : ''}>${testTierLabel(tier)}</option>`).join('')}</select></label><button class="btn btn-small" type="button" data-test-start data-path="${esc(r.worktree_path)}">start</button>`}</td></tr>`).join('')}</tbody></table></div>` : stateBlock('empty', 'No test runs yet.');
+  main.innerHTML = `<section class="tests-page">${heading}<section aria-labelledby="test-runs-heading"><h2 id="test-runs-heading">Current runs</h2>${collection}</section><div id="logs"></div></section>`;
   bind(main);
+  $('#test-capacity-open', main).addEventListener('click', (event) => openTestCapacityDialog(capacity, event.currentTarget));
+  main.querySelectorAll('[data-test-start]').forEach((button) => button.addEventListener('click', () => {
+    const tier = main.querySelector(`[data-test-tier][data-path="${CSS.escape(button.dataset.path)}"]`)?.value || 'release';
+    act(button, 'test.start', { path: button.dataset.path, tier }, () => render());
+  }));
   main.querySelectorAll('[data-out]').forEach((btn) => btn.addEventListener('click', async () => {
     btn.disabled = true;
     try { const r = await api('test.output', { path: btn.dataset.path, stream: btn.dataset.out, tail_bytes: 16384 }, false); $('#logs').innerHTML = `<h2>${esc(btn.dataset.out)} tail ${r.truncated_before_tail ? '(earlier output omitted)' : ''}</h2><pre class="log">${esc(r.tail || '(empty)')}</pre><p class="muted mono">${esc(r.log_path)}</p>`; }
@@ -732,7 +797,7 @@ const viewContainers = guard(async () => {
   main.innerHTML = `${pageHeading('Health', '#/health', 'Containers')}<p><a href="#/health">← Health</a> · ${Object.entries(counts).map(([k, v]) => `${esc(k)} ${v}`).join(' · ')}</p>${containers.length ? `<div class="tablewrap"><table><thead><tr><th>Name / identity</th><th>State</th><th>Class</th><th>Repository</th><th>Deployment / test</th><th>Caller</th><th>CPU</th><th>Memory</th><th>Layer</th><th>Created</th><th>TTL</th><th>Actions</th></tr></thead><tbody>${containers.map((c) => `<tr>
     <td class="wrap"><strong>${esc(c.name)}</strong><div class="muted mono">${esc(c.id)}</div><div class="muted">${esc(c.image)}</div></td><td>${badge(c.state, c.state === 'running' ? 'ok' : '')}</td><td>${badge(c.classification, c.classification === 'unmanaged' ? 'warn' : c.classification === 'orphaned-managed' ? 'bad' : 'ok')}</td>
     <td class="mono">${esc(c.repository_id || '—')}</td><td class="mono wrap">${esc(c.deployment_id ? `${c.deployment_id}/${c.component}` : c.run_id || '—')}</td><td>${c.caller_uid ?? '—'} ${esc(c.client || '')}</td><td>${pct(c.cpu_percent)}</td><td>${bytes(c.memory_bytes)}</td><td>${bytes(c.container_layer_bytes)}</td><td class="wrap">${esc(c.created)}</td><td>${c.ttl_seconds ?? '—'}</td>
-    <td class="actions">${admin && (c.classification === 'orphaned-managed' || c.classification === 'managed-test') ? `<button class="btn btn-small btn-danger" data-cmd="health.container_remove" data-args='${esc(JSON.stringify({ container_id: c.id }))}' data-confirm="Remove this ${c.classification} container? Only DevCoordinator-owned ephemeral containers can be removed here.">remove</button>` : `<span class="muted">${c.classification === 'observed-current' ? 'controlled via its deployment' : 'decide manually'}</span>`}</td></tr>`).join('')}</tbody></table></div>` : stateBlock('empty', 'No containers on this host.')}`;
+    <td class="actions">${admin && (c.classification === 'orphaned-managed' || c.classification === 'managed-test') ? `<button class="btn btn-small btn-danger" data-cmd="health.container_remove" data-args='${esc(JSON.stringify({ container_id: c.id }))}' aria-label="Remove ${esc(c.classification)} container ${esc(c.name)}">Remove ${esc(c.classification)} container</button>` : `<span class="muted">${c.classification === 'observed-current' ? 'controlled via its deployment' : 'decide manually'}</span>`}</td></tr>`).join('')}</tbody></table></div>` : stateBlock('empty', 'No containers on this host.')}`;
   bind(main);
 });
 
@@ -1265,7 +1330,7 @@ const viewAdmin = guard(async () => {
   const depOptions = deployments.deployments.map((d) => `<option value="${esc(d.deployment_id)}">${esc(d.name)}@${esc(d.source)}</option>`).join('');
   const roleOptions = users.roles.map((r) => `<option>${esc(r)}</option>`).join('');
   main.innerHTML = `${pageHeading('Administration', '#/admin')}
-    <h2>Users</h2>${users.users.length ? `<div class="tablewrap"><table><thead><tr><th>E-mail</th><th>Administrator</th><th>Grants</th><th>Last seen</th><th></th></tr></thead><tbody>${users.users.map((u) => `<tr><td class="wrap mono">${esc(u.email)}</td><td>${u.administrator ? badge('administrator', 'ok') : ''}</td><td class="wrap">${u.grants.map((g) => `<span class="badge">${esc(g.role)}</span> <span class="mono">${esc(g.deployment_id)}</span> <button class="btn btn-small" data-cmd="grant.remove" data-args='${esc(JSON.stringify({ email: u.email, deployment_id: g.deployment_id }))}'>×</button>`).join('<br>') || '<span class="muted">none</span>'}</td><td>${ago(u.last_seen_at)}</td><td><button class="btn btn-small btn-danger" data-cmd="user.remove" data-args='${esc(JSON.stringify({ email: u.email }))}' data-confirm="Remove ${esc(u.email)} and all grants? Takes effect on the next request.">remove</button></td></tr>`).join('')}</tbody></table></div>` : stateBlock('empty', 'No users.')}
+    <h2>Users</h2>${users.users.length ? `<div class="tablewrap"><table><thead><tr><th>E-mail</th><th>Administrator</th><th>Grants</th><th>Last seen</th><th></th></tr></thead><tbody>${users.users.map((u) => `<tr><td class="wrap mono">${esc(u.email)}</td><td>${u.administrator ? badge('administrator', 'ok') : ''}</td><td class="wrap">${u.grants.map((g) => `<span class="badge">${esc(g.role)}</span> <span class="mono">${esc(g.deployment_id)}</span> <button class="btn btn-small" data-cmd="grant.remove" data-args='${esc(JSON.stringify({ email: u.email, deployment_id: g.deployment_id }))}' aria-label="Remove ${esc(g.role)} grant for ${esc(u.email)}">Remove grant</button>`).join('<br>') || '<span class="muted">none</span>'}</td><td>${ago(u.last_seen_at)}</td><td><button class="btn btn-small btn-danger" data-cmd="user.remove" data-args='${esc(JSON.stringify({ email: u.email }))}' aria-label="Remove user ${esc(u.email)}">Remove user</button></td></tr>`).join('')}</tbody></table></div>` : stateBlock('empty', 'No users.')}
     <form class="inline" id="grant-form"><label class="f">e-mail<input name="email" required></label><label class="f">deployment<select name="deployment_id" required>${depOptions}</select></label><label class="f">role<select name="role">${roleOptions}</select></label><button class="btn" type="submit">Set grant</button></form>
     <h2>Invitations</h2>${users.invitations.length ? `<div class="tablewrap"><table><thead><tr><th>E-mail</th><th>Administrator</th><th>Grants</th><th>Expires</th><th></th></tr></thead><tbody>${users.invitations.map((i) => `<tr><td class="mono wrap">${esc(i.email)}</td><td>${i.administrator ? 'yes' : ''}</td><td class="wrap mono">${esc(i.grants.map((g) => `${g.role}:${g.deployment_id}`).join(' ') || '—')}</td><td>${esc(i.expires_at)}</td><td><button class="btn btn-small" data-cmd="user.remove" data-args='${esc(JSON.stringify({ email: i.email }))}'>revoke</button></td></tr>`).join('')}</tbody></table></div>` : '<p class="muted">No outstanding invitations.</p>'}
     <form class="inline" id="invite-form"><label class="f">e-mail<input name="email" type="email" required></label><label class="f">deployment<select name="deployment_id"><option value="">(none)</option>${depOptions}</select></label><label class="f">role<select name="role">${roleOptions}</select></label><label class="f">administrator<input type="checkbox" name="administrator"></label><button class="btn" type="submit">Invite</button></form>
@@ -1398,7 +1463,7 @@ function planSelectionTray(selectedRow, releaseById, admin) {
   const progress = planRowProgress(selectedRow);
   const estimateButton = canEstimate
     ? `<button class="btn btn-small" type="button" data-resize-task="${esc(task.task_id)}">${planIcon('arrow-right')}${task.estimated_loc == null ? 'Add estimate' : 'Resize'}</button>` : '';
-  const actionButtons = admin ? `${planElaborationButton(task, 'plan-elaborate-tray')}${movable ? `<button class="btn btn-small" type="button" data-move-task="${esc(task.task_id)}">${planIcon('arrows-move')}Move</button>` : ''}${estimateButton}${editable ? `<button class="btn btn-small btn-danger" data-cmd="task.update" data-args='${esc(JSON.stringify({ task_id: task.task_id, status: 'dropped' }))}' data-confirm='Drop "${esc(task.title)}"? The agent will not build it. You can ask for it again later.'>${planIcon('trash')}Drop</button>` : ''}` : '';
+  const actionButtons = admin ? `${planElaborationButton(task, 'plan-elaborate-tray')}${movable ? `<button class="btn btn-small" type="button" data-move-task="${esc(task.task_id)}">${planIcon('arrows-move')}Move</button>` : ''}${estimateButton}${editable ? `<button class="btn btn-small btn-danger" data-cmd="task.update" data-args='${esc(JSON.stringify({ task_id: task.task_id, status: 'dropped' }))}' aria-label="Drop task ${esc(task.title)}">${planIcon('trash')}Drop task</button>` : ''}` : '';
   const actions = actionButtons ? `<div class="plan-selection-actions"><span class="plan-selection-label">Actions</span><div class="actions">${actionButtons}</div></div>` : '';
   const estimateText = selectedRow.unsizedCount
     ? (selectedRow.isParent ? `${selectedRow.subtreeLoc ? `${loc(selectedRow.subtreeLoc)} + ` : ''}${selectedRow.unsizedCount} ${selectedRow.unsizedCount === 1 ? 'job' : 'jobs'} not estimated` : 'Not estimated yet')
@@ -1455,7 +1520,7 @@ const viewPlan = guard(async (repoId) => {
   const requested = model.preview_requested || [];
   const requestControl = requested.length
     ? `<span class="plan-requested">${planBadge('requested')} <span class="muted">${ago(requested[0].requested_at)}</span></span>`
-    : (admin ? `<button class="btn btn-primary" data-cmd="release.request" data-args='${esc(JSON.stringify({ repository_id: repoId }))}' data-confirm="Ask the agent to put the current work online for you to try?">Request preview</button>` : '');
+    : (admin ? `<button class="btn btn-primary" data-cmd="release.request" data-args='${esc(JSON.stringify({ repository_id: repoId }))}'>Request preview</button>` : '');
   const requestNotice = requested.length
     ? `<div class="plan-preview-notice" role="status">Preview requested. The agent will put the current work online; a link appears on the preview release when it is ready.</div>`
     : '';
