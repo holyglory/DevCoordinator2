@@ -1,0 +1,4 @@
+interface:
+  display_name: "User Journey Docs Audit"
+  short_description: "Audit existing docs for journey readiness"
+  default_prompt: "Use $user-journey-docs-audit to audit the existing product and journey documentation for decision readiness plus formal UI handoff: primary journey frequency/risk, first-viewport roles, continuation, theme, review-input ownership, and changed visual evidence."

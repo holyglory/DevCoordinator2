@@ -14,6 +14,20 @@ __pycache__/
 *.pyc
 .pytest_cache/
 .ruff_cache/
+node_modules/
+*.log
+
+# Local editor and runtime state
+.DS_Store
+.idea/
+.vscode/
+.claude/settings.local.json
+
+# Local audit outputs and scratch runs
+audit-output/
+audit-outputs/
+full-repo-audit-run/
+tmp/
 
 # Runtime state that must never enter the repository
 .devcoordinator/

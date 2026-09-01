@@ -1,4 +1,4 @@
 interface:
   display_name: "DevCoordinator2"
   short_description: "Coordinate local development runtimes safely"
-  default_prompt: "Use $codex-dev-coordinator to inspect or change a host-visible development runtime."
+  default_prompt: "Use $dev-coordinator to inspect or change a host-visible development runtime."

@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/full-repo-audit/marker-free-response.schema.json",
+  "title": "Marker-free manual audit response",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "case_id",
+    "findings",
+    "precision_controls"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "case_id": {
+      "type": "string",
+      "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["class", "path", "symbol", "summary", "evidence"],
+        "properties": {
+          "class": {
+            "enum": [
+              "ignored-input-config",
+              "partial-plumbing-no-dependency-call",
+              "false-persistence-success",
+              "missing-registration-lifecycle",
+              "production-fixture-mock",
+              "shallow-outcome-tests"
+            ]
+          },
+          "path": {"type": "string", "minLength": 1},
+          "symbol": {"type": "string", "minLength": 1},
+          "summary": {"type": "string", "minLength": 12},
+          "evidence": {"type": "string", "minLength": 12}
+        }
+      }
+    },
+    "precision_controls": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "symbol", "reason"],
+        "properties": {
+          "path": {"type": "string", "minLength": 1},
+          "symbol": {"type": "string", "minLength": 1},
+          "reason": {"type": "string", "minLength": 12}
+        }
+      }
+    }
+  }
+}

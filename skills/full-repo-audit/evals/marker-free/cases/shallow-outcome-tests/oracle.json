@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "case_id": "shallow-outcome-tests",
+  "class": "shallow-outcome-tests",
+  "expected_findings": [
+    {
+      "path": "tests/test_invoice.py",
+      "symbols": ["test_invoice_total_returns_decimal"],
+      "why": "The only arithmetic test checks Decimal type, not the required total, accumulation, or invalid-quantity outcome."
+    }
+  ],
+  "precision_controls": [
+    {
+      "path": "tests/test_invoice.py",
+      "symbols": ["test_currency_code_is_usd"],
+      "why": "The requirements expressly retain the narrow assertion for the fixed wire-contract identifier."
+    }
+  ]
+}

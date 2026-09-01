@@ -1,0 +1,353 @@
+# Journey, Theme, And Changed-Review Contract
+
+Use this reference when preparing a formal Web UI verifier configuration or
+finalizing its visual review. Every target—including login, utility, and
+component-demo targets—needs a complete contract. A bare `--url` intentionally
+fails target coverage.
+
+## Complete Target Example
+
+```json
+{
+  "repoRoot": "/absolute/path/to/repository",
+  "targets": [{
+    "name": "accounts",
+    "url": "http://127.0.0.1:3000/accounts",
+    "journeys": [
+      {
+        "id": "view-accounts",
+        "name": "View and manage accounts",
+        "frequencyPercent": 99,
+        "risk": "normal",
+        "rationale": "Normal destination use"
+      },
+      {
+        "id": "add-account",
+        "name": "Add an account",
+        "frequencyPercent": 1,
+        "risk": "normal",
+        "rationale": "Occasional creation"
+      }
+    ],
+    "primaryJourney": "view-accounts",
+    "regions": [
+      {
+        "name": "Account collection",
+        "selector": "[data-ui-region='accounts']",
+        "role": "primary-content",
+        "journey": "view-accounts"
+      },
+      {
+        "name": "Compact account tools",
+        "selector": "[data-ui-region='account-tools']",
+        "role": "supporting"
+      }
+    ],
+    "theme": "light",
+    "reviewInputs": [
+      {"path": "src/accounts", "kind": "ui-code"},
+      {"path": "src/styles/accounts.css", "kind": "style"},
+      {"path": "src/design/tokens.css", "kind": "tokens"},
+      {"path": "public/account-icons", "kind": "asset"}
+    ],
+    "states": [{
+      "name": "add-account-open",
+      "actions": [{"action": "click", "selector": "[data-action='add-account']"}],
+      "primaryJourney": "add-account",
+      "priorityOverrideReason": "The user explicitly activated account creation",
+      "regions": [{
+        "name": "Add account dialog",
+        "selector": "[role='dialog'][data-purpose='add-account']",
+        "role": "primary-content",
+        "journey": "add-account"
+      }],
+      "continuation": {
+        "kind": "in-page",
+        "anchor": "[role='dialog'][data-purpose='add-account'] h2",
+        "focusWithin": "[role='dialog'][data-purpose='add-account']",
+        "maxScrollDelta": 8
+      }
+    }]
+  }],
+  "viewports": [
+    {"name": "mobile", "width": 390, "height": 844},
+    {"name": "desktop", "width": 1440, "height": 900}
+  ],
+  "performance": {"ttfbMs": 10, "lcpMs": 800, "ttfbLocalOnly": true}
+}
+```
+
+`targetDefaults` may provide the same fields for coordinator-discovered or
+repeated fixture targets, but every effective target/state still must resolve a
+complete contract.
+
+## Journey And Region Rules
+
+- Journey IDs are stable. Each definition includes `frequencyPercent` and
+  `risk` (`critical`, `high`, `normal`, or `low`).
+- Exactly one `primaryJourney` owns each target/state. If it is not the
+  highest-frequency journey, provide `priorityOverrideReason`; rare urgent work
+  can legitimately be primary, but the decision must be explicit.
+- `primary-content` is the named destination object or current task.
+- `workflow-surface` is another journey such as create, edit, configuration,
+  or administration. A lower-priority workflow before primary content fails.
+- `supporting` is a compact title, search, filter, sort, or toolbar. When it
+  consumes more than a compact share before primary content, it fails.
+- `blocking-alert` may precede primary content only with a non-empty reason.
+- Product/journey documentation defines these semantic roles. The verifier
+  configuration maps them to exact selectors; do not put CSS selectors into
+  product intent merely to satisfy the tool.
+
+## Continuation Rules
+
+Every state containing an activating click, press, check, uncheck, or selection
+declares `continuation`.
+
+- `in-page`: the anchor must be visible in the user's current viewport, focus
+  must be inside `focusWithin`, and document movement must stay within
+  `maxScrollDelta` (8 CSS pixels by default). A modal, mobile sheet, or nearby
+  expansion can pass; a form appended below a long collection fails.
+- The anchor is the revealed heading or first field. A custom component may
+  mark an equivalent recognizable element with `data-ui-continuation-anchor`;
+  using a broad container merely because it intersects the viewport fails.
+- `navigation`: set `expectedPath`. The destination must stay on the expected
+  origin and render the declared anchor in its initial viewport. Focus is not
+  required merely because a new document loaded.
+- `triggerActionIndex` identifies the action immediately before which the
+  verifier records the user's current scroll position. It defaults to the last
+  action.
+
+## Conditional Control Ownership
+
+A conditional action may declare both `ownerJourney` and `ownerState`:
+
+```json
+{
+  "action": "click",
+  "selector": "[data-action='advanced-target']",
+  "ownerJourney": "advanced-targeting",
+  "ownerState": "advanced-targeting-open"
+}
+```
+
+The named owner must resolve to exactly one configured state in the same target
+group, and that state's primary journey must match. Outside its owner, an absent
+or hidden control records an immediate zero-wait handoff. If it is visible
+outside the owner, the ownership contract is contradictory and fails. In the
+owner state, the normal action and continuation contracts apply. Do not label a
+control as conditionally owned merely to avoid a legitimate readiness wait.
+
+## Observable Readiness
+
+`waitFor` may combine these exact signals:
+
+- `selector`, optionally raced against `errorSelector`;
+- `responseUrl` or `url` (armed before the triggering action);
+- `loadState` or an explicit `networkIdleMs` deadline;
+- `readback: {url, status, jsonPath?, equals?, intervalMs?}`;
+- `renderFrames: 1|2`;
+- compatibility `settleMs` only from 0 through 100 ms.
+
+`timeoutMs`, `loadStateTimeoutMs`, and `networkIdleMs` are event failure
+ceilings and may exceed 100 ms. `settleMs`, `pollIntervalMs`, and readback
+`intervalMs` are deliberate intervals and may never exceed 100 ms. An empty
+wait contract advances after two animation frames rather than an arbitrary
+sleep. `afterFailureWaitFor` may collect one bounded downstream observation
+after an ordinary interaction failure.
+
+## Safe Complete Execution
+
+Top-level `execution.maxConcurrency` is 4 by default. Each target/state may
+declare:
+
+```json
+{
+  "execution": {
+    "parallelSafe": true,
+    "resourceLocks": ["fixture-account-42"],
+    "priority": 50000,
+    "stopOnFailure": true,
+    "stopReason": "A failed mutation can invalidate shared fixture state"
+  }
+}
+```
+
+Undeclared work is exclusive. Parallel-safe cells may overlap only when their
+resource locks do not conflict. A fresh browser context isolates each cell, but
+does not prove that shared server data is isolated. Results retain declared
+plan order plus separate execution indices. Explicit priority overrides the
+default risk-plus-frequency score and changes start order only.
+
+Use `stopOnFailure` only when a failure can corrupt shared state or invalidate
+later evidence, and always provide `stopReason`. It is not a fail-fast shortcut:
+undeclared ordinary failures continue. A declared unsafe failure names every
+remaining unexecuted cell.
+
+Ordinary navigation, interaction, focus, assertion, page, or locale failures
+become cell results while later safe cells continue. Cleanup runs for every
+created context. Loss of browser authority is an unsafe stop: remaining cells
+are recorded as unexecuted rather than silently omitted.
+
+## In-Memory Authentication Profiles
+
+```json
+{
+  "authProfiles": [{
+    "name": "admin",
+    "url": "http://127.0.0.1:3000/sign-in",
+    "actions": [
+      {"action": "fill", "selector": "#password", "value": "secret supplied by caller"},
+      {"action": "click", "selector": "#sign-in"}
+    ],
+    "waitFor": {"responseUrl": "**/session", "selector": "[data-auth-ready]"}
+  }],
+  "targets": [{"url": "http://127.0.0.1:3000/admin", "authProfile": "admin"}]
+}
+```
+
+Each profile bootstraps once. Its Playwright storage state remains in memory and
+seeds a fresh context for every bound cell. Profile failure affects only bound
+cells. Action values and storage contents never enter config evidence, reports,
+logs, progress, or cache entries.
+
+## Development Selection And Cache
+
+Fast affected-cell runs are explicit development evidence:
+
+```json
+{
+  "development": {
+    "changedPaths": ["src/accounts/AccountList.tsx"],
+    "cache": {
+      "directory": "/explicit/external/formal-ui-cache",
+      "dataRevision": "fixture-snapshot-2026-09-01",
+      "mode": "read-write"
+    }
+  }
+}
+```
+
+Changed paths are repository-relative and match declared `reviewInputs`. All
+states and viewports for an affected target group are selected. Any unmapped
+path expands to the full plan instead of risking a false subset. The full
+declared plan still must fit `maxPageCount` before selection.
+
+The cache directory must already exist, be absolute, external to `repoRoot`,
+and contain no symlinked path components. Cache reuse additionally requires an
+expected source binding and valid review-input fingerprint. Keys bind verifier,
+browser, privacy-safe config, secret-value digest, source, intent, data
+revision, route, state, and viewport. Only successful cells with matched source
+identity and complete masked screenshot evidence are written atomically.
+Corrupt or symlinked entries are rejected and rerun. The cache is never a
+hidden baseline and never makes a run readiness-eligible.
+
+## Theme And Palette Rules
+
+- Every target/state declares `light`, `dark`, or `mixed` theme intent.
+- WCAG 2.2 AA text thresholds are critical: 4.5:1 for normal text and 3:1 for
+  rendered large text. Use `allowContrast` or
+  `data-ui-allow-contrast="reason"` only for a documented inactive,
+  incidental, decorative, or logo exception.
+- A 24×24 visible-surface sample blocks a large contradiction of declared
+  light/dark intent. Use `themeExceptions` or
+  `data-ui-theme-exception="reason"` for an intentional local exception.
+- High-chroma surface coverage, four or more prominent accent-hue clusters,
+  gradients, media, and unmeasurable compositing are warnings for screenshot
+  review. They are not automatic claims that a palette is ugly.
+
+## Rendered Navigation Performance
+
+The verifier installs a buffered Largest Contentful Paint observer before each
+document navigation. After the declared readiness contract and document load
+boundary, it lets visible images decode and waits for paint/observer delivery,
+then captures performance before the verifier's own full-page scroll.
+
+Defaults are strict:
+
+- local `localhost`, `*.localhost`, `127.0.0.1`, or `::1` navigation TTFB must
+  be `< 10 ms`;
+- final main-document LCP must be `< 800 ms`.
+
+Equality fails. TTFB is `PerformanceNavigationTiming.responseStart -
+requestStart`; LCP is the last buffered `LargestContentfulPaint.startTime` for
+the final main document. This LCP does not measure the latency of an in-page
+interaction after user input.
+
+Set global thresholds or override them for a target/state:
+
+```json
+{
+  "performance": {"ttfbMs": 10, "lcpMs": 800, "ttfbLocalOnly": true},
+  "targets": [{
+    "url": "http://127.0.0.1:3000/report",
+    "performance": {"ttfbMs": 8, "lcpMs": 650}
+  }]
+}
+```
+
+`ttfbLocalOnly` defaults to `true`; set it to `false` when an explicit TTFB
+threshold must also govern preview or remote targets. Non-local TTFB under the
+default scope is reported as `not-applicable`, not passed. A required metric
+that Chromium cannot expose raises `performance-metric-unavailable`. Evidence
+contains values, thresholds, comparison, status, navigation type, LCP size,
+local-target flag, and timing source only—never the LCP element, its text, or a
+resource URL.
+
+## Review Inputs And Evidence
+
+- `repoRoot` is explicit and canonical. Each `reviewInputs` entry is a
+  repository-relative regular file or directory. Missing, empty, external, or
+  symlinked inputs fail coverage.
+- Inputs identify only UI code, styles, tokens, fonts, assets, and genuinely
+  shared presentation files that can change that target/state. Do not include
+  the entire repository merely to avoid mapping ownership.
+- Every checked cell produces a redacted initial-viewport PNG and full-page
+  PNG. Native control values, placeholders, selected labels, and declarative
+  fill payloads are removed or masked. Add `screenshotMasks` with a reason for
+  other sensitive regions.
+- Screenshot SHA-256 values bind evidence integrity only. Pixel changes never
+  enter the manual-review queue.
+
+## Changed Visual Review
+
+After the formal verifier and all other automatic tests finish, read only
+`review-queue.json`. Open both images for each queued cell, record decisions in
+a small JSON artifact, and finalize the immutable reviewed manifest:
+
+```json
+{
+  "decisions": [
+    {
+      "reviewCellKey": "key from review-queue.json",
+      "decision": "pass",
+      "note": ""
+    }
+  ]
+}
+```
+
+```bash
+python3 "$FORMAL_WEB_UI_SKILL_DIR/scripts/formal_web_ui_review.py" \
+  --report /path/report.json \
+  --queue /path/review-queue.json \
+  --decisions /path/decisions.json \
+  --out /path/manual-review.json
+```
+
+Use `gap` or `blocked` with a concrete note when appropriate. The finalizer
+returns `1` while any decision blocks delivery and `2` for an invalid or
+tampered evidence chain.
+
+Supply a prior reviewed manifest explicitly on the next run:
+
+```bash
+node "$FORMAL_WEB_UI_SKILL_DIR/scripts/formal_web_ui_verify.mjs" \
+  --config formal-web-ui.json \
+  --review-against /path/prior-manual-review.json
+```
+
+Unchanged prior passes and gaps are carried without reopening their images;
+gaps remain blocking. New cells and changed review-input or intent fingerprints
+enter the queue. When a previously reviewed cell is deliberately removed,
+declare its key and reason under `reviewRemovedCells`; silent removal fails
+coverage.

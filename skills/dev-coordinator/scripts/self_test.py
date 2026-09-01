@@ -1,0 +1,59 @@
+#!/usr/bin/env python3
+"""Check that the Dev Coordinator skill matches the repository interfaces."""
+
+from __future__ import annotations
+
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[3]
+SKILL = ROOT / "skills" / "dev-coordinator" / "SKILL.md"
+
+
+def command_help(*args: str) -> str:
+    environment = dict(os.environ)
+    environment["PYTHONPATH"] = str(ROOT / "src")
+    result = subprocess.run(
+        [sys.executable, "-m", "devcoordinator2.client.cli", *args, "--help"],
+        cwd=ROOT,
+        env=environment,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        raise AssertionError(result.stderr or result.stdout)
+    return result.stdout
+
+
+def main() -> int:
+    contract = SKILL.read_text(encoding="utf-8")
+    required_contract = (
+        "name: dev-coordinator",
+        "devcoordinator2",
+        "test start|retry|status|output|stop|event|list",
+        "deployment list|apply|status|start|stop|restart|rollback|logs|remove",
+        "plan overview",
+        "decision record|tail|search|summarize",
+    )
+    for token in required_contract:
+        if token not in contract:
+            raise AssertionError(f"skill contract is missing {token!r}")
+
+    root_help = command_help()
+    for command in ("test", "deployment", "health", "plan", "task", "decision"):
+        if command not in root_help:
+            raise AssertionError(f"CLI help is missing {command!r}")
+    for command in ("test", "deployment", "decision"):
+        if "--help" not in command_help(command):
+            raise AssertionError(f"{command} help is unavailable")
+
+    print("dev-coordinator skill self-test ok")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

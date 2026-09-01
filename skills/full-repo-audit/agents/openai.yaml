@@ -1,0 +1,6 @@
+interface:
+  display_name: "Full Repo Audit"
+  short_description: "Audit semantic implementation across entire repositories"
+  default_prompt: "Use $full-repo-audit for a manifest-verified repository audit; for rendered web UI, complete formal and other automatic checks before reviewing only changed-input queue screenshots, and bind the report, queue, manual-review manifest, and worker results in cold artifacts."
+policy:
+  allow_implicit_invocation: false

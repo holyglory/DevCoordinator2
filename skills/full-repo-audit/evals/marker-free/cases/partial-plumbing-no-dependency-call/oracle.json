@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "case_id": "partial-plumbing-no-dependency-call",
+  "class": "partial-plumbing-no-dependency-call",
+  "expected_findings": [
+    {
+      "path": "delivery.py",
+      "symbols": ["publish"],
+      "why": "The production operation builds a payload and fabricates acceptance without calling gateway.deliver or returning a real provider receipt."
+    }
+  ],
+  "precision_controls": [
+    {
+      "path": "delivery.py",
+      "symbols": ["preview_delivery"],
+      "why": "The preview contract is explicitly side-effect-free, so its lack of a gateway call is intentional."
+    }
+  ]
+}

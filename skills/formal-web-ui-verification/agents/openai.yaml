@@ -1,0 +1,4 @@
+interface:
+  display_name: "Formal Web UI Verification"
+  short_description: "Verify UI journeys, performance, theme, and layout"
+  default_prompt: "Use $formal-web-ui-verification with complete journey, rendered-performance, ownership, readiness, execution-safety, theme, and UI-input mappings; enforce prescribed or default TTFB/LCP limits, continue every safe check, treat subsets/cache as development-only, then review only queued screenshot pairs and finalize their hash-bound manual-review manifest."

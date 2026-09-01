@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "case_id": "ignored-input-config",
+  "class": "ignored-input-config",
+  "expected_findings": [
+    {
+      "path": "candidates.py",
+      "symbols": ["select_candidates"],
+      "why": "The function accepts policy but replaces policy[minimum_score] with a fixed threshold and never validates the required configuration."
+    }
+  ],
+  "precision_controls": [
+    {
+      "path": "candidates.py",
+      "symbols": ["SCHEMA_ID", "export_envelope"],
+      "why": "The requirements define the export schema identifier as a fixed protocol constant."
+    }
+  ]
+}

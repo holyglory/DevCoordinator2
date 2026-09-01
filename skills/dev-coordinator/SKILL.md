@@ -1,5 +1,5 @@
 ---
-name: codex-dev-coordinator
+name: dev-coordinator
 description: Coordinate host-visible local development tests and governed check graphs, deployments, services, ports, containers, PostgreSQL components, health, and runtime cleanup through the installed DevCoordinator2 CLI or MCP server, and use its authoritative planning/completion ledger and decision history. Use for shared runtime observation or mutation and for all ledger/decision work; do not use for ordinary source inspection, editing, Git work, formatting, or static checks.
 ---
 

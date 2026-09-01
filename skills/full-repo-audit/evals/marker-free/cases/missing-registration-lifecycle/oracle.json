@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "case_id": "missing-registration-lifecycle",
+  "class": "missing-registration-lifecycle",
+  "expected_findings": [
+    {
+      "path": "maintenance.py",
+      "symbols": ["build_scheduler", "purge_expired_sessions"],
+      "why": "The daily purge implementation exists but the production scheduler entry point registers only the heartbeat."
+    }
+  ],
+  "precision_controls": [
+    {
+      "path": "maintenance.py",
+      "symbols": ["render_purge_report"],
+      "why": "The requirements identify the report renderer as an on-demand library helper, not scheduler-owned work."
+    }
+  ]
+}

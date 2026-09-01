@@ -1,0 +1,6 @@
+interface:
+  display_name: "Full Repo Test Coverage Audit"
+  short_description: "Map exact test targets and empirical evidence"
+  default_prompt: "Use $full-repo-test-coverage-audit to map repository test targets with honest empirical/structural evidence, dispatch fresh isolated workers with complete prompts and runtime/user-selected effort, save complete results to cold artifacts, and return only a compact outcome and artifact index."
+policy:
+  allow_implicit_invocation: false

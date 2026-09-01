@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "case_id": "false-persistence-success",
+  "class": "false-persistence-success",
+  "expected_findings": [
+    {
+      "path": "contacts.py",
+      "symbols": ["update_contact"],
+      "why": "The update is held only in a local value, store.save is never called, and saved true is returned without durable persistence."
+    }
+  ],
+  "precision_controls": [
+    {
+      "path": "contacts.py",
+      "symbols": ["validate_changes"],
+      "why": "The validation helper is expressly pure and should not be reported for lacking persistence."
+    }
+  ]
+}

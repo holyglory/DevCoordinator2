@@ -1,0 +1,5 @@
+# User Issue Ledger: Operations / skill installation
+
+| ID | Applies to | Mistake pattern | Required behavior | Prevention and verification |
+| --- | --- | --- | --- | --- |
+| UIL-OPERATIONS-SKILL-INSTALLATION-001 | Installing or verifying canonical skills for all configured user-owned agent accounts | The agent installed a new canonical skill only for the initiating runtime home, then reported the other trusted accounts as merely missing it instead of treating cross-account parity as part of installation. | Treat every account named in private installation configuration as one required skill-installation matrix. Inventory every explicit runtime root, preserve unrelated and system skills, and use the reviewed link workflow to make the managed direct-symlink set identical across all configured homes. | Before reporting installation complete, compare every configured top-level skill inventory, require zero missing or extra managed links, and verify every managed entry through the owning account with exact `readlink` and canonical `realpath`. |

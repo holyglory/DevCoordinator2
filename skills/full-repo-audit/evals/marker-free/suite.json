@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "cases": [
+    {
+      "id": "ignored-input-config",
+      "class": "ignored-input-config",
+      "repo": "cases/ignored-input-config/repo",
+      "oracle": "cases/ignored-input-config/oracle.json"
+    },
+    {
+      "id": "partial-plumbing-no-dependency-call",
+      "class": "partial-plumbing-no-dependency-call",
+      "repo": "cases/partial-plumbing-no-dependency-call/repo",
+      "oracle": "cases/partial-plumbing-no-dependency-call/oracle.json"
+    },
+    {
+      "id": "false-persistence-success",
+      "class": "false-persistence-success",
+      "repo": "cases/false-persistence-success/repo",
+      "oracle": "cases/false-persistence-success/oracle.json"
+    },
+    {
+      "id": "missing-registration-lifecycle",
+      "class": "missing-registration-lifecycle",
+      "repo": "cases/missing-registration-lifecycle/repo",
+      "oracle": "cases/missing-registration-lifecycle/oracle.json"
+    },
+    {
+      "id": "production-fixture-mock",
+      "class": "production-fixture-mock",
+      "repo": "cases/production-fixture-mock/repo",
+      "oracle": "cases/production-fixture-mock/oracle.json"
+    },
+    {
+      "id": "shallow-outcome-tests",
+      "class": "shallow-outcome-tests",
+      "repo": "cases/shallow-outcome-tests/repo",
+      "oracle": "cases/shallow-outcome-tests/oracle.json"
+    }
+  ]
+}

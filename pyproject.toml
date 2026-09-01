@@ -22,6 +22,7 @@ where = ["src"]
 line-length = 96
 target-version = "py313"
 src = ["src", "tests", "scripts"]
+extend-exclude = ["scripts/skills"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B", "C4", "RUF"]

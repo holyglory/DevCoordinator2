@@ -1,0 +1,6 @@
+interface:
+  display_name: "UI Implementation Audit"
+  short_description: "Audit an existing implemented UI end to end"
+  default_prompt: "Use $ui-implementation-audit only after confirming substantive repo-owned UI; declare web/native/hybrid scope, review source wiring separately from rendered evidence, import the formal Web bundle when applicable, and verify the final report without prescribing worker effort."
+policy:
+  allow_implicit_invocation: false

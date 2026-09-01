@@ -1,0 +1,5 @@
+# User Issue Ledger: Documentation / completion ledger
+
+| ID | Applies to | Mistake pattern | Required behavior | Prevention and verification |
+| --- | --- | --- | --- | --- |
+| UIL-DOCUMENTATION-COMPLETION-LEDGER-001 | Agent policies, skills, workflow documentation, and completion-ledger tooling | After the user selected a permanent software-owned database ledger, instructions retained an optional or default `CompletionLedger.md` workflow and one audit skill still directed agents to mutate that file. | Treat the software-owned database and its permanent event history as the only authoritative completion ledger. Instructions and active tools must use the reviewed database interface, normal queries must return the active projection, and no workflow may create, update, or fall back to `CompletionLedger.md`. | Scan all `AGENTS.md` files and every canonical skill for Markdown-ledger directives, reject file creation or mutation language with deterministic fixtures, exercise the database interface and permanent history, and require the repository root to contain no `CompletionLedger.md`. |

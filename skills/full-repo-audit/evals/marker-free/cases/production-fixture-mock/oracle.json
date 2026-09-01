@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "case_id": "production-fixture-mock",
+  "class": "production-fixture-mock",
+  "expected_findings": [
+    {
+      "path": "catalog.py",
+      "symbols": ["CatalogService.list_products", "list_products"],
+      "why": "The production service ignores its repository and returns onboarding examples, so current catalog data and repository failures are absent."
+    }
+  ],
+  "precision_controls": [
+    {
+      "path": "catalog.py",
+      "symbols": ["onboarding_preview", "ONBOARDING_PRODUCTS"],
+      "why": "Deterministic examples are explicitly required for the disconnected onboarding preview."
+    }
+  ]
+}
