@@ -428,17 +428,7 @@ class TestLifecycle:
 
     @staticmethod
     def _configured_checks(spec: TestSpec) -> tuple[CheckSpec, ...]:
-        if spec.checks:
-            return spec.checks
-        assert spec.command is not None
-        assert spec.tier is not None
-        return (CheckSpec(
-            name="main", tier=spec.tier, role="work", command=spec.command,
-            discover=None, case_command=None, cases=(), cwd=spec.cwd, env={},
-            after=(), requires=(), completion="process",
-            on_failure="continue", produces=(), timeout_seconds=None,
-            invalidates=(),
-        ),)
+        return spec.checks
 
     @staticmethod
     def _selected_closure(configured: tuple[CheckSpec, ...],

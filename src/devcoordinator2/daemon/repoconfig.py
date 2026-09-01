@@ -78,8 +78,6 @@ class CheckSpec:
 @dataclass(frozen=True)
 class TestSpec:
     name: str
-    command: tuple[str, ...] | None
-    tier: str | None
     cwd: Path  # resolved absolute, proven inside the worktree
     timeout_seconds: int
     env: dict[str, str]
@@ -148,9 +146,8 @@ def validate_test_config(worktree_root: Path) -> tuple[TestConfigSummary, ...]:
     default, specs = _load_all_test_specs(worktree_root)
     summaries = []
     for name, spec in specs.items():
-        tiers = (spec.tier,) if spec.tier is not None else tuple(
-            tier for tier in VALIDATION_TIERS
-            if any(check.tier == tier for check in spec.checks))
+        tiers = tuple(tier for tier in VALIDATION_TIERS
+                      if any(check.tier == tier for check in spec.checks))
         summaries.append(TestConfigSummary(
             name=name, tiers=tiers, default=name == default))
     return tuple(summaries)
@@ -174,28 +171,19 @@ def load_test_spec(worktree_root: Path, test_name: str | None) -> TestSpec:
 
 def _validate_test(worktree_root: Path, name: str, section: dict,
                    *, config_digest: str) -> TestSpec:
-    unknown = set(section) - {
-        "command", "tier", "cwd", "timeout_seconds", "env", "postgres", "check",
-    }
+    legacy = set(section) & {"command", "tier"}
+    if legacy:
+        raise ConfigError(
+            f"[test.{name}] schema 2 rejects direct test commands; "
+            "declare one or more [[test.<name>.check]] tables")
+    unknown = set(section) - {"cwd", "timeout_seconds", "env", "postgres", "check"}
     if unknown:
         raise ConfigError(f"[test.{name}] unknown keys: {sorted(unknown)}")
 
-    command = section.get("command")
     checks_raw = section.get("check")
-    if command is not None and checks_raw is not None:
+    if checks_raw is None:
         raise ConfigError(
-            f"[test.{name}] must declare either command or check, not both")
-    if command is None and checks_raw is None:
-        raise ConfigError(f"[test.{name}] requires command or at least one check")
-    checked_command = None
-    tier = None
-    if command is not None:
-        checked_command = _validate_command(f"[test.{name}].command", command)
-        tier = _validate_tier(f"[test.{name}].tier", section.get("tier"))
-    elif "tier" in section:
-        raise ConfigError(
-            f"[test.{name}].tier applies only to a direct command; "
-            "graph checks declare their own tiers")
+            f"[test.{name}] requires at least one [[test.{name}.check]] table")
 
     cwd = _validate_cwd(worktree_root, f"[test.{name}].cwd",
                         section.get("cwd", "."))
@@ -212,12 +200,9 @@ def _validate_test(worktree_root: Path, name: str, section: dict,
     if "postgres" in section:
         postgres = _validate_postgres(name, section["postgres"])
 
-    checks = ()
-    if checks_raw is not None:
-        checks = _validate_checks(worktree_root, name, cwd, checks_raw)
+    checks = _validate_checks(worktree_root, name, cwd, checks_raw)
 
-    return TestSpec(name=name, command=checked_command, tier=tier, cwd=cwd,
-                    timeout_seconds=timeout, env=env, postgres=postgres,
+    return TestSpec(name=name, cwd=cwd, timeout_seconds=timeout, env=env, postgres=postgres,
                     checks=checks, config_digest=config_digest)
 
 

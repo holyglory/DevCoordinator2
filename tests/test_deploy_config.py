@@ -11,6 +11,9 @@ from devcoordinator2.daemon.repoconfig import ConfigError
 FULL = '''
 schema = 2
 [test.unit]
+[[test.unit.check]]
+name = "main"
+tier = "development"
 command = ["true"]
 
 [deployment.web]

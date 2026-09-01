@@ -513,6 +513,7 @@ def main(argv: list[str] | None = None) -> int:
         try:
             fd = int(os.environ["DEVCOORDINATOR_EVENT_FD"])
             payload = {
+                "schema": 2,
                 "run_id": os.environ["DEVCOORDINATOR_RUN_ID"],
                 "check": os.environ["DEVCOORDINATOR_CHECK_NAME"],
                 "status": ns.status,

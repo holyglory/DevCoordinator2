@@ -14,14 +14,18 @@ schema = 2
 [test]
 default = "unit"
 [test.unit]
-tier = "release"
-command = ["echo", "hello"]
 timeout_seconds = 30
 env = { CI = "1" }
+[[test.unit.check]]
+name = "main"
+tier = "release"
+command = ["echo", "hello"]
 [test.slow]
+cwd = "sub"
+[[test.slow.check]]
+name = "main"
 tier = "development"
 command = ["sleep", "5"]
-cwd = "sub"
 """
 
 
@@ -35,7 +39,7 @@ def test_good_default_and_named(tmp_path):
     root = write(tmp_path, GOOD)
     spec = load_test_spec(root, None)
     assert spec.name == "unit"
-    assert spec.command == ("echo", "hello")
+    assert spec.checks[0].command == ("echo", "hello")
     assert spec.timeout_seconds == 30
     assert spec.env == {"CI": "1"}
     slow = load_test_spec(root, "slow")
@@ -51,7 +55,8 @@ def test_good_default_and_named(tmp_path):
 def test_single_test_needs_no_default(tmp_path):
     root = write(
         tmp_path,
-        'schema = 2\n[test.only]\ntier = "release"\ncommand = ["true"]\n')
+        'schema = 2\n[test.only]\n[[test.only.check]]\nname="main"\n'
+        'tier = "release"\ncommand = ["true"]\n')
     assert load_test_spec(root, None).name == "only"
 
 
@@ -61,9 +66,13 @@ schema=2
 [test]
 default="unit"
 [test.unit]
+[[test.unit.check]]
+name="main"
 tier="release"
 command=["true"]
 [test.hidden]
+[[test.hidden.check]]
+name="main"
 command=["false"]
 ''')
     with pytest.raises(ConfigError, match=r"hidden.*tier"):
@@ -76,25 +85,36 @@ command=["false"]
     ("", "'schema' must be 2"),  # empty file fails schema check
     ("schema = 1\n[test.u]\ncommand=[\"x\"]", "schema 1 is no longer supported"),
     ("schema = 2\n", "[test.<name>] section is required"),
-    ('schema = 2\n[test.u]\ncommand = "sh -c evil"\n', "never a shell string"),
-    ('schema = 2\n[test.u]\ncommand = []\n', "1..256"),
-    ('schema = 2\n[test.u]\ntier="release"\ncommand=["x"]\ncwd="/etc"\n',
+    ('schema = 2\n[test.u]\ncommand=["x"]\ntier="release"\n',
+     "rejects direct test commands"),
+    ('schema = 2\n[test.u]\n[[test.u.check]]\nname="main"\ntier="release"\n'
+     'command = "sh -c evil"\n', "never a shell string"),
+    ('schema = 2\n[test.u]\n[[test.u.check]]\nname="main"\ntier="release"\n'
+     'command = []\n', "1..256"),
+    ('schema = 2\n[test.u]\ncwd="/etc"\n[[test.u.check]]\nname="main"\n'
+     'tier="release"\ncommand=["x"]\n',
      "repository-relative"),
-    ('schema = 2\n[test.u]\ntier="release"\ncommand=["x"]\ncwd="../out"\n',
+    ('schema = 2\n[test.u]\ncwd="../out"\n[[test.u.check]]\nname="main"\n'
+     'tier="release"\ncommand=["x"]\n',
      "escapes"),
-    ('schema = 2\n[test.u]\ntier="release"\ncommand=["x"]\ntimeout_seconds=0\n',
+    ('schema = 2\n[test.u]\ntimeout_seconds=0\n[[test.u.check]]\nname="main"\n'
+     'tier="release"\ncommand=["x"]\n',
      "timeout_seconds"),
-    ('schema = 2\n[test.u]\ntier="release"\ncommand=["x"]\ntimeout_seconds=99999\n',
+    ('schema = 2\n[test.u]\ntimeout_seconds=99999\n[[test.u.check]]\nname="main"\n'
+     'tier="release"\ncommand=["x"]\n',
      "timeout_seconds"),
-    ('schema = 2\n[test.u]\ntier="release"\ncommand=["x"]\nretry=3\n',
+    ('schema = 2\n[test.u]\nretry=3\n[[test.u.check]]\nname="main"\n'
+     'tier="release"\ncommand=["x"]\n',
      "unknown keys"),
-    ('schema = 2\nqueue=true\n[test.u]\ntier="release"\ncommand=["x"]\n',
+    ('schema = 2\nqueue=true\n[test.u]\n[[test.u.check]]\nname="main"\n'
+     'tier="release"\ncommand=["x"]\n',
      "unknown top-level"),
-    ('schema = 2\n[test.u]\ntier="release"\ncommand=["x"]\n'
-     'env={API_TOKEN="abc123"}\n', "secret"),
-    ('schema = 2\n[test]\ndefault="nope"\n[test.u]\ntier="release"\n'
-     'command=["x"]\n', "not defined"),
-    ('schema = 2\n[test.BadName]\ntier="release"\ncommand=["x"]\n',
+    ('schema = 2\n[test.u]\nenv={API_TOKEN="abc123"}\n[[test.u.check]]\n'
+     'name="main"\ntier="release"\ncommand=["x"]\n', "secret"),
+    ('schema = 2\n[test]\ndefault="nope"\n[test.u]\n[[test.u.check]]\n'
+     'name="main"\ntier="release"\ncommand=["x"]\n', "not defined"),
+    ('schema = 2\n[test.BadName]\n[[test.BadName.check]]\nname="main"\n'
+     'tier="release"\ncommand=["x"]\n',
      "invalid test name"),
 ])
 def test_rejections(tmp_path, text, fragment):
@@ -115,26 +135,29 @@ def test_symlink_cwd_escape(tmp_path):
     repo = tmp_path / "repo"
     repo.mkdir()
     (repo / "link").symlink_to(outside)
-    write(repo, 'schema = 2\n[test.u]\ntier="release"\n'
-                'command = ["x"]\ncwd = "link"\n')
+    write(repo, 'schema = 2\n[test.u]\ncwd = "link"\n[[test.u.check]]\n'
+                'name="main"\ntier="release"\ncommand = ["x"]\n')
     with pytest.raises(ConfigError, match="escapes"):
         load_test_spec(repo, None)
 
 
 def test_unknown_test_name(tmp_path):
-    root = write(tmp_path, 'schema = 2\n[test.u]\ntier="release"\ncommand=["x"]\n')
+    root = write(tmp_path, 'schema = 2\n[test.u]\n[[test.u.check]]\nname="main"\n'
+                           'tier="release"\ncommand=["x"]\n')
     with pytest.raises(ConfigError, match="not defined"):
         load_test_spec(root, "missing")
 
 
 def test_postgres_section_defaults_and_overrides(tmp_path):
-    root = write(tmp_path, 'schema = 2\n[test.u]\ntier="release"\ncommand = ["x"]\n'
+    root = write(tmp_path, 'schema = 2\n[test.u]\n[[test.u.check]]\nname="main"\n'
+                           'tier="release"\ncommand = ["x"]\n'
                            '[test.u.postgres]\n')
     spec = load_test_spec(root, None)
     assert spec.postgres is not None
     assert spec.postgres.image == "postgres:16-alpine"
     assert spec.postgres.database == "test"
-    root = write(tmp_path, 'schema = 2\n[test.u]\ntier="release"\ncommand = ["x"]\n'
+    root = write(tmp_path, 'schema = 2\n[test.u]\n[[test.u.check]]\nname="main"\n'
+                           'tier="release"\ncommand = ["x"]\n'
                            '[test.u.postgres]\nimage = "postgres:17.10-alpine"\n'
                            'database = "app_db"\nuser = "app"\n')
     spec = load_test_spec(root, None)
@@ -148,7 +171,8 @@ def test_postgres_section_defaults_and_overrides(tmp_path):
     "registry.example.test/team/postgres:16-postgis@sha256:" + "f" * 64,
 ])
 def test_postgres_section_accepts_immutable_compatible_images(tmp_path, image):
-    root = write(tmp_path, 'schema = 2\n[test.u]\ntier="release"\ncommand = ["x"]\n'
+    root = write(tmp_path, 'schema = 2\n[test.u]\n[[test.u.check]]\nname="main"\n'
+                           'tier="release"\ncommand = ["x"]\n'
                            f'[test.u.postgres]\nimage = "{image}"\n')
     assert load_test_spec(root, None).postgres.image == image
 
@@ -163,7 +187,8 @@ def test_postgres_section_accepts_immutable_compatible_images(tmp_path, image):
     ('persistent = true', "unknown keys"),
 ])
 def test_postgres_section_rejections(tmp_path, body, fragment):
-    root = write(tmp_path, 'schema = 2\n[test.u]\ntier="release"\ncommand = ["x"]\n'
+    root = write(tmp_path, 'schema = 2\n[test.u]\n[[test.u.check]]\nname="main"\n'
+                           'tier="release"\ncommand = ["x"]\n'
                            f'[test.u.postgres]\n{body}\n')
     with pytest.raises(ConfigError) as excinfo:
         load_test_spec(root, None)
@@ -172,7 +197,8 @@ def test_postgres_section_rejections(tmp_path, body, fragment):
 
 def test_file_with_both_tests_and_deployments(tmp_path):
     """One file declares both; the test parser must tolerate deployment sections."""
-    root = write(tmp_path, 'schema = 2\n[test.unit]\ntier="release"\ncommand = ["true"]\n'
+    root = write(tmp_path, 'schema = 2\n[test.unit]\n[[test.unit.check]]\n'
+                           'name="main"\ntier="release"\ncommand = ["true"]\n'
                            '[deployment.svc]\ncomponents = ["api"]\n'
                            '[deployment.svc.component.api]\ntype = "process"\n'
                            'command = ["x"]\n')
@@ -209,7 +235,6 @@ command = ["./scripts/report"]
 after = ["browser"]
 ''')
     spec = load_test_spec(root, None)
-    assert spec.command is None
     assert [check.name for check in spec.checks] == [
         "build", "server", "browser", "report"]
     assert spec.checks[1].completion == "event"
@@ -237,7 +262,7 @@ after = ["browser"]
      "reserved internal prefix"),
     ('tier="release"\ncommand=["true"]\n[[test.g.check]]\nname="a"\n'
      'tier="release"\ncommand=["true"]',
-     "either command or check"),
+     "rejects direct test commands"),
 ])
 def test_governed_check_graph_rejections(tmp_path, body, fragment):
     root = write(tmp_path, f"schema = 2\n[test.g]\n{body}\n")
@@ -248,7 +273,7 @@ def test_governed_check_graph_rejections(tmp_path, body, fragment):
 
 def test_schema_two_requires_every_direct_or_graph_tier(tmp_path):
     root = write(tmp_path, 'schema=2\n[test.u]\ncommand=["true"]\n')
-    with pytest.raises(ConfigError, match="must be 'development'"):
+    with pytest.raises(ConfigError, match="rejects direct test commands"):
         load_test_spec(root, None)
     root = write(tmp_path, '''
 schema=2

@@ -159,7 +159,7 @@ def test_governed_check_event_writes_bound_identity(monkeypatch):
         assert cli.main(["test", "event", "passed"]) == 0
         os.close(write_fd)
         assert json.loads(os.read(read_fd, 4096)) == {
-            "run_id": "trun", "check": "server", "status": "passed"}
+            "schema": 2, "run_id": "trun", "check": "server", "status": "passed"}
     finally:
         os.close(read_fd)
 

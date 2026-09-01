@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import subprocess
@@ -10,7 +11,6 @@ import pytest
 
 from devcoordinator2.check_evidence import (
     EvidenceError,
-    artifact_receipts,
     receipts_match,
     source_digest,
 )
@@ -29,6 +29,15 @@ def repository(tmp_path: Path) -> Path:
     subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
     subprocess.run(["git", "add", "."], cwd=repo, check=True)
     return repo
+
+
+def receipt(path: Path, relative: str) -> dict:
+    payload = path.read_bytes()
+    return {
+        "path": relative,
+        "size": len(payload),
+        "sha256": hashlib.sha256(payload).hexdigest(),
+    }
 
 
 def test_source_digest_tracks_source_but_not_ignored_runtime_state(tmp_path):
@@ -83,14 +92,14 @@ def test_artifact_receipts_are_exact_and_refuse_symlinks(tmp_path):
     repo = repository(tmp_path)
     artifact = repo / "build.bin"
     artifact.write_bytes(b"build")
-    receipts = artifact_receipts(repo, ["build.bin"])
+    receipts = [receipt(artifact, "build.bin")]
     assert receipts_match(repo, receipts)
     artifact.write_bytes(b"changed")
     assert not receipts_match(repo, receipts)
     artifact.unlink()
     artifact.symlink_to(repo / "tracked.txt")
-    with pytest.raises(EvidenceError, match="unavailable"):
-        artifact_receipts(repo, ["build.bin"])
+    with pytest.raises(EvidenceError, match="not a regular file"):
+        receipts_match(repo, receipts)
 
 
 def test_evidence_store_keeps_only_bounded_content_free_fields(tmp_path):
@@ -126,7 +135,7 @@ def test_retry_plan_reuses_only_matching_declared_artifacts(tmp_path):
     current.mkdir(parents=True)
     artifact = repo / "build.bin"
     artifact.write_bytes(b"build")
-    receipts = artifact_receipts(repo, ["build.bin"])
+    receipts = [receipt(artifact, "build.bin")]
     build = CheckSpec(
         name="build", tier="development", role="work", command=("true",),
         discover=None, case_command=None, cases=(), cwd=repo, env={}, after=(),
@@ -138,7 +147,7 @@ def test_retry_plan_reuses_only_matching_declared_artifacts(tmp_path):
         requires=("build",), completion="process", on_failure="continue", produces=(),
         timeout_seconds=30, invalidates=())
     spec = GovernedTestSpec(
-        name="complete", command=None, tier=None, cwd=repo, timeout_seconds=600, env={},
+        name="complete", cwd=repo, timeout_seconds=600, env={},
         checks=(build, failed), config_digest="b" * 64)
     origin = {
         "run_id": "torigin", "test": "complete", "proof": "complete",
@@ -177,7 +186,7 @@ def test_retry_requires_a_failed_check_from_complete_matching_evidence(tmp_path)
         requires=(), completion="process", on_failure="continue", produces=(),
         timeout_seconds=None, invalidates=())
     spec = GovernedTestSpec(
-        name="complete", command=None, tier=None, cwd=repo, timeout_seconds=600, env={},
+        name="complete", cwd=repo, timeout_seconds=600, env={},
         checks=(check,), config_digest="b" * 64)
     origin = {
         "run_id": "torigin", "test": "complete", "proof": "selected",

@@ -142,9 +142,13 @@ def test_strict_cutover_validates_every_named_repository_target(
         "[test]\n"
         "default = 'unit'\n"
         "[test.unit]\n"
+        "[[test.unit.check]]\n"
+        "name = 'main'\n"
         "tier = 'development'\n"
         "command = ['true']\n"
         "[test.release]\n"
+        "[[test.release.check]]\n"
+        "name = 'main'\n"
         "tier = 'release'\n"
         "command = ['true']\n",
         encoding="utf-8",
