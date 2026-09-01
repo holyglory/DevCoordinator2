@@ -63,6 +63,7 @@ fn source_digest_command_returns_only_bounded_receipt() {
     let output = Command::new(binary())
         .args(["source-digest", "--worktree"])
         .arg(&repository.0)
+        .env("PATH", "/nonexistent")
         .output()
         .expect("source-digest");
     let receipt = json_stdout(output);

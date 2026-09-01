@@ -126,10 +126,12 @@ pub fn write_bytes_atomic(
 }
 
 fn git_output(root: &Path, args: &[&str]) -> Result<Vec<u8>, ExecutorError> {
-    let output = Command::new("git")
+    let output = Command::new("/usr/bin/git")
         .arg("-C")
         .arg(root)
         .args(args)
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin")
         .env("GIT_CONFIG_COUNT", "1")
         .env("GIT_CONFIG_KEY_0", "safe.directory")
         .env("GIT_CONFIG_VALUE_0", "*")
