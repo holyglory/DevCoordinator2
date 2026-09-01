@@ -74,7 +74,13 @@ async fn run(path: &Path, local: bool) -> Result<i32, String> {
     let plan = load_plan(path)?;
     let report_path = PathBuf::from(&plan.current_dir).join("check-report.json");
     let permits: Arc<dyn PermitProvider> = if local {
-        Arc::new(LocalPermitProvider::unbounded())
+        let logical_cpus = std::thread::available_parallelism()
+            .map(std::num::NonZeroUsize::get)
+            .unwrap_or(1);
+        Arc::new(
+            LocalPermitProvider::new(logical_cpus.saturating_mul(2))
+                .map_err(|error| error.to_string())?,
+        )
     } else {
         let socket = env::var_os("DEVCOORDINATOR_CAPACITY_SOCKET").ok_or_else(|| {
             "DEVCOORDINATOR_CAPACITY_SOCKET is required for governed run; use run-local only for direct self-validation".to_owned()

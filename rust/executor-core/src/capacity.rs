@@ -6,7 +6,7 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
-use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore, TryAcquireError};
 
 use crate::ExecutorError;
 
@@ -43,11 +43,15 @@ pub trait PermitProvider: Send + Sync {
 #[derive(Clone)]
 pub struct LocalPermitProvider {
     semaphore: Option<Arc<Semaphore>>,
+    limit: Option<u32>,
 }
 
 impl LocalPermitProvider {
     pub fn unbounded() -> Self {
-        Self { semaphore: None }
+        Self {
+            semaphore: None,
+            limit: None,
+        }
     }
 
     pub fn new(limit: usize) -> Result<Self, ExecutorError> {
@@ -56,6 +60,7 @@ impl LocalPermitProvider {
         }
         Ok(Self {
             semaphore: Some(Arc::new(Semaphore::new(limit))),
+            limit: Some(u32::try_from(limit).unwrap_or(u32::MAX)),
         })
     }
 }
@@ -68,18 +73,28 @@ impl CapacityPermit for LocalPermit {}
 impl PermitProvider for LocalPermitProvider {
     fn acquire<'a>(&'a self, _request: PermitRequest) -> PermitFuture<'a> {
         Box::pin(async move {
-            let permit = match &self.semaphore {
-                Some(semaphore) => Some(
-                    semaphore
-                        .clone()
-                        .acquire_owned()
-                        .await
-                        .map_err(|_| ExecutorError::new("local capacity provider closed"))?,
-                ),
-                None => None,
-            };
+            let (permit, waited) =
+                match &self.semaphore {
+                    Some(semaphore) => match semaphore.clone().try_acquire_owned() {
+                        Ok(permit) => (Some(permit), false),
+                        Err(TryAcquireError::NoPermits) => (
+                            Some(semaphore.clone().acquire_owned().await.map_err(|_| {
+                                ExecutorError::new("local capacity provider closed")
+                            })?),
+                            true,
+                        ),
+                        Err(TryAcquireError::Closed) => {
+                            return Err(ExecutorError::new("local capacity provider closed"));
+                        }
+                    },
+                    None => (None, false),
+                };
             Ok(AcquiredPermit {
-                observation: CapacityObservation::default(),
+                observation: CapacityObservation {
+                    learned_capacity: self.limit,
+                    effective_capacity: self.limit,
+                    waited,
+                },
                 _guard: Box::new(LocalPermit { _permit: permit }),
             })
         })
@@ -286,6 +301,9 @@ mod tests {
             })
             .await
             .expect("first permit");
+        assert_eq!(first.observation.learned_capacity, Some(1));
+        assert_eq!(first.observation.effective_capacity, Some(1));
+        assert!(!first.observation.waited);
         let barrier = Arc::new(Barrier::new(2));
         let task_provider = provider.clone();
         let task_barrier = barrier.clone();
@@ -301,7 +319,8 @@ mod tests {
         barrier.wait().await;
         assert!(!waiter.is_finished());
         drop(first);
-        waiter.await.expect("join").expect("second permit");
+        let second = waiter.await.expect("join").expect("second permit");
+        assert!(second.observation.waited);
     }
 
     #[tokio::test]
