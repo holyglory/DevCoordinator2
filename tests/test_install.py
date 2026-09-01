@@ -132,6 +132,49 @@ def test_rust_executor_build_failure_happens_before_runtime_mutation(
         install.build_rust_executor(root)
 
 
+def test_strict_cutover_validates_every_named_repository_target(
+        tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    config = repo / ".devcoordinator.toml"
+    config.write_text(
+        "schema = 2\n"
+        "[test]\n"
+        "default = 'unit'\n"
+        "[test.unit]\n"
+        "tier = 'development'\n"
+        "command = ['true']\n"
+        "[test.release]\n"
+        "tier = 'release'\n"
+        "command = ['true']\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(install, "_active_registered_worktrees", lambda _path: [repo])
+
+    receipts = install.validate_registered_repository_configs(tmp_path / "authority.sqlite3")
+    assert receipts == [{
+        "worktree": str(repo),
+        "tests": ["unit", "release"],
+        "deployments": [],
+    }]
+
+    config.write_text(config.read_text().replace("tier = 'release'\n", ""),
+                      encoding="utf-8")
+    with pytest.raises(RuntimeError, match="not ready for strict schema 2"):
+        install.validate_registered_repository_configs(tmp_path / "authority.sqlite3")
+
+
+def test_strict_cutover_rejects_schema_one_without_translation(tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / ".devcoordinator.toml").write_text(
+        "schema = 1\n[test.unit]\ncommand = ['true']\n", encoding="utf-8")
+    monkeypatch.setattr(install, "_active_registered_worktrees", lambda _path: [repo])
+
+    with pytest.raises(RuntimeError, match="schema 1 is no longer supported"):
+        install.validate_registered_repository_configs(tmp_path / "authority.sqlite3")
+
+
 def test_install_skill_links_replaces_only_existing_agent_roots(tmp_path, monkeypatch):
     home = tmp_path / "home"
     codex = home / ".codex"

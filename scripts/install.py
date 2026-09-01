@@ -248,6 +248,61 @@ def _registered_test_directories(database_path: Path) -> list[Path]:
             for row in rows]
 
 
+def _active_registered_worktrees(database_path: Path) -> list[Path]:
+    if not database_path.is_file():
+        return []
+    try:
+        connection = sqlite3.connect(
+            f"file:{database_path}?mode=ro", uri=True, timeout=5)
+        connection.execute("PRAGMA query_only=ON")
+        rows = connection.execute(
+            "SELECT w.worktree_path FROM worktrees w"
+            " JOIN repositories r ON r.repository_id=w.repository_id"
+            " WHERE r.archived_at IS NULL ORDER BY w.worktree_path"
+        ).fetchall()
+    except sqlite3.Error as exc:
+        raise RuntimeError(f"cannot inventory registered repository configs: {exc}") \
+            from exc
+    finally:
+        if "connection" in locals():
+            connection.close()
+    return [Path(row[0]) for row in rows]
+
+
+def validate_registered_repository_configs(database_path: Path) -> list[dict]:
+    """Reject every existing active declaration that is not wholly schema 2."""
+
+    from devcoordinator2.daemon.deploy_config import ConfigError as DeploymentConfigError
+    from devcoordinator2.daemon.deploy_config import list_deployment_names, load_deployment_spec
+    from devcoordinator2.daemon.repoconfig import ConfigError as TestConfigError
+    from devcoordinator2.daemon.repoconfig import validate_test_config
+
+    receipts = []
+    for worktree in _active_registered_worktrees(database_path):
+        config = worktree / ".devcoordinator.toml"
+        try:
+            details = config.lstat()
+        except FileNotFoundError:
+            continue
+        if config.is_symlink() or not stat.S_ISREG(details.st_mode):
+            raise RuntimeError(f"registered repository config is not a regular file: {config}")
+        try:
+            tests = validate_test_config(worktree)
+            deployments = tuple(list_deployment_names(worktree))
+            for name in deployments:
+                load_deployment_spec(worktree, name)
+        except (TestConfigError, DeploymentConfigError) as exc:
+            raise RuntimeError(
+                f"registered repository is not ready for strict schema 2: {config}: {exc}"
+            ) from exc
+        receipts.append({
+            "worktree": str(worktree),
+            "tests": [summary.name for summary in tests],
+            "deployments": list(deployments),
+        })
+    return receipts
+
+
 def _summary_status(directory: Path) -> str | None:
     try:
         directory_fd = os.open(
@@ -659,6 +714,9 @@ def main() -> int:
     # before installation. Root verifies that already-fetched identity without
     # requiring repository hosting credentials.
     source_commit = validate_live_checkout(source_root, fetch=False)
+    _test_admission, preflight_config = _coordinator_runtime()
+    validated_repository_configs = validate_registered_repository_configs(
+        preflight_config.database_path)
     executor_binary = build_rust_executor(source_root)
     accounts = [a.strip() for a in ns.client_accounts.split(",") if a.strip()]
     ensure_group(ns.client_group, accounts)
@@ -758,6 +816,7 @@ def main() -> int:
             enable_and_restart_units()
     print({"source_root": str(source_root), "source_commit": source_commit,
            "executor_binary": str(executor_binary),
+           "validated_repository_configs": validated_repository_configs,
            "edge_uid": edge_uid, "client_group": ns.client_group,
            "created_config": created, "canary": ns.canary,
            "canary_port": ns.canary_port if ns.canary else None, "started": ns.start,
