@@ -14,6 +14,7 @@ from devcoordinator2.daemon.handlers import build_handlers
 from devcoordinator2.daemon.plan_api import build_plan_handlers
 from devcoordinator2.daemon.registry import Registry
 from devcoordinator2.daemon.server import Server
+from devcoordinator2.daemon.test_capacity import CapacityBroker
 from devcoordinator2.paths import InstanceConfig
 
 
@@ -31,7 +32,8 @@ def live(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("DEVCOORDINATOR2_INSTANCE_ENV", "/nonexistent")
     db = Database(config.database_path)
     registry = Registry(db)
-    handlers = build_handlers(config, registry)
+    capacity = CapacityBroker(db, config.capacity_socket_path, logical_cpus=4)
+    handlers = build_handlers(config, registry, capacity=capacity)
     handlers.update(build_plan_handlers(config, db, registry))
     server = Server(config.socket_path, handlers)
     server.bind()
@@ -39,7 +41,7 @@ def live(tmp_path: Path, monkeypatch):
     repo = tmp_path / "repo"
     repo.mkdir()
     subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
-    yield type("Live", (), {"config": config, "repo": repo})
+    yield type("Live", (), {"config": config, "repo": repo, "capacity": capacity})
     server.shutdown()
     db.close()
 
@@ -49,7 +51,7 @@ def test_cli_ping_and_register_roundtrip(live, capsys):
     assert rc == 0
     response = json.loads(capsys.readouterr().out)
     assert response["ok"] is True
-    assert response["result"]["schema_version"] == 12
+    assert response["result"]["schema_version"] == 13
 
     rc = cli.main(["repository", "register", str(live.repo)])
     assert rc == 0
@@ -102,7 +104,8 @@ def test_governed_check_cli_argument_mapping(tmp_path):
         "--check", "unit", "--check", "browser",
     ])
     assert cli._to_call(start) == ("test.start", {
-        "path": path, "test": "complete", "checks": ["unit", "browser"]})
+        "path": path, "test": "complete", "checks": ["unit", "browser"],
+        "tier": "release"})
     retry = cli.build_parser().parse_args([
         "test", "retry", path, "--test", "complete",
         "--run-id", "torigin", "--check", "unit",
@@ -119,6 +122,32 @@ def test_governed_check_cli_argument_mapping(tmp_path):
     ])
     assert cli._to_call(stop) == ("test.stop", {
         "path": path, "reason": "operator cancelled upgrade"})
+
+    development = cli.build_parser().parse_args([
+        "test", "start", path, "--tier", "development"])
+    assert cli._to_call(development) == ("test.start", {
+        "path": path, "tier": "development"})
+    show = cli.build_parser().parse_args(["test", "capacity", "show"])
+    assert cli._to_call(show) == ("test.capacity.get", {})
+    set_cap = cli.build_parser().parse_args(["test", "capacity", "set", "48"])
+    assert cli._to_call(set_cap) == ("test.capacity.set", {"cap": 48})
+    clear = cli.build_parser().parse_args(["test", "capacity", "clear"])
+    assert cli._to_call(clear) == ("test.capacity.set", {"cap": None})
+
+
+def test_capacity_cli_roundtrip(live, capsys):
+    assert cli.main(["test", "capacity", "show"]) == 0
+    shown = json.loads(capsys.readouterr().out)["result"]
+    assert shown["learned_capacity"] == 8
+    assert shown["effective_capacity"] == 8
+    assert shown["cap"] is None
+    assert cli.main(["test", "capacity", "set", "5"]) == 0
+    changed = json.loads(capsys.readouterr().out)["result"]
+    assert changed["effective_capacity"] == 5
+    assert changed["last_adjustment"]["reason"] == "administrator_cap_changed"
+    assert cli.main(["test", "capacity", "clear"]) == 0
+    cleared = json.loads(capsys.readouterr().out)["result"]
+    assert cleared["cap"] is None and cleared["effective_capacity"] == 8
 
 
 def test_governed_check_event_writes_bound_identity(monkeypatch):
@@ -189,6 +218,8 @@ def test_mcp_full_session(live):
     assert init["serverInfo"]["name"] == "devcoordinator2"
     tools = {t["name"] for t in replies[1]["result"]["tools"]}
     assert {"test_start", "test_retry", "test_status", "test_output", "test_stop",
+            "test_list", "test_capacity_show", "test_capacity_set",
+            "test_capacity_clear",
             "repository_list", "repository_archive", "repository_unarchive",
             "deployment_apply", "deployment_status", "deployment_stop", "deployment_logs",
             "health_containers"} <= tools

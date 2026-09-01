@@ -44,7 +44,8 @@ def _optional_str(args: dict[str, Any], key: str) -> str | None:
 
 
 def build_handlers(config: InstanceConfig, registry: Registry,
-                   lifecycle=None, deployments=None, db=None) -> dict[str, Handler]:
+                   lifecycle=None, deployments=None, db=None,
+                   capacity=None) -> dict[str, Handler]:
     def ping(args: dict[str, Any], caller: Caller) -> dict[str, Any]:
         _no_args(args)
         return {"daemon_version": __version__, "schema_version": SCHEMA_VERSION,
@@ -135,7 +136,7 @@ def build_handlers(config: InstanceConfig, registry: Registry,
 
     if lifecycle is not None:
         def test_start(args: dict[str, Any], caller: Caller) -> dict[str, Any]:
-            unknown = set(args) - {"path", "test", "checks"}
+            unknown = set(args) - {"path", "test", "checks", "tier"}
             if unknown:
                 raise ProtocolError("args_invalid", f"unknown args: {sorted(unknown)}")
             path = _require_path({"path": args.get("path")}, {"path"})
@@ -146,7 +147,13 @@ def build_handlers(config: InstanceConfig, registry: Registry,
             if not isinstance(checks, list) or not all(
                     isinstance(value, str) for value in checks):
                 raise ProtocolError("args_invalid", "'checks' must be an array of strings")
-            return lifecycle.start(path, test, caller, checks=tuple(checks))
+            tier = args.get("tier", "release")
+            if tier not in ("development", "pre-merge", "release"):
+                raise ProtocolError(
+                    "args_invalid",
+                    "'tier' must be development, pre-merge, or release")
+            return lifecycle.start(
+                path, test, caller, checks=tuple(checks), tier=tier)
 
         def test_retry(args: dict[str, Any], caller: Caller) -> dict[str, Any]:
             unknown = set(args) - {"path", "test", "run_id", "check"}
@@ -205,6 +212,32 @@ def build_handlers(config: InstanceConfig, registry: Registry,
             "test.output": test_output,
             "test.stop": test_stop,
             "test.list": test_list,
+        })
+
+    if capacity is not None:
+        def test_capacity_get(args: dict[str, Any], caller: Caller) -> dict[str, Any]:
+            _no_args(args)
+            return capacity.snapshot()
+
+        def test_capacity_set(args: dict[str, Any], caller: Caller) -> dict[str, Any]:
+            unknown = set(args) - {"cap"}
+            if unknown:
+                raise ProtocolError("args_invalid", f"unknown args: {sorted(unknown)}")
+            if "cap" not in args:
+                raise ProtocolError("args_invalid", "'cap' is required (integer or null)")
+            cap = args["cap"]
+            if cap is not None and (
+                    not isinstance(cap, int) or isinstance(cap, bool)):
+                raise ProtocolError("args_invalid", "'cap' must be an integer or null")
+            actor = caller.identity or f"uid:{caller.uid}"
+            try:
+                return capacity.set_cap(cap, actor)
+            except ValueError as exc:
+                raise ProtocolError("args_invalid", str(exc)) from exc
+
+        handlers.update({
+            "test.capacity.get": test_capacity_get,
+            "test.capacity.set": test_capacity_set,
         })
 
     if deployments is not None:

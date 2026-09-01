@@ -166,7 +166,7 @@ def test_schema_v1_upgrades_in_place_preserving_repositories(tmp_path: Path):
         conn.execute("DROP TABLE deployments")
     db.close()
     db = Database(path)
-    assert db.query("SELECT value FROM meta WHERE key='schema_version'")[0]["value"] == "12"
+    assert db.query("SELECT value FROM meta WHERE key='schema_version'")[0]["value"] == "13"
     assert db.query("SELECT repository_id FROM repositories")[0]["repository_id"] == "r1"
     assert db.query("SELECT count(*) AS n FROM deployments")[0]["n"] == 0
     tables = {row["name"] for row in db.query(
@@ -185,7 +185,7 @@ def test_schema_v10_adds_persistent_elaboration_requests(tmp_path: Path):
     db = Database(path)
     columns = {row["name"] for row in db.query("PRAGMA table_info(tasks)")}
     assert "elaboration_needed" in columns
-    assert db.query("SELECT value FROM meta WHERE key='schema_version'")[0]["value"] == "12"
+    assert db.query("SELECT value FROM meta WHERE key='schema_version'")[0]["value"] == "13"
     db.close()
 
 
@@ -193,3 +193,31 @@ def test_schema_idempotent(tmp_path: Path):
     path = tmp_path / "db.sqlite3"
     Database(path).close()
     Database(path).close()
+
+
+def test_schema_v12_adds_capacity_without_touching_permanent_history(tmp_path: Path):
+    path = tmp_path / "db.sqlite3"
+    db = Database(path)
+    with db.transaction() as conn:
+        conn.execute(
+            "INSERT INTO repositories(repository_id,root_path,display_name,registered_at,"
+            " registered_by_uid,last_seen_at)"
+            " VALUES('rhistory','/history','History','t',1,'t')")
+        conn.execute(
+            "INSERT INTO decisions(decision_id,repository_id,seq,aspect,title,body,"
+            " created_at,created_by) VALUES('nhistory','rhistory',1,'testing','Keep it',"
+            " 'Permanent decision','t','fixture')")
+        conn.execute("DROP TABLE test_capacity_events")
+        conn.execute("DROP TABLE test_capacity_state")
+        conn.execute("UPDATE meta SET value='12' WHERE key='schema_version'")
+    db.close()
+
+    db = Database(path)
+    assert db.query("SELECT body FROM decisions WHERE decision_id='nhistory'")[0]["body"] \
+        == "Permanent decision"
+    tables = {row["name"] for row in db.query(
+        "SELECT name FROM sqlite_master WHERE type='table'")}
+    assert {"test_capacity_state", "test_capacity_events"} <= tables
+    assert db.query("SELECT value FROM meta WHERE key='schema_version'")[0]["value"] \
+        == "13"
+    db.close()

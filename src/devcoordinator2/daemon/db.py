@@ -12,7 +12,7 @@ import threading
 from contextlib import contextmanager
 from pathlib import Path
 
-SCHEMA_VERSION = 12
+SCHEMA_VERSION = 13
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (
@@ -417,6 +417,33 @@ CREATE INDEX IF NOT EXISTS repository_events_repository
   ON repository_events(repository_id, event_id);
 """
 
+# Schema 13: host-wide governed-test capacity. The singleton is permanent
+# control state; every automatic or administrator adjustment is append-only
+# evidence. Host samples themselves are deliberately not retained.
+_SCHEMA_V13 = """
+CREATE TABLE IF NOT EXISTS test_capacity_state (
+  singleton        INTEGER PRIMARY KEY CHECK(singleton = 1),
+  learned_capacity INTEGER NOT NULL CHECK(learned_capacity >= 1),
+  cap              INTEGER CHECK(cap IS NULL OR cap >= 1),
+  updated_at       TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS test_capacity_events (
+  event_id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  at                  TEXT NOT NULL,
+  actor               TEXT NOT NULL,
+  reason              TEXT NOT NULL,
+  previous_capacity   INTEGER NOT NULL,
+  new_capacity        INTEGER NOT NULL,
+  cap                 INTEGER,
+  p95_cpu_percent     REAL,
+  p95_memory_percent  REAL,
+  saturation_fraction REAL,
+  epoch_seconds       REAL
+);
+CREATE INDEX IF NOT EXISTS test_capacity_events_time
+  ON test_capacity_events(event_id);
+"""
+
 
 class SchemaMismatch(Exception):
     pass
@@ -478,6 +505,7 @@ class Database:
             self._ensure_column("repositories", "archive_note", "TEXT")
             self._ensure_column("repositories", "merged_into_repository_id", "TEXT")
             self._conn.executescript(_SCHEMA_V12)
+            self._conn.executescript(_SCHEMA_V13)
             self._conn.execute(
                 "INSERT OR REPLACE INTO meta(key, value) VALUES('schema_version', ?)",
                 (str(SCHEMA_VERSION),),

@@ -201,6 +201,11 @@ class InstanceConfig:
         return self.state_dir / "authority.sqlite3"
 
     @property
+    def capacity_socket_path(self) -> Path:
+        """Dedicated connection-as-permit socket beside the daemon socket."""
+        return self.socket_path.with_name("capacity.sock")
+
+    @property
     def deployments_dir(self) -> Path:
         return self.state_dir / "deployments"
 

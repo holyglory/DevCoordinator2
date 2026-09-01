@@ -21,7 +21,7 @@ PLAN_FILE = "check-plan.json"
 REPORT_FILE = "check-report.json"
 HISTORY_SCHEMA = 1
 HISTORY_CAP = 1000
-EVIDENCE_SCHEMA = 1
+EVIDENCE_SCHEMA = 2
 EVIDENCE_CAP = 50
 HISTORY_FIELDS = (
     "run_id", "test", "status", "started_at", "finished_at",
@@ -31,7 +31,7 @@ log = logging.getLogger("devcoordinator2.tests")
 _DIGEST_RE = re.compile(r"[0-9a-f]{64}$")
 _CHECK_STATES = frozenset({
     "pending", "running", "passed", "failed", "not_meaningful",
-    "cancelled", "unsafe", "reused",
+    "cancelled", "unsafe", "reused", "invalidated", "timed_out",
 })
 
 
@@ -93,7 +93,7 @@ def write_check_plan(dir_fd: int, document: dict,
 
 def read_check_report(dir_fd: int) -> dict | None:
     document = _read_json_at(dir_fd, REPORT_FILE)
-    if document is None or document.get("schema") != 1 \
+    if document is None or document.get("schema") != 2 \
             or document.get("proof") not in ("complete", "diagnostic") \
             or document.get("status") not in ("running", "passed", "failed") \
             or not isinstance(document.get("run_id"), str) \
@@ -101,6 +101,12 @@ def read_check_report(dir_fd: int) -> dict | None:
             or not isinstance(document.get("selection"), list) \
             or len(document["selection"]) > 256 \
             or not all(isinstance(name, str) for name in document["selection"]) \
+            or document.get("requested_tier") not in (
+                "development", "pre-merge", "release") \
+            or not isinstance(document.get("readiness_eligible"), bool) \
+            or document["readiness_eligible"] != (
+                document["proof"] == "complete"
+                and document["requested_tier"] == "release") \
             or not isinstance(document.get("source_digest"), str) \
             or not _DIGEST_RE.fullmatch(document["source_digest"]) \
             or not isinstance(document.get("config_digest"), str) \
@@ -110,10 +116,23 @@ def read_check_report(dir_fd: int) -> dict | None:
                      or len(document["unsafe_reason"]) > 512)) \
             or not isinstance(document.get("counts"), dict):
         return None
+    capacity = document.get("capacity")
+    if not isinstance(capacity, dict) or set(capacity) != {
+            "learned_capacity", "effective_capacity", "capacity_wait_count"}:
+        return None
+    for key in ("learned_capacity", "effective_capacity"):
+        value = capacity[key]
+        if value is not None and (
+                not isinstance(value, int) or isinstance(value, bool) or value < 1):
+            return None
+    if not isinstance(capacity["capacity_wait_count"], int) \
+            or isinstance(capacity["capacity_wait_count"], bool) \
+            or capacity["capacity_wait_count"] < 0:
+        return None
     checks = document.get("checks")
     counts = document["counts"]
     if set(counts) != _CHECK_STATES | {"pending", "running"} \
-            or any(not isinstance(value, int) or value < 0 or value > 256
+            or any(not isinstance(value, int) or value < 0 or value > 4096
                    for value in counts.values()):
         return None
     if not isinstance(checks, list) or len(checks) > 256:
@@ -238,6 +257,8 @@ def _evidence_row(report: dict) -> dict:
         "status": report.get("status"),
         "source_digest": report.get("source_digest"),
         "config_digest": report.get("config_digest"),
+        "requested_tier": report.get("requested_tier"),
+        "readiness_eligible": report.get("readiness_eligible"),
         "selection": report.get("selection", []),
         "checks": checks,
     }
@@ -260,6 +281,9 @@ def read_evidence(worktree_root: Path) -> list[dict]:
             or not isinstance(run.get("run_id"), str)
             or run.get("proof") not in ("complete", "diagnostic")
             or run.get("status") not in ("passed", "failed")
+            or run.get("requested_tier") not in (
+                "development", "pre-merge", "release")
+            or not isinstance(run.get("readiness_eligible"), bool)
             or not isinstance(run.get("checks"), list)
             for run in runs):
         raise securefs.SecureFsError("test evidence contains invalid runs")

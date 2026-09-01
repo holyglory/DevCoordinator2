@@ -19,6 +19,7 @@ from devcoordinator2.daemon.progress_api import build_progress_handlers
 from devcoordinator2.daemon.registry import Registry
 from devcoordinator2.daemon.server import Server
 from devcoordinator2.daemon.telegram import Telegram
+from devcoordinator2.daemon.test_capacity import CapacityBroker
 from devcoordinator2.daemon.tests_lifecycle import TestLifecycle
 from devcoordinator2.daemon.usage_api import build_usage_handlers
 from devcoordinator2.paths import load_instance_config
@@ -37,11 +38,14 @@ def main() -> int:
         log.error("refusing to start: %s", exc)
         return 1
     registry = Registry(db)
-    lifecycle = TestLifecycle(config, registry)
+    capacity = CapacityBroker(db, config.capacity_socket_path)
+    lifecycle = TestLifecycle(config, registry, capacity)
     lifecycle.recover()
+    capacity.start()
     deployments = Deployments(config, db, registry)
     deployments.start_expiry_thread()
-    handlers = build_handlers(config, registry, lifecycle, deployments, db)
+    handlers = build_handlers(
+        config, registry, lifecycle, deployments, db, capacity)
     sampler = Sampler(config, db)
     sampler.start()
     handlers.update(build_health_handlers(config, db, registry, sampler))
@@ -72,6 +76,7 @@ def main() -> int:
     telegram.stop()
     deployments.shutdown()
     sampler.stop()
+    capacity.shutdown()
     db.close()
     return 0
 

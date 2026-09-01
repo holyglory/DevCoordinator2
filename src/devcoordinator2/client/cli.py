@@ -47,6 +47,9 @@ def build_parser() -> argparse.ArgumentParser:
                        help="named test from .devcoordinator.toml")
     start.add_argument("--check", dest="checks", action="append", default=[],
                        help="diagnostic check selection; repeat as needed")
+    start.add_argument("--tier", choices=["development", "pre-merge", "release"],
+                       default="release",
+                       help="validation tier (default: release)")
     retry = test_sub.add_parser("retry", help="retry one failed check from a complete run")
     _add_common(retry)
     retry.add_argument("--test", dest="test_name", default=None,
@@ -67,6 +70,15 @@ def build_parser() -> argparse.ArgumentParser:
     event = test_sub.add_parser("event", help="emit this check's exact completion event")
     event.add_argument("status", choices=["passed", "failed", "unsafe"])
     _add_common(test_sub.add_parser("list", help="current run per worktree"), with_path=False)
+    capacity = test_sub.add_parser("capacity", help="host-wide adaptive test capacity")
+    capacity_sub = capacity.add_subparsers(dest="capacity_action", required=True)
+    _add_common(capacity_sub.add_parser("show", help="show learned and effective capacity"),
+                with_path=False)
+    capacity_set = capacity_sub.add_parser("set", help="set an administrator maximum")
+    _add_common(capacity_set, with_path=False)
+    capacity_set.add_argument("cap", type=int)
+    _add_common(capacity_sub.add_parser("clear", help="remove the administrator maximum"),
+                with_path=False)
 
     dep = sub.add_parser("deployment", help="deployment lifecycle")
     dep_sub = dep.add_subparsers(dest="action", required=True)
@@ -288,6 +300,7 @@ def _to_call(ns: argparse.Namespace) -> tuple[str, dict]:
                 args["test"] = ns.test_name
             if ns.checks:
                 args["checks"] = ns.checks
+            args["tier"] = ns.tier
             return "test.start", args
         case ("test", "retry"):
             args = {**path_args, "run_id": ns.run_id, "check": ns.check}
@@ -307,6 +320,11 @@ def _to_call(ns: argparse.Namespace) -> tuple[str, dict]:
                                  if ns.reason else path_args)
         case ("test", "list"):
             return "test.list", {}
+        case ("test", "capacity"):
+            if ns.capacity_action == "show":
+                return "test.capacity.get", {}
+            return "test.capacity.set", {
+                "cap": ns.cap if ns.capacity_action == "set" else None}
         case ("deployment", "list"):
             return "deployment.list", ({"path": str(Path(ns.path).absolute())}
                                        if ns.path else {})

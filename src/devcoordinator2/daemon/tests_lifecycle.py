@@ -32,6 +32,7 @@ from devcoordinator2.daemon.gitinfo import GitResolveError, resolve_worktree
 from devcoordinator2.daemon.registry import Registry
 from devcoordinator2.daemon.repoconfig import (
     CHECK_NAME_RE,
+    VALIDATION_TIERS,
     CheckSpec,
     ConfigError,
     TestSpec,
@@ -64,7 +65,8 @@ class _RunHandle:
                  caller_uid: int, client: str, proc, out: capture.Drainer,
                  err: capture.Drainer, cgroup: Path | None, started_at: str,
                  *, proof: str, selection: tuple[str, ...],
-                 origin_run_id: str | None):
+                 origin_run_id: str | None, requested_tier: str,
+                 readiness_eligible: bool):
         self.run_id = run_id
         self.test = test
         self.unit = unit
@@ -90,6 +92,8 @@ class _RunHandle:
         self.proof = proof
         self.selection = selection
         self.origin_run_id = origin_run_id
+        self.requested_tier = requested_tier
+        self.readiness_eligible = readiness_eligible
         self.stop_detail: str | None = None
 
     def close_dir_fd(self) -> None:
@@ -107,18 +111,20 @@ class _RunHandle:
 
 
 class TestLifecycle:
-    def __init__(self, config: InstanceConfig, registry: Registry):
+    def __init__(self, config: InstanceConfig, registry: Registry, capacity=None):
         self._config = config
         self._registry = registry
         self._locks: dict[str, threading.Lock] = {}
         self._locks_guard = threading.Lock()
         self._runs: dict[str, _RunHandle] = {}  # worktree_id -> live handle
         self._admission = test_admission.TestAdmission(config.socket_path.parent)
+        self._capacity = capacity
 
     # -- public operations -------------------------------------------------
 
     def start(self, path: Path, test_name: str | None,
               caller: Caller, *, checks: tuple[str, ...] = (),
+              tier: str = "release",
               retry_run_id: str | None = None,
               retry_check: str | None = None) -> dict:
         if caller.uid == 0:
@@ -141,9 +147,11 @@ class TestLifecycle:
         if retry_check is not None and checks:
             raise ProtocolError(
                 "args_invalid", "retry and explicit check selection are separate modes")
+        if tier not in VALIDATION_TIERS:
+            raise ProtocolError(
+                "args_invalid", "tier must be development, pre-merge, or release")
         configured = self._configured_checks(spec)
         requested = (retry_check,) if retry_check is not None else checks
-        selected = self._selected_closure(configured, requested)
         try:
             source_fingerprint = source_digest(
                 worktree_root, (caller.uid, caller.gid))
@@ -158,6 +166,8 @@ class TestLifecycle:
             self._validate_retry(
                 origin, retry_run_id, retry_check, spec,
                 source_fingerprint, configured)
+            tier = origin["requested_tier"]
+        selected = self._selected_closure(configured, requested, tier)
         self._validate_executables(configured, selected, spec.env,
                                    caller.uid, caller.gid)
 
@@ -187,15 +197,19 @@ class TestLifecycle:
             client = caller.client_kind
             dir_fd = os.open(current, os.O_RDONLY | os.O_DIRECTORY)
             admitted = False
+            capacity_registered = False
             proc = None
             try:
                 initial = summary.build(run, spec.name, "running", started_at,
                                         caller.uid, client)
                 proof = "diagnostic" if requested else "complete"
+                readiness_eligible = proof == "complete" and tier == "release"
                 initial.update(
                     proof=proof,
                     selection=list(requested),
                     origin_run_id=retry_run_id,
+                    requested_tier=tier,
+                    readiness_eligible=readiness_eligible,
                     check_report_path=str(current / tests_support.REPORT_FILE),
                 )
                 summary.write_atomic_at(dir_fd, initial,
@@ -206,6 +220,11 @@ class TestLifecycle:
                 admission_entered = False
                 env = dict(spec.env)
                 env.setdefault("PATH", _CHECK_PATH)
+                if self._capacity is not None:
+                    self._capacity.register_run(run, caller.uid)
+                    capacity_registered = True
+                    env["DEVCOORDINATOR_CAPACITY_SOCKET"] = str(
+                        self._capacity.socket_path)
                 containers: list[str] = []
                 if spec.postgres is not None:
                     labels = docker_cli.managed_labels(
@@ -231,7 +250,7 @@ class TestLifecycle:
                     env_file = current / _ENV_FILE
                 plan = self._build_plan(
                     spec, configured, selected, run, worktree_root, current,
-                    source_fingerprint, requested, origin, retry_run_id)
+                    source_fingerprint, requested, origin, retry_run_id, tier)
                 tests_support.write_check_plan(
                     dir_fd, plan, (caller.uid, caller.gid))
                 argv = systemd_unit.build_systemd_run_argv(
@@ -260,7 +279,9 @@ class TestLifecycle:
                                     caller.uid, client, proc, out, err, None,
                                     started_at, proof=proof,
                                     selection=requested,
-                                    origin_run_id=retry_run_id)
+                                    origin_run_id=retry_run_id,
+                                    requested_tier=tier,
+                                    readiness_eligible=readiness_eligible)
                 handle.caller_gid = caller.gid
                 handle.dir_fd = dir_fd
                 handle.containers = containers
@@ -273,6 +294,8 @@ class TestLifecycle:
                         proc.terminate()
                 if admitted:
                     self._admission.finished(run)
+                if capacity_registered and self._capacity is not None:
+                    self._capacity.unregister_run(run)
                 _remove_containers(containers)
                 os.close(dir_fd)
                 if isinstance(exc, ProtocolError):
@@ -299,6 +322,8 @@ class TestLifecycle:
                 "proof": proof,
                 "selection": list(requested),
                 "origin_run_id": retry_run_id,
+                "requested_tier": tier,
+                "readiness_eligible": readiness_eligible,
                 "unit": unit,
                 "summary_path": str(handle.summary_path),
             }
@@ -323,6 +348,8 @@ class TestLifecycle:
                 if report is not None:
                     doc.update(self._report_projection(report))
         doc["summary_path"] = str(test_dir(worktree_root) / "summary.json")
+        if self._capacity is not None:
+            doc["capacity"] = self._capacity.snapshot()
         return doc
 
     def output(self, path: Path, stream: str, tail_bytes: int,
@@ -376,7 +403,12 @@ class TestLifecycle:
                 "status": final["status"] if final else "cancelled"}
 
     def list_current(self) -> list[dict]:
-        return tests_support.list_current(self._registry._db, self._runs)
+        rows = tests_support.list_current(self._registry._db, self._runs)
+        if self._capacity is not None:
+            capacity = self._capacity.snapshot()
+            for row in rows:
+                row["capacity"] = capacity
+        return rows
 
     def current_summary_ref(self, path: Path, caller: Caller) -> dict | None:
         try:
@@ -395,15 +427,19 @@ class TestLifecycle:
         if spec.checks:
             return spec.checks
         assert spec.command is not None
+        assert spec.tier is not None
         return (CheckSpec(
-            name="main", command=spec.command, cwd=spec.cwd, env={},
+            name="main", tier=spec.tier, role="work", command=spec.command,
+            discover=None, case_command=None, cases=(), cwd=spec.cwd, env={},
             after=(), requires=(), completion="process",
-            on_failure="continue", produces=(),
+            on_failure="continue", produces=(), timeout_seconds=None,
+            invalidates=(),
         ),)
 
     @staticmethod
     def _selected_closure(configured: tuple[CheckSpec, ...],
-                          requested: tuple[str, ...]) -> tuple[CheckSpec, ...]:
+                          requested: tuple[str, ...],
+                          tier: str) -> tuple[CheckSpec, ...]:
         by_name = {check.name: check for check in configured}
         if len(requested) != len(set(requested)):
             raise ProtocolError("args_invalid", "check selection contains duplicates")
@@ -411,8 +447,17 @@ class TestLifecycle:
         if missing:
             raise ProtocolError(
                 "args_invalid", f"unknown checks: {', '.join(sorted(missing))}")
+        tier_rank = VALIDATION_TIERS.index(tier)
+        excluded = [name for name in requested
+                    if VALIDATION_TIERS.index(by_name[name].tier) > tier_rank]
+        if excluded:
+            raise ProtocolError(
+                "args_invalid",
+                f"checks are outside requested {tier} tier: "
+                f"{', '.join(sorted(excluded))}")
         if not requested:
-            return configured
+            return tuple(check for check in configured
+                         if VALIDATION_TIERS.index(check.tier) <= tier_rank)
         included = set(requested)
         pending = list(requested)
         while pending:
@@ -421,7 +466,8 @@ class TestLifecycle:
                 if dependency not in included:
                     included.add(dependency)
                     pending.append(dependency)
-        return tuple(check for check in configured if check.name in included)
+        return tuple(check for check in configured if check.name in included
+                     and VALIDATION_TIERS.index(check.tier) <= tier_rank)
 
     @staticmethod
     def _validate_executables(configured: tuple[CheckSpec, ...],
@@ -432,35 +478,38 @@ class TestLifecycle:
         for check in configured:
             if check.name not in selected_names:
                 continue
-            executable = check.command[0]
-            path_value = check.env.get("PATH", global_env.get("PATH", _CHECK_PATH))
-            if "/" in executable:
-                candidates = [Path(executable) if Path(executable).is_absolute()
-                              else check.cwd / executable]
-            else:
-                candidates = [Path(part) / executable
-                              for part in path_value.split(os.pathsep) if part]
-            found = False
-            for candidate in candidates:
-                argv = ["/usr/bin/test", "-x", str(candidate)]
-                if os.geteuid() == 0 and uid != 0:
-                    argv = ["setpriv", f"--reuid={uid}", f"--regid={gid}",
-                            "--init-groups", "--", *argv]
-                try:
-                    proc = subprocess.run(
-                        argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL, timeout=5, check=False,
-                        env={"PATH": _CHECK_PATH},
-                    )
-                except (OSError, subprocess.TimeoutExpired):
-                    continue
-                if proc.returncode == 0:
-                    found = True
-                    break
-            if not found:
-                raise ProtocolError(
-                    "test_start_failed",
-                    f"check {check.name!r} executable {executable!r} is unavailable")
+            commands = tuple(command for command in (
+                check.command, check.discover, check.case_command) if command is not None)
+            for command in commands:
+                executable = command[0]
+                path_value = check.env.get("PATH", global_env.get("PATH", _CHECK_PATH))
+                if "/" in executable:
+                    candidates = [Path(executable) if Path(executable).is_absolute()
+                                  else check.cwd / executable]
+                else:
+                    candidates = [Path(part) / executable
+                                  for part in path_value.split(os.pathsep) if part]
+                found = False
+                for candidate in candidates:
+                    argv = ["/usr/bin/test", "-x", str(candidate)]
+                    if os.geteuid() == 0 and uid != 0:
+                        argv = ["setpriv", f"--reuid={uid}", f"--regid={gid}",
+                                "--init-groups", "--", *argv]
+                    try:
+                        proc = subprocess.run(
+                            argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL, timeout=5, check=False,
+                            env={"PATH": _CHECK_PATH},
+                        )
+                    except (OSError, subprocess.TimeoutExpired):
+                        continue
+                    if proc.returncode == 0:
+                        found = True
+                        break
+                if not found:
+                    raise ProtocolError(
+                        "test_start_failed",
+                        f"check {check.name!r} executable {executable!r} is unavailable")
 
     @staticmethod
     def _validate_retry(origin: dict | None, origin_run_id: str,
@@ -473,6 +522,9 @@ class TestLifecycle:
         if origin.get("proof") != "complete" or origin.get("selection"):
             raise ProtocolError(
                 "test_start_failed", "a retry requires an original complete run")
+        if origin.get("requested_tier") not in VALIDATION_TIERS:
+            raise ProtocolError(
+                "test_start_failed", "retry evidence has no valid validation tier")
         if origin.get("test") != spec.name:
             raise ProtocolError(
                 "test_start_failed", "retry evidence belongs to another test")
@@ -493,7 +545,8 @@ class TestLifecycle:
                     selected: tuple[CheckSpec, ...], run_id: str,
                     worktree_root: Path, current: Path,
                     source_fingerprint: str, requested: tuple[str, ...],
-                    origin: dict | None, origin_run_id: str | None) -> dict:
+                    origin: dict | None, origin_run_id: str | None,
+                    requested_tier: str) -> dict:
         selected_names = {check.name for check in selected}
         target_names = set(requested)
         previous = {row.get("name"): row for row in (origin or {}).get("checks", [])}
@@ -505,6 +558,7 @@ class TestLifecycle:
                 expected_paths = [artifact.get("path") for artifact in artifacts
                                   if isinstance(artifact, dict)]
                 if check.name in target_names or check.completion != "process" \
+                        or check.command is None \
                         or not artifacts or tuple(expected_paths) != check.produces \
                         or row.get("status") not in ("passed", "reused") \
                         or not receipts_match(worktree_root, artifacts):
@@ -514,22 +568,38 @@ class TestLifecycle:
         for check in configured:
             if check.name not in selected_names:
                 continue
-            rows.append({
+            row = {
                 "name": check.name,
-                "command": list(check.command),
+                "tier": check.tier,
+                "role": check.role,
                 "cwd": str(check.cwd),
                 "env": check.env,
                 "after": list(check.after),
                 "requires": list(check.requires),
+                "invalidates": list(check.invalidates),
                 "completion": check.completion,
                 "on_failure": check.on_failure,
                 "produces": list(check.produces),
-            })
+                "timeout_seconds": check.timeout_seconds,
+            }
+            if check.command is not None:
+                row["command"] = list(check.command)
+            elif check.discover is not None:
+                row["discover"] = list(check.discover)
+                row["case_command"] = list(check.case_command or ())
+            else:
+                row["cases"] = [
+                    {"id": case.id, "args": list(case.args)} for case in check.cases]
+                row["case_command"] = list(check.case_command or ())
+            rows.append(row)
+        proof = "diagnostic" if requested else "complete"
         return {
-            "schema": 1,
+            "schema": 2,
             "run_id": run_id,
             "test": spec.name,
-            "proof": "diagnostic" if requested else "complete",
+            "requested_tier": requested_tier,
+            "readiness_eligible": proof == "complete" and requested_tier == "release",
+            "proof": proof,
             "selection": list(requested),
             "origin_run_id": origin_run_id,
             "worktree_root": str(worktree_root),
@@ -571,6 +641,8 @@ class TestLifecycle:
                     "check", "status", "reason", "output_ref",
                 )})
         return {
+            "requested_tier": report.get("requested_tier"),
+            "readiness_eligible": bool(report.get("readiness_eligible")),
             "proof": report.get("proof"),
             "selection": report.get("selection", []),
             "check_summary": report.get("counts", {}),
@@ -580,6 +652,10 @@ class TestLifecycle:
             "failure_index_truncated": bool(report.get("failure_index_truncated")),
             "source_changed": bool(report.get("source_changed")),
             "unsafe_reason": report.get("unsafe_reason"),
+            "execution_capacity": report.get("capacity"),
+            "capacity_wait_count": (
+                report.get("capacity", {}).get("capacity_wait_count", 0)
+                if isinstance(report.get("capacity"), dict) else 0),
         }
 
     # -- restart recovery --------------------------------------------------
@@ -784,6 +860,8 @@ class TestLifecycle:
                 proof=handle.proof,
                 selection=list(handle.selection),
                 origin_run_id=handle.origin_run_id,
+                requested_tier=handle.requested_tier,
+                readiness_eligible=handle.readiness_eligible,
                 termination_reason=handle.stop_detail,
                 check_report_path=str(
                     handle.worktree_root / ".devcoordinator" / "test" / "current"
@@ -826,5 +904,7 @@ class TestLifecycle:
                            duration_seconds=duration, caller_uid=handle.caller_uid,
                            client=handle.client, worktree=str(handle.worktree_root))
         finally:
+            if self._capacity is not None:
+                self._capacity.unregister_run(handle.run_id)
             self._admission.finished(handle.run_id)
             handle.finalized.set()

@@ -17,7 +17,10 @@ CONFIG_NAME = ".devcoordinator.toml"
 MAX_CONFIG_BYTES = 262144
 TEST_NAME_RE = re.compile(r"[a-z0-9][a-z0-9-]{0,31}$")
 CHECK_NAME_RE = re.compile(r"[a-z0-9][a-z0-9-]{0,63}$")
+CASE_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 TIMEOUT_MIN, TIMEOUT_MAX, TIMEOUT_DEFAULT = 1, 21600, 600
+VALIDATION_TIERS = ("development", "pre-merge", "release")
+_TIER_RANK = {tier: index for index, tier in enumerate(VALIDATION_TIERS)}
 POSTGRES_IMAGE_RE = re.compile(r"postgres:[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 POSTGRES_DIGEST_IMAGE_RE = re.compile(
     r"[a-z0-9][a-z0-9._/-]{0,200}"
@@ -43,11 +46,24 @@ class PostgresSpec:
 
 
 @dataclass(frozen=True)
+class CaseSpec:
+    """One statically declared case appended to a reviewed case command."""
+
+    id: str
+    args: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class CheckSpec:
     """One check in a finite governed dependency graph."""
 
     name: str
-    command: tuple[str, ...]
+    tier: str
+    role: str
+    command: tuple[str, ...] | None
+    discover: tuple[str, ...] | None
+    case_command: tuple[str, ...] | None
+    cases: tuple[CaseSpec, ...]
     cwd: Path
     env: dict[str, str]
     after: tuple[str, ...]
@@ -55,12 +71,15 @@ class CheckSpec:
     completion: str
     on_failure: str
     produces: tuple[str, ...]
+    timeout_seconds: int | None
+    invalidates: tuple[str, ...]
 
 
 @dataclass(frozen=True)
 class TestSpec:
     name: str
     command: tuple[str, ...] | None
+    tier: str | None
     cwd: Path  # resolved absolute, proven inside the worktree
     timeout_seconds: int
     env: dict[str, str]
@@ -87,8 +106,8 @@ def load_test_spec(worktree_root: Path, test_name: str | None) -> TestSpec:
     unknown = set(data) - {"schema", "test", "deployment"}
     if unknown:
         raise ConfigError(f"unknown top-level keys: {sorted(unknown)}")
-    if data.get("schema") != 1:
-        raise ConfigError("'schema' must be 1")
+    if data.get("schema") != 2:
+        raise ConfigError("'schema' must be 2; schema 1 is no longer supported")
     tests_raw = data.get("test")
     if not isinstance(tests_raw, dict) or not tests_raw:
         raise ConfigError("a [test.<name>] section is required")
@@ -125,7 +144,7 @@ def load_test_spec(worktree_root: Path, test_name: str | None) -> TestSpec:
 def _validate_test(worktree_root: Path, name: str, section: dict,
                    *, config_digest: str) -> TestSpec:
     unknown = set(section) - {
-        "command", "cwd", "timeout_seconds", "env", "postgres", "check",
+        "command", "tier", "cwd", "timeout_seconds", "env", "postgres", "check",
     }
     if unknown:
         raise ConfigError(f"[test.{name}] unknown keys: {sorted(unknown)}")
@@ -138,8 +157,14 @@ def _validate_test(worktree_root: Path, name: str, section: dict,
     if command is None and checks_raw is None:
         raise ConfigError(f"[test.{name}] requires command or at least one check")
     checked_command = None
+    tier = None
     if command is not None:
         checked_command = _validate_command(f"[test.{name}].command", command)
+        tier = _validate_tier(f"[test.{name}].tier", section.get("tier"))
+    elif "tier" in section:
+        raise ConfigError(
+            f"[test.{name}].tier applies only to a direct command; "
+            "graph checks declare their own tiers")
 
     cwd = _validate_cwd(worktree_root, f"[test.{name}].cwd",
                         section.get("cwd", "."))
@@ -160,17 +185,26 @@ def _validate_test(worktree_root: Path, name: str, section: dict,
     if checks_raw is not None:
         checks = _validate_checks(worktree_root, name, cwd, checks_raw)
 
-    return TestSpec(name=name, command=checked_command, cwd=cwd,
+    return TestSpec(name=name, command=checked_command, tier=tier, cwd=cwd,
                     timeout_seconds=timeout, env=env, postgres=postgres,
                     checks=checks, config_digest=config_digest)
+
+
+def _validate_tier(label: str, value) -> str:
+    if value not in VALIDATION_TIERS:
+        raise ConfigError(
+            f"{label} must be 'development', 'pre-merge', or 'release'")
+    return value
 
 
 def _validate_command(label: str, command) -> tuple[str, ...]:
     if isinstance(command, str):
         raise ConfigError(f"{label} must be an argv array, never a shell string")
-    if (not isinstance(command, list) or not command
-            or not all(isinstance(a, str) and a for a in command)):
-        raise ConfigError(f"{label} must be a non-empty array of non-empty strings")
+    if (not isinstance(command, list) or not command or len(command) > 256
+            or not all(isinstance(a, str) and a and len(a.encode("utf-8")) <= 4096
+                       for a in command)):
+        raise ConfigError(
+            f"{label} must contain 1..256 non-empty strings of at most 4096 bytes")
     return tuple(command)
 
 
@@ -223,6 +257,35 @@ def _validate_artifact_path(label: str, value: str) -> str:
     return value
 
 
+def _validate_cases(label: str, value) -> tuple[CaseSpec, ...]:
+    if not isinstance(value, list) or not value:
+        raise ConfigError(f"{label} must be a non-empty array of case tables")
+    if len(value) > 4096:
+        raise ConfigError(f"{label} exceeds 4096 cases")
+    cases: list[CaseSpec] = []
+    seen: set[str] = set()
+    for index, raw in enumerate(value):
+        case_label = f"{label}[{index}]"
+        if not isinstance(raw, dict) or set(raw) != {"id", "args"}:
+            raise ConfigError(f"{case_label} must contain exactly id and args")
+        case_id = raw.get("id")
+        if not isinstance(case_id, str) or not CASE_ID_RE.fullmatch(case_id):
+            raise ConfigError(f"{case_label}.id is invalid")
+        if case_id in seen:
+            raise ConfigError(f"{label} contains duplicate case id {case_id!r}")
+        args = raw.get("args")
+        if not isinstance(args, list) or len(args) > 64 or not all(
+                isinstance(arg, str) and arg and len(arg.encode("utf-8")) <= 4096
+                for arg in args):
+            raise ConfigError(
+                f"{case_label}.args must be at most 64 non-empty bounded strings")
+        if sum(len(arg.encode("utf-8")) for arg in args) > 65536:
+            raise ConfigError(f"{case_label}.args exceeds 65536 UTF-8 bytes")
+        seen.add(case_id)
+        cases.append(CaseSpec(case_id, tuple(args)))
+    return tuple(cases)
+
+
 def _validate_checks(worktree_root: Path, test_name: str, default_cwd: Path,
                      raw) -> tuple[CheckSpec, ...]:
     if not isinstance(raw, list) or not raw:
@@ -232,8 +295,9 @@ def _validate_checks(worktree_root: Path, test_name: str, default_cwd: Path,
     checks: list[CheckSpec] = []
     seen: set[str] = set()
     allowed = {
-        "name", "command", "cwd", "env", "after", "requires",
-        "completion", "on_failure", "produces",
+        "name", "tier", "role", "command", "discover", "case_command", "cases",
+        "cwd", "env", "after", "requires", "completion", "on_failure", "produces",
+        "timeout_seconds", "invalidates",
     }
     for index, item in enumerate(raw):
         label = f"[test.{test_name}.check[{index}]]"
@@ -248,6 +312,34 @@ def _validate_checks(worktree_root: Path, test_name: str, default_cwd: Path,
         if check_name in seen:
             raise ConfigError(f"[test.{test_name}] duplicate check {check_name!r}")
         seen.add(check_name)
+        tier = _validate_tier(f"{label}.tier", item.get("tier"))
+        role = item.get("role", "work")
+        if role not in ("work", "preflight"):
+            raise ConfigError(f"{label}.role must be 'work' or 'preflight'")
+        command = item.get("command")
+        discover = item.get("discover")
+        case_command = item.get("case_command")
+        cases_raw = item.get("cases")
+        execution_forms = sum((command is not None,
+                               discover is not None,
+                               cases_raw is not None))
+        if execution_forms != 1:
+            raise ConfigError(
+                f"{label} requires exactly one of command, discover, or cases")
+        checked_command = _validate_command(f"{label}.command", command) \
+            if command is not None else None
+        checked_discover = _validate_command(f"{label}.discover", discover) \
+            if discover is not None else None
+        checked_case_command = None
+        static_cases: tuple[CaseSpec, ...] = ()
+        if discover is not None or cases_raw is not None:
+            checked_case_command = _validate_command(
+                f"{label}.case_command", case_command)
+            if cases_raw is not None:
+                static_cases = _validate_cases(f"{label}.cases", cases_raw)
+        elif case_command is not None:
+            raise ConfigError(
+                f"{label}.case_command requires discover or cases")
         cwd = default_cwd if "cwd" not in item else _validate_cwd(
             worktree_root, f"{label}.cwd", item["cwd"])
         after = _validate_string_list(f"{label}.after", item.get("after", []))
@@ -258,6 +350,9 @@ def _validate_checks(worktree_root: Path, test_name: str, default_cwd: Path,
         completion = item.get("completion", "process")
         if completion not in ("process", "event"):
             raise ConfigError(f"{label}.completion must be 'process' or 'event'")
+        if completion == "event" and (role == "preflight" or checked_command is None):
+            raise ConfigError(
+                f"{label}.completion 'event' is unavailable for preflights or fan-out")
         on_failure = item.get("on_failure", "continue")
         if on_failure not in ("continue", "stop"):
             raise ConfigError(f"{label}.on_failure must be 'continue' or 'stop'")
@@ -267,9 +362,27 @@ def _validate_checks(worktree_root: Path, test_name: str, default_cwd: Path,
             raise ConfigError(f"{label}.produces exceeds 16 paths")
         produces = tuple(_validate_artifact_path(
             f"{label}.produces", value) for value in produces_raw)
+        timeout = item.get("timeout_seconds")
+        if timeout is not None and (
+                not isinstance(timeout, int) or isinstance(timeout, bool)
+                or not TIMEOUT_MIN <= timeout <= TIMEOUT_MAX):
+            raise ConfigError(
+                f"{label}.timeout_seconds must be an integer in "
+                f"[{TIMEOUT_MIN}, {TIMEOUT_MAX}]")
+        invalidates = _validate_string_list(
+            f"{label}.invalidates", item.get("invalidates", []))
+        if invalidates and role != "preflight":
+            raise ConfigError(f"{label}.invalidates requires role = 'preflight'")
+        if role == "preflight" and not invalidates:
+            raise ConfigError(f"{label} preflight must invalidate at least one check")
         checks.append(CheckSpec(
             name=check_name,
-            command=_validate_command(f"{label}.command", item.get("command")),
+            tier=tier,
+            role=role,
+            command=checked_command,
+            discover=checked_discover,
+            case_command=checked_case_command,
+            cases=static_cases,
             cwd=cwd,
             env=_validate_env(f"{label}.env", item.get("env", {})),
             after=after,
@@ -277,11 +390,14 @@ def _validate_checks(worktree_root: Path, test_name: str, default_cwd: Path,
             completion=completion,
             on_failure=on_failure,
             produces=produces,
+            timeout_seconds=timeout,
+            invalidates=invalidates,
         ))
 
     names = {check.name for check in checks}
+    by_name = {check.name: check for check in checks}
     for check in checks:
-        missing = (set(check.after) | set(check.requires)) - names
+        missing = (set(check.after) | set(check.requires) | set(check.invalidates)) - names
         if missing:
             raise ConfigError(
                 f"[test.{test_name}.check.{check.name}] unknown dependencies: "
@@ -289,8 +405,33 @@ def _validate_checks(worktree_root: Path, test_name: str, default_cwd: Path,
         if check.name in check.after or check.name in check.requires:
             raise ConfigError(
                 f"[test.{test_name}.check.{check.name}] cannot depend on itself")
-    _validate_acyclic(test_name, checks)
-    return tuple(checks)
+        if check.name in check.invalidates:
+            raise ConfigError(
+                f"[test.{test_name}.check.{check.name}] cannot invalidate itself")
+        for dependency in (*check.after, *check.requires):
+            if _TIER_RANK[by_name[dependency].tier] > _TIER_RANK[check.tier]:
+                raise ConfigError(
+                    f"[test.{test_name}.check.{check.name}] tier inversion: "
+                    f"dependency {dependency!r} belongs to a higher tier")
+
+    compiled: list[CheckSpec] = list(checks)
+    indexes = {check.name: index for index, check in enumerate(compiled)}
+    from dataclasses import replace
+    for preflight in checks:
+        for target_name in preflight.invalidates:
+            target = compiled[indexes[target_name]]
+            if _TIER_RANK[preflight.tier] > _TIER_RANK[target.tier]:
+                raise ConfigError(
+                    f"[test.{test_name}.check.{preflight.name}] tier inversion: "
+                    f"cannot invalidate lower-tier check {target_name!r}")
+            if preflight.name in target.after or preflight.name in target.requires:
+                raise ConfigError(
+                    f"[test.{test_name}] duplicate dependency edge from "
+                    f"{preflight.name!r} to {target_name!r}")
+            compiled[indexes[target_name]] = replace(
+                target, requires=(*target.requires, preflight.name))
+    _validate_acyclic(test_name, compiled)
+    return tuple(compiled)
 
 
 def _validate_acyclic(test_name: str, checks: list[CheckSpec]) -> None:

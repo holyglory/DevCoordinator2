@@ -38,6 +38,9 @@ TOOLS = [
                 "checks": {"type": "array", "items": {"type": "string"},
                            "description": "Diagnostic check selection; omitted means "
                                           "the complete graph"},
+                "tier": {"type": "string",
+                         "enum": ["development", "pre-merge", "release"],
+                         "default": "release"},
             },
             "required": ["path"],
         },
@@ -92,7 +95,24 @@ TOOLS = [
     },
     {
         "name": "test_list",
-        "description": "Current governed test run for every registered worktree.",
+        "description": "Current or most recent governed run per worktree.",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "test_capacity_show",
+        "description": "Show learned, effective, active, waiting, and paused test capacity.",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "test_capacity_set",
+        "description": "Set the administrator maximum parallel test-leaf count.",
+        "inputSchema": {"type": "object", "properties": {
+            "cap": {"type": "integer", "minimum": 1, "maximum": 65535}},
+            "required": ["cap"]},
+    },
+    {
+        "name": "test_capacity_clear",
+        "description": "Remove the administrator maximum and return to learned Auto capacity.",
         "inputSchema": {"type": "object", "properties": {}},
     },
     {
@@ -362,6 +382,9 @@ _TOOL_TO_COMMAND = {
     "test_output": "test.output",
     "test_stop": "test.stop",
     "test_list": "test.list",
+    "test_capacity_show": "test.capacity.get",
+    "test_capacity_set": "test.capacity.set",
+    "test_capacity_clear": "test.capacity.set",
     "repository_list": "repository.list",
     "repository_archive": "repository.archive",
     "repository_unarchive": "repository.unarchive",
@@ -443,6 +466,8 @@ class McpServer:
             self._send_error(msg_id, -32602, f"unknown tool: {name}")
             return
         arguments = params.get("arguments") or {}
+        if name == "test_capacity_clear":
+            arguments = {"cap": None}
         if name.startswith("bug_"):
             response = self._bug_tool(name, arguments)
         else:

@@ -146,8 +146,8 @@ def _read(worktree_root: Path) -> dict:
     unknown = set(data) - {"schema", "test", "deployment"}
     if unknown:
         raise ConfigError(f"unknown top-level keys: {sorted(unknown)}")
-    if data.get("schema") != 1:
-        raise ConfigError("'schema' must be 1")
+    if data.get("schema") != 2:
+        raise ConfigError("'schema' must be 2; schema 1 is no longer supported")
     return data
 
 

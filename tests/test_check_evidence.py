@@ -64,6 +64,7 @@ def test_evidence_store_keeps_only_bounded_content_free_fields(tmp_path):
         "run_id": "trun", "test": "complete", "proof": "complete",
         "status": "failed", "source_digest": "a" * 64,
         "config_digest": "b" * 64, "selection": [],
+        "requested_tier": "release", "readiness_eligible": True,
         "checks": [{
             "name": "unit", "status": "failed", "duration_seconds": 1.2,
             "exit_code": 1, "artifacts": [], "reason": "private detail",
@@ -91,18 +92,23 @@ def test_retry_plan_reuses_only_matching_declared_artifacts(tmp_path):
     artifact.write_bytes(b"build")
     receipts = artifact_receipts(repo, ["build.bin"])
     build = CheckSpec(
-        name="build", command=("true",), cwd=repo, env={}, after=(), requires=(),
-        completion="process", on_failure="continue", produces=("build.bin",))
+        name="build", tier="development", role="work", command=("true",),
+        discover=None, case_command=None, cases=(), cwd=repo, env={}, after=(),
+        requires=(), completion="process", on_failure="continue",
+        produces=("build.bin",), timeout_seconds=None, invalidates=())
     failed = CheckSpec(
-        name="unit", command=("false",), cwd=repo, env={}, after=(),
-        requires=("build",), completion="process", on_failure="continue", produces=())
+        name="unit", tier="release", role="work", command=("false",),
+        discover=None, case_command=None, cases=(), cwd=repo, env={}, after=(),
+        requires=("build",), completion="process", on_failure="continue", produces=(),
+        timeout_seconds=30, invalidates=())
     spec = GovernedTestSpec(
-        name="complete", command=None, cwd=repo, timeout_seconds=600, env={},
+        name="complete", command=None, tier=None, cwd=repo, timeout_seconds=600, env={},
         checks=(build, failed), config_digest="b" * 64)
     origin = {
         "run_id": "torigin", "test": "complete", "proof": "complete",
         "status": "failed", "selection": [], "source_digest": "a" * 64,
         "config_digest": "b" * 64,
+        "requested_tier": "release", "readiness_eligible": True,
         "checks": [
             {"name": "build", "status": "passed", "artifacts": receipts},
             {"name": "unit", "status": "failed", "artifacts": []},
@@ -112,28 +118,35 @@ def test_retry_plan_reuses_only_matching_declared_artifacts(tmp_path):
         origin, "torigin", "unit", spec, "a" * 64, (build, failed))
     plan = GovernedTestLifecycle._build_plan(
         spec, (build, failed), (build, failed), "tretry", repo, current,
-        "a" * 64, ("unit",), origin, "torigin")
+        "a" * 64, ("unit",), origin, "torigin", "release")
+    assert plan["schema"] == 2
+    assert plan["requested_tier"] == "release"
+    assert plan["readiness_eligible"] is False
+    assert plan["checks"][1]["timeout_seconds"] == 30
     assert plan["proof"] == "diagnostic"
     assert plan["reused"] == {"build": receipts}
     artifact.write_bytes(b"stale")
     stale = GovernedTestLifecycle._build_plan(
         spec, (build, failed), (build, failed), "tretry2", repo, current,
-        "a" * 64, ("unit",), origin, "torigin")
+        "a" * 64, ("unit",), origin, "torigin", "release")
     assert stale["reused"] == {}
 
 
 def test_retry_requires_a_failed_check_from_complete_matching_evidence(tmp_path):
     repo = repository(tmp_path)
     check = CheckSpec(
-        name="unit", command=("true",), cwd=repo, env={}, after=(), requires=(),
-        completion="process", on_failure="continue", produces=())
+        name="unit", tier="release", role="work", command=("true",),
+        discover=None, case_command=None, cases=(), cwd=repo, env={}, after=(),
+        requires=(), completion="process", on_failure="continue", produces=(),
+        timeout_seconds=None, invalidates=())
     spec = GovernedTestSpec(
-        name="complete", command=None, cwd=repo, timeout_seconds=600, env={},
+        name="complete", command=None, tier=None, cwd=repo, timeout_seconds=600, env={},
         checks=(check,), config_digest="b" * 64)
     origin = {
         "run_id": "torigin", "test": "complete", "proof": "diagnostic",
         "status": "failed", "selection": ["unit"], "source_digest": "a" * 64,
         "config_digest": "b" * 64,
+        "requested_tier": "release", "readiness_eligible": False,
         "checks": [{"name": "unit", "status": "failed", "artifacts": []}],
     }
     with pytest.raises(ProtocolError, match="original complete run"):
