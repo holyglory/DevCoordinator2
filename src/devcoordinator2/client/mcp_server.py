@@ -48,7 +48,7 @@ TOOLS = [
     {
         "name": "test_retry",
         "description": ("Retry one failed check after its original complete run "
-                        "finished. The result is diagnostic, never release proof."),
+                        "finished. The result is non-readiness evidence."),
         "inputSchema": {
             "type": "object",
             "properties": {
