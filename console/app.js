@@ -301,30 +301,207 @@ function lifecycleButtons(id, component, cls = 'btn btn-small', state = null) {
 }
 
 // --- Deployments ---------------------------------------------------------
-function deploymentRow(d, admin) {
-  return `<tr>
-    <td class="wrap"><a href="#/deployments/${esc(d.deployment_id)}">${esc(d.name)}@${esc(d.source)}</a><div class="muted mono">${esc(d.deployment_id)}</div></td>
-    <td>${badge(d.state)} ${d.health && d.health !== 'unknown' && d.health !== d.state ? badge(d.health) : ''} ${d.observed_only ? badge('observed') : ''}</td>
-    <td class="wrap">${d.domain ? esc(d.domain) : '<span class="muted">—</span>'}${admin ? ` <button class="btn btn-small" data-edit-domain="${esc(d.deployment_id)}" title="edit domain">✎</button>` : ''}</td>
-    <td>${d.route_port ?? '—'}</td><td>${d.current_generation ?? '—'}</td><td>${ago(d.updated_at)}</td>
-    <td class="actions">${lifecycleButtons(d.deployment_id, null, 'btn btn-small', d.state)}
-    ${!d.observed_only && admin ? `<button class="btn btn-small" data-cmd="deployment.apply" data-args='${esc(JSON.stringify({ deployment_id: d.deployment_id }))}'${d.state === 'applying' ? ' disabled aria-disabled="true" title="Apply already in progress"' : ''}>apply</button>` : ''}</td></tr>`;
+async function optionalDashboardRead(command, args = {}) {
+  try {
+    return { value: await api(command, args) };
+  } catch (error) {
+    if (error.code === 'stale') throw error;
+    return { error };
+  }
 }
+
+function rowsByRepository(result) {
+  return new Map((result?.value?.repositories || []).map((row) => [row.repository_id, row]));
+}
+
+function repositoryOperatorAllowed(deployments) {
+  if (state.who?.local || state.who?.administrator) return true;
+  const grants = state.who?.grants || {};
+  return deployments.some((deployment) => ['operator', 'administrator'].includes(grants[deployment.deployment_id]));
+}
+
+function repositoryOverallStatus(deployments) {
+  const attention = deployments.filter((deployment) => ['degraded', 'failed'].includes(deployment.state)
+    || deployment.health === 'unhealthy');
+  if (attention.length) {
+    const degraded = deployments.filter((deployment) => deployment.state === 'degraded').length;
+    const label = degraded === attention.length
+      ? `${degraded} degraded`
+      : `${attention.length} need attention`;
+    return { text: `Attention · ${label}`, kind: 'warn' };
+  }
+  const applying = deployments.filter((deployment) => deployment.state === 'applying').length;
+  if (applying) return { text: `Updating · ${applying} applying`, kind: 'warn' };
+  const stopped = deployments.filter((deployment) => deployment.state === 'stopped').length;
+  if (stopped) return { text: `Stopped · ${stopped}`, kind: '' };
+  const observed = deployments.every((deployment) => deployment.observed_only);
+  const explicitlyHealthy = deployments.every((deployment) => deployment.health === 'healthy');
+  if (observed && explicitlyHealthy) return { text: 'Healthy · observed', kind: 'ok' };
+  if (deployments.every((deployment) => deployment.state === 'running')) {
+    return { text: observed ? 'Running · observed' : 'Running', kind: 'ok' };
+  }
+  return { text: 'Status unavailable', kind: '' };
+}
+
+function dashboardLink(label, href, repositoryName) {
+  if (!href) return '';
+  return `<a class="deployment-summary-link" href="${esc(href)}" aria-label="${esc(`${label} for ${repositoryName}`)}"><span>${esc(label)}</span>${planIcon('arrow-right')}</a>`;
+}
+
+function deploymentSummaryItem({ label, value, note = '', kind = '', href = '', link, repositoryName }) {
+  return `<div class="deployment-summary-item" data-summary="${esc(label.toLowerCase().replaceAll(' ', '-'))}">
+    <span class="deployment-summary-label">${esc(label)}</span>
+    <strong class="deployment-summary-value ${esc(kind)}">${esc(value)}</strong>
+    ${note ? `<small>${esc(note)}</small>` : ''}
+    ${dashboardLink(link, href, repositoryName)}
+  </div>`;
+}
+
+function deploymentRecord(deployment, admin) {
+  const health = deployment.health && deployment.health !== 'unknown'
+    && deployment.health !== deployment.state ? badge(deployment.health) : '';
+  const domain = deployment.domain ? esc(deployment.domain) : '<span class="muted">—</span>';
+  const stateKind = ['degraded', 'failed'].includes(deployment.state)
+    || deployment.health === 'unhealthy' ? 'attention' : deployment.state === 'applying' ? 'applying' : 'normal';
+  return `<article class="deployment-record ${stateKind}" data-deployment-id="${esc(deployment.deployment_id)}">
+    <div class="deployment-record-identity">
+      <a href="#/deployments/${esc(deployment.deployment_id)}"><strong>${esc(deployment.name)}@${esc(deployment.source)}</strong></a>
+      <span class="muted mono">${esc(deployment.deployment_id)}</span>
+    </div>
+    <div class="deployment-record-status" aria-label="Deployment status">${badge(deployment.state)} ${health} ${deployment.observed_only ? badge('observed') : ''}</div>
+    <dl class="deployment-record-facts deployment-record-endpoint">
+      <div><dt>Domain</dt><dd><span class="deployment-domain">${domain}</span>${admin ? ` <button class="btn btn-small deployment-domain-edit" data-edit-domain="${esc(deployment.deployment_id)}" aria-label="Edit domain for ${esc(deployment.name)}@${esc(deployment.source)}">edit</button>` : ''}</dd></div>
+      <div><dt>Port</dt><dd>${deployment.route_port ?? '—'}</dd></div>
+    </dl>
+    <dl class="deployment-record-facts deployment-record-runtime">
+      <div><dt>Generation</dt><dd>${deployment.current_generation ?? '—'}</dd></div>
+      <div><dt>Updated</dt><dd>${ago(deployment.updated_at)}</dd></div>
+    </dl>
+    <div class="deployment-record-actions"><span>Actions</span><div class="actions">${lifecycleButtons(deployment.deployment_id, null, 'btn btn-small', deployment.state)}
+      ${!deployment.observed_only && admin ? `<button class="btn btn-small" data-cmd="deployment.apply" data-args='${esc(JSON.stringify({ deployment_id: deployment.deployment_id }))}'${deployment.state === 'applying' ? ' disabled aria-disabled="true" title="Apply already in progress"' : ''}>apply</button>` : ''}</div></div>
+  </article>`;
+}
+
+function repositoryDashboardSection(group, sources, decisions, admin, index) {
+  const { repositoryId, repositoryName, deployments } = group;
+  const plan = sources.plan.get(repositoryId);
+  const progress = sources.progress.get(repositoryId);
+  const usage = sources.usage.get(repositoryId);
+  const tests = (sources.tests.value?.runs || []).filter((run) => run.repository_id === repositoryId);
+  const health = sources.health.get(repositoryId);
+  const decision = decisions.get(repositoryId)?.value?.decisions?.at(-1);
+  const overall = repositoryOverallStatus(deployments);
+  const canOperate = repositoryOperatorAllowed(deployments);
+  const canReadTests = state.who?.local || state.who?.administrator;
+
+  let planValue = 'Not recorded';
+  if (plan?.current_release) planValue = `${plan.current_release.name} · ${plan.open_tasks} open`;
+  else if (plan?.open_tasks) planValue = `${plan.open_tasks} open in backlog`;
+  else if (plan) planValue = 'No open plan work';
+  else if (sources.plan.error?.code === 'permission_denied') planValue = 'Access required';
+  else if (sources.plan.error) planValue = 'Plan unavailable';
+
+  let progressValue = 'No measured progress';
+  if (!canOperate) progressValue = 'Operator access required';
+  else if (progress?.planned_lines_total) {
+    progressValue = `${Math.round(progress.planned_lines_done / progress.planned_lines_total * 100)}% · ${Number(progress.planned_lines_done).toLocaleString('en-US')} of ${Number(progress.planned_lines_total).toLocaleString('en-US')} lines`;
+  } else if (sources.progress.error) progressValue = 'Progress unavailable';
+
+  let usageValue = 'No measured usage'; let usageNote = '';
+  if (!canOperate) usageValue = 'Operator access required';
+  else if (usage?.total_tokens != null) {
+    usageValue = `${compactNumber(usage.total_tokens)} tokens · ${Number(usage.model_requests || 0).toLocaleString('en-US')} requests`;
+    if (usage.coverage) usageNote = coverageText(usage.coverage, true);
+  } else if (usage?.coverage) usageValue = coverageText(usage.coverage, true);
+  else if (sources.usage.error) usageValue = 'Usage unavailable';
+
+  let testValue = 'No current run'; let testKind = '';
+  if (!canReadTests) testValue = 'Administrator access required';
+  else if (sources.tests.error) testValue = 'Tests unavailable';
+  else if (tests.length) {
+    const test = tests.find((run) => run.status === 'running')
+      || tests.find((run) => ['failed', 'timed-out', 'interrupted'].includes(run.status)) || tests[0];
+    testValue = `${test.test} · ${test.status}`;
+    testKind = test.status === 'running' || test.status === 'passed' ? 'ok'
+      : ['failed', 'timed-out'].includes(test.status) ? 'bad' : 'warn';
+  }
+
+  let healthValue = 'No health record'; let healthKind = '';
+  if (sources.healthResult.error) healthValue = 'Health unavailable';
+  else if (health) {
+    const healthName = health.health === 'healthy' && deployments.length === 1
+      ? 'Deployment healthy'
+      : health.health && health.health !== 'none' ? healthLabel(health.health, {}) : 'No incidents recorded';
+    healthValue = `${healthName}${health.health === 'healthy' || health.cpu_percent == null ? '' : ` · CPU ${pct(health.cpu_percent)}`}`;
+    healthKind = health.health === 'unhealthy' ? 'bad' : health.health === 'healthy' ? 'ok' : '';
+  }
+
+  let decisionValue = 'No history'; let decisionNote = '';
+  const decisionResult = decisions.get(repositoryId);
+  if (decision) { decisionValue = decision.title; decisionNote = ago(decision.created_at); }
+  else if (decisionResult?.error?.code === 'permission_denied') decisionValue = 'Access required';
+  else if (decisionResult?.error && decisionResult.error.code !== 'repository_not_found') decisionValue = 'Decisions unavailable';
+
+  const planHref = repositoryId ? `#/plan/${repositoryId}` : '';
+  const progressHref = repositoryId && canOperate ? `#/progress/${repositoryId}` : '';
+  const usageHref = repositoryId && canOperate ? `#/usage/${repositoryId}` : '';
+  const decisionsHref = repositoryId ? `#/decisions/${repositoryId}` : '';
+  const summary = [
+    deploymentSummaryItem({ label: 'Plan', value: planValue, href: planHref, link: 'Open Plan', repositoryName }),
+    deploymentSummaryItem({ label: 'Progress', value: progressValue, href: progressHref, link: 'Open Progress', repositoryName }),
+    deploymentSummaryItem({ label: 'Usage · 24h', value: usageValue, note: usageNote, href: usageHref, link: 'Open Codex Usage', repositoryName }),
+    deploymentSummaryItem({ label: 'Tests', value: testValue, kind: testKind, href: canReadTests ? '#/tests' : '', link: `Open Tests (${repositoryName})`, repositoryName }),
+    deploymentSummaryItem({ label: 'Health', value: healthValue, kind: healthKind, href: '#/health', link: `Open Health (${repositoryName})`, repositoryName }),
+    deploymentSummaryItem({ label: 'Latest decision', value: decisionValue, note: decisionNote, href: decisionsHref, link: `Open Decisions (${repositoryName})`, repositoryName }),
+  ].join('');
+  const titleId = `deployment-repository-${index}`;
+  const count = deployments.length;
+  return `<section class="deployment-repository" data-repository-id="${esc(repositoryId)}" aria-labelledby="${titleId}">
+    <header class="deployment-repository-head">
+      <h2 id="${titleId}">${esc(repositoryName)}</h2>
+      ${repositoryId ? `<span class="muted mono">${esc(repositoryId)}</span>` : ''}
+      <span class="deployment-repository-count">${count} ${count === 1 ? 'deployment' : 'deployments'}</span>
+      <strong class="deployment-repository-status ${overall.kind}">${esc(overall.text)}</strong>
+    </header>
+    <div class="deployment-repository-summary" aria-label="${esc(`${repositoryName} repository summary`)}">${summary}</div>
+    <div class="deployment-records">${deployments.map((deployment) => deploymentRecord(deployment, admin)).join('')}</div>
+  </section>`;
+}
+
 const viewDeployments = guard(async () => {
-  main.innerHTML = `${pageHeading('Deployments', '#/deployments')}${skeleton()}`;
-  const { deployments, declared } = await api('deployment.list', {});
+  main.innerHTML = `<section class="deployments-dashboard">${pageHeading('Deployments', '#/deployments')}${skeleton(8)}</section>`;
+  const [deploymentResult, planResult, progressResult, usageResult, testsResult, healthResult] = await Promise.all([
+    api('deployment.list', {}),
+    optionalDashboardRead('plan.overview', {}),
+    optionalDashboardRead('progress.repositories', {}),
+    optionalDashboardRead('usage.repositories', { range: '24h' }),
+    optionalDashboardRead('test.list', {}),
+    optionalDashboardRead('health.repositories', {}),
+  ]);
+  const { deployments } = deploymentResult;
   if (!deployments.length) { main.innerHTML = `${pageHeading('Deployments', '#/deployments')}${stateBlock('empty', 'No deployments have been applied yet.')}`; return; }
   const admin = state.who?.administrator;
   const groups = new Map();
   for (const d of deployments) {
-    const key = d.repository_name || d.repository_id || 'unattributed';
-    if (!groups.has(key)) groups.set(key, []);
-    groups.get(key).push(d);
+    const key = d.repository_id || `unattributed:${d.deployment_id}`;
+    if (!groups.has(key)) groups.set(key, {
+      repositoryId: d.repository_id || '', repositoryName: d.repository_name || 'Unattributed', deployments: [],
+    });
+    groups.get(key).deployments.push(d);
   }
-  const body = [...groups.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([repo, ds]) =>
-    `<tr class="grouphead"><td colspan="7">${esc(repo)} <span class="muted mono">${esc(ds[0].repository_id || '')}</span></td></tr>${ds.map((d) => deploymentRow(d, admin)).join('')}`).join('');
-  main.innerHTML = `${pageHeading('Deployments', '#/deployments')}<div class="tablewrap"><table><thead><tr><th>Deployment</th><th>State</th><th>Domain</th><th>Port</th><th>Generation</th><th>Updated</th><th>Actions</th></tr></thead><tbody>${body}</tbody></table></div>
-    ${declared?.length ? `<h2>Declared, not applied</h2><ul>${declared.map((x) => `<li class="mono">${esc(x.name)}@${esc(x.source)}</li>`).join('')}</ul>` : ''}`;
+  const orderedGroups = [...groups.values()].sort((left, right) => left.repositoryName.localeCompare(right.repositoryName));
+  const decisionEntries = await Promise.all(orderedGroups.map(async (group) => [group.repositoryId,
+    group.repositoryId ? await optionalDashboardRead('decision.tail', { repository_id: group.repositoryId, n: 1 }) : { value: null }]));
+  const sources = {
+    plan: rowsByRepository(planResult),
+    progress: rowsByRepository(progressResult),
+    usage: rowsByRepository(usageResult),
+    tests: testsResult,
+    health: rowsByRepository(healthResult),
+    healthResult,
+  };
+  const decisions = new Map(decisionEntries);
+  main.innerHTML = `<section class="deployments-dashboard">${pageHeading('Deployments', '#/deployments')}<div class="deployment-repositories">${orderedGroups.map((group, index) => repositoryDashboardSection(group, sources, decisions, admin, index)).join('')}</div></section>`;
   bind(main);
   bindDomainButtons(main, deployments);
 });
@@ -2002,6 +2179,7 @@ async function render() {
   main.classList.toggle('usage-page', view === 'usage' && !!arg);
   main.classList.toggle('progress-page', view === 'progress' && !!arg);
   main.classList.toggle('health-page', view === 'health');
+  main.classList.toggle('deployments-page', view === 'deployments' && !arg);
   document.body.classList.toggle('plan-shell', view === 'plan' && !!arg);
   document.querySelectorAll('#nav a').forEach((a) => a.classList.toggle('active', a.dataset.view === view));
   setBanner('');

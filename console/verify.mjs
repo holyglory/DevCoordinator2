@@ -244,11 +244,11 @@ const fixtures = (scenario) => {
     'deployment.logs': { component: 'api', tail: 'line 1\nline 2 ' + 'long '.repeat(60) + '\nline 3', truncated_before_tail: true, log_path: '/state/logs/api.log' },
     'health.history': { subject_kind: 'component', subject_id: `${DEP}/api`, metric: 'cpu_percent', minutes: 60, points: scenario.empty ? [] : points, truncated: false },
     'test.list': { runs: scenario.empty ? [] : [
-      { run_id: 't20260101T000000Z-abc123', test: 'unit', status: 'running', started_at: new Date().toISOString(), finished_at: null, duration_seconds: null, exit_code: null, stdout_bytes_observed: 123456789, stderr_bytes_observed: 0, stdout_truncated: true, stderr_truncated: false, display_name: 'repo-one', worktree_path: '/srv/repos/repo-one', repository_id: 'r1', worktree_id: 'w1', summary_path: '/srv/repos/repo-one/.devcoordinator/test/current/summary.json' },
+      { run_id: 't20260101T000000Z-abc123', test: 'unit', status: 'running', started_at: new Date().toISOString(), finished_at: null, duration_seconds: null, exit_code: null, stdout_bytes_observed: 123456789, stderr_bytes_observed: 0, stdout_truncated: true, stderr_truncated: false, display_name: 'repo-one', worktree_path: '/srv/repos/repo-one', repository_id: REPO, worktree_id: 'w1', summary_path: '/srv/repos/repo-one/.devcoordinator/test/current/summary.json' },
       { run_id: 't20260101T000100Z-def456', test: 'integration-with-a-long-name', status: 'failed', started_at: new Date(Date.now() - 3600000).toISOString(), finished_at: new Date().toISOString(), duration_seconds: 3599.123, exit_code: 1, stdout_bytes_observed: 10, stderr_bytes_observed: 4194304, stdout_truncated: false, stderr_truncated: true, display_name: LONG, worktree_path: `/srv/repos/${LONG}`, repository_id: 'r2', worktree_id: 'w2', summary_path: '/x' }] },
     'test.output': { run_id: 't1', stream: 'stdout', tail: 'ok\n'.repeat(5), tail_bytes: 15, truncated_before_tail: true, log_path: '/srv/repos/repo-one/.devcoordinator/test/current/stdout.log' },
     'health.summary': { host: { cpu_percent: 93.4, memory_total: 264122252 * 1024, memory_used: 108579328 * 1024, memory_available: 155542924 * 1024, swap_total: 0, swap_used: 0, load_1: 8.32, load_5: 8.39, load_15: 7.69, fs_size: 2113513742336, fs_free: 148698841088, fs_used: 1964814901248, ncpu: 32, reconciliation: { managed_cpu_percent: 40.1, daemon_cpu_percent: 0.3, other_cpu_percent: 53.0, managed_memory: 50e9, daemon_memory: 120e6, other_memory: 60e9 } }, storage: { fs_used: 1964814901248, managed_repositories: 4e11, devcoordinator_state: 5e7, docker_shared: 3e10, docker_images: 2.7e10, docker_build_cache: 2.8e9, docker_shared_volumes: 1e8, other: 1.5e12 }, unhealthy_deployments: scenario.empty ? [] : [{ ...degraded, reasons: [{ component: 'worker', state: 'failed', detail: 'exited 1: boom' }, { component: 'api', state: 'stopped', detail: null }] }, { deployment_id: OBS, name: 'existing-compose-stack', source: 'observed', state: 'running', health: 'unhealthy', repository_name: 'legacy-repo', observed_only: true, reasons: [{ component: 'app', state: 'running', detail: 'container healthcheck failing (Up 3 days (unhealthy))' }] }], active_tests: scenario.empty ? [] : ['unit'], container_counts: { 'managed-test': 1, 'managed-preview': 0, 'managed-permanent': 3, 'orphaned-managed': 1, unmanaged: 43 }, alerts: scenario.empty ? [] : [{ alert_key: 'host/cpu', kind: 'host_cpu', severity: 'warning', message: 'host CPU 93% sustained', opened_at: new Date().toISOString() }, { alert_key: `component/${DEP}/worker/unhealthy`, kind: 'component_unhealthy', severity: 'critical', message: `component ${DEP}/worker is failed`, opened_at: new Date().toISOString() }], sampling: { retention_days: 30 } },
-    'health.repositories': { repositories: scenario.empty ? [] : [{ repository_id: 'r0123456789abcdef', display_name: 'repo-one', root_path: '/srv/repos/repo-one', cpu_percent: 40.1, memory_bytes: 5e10, storage_bytes: 4e11, storage: {}, health: 'unhealthy', deployments: [running, degraded, observed], trend_cpu: [1, 5, 3, 8, 2, 9, 4, 7, 3, 6, 2, 5], trend_memory: [1, 1, 2, 2, 3, 3, 3, 4, 4, 4, 5, 5] }, { repository_id: 'r2', display_name: LONG, root_path: `/srv/repos/${LONG}`, cpu_percent: 0, memory_bytes: 0, storage_bytes: 1234567890123, storage: {}, health: 'none', deployments: [], trend_cpu: [], trend_memory: [] }], devcoordinator: { cpu_percent: 0.3, memory_bytes: 120e6, storage_bytes: 5e7 }, shared_unattributed: { cpu_percent: 53, memory_bytes: 60e9, storage: { docker_shared: 3e10, docker_images: 2.7e10, docker_build_cache: 2.8e9, docker_shared_volumes: 1e8, other: 1.5e12 } }, host: {} },
+    'health.repositories': { repositories: scenario.empty ? [] : [{ repository_id: 'r9999999999999999', display_name: 'legacy-repo', root_path: '/srv/repos/legacy-repo', cpu_percent: 2.5, memory_bytes: 123456789, storage_bytes: 45678, storage: {}, health: 'healthy', deployments: [observed], trend_cpu: [2, 2, 3, 2, 2, 3, 2, 2, 3, 2, 2, 3], trend_memory: [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1] }, { repository_id: 'r0123456789abcdef', display_name: 'repo-one', root_path: '/srv/repos/repo-one', cpu_percent: 40.1, memory_bytes: 5e10, storage_bytes: 4e11, storage: {}, health: 'unhealthy', deployments: [running, degraded], trend_cpu: [1, 5, 3, 8, 2, 9, 4, 7, 3, 6, 2, 5], trend_memory: [1, 1, 2, 2, 3, 3, 3, 4, 4, 4, 5, 5] }, { repository_id: 'r2', display_name: LONG, root_path: `/srv/repos/${LONG}`, cpu_percent: 0, memory_bytes: 0, storage_bytes: 1234567890123, storage: {}, health: 'none', deployments: [], trend_cpu: [], trend_memory: [] }], devcoordinator: { cpu_percent: 0.3, memory_bytes: 120e6, storage_bytes: 5e7 }, shared_unattributed: { cpu_percent: 53, memory_bytes: 60e9, storage: { docker_shared: 3e10, docker_images: 2.7e10, docker_build_cache: 2.8e9, docker_shared_volumes: 1e8, other: 1.5e12 } }, host: {} },
     'health.containers': { containers: scenario.empty ? [] : [
       { id: 'a'.repeat(64), name: 'devcoordinator2-deploy-x-db', image: 'postgres:16-alpine', state: 'running', status: 'Up 3 days', created: '2026-08-20 10:00:00 +0000 UTC', repository_id: 'r0123456789abcdef', deployment_id: DEP, component: 'db', run_id: null, caller_uid: 1000, client: 'claude', ttl_seconds: null, data: 'persistent', classification: 'managed-permanent', cpu_percent: 1.2, memory_bytes: 2677821440, pids: 7, container_layer_bytes: 0 },
       { id: 'b'.repeat(64), name: 'legacy-thing-1', image: 'some/image:latest', state: 'running', status: 'Up 6 weeks', created: '2026-07-01', repository_id: null, deployment_id: null, component: null, run_id: null, caller_uid: null, client: null, ttl_seconds: null, data: null, classification: 'unmanaged', cpu_percent: 12.5, memory_bytes: 9e9, pids: 100, container_layer_bytes: null },
@@ -297,7 +297,7 @@ const fixtures = (scenario) => {
       decisions: { unsummarized_count: scenario.empty ? 0 : 4, summary_due: false },
     },
     'plan.overview-list': { repositories: scenario.empty ? [] : [
-      { repository_id: REPO, display_name: 'repo-one', open_tasks: 4, loc_done: 550, loc_total: 1800, current_release: { name: 'Release 1', kind: 'release', status: 'planned' }, preview_requested: false, elaboration_request_count: 1 },
+      { repository_id: REPO, display_name: 'repo-one', open_tasks: 5, loc_done: 550, loc_total: 1800, current_release: { name: 'Release 1', kind: 'release', status: 'planned' }, preview_requested: false, elaboration_request_count: 1 },
       { repository_id: 'r2', display_name: LONG, open_tasks: 0, loc_done: 0, loc_total: 0, current_release: null, preview_requested: true, elaboration_request_count: 0 }] },
     'decision.tail': {
       repository_id: REPO, display_name: 'repo-one',
@@ -442,6 +442,9 @@ async function startFakeDaemon(dir) {
         result.range = req.args.range || '24h';
         return reply({ ok: true, result });
       }
+      if (cmd === 'decision.tail' && req.args.repository_id === 'r9999999999999999') {
+        return reply({ ok: true, result: { repository_id: req.args.repository_id, display_name: 'legacy-repo', summary: null, decisions: [], has_more: false, unsummarized_count: 0, summary_due: false } });
+      }
       const data = fixtures({ ...scenario, stopped: mutable.stopped, serviceStopped: mutable.serviceStopped })[cmd];
       if (data === undefined) return reply({ ok: false, error: { code: 'command_unknown', message: cmd, detail: '' } });
       return reply({ ok: true, result: data });
@@ -555,7 +558,10 @@ async function main() {
             await daemon.waitForReceivedAfter(callsBeforeNavigation + 1);
           }
           await page.waitForFunction(() => document.querySelector('.skeleton')
-            || /Loading/.test(document.body.innerText));
+            || /Loading/.test(document.body.innerText)).catch(async (error) => {
+            const current = await page.evaluate(() => ({ hash: location.hash, text: document.body.innerText.slice(0, 400), html: document.querySelector('main')?.innerHTML.slice(0, 500) }));
+            throw new Error(`${label}: loading surface did not render: ${JSON.stringify(current)}`, { cause: error });
+          });
           await waitForRenderFrame(page);
         }
         else {
@@ -643,15 +649,52 @@ async function main() {
         if (scenarioName === 'denied' && view.startsWith('#/usage')) check(`${label}: usage requires operator access`, /Permission denied/.test(metrics.notice), metrics.notice.slice(0, 120));
         if (scenarioName === 'denied' && view.startsWith('#/progress')) check(`${label}: progress requires operator access`, /Permission denied/.test(metrics.notice), metrics.notice.slice(0, 120));
         if (scenarioName === 'denied' && view === '#/health') check(`${label}: host health denied but repositories visible`, /administrator-only/.test(metrics.text) && /repo-one/.test(metrics.text));
+        if (scenarioName === 'denied' && view === '#/deployments') {
+          check(`${label}: repository dashboard states restricted evidence without dead links`,
+            /Operator access required/.test(metrics.text) && /Administrator access required/.test(metrics.text)
+            && await page.locator('.deployment-repository a[href^="#/progress/"], .deployment-repository a[href^="#/usage/"], .deployment-repository a[href="#/tests"]').count() === 0);
+        }
         if (scenarioName === 'applying' && (view === '#/deployments' || view === `#/deployments/${DEP}`)) {
           const surface = view === '#/deployments'
-            ? page.locator(`a[href="#/deployments/${DEP}"]`).locator('xpath=ancestor::tr')
+            ? page.locator(`a[href="#/deployments/${DEP}"]`).locator('xpath=ancestor::article[contains(@class,"deployment-record")]')
             : page.locator('main');
           const enabledMutation = await surface.locator('[data-cmd^="deployment."]:not(:disabled)').count();
           check(`${label}: applying deployment has no enabled conflicting mutation`, enabledMutation === 0, `${enabledMutation} enabled`);
           if (view === `#/deployments/${DEP}`) check(`${label}: applying journey explains lost replies`, /Closing this page does not cancel/.test(metrics.text));
         }
         if (scenarioName === 'populated' && ['#/deployments', '#/tests', '#/health'].includes(view)) check(`${label}: long names rendered`, /going-and-going/.test(metrics.text), metrics.text.slice(0, 80));
+        if (scenarioName === 'populated' && view === '#/deployments') {
+          const legacy = page.locator('[data-repository-id="r9999999999999999"]');
+          const repo = page.locator(`[data-repository-id="${REPO}"]`);
+          const legacyText = await legacy.innerText();
+          const repoText = await repo.innerText();
+          check(`${label}: every deployment is attributed to exactly one repository summary`,
+            await page.locator('.deployment-repository').count() === 2
+            && await legacy.locator(`[data-deployment-id="${OBS}"]`).count() === 1
+            && await legacy.locator(`[data-deployment-id="${DEP}"], [data-deployment-id="d1111111111111111"]`).count() === 0
+            && await repo.locator(`[data-deployment-id="${DEP}"], [data-deployment-id="d1111111111111111"]`).count() === 2
+            && await repo.locator(`[data-deployment-id="${OBS}"]`).count() === 0,
+            `${legacyText.slice(0, 120)} | ${repoText.slice(0, 120)}`);
+          check(`${label}: repository evidence never crosses project boundaries`,
+            /Not recorded/.test(legacyText) && /No measured progress/.test(legacyText)
+            && /No measured usage/.test(legacyText) && /No current run/.test(legacyText)
+            && /Deployment healthy/.test(legacyText) && /No history/.test(legacyText)
+            && !/Release 1|6\.4M|Buttons are green/.test(legacyText)
+            && /Release 1 · 5 open/.test(repoText) && /62% · 1,558 of 2,500 lines/.test(repoText)
+            && /6\.4M tokens · 104 requests/.test(repoText) && /unit · running/.test(repoText)
+            && /Unhealthy · CPU 40\.1%/.test(repoText) && /Buttons are green now/.test(repoText),
+            `${legacyText.slice(0, 240)} | ${repoText.slice(0, 240)}`);
+          check(`${label}: each repository exposes six truthful continuation summaries`,
+            await legacy.locator('.deployment-summary-item').count() === 6
+            && await repo.locator('.deployment-summary-item').count() === 6
+            && await repo.locator(`a[href="#/plan/${REPO}"]`).count() === 1
+            && await repo.locator(`a[href="#/progress/${REPO}"]`).count() === 1
+            && await repo.locator(`a[href="#/usage/${REPO}"]`).count() === 1
+            && await repo.locator(`a[href="#/decisions/${REPO}"]`).count() === 1
+            && await repo.locator('a[href="#/tests"]').count() === 1
+            && await repo.locator('a[href="#/health"]').count() === 1);
+          check(`${label}: removed declared-only area stays absent`, !/Declared, not applied|tool@worktree/.test(metrics.text));
+        }
         if (scenarioName === 'populated' && ['#/tests', '#/health'].includes(view)) check(`${label}: large numbers humanized`, /MiB|GiB|TiB/.test(metrics.text), metrics.text.slice(0, 80));
         if (scenarioName === 'populated' && view === '#/health') {
           check(`${label}: host capacity and operational status lead as one aligned summary`,
@@ -708,7 +751,10 @@ async function main() {
             && /Current task estimates/.test(metrics.text)
             && !/Git lines completed/.test(metrics.text));
         }
-        if (scenario.delayMs) daemon.releaseDelayed();
+        if (scenario.delayMs) {
+          await page.goto('about:blank');
+          daemon.releaseDelayed();
+        }
       }
       await context.close();
     }
@@ -777,11 +823,27 @@ async function main() {
   check('interaction: domain pop-up calls deployment.set_domain with the new label',
     domainCall && domainCall.args.deployment_id === DEP && domainCall.args.domain === 'renamed-app');
   await page.goto(`http://${HOST}:${port}/#/deployments`);
-  await page.waitForSelector('tr.grouphead');
-  const groupHeads = await page.locator('tr.grouphead').allInnerTexts();
+  await page.waitForSelector('.deployment-repository-head');
+  const groupHeads = await page.locator('.deployment-repository-head').allInnerTexts();
   check('deployments list groups rows under repository headers',
     groupHeads.length === 2 && groupHeads.some((t) => /repo-one/.test(t)) && groupHeads.some((t) => /legacy-repo/.test(t)),
     groupHeads.join(' | '));
+  const repositorySummaryJourneys = [
+    [`#/plan/${REPO}`, '#/plan'],
+    [`#/progress/${REPO}`, '#/progress'],
+    [`#/usage/${REPO}`, '#/usage'],
+    [`#/decisions/${REPO}`, '#/decisions'],
+    ['#/tests', '#/tests'],
+    ['#/health', '#/health'],
+  ];
+  for (const [href, destination] of repositorySummaryJourneys) {
+    await page.locator(`[data-repository-id="${REPO}"] a[href="${href}"]`).click();
+    await page.waitForURL((url) => url.hash === href);
+    await page.waitForSelector(`main h1 a[href="${destination}"]`);
+    check(`interaction: repository summary continues to ${href}`, true);
+    await page.goto(`http://${HOST}:${port}/#/deployments`);
+    await page.waitForSelector(`[data-repository-id="${REPO}"]`);
+  }
   daemon.calls.length = 0;
   await page.click(`[data-edit-domain="${OBS}"]`);
   await page.waitForSelector('dialog#domain-dialog[open]');
@@ -789,10 +851,10 @@ async function main() {
   await page.click('#domain-form button[type=submit]');
   await waitForSettledCall(daemon, page, 'deployment.set_domain');
   const listDomainCall = daemon.calls.find((c) => c.command === 'deployment.set_domain');
-  check('interaction: list-row ✎ opens the pop-up and edits that deployment',
+  check('interaction: list-row domain edit opens the pop-up and edits that deployment',
     listDomainCall && listDomainCall.args.deployment_id === OBS && listDomainCall.args.domain === 'from-list');
   await page.goto(`http://${HOST}:${port}/#/deployments`);
-  const observedRow = page.locator(`a[href="#/deployments/${OBS}"]`).locator('xpath=ancestor::tr');
+  const observedRow = page.locator(`a[href="#/deployments/${OBS}"]`).locator('xpath=ancestor::article[contains(@class,"deployment-record")]');
   await observedRow.waitFor();
   check('observed deployment list row offers start/stop/restart',
     await observedRow.locator('[data-cmd="deployment.restart"]').count() === 1);
@@ -1524,6 +1586,80 @@ async function main() {
   check('interaction: search calls decision.search with the typed query',
     daemon.calls.some((c) => c.command === 'decision.search' && c.args.query === 'export' && c.args.aspect === 'ui'));
   await context.close();
+
+  // Deployments dashboard: repository attribution, every responsive grid
+  // transition, and multiple small mobile widths. No summary value or action
+  // may cross into another repository or require horizontal page movement.
+  daemon.setScenario(SCENARIOS.populated);
+  const deploymentContext = await browser.newContext({ viewport: { width: 1440, height: 1024 } });
+  const { cookie: deploymentCookie } = sessions.issue({ sub: 'sub', email: 'owner@example.test' });
+  await deploymentContext.addCookies([{ name: 'dc2_session', value: deploymentCookie.split(';')[0].split('=')[1], domain: `.${BASE}`, path: '/' }]);
+  const deploymentPage = await deploymentContext.newPage();
+  const deploymentSamples = [
+    { width: 320, height: 780 },
+    { width: 390, height: 844 },
+    { width: 430, height: 900 },
+    { width: 619, height: 900 },
+    { width: 620, height: 900 },
+    { width: 621, height: 900 },
+    { width: 959, height: 960 },
+    { width: 960, height: 960 },
+    { width: 961, height: 960 },
+    { width: 834, height: 1194 },
+    { width: 1179, height: 900 },
+    { width: 1180, height: 900 },
+    { width: 1181, height: 900 },
+    { width: 1239, height: 900 },
+    { width: 1240, height: 900 },
+    { width: 1241, height: 900 },
+    { width: 1440, height: 1024 },
+  ];
+  for (const viewport of deploymentSamples) {
+    await deploymentPage.setViewportSize(viewport);
+    await deploymentPage.goto(`http://${HOST}:${port}/#/deployments`);
+    await deploymentPage.waitForSelector('.deployment-repository-summary');
+    await deploymentPage.screenshot({ path: path.join(OUT, `deployments-${viewport.width}.png`), fullPage: true });
+    const layout = await deploymentPage.evaluate(() => {
+      const firstSummaryItems = [...document.querySelectorAll('.deployment-repository:first-child .deployment-summary-item')];
+      const summaryRows = new Map();
+      for (const item of firstSummaryItems) {
+        const top = Math.round(item.getBoundingClientRect().top);
+        summaryRows.set(top, (summaryRows.get(top) || 0) + 1);
+      }
+      const record = document.querySelector('.deployment-record');
+      const visibleControls = [...document.querySelectorAll('.deployment-repository a, .deployment-repository button')]
+        .filter((element) => element.offsetParent !== null)
+        .map((element) => element.getBoundingClientRect());
+      const clippedText = [...document.querySelectorAll('.deployment-repository-head, .deployment-summary-item, .deployment-record-identity, .deployment-record-facts dd')]
+        .filter((element) => element.scrollWidth > element.clientWidth + 1)
+        .map((element) => element.textContent.trim().slice(0, 60));
+      return {
+        overflow: document.documentElement.scrollWidth - innerWidth,
+        summaryColumns: Math.max(...summaryRows.values()),
+        recordColumns: getComputedStyle(record).gridTemplateColumns.split(' ').length,
+        controlsContained: visibleControls.every((rect) => rect.left >= -1 && rect.right <= innerWidth + 1),
+        clippedText,
+        repositoryCount: document.querySelectorAll('.deployment-repository').length,
+        summaryCount: document.querySelectorAll('.deployment-summary-item').length,
+        deploymentCount: document.querySelectorAll('.deployment-record').length,
+      };
+    });
+    const expectedSummaryColumns = viewport.width <= 620 ? 1 : viewport.width <= 1240 ? 3 : 6;
+    const expectedRecordColumns = viewport.width <= 620 ? 1 : viewport.width <= 960 ? 2 : viewport.width <= 1180 ? 4 : 5;
+    check(`deployments ${viewport.width}px: repository summaries use the intended responsive grid`,
+      layout.summaryColumns === expectedSummaryColumns,
+      JSON.stringify({ expected: expectedSummaryColumns, actual: layout.summaryColumns }));
+    check(`deployments ${viewport.width}px: deployment facts switch before columns become cramped`,
+      layout.recordColumns === expectedRecordColumns,
+      JSON.stringify({ expected: expectedRecordColumns, actual: layout.recordColumns }));
+    check(`deployments ${viewport.width}px: every repository, summary, and deployment remains present`,
+      layout.repositoryCount === 2 && layout.summaryCount === 12 && layout.deploymentCount === 3,
+      JSON.stringify(layout));
+    check(`deployments ${viewport.width}px: no clipping, off-canvas controls, or document overflow`,
+      layout.overflow <= 0 && layout.controlsContained && layout.clippedText.length === 0,
+      JSON.stringify(layout));
+  }
+  await deploymentContext.close();
 
   // Health layout: preserve the user-marked 856 px surface, mobile, desktop,
   // and the exact responsive transition where the repository table becomes

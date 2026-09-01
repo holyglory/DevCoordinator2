@@ -20,11 +20,22 @@ a native select.
 
 ## Destinations
 
-1. **Deployments** — collection first, grouped under repository headers
-   (display name + repository id) so `web@worktree` is always attributed
-   (state, domain, port, generation, updated); a ✎ button on every row's
-   domain opens the pop-up domain editor in place;
-   start/stop/restart for operators on every deployment —
+1. **Deployments** — a repository-by-repository operations dashboard. Every
+   repository section keeps its display name, repository id, deployment count,
+   and overall deployment condition together with six strictly attributed
+   summaries: current Plan release/open work, measured Progress, 24-hour Codex
+   Usage, current or latest Tests, repository Health, and the latest Decision.
+   Missing, restricted, and unavailable evidence remains explicit instead of
+   becoming zero or borrowing another repository's value. Plan, Progress,
+   Codex Usage, and Decisions continue to the exact repository route; Tests
+   and Health links retain the repository name while continuing to their
+   existing destinations. The repository's deployments and lifecycle controls
+   follow immediately below its summary, with complete identity, state,
+   domain, port, generation, and recency. At tablet widths the summaries become
+   a 3-by-2 grid and deployment facts use two rows; on mobile both become
+   labelled stacked layouts without document-level horizontal scrolling. An
+   **edit** button beside every administrator-visible domain opens the pop-up
+   domain editor in place; start/stop/restart remain available to operators —
    observed ones drive the exact recorded containers
    (DC2-2026-08-24-OBSERVED-LIFECYCLE) — apply for administrators on
    managed ones; detail page with components (state, health, generation,
@@ -150,6 +161,7 @@ explicit permission-denied notice instead of partial data.
 
 | Control | API call | Proof of state change |
 |---|---|---|
+| Repository dashboard continuations | `plan.overview`, `progress.repositories`, `usage.repositories`, `test.list`, `health.repositories`, and repository-scoped `decision.tail` reads; then real hash links | Every value remains inside the matching repository section. Plan, Progress, Codex Usage, and Decisions open that repository; Tests and Health open their existing destinations with the repository named in the originating link. Restricted reads show an honest access state without an enabled dead link. |
 | Deployment start/stop/restart (list, detail, component; managed and observed) | `deployment.start/stop/restart` | view re-fetches `deployment.status`; header/component badges change |
 | Independent Compose-service start/stop/restart (detail only; explicitly declared services) | `deployment.start/stop/restart {component: "stack/service"}` | service badge and aggregate header change; unrelated service and route remain |
 | Domain edit / clear (pop-up from list rows and the detail page, administrators) | `deployment.set_domain {deployment_id, domain|null, port?, public?}` | status re-read; route document republished |
@@ -221,7 +233,7 @@ data explanations, and exact non-hover values and large-scale axis-label separat
 pass additionally verifies the correct heading link on all 13 routes in every
 fixture state, custom project menus on all three repository details, the
 reported 799×964 surface, and 1240/1241 px boundary behavior. Last complete
-run: 1,409 checks, 0 failures. Current-source formal usage verification checked
+run: 1,493 checks, 0 failures. Current-source formal usage verification checked
 closed missing/complete/unavailable states plus the opened completeness hint at
 390×844, the owner-marked 858×915 surface, and 1440×900: 12/12 cells, zero
 critical findings, and all 24 final viewport/full-page images passed the
@@ -242,3 +254,13 @@ document or attribution scrolling. The current focused interaction pass has
 138 checks and zero failures; formal verification checked all 9 planned cells
 with zero critical findings, and all 18 viewport/full-page images passed the
 manual review manifest.
+
+The Deployments dashboard has an additional repository-attribution gate. Its
+fixtures deliberately give two repositories different Plan, Progress, Codex
+Usage, Test, Health, Decision, and deployment states, then assert that no value
+or deployment crosses sections. Every repository continuation and deployment
+action is invoked. The focused browser pass checks 320, 390, 430, 619/620/621,
+834, 959/960/961, 1179/1180/1181, 1239/1240/1241, and 1440 px; its current
+229 checks all pass. Formal verification checked 16 planned cells with zero
+critical findings, and all 32 initial/full-page images passed the finalized
+manual-review manifest.
