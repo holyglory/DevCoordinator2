@@ -24,6 +24,7 @@ import re
 import secrets
 import select
 import shutil
+import sqlite3
 import stat
 import subprocess
 import sys
@@ -246,6 +247,81 @@ def _wait_legacy_tests(unit_prefix: str) -> None:
             _wait_cgroup_empty(_unit_cgroup(unit))
 
 
+def _registered_test_directories(database_path: Path) -> list[Path]:
+    try:
+        connection = sqlite3.connect(
+            f"file:{database_path}?mode=ro", uri=True, timeout=5)
+        connection.execute("PRAGMA query_only=ON")
+        rows = connection.execute(
+            "SELECT worktree_path FROM worktrees ORDER BY worktree_path").fetchall()
+    except sqlite3.Error as exc:
+        raise RuntimeError(f"cannot read registered test worktrees: {exc}") from exc
+    finally:
+        if "connection" in locals():
+            connection.close()
+    return [Path(row[0]) / ".devcoordinator" / "test" / "current"
+            for row in rows]
+
+
+def _summary_status(directory: Path) -> str | None:
+    try:
+        directory_fd = os.open(
+            directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    except (FileNotFoundError, OSError):
+        return None
+    try:
+        try:
+            summary_fd = os.open(
+                "summary.json", os.O_RDONLY | os.O_NOFOLLOW, dir_fd=directory_fd)
+        except (FileNotFoundError, OSError):
+            return None
+        try:
+            details = os.fstat(summary_fd)
+            if not stat.S_ISREG(details.st_mode) or details.st_size > 262144:
+                return None
+            payload = os.read(summary_fd, 262145)
+            if len(payload) > 262144:
+                return None
+            document = json.loads(payload)
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            return None
+        finally:
+            os.close(summary_fd)
+    finally:
+        os.close(directory_fd)
+    status = document.get("status") if isinstance(document, dict) else None
+    return status if isinstance(status, str) else None
+
+
+def _wait_legacy_summaries(directories: list[Path], test_admission) -> None:
+    """Wait until the old daemon publishes each terminal atomic summary."""
+    while True:
+        running = [directory for directory in directories
+                   if _summary_status(directory) == "running"]
+        if not running:
+            return
+        watchers = []
+        try:
+            for directory in running:
+                try:
+                    watchers.append(test_admission.DirectoryEvents(directory))
+                except OSError:
+                    pass
+            # Subscribe before the second read so a fast summary replacement
+            # cannot be lost between observation and waiting.
+            if not any(_summary_status(directory) == "running" for directory in running):
+                return
+            if not watchers:
+                raise RuntimeError("cannot observe legacy test summary completion")
+            poller = select.poll()
+            for watcher in watchers:
+                poller.register(watcher.fd, select.POLLIN | select.POLLERR)
+            poller.poll()
+        finally:
+            for watcher in watchers:
+                watcher.close()
+
+
 @contextlib.contextmanager
 def drain_active_tests(*, socket_path: Path, runtime_dir: Path,
                        unit_prefix: str, daemon_running: bool):
@@ -269,6 +345,10 @@ def drain_active_tests(*, socket_path: Path, runtime_dir: Path,
             os.replace(socket_path, fence)
             fenced = True
             _wait_legacy_tests(unit_prefix)
+            if _config is not None:
+                _wait_legacy_summaries(
+                    _registered_test_directories(_config.database_path),
+                    test_admission)
         elif daemon_running:
             test_admission.wait_for_zero_activity(runtime_dir)
         yield

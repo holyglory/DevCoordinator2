@@ -4,6 +4,7 @@ import importlib.util
 import json
 import os
 import subprocess
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -329,3 +330,23 @@ def test_aborted_first_upgrade_restores_old_socket(tmp_path, monkeypatch):
             raise RuntimeError("install failed")
     assert socket_path.read_text() == "old-socket"
     assert not (runtime / "daemon.pre-drain.sock").exists()
+
+
+def test_legacy_drain_waits_for_terminal_atomic_summary(tmp_path):
+    current = tmp_path / "repo" / ".devcoordinator" / "test" / "current"
+    current.mkdir(parents=True)
+    summary = current / "summary.json"
+    summary.write_text(json.dumps({"status": "running"}))
+    completed = threading.Event()
+
+    def wait():
+        install._wait_legacy_summaries([current], test_admission)
+        completed.set()
+
+    thread = threading.Thread(target=wait)
+    thread.start()
+    replacement = current / ".summary-new"
+    replacement.write_text(json.dumps({"status": "passed"}))
+    os.replace(replacement, summary)
+    thread.join(10)
+    assert completed.is_set()
