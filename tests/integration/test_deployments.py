@@ -257,15 +257,17 @@ def test_failed_component_is_degraded_and_busy_is_immediate(world):
     # Busy: two concurrent applies — exactly one proceeds, the other gets busy now.
     _write_config(world.repo, world.caller, TOML)
     results = []
+    start_together = threading.Barrier(3)
 
     def go():
+        start_together.wait()
         results.append(_call(world, "deployment.apply",
                              {"path": str(world.repo), "name": "web@worktree"}))
 
     threads = [threading.Thread(target=go) for _ in range(2)]
     for t in threads:
         t.start()
-        time.sleep(0.3)
+    start_together.wait()
     for t in threads:
         t.join()
     codes = sorted(r.get("error", {}).get("code", "ok") for r in results)

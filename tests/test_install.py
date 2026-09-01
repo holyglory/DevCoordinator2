@@ -9,6 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from devcoordinator2.daemon import test_admission
 from devcoordinator2.ids import repository_id
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -36,6 +37,14 @@ def test_install_release_excludes_local_design_references(tmp_path, monkeypatch)
 
     assert (release / "console" / "app.js").read_text() == "console"
     assert not (release / "console" / "design-reference").exists()
+    with pytest.raises(RuntimeError, match="immutable release already exists"):
+        install.install_release("test-release")
+
+
+def test_install_release_rejects_path_escape_identifier(tmp_path, monkeypatch):
+    monkeypatch.setattr(install, "OPT", tmp_path / "opt")
+    with pytest.raises(ValueError, match="path-safe"):
+        install.install_release("../escape", activate=False)
 
 
 def test_install_skill_links_replaces_only_existing_agent_roots(tmp_path, monkeypatch):
@@ -219,3 +228,104 @@ def test_install_restart_path_activates_the_new_release(monkeypatch):
         (["systemctl", "enable", "devcoordinator2-edge.service"], True),
         (["systemctl", "restart", "devcoordinator2-edge.service"], True),
     ]
+
+
+def test_release_can_stage_without_switch_and_activate_atomically(tmp_path, monkeypatch):
+    root = tmp_path / "source"
+    (root / "console").mkdir(parents=True)
+    (root / "console" / "app.js").write_text("new")
+    opt = tmp_path / "opt"
+    monkeypatch.setattr(install, "ROOT", root)
+    monkeypatch.setattr(install, "OPT", opt)
+    monkeypatch.setattr(install, "RELEASE_ITEMS", ("console",))
+
+    staged = install.install_release("next", activate=False)
+    assert staged.exists()
+    assert not (opt / "current").exists()
+    assert install.activate_release(staged) is None
+    assert (opt / "current").resolve() == staged
+
+
+def test_activation_guard_rolls_back_on_parent_failure_and_commits_on_success(
+        tmp_path, monkeypatch):
+    opt = tmp_path / "opt"
+    old = opt / "releases" / "old"
+    new = opt / "releases" / "new"
+    old.mkdir(parents=True)
+    new.mkdir()
+    (opt / "current").symlink_to(old)
+    monkeypatch.setattr(install, "OPT", opt)
+
+    rollback_guard = install.start_activation_guard(
+        old, new, restart_services=False)
+    install.activate_release(new)
+    install.finish_activation_guard(rollback_guard, commit=False)
+    assert (opt / "current").resolve() == old
+
+    commit_guard = install.start_activation_guard(
+        old, new, restart_services=False)
+    install.activate_release(new)
+    install.finish_activation_guard(commit_guard, commit=True)
+    assert (opt / "current").resolve() == new
+
+
+def test_new_daemon_drain_uses_activity_receipt_without_fencing_socket(
+        tmp_path, monkeypatch):
+    runtime = tmp_path / "run"
+    runtime.mkdir()
+    socket_path = runtime / "daemon.sock"
+    socket_path.write_text("live")
+    admission = test_admission.TestAdmission(runtime)
+    admission.reset()
+    monkeypatch.setattr(
+        install, "_coordinator_runtime", lambda: (test_admission, None))
+
+    with install.drain_active_tests(
+            socket_path=socket_path, runtime_dir=runtime,
+            unit_prefix="tests", daemon_running=True):
+        assert socket_path.exists()
+        assert (runtime / test_admission.DRAIN_FILE).exists()
+        with pytest.raises(test_admission.TestsDraining):
+            with admission.start_guard():
+                pass
+    assert not (runtime / test_admission.DRAIN_FILE).exists()
+
+
+def test_first_upgrade_fences_old_socket_until_legacy_tests_finish(
+        tmp_path, monkeypatch):
+    runtime = tmp_path / "run"
+    runtime.mkdir()
+    socket_path = runtime / "daemon.sock"
+    socket_path.write_text("old-socket")
+    waited = []
+    monkeypatch.setattr(
+        install, "_coordinator_runtime", lambda: (test_admission, None))
+    monkeypatch.setattr(install, "_wait_legacy_tests", lambda prefix: waited.append(prefix))
+
+    with install.drain_active_tests(
+            socket_path=socket_path, runtime_dir=runtime,
+            unit_prefix="legacy-tests", daemon_running=True):
+        assert not socket_path.exists()
+        assert (runtime / "daemon.pre-drain.sock").read_text() == "old-socket"
+        socket_path.write_text("new-socket")
+    assert waited == ["legacy-tests"]
+    assert socket_path.read_text() == "new-socket"
+    assert not (runtime / "daemon.pre-drain.sock").exists()
+
+
+def test_aborted_first_upgrade_restores_old_socket(tmp_path, monkeypatch):
+    runtime = tmp_path / "run"
+    runtime.mkdir()
+    socket_path = runtime / "daemon.sock"
+    socket_path.write_text("old-socket")
+    monkeypatch.setattr(
+        install, "_coordinator_runtime", lambda: (test_admission, None))
+    monkeypatch.setattr(install, "_wait_legacy_tests", lambda _prefix: None)
+
+    with pytest.raises(RuntimeError, match="install failed"):
+        with install.drain_active_tests(
+                socket_path=socket_path, runtime_dir=runtime,
+                unit_prefix="legacy-tests", daemon_running=True):
+            raise RuntimeError("install failed")
+    assert socket_path.read_text() == "old-socket"
+    assert not (runtime / "daemon.pre-drain.sock").exists()

@@ -5,6 +5,7 @@ import threading
 import time
 from pathlib import Path
 
+import devcoordinator2.daemon.codex_usage as codex_usage_module
 from devcoordinator2.daemon.codex_usage import CodexUsage, SourceReport
 from devcoordinator2.daemon.db import Database
 from devcoordinator2.paths import CodexUsageSource, InstanceConfig
@@ -44,6 +45,12 @@ def _source_database(codex_home: Path, *, schema: int = 4) -> tuple[str, str, in
         CREATE TABLE effective_classification_events(
           operation_id TEXT, phase TEXT, activity TEXT, activity_state TEXT,
           provenance TEXT);
+        CREATE INDEX token_observations_request_idx
+          ON token_observations(model_request_id);
+        CREATE INDEX token_observations_tool_idx
+          ON token_observations(tool_invocation_id);
+        CREATE INDEX coverage_events_operation_idx
+          ON coverage_events(operation_id);
     """)
     conn.execute("INSERT INTO _sqlx_migrations VALUES(?)", (schema,))
     conn.execute("INSERT INTO taxonomy_versions VALUES(1)")
@@ -250,6 +257,137 @@ def test_collection_reports_mapping_pending_without_blocking_probe(tmp_path):
     coverage = result["repositories"][0]["coverage"]
     assert coverage["state"] == "unavailable"
     assert coverage["unavailable_reasons"] == {"mapping_pending": 1}
+    db.close()
+
+
+def test_collection_reads_each_source_once_and_preserves_compact_totals(
+        tmp_path, monkeypatch):
+    codex_home = tmp_path / "codex-home"
+    _, canonical, now_ms = _source_database(codex_home)
+    source = CodexUsageSource(os.getuid(), codex_home, tmp_path / "codex")
+    usage, db, first = _world(tmp_path, source)
+    repositories = [first]
+    with db.transaction() as conn:
+        conn.execute(
+            "INSERT INTO codex_usage_repository_links VALUES(?,?,?,?,?,?)",
+            (os.getuid(), first["repository_id"], canonical, 4, 1, "t"))
+        for index in range(1, 11):
+            repository = {
+                "repository_id": f"r{index:016x}",
+                "display_name": f"Example {index}",
+                "root_path": str(tmp_path / f"repo-{index}"),
+            }
+            repositories.append(repository)
+            conn.execute("INSERT INTO repositories VALUES(?,?,?,?,?,?)", (
+                repository["repository_id"], repository["root_path"],
+                repository["display_name"], "t", os.getuid(), "t"))
+            conn.execute(
+                "INSERT INTO codex_usage_repository_links VALUES(?,?,?,?,?,?)",
+                (os.getuid(), repository["repository_id"], canonical, 4, 1, "t"))
+    opens = 0
+    original_open = usage._open_database
+
+    def counted_open(source, *, deadline=None):
+        nonlocal opens
+        opens += 1
+        return original_open(source, deadline=deadline)
+
+    monkeypatch.setattr(usage, "_open_database", counted_open)
+
+    overview = usage.repositories(repositories, "24h", now_ms)
+
+    assert opens == 1
+    assert len(overview["repositories"]) == 11
+    assert all(row["coverage"]["state"] == "complete"
+               for row in overview["repositories"])
+    assert all(row["total_tokens"] == 100 for row in overview["repositories"])
+    assert all(row["model_requests"] == 1 for row in overview["repositories"])
+    assert all(row["tool_calls"] == 1 for row in overview["repositories"])
+    assert all(row["execution_wall_ms"] == 10_000
+               for row in overview["repositories"])
+    db.close()
+
+
+def test_collection_uses_indexed_token_and_coverage_lookups_at_scale(
+        tmp_path, monkeypatch):
+    codex_home = tmp_path / "codex-home"
+    _, canonical, now_ms = _source_database(codex_home)
+    source = CodexUsageSource(os.getuid(), codex_home, tmp_path / "codex")
+    usage, db, repository = _world(tmp_path, source)
+    with db.transaction() as conn:
+        conn.execute(
+            "INSERT INTO codex_usage_repository_links VALUES(?,?,?,?,?,?)",
+            (os.getuid(), repository["repository_id"], canonical, 4, 1, "t"))
+    source_path = codex_home / "usage" / "usage.sqlite3"
+    conn = sqlite3.connect(source_path)
+    unrelated_at = now_ms - 30_000
+    conn.executemany(
+        "INSERT INTO token_observations VALUES(?,?,?,?,?,?,?,?)",
+        (("total_tokens", 1, "complete", unrelated_at, "unrelated", None,
+          canonical, "provider_reported") for _ in range(100_000)),
+    )
+    conn.executemany(
+        "INSERT INTO coverage_events VALUES(?,?,?)",
+        (("unrelated", "complete", unrelated_at) for _ in range(100_000)),
+    )
+    conn.commit()
+    conn.close()
+    statements = []
+    original_open = usage._open_database
+
+    def traced_open(source, *, deadline=None):
+        opened = original_open(source, deadline=deadline)
+        opened.set_trace_callback(statements.append)
+        return opened
+
+    monkeypatch.setattr(usage, "_open_database", traced_open)
+    started = time.perf_counter()
+
+    overview = usage.repositories([repository], "24h", now_ms)
+
+    elapsed = time.perf_counter() - started
+    normalized = [statement.upper() for statement in statements]
+    assert elapsed < 1.0
+    assert overview["repositories"][0]["total_tokens"] == 100
+    assert any("FROM TOKEN_OBSERVATIONS" in statement
+               and "MODEL_REQUEST_ID IN" in statement for statement in normalized)
+    assert any("FROM COVERAGE_EVENTS" in statement
+               and "OPERATION_ID IN" in statement for statement in normalized)
+    db.close()
+
+
+def test_collection_returns_indexing_then_ephemeral_background_result(
+        tmp_path, monkeypatch):
+    codex_home = tmp_path / "codex-home"
+    _, canonical, now_ms = _source_database(codex_home)
+    source = CodexUsageSource(os.getuid(), codex_home, tmp_path / "codex")
+    usage, db, repository = _world(tmp_path, source)
+    with db.transaction() as conn:
+        conn.execute(
+            "INSERT INTO codex_usage_repository_links VALUES(?,?,?,?,?,?)",
+            (os.getuid(), repository["repository_id"], canonical, 4, 1, "t"))
+    monkeypatch.setattr(codex_usage_module, "COLLECTION_TIMEOUT_SECONDS", 0.000_001)
+    monkeypatch.setattr(
+        codex_usage_module, "COLLECTION_BACKGROUND_TIMEOUT_SECONDS", 2.0)
+
+    first = usage.repositories([repository], "7d", now_ms)
+
+    assert first["repositories"][0]["coverage"]["unavailable_reasons"] == {
+        "indexing": 1,
+    }
+    deadline = time.monotonic() + 2.0
+    while time.monotonic() < deadline:
+        resolved = usage.repositories([repository], "7d", now_ms)
+        if resolved["repositories"][0]["total_tokens"] == 100:
+            break
+        time.sleep(0.01)
+    else:
+        raise AssertionError("background usage collection did not finish")
+    assert resolved["repositories"][0]["coverage"]["state"] == "complete"
+    tables = {row["name"] for row in db.query(
+        "SELECT name FROM sqlite_master WHERE type='table'")}
+    assert not any("usage_cache" in name or "usage_snapshot" in name for name in tables)
+    usage._collection_pool.shutdown(wait=True)
     db.close()
 
 

@@ -6,7 +6,9 @@ import pytest
 from devcoordinator2.daemon import events, metrics_store
 from devcoordinator2.daemon.alerts import AlertEngine, Condition
 from devcoordinator2.daemon.db import Database
+from devcoordinator2.daemon.metrics_sampler import Sampler
 from devcoordinator2.daemon.metrics_sources import _parse_size, cgroup_stats, host_memory
+from devcoordinator2.paths import InstanceConfig
 
 
 @pytest.fixture
@@ -44,6 +46,18 @@ def test_flush_series_trend_and_expire(db):
     assert metrics_store.expire(db) == 1
     assert metrics_store.table_size(db) == 1
     assert metrics_store.series(db, "repository", "none", "cpu_percent", 60) == []
+
+
+def test_lifecycle_events_wake_sampling_without_a_settle_delay(db, tmp_path):
+    config = InstanceConfig(
+        socket_path=tmp_path / "daemon.sock", state_dir=tmp_path / "state",
+        unit_prefix="metrics-test", slice_name="metrics.slice", client_group="")
+    sampler = Sampler(config, db)
+    assert not sampler._sample_wakeup.is_set()
+    assert not sampler._storage_wakeup.is_set()
+    sampler._on_event({"kind": "deployment.applied"})
+    assert sampler._sample_wakeup.is_set()
+    assert sampler._storage_wakeup.is_set()
 
 
 def test_alert_sustain_dedupe_and_recovery(db, monkeypatch):

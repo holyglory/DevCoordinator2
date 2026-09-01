@@ -14,12 +14,15 @@ argument; nothing here names an installation.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import grp
 import hashlib
 import json
 import os
 import pwd
+import re
 import secrets
+import select
 import shutil
 import stat
 import subprocess
@@ -34,6 +37,43 @@ RELEASE_ITEMS = ("src", "edge", "console", "deploy", "scripts", "skills",
 COMPOSE_ENV_ALLOWLIST = ETC / "compose-env-allowlist.json"
 CODEX_USAGE_SOURCES = ETC / "codex-usage-sources.json"
 _REPOSITORY_NAMESPACE = b"devcoordinator2.repository\0"
+_RELEASE_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+_LEGACY_FENCE_GUARD = """
+import os
+import sys
+sys.stdin.buffer.read()
+socket_path, fence_path = sys.argv[1:3]
+if os.path.exists(fence_path):
+    if os.path.exists(socket_path):
+        os.unlink(fence_path)
+    else:
+        os.replace(fence_path, socket_path)
+"""
+_ACTIVATION_GUARD = """
+import os
+import subprocess
+import sys
+current, previous, activated, restart_services = sys.argv[1:5]
+command = sys.stdin.buffer.read().strip()
+if command == b'commit':
+    raise SystemExit(0)
+if previous:
+    tmp = current + '.rollback-guard'
+    try:
+        os.unlink(tmp)
+    except FileNotFoundError:
+        pass
+    os.symlink(previous, tmp)
+    os.replace(tmp, current)
+elif os.path.islink(current) and os.path.realpath(current) == os.path.realpath(activated):
+    os.unlink(current)
+if previous and restart_services == '1':
+    subprocess.run(['systemctl', 'daemon-reload'], check=False,
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    for unit in ('devcoordinator2.service', 'devcoordinator2-edge.service'):
+        subprocess.run(['systemctl', 'restart', unit], check=False,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+"""
 
 
 def run(argv: list[str], check: bool = True) -> subprocess.CompletedProcess:
@@ -89,33 +129,199 @@ def install_skill_links(accounts: list[str], release_skill: Path) -> list[str]:
     return installed
 
 
-def install_release(release_id: str) -> Path:
+def install_release(release_id: str, *, activate: bool = True) -> Path:
+    if not _RELEASE_ID_RE.fullmatch(release_id):
+        raise ValueError("release id must be 1..128 path-safe characters")
     target = OPT / "releases" / release_id
     if target.exists():
-        shutil.rmtree(target)
-    target.mkdir(parents=True)
-    for item in RELEASE_ITEMS:
-        src = ROOT / item
-        if src.is_dir():
-            shutil.copytree(src, target / item, ignore=shutil.ignore_patterns(
-                "__pycache__", ".pytest_cache", "test", "tests", "design-reference"))
-        else:
-            shutil.copy2(src, target / item)
-    # World-readable release: the edge user and every client account read it.
-    for dirpath, _dirnames, filenames in os.walk(target):
-        os.chmod(dirpath, 0o755)
-        for name in filenames:
-            path = Path(dirpath) / name
-            os.chmod(path, 0o755 if os.access(path, os.X_OK) else 0o644)
+        raise RuntimeError(f"immutable release already exists: {target}")
+    staging = OPT / "releases" / f".{release_id}.staging-{os.getpid()}"
+    if staging.exists():
+        shutil.rmtree(staging)
+    staging.mkdir(parents=True)
+    try:
+        for item in RELEASE_ITEMS:
+            src = ROOT / item
+            if src.is_dir():
+                shutil.copytree(src, staging / item, ignore=shutil.ignore_patterns(
+                    "__pycache__", ".pytest_cache", "test", "tests",
+                    "design-reference"))
+            else:
+                shutil.copy2(src, staging / item)
+        # World-readable release: edge and client accounts read exact immutable files.
+        for dirpath, _dirnames, filenames in os.walk(staging):
+            os.chmod(dirpath, 0o755)
+            for name in filenames:
+                path = Path(dirpath) / name
+                os.chmod(path, 0o755 if os.access(path, os.X_OK) else 0o644)
+        os.replace(staging, target)
+    except BaseException:
+        if staging.exists():
+            shutil.rmtree(staging)
+        raise
     os.chmod(OPT, 0o755)
     os.chmod(OPT / "releases", 0o755)
+    if activate:
+        activate_release(target)
+    return target
+
+
+def activate_release(target: Path) -> Path | None:
     current = OPT / "current"
+    previous = current.resolve() if current.is_symlink() else None
     tmp = OPT / "current.tmp"
     if tmp.is_symlink() or tmp.exists():
         tmp.unlink()
     tmp.symlink_to(target)
     os.replace(tmp, current)
-    return target
+    return previous
+
+
+def _coordinator_runtime():
+    source = str(ROOT / "src")
+    if source not in sys.path:
+        sys.path.insert(0, source)
+    from devcoordinator2.daemon import test_admission
+    from devcoordinator2.paths import load_instance_config
+    return test_admission, load_instance_config()
+
+
+def _test_units(unit_prefix: str) -> list[str]:
+    proc = run([
+        "systemctl", "list-units", "--all", "--plain", "--no-legend",
+        "--no-pager", f"{unit_prefix}-*.service",
+    ], check=False)
+    return [line.split()[0] for line in proc.stdout.splitlines() if line.split()]
+
+
+def _unit_cgroup(unit: str) -> Path | None:
+    proc = run([
+        "systemctl", "show", unit, "-p", "ControlGroup", "--value", "--no-pager",
+    ], check=False)
+    value = proc.stdout.strip()
+    return Path("/sys/fs/cgroup") / value.lstrip("/") if value else None
+
+
+def _wait_cgroup_empty(path: Path | None) -> None:
+    if path is None:
+        return
+    events_path = path / "cgroup.events"
+    try:
+        fd = os.open(events_path, os.O_RDONLY | os.O_CLOEXEC)
+    except FileNotFoundError:
+        return
+    try:
+        watcher = select.poll()
+        watcher.register(fd, select.POLLPRI | select.POLLERR)
+        while True:
+            os.lseek(fd, 0, os.SEEK_SET)
+            payload = os.read(fd, 4096).decode("ascii", errors="replace")
+            populated = next((line.split()[1] for line in payload.splitlines()
+                              if line.startswith("populated ")), "0")
+            if populated == "0":
+                return
+            watcher.poll()
+    finally:
+        os.close(fd)
+
+
+def _cgroup_is_populated(path: Path | None) -> bool:
+    if path is None:
+        return False
+    try:
+        payload = (path / "cgroup.events").read_text()
+    except FileNotFoundError:
+        return False
+    return any(line == "populated 1" for line in payload.splitlines())
+
+
+def _wait_legacy_tests(unit_prefix: str) -> None:
+    """Wait on cgroup completion events after the old socket is fenced."""
+    while True:
+        units = [unit for unit in _test_units(unit_prefix)
+                 if _cgroup_is_populated(_unit_cgroup(unit))]
+        if not units:
+            return
+        for unit in units:
+            _wait_cgroup_empty(_unit_cgroup(unit))
+
+
+@contextlib.contextmanager
+def drain_active_tests(*, socket_path: Path, runtime_dir: Path,
+                       unit_prefix: str, daemon_running: bool):
+    """Close admission and wait without using the installed Coordinator client."""
+    test_admission, _config = _coordinator_runtime()
+    lease = test_admission.begin_drain(runtime_dir, "coordinator upgrade")
+    fence = runtime_dir / "daemon.pre-drain.sock"
+    legacy = daemon_running and test_admission.read_activity(runtime_dir) is None
+    fenced = False
+    fence_guard = None
+    try:
+        if legacy:
+            if fence.exists():
+                raise RuntimeError(f"stale legacy drain socket exists: {fence}")
+            fence_guard = subprocess.Popen(
+                ["/usr/bin/python3", "-c", _LEGACY_FENCE_GUARD,
+                 str(socket_path), str(fence)],
+                stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL, start_new_session=True,
+            )
+            os.replace(socket_path, fence)
+            fenced = True
+            _wait_legacy_tests(unit_prefix)
+        elif daemon_running:
+            test_admission.wait_for_zero_activity(runtime_dir)
+        yield
+    except BaseException:
+        if fenced and fence.exists() and not socket_path.exists():
+            os.replace(fence, socket_path)
+            fenced = False
+        raise
+    finally:
+        test_admission.end_drain(lease)
+        if fence_guard is not None:
+            assert fence_guard.stdin is not None
+            fence_guard.stdin.close()
+            try:
+                fence_guard.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                fence_guard.kill()
+                fence_guard.wait()
+        elif fenced:
+            fence.unlink(missing_ok=True)
+
+
+def restore_release(previous: Path | None, activated: Path) -> None:
+    if previous is not None:
+        activate_release(previous)
+        return
+    current = OPT / "current"
+    if current.is_symlink() and current.resolve() == activated.resolve():
+        current.unlink()
+
+
+def start_activation_guard(previous: Path | None, activated: Path,
+                           *, restart_services: bool) -> subprocess.Popen:
+    return subprocess.Popen(
+        ["/usr/bin/python3", "-c", _ACTIVATION_GUARD,
+         str(OPT / "current"), str(previous or ""), str(activated),
+         "1" if restart_services else "0"],
+        stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL, start_new_session=True,
+    )
+
+
+def finish_activation_guard(guard: subprocess.Popen, *, commit: bool) -> None:
+    assert guard.stdin is not None
+    if commit:
+        guard.stdin.write(b"commit\n")
+        guard.stdin.flush()
+    guard.stdin.close()
+    try:
+        guard.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        guard.kill()
+        guard.wait()
 
 
 def write_if_absent(path: Path, content: str, mode: int,
@@ -330,7 +536,7 @@ def main() -> int:
     accounts = [a.strip() for a in ns.client_accounts.split(",") if a.strip()]
     ensure_group(ns.client_group, accounts)
     edge_uid, edge_gid = ensure_edge_user(ns.client_group)
-    release = install_release(release_id)
+    release = install_release(release_id, activate=False)
     gid = grp.getgrnam(ns.client_group).gr_gid
 
     for path, mode, owner in ((Path("/run/devcoordinator2"), 0o755, (0, 0)),
@@ -390,21 +596,54 @@ def main() -> int:
     created.append(write_if_absent(secret_dir / "session.secret", secrets.token_urlsafe(48),
                                    0o640, (0, edge_gid)))
 
-    Path("/etc/systemd/system/devcoordinator2.service").write_text(unit_daemon(release))
-    Path("/etc/systemd/system/devcoordinator2-edge.service").write_text(
-        unit_edge(release, ns.canary))
-    shim = Path("/usr/local/bin/devcoordinator2")
-    shim.write_text("#!/usr/bin/python3\n"
-                    "import sys\n"
-                    f"sys.path.insert(0, '{OPT}/current/src')\n"
-                    "from devcoordinator2.client.cli import main\n"
-                    "sys.exit(main())\n")
-    os.chmod(shim, 0o755)
-    skill_links = install_skill_links(
-        accounts, OPT / "current" / "skills" / "codex-dev-coordinator")
-    run(["systemctl", "daemon-reload"])
-    if ns.start:
-        enable_and_restart_units()
+    test_admission, instance_config = _coordinator_runtime()
+    del test_admission
+    daemon_running = instance_config.socket_path.exists()
+    if daemon_running and not ns.start:
+        raise RuntimeError("--start is required to activate an upgrade over a running daemon")
+    previous = None
+    activation_guard = None
+    skill_links: list[str] = []
+    with drain_active_tests(
+            socket_path=instance_config.socket_path,
+            runtime_dir=instance_config.socket_path.parent,
+            unit_prefix=instance_config.unit_prefix,
+            daemon_running=daemon_running):
+        try:
+            Path("/etc/systemd/system/devcoordinator2.service").write_text(
+                unit_daemon(release))
+            Path("/etc/systemd/system/devcoordinator2-edge.service").write_text(
+                unit_edge(release, ns.canary))
+            shim = Path("/usr/local/bin/devcoordinator2")
+            shim.write_text("#!/usr/bin/python3\n"
+                            "import sys\n"
+                            f"sys.path.insert(0, '{OPT}/current/src')\n"
+                            "from devcoordinator2.client.cli import main\n"
+                            "sys.exit(main())\n")
+            os.chmod(shim, 0o755)
+            skill_links = install_skill_links(
+                accounts, release / "skills" / "codex-dev-coordinator")
+            run(["systemctl", "daemon-reload"])
+            current = OPT / "current"
+            previous = current.resolve() if current.is_symlink() else None
+            activation_guard = start_activation_guard(
+                previous, release, restart_services=daemon_running)
+            activate_release(release)
+            if ns.start:
+                enable_and_restart_units()
+            finish_activation_guard(activation_guard, commit=True)
+            activation_guard = None
+        except BaseException:
+            if activation_guard is not None:
+                finish_activation_guard(activation_guard, commit=False)
+                activation_guard = None
+            else:
+                restore_release(previous, release)
+            if daemon_running and previous is not None:
+                run(["systemctl", "daemon-reload"], check=False)
+                for unit in ("devcoordinator2.service", "devcoordinator2-edge.service"):
+                    run(["systemctl", "restart", unit], check=False)
+            raise
     print({"release": str(release), "edge_uid": edge_uid, "client_group": ns.client_group,
            "created_config": created, "canary": ns.canary,
            "canary_port": ns.canary_port if ns.canary else None, "started": ns.start,

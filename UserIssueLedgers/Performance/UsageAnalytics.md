@@ -1,0 +1,5 @@
+# User Issue Ledger: Performance / usage analytics
+
+| ID | Applies to | Mistake pattern | Required behavior | Prevention and verification |
+| --- | --- | --- | --- | --- |
+| UIL-PERFORMANCE-USAGE-ANALYTICS-001 | Codex Usage repository collection and first render | The implementation enforced a two-second limit on each individual source read but invoked that limit serially for multiple repositories, turning a bounded query into a 12-second page load | The complete repository collection API and rendered route must settle in under one second for the configured production-scale repository/source set; per-source safeguards must compose under one end-to-end request budget rather than multiply by row count | Measure daemon API and browser navigation separately on cold and repeated runs; use 11+ repositories, multiple sources, mapped/unmapped/unsupported/unavailable cases, and a production-scale unrelated-history fixture; fail when API or visible table settlement reaches 1,000 ms, when work grows as repository count × timeout, or when a timeout is disguised as a legitimate zero |

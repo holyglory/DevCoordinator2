@@ -13,9 +13,9 @@ schema = 1
 default = "unit"            # optional; required if more than one test
 
 [test.unit]
-command = ["python3", "-m", "pytest", "-q"]   # argv array, REQUIRED
+command = ["python3", "-m", "pytest", "-q"]   # argv array; one-check form
 cwd = "."                   # optional, repo-relative, default "."
-timeout_seconds = 600       # optional, 1..21600, default 600
+timeout_seconds = 600       # outer runaway watchdog only; never readiness
 env = { CI = "1" }          # optional, string→string; additive only
 
 [test.unit.postgres]        # optional: test-scoped ephemeral PostgreSQL
@@ -23,7 +23,47 @@ image = "postgres:16-alpine"   # official postgres:<tag> (default), or a compati
                                 # image pinned as name@sha256:<64 lowercase hex>
 database = "test"              # [a-z_][a-z0-9_]{0,62}
 user = "test"
+
+[test.complete]             # graph form: use check tables instead of command
+timeout_seconds = 21600
+
+[[test.complete.check]]
+name = "build"
+command = ["npm", "run", "build"]
+produces = ["dist/app.js"]  # immutable regular-file receipts, repo-relative
+
+[[test.complete.check]]
+name = "server"
+command = ["./scripts/start-test-server"]
+requires = ["build"]        # waits for build and requires it to pass
+completion = "event"        # emits its exact event, then may stay alive
+on_failure = "stop"         # only for evidence-invalidating/unsafe failure
+
+[[test.complete.check]]
+name = "browser"
+command = ["node", "verify.mjs"]
+requires = ["server"]
+
+[[test.complete.check]]
+name = "package-report"
+command = ["./scripts/package-report"]
+after = ["browser"]         # runs after browser even when browser failed
 ```
+
+In graph form every ready check starts concurrently. There is deliberately no
+`max_parallel`, worker-budget, resource-lock, CPU, memory, or client-override
+field. If two checks cannot safely overlap, declare their real completion or
+success dependency. Every check receives an isolated
+`DEVCOORDINATOR_CHECK_SCRATCH`, the shared
+`DEVCOORDINATOR_SHARED_ARTIFACTS`, and its exact run/check identity.
+
+`completion = "process"` (default) uses the exact exit status. A long-lived
+setup uses `completion = "event"` and emits one identity-bound result with
+`devcoordinator2 test event passed|failed|unsafe`; the inherited descriptor,
+not elapsed time, binds the event to that check. A passed long-lived process
+stays available to dependents and is terminated during final cleanup. If it
+exits early, downstream evidence is unsafe. `produces` paths are content-hashed
+regular files; symlinks, missing files, path escape, and mutable receipts fail.
 
 An ephemeral PostgreSQL is one throwaway instance per run: a Docker
 container carrying the exact run identity in daemon-owned labels, data on
@@ -45,8 +85,9 @@ contract and provide `pg_isready`; extensions remain repository-specific.
 Validation rules:
 
 - `schema` must be `1`.
-- `command` is a non-empty array of non-empty strings. A single string is
-  rejected: shell strings are forbidden everywhere.
+- A test declares either one `command` or one or more `[[test.<name>.check]]`
+  tables, never both. Every check command is a non-empty argv array. Shell
+  strings are forbidden everywhere.
 - `cwd` must resolve (realpath, after joining) inside the repository; `..`
   or symlink escape is rejected.
 - `timeout_seconds` integer in [1, 21600].
@@ -54,6 +95,12 @@ Validation rules:
   token/secret/password/key patterns with literal values — reference
   secrets held outside the repository instead).
 - Test names: `[a-z0-9][a-z0-9-]{0,31}`.
+- Check names: `[a-z0-9][a-z0-9-]{0,63}`; names are unique, dependencies must
+  exist, self-dependency and cycles are rejected, and `after`/`requires` may
+  not repeat the same edge.
+- Check `completion` is `process|event`; `on_failure` is `continue|stop`.
+- `DEVCOORDINATOR_*` environment names are reserved for exact runner identity,
+  scratch, artifact, and event delivery.
 - Unknown keys anywhere are rejected (`repository_config_invalid`), so
   typos never silently change meaning.
 
@@ -64,7 +111,9 @@ Validation rules:
 - Literal secrets of any kind.
 - Docker socket operations, privileged flags, or raw Docker options.
 - CPU/memory/PID admission values.
-- Test retry, queue, evidence, history, or retention policies.
+- Repository-selected retry, queue, evidence-retention, concurrency-budget,
+  or resource-quota policies. Diagnostic selection/retry is a Coordinator
+  command with fixed semantics, not repository authority.
 - Public users and grants.
 
 ## Phase 3 schema: deployments (implemented)

@@ -70,20 +70,23 @@ a native select.
    preview now" (replaced by a pending notice while one is requested),
    drop-task with confirm, and an "Ask for a change" form that files a
    `user_feedback` task. Viewers get the same chart read-only.
-3. **Progress** — an operator/administrator repository dashboard with two
-   complementary modes selected by the owner. **Delivery pulse** aligns
+3. **Progress** — an operator/administrator repository dashboard that aligns
    terminal task completions, current planned task lines completed, terminal
    test pass rate, and provider total-token use on hourly, daily, or
-   Monday-aligned weekly UTC buckets. **Priorities** ranks owner-facing open
-   outcomes by recorded status, estimate uncertainty, request kind, and
-   contribution to remaining work, then compares the current forecast with
-   moving the selected work first or moving it to a later release. Selection
-   and scenarios are local and never mutate Plan order or scope; **Open selected
-   in plan** continues to the exact task. The release forecast is a date range
-   with confidence, evidence, and assumptions—not a promise—and becomes
-   unavailable when there is no release or measurable completion pace. Missing
-   test/token history stays blank and visibly partial. Exact bucket values and
-   counting semantics remain available without hover.
+   Monday-aligned weekly UTC buckets. Tasks and planned lines use bars for each
+   bucket and a separate thin running-total line; the legend says exactly what
+   each mark means. The line paints behind bars and haloed value labels so
+   crossing geometry never hides a number. Open release work follows the Plan order and shows the
+   owner-facing title, recorded status, estimate, elaboration request, and a
+   simple reopened state without exposing raw planning/event notes or inventing
+   priority, dependency, or impact days. Selection is local; **Open selected in
+   plan** continues to the exact task. The release forecast is a provisional date range paired with
+   confidence and a Forecast quality explanation naming missing estimates and
+   the missing target date. Test and token evidence explain their own gaps so
+   token coverage is not misrepresented as a forecast input. The forecast
+   becomes unavailable when there is no release or measurable completion pace.
+   Missing test/token history stays blank rather than becoming zero. Exact
+   bucket values and counting semantics remain available without hover.
 4. **Decisions** — the per-repository decision history in plain language:
    "The story so far" (latest rolling summary), a full-text search box over
    every decision ever recorded, an aspect filter (server-side), entries
@@ -114,16 +117,23 @@ a native select.
    time, TTL; removal is offered only for orphaned-managed and managed-test
    containers (unmanaged ones say "decide manually").
 7. **Codex Usage** — operator/administrator repository collection first, with
-   combined 24h totals and a plain-language **Data included** status. Repository details lead with one
+   combined 24h totals and a plain-language **Data included** status. The
+   collection reads every environment once across all rows and settles in under
+   one second on the configured production repository/source set. A neutral
+   status means setup is not connected everywhere; amber means measured data is
+   partial, green means complete, and red is reserved for a real read failure.
+   Repository details lead with one
    continuous total/request/tool/execution strip and a stacked UTC token chart
    whose only additive basis is provider `total_tokens`, grouped by work phase.
    Ranked activities, separate request-wall/execution-union/summed-agent rails,
    tool outcomes, exact bucket values, and data-completeness details follow.
-   The interface calls each configured input a **Codex environment** and
-   explains that each environment is a separate local Codex setup with its own
-   usage history. When an environment supplies no data or a measurement is missing, it says some
-   usage may be missing and explains that absent values are excluded rather
-   than counted as zero. Internal collector status remains an API detail. The page returns no contributor identities, private
+   The interface calls each configured input a **Codex environment**. The
+   consequence-first status remains visible; a small adjacent information hint
+   opens on request to explain that each environment is a separate local Codex
+   setup with its own usage history. When an environment supplies no data or a
+   measurement is missing, the status says some usage may be missing and the
+   hint explains that absent values are excluded rather than counted as zero.
+   Internal collector status remains an API detail. The page returns no contributor identities, private
    paths, raw Codex IDs, captured content, or per-user values.
 8. **Bugs** — open records with occurrence counts and correlations; report
    form; close.
@@ -146,9 +156,9 @@ explicit permission-denied notice instead of partial data.
 | Health range switch (24h/7d/30d) and usage range (1h/24h/7d/30d) | `health.history {minutes, points}` | charts re-render from the store |
 | Health container inventory / unhealthy deployment details | — (real hash links) | opens the Containers or exact deployment destination; Back/Health returns to the same Health context |
 | Codex Usage repository selection and range (24h/7d/30d) | `usage.repositories {range}` / `usage.repository {repository_id, range}` | repository heading, totals, phase chart, exact table, and data-completeness explanation re-render from canonical reads |
-| Progress period (Hour/Day/Week) | `progress.repository {repository_id, period}` | all four aligned evidence lanes, comparison totals, forecast, priorities, coverage, and exact values re-render from one bounded report |
-| Progress mode (Delivery pulse/Priorities) | — (client-side) | switches between the two selected views without another API read or loading state |
-| Select priority work | — (client-side) | selected row and defer comparison update; task order and release scope remain unchanged |
+| Codex Usage completeness hint | — (client-side) | opens the full environment and excluded-not-zero explanation in a labelled DOM pop-up; Escape, focus departure, outside click, or the toggle closes it |
+| Progress period (Hour/Day/Week) | `progress.repository {repository_id, period}` | daily bars, running totals, test/token evidence, forecast quality, Plan-ordered work, comparison totals, and exact values re-render from one bounded report |
+| Select release work | — (client-side) | only row selection and the Plan-continuation target change; the workspace node, scroll, focus, task order, and release scope remain unchanged |
 | Open selected in plan | — (real hash navigation with local task continuation) | opens the same repository Plan with the exact selected task highlighted |
 | Progress exact values disclosure | — (client-side) | exposes every visible bucket value, coverage status, and counting method without hover |
 | Destination heading link (every route and state) | — (real hash link) | returns to that destination's collection |
@@ -191,7 +201,7 @@ no clipped headline text, no off-canvas controls outside scroll containers,
 explicit empty/error/loading/denied states, humanized large numbers; and
 clicks through stop/start/logs/remove/test output/bug report/invite/
 container removal proving each calls the API with the expected arguments
-and re-renders — including Progress period/mode/priority/exact-value/Plan
+and re-renders — including Progress period/release-work/exact-value/Plan
 continuation, the Plan drag-and-drop (reorder and cross-release),
 move pop-up, preview request, feedback form, task drop, decision
 filter/search/paging, and a plain-language proof that the agent-facing
@@ -211,10 +221,18 @@ data explanations, and exact non-hover values and large-scale axis-label separat
 pass additionally verifies the correct heading link on all 13 routes in every
 fixture state, custom project menus on all three repository details, the
 reported 799×964 surface, and 1240/1241 px boundary behavior. Last complete
-run: 1,397 checks, 0 failures. Current-source formal usage verification checked
-missing, complete, and unavailable states at 390×844, 856×915, and 1440×900:
-9/9 cells, zero critical findings, and all 18 final viewport/full-page images
-passed the manual-review manifest.
+run: 1,409 checks, 0 failures. Current-source formal usage verification checked
+closed missing/complete/unavailable states plus the opened completeness hint at
+390×844, the owner-marked 858×915 surface, and 1440×900: 12/12 cells, zero
+critical findings, and all 24 final viewport/full-page images passed the
+manual-review manifest.
+
+The repository collection has an additional one-second gate. A production-scale
+source-wide read returns the default 24-hour rows directly; longer cold ranges
+return an honest **Updating usage data…** state with dashes inside the same
+budget, prepare one ephemeral in-memory result, and refresh the table in place.
+No aggregate usage record is persisted. Mixed collection states and responsive
+cards/tables are checked at 390×844, 858×915, and 1440×900.
 
 The Health layout has an additional focused journey gate at 390×844,
 856×915, 1440×1024, 959/960/961×915, and 1199/1200/1201×915. It verifies

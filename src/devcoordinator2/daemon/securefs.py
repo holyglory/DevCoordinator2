@@ -19,6 +19,7 @@ class SecureFsError(Exception):
 
 
 _TEST_HISTORY_MAX_BYTES = 2 * 1024 * 1024
+_TEST_EVIDENCE_MAX_BYTES = 2 * 1024 * 1024
 
 
 def _open_dir(dir_fd: int | None, name: str | Path) -> int:
@@ -203,4 +204,133 @@ def write_test_history(worktree_root: Path, payload: bytes,
     except OSError as exc:
         raise SecureFsError(f"cannot write test history: {exc}") from exc
     finally:
+        os.close(root_fd)
+
+
+def read_test_evidence(worktree_root: Path) -> bytes | None:
+    """Read bounded test/evidence.json without following repository symlinks."""
+    root_fd = _open_dir(None, worktree_root)
+    try:
+        try:
+            devco_fd = _open_dir(root_fd, ".devcoordinator")
+        except SecureFsError:
+            return None
+        try:
+            try:
+                test_fd = _open_dir(devco_fd, "test")
+            except SecureFsError:
+                return None
+            try:
+                try:
+                    fd = os.open("evidence.json", os.O_RDONLY | os.O_NOFOLLOW,
+                                 dir_fd=test_fd)
+                except FileNotFoundError:
+                    return None
+                except OSError as exc:
+                    raise SecureFsError(f"cannot open test evidence: {exc}") from exc
+                try:
+                    details = os.fstat(fd)
+                    if not stat.S_ISREG(details.st_mode):
+                        raise SecureFsError("test evidence is not a regular file")
+                    if details.st_size > _TEST_EVIDENCE_MAX_BYTES:
+                        raise SecureFsError("test evidence exceeds the 2 MiB limit")
+                    payload = os.read(fd, _TEST_EVIDENCE_MAX_BYTES + 1)
+                    if len(payload) > _TEST_EVIDENCE_MAX_BYTES:
+                        raise SecureFsError("test evidence exceeds the 2 MiB limit")
+                    return payload
+                finally:
+                    os.close(fd)
+            finally:
+                os.close(test_fd)
+        finally:
+            os.close(devco_fd)
+    finally:
+        os.close(root_fd)
+
+
+def write_test_evidence(worktree_root: Path, payload: bytes,
+                        owner: tuple[int, int]) -> None:
+    """Atomically replace bounded test/evidence.json through a safe dirfd."""
+    if len(payload) > _TEST_EVIDENCE_MAX_BYTES:
+        raise SecureFsError("test evidence exceeds the 2 MiB limit")
+    root_fd = _open_dir(None, worktree_root)
+    try:
+        devco_fd = _open_dir(root_fd, ".devcoordinator")
+        try:
+            test_fd = _open_dir(devco_fd, "test")
+            try:
+                tmp_name = (f".evidence-{os.getpid()}-{threading.get_ident()}-"
+                            f"{time.time_ns()}")
+                fd = os.open(tmp_name, os.O_WRONLY | os.O_CREAT | os.O_EXCL
+                             | os.O_NOFOLLOW, 0o600, dir_fd=test_fd)
+                try:
+                    written = 0
+                    while written < len(payload):
+                        written += os.write(fd, payload[written:])
+                    os.fsync(fd)
+                    os.fchmod(fd, 0o600)
+                    os.fchown(fd, owner[0], owner[1])
+                finally:
+                    os.close(fd)
+                try:
+                    os.replace(tmp_name, "evidence.json", src_dir_fd=test_fd,
+                               dst_dir_fd=test_fd)
+                    os.fsync(test_fd)
+                except OSError:
+                    try:
+                        os.unlink(tmp_name, dir_fd=test_fd)
+                    except OSError:
+                        pass
+                    raise
+            finally:
+                os.close(test_fd)
+        finally:
+            os.close(devco_fd)
+    except OSError as exc:
+        raise SecureFsError(f"cannot write test evidence: {exc}") from exc
+    finally:
+        os.close(root_fd)
+
+
+def tail_test_file(worktree_root: Path, relative: tuple[str, ...],
+                   tail_bytes: int) -> tuple[bytes, bool]:
+    """Read one caller-owned test file without following any symlink."""
+    if not relative or any(not name or "/" in name or name in (".", "..")
+                           for name in relative):
+        raise SecureFsError("invalid test output path")
+    root_fd = _open_dir(None, worktree_root)
+    fd = root_fd
+    opened = []
+    try:
+        for name in (".devcoordinator", "test", "current", *relative[:-1]):
+            child = _open_dir(fd, name)
+            opened.append(child)
+            fd = child
+        try:
+            file_fd = os.open(relative[-1], os.O_RDONLY | os.O_NOFOLLOW, dir_fd=fd)
+        except FileNotFoundError:
+            return b"", False
+        except OSError as exc:
+            raise SecureFsError(f"cannot open test output: {exc}") from exc
+        try:
+            details = os.fstat(file_fd)
+            if not stat.S_ISREG(details.st_mode):
+                raise SecureFsError("test output is not a regular file")
+            truncated = details.st_size > tail_bytes
+            if truncated:
+                os.lseek(file_fd, details.st_size - tail_bytes, os.SEEK_SET)
+            chunks = []
+            remaining = tail_bytes
+            while remaining:
+                block = os.read(file_fd, min(65536, remaining))
+                if not block:
+                    break
+                chunks.append(block)
+                remaining -= len(block)
+            return b"".join(chunks), truncated
+        finally:
+            os.close(file_fd)
+    finally:
+        for opened_fd in reversed(opened):
+            os.close(opened_fd)
         os.close(root_fd)

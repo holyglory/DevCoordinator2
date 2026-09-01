@@ -98,6 +98,9 @@ def _populated(world):
                         outcome="People can find the right result without waiting.")
     call(world, "task.update", task_id=done_one["task_id"], status="done")
     call(world, "task.update", task_id=done_two["task_id"], status="done")
+    call(world, "task.update", task_id=open_known["task_id"], status="done")
+    call(world, "task.update", task_id=open_known["task_id"], status="in_progress",
+         note="Final release receipts are not yet attached.")
     with world.db.transaction() as conn:
         conn.execute(
             "UPDATE plan_events SET at='2026-08-25T12:00:00Z'"
@@ -107,6 +110,10 @@ def _populated(world):
             "UPDATE plan_events SET at='2026-08-28T12:00:00Z'"
             " WHERE subject_id=? AND event='status' AND to_value='done'",
             (done_two["task_id"],))
+        conn.execute(
+            "UPDATE plan_events SET at='2026-08-20T12:00:00Z'"
+            " WHERE subject_id=? AND event='status'",
+            (open_known["task_id"],))
     securefs.create_test_dir(world.repo, os.getuid(), os.getgid())
     owner = (os.getuid(), os.getgid())
     tests_support.record_history(
@@ -131,11 +138,13 @@ def test_day_report_combines_measured_sources_and_explainable_forecast(world):
     assert report["forecast"]["earliest_at_ms"] <= \
         report["forecast"]["likely_at_ms"] <= report["forecast"]["latest_at_ms"]
     assert "No target date" in report["forecast"]["explanation"]
-    assert report["priorities"][0]["task_id"] == open_unknown["task_id"]
-    known = next(row for row in report["priorities"]
-                 if row["task_id"] == open_known["task_id"])
-    assert known["forecast_if_deferred"]["likely_at_ms"] <= \
-        report["forecast"]["likely_at_ms"]
+    assert [row["task_id"] for row in report["release_work"]] == [
+        open_known["task_id"], open_unknown["task_id"]]
+    known = report["release_work"][0]
+    assert known["title"] == "Billing changes save reliably"
+    assert known["status"] == "in_progress" and known["reopened"] is True
+    assert known["reopen_note"] == "Final release receipts are not yet attached."
+    assert "outcome" not in known and "priorities" not in report
     assert report["coverage"]["state"] == "partial"  # history starts mid-window
     assert report["semantics"]["lines"].startswith("current planned")
 
@@ -162,6 +171,29 @@ def test_planned_release_without_completed_work_does_not_invent_a_date(world):
     report = repository_report(world.db, repository, FakeUsage(), "day", NOW)
     assert report["forecast"]["reason"] == "insufficient_completion_history"
     assert report["forecast"].get("likely_at_ms") is None
+
+
+def test_release_work_follows_nested_plan_order_and_keeps_unknown_size(world):
+    release = call(world, "release.create", repository_id="r1",
+                   name="First release", kind="release")
+    parent = call(world, "task.create", repository_id="r1",
+                  title="Check the release", kind="goal",
+                  release_id=release["release_id"])
+    later = call(world, "task.create", repository_id="r1",
+                 title="Check recovery", kind="improvement",
+                 parent_task_id=parent["task_id"], release_id=release["release_id"],
+                 estimated_loc=90)
+    first = call(world, "task.create", repository_id="r1",
+                 title="Check sign in", kind="improvement",
+                 parent_task_id=parent["task_id"], release_id=release["release_id"])
+    call(world, "task.update", task_id=first["task_id"], position=0)
+    repository = Registry(world.db).list_repositories()[0]
+    report = repository_report(world.db, repository, FakeUsage(), "day", NOW)
+    assert [row["task_id"] for row in report["release_work"]] == [
+        first["task_id"], later["task_id"]]
+    assert report["release_work"][0]["estimated_loc"] is None
+    assert parent["task_id"] not in {
+        row["task_id"] for row in report["release_work"]}
 
 
 def test_week_windows_align_to_monday_and_handlers_validate_scope(world):

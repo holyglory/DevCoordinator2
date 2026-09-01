@@ -72,6 +72,7 @@ Stable snake_case, terminal (no retry/queue semantics):
 | `worktree_busy` | per-worktree start lock not acquired within the bounded wait |
 | `test_not_found` | no current test run for the worktree |
 | `test_start_failed` | terminal launch failure (never `queued`) |
+| `tests_draining` | a normal Coordinator upgrade has closed test admission; never queued |
 | `unit_stop_failed` | prior unit would not stop / cgroup not proven empty |
 | `task_not_found` | no ledger task with that id |
 | `release_not_found` | no release with that id |

@@ -8,12 +8,14 @@ returned to the Console.
 
 from __future__ import annotations
 
+import copy
 import json
 import os
 import pwd
 import re
 import sqlite3
 import subprocess
+import threading
 import time
 from collections import Counter, defaultdict
 from concurrent.futures import ThreadPoolExecutor
@@ -31,6 +33,10 @@ SUPPORTED_TAXONOMY = 1
 SOURCE_TIMEOUT_SECONDS = 15
 SOURCE_OUTPUT_BYTES = 262_144
 QUERY_TIMEOUT_SECONDS = 2.0
+COLLECTION_TIMEOUT_SECONDS = 0.8
+COLLECTION_BACKGROUND_TIMEOUT_SECONDS = 30.0
+COLLECTION_CACHE_SECONDS = 30.0
+SQLITE_VARIABLE_CHUNK = 20_000
 REPOSITORY_KEY = re.compile(r"[0-9a-f]{64}$")
 PHASES = ("planning", "implementation", "testing", "deployment", "reporting",
           "unattributed")
@@ -137,6 +143,12 @@ def _subtract(base: tuple[int, int], exclusions: list[tuple[int, int]]) \
     return result
 
 
+def _chunks(values: list[str] | tuple[str, ...] | set[str],
+            size: int = SQLITE_VARIABLE_CHUNK) -> list[list[str]]:
+    ordered = list(values)
+    return [ordered[index:index + size] for index in range(0, len(ordered), size)]
+
+
 def _tool_outcome(value: str | None) -> str:
     if value == "completed":
         return "completed"
@@ -153,14 +165,106 @@ class CodexUsage:
     def __init__(self, config: InstanceConfig, db: Database):
         self._config = config
         self._db = db
+        self._collection_lock = threading.Lock()
+        self._collection_cache: dict[tuple, tuple[float, dict[str, Any]]] = {}
+        self._collection_refreshing: set[tuple] = set()
+        self._collection_pool = ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="codex-usage-collection")
 
     def repositories(self, repositories: list[dict], range_key: str,
                      now_ms: int | None = None) -> dict[str, Any]:
         now_ms = now_ms or int(time.time() * 1000)
+        key = (range_key, tuple(sorted(
+            repository["repository_id"] for repository in repositories)))
+        monotonic_now = time.monotonic()
+        with self._collection_lock:
+            cached = self._collection_cache.get(key)
+            if cached and cached[0] > monotonic_now:
+                return copy.deepcopy(cached[1])
+            refreshing = key in self._collection_refreshing
+        if refreshing:
+            return self._repositories_uncached(
+                repositories, range_key, now_ms, deadline=monotonic_now,
+                deadline_reason="indexing")
+        result = self._repositories_uncached(
+            repositories, range_key, now_ms,
+            deadline=monotonic_now + COLLECTION_TIMEOUT_SECONDS,
+            deadline_reason="indexing")
+        if self._collection_has_reason(result, "indexing"):
+            self._start_collection_refresh(key, repositories, range_key, now_ms)
+        else:
+            with self._collection_lock:
+                self._collection_cache[key] = (
+                    time.monotonic() + COLLECTION_CACHE_SECONDS,
+                    copy.deepcopy(result))
+        return result
+
+    @staticmethod
+    def _collection_has_reason(result: dict[str, Any], reason: str) -> bool:
+        return any(reason in row["coverage"]["unavailable_reasons"]
+                   for row in result["repositories"])
+
+    def _start_collection_refresh(self, key: tuple, repositories: list[dict],
+                                  range_key: str, now_ms: int) -> None:
+        with self._collection_lock:
+            if key in self._collection_refreshing:
+                return
+            self._collection_refreshing.add(key)
+        self._collection_pool.submit(
+            self._refresh_collection, key, copy.deepcopy(repositories),
+            range_key, now_ms)
+
+    def _refresh_collection(self, key: tuple, repositories: list[dict],
+                            range_key: str, now_ms: int) -> None:
+        try:
+            result = self._repositories_uncached(
+                repositories, range_key, now_ms,
+                deadline=time.monotonic() + COLLECTION_BACKGROUND_TIMEOUT_SECONDS,
+                deadline_reason="source_unavailable")
+            with self._collection_lock:
+                self._collection_cache[key] = (
+                    time.monotonic() + COLLECTION_CACHE_SECONDS, result)
+        finally:
+            with self._collection_lock:
+                self._collection_refreshing.discard(key)
+
+    def _repositories_uncached(self, repositories: list[dict], range_key: str,
+                               now_ms: int, *, deadline: float,
+                               deadline_reason: str) -> dict[str, Any]:
+        start_ms, _end_ms, bucket_ms, bucket_count = _window(range_key, now_ms)
+        reports: dict[str, list[tuple[int, SourceReport]]] = defaultdict(list)
+        failures: dict[str, Counter] = defaultdict(Counter)
+        repository_ids = {repository["repository_id"] for repository in repositories}
+        sources = self._config.codex_usage_sources
+        for source_index, source in enumerate(sources):
+            source_reports, source_failures = self._collection_source_reports(
+                source, repositories, start_ms, now_ms, deadline,
+                deadline_reason)
+            for repository_id, report in source_reports.items():
+                reports[repository_id].append((source.uid, report))
+            for repository_id, reason in source_failures.items():
+                failures[repository_id][reason] += 1
+            if time.monotonic() >= deadline:
+                repository_placeholders = ",".join("?" for _ in repository_ids)
+                for remaining in sources[source_index + 1:]:
+                    rows = self._db.query(
+                        "SELECT repository_id FROM codex_usage_repository_links"
+                        " WHERE source_uid=? AND repository_id IN"
+                        f" ({repository_placeholders})",
+                        (remaining.uid, *repository_ids),
+                    )
+                    mapped = {row["repository_id"] for row in rows}
+                    for repository_id in repository_ids:
+                        failures[repository_id][
+                            deadline_reason if repository_id in mapped
+                            else "mapping_pending"] += 1
+                break
         rows = []
         for repository in repositories:
-            report = self.repository(repository, range_key, now_ms,
-                                     resolve_missing=False)
+            repository_id = repository["repository_id"]
+            report = self._combine(
+                repository, range_key, now_ms, start_ms, bucket_ms, bucket_count,
+                reports[repository_id], failures[repository_id])
             rows.append({
                 "repository_id": report["repository_id"],
                 "display_name": report["display_name"],
@@ -172,6 +276,216 @@ class CodexUsage:
                 "execution_wall_ms": report["time"]["execution_wall"]["measured_ms"],
             })
         return {"range": range_key, "generated_at_ms": now_ms, "repositories": rows}
+
+    def _collection_source_reports(
+            self, source: CodexUsageSource, repositories: list[dict],
+            start_ms: int, end_ms: int, deadline: float,
+            deadline_reason: str,
+    ) -> tuple[dict[str, SourceReport], dict[str, str]]:
+        repository_by_id = {item["repository_id"]: item for item in repositories}
+        repository_ids = list(repository_by_id)
+        if not repository_ids:
+            return {}, {}
+        placeholders = ",".join("?" for _ in repository_ids)
+        links = self._db.query(
+            "SELECT repository_id,codex_repository_id"
+            " FROM codex_usage_repository_links WHERE source_uid=?"
+            f" AND repository_id IN ({placeholders})",
+            (source.uid, *repository_ids),
+        )
+        link_by_repository = {row["repository_id"]: row["codex_repository_id"]
+                              for row in links}
+        failures = {repository_id: "mapping_pending" for repository_id in repository_ids
+                    if repository_id not in link_by_repository}
+        if not link_by_repository:
+            return {}, failures
+        mapped_ids = set(link_by_repository)
+        if time.monotonic() >= deadline:
+            failures.update(dict.fromkeys(mapped_ids, deadline_reason))
+            return {}, failures
+        try:
+            conn = self._open_database(source, deadline=deadline)
+        except SourceUnavailable as exc:
+            reason = deadline_reason if time.monotonic() >= deadline else exc.reason
+            failures.update(dict.fromkeys(mapped_ids, reason))
+            return {}, failures
+        try:
+            schema = int(conn.execute(
+                "SELECT COALESCE(MAX(version),0) FROM _sqlx_migrations").fetchone()[0])
+            taxonomy = int(conn.execute(
+                "SELECT COALESCE(MAX(version),0) FROM taxonomy_versions").fetchone()[0])
+            if schema != SUPPORTED_DATABASE_SCHEMA or taxonomy != SUPPORTED_TAXONOMY:
+                raise SourceUnavailable("schema_unsupported")
+            source_key_repositories: dict[str, set[str]] = defaultdict(set)
+            valid_ids = set()
+            for repository_id, key in link_by_repository.items():
+                try:
+                    canonical = self._canonical_repository(conn, key)
+                    family = self._repository_family(conn, canonical)
+                    family_placeholders = ",".join("?" for _ in family)
+                    exists = conn.execute(
+                        f"SELECT 1 FROM repositories WHERE id IN ({family_placeholders})"
+                        " LIMIT 1", tuple(family)).fetchone()
+                    if exists is None:
+                        with self._db.transaction() as authority:
+                            authority.execute(
+                                "DELETE FROM codex_usage_repository_links"
+                                " WHERE source_uid=? AND repository_id=?",
+                                (source.uid, repository_id),
+                            )
+                        failures[repository_id] = "mapping_pending"
+                        continue
+                    valid_ids.add(repository_id)
+                    for source_key in family:
+                        source_key_repositories[source_key].add(repository_id)
+                except SourceUnavailable as exc:
+                    failures[repository_id] = exc.reason
+            if not valid_ids:
+                return {}, failures
+            reports = {
+                repository_id: SourceReport(schema, taxonomy)
+                for repository_id in valid_ids
+            }
+            source_keys = list(source_key_repositories)
+            source_placeholders = ",".join("?" for _ in source_keys)
+            operation_repositories: dict[str, set[str]] = defaultdict(set)
+            for row in conn.execute(
+                    "SELECT operation_id,repository_id FROM repository_attributions"
+                    f" WHERE repository_id IN ({source_placeholders})", source_keys):
+                operation_repositories[row["operation_id"]].update(
+                    source_key_repositories[row["repository_id"]])
+            operations = conn.execute(
+                "SELECT operation.id,operation.operation_kind,operation.agent_id,"
+                " operation.started_at_ms,operation.activity_state,"
+                " terminal.occurred_at_ms,tool.id tool_id,request.id request_id"
+                " FROM operations operation LEFT JOIN operation_events terminal"
+                " ON terminal.operation_id=operation.id AND terminal.terminal=1"
+                " LEFT JOIN tool_invocations tool ON tool.operation_id=operation.id"
+                " LEFT JOIN model_requests request ON request.operation_id=operation.id"
+                " WHERE operation.started_at_ms<?"
+                " AND (terminal.occurred_at_ms IS NULL OR terminal.occurred_at_ms>?)",
+                (end_ms, start_ms),
+            )
+            request_operations = {}
+            tool_operations = {}
+            operation_ids = []
+            for operation in operations:
+                repositories_for_operation = operation_repositories.get(operation["id"])
+                if not repositories_for_operation:
+                    continue
+                operation_ids.append(operation["id"])
+                if operation["request_id"]:
+                    request_operations[operation["request_id"]] = operation["id"]
+                if operation["tool_id"]:
+                    tool_operations[operation["tool_id"]] = operation["id"]
+                interval = _clip_interval(
+                    operation["started_at_ms"], operation["occurred_at_ms"],
+                    start_ms, end_ms)
+                for repository_id in repositories_for_operation:
+                    report = reports[repository_id]
+                    report.evidence = True
+                    report.operation_count += 1
+                    report.freshest_at_ms = max(
+                        report.freshest_at_ms or operation["started_at_ms"],
+                        operation["started_at_ms"])
+                    if operation["operation_kind"] == "model_request":
+                        report.model_request_count += 1
+                    if operation["operation_kind"] in (
+                            "local_tool", "hosted_tool", "activity_control"):
+                        report.tool_count += 1
+                    if interval is None:
+                        report.execution_unknown += 1
+                        if operation["operation_kind"] == "model_request":
+                            report.request_unknown += 1
+                    else:
+                        report.execution_intervals.append(interval)
+            self._add_collection_tokens(
+                conn, reports, operation_repositories, source_key_repositories,
+                request_operations, tool_operations, start_ms, end_ms)
+            self._add_collection_coverage(
+                conn, reports, operation_repositories, operation_ids,
+                start_ms, end_ms)
+            return reports, failures
+        except SourceUnavailable as exc:
+            failures.update(dict.fromkeys(mapped_ids, exc.reason))
+            return {}, failures
+        except sqlite3.Error:
+            reason = deadline_reason if time.monotonic() >= deadline \
+                else "source_unavailable"
+            failures.update(dict.fromkeys(mapped_ids, reason))
+            return {}, failures
+        finally:
+            conn.close()
+
+    @staticmethod
+    def _add_collection_tokens(
+            conn: sqlite3.Connection, reports: dict[str, SourceReport],
+            operation_repositories: dict[str, set[str]],
+            source_key_repositories: dict[str, set[str]],
+            request_operations: dict[str, str], tool_operations: dict[str, str],
+            start_ms: int, end_ms: int,
+    ) -> None:
+        source_keys = list(source_key_repositories)
+        source_placeholders = ",".join("?" for _ in source_keys)
+        category_placeholders = ",".join("?" for _ in TOKEN_CATEGORIES)
+        for column, operation_map in (
+                ("model_request_id", request_operations),
+                ("tool_invocation_id", tool_operations)):
+            for identifiers in _chunks(list(operation_map)):
+                if not identifiers:
+                    continue
+                identifier_placeholders = ",".join("?" for _ in identifiers)
+                rows = conn.execute(
+                    "SELECT category_path,token_count,coverage_state,observed_at_ms,"
+                    f" {column} operation_source,repository_bucket"
+                    f" FROM token_observations WHERE {column} IN"
+                    f" ({identifier_placeholders})"
+                    f" AND repository_bucket IN ({source_placeholders})"
+                    f" AND category_path IN ({category_placeholders})"
+                    " AND measurement_provenance='provider_reported'"
+                    " AND observed_at_ms>=? AND observed_at_ms<?",
+                    (*identifiers, *source_keys, *TOKEN_CATEGORIES, start_ms, end_ms),
+                )
+                for row in rows:
+                    operation_id = operation_map.get(row["operation_source"])
+                    if operation_id is None:
+                        continue
+                    repository_ids = operation_repositories.get(operation_id, set()) \
+                        & source_key_repositories.get(row["repository_bucket"], set())
+                    for repository_id in repository_ids:
+                        report = reports[repository_id]
+                        report.evidence = True
+                        report.token_observations[row["coverage_state"]] += 1
+                        report.freshest_at_ms = max(
+                            report.freshest_at_ms or row["observed_at_ms"],
+                            row["observed_at_ms"])
+                        if row["token_count"] is not None:
+                            report.tokens[row["category_path"]] = (
+                                report.tokens.get(row["category_path"], 0)
+                                + row["token_count"])
+
+    @staticmethod
+    def _add_collection_coverage(
+            conn: sqlite3.Connection, reports: dict[str, SourceReport],
+            operation_repositories: dict[str, set[str]], operation_ids: list[str],
+            start_ms: int, end_ms: int,
+    ) -> None:
+        for identifiers in _chunks(operation_ids):
+            if not identifiers:
+                continue
+            placeholders = ",".join("?" for _ in identifiers)
+            rows = conn.execute(
+                "SELECT operation_id,coverage_state FROM coverage_events"
+                f" WHERE operation_id IN ({placeholders})"
+                " AND occurred_at_ms>=? AND occurred_at_ms<?",
+                (*identifiers, start_ms, end_ms),
+            )
+            for row in rows:
+                for repository_id in operation_repositories.get(
+                        row["operation_id"], set()):
+                    report = reports[repository_id]
+                    report.coverage_events[row["coverage_state"]] += 1
+                    report.evidence = True
 
     def repository(self, repository: dict, range_key: str,
                    now_ms: int | None = None, *,
@@ -312,7 +626,8 @@ class CodexUsage:
         return {"key": key, "schema": schema, "taxonomy": taxonomy}
 
     @staticmethod
-    def _open_database(source: CodexUsageSource) -> sqlite3.Connection:
+    def _open_database(source: CodexUsageSource, *,
+                       deadline: float | None = None) -> sqlite3.Connection:
         path = source.codex_home / "usage" / "usage.sqlite3"
         try:
             info = path.lstat()
@@ -321,13 +636,19 @@ class CodexUsage:
         if path.is_symlink() or not path.is_file() or info.st_uid != source.uid:
             raise SourceUnavailable("source_unavailable")
         uri = f"file:{quote(str(path), safe='/')}?mode=ro"
+        query_deadline = deadline or (time.monotonic() + QUERY_TIMEOUT_SECONDS)
+        remaining = query_deadline - time.monotonic()
+        if remaining <= 0:
+            raise SourceUnavailable("source_unavailable")
         try:
-            conn = sqlite3.connect(uri, uri=True, timeout=0.25)
+            conn = sqlite3.connect(uri, uri=True, timeout=min(0.25, remaining))
             conn.row_factory = sqlite3.Row
             conn.execute("PRAGMA query_only=ON")
-            conn.execute("PRAGMA busy_timeout=250")
-            deadline = time.monotonic() + QUERY_TIMEOUT_SECONDS
-            conn.set_progress_handler(lambda: int(time.monotonic() > deadline), 10_000)
+            remaining_ms = max(1, min(250, int(
+                (query_deadline - time.monotonic()) * 1000)))
+            conn.execute(f"PRAGMA busy_timeout={remaining_ms}")
+            conn.set_progress_handler(
+                lambda: int(time.monotonic() > query_deadline), 10_000)
             return conn
         except sqlite3.Error as exc:
             raise SourceUnavailable("source_unavailable") from exc

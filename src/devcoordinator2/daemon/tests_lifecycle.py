@@ -9,12 +9,14 @@ from __future__ import annotations
 
 import logging
 import os
+import subprocess
 import threading
 import time
 from datetime import UTC, datetime
 from pathlib import Path
 
 from devcoordinator2 import ids
+from devcoordinator2.check_evidence import EvidenceError, receipts_match, source_digest
 from devcoordinator2.daemon import (
     capture,
     docker_cli,
@@ -22,12 +24,19 @@ from devcoordinator2.daemon import (
     securefs,
     summary,
     systemd_unit,
+    test_admission,
     test_postgres,
     tests_support,
 )
 from devcoordinator2.daemon.gitinfo import GitResolveError, resolve_worktree
 from devcoordinator2.daemon.registry import Registry
-from devcoordinator2.daemon.repoconfig import ConfigError, load_test_spec
+from devcoordinator2.daemon.repoconfig import (
+    CHECK_NAME_RE,
+    CheckSpec,
+    ConfigError,
+    TestSpec,
+    load_test_spec,
+)
 from devcoordinator2.daemon.server import Caller
 from devcoordinator2.daemon.tests_support import (
     _remove_containers,
@@ -40,6 +49,9 @@ from devcoordinator2.protocol import ProtocolError
 _START_LOCK_WAIT = 10.0
 _LAUNCH_VERIFY_WAIT = 10.0
 _ENV_FILE = tests_support.ENV_FILE
+_PLAN_FILE = tests_support.PLAN_FILE
+_RUNNER_SCRIPT = Path(__file__).resolve().parents[3] / "scripts/governed_check_runner.py"
+_CHECK_PATH = "/usr/local/bin:/usr/bin:/bin"
 log = logging.getLogger("devcoordinator2.tests")
 
 
@@ -50,7 +62,9 @@ def _now_iso() -> str:
 class _RunHandle:
     def __init__(self, run_id: str, test: str, unit: str, worktree_root: Path,
                  caller_uid: int, client: str, proc, out: capture.Drainer,
-                 err: capture.Drainer, cgroup: Path | None, started_at: str):
+                 err: capture.Drainer, cgroup: Path | None, started_at: str,
+                 *, proof: str, selection: tuple[str, ...],
+                 origin_run_id: str | None):
         self.run_id = run_id
         self.test = test
         self.unit = unit
@@ -73,6 +87,10 @@ class _RunHandle:
         self.finalized = threading.Event()  # set after the summary write
         self.containers: list[str] = []  # exact full IDs owned by this run
         self.repository_id: str | None = None
+        self.proof = proof
+        self.selection = selection
+        self.origin_run_id = origin_run_id
+        self.stop_detail: str | None = None
 
     def close_dir_fd(self) -> None:
         with self.lock:
@@ -95,11 +113,14 @@ class TestLifecycle:
         self._locks: dict[str, threading.Lock] = {}
         self._locks_guard = threading.Lock()
         self._runs: dict[str, _RunHandle] = {}  # worktree_id -> live handle
+        self._admission = test_admission.TestAdmission(config.socket_path.parent)
 
     # -- public operations -------------------------------------------------
 
     def start(self, path: Path, test_name: str | None,
-              caller: Caller) -> dict:
+              caller: Caller, *, checks: tuple[str, ...] = (),
+              retry_run_id: str | None = None,
+              retry_check: str | None = None) -> dict:
         if caller.uid == 0:
             raise ProtocolError("test_start_failed",
                                 "repository code never runs as root; "
@@ -114,12 +135,44 @@ class TestLifecycle:
             spec = load_test_spec(worktree_root, test_name)
         except ConfigError as exc:
             raise ProtocolError("repository_config_invalid", str(exc)) from exc
+        if (retry_run_id is None) != (retry_check is None):
+            raise ProtocolError(
+                "args_invalid", "retry_run_id and retry_check must be supplied together")
+        if retry_check is not None and checks:
+            raise ProtocolError(
+                "args_invalid", "retry and explicit check selection are separate modes")
+        configured = self._configured_checks(spec)
+        requested = (retry_check,) if retry_check is not None else checks
+        selected = self._selected_closure(configured, requested)
+        try:
+            source_fingerprint = source_digest(
+                worktree_root, (caller.uid, caller.gid))
+        except EvidenceError as exc:
+            raise ProtocolError("test_start_failed", str(exc)) from exc
+        origin = None
+        if retry_run_id is not None:
+            try:
+                origin = tests_support.find_evidence(worktree_root, retry_run_id)
+            except securefs.SecureFsError as exc:
+                raise ProtocolError("test_start_failed", str(exc)) from exc
+            self._validate_retry(
+                origin, retry_run_id, retry_check, spec,
+                source_fingerprint, configured)
+        self._validate_executables(configured, selected, spec.env,
+                                   caller.uid, caller.gid)
 
         lock = self._worktree_lock(reg.worktree_id)
         if not lock.acquire(timeout=_START_LOCK_WAIT):
             raise ProtocolError("worktree_busy",
                                 "another start for this worktree is in progress")
+        admission_context = self._admission.start_guard()
+        admission_entered = False
         try:
+            try:
+                admission = admission_context.__enter__()
+                admission_entered = True
+            except test_admission.TestsDraining as exc:
+                raise ProtocolError("tests_draining", str(exc)) from exc
             self._supersede_prior(reg.worktree_id, worktree_root)
             securefs.remove_test_dir(worktree_root)
             try:
@@ -133,12 +186,26 @@ class TestLifecycle:
             started_at = _now_iso()
             client = caller.client_kind
             dir_fd = os.open(current, os.O_RDONLY | os.O_DIRECTORY)
+            admitted = False
+            proc = None
             try:
                 initial = summary.build(run, spec.name, "running", started_at,
                                         caller.uid, client)
+                proof = "diagnostic" if requested else "complete"
+                initial.update(
+                    proof=proof,
+                    selection=list(requested),
+                    origin_run_id=retry_run_id,
+                    check_report_path=str(current / tests_support.REPORT_FILE),
+                )
                 summary.write_atomic_at(dir_fd, initial,
                                         owner=(caller.uid, caller.gid))
+                admission.started(run, unit)
+                admitted = True
+                admission_context.__exit__(None, None, None)
+                admission_entered = False
                 env = dict(spec.env)
+                env.setdefault("PATH", _CHECK_PATH)
                 containers: list[str] = []
                 if spec.postgres is not None:
                     labels = docker_cli.managed_labels(
@@ -162,11 +229,18 @@ class TestLifecycle:
                 if env:
                     _write_env_file(dir_fd, env, (caller.uid, caller.gid))
                     env_file = current / _ENV_FILE
+                plan = self._build_plan(
+                    spec, configured, selected, run, worktree_root, current,
+                    source_fingerprint, requested, origin, retry_run_id)
+                tests_support.write_check_plan(
+                    dir_fd, plan, (caller.uid, caller.gid))
                 argv = systemd_unit.build_systemd_run_argv(
                     unit=unit, slice_name=self._config.slice_name,
                     uid=caller.uid, gid=caller.gid,
-                    timeout_seconds=spec.timeout_seconds, cwd=spec.cwd,
-                    env_file=env_file, command=spec.command,
+                    timeout_seconds=spec.timeout_seconds, cwd=worktree_root,
+                    env_file=env_file,
+                    command=("/usr/bin/python3", str(_RUNNER_SCRIPT),
+                             str(current / _PLAN_FILE)),
                     scratch_dir=current / "scratch",
                 )
                 try:
@@ -184,12 +258,22 @@ class TestLifecycle:
                 err.start()
                 handle = _RunHandle(run, spec.name, unit, worktree_root,
                                     caller.uid, client, proc, out, err, None,
-                                    started_at)
+                                    started_at, proof=proof,
+                                    selection=requested,
+                                    origin_run_id=retry_run_id)
                 handle.caller_gid = caller.gid
                 handle.dir_fd = dir_fd
                 handle.containers = containers
                 handle.repository_id = reg.repository_id
             except (OSError, ProtocolError) as exc:
+                if proc is not None and proc.poll() is None:
+                    try:
+                        systemd_unit.stop_unit(unit)
+                    except systemd_unit.SystemdError:
+                        proc.terminate()
+                if admitted:
+                    self._admission.finished(run)
+                _remove_containers(containers)
                 os.close(dir_fd)
                 if isinstance(exc, ProtocolError):
                     raise
@@ -212,10 +296,15 @@ class TestLifecycle:
                 "worktree_id": reg.worktree_id,
                 "test": spec.name,
                 "status": "running",
+                "proof": proof,
+                "selection": list(requested),
+                "origin_run_id": retry_run_id,
                 "unit": unit,
                 "summary_path": str(handle.summary_path),
             }
         finally:
+            if admission_entered:
+                admission_context.__exit__(None, None, None)
             lock.release()
 
     def status(self, path: Path, caller: Caller) -> dict:
@@ -229,29 +318,46 @@ class TestLifecycle:
                 and handle.final_status is None:
             doc["stdout_bytes_observed"] = handle.out.counts.observed
             doc["stderr_bytes_observed"] = handle.err.counts.observed
+            if handle.dir_fd is not None:
+                report = tests_support.read_check_report(handle.dir_fd)
+                if report is not None:
+                    doc.update(self._report_projection(report))
         doc["summary_path"] = str(test_dir(worktree_root) / "summary.json")
         return doc
 
     def output(self, path: Path, stream: str, tail_bytes: int,
-               caller: Caller) -> dict:
+               caller: Caller, check_name: str | None = None) -> dict:
         worktree_root, _ = self._resolve(path, caller)
         current = test_dir(worktree_root)
         doc = summary.read(current / "summary.json")
         if doc is None:
             raise ProtocolError("test_not_found",
                                 "no current test run for this worktree")
-        log_path = current / f"{stream}.log"
-        tail, truncated_before = capture.tail_file(log_path, tail_bytes)
+        if check_name is not None:
+            if not CHECK_NAME_RE.fullmatch(check_name):
+                raise ProtocolError("args_invalid", "invalid check name")
+            relative = ("checks", check_name, f"{stream}.log")
+            log_path = current / "checks" / check_name / f"{stream}.log"
+        else:
+            relative = (f"{stream}.log",)
+            log_path = current / f"{stream}.log"
+        try:
+            tail, truncated_before = securefs.tail_test_file(
+                worktree_root, relative, tail_bytes)
+        except securefs.SecureFsError as exc:
+            raise ProtocolError("test_not_found", str(exc)) from exc
         return {
             "run_id": doc["run_id"],
             "stream": stream,
+            "check": check_name,
             "tail": tail.decode("utf-8", errors="replace"),
             "tail_bytes": len(tail),
             "truncated_before_tail": truncated_before,
             "log_path": str(log_path),
         }
 
-    def stop(self, path: Path, caller: Caller) -> dict:
+    def stop(self, path: Path, caller: Caller,
+             reason: str | None = None) -> dict:
         worktree_root, wt_id = self._resolve(path, caller)
         doc = summary.read(test_dir(worktree_root) / "summary.json")
         if doc is None:
@@ -263,6 +369,7 @@ class TestLifecycle:
             latest = summary.read(test_dir(worktree_root) / "summary.json") or doc
             return {"run_id": doc["run_id"], "status": latest["status"],
                     "already_finished": True}
+        handle.stop_detail = reason
         self._terminate(handle, "cancelled")
         final = summary.read(handle.summary_path)
         return {"run_id": handle.run_id,
@@ -282,6 +389,198 @@ class TestLifecycle:
         return {"status": doc["status"],
                 "run_id": doc["run_id"],
                 "summary_path": str(test_dir(worktree_root) / "summary.json")}
+
+    @staticmethod
+    def _configured_checks(spec: TestSpec) -> tuple[CheckSpec, ...]:
+        if spec.checks:
+            return spec.checks
+        assert spec.command is not None
+        return (CheckSpec(
+            name="main", command=spec.command, cwd=spec.cwd, env={},
+            after=(), requires=(), completion="process",
+            on_failure="continue", produces=(),
+        ),)
+
+    @staticmethod
+    def _selected_closure(configured: tuple[CheckSpec, ...],
+                          requested: tuple[str, ...]) -> tuple[CheckSpec, ...]:
+        by_name = {check.name: check for check in configured}
+        if len(requested) != len(set(requested)):
+            raise ProtocolError("args_invalid", "check selection contains duplicates")
+        missing = [name for name in requested if name not in by_name]
+        if missing:
+            raise ProtocolError(
+                "args_invalid", f"unknown checks: {', '.join(sorted(missing))}")
+        if not requested:
+            return configured
+        included = set(requested)
+        pending = list(requested)
+        while pending:
+            check = by_name[pending.pop()]
+            for dependency in (*check.after, *check.requires):
+                if dependency not in included:
+                    included.add(dependency)
+                    pending.append(dependency)
+        return tuple(check for check in configured if check.name in included)
+
+    @staticmethod
+    def _validate_executables(configured: tuple[CheckSpec, ...],
+                              selected: tuple[CheckSpec, ...],
+                              global_env: dict[str, str], uid: int,
+                              gid: int) -> None:
+        selected_names = {check.name for check in selected}
+        for check in configured:
+            if check.name not in selected_names:
+                continue
+            executable = check.command[0]
+            path_value = check.env.get("PATH", global_env.get("PATH", _CHECK_PATH))
+            if "/" in executable:
+                candidates = [Path(executable) if Path(executable).is_absolute()
+                              else check.cwd / executable]
+            else:
+                candidates = [Path(part) / executable
+                              for part in path_value.split(os.pathsep) if part]
+            found = False
+            for candidate in candidates:
+                argv = ["/usr/bin/test", "-x", str(candidate)]
+                if os.geteuid() == 0 and uid != 0:
+                    argv = ["setpriv", f"--reuid={uid}", f"--regid={gid}",
+                            "--init-groups", "--", *argv]
+                try:
+                    proc = subprocess.run(
+                        argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL, timeout=5, check=False,
+                        env={"PATH": _CHECK_PATH},
+                    )
+                except (OSError, subprocess.TimeoutExpired):
+                    continue
+                if proc.returncode == 0:
+                    found = True
+                    break
+            if not found:
+                raise ProtocolError(
+                    "test_start_failed",
+                    f"check {check.name!r} executable {executable!r} is unavailable")
+
+    @staticmethod
+    def _validate_retry(origin: dict | None, origin_run_id: str,
+                        retry_check: str | None, spec: TestSpec,
+                        source_fingerprint: str,
+                        configured: tuple[CheckSpec, ...]) -> None:
+        if origin is None:
+            raise ProtocolError(
+                "test_start_failed", f"no completed evidence for run {origin_run_id}")
+        if origin.get("proof") != "complete" or origin.get("selection"):
+            raise ProtocolError(
+                "test_start_failed", "a retry requires an original complete run")
+        if origin.get("test") != spec.name:
+            raise ProtocolError(
+                "test_start_failed", "retry evidence belongs to another test")
+        if origin.get("source_digest") != source_fingerprint \
+                or origin.get("config_digest") != spec.config_digest:
+            raise ProtocolError(
+                "test_start_failed", "retry evidence is stale for current source or config")
+        if retry_check not in {check.name for check in configured}:
+            raise ProtocolError("args_invalid", f"unknown check: {retry_check}")
+        previous = next((row for row in origin.get("checks", [])
+                         if row.get("name") == retry_check), None)
+        if previous is None or previous.get("status") != "failed":
+            raise ProtocolError(
+                "test_start_failed", "only a failed check from that complete run can retry")
+
+    @staticmethod
+    def _build_plan(spec: TestSpec, configured: tuple[CheckSpec, ...],
+                    selected: tuple[CheckSpec, ...], run_id: str,
+                    worktree_root: Path, current: Path,
+                    source_fingerprint: str, requested: tuple[str, ...],
+                    origin: dict | None, origin_run_id: str | None) -> dict:
+        selected_names = {check.name for check in selected}
+        target_names = set(requested)
+        previous = {row.get("name"): row for row in (origin or {}).get("checks", [])}
+        reused: dict[str, list[dict]] = {}
+        if origin is not None:
+            for check in selected:
+                row = previous.get(check.name)
+                artifacts = row.get("artifacts", []) if isinstance(row, dict) else []
+                expected_paths = [artifact.get("path") for artifact in artifacts
+                                  if isinstance(artifact, dict)]
+                if check.name in target_names or check.completion != "process" \
+                        or not artifacts or tuple(expected_paths) != check.produces \
+                        or row.get("status") not in ("passed", "reused") \
+                        or not receipts_match(worktree_root, artifacts):
+                    continue
+                reused[check.name] = artifacts
+        rows = []
+        for check in configured:
+            if check.name not in selected_names:
+                continue
+            rows.append({
+                "name": check.name,
+                "command": list(check.command),
+                "cwd": str(check.cwd),
+                "env": check.env,
+                "after": list(check.after),
+                "requires": list(check.requires),
+                "completion": check.completion,
+                "on_failure": check.on_failure,
+                "produces": list(check.produces),
+            })
+        return {
+            "schema": 1,
+            "run_id": run_id,
+            "test": spec.name,
+            "proof": "diagnostic" if requested else "complete",
+            "selection": list(requested),
+            "origin_run_id": origin_run_id,
+            "worktree_root": str(worktree_root),
+            "current_dir": str(current),
+            "source_digest": source_fingerprint,
+            "config_digest": spec.config_digest,
+            "checks": rows,
+            "reused": reused,
+        }
+
+    @staticmethod
+    def _report_projection(report: dict) -> dict:
+        checks = []
+        all_checks = report.get("checks", [])
+        if not isinstance(all_checks, list):
+            all_checks = []
+        for row in all_checks[:64]:
+            if not isinstance(row, dict):
+                continue
+            projected = {key: row.get(key) for key in (
+                "name", "status", "started_at", "finished_at",
+                "duration_seconds", "exit_code", "reason", "output_ref",
+                "stdout_bytes_observed", "stdout_bytes_retained",
+                "stdout_truncated", "stderr_bytes_observed",
+                "stderr_bytes_retained", "stderr_truncated",
+            )}
+            artifacts = row.get("artifacts", [])
+            projected["artifacts"] = artifacts[:8] if isinstance(artifacts, list) else []
+            projected["artifacts_truncated"] = isinstance(artifacts, list) \
+                and len(artifacts) > 8
+            checks.append(projected)
+        failures = []
+        all_failures = report.get("failure_index", [])
+        if not isinstance(all_failures, list):
+            all_failures = []
+        for row in all_failures[:64]:
+            if isinstance(row, dict):
+                failures.append({key: row.get(key) for key in (
+                    "check", "status", "reason", "output_ref",
+                )})
+        return {
+            "proof": report.get("proof"),
+            "selection": report.get("selection", []),
+            "check_summary": report.get("counts", {}),
+            "checks": checks,
+            "checks_truncated": len(all_checks) > 64,
+            "failure_index": failures,
+            "failure_index_truncated": bool(report.get("failure_index_truncated")),
+            "source_changed": bool(report.get("source_changed")),
+            "unsafe_reason": report.get("unsafe_reason"),
+        }
 
     # -- restart recovery --------------------------------------------------
 
@@ -326,6 +625,7 @@ class TestLifecycle:
                                     worktree_path, exc)
                 except OSError:
                     pass
+        self._admission.reset()
 
     # -- internals ---------------------------------------------------------
 
@@ -457,11 +757,13 @@ class TestLifecycle:
             props = systemd_unit.show_unit(handle.unit,
                                            ["Result", "ExecMainStatus"])
             result = props.get("Result", "")
+            report = tests_support.read_check_report(handle.dir_fd) \
+                if handle.dir_fd is not None else None
             if handle.stop_reason is not None:
                 status, exit_code = handle.stop_reason, None
             elif result == "timeout":
                 status, exit_code = "timed-out", None
-            elif rc == 0:
+            elif rc == 0 and report is not None and report.get("status") == "passed":
                 status, exit_code = "passed", 0
             else:
                 status, exit_code = "failed", rc
@@ -478,6 +780,29 @@ class TestLifecycle:
                 stdout_observed=out.observed, stdout_retained=out.retained,
                 stderr_observed=err.observed, stderr_retained=err.retained,
             )
+            doc.update(
+                proof=handle.proof,
+                selection=list(handle.selection),
+                origin_run_id=handle.origin_run_id,
+                termination_reason=handle.stop_detail,
+                check_report_path=str(
+                    handle.worktree_root / ".devcoordinator" / "test" / "current"
+                    / tests_support.REPORT_FILE),
+            )
+            if report is not None:
+                doc.update(self._report_projection(report))
+                doc["check_report_path"] = str(
+                    handle.worktree_root / ".devcoordinator" / "test" / "current"
+                    / tests_support.REPORT_FILE)
+                try:
+                    # Retry evidence must be durable before the terminal summary
+                    # becomes observable to a new caller.
+                    tests_support.record_evidence(
+                        handle.worktree_root, report,
+                        (handle.caller_uid, handle.caller_gid))
+                except securefs.SecureFsError as exc:
+                    log.warning("cannot record check evidence for %s: %s",
+                                handle.worktree_root, exc)
             try:
                 # Written through the run's own directory fd: if this run was
                 # superseded and its directory replaced, the write fails with
@@ -501,4 +826,5 @@ class TestLifecycle:
                            duration_seconds=duration, caller_uid=handle.caller_uid,
                            client=handle.client, worktree=str(handle.worktree_root))
         finally:
+            self._admission.finished(handle.run_id)
             handle.finalized.set()

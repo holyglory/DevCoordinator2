@@ -47,7 +47,7 @@ def test_health_views_measure_real_workloads(world):
         if summary["host"].get("reconciliation") and \
                 summary["host"]["reconciliation"]["managed_memory"] > 0:
             break
-        time.sleep(3)
+        time.sleep(0.1)  # no public sample event; bounded observation fallback
     assert summary and summary["host"]["memory_total"] > 0
     rec = summary["host"]["reconciliation"]
     assert rec["managed_memory"] > 0  # our postgres + api are measured and attributed
@@ -76,7 +76,7 @@ def test_health_views_measure_real_workloads(world):
         kinds = {(c["kind"], c.get("component")) for c in detail["components"]}
         if ("container", "db") in kinds and ("component", "api") in kinds:
             break
-        time.sleep(3)
+        time.sleep(0.1)  # no public sample event; bounded observation fallback
     assert ("container", "db") in kinds
     assert ("component", "api") in kinds
     db_entry = next(c for c in detail["components"] if c["id"] == db_id)
@@ -91,7 +91,7 @@ def test_health_views_measure_real_workloads(world):
                     if r["repository_id"] == resp["result"]["repository_id"])
         if mine["storage"].get("total"):
             break
-        time.sleep(5)
+        time.sleep(0.1)  # no public sample event; bounded observation fallback
     assert mine["storage"]["checkout"] > 0
     assert mine["storage"]["postgres_data"] > 0
     host_storage = _call(world, "health.summary", {})["result"]["storage"]
@@ -113,7 +113,7 @@ def test_health_views_measure_real_workloads(world):
             "subject_kind": "repository", "subject_id": resp["result"]["repository_id"],
             "metric": "memory_bytes", "minutes": 10})
         points = hist["result"]["points"]
-        time.sleep(5)
+        time.sleep(0.1)  # no public sample event; bounded observation fallback
     assert points and points[0]["avg"] > 0 and points[0]["samples"] >= 1
 
     _call(world, "deployment.remove", {"path": str(world.repo), "name": "svc",

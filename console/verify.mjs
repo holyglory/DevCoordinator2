@@ -39,20 +39,24 @@ const P_UNSIZED_PARENT = 'p1111111111111109';
 const progressFixture = (scenario, period = 'day') => {
   const spec = { hour: [3600000, 24], day: [86400000, 7], week: [604800000, 8] }[period];
   const [bucketMs, count] = spec;
-  const alignedEnd = period === 'week' ? Date.UTC(2026, 7, 31) : Date.UTC(2026, 7, 31);
+  const referenceState = !!scenario.progressReference && period === 'day';
+  const evidenceMissing = scenario.empty || referenceState;
+  const alignedEnd = referenceState ? Date.UTC(2026, 8, 1) : Date.UTC(2026, 7, 31);
+  const referenceTasks = [0, 0, 6, 3, 4, 6, 13];
+  const referenceLines = [0, 0, 1500, 0, 3500, 200, 2200];
   const series = Array.from({ length: count }, (_, index) => ({
     bucket_start_ms: alignedEnd - (count - index) * bucketMs,
     bucket_end_ms: alignedEnd - (count - index - 1) * bucketMs,
-    tasks_completed: scenario.empty ? 0 : [1, 0, 2, 1, 0, 2, 1, 1][index % 8],
+    tasks_completed: scenario.empty ? 0 : referenceState ? referenceTasks[index] : [1, 0, 2, 1, 0, 2, 1, 1][index % 8],
     tasks_created: scenario.empty ? 0 : [0, 1, 0, 0, 2, 0, 0, 1][index % 8],
     tasks_reopened: scenario.empty ? 0 : (index === count - 2 ? 1 : 0),
-    planned_lines_completed: scenario.empty ? 0 : [80, 0, 140, 95, 0, 220, 110, 75][index % 8],
+    planned_lines_completed: scenario.empty ? 0 : referenceState ? referenceLines[index] : [80, 0, 140, 95, 0, 220, 110, 75][index % 8],
     scope_lines_changed: scenario.empty ? 0 : [0, 40, 0, -20, 120, 0, 0, 30][index % 8],
-    test_runs: scenario.empty ? 0 : [3, 2, 4, 3, 5, 2, 4, 3][index % 8],
-    tests_passed: scenario.empty ? 0 : [3, 2, 3, 3, 4, 2, 4, 2][index % 8],
-    test_pass_rate: scenario.empty ? null : [1, 1, .75, 1, .8, 1, 1, .667][index % 8],
-    total_tokens: scenario.empty ? null : [120000, 90000, 180000, 150000, 210000, 110000, 170000, 130000][index % 8],
-    token_coverage: scenario.empty ? 'unobserved' : (scenario.partial && index === 2 ? 'partial' : 'complete'),
+    test_runs: evidenceMissing ? 0 : [3, 2, 4, 3, 5, 2, 4, 3][index % 8],
+    tests_passed: evidenceMissing ? 0 : [3, 2, 3, 3, 4, 2, 4, 2][index % 8],
+    test_pass_rate: evidenceMissing ? null : [1, 1, .75, 1, .8, 1, 1, .667][index % 8],
+    total_tokens: evidenceMissing ? null : [120000, 90000, 180000, 150000, 210000, 110000, 170000, 130000][index % 8],
+    token_coverage: evidenceMissing ? 'unobserved' : (scenario.partial && index === 2 ? 'partial' : 'complete'),
   }));
   const currentTotals = {
     tasks_completed: series.reduce((sum, point) => sum + point.tasks_completed, 0),
@@ -62,29 +66,34 @@ const progressFixture = (scenario, period = 'day') => {
     scope_lines_changed: series.reduce((sum, point) => sum + point.scope_lines_changed, 0),
     test_runs: series.reduce((sum, point) => sum + point.test_runs, 0),
     tests_passed: series.reduce((sum, point) => sum + point.tests_passed, 0),
-    test_pass_rate: scenario.empty ? null : .86,
-    total_tokens: scenario.empty ? null : series.reduce((sum, point) => sum + (point.total_tokens || 0), 0),
-    tokens_per_completed_task: scenario.empty ? null : 142500,
-    tokens_per_planned_line: scenario.empty ? null : 1220,
+    test_pass_rate: evidenceMissing ? null : .86,
+    total_tokens: evidenceMissing ? null : series.reduce((sum, point) => sum + (point.total_tokens || 0), 0),
+    tokens_per_completed_task: evidenceMissing ? null : 142500,
+    tokens_per_planned_line: evidenceMissing ? null : 1220,
     tasks_completed_per_day: scenario.empty ? 0 : 1.1,
     tasks_created_per_day: scenario.empty ? 0 : .6,
-    tests_per_completed_task: scenario.empty ? null : 3.25,
+    tests_per_completed_task: evidenceMissing ? null : 3.25,
   };
-  const priorities = scenario.empty ? [] : [
-    { task_id: P_C2, rank: 1, title: 'Wrong password message', outcome: 'People understand why sign-in failed and how to try again.', status: 'in_progress', kind: 'goal', estimated_loc: 275, impact_days: 1.2, group: null, dependency: null, elaboration_needed: false, reason: 'Finishing work already underway reduces handoff and delay risk.', forecast_if_deferred: { earliest_at_ms: Date.UTC(2026, 8, 2), likely_at_ms: Date.UTC(2026, 8, 3), latest_at_ms: Date.UTC(2026, 8, 5), confidence_percent: 60, explanation: 'This assumes the selected task moves out of this release; nothing is changed automatically.' } },
-    { task_id: P_UNSIZED, rank: 2, title: 'Check release', outcome: 'The complete release works in a real browser before people use it.', status: 'planned', kind: 'improvement', estimated_loc: null, impact_days: 1.0, group: null, dependency: null, elaboration_needed: false, reason: 'A missing estimate makes the release range less certain.', forecast_if_deferred: null },
-    { task_id: P_G1, rank: 3, title: 'Check e-mail spelling', outcome: 'People are told when an e-mail address is written incorrectly.', status: 'planned', kind: 'stub', estimated_loc: 100, impact_days: .4, group: null, dependency: null, elaboration_needed: false, reason: 'This is about 12% of the remaining measured scope.', forecast_if_deferred: { earliest_at_ms: Date.UTC(2026, 8, 3), likely_at_ms: Date.UTC(2026, 8, 4), latest_at_ms: Date.UTC(2026, 8, 6), confidence_percent: 64, explanation: 'This assumes the selected task moves out of this release; nothing is changed automatically.' } },
+  const releaseWork = scenario.empty ? [] : referenceState ? [
+    { task_id: P_C2, title: 'Check company internet names in the real app', status: 'in_progress', kind: 'goal', estimated_loc: 120, elaboration_needed: false, unblock_condition: 'TECHNICAL-UNBLOCK-MARKER internal acceptance harness', reopened: false, reopen_note: null },
+    { task_id: P_UNSIZED, title: 'Check the basic rules that later features depend on', status: 'planned', kind: 'improvement', estimated_loc: null, elaboration_needed: false, unblock_condition: null, reopened: false, reopen_note: null },
+    { task_id: P_G1, title: 'Run the finished work in the real app and check recovery', status: 'in_progress', kind: 'improvement', estimated_loc: 300, elaboration_needed: false, unblock_condition: null, reopened: true, reopen_note: 'TECHNICAL-REOPEN-MARKER atomic evidence reconciliation' },
+  ] : [
+    { task_id: P_C2, title: 'Help people recover from a failed sign-in', status: 'in_progress', kind: 'goal', estimated_loc: 275, elaboration_needed: false, unblock_condition: null, reopened: true, reopen_note: 'Final release receipts are not yet attached.' },
+    { task_id: P_UNSIZED, title: 'Run the complete release in a real browser', status: 'planned', kind: 'improvement', estimated_loc: null, elaboration_needed: false, unblock_condition: null, reopened: false, reopen_note: null },
+    { task_id: P_G1, title: 'Explain when an e-mail address is written incorrectly', status: 'planned', kind: 'stub', estimated_loc: 100, elaboration_needed: false, unblock_condition: null, reopened: false, reopen_note: null },
   ];
   return {
     repository_id: REPO, display_name: 'repo-one', period,
-    generated_at_ms: Date.UTC(2026, 7, 30, 23, 59),
+    generated_at_ms: referenceState ? Date.UTC(2026, 7, 31, 23, 59) : Date.UTC(2026, 7, 30, 23, 59),
     window: { bucket_ms: bucketMs, start_ms: alignedEnd - count * bucketMs,
-      end_ms: Date.UTC(2026, 7, 30, 23, 59),
+      end_ms: referenceState ? Date.UTC(2026, 7, 31, 23, 59) : Date.UTC(2026, 7, 30, 23, 59),
       comparison_start_ms: alignedEnd - count * 2 * bucketMs, timezone: 'UTC' },
-    scope: { tasks_total: scenario.empty ? 0 : 12, tasks_done: scenario.empty ? 0 : 7,
-      planned_lines_total: scenario.empty ? 0 : 2500,
-      planned_lines_done: scenario.empty ? 0 : 1558,
-      unestimated_open_tasks: scenario.empty ? 0 : 1 },
+    scope: { tasks_total: scenario.empty ? 0 : referenceState ? 126 : 12,
+      tasks_done: scenario.empty ? 0 : referenceState ? 32 : 7,
+      planned_lines_total: scenario.empty ? 0 : referenceState ? 14200 : 2500,
+      planned_lines_done: scenario.empty ? 0 : referenceState ? 7400 : 1558,
+      unestimated_open_tasks: scenario.empty ? 0 : referenceState ? 71 : 1 },
     series,
     comparison: { current: currentTotals, previous: scenario.empty ? { ...currentTotals } : {
       ...currentTotals, tasks_completed: 6, tasks_created: 7, tasks_reopened: 0,
@@ -99,6 +108,17 @@ const progressFixture = (scenario, period = 'day') => {
       velocity: { tasks_per_day: 0, planned_lines_per_day: 0, lookback_days: 28 },
       target_date_recorded: false,
       explanation: 'Plan a release before estimating its delivery range.',
+    } : referenceState ? {
+      state: 'available', release: { release_id: V_R1, name: 'Current release', status: 'planned' },
+      remaining_tasks: 94, remaining_planned_lines: 6800, unestimated_tasks: 71,
+      velocity: { tasks: 32, planned_lines: 7400, lookback_days: 7,
+        tasks_per_day: 4.6, planned_lines_per_day: 1057 },
+      target_date_recorded: false, as_of_ms: Date.UTC(2026, 7, 31, 23, 59),
+      likely_at_ms: Date.UTC(2026, 8, 13), earliest_at_ms: Date.UTC(2026, 8, 4),
+      latest_at_ms: Date.UTC(2026, 8, 21), confidence_percent: 49,
+      confidence: 'low', drivers: ['71 remaining tasks are not estimated'],
+      explanation: '71 remaining tasks are not estimated. No target date is recorded.',
+      assumptions: ['Unestimated work uses the median recorded task size when available.'],
     } : {
       state: 'available', release: { release_id: V_R1, name: 'Release 1', status: 'planned' },
       remaining_tasks: 5, remaining_planned_lines: 942, unestimated_tasks: 1,
@@ -111,11 +131,11 @@ const progressFixture = (scenario, period = 'day') => {
       explanation: 'One remaining task is not estimated. No target date is recorded.',
       assumptions: ['Current task estimates are used as planned size.'],
     },
-    priorities,
-    coverage: { state: scenario.empty ? 'unavailable' : scenario.partial ? 'partial' : 'complete',
+    release_work: releaseWork,
+    coverage: { state: scenario.empty ? 'unavailable' : (scenario.partial || referenceState) ? 'partial' : 'complete',
       plan: { state: 'complete', completed_with_estimate: 7, completed_total: 7 },
-      tests: { state: scenario.empty ? 'unobserved' : scenario.partial ? 'partial' : 'complete', recorded_runs: scenario.empty ? 0 : 26, history_sources: scenario.empty ? 0 : 1, unavailable_sources: 0, earliest_at: scenario.empty ? null : '2026-08-01T00:00:00Z' },
-      tokens: { state: scenario.empty ? 'unobserved' : scenario.partial ? 'partial' : 'complete', has_gaps: !!scenario.partial, configured_collectors: 2, available_collectors: 2, contributing_collectors: scenario.empty ? 0 : 2, freshest_at_ms: scenario.empty ? null : Date.UTC(2026, 7, 30, 23, 58), unavailable_reasons: {} } },
+      tests: { state: evidenceMissing ? 'unobserved' : scenario.partial ? 'partial' : 'complete', recorded_runs: evidenceMissing ? 0 : 26, history_sources: evidenceMissing ? 0 : 1, unavailable_sources: 0, earliest_at: evidenceMissing ? null : '2026-08-01T00:00:00Z' },
+      tokens: { state: scenario.empty ? 'unobserved' : referenceState || scenario.partial ? 'partial' : 'complete', has_gaps: !!(scenario.partial || referenceState), configured_collectors: 2, available_collectors: referenceState ? 1 : 2, contributing_collectors: evidenceMissing ? 0 : 2, freshest_at_ms: evidenceMissing ? null : Date.UTC(2026, 7, 30, 23, 58), unavailable_reasons: {} } },
     semantics: { tasks: 'terminal task status events in the permanent plan ledger', lines: 'current planned task estimates completed; not measured Git changes', tests: 'bounded repository-local terminal test summaries', tokens: 'provider total_tokens; missing collector coverage stays missing', forecast: 'deterministic range from recent pace, scope, estimates, and test stability' },
   };
 };
@@ -158,6 +178,20 @@ const fixtures = (scenario) => {
       : scenario.empty
         ? { state: 'unobserved', has_gaps: true, configured_collectors: 4, available_collectors: 4, contributing_collectors: 0, freshest_at_ms: null, events: {}, token_observations: {}, unavailable_reasons: {}, database_schemas: [4], taxonomy_versions: [1] }
         : { state: 'partial', has_gaps: true, configured_collectors: 4, available_collectors: 3, contributing_collectors: 3, freshest_at_ms: Date.now() - 120000, events: { complete: 80, partial: 2 }, token_observations: { complete: 144, partial: 3 }, unavailable_reasons: { source_unavailable: 1 }, database_schemas: [4], taxonomy_versions: [1] };
+  const usageCompleteCoverage = { ...usageCoverage, state: 'complete', has_gaps: false,
+    configured_collectors: 4, available_collectors: 4, contributing_collectors: 4,
+    unavailable_reasons: {} };
+  const usageUnobservedCoverage = { ...usageCoverage, state: 'unobserved', has_gaps: true,
+    available_collectors: 3, contributing_collectors: 0, freshest_at_ms: null,
+    events: {}, token_observations: {}, unavailable_reasons: {} };
+  const usageMappingPendingCoverage = { ...usageCoverage, state: 'unavailable', has_gaps: true,
+    available_collectors: 0, contributing_collectors: 0, freshest_at_ms: null,
+    events: {}, token_observations: {}, unavailable_reasons: { mapping_pending: 4 },
+    database_schemas: [], taxonomy_versions: [] };
+  const usageSourceFailureCoverage = { ...usageMappingPendingCoverage,
+    unavailable_reasons: { source_unavailable: 4 } };
+  const usageIndexingCoverage = { ...usageMappingPendingCoverage,
+    unavailable_reasons: { indexing: 4 } };
   const usageSeries = usageHasNoMeasurements ? [] : Array.from({ length: 24 }, (_, index) => {
     const start = Date.UTC(2026, 7, 28, 19 + index);
     const phases = {
@@ -221,8 +255,11 @@ const fixtures = (scenario) => {
       { id: 'c'.repeat(64), name: 'devcoordinator2-test-old-postgres', image: 'postgres:16-alpine', state: 'exited', status: 'Exited (0)', created: '2026-08-22', repository_id: 'r1', deployment_id: null, component: null, run_id: 't-old', caller_uid: 1001, client: 'codex', ttl_seconds: 3600, data: 'disposable', classification: 'orphaned-managed', cpu_percent: null, memory_bytes: null, pids: null, container_layer_bytes: 12345 },
       { id: 'd'.repeat(64), name: 'existing-compose-stack-app-1', image: 'app:1', state: 'running', status: 'Up 3 days (healthy)', created: '2026-08-20', repository_id: 'r0123456789abcdef', deployment_id: OBS, component: 'app', run_id: null, caller_uid: null, client: 'legacy-current-import', ttl_seconds: null, data: 'observed-only', classification: 'observed-current', cpu_percent: 2.5, memory_bytes: 123456789, pids: 4, container_layer_bytes: 45678 }], counts: { 'managed-test': 0, 'managed-preview': 0, 'managed-permanent': 1, 'observed-current': 1, 'orphaned-managed': 1, unmanaged: 1 } },
     'usage.repositories': { range: '24h', generated_at_ms: Date.now(), repositories: scenario.empty ? [] : [
-      { repository_id: REPO, display_name: 'repo-one', range: '24h', coverage: usageCoverage, total_tokens: 6405721, model_requests: 104, tool_calls: 236, execution_wall_ms: 147000 },
-      { repository_id: 'r2', display_name: LONG, range: '24h', coverage: { ...usageCoverage, state: 'complete', has_gaps: false, configured_collectors: 4, available_collectors: 4, contributing_collectors: 4 }, total_tokens: 2100000, model_requests: 38, tool_calls: 74, execution_wall_ms: 72000 }] },
+      { repository_id: REPO, display_name: 'repo-one', range: '24h', coverage: scenario.usageIndexing ? usageIndexingCoverage : usageCoverage, total_tokens: scenario.usageIndexing ? null : 6405721, model_requests: scenario.usageIndexing ? 0 : 104, tool_calls: scenario.usageIndexing ? 0 : 236, execution_wall_ms: scenario.usageIndexing ? 0 : 147000 },
+      { repository_id: 'r2', display_name: LONG, range: '24h', coverage: usageCompleteCoverage, total_tokens: 2100000, model_requests: 38, tool_calls: 74, execution_wall_ms: 72000 },
+      { repository_id: 'r3', display_name: 'no-measurements', range: '24h', coverage: usageUnobservedCoverage, total_tokens: null, model_requests: 0, tool_calls: 0, execution_wall_ms: 0 },
+      { repository_id: 'r4', display_name: 'not-connected', range: '24h', coverage: usageMappingPendingCoverage, total_tokens: null, model_requests: 0, tool_calls: 0, execution_wall_ms: 0 },
+      { repository_id: 'r5', display_name: 'source-read-failed', range: '24h', coverage: usageSourceFailureCoverage, total_tokens: null, model_requests: 0, tool_calls: 0, execution_wall_ms: 0 }] },
     'usage.repository': usageDetail,
     'progress.repositories': { repositories: scenario.empty ? [] : [
       { repository_id: REPO, display_name: 'repo-one', open_tasks: 5,
@@ -286,7 +323,9 @@ const SCENARIOS = {
   applying: { identity: 'owner@example.test', admin: true, applying: true },
   usageComplete: { identity: 'owner@example.test', admin: true, usageComplete: true, targetedOnly: true },
   usageUnavailable: { identity: 'owner@example.test', admin: true, usageUnavailable: true, targetedOnly: true },
+  usageIndexing: { identity: 'owner@example.test', admin: true, usageIndexing: true, targetedOnly: true },
   progressPartial: { identity: 'owner@example.test', admin: true, partial: true, targetedOnly: true },
+  progressReference: { identity: 'owner@example.test', admin: true, progressReference: true, targetedOnly: true },
 };
 const VIEWS = ['#/deployments', `#/deployments/${DEP}`, '#/plan', `#/plan/${REPO}`, '#/progress', `#/progress/${REPO}`, '#/usage', `#/usage/${REPO}`, '#/decisions', `#/decisions/${REPO}`, '#/tests', '#/health', '#/health/containers', '#/bugs', '#/admin'];
 const VIEWPORTS = { wide: { width: 1280, height: 800 }, narrow: { width: 390, height: 844 } };
@@ -309,7 +348,11 @@ async function startFakeDaemon(dir) {
   const socketPath = path.join(dir, 'daemon.sock');
   let scenario = SCENARIOS.populated;
   const calls = [];
-  const mutable = { stopped: false, serviceStopped: false, taskUpdates: new Map(), createdTasks: [], previewRequested: false, failNextTaskUpdate: false };
+  const settled = new WeakSet();
+  const settledWaiters = new Set();
+  const receivedWaiters = new Set();
+  const delayedReplies = new Set();
+  const mutable = { stopped: false, serviceStopped: false, taskUpdates: new Map(), createdTasks: [], previewRequested: false, failNextTaskUpdate: false, usageCollectionReads: 0 };
   const planOverview = () => {
     const result = fixtures(scenario)['plan.overview'];
     result.tasks = result.tasks
@@ -328,8 +371,21 @@ async function startFakeDaemon(dir) {
     socket.on('data', async (c) => {
       buf += c; if (!buf.endsWith('\n')) return;
       const req = JSON.parse(buf); calls.push(req);
-      const reply = (payload) => socket.end(`${JSON.stringify({ protocol: 1, id: req.id, ...payload })}\n`);
-      if (scenario.delayMs) await new Promise((r) => setTimeout(r, scenario.delayMs));
+      for (const waiter of [...receivedWaiters]) {
+        if (calls.length <= waiter.after) continue;
+        receivedWaiters.delete(waiter);
+        waiter.resolve(req);
+      }
+      const markSettled = () => {
+        settled.add(req);
+        for (const waiter of [...settledWaiters]) {
+          if (!waiter.predicate(req)) continue;
+          settledWaiters.delete(waiter);
+          waiter.resolve(req);
+        }
+      };
+      const reply = (payload) => socket.end(`${JSON.stringify({ protocol: 1, id: req.id, ...payload })}\n`, markSettled);
+      if (scenario.delayMs) await new Promise((resolve) => delayedReplies.add(resolve));
       const cmd = req.command;
       if (cmd === 'user.whoami' && process.env.CONSOLE_VERIFY_RESET_PLAN_ON_SESSION === '1') {
         mutable.taskUpdates.clear();
@@ -379,7 +435,10 @@ async function startFakeDaemon(dir) {
         return reply({ ok: true, result });
       }
       if (cmd === 'usage.repositories') {
-        const result = structuredClone(fixtures(scenario)['usage.repositories']);
+        const fixtureScenario = scenario.usageIndexing && mutable.usageCollectionReads > 0
+          ? { ...scenario, usageIndexing: false } : scenario;
+        mutable.usageCollectionReads += 1;
+        const result = structuredClone(fixtures(fixtureScenario)['usage.repositories']);
         result.range = req.args.range || '24h';
         return reply({ ok: true, result });
       }
@@ -392,10 +451,33 @@ async function startFakeDaemon(dir) {
   return {
     socketPath,
     calls,
-    setScenario: (s) => { scenario = s; mutable.stopped = false; mutable.serviceStopped = false; mutable.taskUpdates.clear(); mutable.createdTasks.length = 0; mutable.previewRequested = false; mutable.failNextTaskUpdate = false; calls.length = 0; },
+    setScenario: (s) => { for (const release of delayedReplies) release(); delayedReplies.clear(); scenario = s; mutable.stopped = false; mutable.serviceStopped = false; mutable.taskUpdates.clear(); mutable.createdTasks.length = 0; mutable.previewRequested = false; mutable.failNextTaskUpdate = false; mutable.usageCollectionReads = 0; calls.length = 0; },
     failNextTaskUpdate: () => { mutable.failNextTaskUpdate = true; },
+    releaseDelayed: () => { for (const release of delayedReplies) release(); delayedReplies.clear(); },
+    waitForReceivedAfter: (after) => {
+      if (calls.length > after) return Promise.resolve(calls[after]);
+      return new Promise((resolve) => receivedWaiters.add({ after, resolve }));
+    },
+    waitForCall: (predicateOrCommand) => {
+      const predicate = typeof predicateOrCommand === 'string'
+        ? (call) => call.command === predicateOrCommand : predicateOrCommand;
+      const existing = calls.find((call) => settled.has(call) && predicate(call));
+      if (existing) return Promise.resolve(existing);
+      return new Promise((resolve) => settledWaiters.add({ predicate, resolve }));
+    },
     close: () => new Promise((r) => server.close(r)),
   };
+}
+
+async function waitForRenderFrame(page) {
+  await page.evaluate(() => new Promise((resolve) => {
+    requestAnimationFrame(() => requestAnimationFrame(resolve));
+  }));
+}
+
+async function waitForSettledCall(daemon, page, predicateOrCommand) {
+  await daemon.waitForCall(predicateOrCommand);
+  await waitForRenderFrame(page);
 }
 
 async function main() {
@@ -464,9 +546,22 @@ async function main() {
       page.on('dialog', (d) => d.accept());
       for (const view of VIEWS) {
         const label = `${scenarioName}-${view.replace(/[#/]+/g, '_').replace(/^_/, '')}-${vpName}`;
+        const callsBeforeNavigation = daemon.calls.length;
         await page.goto(`http://${HOST}:${port}/${view}`);
-        if (scenario.delayMs) { await page.waitForTimeout(500); }
-        else { await page.waitForFunction(() => !document.querySelector('.skeleton'), null, { timeout: 15000 }).catch(() => {}); await page.waitForTimeout(300); }
+        if (scenario.delayMs) {
+          const firstPending = await daemon.waitForReceivedAfter(callsBeforeNavigation);
+          if (firstPending.command === 'user.whoami') {
+            daemon.releaseDelayed();
+            await daemon.waitForReceivedAfter(callsBeforeNavigation + 1);
+          }
+          await page.waitForFunction(() => document.querySelector('.skeleton')
+            || /Loading/.test(document.body.innerText));
+          await waitForRenderFrame(page);
+        }
+        else {
+          await page.waitForFunction(() => !document.querySelector('.skeleton'), null, { timeout: 15000 }).catch(() => {});
+          await waitForRenderFrame(page);
+        }
         await page.screenshot({ path: path.join(OUT, `${label}.png`), fullPage: true });
         const metrics = await page.evaluate((expectedDestinationHref) => {
           const doc = document.documentElement;
@@ -586,19 +681,34 @@ async function main() {
           check(`${label}: usage provides exact chart values`, await page.locator('.usage-exact table').count() === 1);
         }
         if (scenarioName === 'populated' && view === `#/progress/${REPO}`) {
-          check(`${label}: progress leads with the release forecast and delivery pulse`,
-            /likely release date/i.test(metrics.text) && /Delivery pulse/.test(metrics.text)
+          check(`${label}: progress leads with the release forecast and daily progress`,
+            /Likely release:/.test(metrics.text) && /Daily progress/.test(metrics.text)
             && await page.locator('[data-ui-region="progress-forecast"]').count() === 1
-            && await page.locator('.progress-pulse-chart').count() === 1);
-          check(`${label}: progress keeps both selected design modes available`,
-            await page.locator('[data-progress-mode="pulse"]').count() === 1
-            && await page.locator('[data-progress-mode="priorities"]').count() === 1
-            && /Priority queue/.test(metrics.text));
+            && await page.locator('.progress-pulse-chart').count() === 2
+            && await page.locator('[data-ui-region="progress-release-work"]').count() === 1);
+          check(`${label}: progress shows factual Plan-ordered work without heuristic claims`,
+            /Work in this release/.test(metrics.text)
+            && /Shown in Plan order/.test(metrics.text)
+            && !/Priority queue|Release impact|dependency|ranked by|\d+\.\d+ days|TECHNICAL-(?:UNBLOCK|REOPEN)-MARKER/.test(metrics.text));
+          check(`${label}: progress distinguishes daily bars from running-total lines`,
+            await page.locator('.progress-bar').count() > 0
+            && await page.locator('.progress-running-line').count() === 2
+            && /Bars = finished that/.test(metrics.text)
+            && /Line = total during this period/.test(metrics.text));
+          const labelLayering = await page.locator('.progress-bar-line-chart').evaluateAll((charts) => charts.every((chart) => {
+            const line = chart.querySelector('.progress-running-line');
+            const labels = [...chart.querySelectorAll('.progress-bar-value')];
+            return line && labels.length > 0
+              && labels.every((value) => Boolean(line.compareDocumentPosition(value) & Node.DOCUMENT_POSITION_FOLLOWING))
+              && labels.every((value) => getComputedStyle(value).paintOrder.startsWith('stroke'));
+          }));
+          check(`${label}: progress value labels paint above the running line with a readability halo`, labelLayering);
           check(`${label}: progress labels estimated lines truthfully`,
             /Planned lines completed/.test(metrics.text)
             && /Current task estimates/.test(metrics.text)
             && !/Git lines completed/.test(metrics.text));
         }
+        if (scenario.delayMs) daemon.releaseDelayed();
       }
       await context.close();
     }
@@ -652,7 +762,7 @@ async function main() {
   await page.waitForSelector('pre.log');
   check('interaction: logs load on demand', daemon.calls.some((c) => c.command === 'deployment.logs' && c.args.component === 'api'));
   await page.click('button[data-cmd="deployment.remove"]');
-  await page.waitForTimeout(500);
+  await waitForSettledCall(daemon, page, 'deployment.remove');
   const removeCall = daemon.calls.find((c) => c.command === 'deployment.remove');
   check('interaction: remove asks for confirmation and passes delete_data explicitly', removeCall && typeof removeCall.args.delete_data === 'boolean');
   // Domain editing (DC2-2026-08-24: administrators edit the routed domain in place).
@@ -662,7 +772,7 @@ async function main() {
   await page.waitForSelector('dialog#domain-dialog[open]');
   await page.fill('#domain-form [name=domain]', 'renamed-app');
   await page.click('#domain-form button[type=submit]');
-  await page.waitForTimeout(500);
+  await waitForSettledCall(daemon, page, 'deployment.set_domain');
   const domainCall = daemon.calls.find((c) => c.command === 'deployment.set_domain');
   check('interaction: domain pop-up calls deployment.set_domain with the new label',
     domainCall && domainCall.args.deployment_id === DEP && domainCall.args.domain === 'renamed-app');
@@ -677,7 +787,7 @@ async function main() {
   await page.waitForSelector('dialog#domain-dialog[open]');
   await page.fill('#domain-form [name=domain]', 'from-list');
   await page.click('#domain-form button[type=submit]');
-  await page.waitForTimeout(500);
+  await waitForSettledCall(daemon, page, 'deployment.set_domain');
   const listDomainCall = daemon.calls.find((c) => c.command === 'deployment.set_domain');
   check('interaction: list-row ✎ opens the pop-up and edits that deployment',
     listDomainCall && listDomainCall.args.deployment_id === OBS && listDomainCall.args.domain === 'from-list');
@@ -696,7 +806,7 @@ async function main() {
     && await page.locator('[data-logs]').count() >= 1
     && await page.locator('[data-cmd="deployment.apply"], [data-cmd="deployment.rollback"], [data-cmd="deployment.remove"]').count() === 0);
   await page.click('h1 ~ .actions button[data-cmd="deployment.restart"]');
-  await page.waitForTimeout(500);
+  await waitForSettledCall(daemon, page, 'deployment.restart');
   check('interaction: observed restart calls deployment.restart on the observed id',
     daemon.calls.some((c) => c.command === 'deployment.restart' && c.args.deployment_id === OBS));
   await page.goto(`http://${HOST}:${port}/#/tests`);
@@ -708,13 +818,13 @@ async function main() {
   await page.waitForSelector('#bug-form');
   for (const [f, v] of [['component', 'api'], ['summary', 'verify'], ['expected', 'a'], ['actual', 'b'], ['steps', 'c']]) await page.fill(`#bug-form [name=${f}]`, v);
   await page.click('#bug-form button[type=submit]');
-  await page.waitForTimeout(500);
+  await waitForSettledCall(daemon, page, 'bug.report');
   check('interaction: bug report form calls bug.report', daemon.calls.some((c) => c.command === 'bug.report' && c.args.summary === 'verify'));
   await page.goto(`http://${HOST}:${port}/#/admin`);
   await page.waitForSelector('#invite-form');
   await page.fill('#invite-form [name=email]', 'new2@example.test');
   await page.click('#invite-form button[type=submit]');
-  await page.waitForTimeout(500);
+  await waitForSettledCall(daemon, page, 'user.invite');
   check('interaction: invite form calls user.invite', daemon.calls.some((c) => c.command === 'user.invite' && c.args.email === 'new2@example.test'));
   await page.waitForFunction(() => /daemon 0\.1\.0/.test(document.querySelector('#server')?.textContent || ''), null, { timeout: 10000 });
   check('admin: the Server line renders daemon version, schema, and route generation',
@@ -729,7 +839,7 @@ async function main() {
     /observed-current/.test(await observedContainer.innerText()) &&
     await observedContainer.locator('button[data-cmd="health.container_remove"]').count() === 0);
   await removable[0].click();
-  await page.waitForTimeout(500);
+  await waitForSettledCall(daemon, page, 'health.container_remove');
   check('interaction: container removal calls health.container_remove with the exact id', daemon.calls.some((c) => c.command === 'health.container_remove' && c.args.container_id === 'c'.repeat(64)));
   await page.goto(`http://${HOST}:${port}/#/health`);
   await page.waitForSelector('.card.bad-edge');
@@ -747,20 +857,22 @@ async function main() {
   daemon.calls.length = 0;
   await page.click('[data-health-range="7d"]');
   await page.waitForSelector('.chartbox svg.chart');
-  await page.waitForTimeout(400);
+  await waitForSettledCall(daemon, page,
+    (call) => call.command === 'health.history' && call.args.minutes === 10080);
   check('interaction: the 7d range requests a downsampled week of host history',
     daemon.calls.some((c) => c.command === 'health.history' && c.args.minutes === 10080 && c.args.points > 0));
   daemon.calls.length = 0;
   await page.click('[data-health-range="30d"]');
   await page.waitForSelector('.chartbox svg.chart');
-  await page.waitForTimeout(400);
+  await waitForSettledCall(daemon, page,
+    (call) => call.command === 'health.history' && call.args.minutes === 43200);
   check('interaction: the 30d range requests a downsampled month of host history',
     daemon.calls.some((c) => c.command === 'health.history' && c.args.minutes === 43200 && c.args.points > 0));
   for (const action of ['start', 'stop', 'restart']) {
     daemon.calls.length = 0;
     await page.click(`.health-incident-card [data-cmd="deployment.${action}"]`);
     await page.waitForSelector('.health-incident-card');
-    await page.waitForTimeout(300);
+    await waitForSettledCall(daemon, page, `deployment.${action}`);
     check(`interaction: Health ${action} acts on the selected unhealthy deployment`,
       daemon.calls.some((call) => call.command === `deployment.${action}` && call.args.deployment_id === 'd1111111111111111'));
   }
@@ -795,9 +907,17 @@ async function main() {
   const usageCollectionText = await page.innerText('[data-ui-region="codex-usage-repositories"]');
   check('usage: repository collection describes data inclusion without implementation jargon',
     /Data included/.test(usageCollectionText)
-    && /All 4 configured Codex environments included/.test(usageCollectionText)
-    && /Some usage may be missing/.test(usageCollectionText)
+    && /All 4 environments included/.test(usageCollectionText)
+    && /3 of 4 environments included/.test(usageCollectionText)
+    && /No usage measured/.test(usageCollectionText)
+    && /Not connected in all environments/.test(usageCollectionText)
+    && /Usage data unavailable/.test(usageCollectionText)
     && !/\bcollectors?\b|Partial coverage|Complete coverage/.test(usageCollectionText));
+  check('usage: collection severity distinguishes setup, partial, complete, and failure',
+    await page.locator('.usage-collection-table .usage-coverage-mark.setup').count() === 1
+    && await page.locator('.usage-collection-table .usage-coverage-mark.warn').count() === 1
+    && await page.locator('.usage-collection-table .usage-coverage-mark.ok').count() === 1
+    && await page.locator('.usage-collection-table .usage-coverage-mark.bad').count() === 1);
   await page.click(`a[href="#/usage/${REPO}"]`);
   await page.waitForSelector('.usage-phase-chart');
   check('usage: the destination title is a real collection link',
@@ -810,11 +930,15 @@ async function main() {
   await page.waitForSelector('[data-project-picker-menu]:not([hidden])');
   await page.waitForFunction(() => document.activeElement?.matches('[data-project-picker-menu] [role="menuitem"]'));
   check('interaction: the project menu lists every visible project as a real link',
-    await page.locator('[data-project-picker-menu] [role="menuitem"]').count() === 2
+    await page.locator('[data-project-picker-menu] [role="menuitem"]').count() === 5
     && await page.locator('[data-project-picker-menu] a[href="#/usage/r2"]').count() === 1);
+  const usageProjectBeforeArrow = await page.evaluate(
+    () => document.activeElement?.getAttribute('href'));
   await page.keyboard.press('ArrowDown');
   check('interaction: arrow keys move focus through the project menu',
-    await page.evaluate(() => document.activeElement?.getAttribute('href')) === '#/usage/r2');
+    !!usageProjectBeforeArrow
+    && await page.evaluate(() => document.activeElement?.getAttribute('href'))
+      !== usageProjectBeforeArrow);
   await page.keyboard.press('Escape');
   check('interaction: Escape closes the project menu and returns focus',
     await page.locator('[data-project-picker-menu][hidden]').count() === 1
@@ -845,16 +969,45 @@ async function main() {
     await page.locator('.usage-rail').count() === 3
     && /not added together/.test(await page.innerText('.usage-lower')));
   const usageContextText = await page.innerText('.usage-context');
-  check('usage: missing data is explained before the chart in plain language',
+  check('usage: missing-data status stays concise before the chart',
     /Some usage may be missing/.test(usageContextText)
     && /data from 3 of 4 configured Codex environments/.test(usageContextText)
-    && /separately configured local Codex setup with its own usage history/.test(usageContextText)
-    && /excluded, never counted as zero/.test(usageContextText)
+    && !/separately configured local Codex setup with its own usage history/.test(usageContextText)
+    && !/excluded, never counted as zero/.test(usageContextText)
+    && await page.locator('.usage-coverage-popover[hidden]').count() === 1
+    && await page.locator('.usage-coverage-note').count() === 0
     && !/\bcollectors?\b|Partial coverage|measured values only|configured histories/.test(usageContextText));
+  const usageHintToggle = page.locator('[data-usage-coverage-hint-toggle]');
+  check('usage: completeness hint has an accessible controlled dialog',
+    await usageHintToggle.getAttribute('aria-controls') === 'usage-coverage-hint'
+    && await usageHintToggle.getAttribute('aria-expanded') === 'false'
+    && await page.locator('#usage-coverage-hint[role="dialog"][aria-labelledby="usage-coverage-hint-title"]').count() === 1);
+  await usageHintToggle.focus();
+  await page.keyboard.press('Enter');
+  await page.waitForSelector('.usage-coverage-popover:not([hidden])');
+  await page.waitForFunction(() => document.activeElement?.matches('.usage-coverage-popover'));
+  const usageHintText = await page.innerText('.usage-coverage-popover');
+  check('interaction: keyboard opens the full usage explanation only on request',
+    await usageHintToggle.getAttribute('aria-expanded') === 'true'
+    && await page.locator('.usage-coverage-popover:focus').count() === 1
+    && /separately configured local Codex setup with its own usage history/.test(usageHintText)
+    && /excluded, never counted as zero/.test(usageHintText));
+  await page.keyboard.press('Escape');
+  check('interaction: Escape closes the usage hint and returns focus',
+    await page.locator('.usage-coverage-popover[hidden]').count() === 1
+    && await usageHintToggle.getAttribute('aria-expanded') === 'false'
+    && await page.locator('[data-usage-coverage-hint-toggle]:focus').count() === 1);
+  await usageHintToggle.click();
+  await page.waitForSelector('.usage-coverage-popover:not([hidden])');
+  await page.click('.usage-repo-mark');
+  check('interaction: clicking outside dismisses the usage hint',
+    await page.locator('.usage-coverage-popover[hidden]').count() === 1
+    && await usageHintToggle.getAttribute('aria-expanded') === 'false');
   daemon.calls.length = 0;
   await page.click('[data-codex-range="7d"]');
   await page.waitForSelector('.usage-phase-chart');
-  await page.waitForTimeout(400);
+  await waitForSettledCall(daemon, page,
+    (call) => call.command === 'usage.repository' && call.args.range === '7d');
   check('interaction: the 7d range re-reads the selected repository and restores focus',
     daemon.calls.some((c) => c.command === 'usage.repository' && c.args.repository_id === REPO && c.args.range === '7d')
     && await page.locator('[data-codex-range="7d"]:focus').count() === 1);
@@ -873,24 +1026,60 @@ async function main() {
 
   for (const [scenarioName, scenario, expected, explanation] of [
     ['complete', SCENARIOS.usageComplete, 'All 4 configured Codex environments included', 'Every configured environment supplied measurable data for this repository and period.'],
-    ['no-measurement', SCENARIOS.empty, 'No usage measured in this period', 'The configured environments contained no measured usage for this repository and period.'],
-    ['unavailable', SCENARIOS.usageUnavailable, 'Usage unavailable · no configured Codex environment supplied data', 'No configured environment supplied data for this repository and period.'],
+    ['no-measurement', SCENARIOS.empty, 'No usage measured in this period', 'The connected environments contained no measured usage for this repository and period.'],
+    ['unavailable', SCENARIOS.usageUnavailable, 'Usage data unavailable', 'Configured environments could not supply usage data for this repository and period.'],
   ]) {
     daemon.setScenario(scenario);
     await page.reload();
-    await page.waitForSelector('.usage-coverage-note');
+    await page.waitForSelector('[data-usage-coverage-hint-toggle]');
     await page.waitForFunction((expectedText) =>
       (document.querySelector('.usage-context')?.innerText || '').includes(expectedText), expected);
     const contextText = await page.innerText('.usage-context');
-    check(`usage: ${scenarioName} state explains what data is included`,
-      contextText.includes(expected) && contextText.includes(explanation)
+    check(`usage: ${scenarioName} state keeps its explanation hidden by default`,
+      contextText.includes(expected) && !contextText.includes(explanation)
+      && await page.locator('.usage-coverage-popover[hidden]').count() === 1
       && !/\bcollectors?\b|Partial coverage|Complete coverage|measured values only|configured histories/.test(contextText),
       contextText.slice(0, 240));
+    await page.click('[data-usage-coverage-hint-toggle]');
+    await page.waitForSelector('.usage-coverage-popover:not([hidden])');
+    const explanationText = await page.innerText('.usage-coverage-popover');
+    check(`interaction: ${scenarioName} hint explains what data is included`,
+      explanationText.includes(explanation)
+      && /separately configured local Codex setup with its own usage history/.test(explanationText)
+      && !/\bcollectors?\b|Partial coverage|Complete coverage|measured values only|configured histories/.test(explanationText),
+      explanationText.slice(0, 240));
+    await page.keyboard.press('Escape');
   }
+  daemon.setScenario(SCENARIOS.usageIndexing);
+  const usageIndexingStarted = Date.now();
+  await page.goto(`http://${HOST}:${port}/#/usage`);
+  await page.waitForSelector('.usage-collection-table .usage-coverage-mark.indexing');
+  const usageIndexingFirstRow = await page.innerText('.usage-collection-table tbody tr');
+  const usageIndexingVisibleMs = Date.now() - usageIndexingStarted;
+  await page.focus('[data-codex-range="24h"]');
+  check('usage: indexing collection appears within one second without fake zeroes',
+    usageIndexingVisibleMs < 1000
+    && /Updating usage data/.test(usageIndexingFirstRow)
+    && (usageIndexingFirstRow.match(/—/g) || []).length >= 4,
+    JSON.stringify({ usageIndexingVisibleMs, usageIndexingFirstRow }));
+  await page.waitForFunction(() => {
+    const row = document.querySelector('.usage-collection-table tbody tr');
+    return !document.querySelector('.usage-collection-table .usage-coverage-mark.indexing')
+      && /6\.4M/.test(row?.innerText || '')
+      && document.activeElement?.matches('[data-codex-range="24h"]');
+  }, null, { timeout: 3000 });
+  const usageIndexingCalls = daemon.calls.filter(
+    (call) => call.command === 'usage.repositories').length;
+  const usageIndexingFinalRow = await page.innerText('.usage-collection-table tbody tr');
+  const usageIndexingFocus = await page.locator('[data-codex-range="24h"]:focus').count();
+  check('interaction: indexing collection refreshes in place and preserves range focus',
+    usageIndexingCalls >= 2 && /6\.4M/.test(usageIndexingFinalRow)
+    && usageIndexingFocus === 1,
+    JSON.stringify({ usageIndexingCalls, usageIndexingFinalRow, usageIndexingFocus }));
   daemon.setScenario(SCENARIOS.populated);
 
-  // Progress: both selected dashboard modes, truthful comparisons, local
-  // prioritization, period reads, partial coverage, and Plan continuation.
+  // Progress: factual release work, truthful bars and running totals, local
+  // selection, period reads, missing evidence, and exact Plan continuation.
   await page.goto(`http://${HOST}:${port}/#/progress`);
   await page.waitForSelector(`a[href="#/progress/${REPO}"]`);
   check('progress: the operator navigation and repository collection are available',
@@ -916,51 +1105,41 @@ async function main() {
   check('interaction: the Progress project menu switches within Progress',
     /going-and-going/.test(await page.innerText('.project-picker-current')));
   await page.goto(`http://${HOST}:${port}/#/progress/${REPO}`);
-  await page.waitForSelector('.progress-pulse-chart, .progress-priority-view');
-  daemon.calls.length = 0;
-  await page.click('[data-progress-mode="priorities"]');
-  await page.waitForSelector('.progress-priority-view');
-  check('interaction: switching to Priorities is local and exposes the full ranked view',
-    !daemon.calls.some((call) => call.command === 'progress.repository')
-    && await page.locator('.progress-priority-full [data-progress-task]').count() === 3
-    && /Selection changes the comparison only/.test(await page.innerText('.progress-priority-view')));
-  await page.click('[data-progress-mode="pulse"]');
-  await page.waitForSelector('.progress-pulse-view');
-  check('interaction: switching back to Delivery pulse is local',
-    !daemon.calls.some((call) => call.command === 'progress.repository')
-    && await page.locator('.progress-pulse-chart').count() === 1);
-  await page.click('[data-progress-show-priorities]');
-  await page.waitForSelector('.progress-priority-view');
-  check('interaction: View full ranked table opens the complete Priorities mode',
-    await page.locator('[data-progress-mode="priorities"].active').count() === 1);
+  await page.waitForSelector('.progress-pulse-chart');
+  await page.evaluate(() => { window.__progressWorkspace = document.querySelector('[data-ui-region="progress-primary"]'); });
   daemon.calls.length = 0;
   for (const taskId of [P_C2, P_UNSIZED, P_G1]) {
     await page.click(`[data-progress-task="${taskId}"]`);
-    check(`interaction: priority row ${taskId} is selectable`,
+    check(`interaction: release-work row ${taskId} is selectable`,
       await page.locator(`[data-progress-task="${taskId}"].selected`).count() === 1);
   }
-  check('interaction: selecting priority work updates the scenarios without mutating the plan',
+  check('interaction: selecting release work is local and keeps the page stable',
     await page.locator(`[data-progress-task="${P_G1}"].selected`).count() === 1
+    && await page.evaluate(() => document.querySelector('[data-ui-region="progress-primary"]') === window.__progressWorkspace)
+    && !daemon.calls.some((call) => call.command === 'progress.repository')
     && !daemon.calls.some((call) => call.command === 'task.update')
-    && /nothing is changed automatically/.test(await page.innerText('.progress-scenarios')));
+    && !/Priority queue|Release impact|dependency/.test(await page.innerText('main')));
   daemon.calls.length = 0;
   await page.click('[data-progress-period="hour"]');
-  await page.waitForTimeout(300);
+  await waitForSettledCall(daemon, page,
+    (call) => call.command === 'progress.repository' && call.args.period === 'hour');
   check('interaction: hourly progress reads hourly repository buckets',
     daemon.calls.some((call) => call.command === 'progress.repository'
       && call.args.repository_id === REPO && call.args.period === 'hour')
     && await page.locator('[data-progress-period="hour"]:focus').count() === 1);
   daemon.calls.length = 0;
   await page.click('[data-progress-period="day"]');
-  await page.waitForTimeout(300);
+  await waitForSettledCall(daemon, page,
+    (call) => call.command === 'progress.repository' && call.args.period === 'day');
   check('interaction: daily progress reads daily repository buckets',
     daemon.calls.some((call) => call.command === 'progress.repository'
       && call.args.repository_id === REPO && call.args.period === 'day')
     && await page.locator('[data-progress-period="day"]:focus').count() === 1);
   daemon.calls.length = 0;
   await page.click('[data-progress-period="week"]');
-  await page.waitForSelector('.progress-pulse-chart, .progress-priority-view');
-  await page.waitForTimeout(400);
+  await page.waitForSelector('.progress-pulse-chart');
+  await waitForSettledCall(daemon, page,
+    (call) => call.command === 'progress.repository' && call.args.period === 'week');
   check('interaction: weekly progress re-reads aligned repository buckets and restores focus',
     daemon.calls.some((call) => call.command === 'progress.repository'
       && call.args.repository_id === REPO && call.args.period === 'week')
@@ -975,18 +1154,27 @@ async function main() {
   check('interaction: Open full plan navigates to the repository plan',
     await page.locator('.gantt').count() === 1);
   await page.goto(`http://${HOST}:${port}/#/progress/${REPO}`);
-  await page.waitForSelector('.progress-pulse-chart, .progress-priority-view');
+  await page.waitForSelector('.progress-pulse-chart');
   daemon.setScenario(SCENARIOS.progressPartial);
   await page.reload();
-  await page.waitForSelector('.progress-coverage');
+  await page.waitForSelector('.progress-missing-note');
   check('progress: partial evidence is visible and never described as zero',
-    /partial data/.test(await page.innerText('.progress-coverage'))
-    && /Gaps stay blank rather than becoming zero/.test(await page.innerText('.progress-coverage')));
+    /gaps stay blank/i.test(await page.innerText('.progress-pulse'))
+    && /never counted as zero/.test(await page.innerText('.progress-missing-note')));
+  daemon.setScenario(SCENARIOS.progressReference);
+  await page.reload();
+  await page.waitForSelector('.progress-pulse-chart');
+  check('progress: entirely missing test and token evidence has no zero-valued chart',
+    await page.locator('.progress-evidence-chart').count() === 0
+    && await page.locator('.progress-evidence-lane > strong').allTextContents().then((values) => values.every((value) => value.trim() === '—'))
+    && /No test runs recorded for this period/.test(await page.innerText('.progress-pulse'))
+    && /Some token data is missing/.test(await page.innerText('.progress-pulse'))
+    && /71 tasks have no estimate/.test(await page.innerText('.progress-forecast'))
+    && /reopened/.test(await page.innerText('.progress-release-work'))
+    && !/TECHNICAL-(?:UNBLOCK|REOPEN)-MARKER/.test(await page.innerText('.progress-release-work')));
   daemon.setScenario(SCENARIOS.populated);
   await page.reload();
   await page.waitForSelector('.progress-pulse-chart');
-  await page.click('[data-progress-mode="priorities"]');
-  await page.waitForSelector('.progress-priority-view');
   await page.click(`[data-progress-task="${P_C2}"]`);
   await page.click('[data-progress-open-task]');
   await page.waitForURL(new RegExp(`#\\/plan\\/${REPO}$`));
@@ -1039,7 +1227,7 @@ async function main() {
     JSON.stringify(daemon.calls));
   daemon.calls.length = 0; daemon.failNextTaskUpdate();
   await page.click(`[data-task-row="${P_G1}"] [data-elaborate-task]`);
-  await page.waitForTimeout(500);
+  await waitForSettledCall(daemon, page, 'task.update');
   check('interaction: a failed elaboration request reports the failure and stays retryable',
     await page.locator(`[data-task-row="${P_G1}"] [data-elaborate-task]:not(:disabled)`).count() === 1
     && !/elaboration needed/.test(await page.innerText(`[data-task-row="${P_G1}"]`))
@@ -1141,7 +1329,7 @@ async function main() {
   await page.waitForSelector('dialog#estimate-dialog[open]');
   await page.fill('#estimate-form [name=estimated_loc]', '240');
   await page.click('#estimate-form button[type=submit]');
-  await page.waitForTimeout(500);
+  await waitForSettledCall(daemon, page, 'task.update');
   check('interaction: adding an estimate persists it and moves the task onto the measured scale',
     daemon.calls.some((call) => call.command === 'task.update' && call.args.task_id === P_UNSIZED && call.args.estimated_loc === 240)
     && /~240 lines/.test(await page.innerText(`[data-task-row="${P_UNSIZED}"]`))
@@ -1156,7 +1344,7 @@ async function main() {
   await page.mouse.down();
   await page.mouse.move(resizeBox.x + resizeBox.width / 2 + 70, resizeBox.y + resizeBox.height / 2, { steps: 5 });
   await page.mouse.up();
-  await page.waitForTimeout(500);
+  await waitForSettledCall(daemon, page, 'task.update');
   const pointerResizeCall = daemon.calls.find((c) => c.command === 'task.update' && c.args.task_id === P_C2 && c.args.estimated_loc > 200);
   check('interaction: dragging the selected bar handle updates its real estimate', !!pointerResizeCall, JSON.stringify(pointerResizeCall?.args));
   const persistedEstimate = pointerResizeCall?.args.estimated_loc;
@@ -1174,7 +1362,7 @@ async function main() {
   await page.mouse.move(resizeBox.x + resizeBox.width / 2 + 40, resizeBox.y + resizeBox.height / 2, { steps: 3 });
   await page.keyboard.press('Escape');
   await page.mouse.up();
-  await page.waitForTimeout(400);
+  await waitForRenderFrame(page);
   check('interaction: Escape cancels a pointer resize without changing the task', !daemon.calls.some((c) => c.command === 'task.update'));
 
   // Failed resize keeps the persisted value and reports the error.
@@ -1186,7 +1374,7 @@ async function main() {
   await page.mouse.down();
   await page.mouse.move(resizeBox.x + resizeBox.width / 2 + 30, resizeBox.y + resizeBox.height / 2, { steps: 3 });
   await page.mouse.up();
-  await page.waitForTimeout(800);
+  await waitForSettledCall(daemon, page, 'task.update');
   const resizeFailureText = await page.locator('.toast.bad').allInnerTexts();
   check('interaction: a failed resize reports failure and keeps the task available', resizeFailureText.some((text) => /resize failed/.test(text)) && await page.locator(`[data-task-row="${P_C2}"]`).count() === 1, resizeFailureText.join(' | '));
 
@@ -1198,7 +1386,7 @@ async function main() {
   await page.waitForSelector('dialog#estimate-dialog[open]');
   await page.fill('#estimate-form [name=estimated_loc]', '275');
   await page.click('#estimate-form button[type=submit]');
-  await page.waitForTimeout(400);
+  await waitForSettledCall(daemon, page, 'task.update');
   check('interaction: the resize dialog saves an exact estimate', daemon.calls.some((c) => c.command === 'task.update' && c.args.task_id === P_C2 && c.args.estimated_loc === 275));
 
   if (await page.locator('.plan-selection:not(.collapsed) [data-plan-selection-toggle]').count()) {
@@ -1222,7 +1410,7 @@ async function main() {
       hit: hit?.className || hit?.tagName || '' };
   });
   await pointerDrag(`[data-drag-task="${P_C2}"]`, `[data-task-row="${P_C1}"]`, { x: 100, y: 28 });
-  await page.waitForTimeout(400);
+  await waitForSettledCall(daemon, page, 'task.update');
   const reorderCall = daemon.calls.find((c) => c.command === 'task.update');
   const dragEvents = await page.evaluate(() => window.__planDragEvents);
   const reorderedInView = reorderCall ? await page.waitForFunction(({ movedId, targetId }) => {
@@ -1242,7 +1430,7 @@ async function main() {
     if (viewport && sourceRow && target) viewport.scrollTop = Math.max(0, ((sourceRow.offsetTop + target.offsetTop) / 2) - (viewport.clientHeight / 2));
   }, { sourceId: P_C2, releaseId: V_R2 });
   await pointerDrag(`[data-drag-task="${P_C2}"]`, `[data-drop-release="${V_R2}"]`);
-  await page.waitForTimeout(400);
+  await waitForSettledCall(daemon, page, 'task.update');
   const dragMoveCall = daemon.calls.find((c) => c.command === 'task.update' && c.args.task_id === P_C2);
   check('interaction: dropping a task on a release header moves it into that release',
     dragMoveCall && dragMoveCall.args.task_id === P_C2 && dragMoveCall.args.release_id === V_R2,
@@ -1260,14 +1448,14 @@ async function main() {
   await page.waitForSelector('dialog#move-dialog[open]');
   await page.selectOption('#move-form [name=release_id]', V_R2);
   await page.click('#move-form button[type=submit]');
-  await page.waitForTimeout(400);
+  await waitForSettledCall(daemon, page, 'task.update');
   const dialogMoveCall = daemon.calls.find((c) => c.command === 'task.update');
   check('interaction: the move pop-up posts the chosen release',
     dialogMoveCall && dialogMoveCall.args.task_id === P_G1 && dialogMoveCall.args.release_id === V_R2,
     JSON.stringify(dialogMoveCall?.args));
   daemon.calls.length = 0;
   await page.click('button[data-cmd="release.request"]');
-  await page.waitForTimeout(400);
+  await waitForSettledCall(daemon, page, 'release.request');
   check('interaction: Request preview now calls release.request for the repository',
     daemon.calls.some((c) => c.command === 'release.request' && c.args.repository_id === REPO));
   check('interaction: preview request re-renders as a pending notice', /Preview requested/.test(await page.innerText('main')));
@@ -1276,7 +1464,7 @@ async function main() {
   await page.waitForSelector('dialog#feedback-dialog[open]');
   await page.fill('#comment-form [name=title]', 'The export button fails for me');
   await page.click('#comment-form button[type=submit]');
-  await page.waitForTimeout(400);
+  await waitForSettledCall(daemon, page, 'task.create');
   const feedbackCall = daemon.calls.find((c) => c.command === 'task.create');
   check('interaction: the ask-for-a-change form creates a user_feedback task',
     feedbackCall && feedbackCall.args.title === 'The export button fails for me'
@@ -1286,7 +1474,7 @@ async function main() {
   daemon.calls.length = 0;
   await page.click(`[data-task-row="${P_G1}"] .plan-task-select`);
   await page.click(`.plan-selection [data-cmd="task.update"]`);
-  await page.waitForTimeout(400);
+  await waitForSettledCall(daemon, page, 'task.update');
   const dropCall = daemon.calls.find((c) => c.command === 'task.update');
   check('interaction: drop asks for confirmation and marks the task dropped',
     dropCall && dropCall.args.task_id === P_G1 && dropCall.args.status === 'dropped',
@@ -1321,12 +1509,12 @@ async function main() {
   check('decisions: superseded entries are collapsed', await page.locator('details.decision.superseded:not([open])').count() === 1);
   daemon.calls.length = 0;
   await page.click('#decisions-older');
-  await page.waitForTimeout(400);
+  await waitForSettledCall(daemon, page, 'decision.tail');
   check('interaction: Show older pages the tail with before_seq of the oldest shown decision',
     daemon.calls.some((c) => c.command === 'decision.tail' && c.args.before_seq === 41));
   daemon.calls.length = 0;
   await page.click('[data-decision-aspect="ui"]');
-  await page.waitForTimeout(400);
+  await waitForSettledCall(daemon, page, 'decision.tail');
   check('interaction: the aspect filter is applied server-side',
     daemon.calls.some((c) => c.command === 'decision.tail' && c.args.aspect === 'ui' && !('before_seq' in c.args)));
   daemon.calls.length = 0;

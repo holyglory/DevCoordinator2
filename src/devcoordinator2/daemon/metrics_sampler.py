@@ -48,6 +48,7 @@ class Sampler:
         self._cgroup_cache: dict[str, Path | None] = {}
         self._restarts: dict[str, list[tuple[float, int]]] = {}
         self._last_expire = 0.0
+        self._sample_wakeup = threading.Event()
         self._storage_wakeup = threading.Event()
         self._seen_containers: set[str] | None = None  # None until the first tick
         events.subscribe(self._on_event)
@@ -55,6 +56,7 @@ class Sampler:
     def _on_event(self, event: dict) -> None:
         if event["kind"] in ("repository.registered", "deployment.applied",
                              "deployment.removed", "test.started"):
+            self._sample_wakeup.set()
             self._storage_wakeup.set()
 
     # -- lifecycle -------------------------------------------------------------
@@ -67,6 +69,8 @@ class Sampler:
 
     def stop(self) -> None:
         self._stop.set()
+        self._sample_wakeup.set()
+        self._storage_wakeup.set()
 
     def _storage_loop(self) -> None:
         """Every 5 minutes, or sooner when a lifecycle event changes what
@@ -80,18 +84,20 @@ class Sampler:
             self._storage_wakeup.wait(STORAGE_SECONDS)
             if self._stop.is_set():
                 break
-            if self._storage_wakeup.is_set():
-                time.sleep(2.0)  # let the triggering mutation settle
+            # Lifecycle events are published after their authoritative state
+            # change, so the event itself is the signal to sample again.
 
     def _loop(self, fn, interval: int) -> None:
         while not self._stop.is_set():
+            self._sample_wakeup.clear()
             started = time.monotonic()
             try:
                 fn()
             except Exception:
                 log.exception("%s failed", fn.__name__)
             elapsed = time.monotonic() - started
-            if self._stop.wait(max(1.0, interval - elapsed)):
+            self._sample_wakeup.wait(max(1.0, interval - elapsed))
+            if self._stop.is_set():
                 break
 
     # -- subject discovery -----------------------------------------------------

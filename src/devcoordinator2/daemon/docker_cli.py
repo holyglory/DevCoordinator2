@@ -149,6 +149,20 @@ def exec_ok(container_id: str, argv: list[str], timeout: int = 15) -> bool:
     return proc.returncode == 0
 
 
+def follow_logs(container_id: str) -> subprocess.Popen:
+    """Stream exact container logs; existing records are included before follow."""
+    if len(container_id) != 64:
+        raise DockerError("refusing logs for a non-exact container reference")
+    try:
+        return subprocess.Popen(
+            ["docker", "logs", "--follow", container_id],
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, text=True,
+        )
+    except OSError as exc:
+        raise DockerError(f"docker logs failed: {exc}") from exc
+
+
 def remove_exact(container_id: str) -> None:
     """Remove one exact full ID with its anonymous volumes; idempotent."""
     if len(container_id) != 64:

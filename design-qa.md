@@ -1,106 +1,59 @@
-# Progress dashboard design QA
+# Progress redesign design QA
 
 final result: passed
 
 ## Comparison target
 
-- Source visual truth: `console/design-reference/progress-dashboard-combined.png`
-  (`1487 × 1058` pixels), normalized to `1440 × 1024`.
-- Rendered implementation: `/tmp/dc2-progress-implementation-final.png`
-  (`1440 × 1024` pixels, CSS viewport `1440 × 1024`, device scale factor `1`).
-- State: populated repository, Delivery pulse, daily period, complete evidence,
-  dark theme.
-- Combined full-view evidence:
-  `/tmp/dc2-progress-design-qa-comparison-passed.png`.
-- Focused priority/scenario evidence:
-  `/tmp/dc2-progress-design-qa-priority-passed.png`.
-
-## Findings and iteration history
-
-### Initial comparison — blocked
-
-- **[P2] The desktop composition extended below the selected 1440 × 1024
-  frame.** The first implementation used full-detail priority rows beside a
-  500px chart and a taller forecast strip. The period comparison and exact
-  values fell below the target viewport, weakening the selected one-screen
-  decision hierarchy. The implementation was tightened by replacing the pulse
-  sidebar with a compact top-three summary, reducing chart height, shortening
-  forecast copy, adding the visible UTC range, and reserving the full reasons
-  for the Priorities mode. Post-fix geometry is exactly `1440 × 1024` with the
-  comparison band and disclosure visible.
-- **[P2] The activated priority view followed a tall stacked forecast on narrow
-  screens.** This delayed the content the user explicitly selected. At 520px
-  and below, the ranked queue and scenarios now move directly after the view
-  controls; forecast evidence remains complete immediately afterward. The
-  390px continuation is visible and focused without a document jump.
-
-### Final comparison — passed
-
-No actionable P0, P1, or P2 differences remain. Both selected directions are
-present as complementary modes: the default shared-time-axis pulse includes a
-compact priority/scenario decision column, while Priorities exposes the full
-ranked queue, scenarios, and KPI signals.
-
-Three visible differences are intentional product constraints rather than
-design drift:
-
-- The selected mock's dashed future task/line paths and token budget were not
-  copied as stand-ins. The product shows measured buckets and puts the real
-  deterministic date range, confidence, and assumptions in the forecast.
-- Dynamic repository outcomes, task estimates, tests, tokens, and dates replace
-  the mock values. Missing target dates, test history, token history, and task
-  estimates are named honestly.
-- Decorative mock icons are omitted where the existing Console has no matching
-  asset or where plain labels are clearer; no handcrafted SVG, CSS-art icon, or
-  placeholder asset was introduced.
-
-## Required fidelity surfaces
-
-- **Fonts and typography:** The implementation uses the Console's system UI
-  stack and reproduces the reference's compact weights, 10.5–15px support
-  scale, 18px KPI emphasis, uppercase metric labels, and readable line height.
-  Long real outcomes wrap in the full view and clamp only in the compact pulse
-  summary, where the complete text remains in Priorities.
-- **Spacing and layout rhythm:** The global shell, 20px desktop inset, compact
-  control row, six-part forecast strip, dominant two-column workspace, thin
-  section dividers, comparison band, and square surfaces match the target.
-  Final desktop document height equals the `1024px` viewport.
-- **Colors and visual tokens:** Existing navy surfaces, slate rules, blue
-  selection, green task progress, blue planned lines, mint test stability,
-  purple tokens, amber uncertainty, and red adverse movement map directly to
-  the selected direction. Formal contrast/theme checks found no critical issue.
-- **Image quality and asset fidelity:** This operational dashboard has no
-  raster imagery, logos, avatars, or illustration assets. Dynamic charts are
-  accessible data visualizations, not asset substitutes; no generated image or
-  custom decorative SVG was required.
-- **Copy and content:** Every static label explains the real measurement.
-  “Planned lines completed” explicitly means current task estimates, token use
-  is provider `total_tokens`, scenarios state that they do not mutate Plan, and
-  ordering alone does not falsely move the central date.
-- **Icons:** The route preserves the existing Tabler-backed global shell. The
-  new decision surface relies on text, selection borders, and native buttons
-  where the source's decorative icons would add no action meaning.
-- **Responsive and accessibility:** Delivery pulse, Priorities, and weekly
-  states pass at `390 × 844`, the reported `799 × 964`, and `1440 × 1024`.
-  Mode/period controls restore focus, priority rows are keyboard buttons,
-  chart scroll is contained on narrow screens, exact values need no hover, and
-  the selected task continues to the exact Plan row.
+- Source visual truth: `/home/DevCoordinator2/console/design-reference/progress-factual-release-work.png`
+- Browser-rendered implementation: `/tmp/dc2-progress-label-desktop-viewport.png`
+- Full-view comparison: `/tmp/dc2-progress-design-qa/comparison-full.png`
+- Focused header/forecast comparison: `/tmp/dc2-progress-design-qa/comparison-header.png`
+- Focused chart/release-work comparison: `/tmp/dc2-progress-design-qa/comparison-main.png`
+- Source pixels: 1487 × 1058. The source was proportionally normalized to 1440 × 1024 for comparison.
+- Implementation pixels and CSS viewport: 1440 × 1024 at device scale factor 1.
+- State: dark Console theme, Day selected, Tue Aug 25–Mon Aug 31 2026, low-confidence forecast, 94 remaining tasks, 71 without estimates, missing test/token evidence, first release-work row selected.
+- Browser geometry: scroll position 0; document and viewport height both 1024 px in the desktop comparison.
 
 ## Browser evidence
 
-- Primary interactions tested: repository collection/detail, project menu,
-  Delivery pulse/Priorities switching, task selection, hourly/daily/weekly
-  reads, exact-value expansion, partial evidence, and exact Plan continuation.
-- Loading, empty, error, denied, populated, partial, long-content, desktop, and
-  narrow states were rendered. Browser console errors: none.
-- Complete Console inventory: 1,397 checks, 0 failures.
-- Formal verifier: 9/9 Progress cells checked, 0 critical findings, 6
-  review-only warnings; all nine viewport/full-page pairs manually reviewed.
-- Formal report: `/tmp/dc2-progress-formal-final3/report.json`.
-- Reviewed manifest: `/tmp/dc2-progress-formal-final3/manual-review.json`.
+- The exact isolated hotfix release passed 1,406 complete Console checks with zero failures in `/tmp/dc2-progress-label-hotfix-console-final/report.json`; its coherent interaction inventory passed 152/152.
+- Deterministic chart checks at 1440×1024, the reported 858×915 viewport, and 390×844 prove both running lines precede every value label in SVG paint order, every label has a 3 px chart-background halo, all labels are visible, document overflow is zero, and browser console errors are zero.
+- Primary Progress interactions tested: repository switching, Hour/Day/Week reads, local task selection, selected-task continuation into Plan, full-Plan navigation, and exact-value disclosure.
+- The reference-matched evidence state proves that missing tests and token use produce no zero-valued chart and raw unblock/reopening prose does not render in the compact work list.
+- Browser console errors in the final desktop capture: none.
+- Formal run `formal-web-ui-mthgf4b5` checked 14 cells at 390, 559/560/561, 799/800/801, 1179/1180/1181, 1319/1320/1321, and 1440 px. It reported zero critical findings; all 14 viewport/full-page pairs received a pass in `/tmp/dc2-progress-formal-redesign-final2/manual-review.json`.
+- Focused formal run `formal-web-ui-mtihjr1d` checked the label-layering hotfix at 390, 858, and 1440 px with zero critical findings; all six viewport/full-page images were reviewed and the three pass decisions were finalized in `/tmp/dc2-progress-label-formal/manual-review.json`.
+
+## Findings
+
+- No actionable P0, P1, or P2 difference remains.
+- The generated reference's decorative warning-triangle glyph is intentionally omitted rather than replaced with a one-off drawing. Amber confidence text and the `Forecast quality` heading carry the same meaning within the Console's existing icon-light language. This is non-blocking P3 polish.
+
+## Required fidelity surfaces
+
+- Fonts and typography: both views use the Console's system UI stack, compact 10–15 px supporting text, 18–22 px destination/forecast emphasis, and matching medium/bold hierarchy. Long task names wrap without clipping.
+- Spacing and layout rhythm: the 1440 px frame preserves the reference's compact shell, one forecast strip, dominant chart, narrower release-work list, two-value comparison, and exact-value footer. The desktop page fits one 1024 px viewport. Responsive evidence shows deliberate stacking without overlap or document-level horizontal overflow.
+- Colors and visual tokens: the implementation keeps the source and Console navy surfaces, slate dividers, blue selection/action treatment, green task series, blue planned-line series, amber low-confidence state, and muted explanatory text. Formal contrast checks found no critical issue.
+- Image quality and asset fidelity: the target contains no raster product imagery. Charts remain sharp data-driven SVGs; existing Tabler navigation and chevron assets are preserved. No placeholder image, handcrafted decorative SVG, CSS illustration, gradient, or fake asset was introduced.
+- Copy and content: `Priority queue`, inferred impact days, dependency claims, imported outcome prose, raw unblock text, and raw event-note prose are absent. Task titles, statuses, estimates, a simple reopened state, forecast gaps, missing-evidence text, and counting language map to recorded response fields.
+- States and interactions: selection changes only row state and the Plan-continuation target. Empty, partial, unavailable, loading, denied, and error journeys remain covered by the complete Console suite.
+
+## Comparison history
+
+1. Initial comparison found a P2 density mismatch: the implementation extended roughly 100 px below the 1440 × 1024 reference, omitted daily bar labels, and lacked the reference's compact `Task` column cue. The chart/evidence lanes and release-work rows were tightened, truthful bar labels were added, and the task cue was restored. The revised desktop document fits 1024 px.
+2. The first responsive evidence pass found a P2 transition issue just above 1180 px: the two-column workspace made the chart's right edge and legend horizontally dependent on scrolling. The side-by-side breakpoint moved to 1320 px, and explicit 1319/1320/1321 samples were added. The post-fix 14-cell formal run and manual review both passed.
+3. Authenticated live acceptance found a P2 content-density recurrence: raw unblock and reopening notes contained internal test names and implementation detail. The compact list now keeps only the owner-facing title, status, estimate, elaboration, and a simple `reopened` state. A 1,404-check rerun with technical marker fixtures and the final source-to-render comparison pass.
+4. A live browser comment found a P2 label-layering recurrence: the running-total line painted after the bar values and crossed through several numbers. The line and dots now paint first, bars next, and haloed value labels last. Crossing fixtures, deterministic paint-order checks, the 1,406-check exact-release matrix, and focused visual/formal review all pass.
+
+## Implementation checklist
+
+- [x] Match the selected desktop hierarchy and Console visual system.
+- [x] Render daily completions as bars and running totals as unfilled lines.
+- [x] Keep missing tests and token values blank and explicitly explained.
+- [x] Show release work in factual Plan order with local selection.
+- [x] Preserve exact task continuation and every existing supporting control.
+- [x] Pass source tests, complete Console regression, formal responsive verification, changed visual review, and source-to-render comparison.
 
 ## Follow-up polish
 
-- The measured chart intentionally omits a fabricated future series. A later
-  product decision could add a separately labelled, modelled projection lane
-  if its source data and uncertainty contract are expanded.
+- Optional P3: add the official matching alert icon from the Console's chosen icon library if that library is expanded later; do not substitute a text glyph or handcrafted drawing.

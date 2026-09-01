@@ -86,3 +86,28 @@ def test_test_history_refuses_symlink(tmp_path: Path):
         (os.getuid(), os.getgid()))
     assert history.is_file() and not history.is_symlink()
     assert victim.read_text() == "keep me"
+
+
+def test_test_evidence_is_atomic_bounded_metadata_outside_current(tmp_path: Path):
+    securefs.create_test_dir(tmp_path, os.getuid(), os.getgid())
+    payload = b'{"schema":1,"runs":[]}\n'
+    securefs.write_test_evidence(tmp_path, payload, (os.getuid(), os.getgid()))
+    assert securefs.read_test_evidence(tmp_path) == payload
+    securefs.remove_test_dir(tmp_path)
+    assert securefs.read_test_evidence(tmp_path) == payload
+
+
+def test_test_output_tail_never_follows_a_caller_symlink(tmp_path: Path):
+    current = securefs.create_test_dir(tmp_path, os.getuid(), os.getgid())
+    check = current / "checks" / "unit"
+    check.mkdir(parents=True)
+    (check / "stdout.log").write_bytes(b"abcdef")
+    assert securefs.tail_test_file(
+        tmp_path, ("checks", "unit", "stdout.log"), 3) == (b"def", True)
+    victim = tmp_path / "private"
+    victim.write_text("must not be returned")
+    (check / "stdout.log").unlink()
+    (check / "stdout.log").symlink_to(victim)
+    with pytest.raises(securefs.SecureFsError):
+        securefs.tail_test_file(
+            tmp_path, ("checks", "unit", "stdout.log"), 65536)

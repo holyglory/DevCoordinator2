@@ -87,21 +87,42 @@ def build_handlers(config: InstanceConfig, registry: Registry,
 
     if lifecycle is not None:
         def test_start(args: dict[str, Any], caller: Caller) -> dict[str, Any]:
-            unknown = set(args) - {"path", "test"}
+            unknown = set(args) - {"path", "test", "checks"}
             if unknown:
                 raise ProtocolError("args_invalid", f"unknown args: {sorted(unknown)}")
             path = _require_path({"path": args.get("path")}, {"path"})
             test = args.get("test")
             if test is not None and not isinstance(test, str):
                 raise ProtocolError("args_invalid", "'test' must be a string")
-            return lifecycle.start(path, test, caller)
+            checks = args.get("checks", [])
+            if not isinstance(checks, list) or not all(
+                    isinstance(value, str) for value in checks):
+                raise ProtocolError("args_invalid", "'checks' must be an array of strings")
+            return lifecycle.start(path, test, caller, checks=tuple(checks))
+
+        def test_retry(args: dict[str, Any], caller: Caller) -> dict[str, Any]:
+            unknown = set(args) - {"path", "test", "run_id", "check"}
+            if unknown:
+                raise ProtocolError("args_invalid", f"unknown args: {sorted(unknown)}")
+            path = _require_path({"path": args.get("path")}, {"path"})
+            test = args.get("test")
+            run_id = args.get("run_id")
+            check = args.get("check")
+            if test is not None and not isinstance(test, str):
+                raise ProtocolError("args_invalid", "'test' must be a string")
+            if not isinstance(run_id, str) or not run_id:
+                raise ProtocolError("args_invalid", "'run_id' must be a string")
+            if not isinstance(check, str) or not check:
+                raise ProtocolError("args_invalid", "'check' must be a string")
+            return lifecycle.start(
+                path, test, caller, retry_run_id=run_id, retry_check=check)
 
         def test_status(args: dict[str, Any], caller: Caller) -> dict[str, Any]:
             path = _require_path(args, {"path"})
             return lifecycle.status(path, caller)
 
         def test_output(args: dict[str, Any], caller: Caller) -> dict[str, Any]:
-            path = _require_path(args, {"path", "stream", "tail_bytes"})
+            path = _require_path(args, {"path", "stream", "tail_bytes", "check"})
             stream = args.get("stream")
             if stream not in ("stdout", "stderr"):
                 raise ProtocolError("args_invalid",
@@ -110,11 +131,20 @@ def build_handlers(config: InstanceConfig, registry: Registry,
             if not isinstance(tail_bytes, int) or not (1 <= tail_bytes <= 65536):
                 raise ProtocolError("args_invalid",
                                     "'tail_bytes' must be an integer in 1..65536")
-            return lifecycle.output(path, stream, tail_bytes, caller)
+            check = args.get("check")
+            if check is not None and not isinstance(check, str):
+                raise ProtocolError("args_invalid", "'check' must be a string")
+            return lifecycle.output(path, stream, tail_bytes, caller, check)
 
         def test_stop(args: dict[str, Any], caller: Caller) -> dict[str, Any]:
-            path = _require_path(args, {"path"})
-            return lifecycle.stop(path, caller)
+            path = _require_path(args, {"path", "reason"})
+            reason = args.get("reason")
+            if reason is not None and (
+                    not isinstance(reason, str) or not (3 <= len(reason) <= 256)
+                    or "\n" in reason or "\r" in reason):
+                raise ProtocolError(
+                    "args_invalid", "'reason' must be one 3..256 character line")
+            return lifecycle.stop(path, caller, reason)
 
         def test_list(args: dict[str, Any], caller: Caller) -> dict[str, Any]:
             _no_args(args)
@@ -122,6 +152,7 @@ def build_handlers(config: InstanceConfig, registry: Registry,
 
         handlers.update({
             "test.start": test_start,
+            "test.retry": test_retry,
             "test.status": test_status,
             "test.output": test_output,
             "test.stop": test_stop,

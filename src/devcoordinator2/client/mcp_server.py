@@ -34,8 +34,26 @@ TOOLS = [
                 "test": {"type": "string",
                          "description": "Named test from .devcoordinator.toml "
                                         "(default: the declared default)"},
+                "checks": {"type": "array", "items": {"type": "string"},
+                           "description": "Diagnostic check selection; omitted means "
+                                          "the complete graph"},
             },
             "required": ["path"],
+        },
+    },
+    {
+        "name": "test_retry",
+        "description": ("Retry one failed check after its original complete run "
+                        "finished. The result is diagnostic, never release proof."),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "path": _PATH,
+                "test": {"type": "string"},
+                "run_id": {"type": "string"},
+                "check": {"type": "string"},
+            },
+            "required": ["path", "run_id", "check"],
         },
     },
     {
@@ -57,6 +75,8 @@ TOOLS = [
                 "stream": {"type": "string", "enum": ["stdout", "stderr"]},
                 "tail_bytes": {"type": "integer", "minimum": 1,
                                "maximum": 65536, "default": 16384},
+                "check": {"type": "string",
+                          "description": "Optional governed check name"},
             },
             "required": ["path", "stream"],
         },
@@ -64,7 +84,9 @@ TOOLS = [
     {
         "name": "test_stop",
         "description": "Cancel the current test run and prove cleanup.",
-        "inputSchema": {"type": "object", "properties": {"path": _PATH},
+        "inputSchema": {"type": "object", "properties": {
+            "path": _PATH,
+            "reason": {"type": "string", "minLength": 3, "maxLength": 256}},
                         "required": ["path"]},
     },
     {
@@ -309,6 +331,7 @@ _TOOL_TO_COMMAND = {
     "health_repository": "health.repository",
     "bug_report": "bug.report", "bug_list": "bug.list", "bug_close": "bug.close",
     "test_start": "test.start",
+    "test_retry": "test.retry",
     "test_status": "test.status",
     "test_output": "test.output",
     "test_stop": "test.stop",

@@ -24,6 +24,7 @@ ERROR_CODES = (
     "worktree_busy",
     "test_not_found",
     "test_start_failed",
+    "tests_draining",
     "unit_stop_failed",
     "deployment_not_found",
     "busy",

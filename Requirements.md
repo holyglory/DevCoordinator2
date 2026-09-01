@@ -44,6 +44,44 @@ not contradict them.
   The root daemon alone pulls and verifies the exact digest; generated
   credentials, loopback publication, disposable storage, attribution, and
   exact cleanup remain identical to the official-image fixture.
+- **REQ-TEST-11** (2026-09-01, done): A named test may declare a finite
+  acyclic graph of checks. Every check whose declared prerequisites are
+  satisfied starts concurrently; `after` waits for terminal completion and
+  `requires` additionally requires success. A real correctness dependency is
+  an edge. No concurrency budget, host ceiling, per-repository limit, quota,
+  or client override exists. Existing single-command tests behave as one-check
+  complete graphs (DC2-2026-09-01-INDEPENDENT-CHECKS-NO-BUDGET).
+- **REQ-TEST-12** (2026-09-01, done): Normal check progression comes only
+  from the exact process exit or a dedicated inherited completion event bound
+  to the run and check identity. Elapsed time is never readiness. The test's
+  `timeout_seconds` remains one outer systemd containment watchdog; per-check
+  timeouts and timer-success states do not exist. Governed runner, fixture,
+  integration, and browser-verification code rejects fixed timer waits, with
+  only the bounded 50 ms systemd launch probe retained as an explicit fallback
+  (DC2-2026-09-01-DETERMINISTIC-CHECK-COMPLETION).
+- **REQ-TEST-13** (2026-09-01, done): Live and terminal status includes a
+  bounded, atomically replaced check report: proof kind, selection, exact
+  state and monotonic duration per check, declared artifact receipts, and one
+  ordered failure index. Ordinary failures do not stop independent checks or
+  completion-only successors; success-dependent checks become explicitly not
+  meaningful. Only an explicitly unsafe/stop failure cancels remaining work,
+  and every path completes the existing cgroup/container cleanup contract.
+- **REQ-TEST-14** (2026-09-01, done): Explicit check selections and a
+  failed-check retry are diagnostic only. Retry begins only after an original
+  complete run finishes, includes the target's prerequisite closure, reuses
+  only exact matching regular-file artifact receipts, reruns non-reusable
+  setup, and rejects changed source, config, artifacts, origin, or target
+  state. Bounded evidence stores no source, commands, environment values,
+  credentials, raw output, or caller identity. Only a fresh complete passing
+  graph is release-quality proof (DC2-2026-09-01-DIAGNOSTIC-CHECK-EVIDENCE).
+- **REQ-TEST-15** (2026-09-01, done): A normal DevCoordinator2 upgrade
+  atomically closes test admission, waits on exact active-run receipt events
+  until every current test and cleanup finishes under the old release, and
+  only then switches and restarts. Abort restores admission and keeps the old
+  release. A stale installer lease recovers. Explicit cancellation records a
+  bounded operational reason; unexpected daemon restart retains REQ-TEST-08
+  and never reconnects or resurrects work
+  (DC2-2026-09-01-UPGRADE-TEST-DRAIN).
 
 ## Deployments (REQ-DEPLOY, P3)
 
@@ -120,12 +158,20 @@ not contradict them.
   explicitly configured same-owner collector is read in place and contributes
   only measured facts; missing, unmapped, or unsupported collectors produce
   a visible warning that some usage may be missing. The Console calls these
-  inputs configured Codex environments, explains that each environment is a
-  separate local Codex setup with its own usage history, and says environments
-  that supplied no data and unmeasured values are excluded rather than counted as zero,
-  and never exposes internal collector terminology. Administrators see every repository and operators
+  inputs configured Codex environments. The visible status stays concise; an
+  adjacent keyboard-accessible information hint explains that each environment
+  is a separate local Codex setup with its own usage history and that environments
+  which supplied no data and unmeasured values are excluded rather than counted
+  as zero. The Console never exposes internal collector terminology. Administrators see every repository and operators
   see only repositories where they hold operator-or-higher deployment access;
   viewers and individual collector identities remain excluded.
+- **REQ-HEALTH-08** (2026-09-01): `usage.repositories` reads each configured
+  Codex environment once for all visible repositories, uses indexed compact
+  facts rather than repeating detail-only scans per row, and settles the live
+  repository table in under one second without copying usage records or
+  persisting aggregates. Not-connected setup states are neutral; partial
+  measured data is amber, complete data green, no measurements neutral, and
+  red is reserved for an actual source/read failure.
 
 ## Repository progress and forecasting (REQ-PROGRESS)
 
@@ -134,6 +180,10 @@ not contradict them.
   buckets for terminal task completions, current planned task lines completed,
   terminal test outcomes, and provider-reported total tokens. Missing test or
   token evidence remains visibly missing and is never converted to zero.
+  Discrete completions render as bars and their running total as a separate
+  thin line with an explicit legend; no filled area implies another measure.
+  The line paints behind bars and haloed value labels so it cannot hide a
+  daily number at an intersection.
 - **REQ-PROGRESS-02** (2026-08-30, done): Terminal test summaries are copied
   into a symlink-safe, repository-local metadata history bounded to the latest
   1,000 runs. It contains no output, caller identity, private path, or command;
@@ -145,17 +195,21 @@ not contradict them.
   velocity, test stability, scope movement, assumptions, and the absence of a
   target date. No release or insufficient pace produces an honest unavailable
   state instead of a guessed date.
-- **REQ-PROGRESS-04** (2026-08-30, done): Priority ranking uses recorded task
-  outcomes, status, kind, estimate coverage, and estimated contribution to
-  remaining work. It never invents task dependencies or test-to-task
-  attribution. “Move first” truthfully keeps the central forecast unchanged;
-  deferring selected work is a local comparison and never mutates the Plan.
-- **REQ-PROGRESS-05** (2026-08-30, done): One responsive Progress destination
-  implements the selected Delivery pulse and Priorities views. Repository,
-  period, mode, priority, exact-value, project-menu, and Plan-continuation
-  controls all work through the rendered UI; the named collection and selected
-  repository remain primary across loading, empty, partial, denied, error,
-  populated, long-content, desktop, 799 px, and narrow states.
+- **REQ-PROGRESS-04** (2026-08-31, done): Open work for the next release follows
+  the same depth-first sibling order as the Plan and uses the owner-facing task
+  title, recorded status, estimate, elaboration request, and a simple reopened
+  state. Raw outcome, impact, unblock, verification, technical, and event-note
+  prose does not render in this compact surface. Progress does not present a
+  heuristic as owner priority and does not infer dependency, release-impact
+  days, or a what-if ordering effect until those inputs are explicitly modeled
+  and recorded.
+- **REQ-PROGRESS-05** (2026-08-31, done): One responsive Progress destination
+  implements the owner-selected factual release-work design. Repository,
+  period, task selection, exact-value, project-menu, and exact Plan-continuation
+  controls all work through the rendered UI; task selection is a local DOM
+  update without another API read or page replacement. The named collection
+  and selected repository remain primary across loading, empty, partial,
+  denied, error, populated, long-content, desktop, 799 px, and narrow states.
 
 ## Console navigation (REQ-CONSOLE)
 

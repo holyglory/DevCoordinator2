@@ -1,5 +1,6 @@
 import io
 import json
+import os
 import subprocess
 import threading
 from pathlib import Path
@@ -73,6 +74,46 @@ def test_deployment_list_without_path_builds_empty_args():
     assert cli._to_call(ns) == ("deployment.list", {})
 
 
+def test_governed_check_cli_argument_mapping(tmp_path):
+    path = str(tmp_path.absolute())
+    start = cli.build_parser().parse_args([
+        "test", "start", path, "--test", "complete",
+        "--check", "unit", "--check", "browser",
+    ])
+    assert cli._to_call(start) == ("test.start", {
+        "path": path, "test": "complete", "checks": ["unit", "browser"]})
+    retry = cli.build_parser().parse_args([
+        "test", "retry", path, "--test", "complete",
+        "--run-id", "torigin", "--check", "unit",
+    ])
+    assert cli._to_call(retry) == ("test.retry", {
+        "path": path, "test": "complete", "run_id": "torigin", "check": "unit"})
+    output = cli.build_parser().parse_args([
+        "test", "output", path, "--stream", "stderr", "--check", "unit",
+    ])
+    assert cli._to_call(output) == ("test.output", {
+        "path": path, "stream": "stderr", "tail_bytes": 16384, "check": "unit"})
+    stop = cli.build_parser().parse_args([
+        "test", "stop", path, "--reason", "operator cancelled upgrade",
+    ])
+    assert cli._to_call(stop) == ("test.stop", {
+        "path": path, "reason": "operator cancelled upgrade"})
+
+
+def test_governed_check_event_writes_bound_identity(monkeypatch):
+    read_fd, write_fd = os.pipe()
+    monkeypatch.setenv("DEVCOORDINATOR_EVENT_FD", str(write_fd))
+    monkeypatch.setenv("DEVCOORDINATOR_RUN_ID", "trun")
+    monkeypatch.setenv("DEVCOORDINATOR_CHECK_NAME", "server")
+    try:
+        assert cli.main(["test", "event", "passed"]) == 0
+        os.close(write_fd)
+        assert json.loads(os.read(read_fd, 4096)) == {
+            "run_id": "trun", "check": "server", "status": "passed"}
+    finally:
+        os.close(read_fd)
+
+
 def test_deployment_set_domain_argument_mapping():
     ns = cli.build_parser().parse_args(
         ["deployment", "set-domain", "--deployment-id", "d123", "--domain", "app",
@@ -126,7 +167,8 @@ def test_mcp_full_session(live):
     assert init["protocolVersion"] == "2025-06-18"
     assert init["serverInfo"]["name"] == "devcoordinator2"
     tools = {t["name"] for t in replies[1]["result"]["tools"]}
-    assert {"test_start", "test_status", "test_output", "test_stop", "repository_list",
+    assert {"test_start", "test_retry", "test_status", "test_output", "test_stop",
+            "repository_list",
             "deployment_apply", "deployment_status", "deployment_stop", "deployment_logs",
             "health_containers"} <= tools
     call_result = replies[2]["result"]

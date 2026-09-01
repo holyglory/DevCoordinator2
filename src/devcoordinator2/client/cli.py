@@ -45,13 +45,27 @@ def build_parser() -> argparse.ArgumentParser:
     _add_common(start)
     start.add_argument("--test", dest="test_name", default=None,
                        help="named test from .devcoordinator.toml")
+    start.add_argument("--check", dest="checks", action="append", default=[],
+                       help="diagnostic check selection; repeat as needed")
+    retry = test_sub.add_parser("retry", help="retry one failed check from a complete run")
+    _add_common(retry)
+    retry.add_argument("--test", dest="test_name", default=None,
+                       help="named test from .devcoordinator.toml")
+    retry.add_argument("--run-id", required=True)
+    retry.add_argument("--check", required=True)
     _add_common(test_sub.add_parser("status", help="current run summary"))
     output = test_sub.add_parser("output", help="bounded log tail")
     _add_common(output)
     output.add_argument("--stream", choices=["stdout", "stderr"],
                         default="stdout")
     output.add_argument("--tail-bytes", type=int, default=16384)
-    _add_common(test_sub.add_parser("stop", help="cancel the current run"))
+    output.add_argument("--check", default=None, help="one governed check")
+    stop = test_sub.add_parser("stop", help="cancel the current run")
+    _add_common(stop)
+    stop.add_argument("--reason", default=None,
+                      help="bounded operational reason recorded with cancellation")
+    event = test_sub.add_parser("event", help="emit this check's exact completion event")
+    event.add_argument("status", choices=["passed", "failed", "unsafe"])
     _add_common(test_sub.add_parser("list", help="current run per worktree"), with_path=False)
 
     dep = sub.add_parser("deployment", help="deployment lifecycle")
@@ -261,14 +275,25 @@ def _to_call(ns: argparse.Namespace) -> tuple[str, dict]:
             args = dict(path_args)
             if ns.test_name:
                 args["test"] = ns.test_name
+            if ns.checks:
+                args["checks"] = ns.checks
             return "test.start", args
+        case ("test", "retry"):
+            args = {**path_args, "run_id": ns.run_id, "check": ns.check}
+            if ns.test_name:
+                args["test"] = ns.test_name
+            return "test.retry", args
         case ("test", "status"):
             return "test.status", path_args
         case ("test", "output"):
-            return "test.output", {**path_args, "stream": ns.stream,
-                                   "tail_bytes": ns.tail_bytes}
+            args = {**path_args, "stream": ns.stream,
+                    "tail_bytes": ns.tail_bytes}
+            if ns.check:
+                args["check"] = ns.check
+            return "test.output", args
         case ("test", "stop"):
-            return "test.stop", path_args
+            return "test.stop", ({**path_args, "reason": ns.reason}
+                                 if ns.reason else path_args)
         case ("test", "list"):
             return "test.list", {}
         case ("deployment", "list"):
@@ -444,6 +469,19 @@ def main(argv: list[str] | None = None) -> int:
     if ns.group == "mcp":
         from devcoordinator2.client.mcp_server import main as mcp_main
         return mcp_main()
+    if ns.group == "test" and ns.action == "event":
+        try:
+            fd = int(os.environ["DEVCOORDINATOR_EVENT_FD"])
+            payload = {
+                "run_id": os.environ["DEVCOORDINATOR_RUN_ID"],
+                "check": os.environ["DEVCOORDINATOR_CHECK_NAME"],
+                "status": ns.status,
+            }
+            os.write(fd, (json.dumps(payload, separators=(",", ":")) + "\n").encode())
+        except (KeyError, ValueError, OSError) as exc:
+            print(f"cannot emit governed-check event: {exc}", file=sys.stderr)
+            return 2
+        return 0
     if ns.group == "bug":
         return _bug_command(ns)
     command, args = _to_call(ns)

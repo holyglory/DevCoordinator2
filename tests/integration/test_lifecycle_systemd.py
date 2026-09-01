@@ -2,12 +2,21 @@
 
 from __future__ import annotations
 
+import importlib.util
 import json
+import os
+import select
 import subprocess
-import time
+import threading
 from pathlib import Path
 
 from devcoordinator2.daemon import tests_support
+from devcoordinator2.daemon.test_admission import (
+    DirectoryEvents,
+    begin_drain,
+    end_drain,
+    read_activity,
+)
 from integration.helpers import (
     ROOT_ONLY,
     UNIT_PREFIX,
@@ -20,6 +29,12 @@ from integration.helpers import (
 )
 
 pytestmark = ROOT_ONLY
+_INSTALL_SPEC = importlib.util.spec_from_file_location(
+    "devcoordinator2_install_for_integration",
+    Path(__file__).resolve().parents[2] / "scripts" / "install.py")
+assert _INSTALL_SPEC and _INSTALL_SPEC.loader
+install = importlib.util.module_from_spec(_INSTALL_SPEC)
+_INSTALL_SPEC.loader.exec_module(install)
 
 
 def test_pass_uid_and_bounded_output(world):
@@ -117,16 +132,10 @@ def test_daemon_restart_marks_interrupted(world):
     world.daemon.kill_hard()
     assert json.loads(summary_path.read_text())["status"] == "running"
     world.daemon.start()
-    deadline = time.monotonic() + 30
-    while time.monotonic() < deadline:
-        if json.loads(summary_path.read_text())["status"] == "interrupted":
-            break
-        time.sleep(0.3)
-    doc = json.loads(summary_path.read_text())
+    doc = _wait_status(world, world.repo, {"interrupted"}, timeout=30)
     assert doc["status"] == "interrupted"
     assert _units() == []
-    # Never resurrected: still interrupted after a grace period.
-    time.sleep(2)
+    # No unit remains that could resurrect the interrupted run.
     assert json.loads(summary_path.read_text())["status"] == "interrupted"
 
 
@@ -233,8 +242,277 @@ def test_postgres_removed_on_supersession_and_recovery(world):
     world.daemon.kill_hard()
     assert len(_containers_with_label("run", second_run)) == 1
     world.daemon.start()
-    deadline = time.monotonic() + 60
-    while time.monotonic() < deadline and _containers_with_label("run", second_run):
-        time.sleep(0.5)
+    # Recovery removes test containers before the daemon publishes its socket.
     assert _containers_with_label("run", second_run) == []
     assert _containers_with_label("instance", UNIT_PREFIX) == []
+
+
+def _check_toml(name: str, code: str, *, after=(), requires=(),
+                completion="process", on_failure="continue", produces=()) -> str:
+    rows = [
+        "[[test.complete.check]]",
+        f"name = {json.dumps(name)}",
+        f"command = {json.dumps(['/usr/bin/python3', '-c', code])}",
+    ]
+    if after:
+        rows.append(f"after = {json.dumps(list(after))}")
+    if requires:
+        rows.append(f"requires = {json.dumps(list(requires))}")
+    if completion != "process":
+        rows.append(f"completion = {json.dumps(completion)}")
+    if on_failure != "continue":
+        rows.append(f"on_failure = {json.dumps(on_failure)}")
+    if produces:
+        rows.append(f"produces = {json.dumps(list(produces))}")
+    return "\n".join(rows) + "\n"
+
+
+def test_governed_graph_runs_all_ready_checks_and_collects_safe_failures(world):
+    paths = {name: world.base / name for name in (
+        "one-started", "two-started", "one-release", "two-release")}
+    for path in paths.values():
+        os.mkfifo(path)
+        os.chmod(path, 0o666)
+    started_fds = {name: os.open(paths[f"{name}-started"], os.O_RDWR | os.O_NONBLOCK)
+                   for name in ("one", "two")}
+    release_fds = {name: os.open(paths[f"{name}-release"], os.O_RDWR | os.O_NONBLOCK)
+                   for name in ("one", "two")}
+    accepted = set()
+    failure = []
+
+    def barrier():
+        try:
+            poller = select.poll()
+            by_fd = {fd: name for name, fd in started_fds.items()}
+            for fd in by_fd:
+                poller.register(fd, select.POLLIN)
+            while len(accepted) < 2:
+                events = poller.poll(30_000)
+                assert events
+                for fd, _event in events:
+                    if os.read(fd, 1) == b"1":
+                        accepted.add(by_fd[fd])
+            for name in ("one", "two"):
+                os.write(release_fds[name], b"1")
+        except Exception as exc:
+            failure.append(exc)
+        finally:
+            for fd in [*started_fds.values(), *release_fds.values()]:
+                os.close(fd)
+
+    thread = threading.Thread(target=barrier)
+    thread.start()
+    config = "schema = 1\n[test.complete]\ntimeout_seconds = 120\n"
+    for name in ("one", "two"):
+        code = (
+            "import os;"
+            f"w=os.open({str(paths[f'{name}-started'])!r},os.O_WRONLY);"
+            "os.write(w,b'1');os.close(w);"
+            f"r=os.open({str(paths[f'{name}-release'])!r},os.O_RDONLY);"
+            "assert os.read(r,1)==b'1';os.close(r)")
+        config += _check_toml(name, code)
+    config += _check_toml(
+        "fails", "import sys;print('exact-check-failure',file=sys.stderr);raise SystemExit(7)")
+    config += _check_toml("after", "pass", after=("fails",))
+    config += _check_toml(
+        "needs", "raise AssertionError('must not run')", requires=("fails",))
+    _write_config(world.repo, world.caller, config)
+
+    started = _call(world, "test.start", {"path": str(world.repo)})
+    assert started["ok"], started
+    final = _wait_status(world, world.repo, {"failed"}, timeout=120)
+    thread.join(30)
+    assert not failure and accepted == {"one", "two"}
+    states = {row["name"]: row["status"] for row in final["checks"]}
+    assert states == {
+        "one": "passed", "two": "passed", "fails": "failed",
+        "after": "passed", "needs": "not_meaningful",
+    }
+    assert [row["check"] for row in final["failure_index"]] == ["fails", "needs"]
+    assert final["proof"] == "complete"
+    failed_output = _call(world, "test.output", {
+        "path": str(world.repo), "stream": "stderr", "check": "fails"})
+    assert failed_output["ok"], failed_output
+    assert failed_output["result"]["check"] == "fails"
+    assert "exact-check-failure" in failed_output["result"]["tail"]
+
+
+def test_event_completed_setup_stays_alive_for_dependent_check(world):
+    artifact = ".devcoordinator/test/current/artifacts/browser-ready"
+    setup = (
+        "import json,os,signal;"
+        "payload={'run_id':os.environ['DEVCOORDINATOR_RUN_ID'],"
+        "'check':os.environ['DEVCOORDINATOR_CHECK_NAME'],'status':'passed'};"
+        "os.write(int(os.environ['DEVCOORDINATOR_EVENT_FD']),"
+        "(json.dumps(payload)+'\\n').encode());signal.pause()")
+    dependent = (
+        "import os;from pathlib import Path;"
+        f"Path({artifact!r}).write_text('ready')")
+    config = "schema = 1\n[test.complete]\ntimeout_seconds = 120\n"
+    config += _check_toml("service", setup, completion="event")
+    config += _check_toml(
+        "browser", dependent, requires=("service",), produces=(artifact,))
+    _write_config(world.repo, world.caller, config)
+
+    started = _call(world, "test.start", {"path": str(world.repo)})
+    assert started["ok"], started
+    final = _wait_status(world, world.repo, {"passed", "failed"}, timeout=120)
+    assert final["status"] == "passed", final
+    checks = {row["name"]: row for row in final["checks"]}
+    assert checks["service"]["status"] == "passed"
+    assert checks["browser"]["artifacts"][0]["path"] == artifact
+    assert _units() == []
+
+
+def test_selection_and_failed_check_retry_remain_diagnostic(world):
+    ignore = world.repo / ".gitignore"
+    ignore.write_text(".devcoordinator/\nbuild.bin\n")
+    subprocess.run(["chown", f"{world.caller.pw_uid}:{world.caller.pw_gid}", ignore],
+                   check=True)
+    build = "from pathlib import Path;Path('build.bin').write_text('exact-build')"
+    verify = "from pathlib import Path;raise SystemExit(0 if Path('fix.flag').exists() else 9)"
+    unrelated = (
+        "from pathlib import Path;import os;"
+        "Path(os.environ['DEVCOORDINATOR_CHECK_SCRATCH'],'ran').write_text('yes')")
+    config = "schema = 1\n[test.complete]\ntimeout_seconds = 120\n"
+    config += _check_toml("build", build, produces=("build.bin",))
+    config += _check_toml("verify", verify, requires=("build",))
+    config += _check_toml("unrelated", unrelated)
+    _write_config(world.repo, world.caller, config)
+
+    first = _call(world, "test.start", {"path": str(world.repo)})
+    assert first["ok"], first
+    failed = _wait_status(world, world.repo, {"failed"}, timeout=120)
+    origin = failed["run_id"]
+    retried = _call(world, "test.retry", {
+        "path": str(world.repo), "run_id": origin, "check": "verify"})
+    assert retried["ok"], retried
+    retry_final = _wait_status(world, world.repo, {"failed"}, timeout=120)
+    retry_states = {row["name"]: row["status"] for row in retry_final["checks"]}
+    assert retry_states == {"build": "reused", "verify": "failed"}
+    assert retry_final["proof"] == "diagnostic"
+    assert retry_final["origin_run_id"] == origin
+
+    fix = world.repo / "fix.flag"
+    fix.write_text("fixed")
+    subprocess.run(["chown", f"{world.caller.pw_uid}:{world.caller.pw_gid}", fix],
+                   check=True)
+    stale = _call(world, "test.retry", {
+        "path": str(world.repo), "run_id": origin, "check": "verify"})
+    assert stale["ok"] is False
+    assert "stale" in stale["error"]["message"]
+    still_retry = _call(world, "test.status", {"path": str(world.repo)})
+    assert still_retry["result"]["run_id"] == retry_final["run_id"]
+
+    selected = _call(world, "test.start", {
+        "path": str(world.repo), "checks": ["verify"]})
+    assert selected["ok"], selected
+    selected_final = _wait_status(world, world.repo, {"passed", "failed"}, timeout=120)
+    assert selected_final["status"] == "passed", selected_final
+    assert selected_final["proof"] == "diagnostic"
+    assert selected_final["selection"] == ["verify"]
+    assert {row["name"] for row in selected_final["checks"]} == {"build", "verify"}
+
+    complete = _call(world, "test.start", {"path": str(world.repo)})
+    assert complete["ok"], complete
+    complete_final = _wait_status(world, world.repo, {"passed", "failed"}, timeout=120)
+    assert complete_final["status"] == "passed", complete_final
+    assert complete_final["proof"] == "complete"
+    assert {row["name"] for row in complete_final["checks"]} == {
+        "build", "verify", "unrelated"}
+
+
+def test_upgrade_drain_rejects_new_starts_and_stop_reason_is_operational(world):
+    _write_config(world.repo, world.caller,
+                  'schema = 1\n[test.unit]\ncommand = ["sleep", "120"]\n')
+    started = _call(world, "test.start", {"path": str(world.repo)})
+    assert started["ok"], started
+    activity = read_activity(world.base)
+    assert [row["run_id"] for row in activity["active"]] == [started["result"]["run_id"]]
+    lease = begin_drain(world.base, "test upgrade")
+    try:
+        refused = _call(world, "test.start", {"path": str(world.repo)})
+        assert refused["ok"] is False
+        assert refused["error"]["code"] == "tests_draining"
+        status = _call(world, "test.status", {"path": str(world.repo)})
+        assert status["result"]["run_id"] == started["result"]["run_id"]
+        stopped = _call(world, "test.stop", {
+            "path": str(world.repo), "reason": "operator cancelled for emergency upgrade"})
+        assert stopped["ok"] and stopped["result"]["status"] == "cancelled"
+    finally:
+        end_drain(lease)
+    final = _call(world, "test.status", {"path": str(world.repo)})["result"]
+    assert final["status"] == "cancelled"
+    assert final["termination_reason"] == "operator cancelled for emergency upgrade"
+    assert read_activity(world.base)["active"] == []
+    assert _units() == []
+
+
+def test_repository_installer_drain_waits_then_switches_and_reconnects(
+        world, monkeypatch):
+    release_fifo = world.base / "release-test"
+    os.mkfifo(release_fifo)
+    os.chmod(release_fifo, 0o666)
+    command = (
+        "import os;"
+        f"fd=os.open({str(release_fifo)!r},os.O_RDONLY);"
+        "assert os.read(fd,1)==b'1';os.close(fd)")
+    _write_config(
+        world.repo, world.caller,
+        "schema = 1\n[test.unit]\n"
+        f"command = {json.dumps(['/usr/bin/python3', '-c', command])}\n")
+    started = _call(world, "test.start", {"path": str(world.repo)})
+    assert started["ok"], started
+    opt = world.base / "opt"
+    old_release = opt / "releases" / "old"
+    new_release = opt / "releases" / "new"
+    old_release.mkdir(parents=True)
+    new_release.mkdir()
+    (opt / "current").symlink_to(old_release)
+    monkeypatch.setattr(install, "OPT", opt)
+    entered = threading.Event()
+    completed = threading.Event()
+    failures = []
+
+    def drain():
+        try:
+            with install.drain_active_tests(
+                    socket_path=world.daemon.socket_path,
+                    runtime_dir=world.base, unit_prefix=UNIT_PREFIX,
+                    daemon_running=True):
+                previous = install.activate_release(new_release)
+                assert previous == old_release
+                world.daemon.stop()
+                world.daemon.start()
+                entered.set()
+            completed.set()
+        except Exception as exc:
+            failures.append(exc)
+
+    with DirectoryEvents(world.base) as events:
+        thread = threading.Thread(target=drain)
+        thread.start()
+        if not (world.base / "test-drain.json").exists():
+            events.wait(10)
+    assert not entered.is_set()
+    refused = _call(world, "test.start", {"path": str(world.repo)})
+    assert refused["ok"] is False and refused["error"]["code"] == "tests_draining"
+    writer = os.open(release_fifo, os.O_WRONLY)
+    os.write(writer, b"1")
+    os.close(writer)
+    thread.join(120)
+    assert not failures and entered.is_set() and completed.is_set()
+    assert not (world.base / "test-drain.json").exists()
+    assert (opt / "current").resolve() == new_release
+    summary_path = world.repo / ".devcoordinator" / "test" / "current" / "summary.json"
+    final = json.loads(summary_path.read_text())
+    assert final["status"] == "passed", final
+    reconnected = _call(world, "test.status", {"path": str(world.repo)})
+    assert reconnected["ok"] and reconnected["result"]["run_id"] == final["run_id"]
+    _write_config(world.repo, world.caller,
+                  'schema = 1\n[test.unit]\ncommand = ["true"]\n')
+    after_upgrade = _call(world, "test.start", {"path": str(world.repo)})
+    assert after_upgrade["ok"], after_upgrade
+    final_after_upgrade = _wait_status(
+        world, world.repo, {"passed", "failed"}, timeout=120)
+    assert final_after_upgrade["status"] == "passed", final_after_upgrade

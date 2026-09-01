@@ -136,3 +136,63 @@ def test_file_with_both_tests_and_deployments(tmp_path):
                            '[deployment.svc.component.api]\ntype = "process"\n'
                            'command = ["x"]\n')
     assert load_test_spec(root, None).name == "unit"
+
+
+def test_governed_check_graph_accepts_dependencies_events_and_artifacts(tmp_path):
+    root = write(tmp_path, '''
+schema = 1
+[test.complete]
+timeout_seconds = 3600
+[[test.complete.check]]
+name = "build"
+command = ["make", "build"]
+produces = ["dist/app"]
+[[test.complete.check]]
+name = "server"
+command = ["./scripts/server"]
+requires = ["build"]
+completion = "event"
+on_failure = "stop"
+[[test.complete.check]]
+name = "browser"
+command = ["node", "verify.mjs"]
+requires = ["server"]
+env = { CI = "1" }
+[[test.complete.check]]
+name = "report"
+command = ["./scripts/report"]
+after = ["browser"]
+''')
+    spec = load_test_spec(root, None)
+    assert spec.command is None
+    assert [check.name for check in spec.checks] == [
+        "build", "server", "browser", "report"]
+    assert spec.checks[1].completion == "event"
+    assert spec.checks[1].on_failure == "stop"
+    assert spec.checks[2].requires == ("server",)
+    assert spec.checks[0].produces == ("dist/app",)
+    assert len(spec.config_digest) == 64
+
+
+@pytest.mark.parametrize("body,fragment", [
+    ('max_parallel = 4\n[[test.g.check]]\nname="a"\ncommand=["true"]',
+     "unknown keys"),
+    ('[[test.g.check]]\nname="a"\ncommand=["true"]\nresources=["db"]',
+     "unknown keys"),
+    ('[[test.g.check]]\nname="a"\ncommand=["true"]\nafter=["missing"]',
+     "unknown dependencies"),
+    ('[[test.g.check]]\nname="a"\ncommand=["true"]\nafter=["b"]\n'
+     '[[test.g.check]]\nname="b"\ncommand=["true"]\nafter=["a"]',
+     "contain a cycle"),
+    ('[[test.g.check]]\nname="a"\ncommand=["true"]\nproduces=["../secret"]',
+     "normalized repository-relative"),
+    ('[[test.g.check]]\nname="a"\ncommand=["true"]\nenv={DEVCOORDINATOR_RUN_ID="x"}',
+     "reserved internal prefix"),
+    ('command=["true"]\n[[test.g.check]]\nname="a"\ncommand=["true"]',
+     "either command or check"),
+])
+def test_governed_check_graph_rejections(tmp_path, body, fragment):
+    root = write(tmp_path, f"schema = 1\n[test.g]\n{body}\n")
+    with pytest.raises(ConfigError) as excinfo:
+        load_test_spec(root, None)
+    assert fragment in str(excinfo.value)

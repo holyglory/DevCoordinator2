@@ -11,6 +11,8 @@ logs, metrics, or agent results.
 from __future__ import annotations
 
 import secrets
+import selectors
+import subprocess
 import time
 from dataclasses import dataclass
 
@@ -69,18 +71,50 @@ def provision(spec: PostgresSpec, *, run_id: str,
 
 def _wait_ready(container_id: str, spec: PostgresSpec) -> None:
     deadline = time.monotonic() + READY_TIMEOUT_SECONDS
-    # During first-run init the official image serves a temporary server on
-    # the Unix socket only, then restarts listening on TCP. Probing over TCP
-    # (and requiring two consecutive successes) avoids racing that restart.
-    consecutive = 0
-    while time.monotonic() < deadline:
-        if docker_cli.exec_ok(container_id,
-                              ["pg_isready", "-h", "127.0.0.1", "-U", spec.user,
-                               "-d", spec.database]):
-            consecutive += 1
-            if consecutive >= 2:
+    # First-run initialization emits readiness for a temporary socket-only
+    # server and then for the final TCP server. Follow the exact log events,
+    # require the second, and verify TCP once; elapsed time is never success.
+    follower = docker_cli.follow_logs(container_id)
+    assert follower.stdout is not None and follower.stderr is not None
+    watched = selectors.DefaultSelector()
+    watched.register(follower.stdout, selectors.EVENT_READ)
+    watched.register(follower.stderr, selectors.EVENT_READ)
+    ready_events = 0
+    try:
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise docker_cli.DockerError("ephemeral postgres readiness event missing")
+            events = watched.select(remaining)
+            if not events:
+                raise docker_cli.DockerError("ephemeral postgres readiness event missing")
+            for key, _mask in events:
+                line = key.fileobj.readline()
+                if not line:
+                    watched.unregister(key.fileobj)
+                    if not watched.get_map():
+                        detail = follower.stderr.read().strip()[:512]
+                        raise docker_cli.DockerError(
+                            detail or "ephemeral postgres logs ended before readiness")
+                    continue
+                if "database system is ready to accept connections" not in line:
+                    continue
+                ready_events += 1
+                if ready_events < 2:
+                    continue
+                if not docker_cli.exec_ok(
+                        container_id,
+                        ["pg_isready", "-h", "127.0.0.1", "-U", spec.user,
+                         "-d", spec.database]):
+                    raise docker_cli.DockerError(
+                        "ephemeral postgres final readiness verification failed")
                 return
-        else:
-            consecutive = 0
-        time.sleep(0.5)
-    raise docker_cli.DockerError("ephemeral postgres did not become ready")
+    finally:
+        watched.close()
+        if follower.poll() is None:
+            follower.terminate()
+        try:
+            follower.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            follower.kill()
+            follower.wait()

@@ -10,6 +10,7 @@ from __future__ import annotations
 import grp
 import os
 import pwd
+import select
 import subprocess
 import time
 from pathlib import Path
@@ -146,19 +147,32 @@ def prove_cgroup_empty(cgroup: Path | None, deadline_seconds: float = 15.0) -> b
     """True only when the cgroup provably has no processes (or is gone)."""
     if cgroup is None:
         return True
-    procs_file = cgroup / "cgroup.procs"
+    events_file = cgroup / "cgroup.events"
+    try:
+        fd = os.open(events_file, os.O_RDONLY | os.O_CLOEXEC)
+    except FileNotFoundError:
+        return True
+    except OSError:
+        return False
     deadline = time.monotonic() + deadline_seconds
-    while time.monotonic() < deadline:
-        try:
-            content = procs_file.read_text()
-        except FileNotFoundError:
-            return True
-        except OSError:
-            return False
-        if not content.strip():
-            return True
-        time.sleep(0.2)
-    return False
+    watcher = select.poll()
+    watcher.register(fd, select.POLLPRI | select.POLLERR)
+    try:
+        while True:
+            try:
+                os.lseek(fd, 0, os.SEEK_SET)
+                content = os.read(fd, 4096).decode("ascii", errors="replace")
+            except FileNotFoundError:
+                return True
+            except OSError:
+                return False
+            if any(line == "populated 0" for line in content.splitlines()):
+                return True
+            remaining_ms = max(0, int((deadline - time.monotonic()) * 1000))
+            if remaining_ms == 0 or not watcher.poll(remaining_ms):
+                return False
+    finally:
+        os.close(fd)
 
 
 def process_uids(pid: int) -> tuple[int, int, int, int] | None:

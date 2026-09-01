@@ -1,4 +1,4 @@
-"""Repository delivery progress, prioritization, and explainable forecasts.
+"""Repository delivery progress, factual release work, and explainable forecasts.
 
 Every number is derived from an existing authority: permanent plan events,
 bounded repository-local test summaries, and the read-only Codex usage
@@ -359,83 +359,64 @@ def _forecast(scope: list[dict], evidence: dict[str, Any], now_ms: int,
             ]}
 
 
-def _priorities(scope: list[dict], forecast: dict,
-                evidence: dict[str, Any]) -> list[dict[str, Any]]:
-    open_tasks = [task for task in scope if task["status"] != "done"]
-    known = [task["estimated_loc"] for task in scope if task["estimated_loc"]]
-    median_size = statistics.median(known) if known else None
-    line_rate = evidence["planned_lines_per_day"]
-    task_rate = evidence["tasks_per_day"]
-    remaining_lines = sum(task["estimated_loc"] or 0 for task in open_tasks)
-    rows = []
-    for task in open_tasks:
-        size = task["estimated_loc"] or median_size
-        impact_days = (size / line_rate if size and line_rate > 0
-                       else 1 / task_rate if task_rate > 0 else None)
-        measured_share = ((task["estimated_loc"] or 0) / remaining_lines
-                          if remaining_lines else None)
-        score = (30 if task["status"] == "in_progress" else 0) \
-            + (24 if task["estimated_loc"] is None else 0) \
-            + (12 if task["kind"] == "user_feedback" else 0) \
-            + min(20, (impact_days or 0) * 4)
-        if task["estimated_loc"] is None:
-            reason = "A missing estimate makes the release range less certain."
-        elif task["status"] == "in_progress":
-            reason = "Finishing work already underway reduces handoff and delay risk."
-        elif task["kind"] == "user_feedback":
-            reason = "This is recorded owner-requested work in the release."
-        elif measured_share is not None:
-            reason = (f"This is about {round(measured_share * 100)}% of the remaining"
-                      " measured scope.")
-        else:
-            reason = "This remains open in the selected release."
-        rows.append({
-            "task_id": task["task_id"],
-            "title": task["title"],
-            "outcome": task["outcome"],
-            "status": task["status"],
-            "kind": task["kind"],
-            "estimated_loc": task["estimated_loc"],
-            "impact_days": round(impact_days, 1) if impact_days is not None else None,
-            "group": None,
-            "dependency": None,
-            "elaboration_needed": bool(task.get("elaboration_needed")),
-            "reason": reason,
-            "_score": score,
-        })
-    rows.sort(key=lambda row: (-row["_score"], row["task_id"]))
-    for rank, row in enumerate(rows, start=1):
-        row["rank"] = rank
-        row.pop("_score")
-        row["forecast_if_deferred"] = _deferred_forecast(forecast, row)
-    return rows[:20]
-
-
-def _deferred_forecast(forecast: dict, task: dict) -> dict[str, Any] | None:
-    if forecast.get("state") != "available" or task.get("impact_days") is None:
-        return None
-    shift = max(0, math.ceil(task["impact_days"])) * DAY_MS
-    as_of = forecast["as_of_ms"]
-    return {
-        "earliest_at_ms": max(as_of, forecast["earliest_at_ms"] - shift),
-        "likely_at_ms": max(as_of, forecast["likely_at_ms"] - shift),
-        "latest_at_ms": max(as_of, forecast["latest_at_ms"] - shift),
-        "confidence_percent": max(20, forecast["confidence_percent"] - 4),
-        "explanation": "This assumes the selected task moves out of this release;"
-        " nothing is changed automatically.",
-    }
-
-
-def _release_scope(db: Database, repository_id: str, leaves: list[dict]) \
+def _release_scope(db: Database, repository_id: str, tasks: list[dict],
+                   parents: set[str]) \
         -> tuple[dict | None, list[dict]]:
     releases = [dict(row) for row in db.query(
         "SELECT * FROM releases WHERE repository_id=?"
         " AND status IN ('planned','requested') ORDER BY seq",
         (repository_id,))]
     release = releases[0] if releases else None
-    scope = ([task for task in leaves if task["release_id"] == release["release_id"]]
-             if release else [task for task in leaves if task["release_id"] is None])
+    release_id = release["release_id"] if release else None
+    grouped = [task for task in tasks if task["status"] != "dropped"
+               and task["release_id"] == release_id]
+    grouped_by_id = {task["task_id"]: task for task in grouped}
+    children: dict[str, list[dict]] = {}
+    for task in grouped:
+        if task["parent_task_id"] in grouped_by_id:
+            children.setdefault(task["parent_task_id"], []).append(task)
+    def order(task: dict) -> tuple[int, int]:
+        return task["position"], task["seq"]
+    for rows in children.values():
+        rows.sort(key=order)
+    scope: list[dict] = []
+
+    def walk(task: dict) -> None:
+        nested = children.get(task["task_id"], [])
+        if not nested:
+            if task["task_id"] not in parents:
+                scope.append(task)
+            return
+        for child in nested:
+            walk(child)
+
+    roots = [task for task in grouped
+             if task["parent_task_id"] not in grouped_by_id]
+    for task in sorted(roots, key=order):
+        walk(task)
     return release, scope
+
+
+def _release_work(db: Database, repository_id: str,
+                  scope: list[dict]) -> list[dict[str, Any]]:
+    reopened: dict[str, str | None] = {}
+    for event in db.query(
+            "SELECT subject_id, note FROM plan_events"
+            " WHERE repository_id=? AND subject_kind='task' AND event='status'"
+            " AND from_value='done' AND to_value!='done' ORDER BY event_id",
+            (repository_id,)):
+        reopened[event["subject_id"]] = event["note"]
+    return [{
+        "task_id": task["task_id"],
+        "title": task["title"],
+        "status": task["status"],
+        "kind": task["kind"],
+        "estimated_loc": task["estimated_loc"],
+        "elaboration_needed": bool(task.get("elaboration_needed")),
+        "unblock_condition": task.get("unblock_condition"),
+        "reopened": task["task_id"] in reopened,
+        "reopen_note": reopened.get(task["task_id"]),
+    } for task in scope if task["status"] != "done"]
 
 
 def _coverage(plan: dict, tests: dict, usage: dict) -> dict[str, Any]:
@@ -473,12 +454,12 @@ def repository_report(db: Database, repository: dict, usage: CodexUsage,
     current = _totals(current_buckets, duration_days)
     previous = _totals(previous_buckets, duration_days)
     release, scope = _release_scope(
-        db, repository["repository_id"], plan["leaves"])
+        db, repository["repository_id"], plan["tasks"], plan["parents"])
     evidence = _completion_evidence(
         db, repository["repository_id"], plan, now_ms)
     forecast = _forecast(scope, evidence, now_ms, current["test_pass_rate"],
                          current["scope_lines_changed"], release)
-    priorities = _priorities(scope, forecast, evidence)
+    release_work = _release_work(db, repository["repository_id"], scope)
     leaves = [task for task in plan["leaves"] if task["status"] != "dropped"]
     coverage = _coverage(
         plan, test_coverage,
@@ -510,15 +491,17 @@ def repository_report(db: Database, repository: dict, usage: CodexUsage,
         "series": current_buckets,
         "comparison": {"current": current, "previous": previous},
         "forecast": forecast,
-        "priorities": priorities,
+        "release_work": release_work,
         "coverage": coverage,
         "semantics": {
             "tasks": "terminal task status events in the permanent plan ledger",
             "lines": "current planned task estimates completed; not measured Git changes",
             "tests": "bounded repository-local terminal test summaries",
             "tokens": "provider total_tokens; missing collector coverage stays missing",
-            "forecast": ("deterministic range from recent pace, scope, estimates,"
-                         " and test stability"),
+            "forecast": ("provisional range from recent completion pace, current"
+                         " estimates, scope movement, and test stability; when work"
+                         " has no estimate, the median recorded task size is used"
+                         " when available"),
         },
     }
 

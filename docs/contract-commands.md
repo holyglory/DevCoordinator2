@@ -7,9 +7,9 @@ have no implementation and must not be exposed before their end-to-end
 behavior exists.
 
 The CLI maps `devcoordinator2 test start …` to command `test.start`; the MCP
-server exposes the same commands as tools `test_start`, `test_status`,
-`test_output`, `test_stop`, `repository_list`. All three surfaces return the
-identical result JSON.
+server exposes the same commands as tools `test_start`, `test_retry`,
+`test_status`, `test_output`, `test_stop`, `repository_list`. All three
+surfaces return the identical result JSON.
 
 ## ping
 
@@ -22,6 +22,8 @@ Args:
 - `path` (string, required) — any path inside the target worktree.
 - `test` (string, optional) — named test from `.devcoordinator.toml`;
   defaults to the file's declared default.
+- `checks` (array of unique check names, optional) — diagnostic selection plus
+  its transitive prerequisites. Omit for the complete graph.
 
 Result (only after the process exists):
 
@@ -31,20 +33,46 @@ Result (only after the process exists):
   "repository_id": "r…", "worktree_id": "w…",
   "test": "unit",
   "status": "running",
+  "proof": "complete",
+  "selection": [],
+  "origin_run_id": null,
   "unit": "devcoordinator2-test-<worktree_id>-<suffix>.service",
   "summary_path": "<worktree>/.devcoordinator/test/current/summary.json"
 }
 ```
 
 Errors: `repository_not_found`, `repository_config_invalid`,
-`worktree_busy`, `unit_stop_failed`, `test_start_failed`. Never `queued`.
+`worktree_busy`, `tests_draining`, `unit_stop_failed`, `test_start_failed`.
+Never `queued`.
 Latest-start-wins: a concurrent earlier run ends `superseded`.
+
+Every ready graph check starts concurrently. `after` requires terminal
+completion; `requires` requires success. Process exit or an inherited exact
+completion event advances the graph. `timeout_seconds` is only the outer
+runaway watchdog and can never produce readiness or success.
+
+## test.retry
+
+Args: `path`, optional `test`, `run_id` of an original completed full run, and
+one failed `check`. Result has the same running shape as `test.start`, with
+`proof: "diagnostic"`, `selection: [check]`, and `origin_run_id` set. The
+target's prerequisite closure runs; a matching process-completed prerequisite
+with declared artifact receipts may be `reused`. Missing, unfinished,
+diagnostic, non-failed, source/config-changed, or artifact-stale origins fail
+before the current slot is changed. A retry never constitutes complete proof.
 
 ## test.status
 
 Args: `path` (required).
 Result: the current `summary.json` fields (see below) plus `summary_path`.
 Successful runs carry **no log text**. Error: `test_not_found`.
+
+Graph status additionally carries `proof` (`complete|diagnostic`), `selection`,
+`origin_run_id`, `check_summary`, ordered `checks` (state, monotonic duration,
+exit code, bounded reason, declared artifact receipts, output reference), a
+bounded `failure_index`, `source_changed`, `unsafe_reason`, and
+`check_report_path`. States are `pending|running|passed|failed|reused|`
+`not_meaningful|cancelled|unsafe`. Measurements never control progression.
 
 summary.json fields (result schema 1): `schema_version`, `run_id`, `test`,
 `status` (`running|passed|failed|timed-out|cancelled|interrupted|superseded`),
@@ -59,16 +87,19 @@ Args:
 - `path` (required)
 - `stream` — `"stdout"` or `"stderr"` (required)
 - `tail_bytes` — 1..65536, default 16384
+- `check` — optional governed check name; omitted returns the aggregate stream
 
-Result: `{"run_id", "stream", "tail": "<utf-8, lossy-decoded>",
+Result: `{"run_id", "stream", "check", "tail": "<utf-8, lossy-decoded>",
 "tail_bytes": n, "truncated_before_tail": bool, "log_path": "…"}`
 
 ## test.stop
 
-Args: `path` (required).
+Args: `path` (required), optional one-line `reason` (3..256 characters).
 Result: `{"run_id", "status": "cancelled"}` after the cgroup is proven
 empty, or `{"run_id", "status": "<terminal>", "already_finished": true}`.
 Errors: `test_not_found`, `unit_stop_failed`.
+The reason is stored as `termination_reason` operational metadata and never
+changes cancellation into a test failure.
 
 ## repository.register
 
@@ -206,7 +237,10 @@ Deduplicated while active; one recovery each.
 
 - `usage.repositories {range?}` returns the registered repositories visible to
   the caller with compact combined Codex totals. `range` is exactly `24h`,
-  `7d`, or `30d` and defaults to `24h`.
+  `7d`, or `30d` and defaults to `24h`. The collection opens each configured
+  source once for all requested repositories, reads only row-level token/count/
+  execution facts through indexed identities, and has an 800 ms server-side
+  query budget so repository count cannot multiply an individual timeout.
 - `usage.repository {repository_id, range?}` returns one content-free combined
   report: coverage/source counts, provider-native top-level token categories,
   fixed UTC phase buckets, activity totals, separate timing unions, tool
@@ -234,13 +268,18 @@ Deduplicated while active; one recovery each.
   current planned lines completed and scope movement, terminal test counts and
   pass rate, provider `total_tokens`, and per-bucket token coverage. It also
   carries current/previous totals, current scope, source-specific coverage,
-  a deterministic release forecast, ranked open work, local defer scenarios,
-  and explicit counting semantics.
+  a deterministic release forecast, open release work in depth-first Plan
+  order, and explicit counting semantics. Each open-work row exposes only the
+  owner-facing title and recorded status, estimate, elaboration request,
+  unblock condition, and latest reopening note. The compact Console summary
+  deliberately renders only title, status, estimate, elaboration, and a simple
+  reopened state; full raw planning/event prose remains outside that surface.
 - “Planned lines completed” means the current estimates attached to tasks whose
   permanent status event reached `done`; it is not measured Git churn. Test
   history is bounded repository-local terminal metadata. Missing histories,
   unestimated tasks, no release, zero pace, and missing target dates remain
-  explicit. No scenario mutates task order or release scope.
+  explicit. The response does not infer priority, dependency, impact days, or
+  an ordering scenario from those facts.
 - Administrators may read every repository. Public operators may read only a
   repository where they hold operator-or-higher deployment access; viewers are
   denied because the result includes combined private token analytics.

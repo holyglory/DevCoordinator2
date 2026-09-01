@@ -10,7 +10,6 @@ const state = {
   usageRange: '1h',
   codexUsageRange: '24h',
   progressPeriod: 'day',
-  progressMode: 'pulse',
   progressRepositoryId: null,
   progressSelectedTaskId: null,
   decisionAspect: 'all',
@@ -598,41 +597,63 @@ function utcBucket(ms, includeDate = false) {
   return `${day}, ${time}`;
 }
 
-function coverageKind(stateName) {
+function coverageKind(value) {
+  const coverage = value && typeof value === 'object' ? value : null;
+  const stateName = coverage?.state || value;
+  if (coverage?.unavailable_reasons?.indexing) return 'indexing';
+  if (stateName === 'unavailable' && coverage?.unavailable_reasons?.mapping_pending) {
+    return 'setup';
+  }
   return stateName === 'complete' ? 'ok' : stateName === 'partial' ? 'warn'
     : stateName === 'unavailable' ? 'bad' : '';
 }
 
-function coverageText(coverage) {
+function coverageText(coverage, compact = false) {
   const configured = Number(coverage.configured_collectors || 0);
   const included = Number(coverage.contributing_collectors || 0);
-  if (coverage.unavailable_reasons?.mapping_pending) {
-    return 'Usage setup incomplete · repository not connected in every Codex environment';
-  }
-  if (coverage.state === 'unavailable') {
-    return 'Usage unavailable · no configured Codex environment supplied data';
-  }
-  if (coverage.state === 'unobserved') return 'No usage measured in this period';
+  if (coverage.unavailable_reasons?.indexing) return 'Updating usage data…';
   if (coverage.state === 'complete') {
     const total = configured || included;
+    if (compact) return `All ${total} environments included`;
     return `All ${total} configured Codex ${total === 1 ? 'environment' : 'environments'} included`;
   }
+  if (coverage.state === 'partial') {
+    if (compact) return `${included} of ${configured} environments included`;
+    return `Some usage may be missing · data from ${included} of ${configured} configured Codex environments`;
+  }
+  if (coverage.state === 'unobserved') {
+    return compact ? 'No usage measured' : 'No usage measured in this period';
+  }
+  if (coverage.unavailable_reasons?.mapping_pending) {
+    return compact
+      ? 'Not connected in all environments'
+      : 'Not connected in every configured Codex environment';
+  }
+  if (coverage.state === 'unavailable') return 'Usage data unavailable';
   return `Some usage may be missing · data from ${included} of ${configured} configured Codex environments`;
 }
 
 function coverageExplanation(coverage) {
   const introduction = 'A Codex environment is a separately configured local Codex setup with its own usage history. This page combines environments without identifying them.';
+  if (coverage.unavailable_reasons?.indexing) {
+    return `${introduction} This range is still being prepared from the canonical usage histories; no missing value is counted as zero.`;
+  }
+  if (coverage.state === 'complete') {
+    return `${introduction} Every configured environment supplied measurable data for this repository and period.`;
+  }
+  if (coverage.state === 'partial') {
+    return `${introduction} Data from connected environments is shown. Environments that supplied no data, are not connected, or have unmeasured values are excluded, never counted as zero.`;
+  }
+  if (coverage.state === 'unobserved') {
+    const setup = coverage.unavailable_reasons?.mapping_pending
+      ? ' This repository is not connected in every configured environment.' : '';
+    return `${introduction} The connected environments contained no measured usage for this repository and period.${setup}`;
+  }
   if (coverage.unavailable_reasons?.mapping_pending) {
     return `${introduction} This repository has not yet been connected in every configured environment.`;
   }
   if (coverage.state === 'unavailable') {
-    return `${introduction} No configured environment supplied data for this repository and period.`;
-  }
-  if (coverage.state === 'unobserved') {
-    return `${introduction} The configured environments contained no measured usage for this repository and period.`;
-  }
-  if (coverage.state === 'complete') {
-    return `${introduction} Every configured environment supplied measurable data for this repository and period.`;
+    return `${introduction} Configured environments could not supply usage data for this repository and period.`;
   }
   return `${introduction} Environments that supplied no data and unmeasured values are excluded, never counted as zero.`;
 }
@@ -645,8 +666,47 @@ function bucketDataStatus(stateName) {
   return 'Unknown';
 }
 
-function coverageMark(coverage) {
-  return `<span class="usage-coverage-mark ${coverageKind(coverage.state)}"><i aria-hidden="true"></i>${esc(coverageText(coverage))}</span>`;
+function coverageMark(coverage, compact = false) {
+  return `<span class="usage-coverage-mark ${coverageKind(coverage)}"><i aria-hidden="true"></i>${esc(coverageText(coverage, compact))}</span>`;
+}
+
+function coverageHint(coverage) {
+  const hintId = 'usage-coverage-hint';
+  const titleId = `${hintId}-title`;
+  return `<div class="usage-coverage-line"><span class="usage-coverage-status">${coverageMark(coverage)}</span><button type="button" class="usage-coverage-hint-toggle" aria-label="Explain Codex usage data completeness" aria-haspopup="dialog" aria-expanded="false" aria-controls="${hintId}" data-usage-coverage-hint-toggle>${planIcon('info-circle')}</button><div class="usage-coverage-popover" id="${hintId}" role="dialog" aria-labelledby="${titleId}" tabindex="-1" data-ui-allow-overlap="Open information hint intentionally overlays dashboard content" hidden><strong id="${titleId}" data-ui-continuation-anchor>About Codex environments</strong><p>${esc(coverageExplanation(coverage))}</p></div></div>`;
+}
+
+function bindCoverageHint(root = main) {
+  const line = $('.usage-coverage-line', root);
+  const toggle = $('[data-usage-coverage-hint-toggle]', root);
+  const popover = $('.usage-coverage-popover', root);
+  const metrics = $('.usage-metrics', root);
+  if (!line || !toggle || !popover) return;
+  const close = (restoreFocus = false) => {
+    if (popover.hidden) return;
+    popover.hidden = true;
+    toggle.setAttribute('aria-expanded', 'false');
+    metrics?.removeAttribute('data-ui-allow-overlap');
+    document.removeEventListener('pointerdown', outside, true);
+    if (restoreFocus) toggle.focus();
+  };
+  const outside = (event) => { if (!line.contains(event.target)) close(false); };
+  const open = () => {
+    popover.hidden = false;
+    toggle.setAttribute('aria-expanded', 'true');
+    metrics?.setAttribute('data-ui-allow-overlap', 'Open completeness hint intentionally overlays headline metrics');
+    document.addEventListener('pointerdown', outside, true);
+    popover.focus({ preventScroll: true });
+  };
+  toggle.addEventListener('click', () => popover.hidden ? open() : close(true));
+  line.addEventListener('keydown', (event) => {
+    if (event.key !== 'Escape' || popover.hidden) return;
+    event.preventDefault();
+    close(true);
+  });
+  line.addEventListener('focusout', () => requestAnimationFrame(() => {
+    if (!line.contains(document.activeElement)) close(false);
+  }));
 }
 
 function phaseLegend() {
@@ -731,11 +791,26 @@ const viewCodexUsageRepositories = guard(async () => {
   main.innerHTML = `${pageHeading('Codex Usage', '#/usage')}${skeleton(5)}`;
   const result = await api('usage.repositories', { range: state.codexUsageRange });
   const rows = result.repositories || [];
-  main.innerHTML = `<section data-ui-region="codex-usage-repositories"><div class="usage-collection-head">${pageHeading('Codex Usage', '#/usage')}${seg(['24h', '7d', '30d'], state.codexUsageRange, 'codex-range')}</div>${rows.length ? `<div class="tablewrap"><table><thead><tr><th>Repository</th><th>Total tokens</th><th>Model requests</th><th>Tool calls</th><th>Execution time</th><th>Data included</th></tr></thead><tbody>${rows.map((row) => `<tr><td><a href="#/usage/${esc(row.repository_id)}"><strong>${esc(row.display_name)}</strong></a></td><td>${esc(compactNumber(row.total_tokens))}</td><td>${Number(row.model_requests).toLocaleString('en-US')}</td><td>${Number(row.tool_calls).toLocaleString('en-US')}</td><td>${esc(durationMs(row.execution_wall_ms))}</td><td>${coverageMark(row.coverage)}</td></tr>`).join('')}</tbody></table></div>` : stateBlock('empty', 'No repositories are available for Codex usage analytics.')}</section>`;
+  const measured = (row) => ['complete', 'partial'].includes(row.coverage.state)
+    || Number(row.coverage.contributing_collectors || 0) > 0;
+  main.innerHTML = `<section data-ui-region="codex-usage-repositories"><div class="usage-collection-head">${pageHeading('Codex Usage', '#/usage')}${seg(['24h', '7d', '30d'], state.codexUsageRange, 'codex-range')}</div>${rows.length ? `<div class="tablewrap usage-collection-tablewrap"><table class="usage-collection-table"><thead><tr><th>Repository</th><th>Total tokens</th><th>Model requests</th><th>Tool calls</th><th>Execution time</th><th>Data included</th></tr></thead><tbody>${rows.map((row) => `<tr><td data-label="Repository"><a href="#/usage/${esc(row.repository_id)}"><strong>${esc(row.display_name)}</strong></a></td><td data-label="Total tokens">${esc(compactNumber(row.total_tokens))}</td><td data-label="Model requests">${measured(row) ? Number(row.model_requests).toLocaleString('en-US') : '—'}</td><td data-label="Tool calls">${measured(row) ? Number(row.tool_calls).toLocaleString('en-US') : '—'}</td><td data-label="Execution time">${measured(row) ? esc(durationMs(row.execution_wall_ms)) : '—'}</td><td data-label="Data included">${coverageMark(row.coverage, true)}</td></tr>`).join('')}</tbody></table></div>` : stateBlock('empty', 'No repositories are available for Codex usage analytics.')}</section>`;
   bindSeg(main, 'codex-range', (range) => {
     state.codexUsageRange = range;
     render().then(() => $(`[data-codex-range="${range}"]`, main)?.focus());
   });
+  if (rows.some((row) => row.coverage.unavailable_reasons?.indexing)) {
+    const requestedRange = state.codexUsageRange;
+    setTimeout(() => {
+      const [, view, repositoryId] = (location.hash || '').slice(1).split('/');
+      if (view !== 'usage' || repositoryId || state.codexUsageRange !== requestedRange) return;
+      const restoreRangeFocus = document.activeElement?.dataset?.codexRange;
+      viewCodexUsageRepositories().then(() => {
+        if (restoreRangeFocus) {
+          $(`[data-codex-range="${restoreRangeFocus}"]`, main)?.focus();
+        }
+      });
+    }, 750);
+  }
 });
 
 const viewCodexUsage = guard(async (repositoryId) => {
@@ -752,13 +827,14 @@ const viewCodexUsage = guard(async (repositoryId) => {
     ['output', data.totals.output_tokens], ['reasoning', data.totals.reasoning_tokens],
   ].filter(([, value]) => value != null).map(([label, value]) => `${label} ${compactNumber(value)}`).join(' · ');
   main.innerHTML = `<section class="usage-dashboard" data-ui-region="codex-usage-dashboard">
-    <div class="usage-context"><div class="usage-title"><span class="usage-repo-mark" aria-hidden="true">${planIcon('focus-centered')}</span><h1>${destinationLink('Codex Usage', '#/usage')}</h1><span class="usage-slash" aria-hidden="true">/</span>${projectPicker(projects, repositoryId, (id) => `#/usage/${id}`, 'usage')}</div><div class="usage-range">${seg(['24h', '7d', '30d'], state.codexUsageRange, 'codex-range')}</div><div class="usage-coverage">${coverageMark(data.coverage)}<span class="muted">Data current ${data.coverage.freshest_at_ms ? ago(new Date(data.coverage.freshest_at_ms).toISOString()) : '—'}</span><span class="usage-coverage-note">${esc(coverageExplanation(data.coverage))}</span></div></div>
+    <div class="usage-context"><div class="usage-title"><span class="usage-repo-mark" aria-hidden="true">${planIcon('focus-centered')}</span><h1>${destinationLink('Codex Usage', '#/usage')}</h1><span class="usage-slash" aria-hidden="true">/</span>${projectPicker(projects, repositoryId, (id) => `#/usage/${id}`, 'usage')}</div><div class="usage-range">${seg(['24h', '7d', '30d'], state.codexUsageRange, 'codex-range')}</div><div class="usage-coverage">${coverageHint(data.coverage)}<span class="muted">Data current ${data.coverage.freshest_at_ms ? ago(new Date(data.coverage.freshest_at_ms).toISOString()) : '—'}</span></div></div>
     <div class="usage-metrics" data-ui-verify-min-content-inset="12">${usageMetric('Total tokens', compactNumber(data.totals.total_tokens))}${usageMetric('Model requests', compactNumber(data.totals.model_requests))}${usageMetric('Tool calls', compactNumber(data.totals.tool_calls))}${usageMetric('Execution time', durationMs(data.time.execution_wall.measured_ms))}</div>
     <section class="usage-primary" data-ui-region="usage-primary-trend"><div class="usage-section-title"><h2>Provider-reported total tokens by work phase</h2></div>${phaseLegend()}${usagePhaseChart(data.series)}</section>
     <div class="usage-lower"><section><h2>Activity breakdown</h2>${activityRows(data)}</section><section><h2>Time breakdown <span class="muted">(separate, not added together)</span></h2>${timeRails(data)}</section><section><h2>Tool outcomes</h2>${toolOutcomeRows(data)}</section></div>
     <details class="usage-provenance"><summary><strong>Data completeness</strong><span>${esc(coverageText(data.coverage))}</span><strong>Counting method</strong><span>Provider-reported total tokens; cached input and reasoning are subsets.</span></summary><div><p>${esc(coverageExplanation(data.coverage))}</p><p>${subsets ? esc(subsets) : 'Token subsets unavailable.'}</p><p>Schema ${esc(data.coverage.database_schemas.join(', ') || 'unavailable')} · taxonomy ${esc(data.coverage.taxonomy_versions.join(', ') || 'unavailable')}</p><p>${esc(data.semantics.time)}. Environments that supplied no data and unmeasured values are excluded rather than treated as zero.</p>${exactUsageTable(data)}</div></details>
   </section>`;
   bindProjectPicker(main);
+  bindCoverageHint(main);
   bindSeg(main, 'codex-range', (range) => {
     state.codexUsageRange = range;
     render().then(() => $(`[data-codex-range="${range}"]`, main)?.focus());
@@ -793,29 +869,24 @@ function progressDelta(current, previous, { lowerIsBetter = false, suffix = '' }
   return `<span class="progress-delta ${good ? 'good' : 'bad'}">${sign}${esc(compactNumber(delta))}${esc(suffix)}</span>`;
 }
 
-function progressCoverage(data) {
-  if (data.coverage.state === 'complete') return '';
-  const messages = [];
-  if (data.coverage.tests.state !== 'complete') messages.push(
-    data.coverage.tests.state === 'unobserved' ? 'Test history starts after this period.' : 'Some test history is unavailable.');
-  if (data.coverage.tokens.state !== 'complete') messages.push(
-    data.coverage.tokens.state === 'unobserved' ? 'No token use was measured in this period.' : 'Some token use is missing.');
-  return `<div class="progress-coverage" role="status">${badge(data.coverage.state === 'unavailable' ? 'data unavailable' : 'partial data', data.coverage.state === 'unavailable' ? 'bad' : 'warn')}<span>${esc(messages.join(' ') || 'Some evidence is incomplete.')} Gaps stay blank rather than becoming zero.</span></div>`;
-}
-
 function progressForecastStrip(data) {
   const f = data.forecast;
   const available = ['available', 'ready'].includes(f.state);
-  const likely = available ? progressDate(f.likely_at_ms, true) : 'Not enough evidence';
-  const confidence = available ? `${f.confidence_percent}%` : 'Unavailable';
-  const scopeMovement = data.comparison.current.scope_lines_changed;
-  return `<section class="progress-forecast" data-ui-region="progress-forecast" aria-label="Release forecast">
-    <div><span>Likely release date</span><strong class="${available ? '' : 'muted'}">${esc(likely)}</strong><small>${esc(available ? `Range ${progressRange(f)}` : f.explanation)}</small></div>
-    <div><span>Confidence</span><strong>${esc(confidence)}</strong><small>${available ? `${esc(f.confidence)} confidence · ` : ''}${f.target_date_recorded ? 'Compared with the recorded target' : 'No target date recorded'}</small></div>
-    <div><span>Remaining scope</span><strong>${Number(f.remaining_tasks || 0).toLocaleString('en-US')} tasks</strong><small>${f.unestimated_tasks ? `${f.unestimated_tasks} not estimated` : `${Number(f.remaining_planned_lines || 0).toLocaleString('en-US')} planned lines`}</small></div>
-    <div><span>Current pace</span><strong>${Number(f.velocity?.tasks_per_day || 0).toFixed(1)} tasks / day</strong><small>${Number(f.velocity?.lookback_days || 0).toFixed(0)}-day measured window</small></div>
-    <div><span>Scope movement</span><strong class="${scopeMovement > 0 ? 'bad-text' : scopeMovement < 0 ? 'ok-text' : ''}">${scopeMovement > 0 ? '+' : ''}${Number(scopeMovement).toLocaleString('en-US')} lines</strong><small>During this period</small></div>
-    <div class="progress-driver"><span>Biggest forecast driver</span><strong>${esc(f.explanation)}</strong></div>
+  const headline = available ? `Likely release: ${progressRange(f)}` : 'Release date not available';
+  const confidence = available
+    ? `${f.confidence === 'low' ? 'Low' : f.confidence === 'medium' ? 'Medium' : 'High'} confidence · ${f.confidence_percent}%`
+    : 'Confidence unavailable';
+  const quality = [];
+  quality.push(f.unestimated_tasks
+    ? `${Number(f.unestimated_tasks).toLocaleString('en-US')} tasks have no estimate`
+    : 'Every remaining task has an estimate');
+  quality.push(f.target_date_recorded ? 'Release target date recorded' : 'No release target date is recorded');
+  const note = available
+    ? 'This date is provisional. It becomes more reliable as estimates and delivery evidence improve.'
+    : f.explanation;
+  return `<section class="progress-forecast" data-ui-region="progress-forecast" aria-label="Release forecast and forecast quality">
+    <div class="progress-forecast-summary"><strong class="${available ? '' : 'muted'}">${esc(headline)}</strong><span class="progress-confidence${f.confidence === 'low' ? ' low' : ''}">${esc(confidence)}</span><span class="progress-remaining">${Number(f.remaining_tasks || 0).toLocaleString('en-US')} tasks remain</span></div>
+    <div class="progress-forecast-quality"><div><strong>Forecast quality</strong><ul>${quality.map((item) => `<li>${esc(item)}</li>`).join('')}</ul></div><p>${esc(note)}</p></div>
   </section>`;
 }
 
@@ -845,86 +916,91 @@ function progressSegments(values, x, y) {
   return segments;
 }
 
-function progressPulseChart(data) {
-  const series = progressChartValues(data);
-  if (!series.length) return stateBlock('empty', 'No progress buckets in this period.');
-  const hasEvidence = series.some((point) => point.tasks_completed
-    || point.planned_lines_completed || point.test_runs || point.total_tokens != null);
-  if (!hasEvidence) return stateBlock(
-    'empty', 'No task, test, or token progress was measured in this period.');
-  const width = 820; const height = 420; const left = 126; const right = 70;
-  const top = 38; const laneHeight = 74; const laneGap = 10;
-  const chartWidth = width - left - right;
-  const x = (index) => left + (series.length === 1 ? 0 : index * chartWidth / (series.length - 1));
-  const lanes = [
-    { key: 'tasks_cumulative', label: 'Tasks finished', detail: 'Cumulative in period', cls: 'tasks', format: compactNumber },
-    { key: 'lines_cumulative', label: 'Planned lines completed', detail: 'Current task estimates', cls: 'lines', format: compactNumber },
-    { key: 'test_pass_rate', label: 'Test pass rate', detail: 'Recorded terminal runs', cls: 'tests', format: progressPercent, fixedMax: 1 },
-    { key: 'tokens_cumulative', label: 'Token use', detail: 'Provider total tokens', cls: 'tokens', format: compactNumber },
+function progressBucketLabel(ms, period) {
+  const date = new Date(ms);
+  if (period === 'hour') return [new Intl.DateTimeFormat('en-US', {
+    hour: 'numeric', timeZone: 'UTC',
+  }).format(date)];
+  return [
+    new Intl.DateTimeFormat('en-US', { weekday: 'short', timeZone: 'UTC' }).format(date),
+    new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' }).format(date),
   ];
-  const verticals = series.map((point, index) => `<line x1="${x(index)}" x2="${x(index)}" y1="${top - 10}" y2="${height - 42}" class="progress-grid-v"/>`).join('');
+}
+
+function progressBarLineLane(data, { key, cumulativeKey, label, detail, cls, format }) {
+  const series = progressChartValues(data);
+  const width = Math.max(760, 235 + series.length * 48);
+  const height = 136; const left = 168; const right = 92;
+  const top = 20; const bottom = 42; const plotHeight = height - top - bottom;
+  const chartWidth = width - left - right; const step = chartWidth / Math.max(1, series.length);
+  const center = (index) => left + step * (index + .5);
+  const values = series.map((point) => Number(point[key] || 0));
+  const cumulative = series.map((point) => Number(point[cumulativeKey] || 0));
+  const dailyMax = Math.max(...values, 1); const cumulativeMax = Math.max(...cumulative, 1);
+  const barY = (value) => top + plotHeight - (value / dailyMax) * (plotHeight - 14);
+  const lineY = (value) => top + plotHeight - (value / cumulativeMax) * (plotHeight - 14);
+  const barWidth = Math.max(7, Math.min(28, step * .48));
+  const bars = values.map((value, index) => {
+    if (!value) return '';
+    const y = barY(value);
+    return `<rect x="${(center(index) - barWidth / 2).toFixed(1)}" y="${y.toFixed(1)}" width="${barWidth.toFixed(1)}" height="${(top + plotHeight - y).toFixed(1)}" rx="2" class="progress-bar progress-bar-${cls}"><title>${esc(`${label} that bucket: ${format(value)} · ${utcBucket(series[index].bucket_start_ms, true)} UTC`)}</title></rect>`;
+  }).join('');
+  const barLabels = values.map((value, index) => {
+    if (!value) return '';
+    const y = barY(value);
+    return `<text x="${center(index).toFixed(1)}" y="${Math.max(top + 9, y - 5).toFixed(1)}" text-anchor="middle" class="progress-bar-value">${esc(format(value))}</text>`;
+  }).join('');
+  const linePoints = cumulative.map((value, index) => `${center(index).toFixed(1)},${lineY(value).toFixed(1)}`);
+  const dots = cumulative.map((value, index) => `<circle cx="${center(index).toFixed(1)}" cy="${lineY(value).toFixed(1)}" r="3" class="progress-running-dot progress-running-${cls}"><title>${esc(`${label} running total: ${format(value)} · ${utcBucket(series[index].bucket_start_ms, true)} UTC`)}</title></circle>`).join('');
+  const every = Math.max(1, Math.ceil(series.length / 8));
   const labels = series.map((point, index) => {
-    const every = Math.max(1, Math.ceil(series.length / 7));
     if (index % every && index !== series.length - 1) return '';
-    const date = new Date(point.bucket_start_ms);
-    const format = data.period === 'hour'
-      ? new Intl.DateTimeFormat('en-US', { hour: 'numeric', timeZone: 'UTC' })
-      : new Intl.DateTimeFormat('en-US', { weekday: 'short', month: 'short', day: 'numeric', timeZone: 'UTC' });
-    return `<text x="${x(index)}" y="${height - 15}" text-anchor="middle">${esc(format.format(date))}</text>`;
+    const centerX = center(index).toFixed(1);
+    const parts = progressBucketLabel(point.bucket_start_ms, data.period);
+    return `<text x="${centerX}" y="${height - (parts.length > 1 ? 24 : 14)}" text-anchor="middle">${parts.map((part, partIndex) => `<tspan x="${centerX}" dy="${partIndex ? 12 : 0}">${esc(part)}</tspan>`).join('')}</text>`;
   }).join('');
-  const laneSvg = lanes.map((lane, laneIndex) => {
-    const laneTop = top + laneIndex * (laneHeight + laneGap);
-    const values = series.map((point) => point[lane.key]);
-    const max = lane.fixedMax || Math.max(...values.filter((value) => value != null), 1);
-    const y = (value) => laneTop + laneHeight - (Number(value) / max) * (laneHeight - 16);
-    const polylines = progressSegments(values, x, y).map((points) => `<polyline points="${points.join(' ')}" class="progress-line progress-line-${lane.cls}"/>`).join('');
-    const dots = values.map((value, index) => value == null ? '' : `<circle cx="${x(index)}" cy="${y(value)}" r="3" class="progress-dot progress-line-${lane.cls}"><title>${esc(`${lane.label}: ${lane.format(value)} · ${utcBucket(series[index].bucket_start_ms, true)} UTC`)}</title></circle>`).join('');
-    const last = [...values].reverse().find((value) => value != null);
-    return `<g><line x1="${left}" x2="${width - right}" y1="${laneTop + laneHeight}" y2="${laneTop + laneHeight}" class="progress-grid-h"/><text x="12" y="${laneTop + 18}" class="progress-lane-title">${esc(lane.label)}</text><text x="12" y="${laneTop + 39}" class="progress-lane-detail">${esc(lane.detail)}</text><text x="${width - 8}" y="${laneTop + 30}" text-anchor="end" class="progress-lane-value">${esc(last == null ? '—' : lane.format(last))}</text>${polylines}${dots}</g>`;
-  }).join('');
-  return `<div class="progress-chart-scroll" tabindex="0" aria-label="Scrollable delivery pulse chart"><svg class="progress-pulse-chart" viewBox="0 0 ${width} ${height}" role="img" aria-labelledby="progress-chart-title progress-chart-desc"><title id="progress-chart-title">Repository delivery pulse</title><desc id="progress-chart-desc">Tasks, planned lines, test pass rate, and provider token use aligned to the same UTC buckets. Exact values follow the chart.</desc>${verticals}${laneSvg}${labels}</svg></div>`;
+  const total = cumulative.at(-1) || 0;
+  const empty = total ? '' : `<text x="${left + chartWidth / 2}" y="${top + plotHeight / 2}" text-anchor="middle" class="progress-chart-empty">No ${esc(label.toLowerCase())} in this period</text>`;
+  return `<svg class="progress-pulse-chart progress-bar-line-chart" viewBox="0 0 ${width} ${height}" role="img" aria-label="${esc(label)} by ${esc(data.period)} with running total"><title>${esc(label)} by ${esc(data.period)}</title><desc>Bars show finished work in each bucket. The thin line shows the running total. Exact values follow the chart.</desc><line x1="${left}" x2="${width - right}" y1="${top + plotHeight}" y2="${top + plotHeight}" class="progress-grid-h"/><text x="14" y="${top + 16}" class="progress-lane-title">${esc(label)}</text><text x="14" y="${top + 38}" class="progress-lane-detail">${esc(detail)}</text><text x="${width - 10}" y="${top + 28}" text-anchor="end" class="progress-lane-value progress-running-${cls}">${esc(format(total))}</text><text x="${width - 10}" y="${top + 46}" text-anchor="end" class="progress-lane-detail">total</text><polyline points="${linePoints.join(' ')}" class="progress-running-line progress-running-${cls}"/>${dots}${bars}${barLabels}${empty}${labels}</svg>`;
 }
 
-function progressImpact(task) {
-  if (task.impact_days == null) return '<span class="muted">unknown</span>';
-  const kind = task.impact_days >= 1 ? 'bad' : task.impact_days >= .4 ? 'warn' : 'ok';
-  return badge(`${task.impact_days.toFixed(1)} days`, kind);
+function progressEvidenceLane(data, { key, label, detail, cls, format, fixedMax = null }) {
+  const values = data.series.map((point) => point[key]);
+  const observed = values.some((value) => value != null);
+  const coverage = cls === 'tests' ? data.coverage.tests : data.coverage.tokens;
+  const unavailable = cls === 'tests'
+    ? 'No test runs recorded for this period.'
+    : coverage.state === 'unobserved' ? 'No token data recorded for this period.' : 'Some token data is missing.';
+  if (!observed) return `<div class="progress-evidence-lane"><div><strong>${esc(label)}</strong><small>${esc(detail)}</small></div><p>${esc(unavailable)}</p><strong>—</strong></div>`;
+  const width = Math.max(650, 220 + values.length * 38); const height = 58;
+  const left = 168; const right = 92; const top = 8; const bottom = 8;
+  const chartWidth = width - left - right;
+  const x = (index) => left + (values.length === 1 ? chartWidth / 2 : index * chartWidth / (values.length - 1));
+  const max = fixedMax || Math.max(...values.filter((value) => value != null), 1);
+  const y = (value) => top + (height - top - bottom) - (Number(value) / max) * (height - top - bottom - 10);
+  const polylines = progressSegments(values, x, y).map((points) => `<polyline points="${points.join(' ')}" class="progress-evidence-line progress-running-${cls}"/>`).join('');
+  const dots = values.map((value, index) => value == null ? '' : `<circle cx="${x(index).toFixed(1)}" cy="${y(value).toFixed(1)}" r="3" class="progress-evidence-dot progress-running-${cls}"><title>${esc(`${label}: ${format(value)} · ${utcBucket(data.series[index].bucket_start_ms, true)} UTC`)}</title></circle>`).join('');
+  const last = [...values].reverse().find((value) => value != null);
+  const note = coverage.state === 'complete' ? detail : 'Some data is missing; gaps stay blank.';
+  return `<div class="progress-evidence-lane"><div><strong>${esc(label)}</strong><small>${esc(note)}</small></div><svg class="progress-evidence-chart" viewBox="0 0 ${width} ${height}" role="img" aria-label="${esc(label)} across this period"><line x1="${left}" x2="${width - right}" y1="${height - bottom}" y2="${height - bottom}" class="progress-grid-h"/>${polylines}${dots}</svg><strong>${esc(format(last))}</strong></div>`;
 }
 
-function progressPriorityRows(data, limit = null) {
-  const rows = limit ? data.priorities.slice(0, limit) : data.priorities;
-  if (!rows.length) return stateBlock('empty', 'No open work in the selected release.');
-  return rows.map((task) => {
+function progressPulseChart(data) {
+  if (!data.series.length) return stateBlock('empty', 'No progress buckets in this period.');
+  return `<div class="progress-chart-scroll" tabindex="0" aria-label="Scrollable daily progress charts"><div class="progress-chart-canvas"><div class="progress-chart-legend"><span><i class="progress-legend-bar" aria-hidden="true"></i>Green = tasks finished</span><span><i class="progress-legend-bar progress-legend-lines" aria-hidden="true"></i>Blue = planned lines completed</span><span>Bars = finished that ${esc(data.period)}</span><span><i class="progress-legend-line" aria-hidden="true"></i>Line = total during this period</span></div>${progressBarLineLane(data, { key: 'tasks_completed', cumulativeKey: 'tasks_cumulative', label: 'Tasks finished', detail: 'Recorded completed tasks', cls: 'tasks', format: compactNumber })}${progressBarLineLane(data, { key: 'planned_lines_completed', cumulativeKey: 'lines_cumulative', label: 'Planned lines completed', detail: 'Current task estimates', cls: 'lines', format: compactNumber })}${progressEvidenceLane(data, { key: 'test_pass_rate', label: 'Test pass rate', detail: 'Recorded terminal runs', cls: 'tests', format: progressPercent, fixedMax: 1 })}${progressEvidenceLane(data, { key: 'total_tokens', label: 'Token use', detail: 'Provider total tokens', cls: 'tokens', format: compactNumber })}<p class="progress-missing-note">Missing information stays blank and is never counted as zero.</p></div></div>`;
+}
+
+function progressReleaseWork(data, repositoryId) {
+  const rows = data.release_work.slice(0, 5);
+  const title = data.forecast.release ? 'Work in this release' : 'Open plan work';
+  if (!rows.length) return `<section class="progress-release-work" data-ui-region="progress-release-work"><div class="progress-section-heading"><div><h2>${title}</h2><span>Shown in Plan order</span></div></div>${stateBlock('empty', data.forecast.release ? 'No open work remains in this release.' : 'No open work is recorded.')}</section>`;
+  const body = rows.map((task) => {
     const selected = task.task_id === state.progressSelectedTaskId;
-    return `<button type="button" class="progress-priority-row${selected ? ' selected' : ''}" data-progress-task="${esc(task.task_id)}" aria-pressed="${selected}">
-      <span class="progress-priority-rank">${task.rank}</span><span class="progress-priority-outcome"><strong>${esc(task.outcome || task.title)}</strong><small>${esc(task.reason)}</small></span><span><small>Release impact</small>${progressImpact(task)}</span><span><small>Effort</small><strong>${task.estimated_loc == null ? 'Not estimated' : `${Number(task.estimated_loc).toLocaleString('en-US')} lines`}</strong></span><span><small>Dependency</small><strong>${task.dependency ? esc(task.dependency) : 'Not recorded'}</strong></span>
-    </button>`;
+    const estimate = task.estimated_loc == null
+      ? 'Estimate missing' : `~${Number(task.estimated_loc).toLocaleString('en-US')} lines`;
+    return `<button type="button" class="progress-work-row${selected ? ' selected' : ''}" data-progress-task="${esc(task.task_id)}" aria-pressed="${selected}"><span class="progress-work-title"><strong>${esc(task.title)}</strong><small>${planBadge(task.status)} <span>${esc(estimate)}</span>${task.reopened ? ` ${badge('reopened', 'warn')}` : ''}${task.elaboration_needed ? ` ${badge('elaboration needed', 'warn')}` : ''}</small></span><span class="ti ti-chevron-right" aria-hidden="true"></span></button>`;
   }).join('');
-}
-
-function progressPrioritySummaryRows(data) {
-  const rows = data.priorities.slice(0, 3);
-  if (!rows.length) return stateBlock('empty', 'No open work in the selected release.');
-  return rows.map((task) => {
-    const selected = task.task_id === state.progressSelectedTaskId;
-    const effort = task.estimated_loc == null
-      ? 'not estimated' : `${Number(task.estimated_loc).toLocaleString('en-US')} lines`;
-    return `<button type="button" class="progress-priority-summary-row${selected ? ' selected' : ''}" data-progress-task="${esc(task.task_id)}" aria-pressed="${selected}"><span>${task.rank}</span><span><strong>${esc(task.outcome || task.title)}</strong><small>${progressImpact(task)} · ${esc(effort)} · no dependency recorded</small></span></button>`;
-  }).join('');
-}
-
-function progressScenarioDate(scenario) {
-  return scenario ? `${progressDate(scenario.earliest_at_ms)} – ${progressDate(scenario.latest_at_ms)}` : 'Unavailable';
-}
-
-function progressScenarios(data, selected) {
-  const base = data.forecast;
-  const current = ['available', 'ready'].includes(base.state) ? progressRange(base) : 'Unavailable';
-  return `<section class="progress-scenarios" aria-labelledby="progress-scenarios-title"><h2 id="progress-scenarios-title">Forecast if we…</h2>
-    <div class="progress-scenario selected"><strong>Keep current order</strong><span>${esc(current)}</span><small>${esc(base.state === 'available' ? `${base.confidence_percent}% confidence` : base.explanation)}</small></div>
-    <div class="progress-scenario"><strong>Move selected work first</strong><span>${esc(current)}</span><small>Ordering alone does not change total scope or the central date.</small></div>
-    <div class="progress-scenario"><strong>Move selected work to a later release</strong><span>${esc(progressScenarioDate(selected?.forecast_if_deferred))}</span><small>${esc(selected?.forecast_if_deferred?.explanation || 'A task estimate and forecast are required for this comparison.')}</small></div>
-  </section>`;
+  return `<section class="progress-release-work" data-ui-region="progress-release-work"><div class="progress-section-heading"><div><h2>${title}</h2><span>Shown in Plan order</span></div></div><div class="progress-work-column-label">Task</div>${body}<footer>Showing ${rows.length} of ${Number(data.release_work.length).toLocaleString('en-US')} open tasks <a href="#/plan/${esc(repositoryId)}">Open full plan →</a></footer></section>`;
 }
 
 function progressComparison(data) {
@@ -932,32 +1008,37 @@ function progressComparison(data) {
   const items = [
     ['Tasks completed', compactNumber(current.tasks_completed), compactNumber(previous.tasks_completed), progressDelta(current.tasks_completed, previous.tasks_completed)],
     ['Planned lines completed', compactNumber(current.planned_lines_completed), compactNumber(previous.planned_lines_completed), progressDelta(current.planned_lines_completed, previous.planned_lines_completed)],
-    ['Test stability', current.test_pass_rate == null ? '—' : progressPercent(current.test_pass_rate), previous.test_pass_rate == null ? '—' : progressPercent(previous.test_pass_rate), progressDelta(current.test_pass_rate == null ? null : current.test_pass_rate * 100, previous.test_pass_rate == null ? null : previous.test_pass_rate * 100, { suffix: ' pp' })],
-    ['Token efficiency', current.tokens_per_planned_line == null ? '—' : `${compactNumber(current.tokens_per_planned_line)} / line`, previous.tokens_per_planned_line == null ? '—' : `${compactNumber(previous.tokens_per_planned_line)} / line`, progressDelta(current.tokens_per_planned_line, previous.tokens_per_planned_line, { lowerIsBetter: true })],
   ];
-  return `<section class="progress-comparison" aria-labelledby="progress-comparison-title"><h2 id="progress-comparison-title">Compared with the previous matching period</h2><div>${items.map(([label, now, before, delta]) => `<article><span>${esc(label)}</span><strong>${esc(now)}</strong><small>Previous ${esc(before)}</small>${delta}</article>`).join('')}</div></section>`;
+  const previousRange = `${progressDate(data.window.comparison_start_ms)} – ${progressDate(data.window.start_ms - 1, true)}`;
+  return `<section class="progress-comparison" aria-labelledby="progress-comparison-title"><h2 id="progress-comparison-title">Compared with the previous matching period (${esc(previousRange)})</h2><div>${items.map(([label, now, before, delta]) => `<article><span>${esc(label)}</span><strong>${esc(now)}</strong><small>Previous ${esc(before)}</small>${delta}</article>`).join('')}</div></section>`;
 }
 
 function progressExactTable(data) {
-  return `<details class="progress-exact"><summary>Exact bucket values and counting method</summary><div class="tablewrap"><table><thead><tr><th>UTC bucket</th><th>Tasks done</th><th>Planned lines done</th><th>Tests</th><th>Pass rate</th><th>Total tokens</th><th>Token data</th></tr></thead><tbody>${data.series.map((point) => `<tr><td>${esc(utcBucket(point.bucket_start_ms, true))}</td><td>${point.tasks_completed}</td><td>${Number(point.planned_lines_completed).toLocaleString('en-US')}</td><td>${point.test_runs}</td><td>${point.test_pass_rate == null ? '—' : progressPercent(point.test_pass_rate)}</td><td>${point.total_tokens == null ? '—' : Number(point.total_tokens).toLocaleString('en-US')}</td><td>${esc(bucketDataStatus(point.token_coverage))}</td></tr>`).join('')}</tbody></table></div><p>${esc(data.semantics.lines)}. ${esc(data.semantics.tests)}. ${esc(data.semantics.tokens)}.</p></details>`;
+  return `<details class="progress-exact"><summary>Exact values and counting method</summary><div class="tablewrap"><table><thead><tr><th>UTC bucket</th><th>Tasks done</th><th>Planned lines done</th><th>Tests</th><th>Pass rate</th><th>Total tokens</th><th>Token data</th></tr></thead><tbody>${data.series.map((point) => `<tr><td>${esc(utcBucket(point.bucket_start_ms, true))}</td><td>${point.tasks_completed}</td><td>${Number(point.planned_lines_completed).toLocaleString('en-US')}</td><td>${point.test_runs}</td><td>${point.test_pass_rate == null ? '—' : progressPercent(point.test_pass_rate)}</td><td>${point.total_tokens == null ? '—' : Number(point.total_tokens).toLocaleString('en-US')}</td><td>${esc(bucketDataStatus(point.token_coverage))}</td></tr>`).join('')}</tbody></table></div><p>${esc(data.semantics.lines)}. ${esc(data.semantics.tests)}. ${esc(data.semantics.tokens)}. ${esc(data.semantics.forecast)}.</p></details>`;
 }
 
 function renderProgressDashboard(data, projects, repositoryId) {
-  if (!data.priorities.some((task) => task.task_id === state.progressSelectedTaskId)) {
-    state.progressSelectedTaskId = data.priorities[0]?.task_id || null;
+  const visibleWork = data.release_work.slice(0, 5);
+  if (!visibleWork.some((task) => task.task_id === state.progressSelectedTaskId)) {
+    state.progressSelectedTaskId = visibleWork[0]?.task_id || null;
   }
-  const selected = data.priorities.find((task) => task.task_id === state.progressSelectedTaskId) || null;
+  const selected = data.release_work.find((task) => task.task_id === state.progressSelectedTaskId) || null;
   const periodLabels = { hour: 'Hour', day: 'Day', week: 'Week' };
-  const modeLabels = { pulse: 'Delivery pulse', priorities: 'Priorities' };
-  const context = `<header class="progress-context" data-ui-region="progress-context"><div class="progress-identity"><h1>${destinationLink('Progress', '#/progress')}</h1><span aria-hidden="true">/</span>${projectPicker(projects, repositoryId, (id) => `#/progress/${id}`, 'progress')}</div><div class="progress-view-switch">${seg(['pulse', 'priorities'], state.progressMode, 'progress-mode', (mode) => modeLabels[mode])}</div><output class="progress-window">${esc(progressDate(data.window.start_ms))} – ${esc(progressDate(data.window.end_ms, true))} · UTC</output><div class="progress-period">${seg(['hour', 'day', 'week'], state.progressPeriod, 'progress-period', (period) => periodLabels[period])}</div><div class="progress-actions"><button class="btn btn-primary" type="button" data-progress-open-task${selected ? '' : ' disabled'}>Open selected in plan</button><a href="#/plan/${esc(repositoryId)}">Open full plan →</a></div></header>`;
-  const pulse = `<div class="progress-workspace progress-pulse-view" data-ui-region="progress-primary"><section class="progress-pulse"><div class="progress-section-heading"><h2>Delivery pulse</h2><span class="muted">Aligned ${esc(state.progressPeriod)}ly evidence · UTC</span></div>${progressPulseChart(data)}</section><aside class="progress-decision-column"><section class="progress-priority"><div class="progress-section-heading"><h2>Priority queue <span class="muted">(top 3)</span></h2><button class="link-button" type="button" data-progress-show-priorities>View full ranked table →</button></div>${progressPrioritySummaryRows(data)}</section>${progressScenarios(data, selected)}</aside></div>`;
-  const priorities = `<div class="progress-workspace progress-priority-view" data-ui-region="progress-primary"><section class="progress-priority progress-priority-full"><div class="progress-section-heading"><h2>Priority queue <span class="muted">(ranked by release impact)</span></h2><span class="muted">Selection changes the comparison only; it does not reorder the Plan.</span></div>${progressPriorityRows(data)}</section><aside class="progress-decision-column">${progressScenarios(data, selected)}<section class="progress-signals"><h2>Signals</h2><dl><div><dt>Work arriving vs finishing</dt><dd>${data.comparison.current.tasks_created_per_day.toFixed(1)} vs ${data.comparison.current.tasks_completed_per_day.toFixed(1)} / day</dd></div><div><dt>Reopened tasks</dt><dd>${data.comparison.current.tasks_reopened}</dd></div><div><dt>Tests per completed task</dt><dd>${data.comparison.current.tests_per_completed_task == null ? '—' : data.comparison.current.tests_per_completed_task.toFixed(1)}</dd></div><div><dt>Tokens per planned line</dt><dd>${data.comparison.current.tokens_per_planned_line == null ? '—' : compactNumber(data.comparison.current.tokens_per_planned_line)}</dd></div></dl></section></aside></div>`;
-  main.innerHTML = `<section class="progress-dashboard mode-${esc(state.progressMode)}">${context}${progressCoverage(data)}${progressForecastStrip(data)}${state.progressMode === 'pulse' ? pulse : priorities}${progressComparison(data)}${progressExactTable(data)}</section>`;
+  const context = `<header class="progress-context" data-ui-region="progress-context"><div class="progress-identity"><h1>${destinationLink('Progress', '#/progress')}</h1><span aria-hidden="true">/</span>${projectPicker(projects, repositoryId, (id) => `#/progress/${id}`, 'progress')}</div><output class="progress-window">${esc(progressDate(data.window.start_ms))} – ${esc(progressDate(data.window.end_ms, true))} · UTC</output><div class="progress-period">${seg(['hour', 'day', 'week'], state.progressPeriod, 'progress-period', (period) => periodLabels[period])}</div><div class="progress-actions"><button class="btn btn-primary" type="button" data-progress-open-task${selected ? '' : ' disabled'}>Open selected in plan</button><a href="#/plan/${esc(repositoryId)}">Open full plan →</a></div></header>`;
+  const workspace = `<div class="progress-workspace" data-ui-region="progress-primary"><section class="progress-pulse"><div class="progress-section-heading"><div><h2>Daily progress</h2><span>Aligned ${esc(state.progressPeriod)}ly evidence · UTC</span></div></div>${progressPulseChart(data)}</section>${progressReleaseWork(data, repositoryId)}</div>`;
+  main.innerHTML = `<section class="progress-dashboard">${context}${progressForecastStrip(data)}${workspace}${progressComparison(data)}${progressExactTable(data)}</section>`;
   bindProjectPicker(main);
-  bindSeg(main, 'progress-mode', (mode) => { state.progressMode = mode; renderProgressDashboard(data, projects, repositoryId); $(`[data-progress-mode="${mode}"]`, main)?.focus(); });
   bindSeg(main, 'progress-period', (period) => { state.progressPeriod = period; viewProgress(repositoryId).then(() => $(`[data-progress-period="${period}"]`, main)?.focus()); });
-  main.querySelectorAll('[data-progress-task]').forEach((button) => button.addEventListener('click', () => { state.progressSelectedTaskId = button.dataset.progressTask; renderProgressDashboard(data, projects, repositoryId); main.querySelector(`[data-progress-task="${CSS.escape(state.progressSelectedTaskId)}"]`)?.focus({ preventScroll: true }); }));
-  $('[data-progress-show-priorities]', main)?.addEventListener('click', () => { state.progressMode = 'priorities'; renderProgressDashboard(data, projects, repositoryId); $('[data-progress-mode="priorities"]', main)?.focus(); });
+  main.querySelectorAll('[data-progress-task]').forEach((button) => button.addEventListener('click', () => {
+    state.progressSelectedTaskId = button.dataset.progressTask;
+    main.querySelectorAll('[data-progress-task]').forEach((row) => {
+      const active = row.dataset.progressTask === state.progressSelectedTaskId;
+      row.classList.toggle('selected', active);
+      row.setAttribute('aria-pressed', String(active));
+    });
+    const open = $('[data-progress-open-task]', main);
+    if (open) open.disabled = !state.progressSelectedTaskId;
+  }));
   $('[data-progress-open-task]', main)?.addEventListener('click', () => {
     if (!state.progressSelectedTaskId) return;
     state.planRequestedTaskId = state.progressSelectedTaskId;

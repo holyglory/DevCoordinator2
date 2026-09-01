@@ -16,7 +16,6 @@ import json
 import os
 import pwd
 import signal
-import socket
 import subprocess
 import sys
 import time
@@ -25,6 +24,7 @@ from pathlib import Path
 
 import pytest
 
+from devcoordinator2.daemon.test_admission import DirectoryEvents
 from devcoordinator2.ids import repository_id
 
 ROOT_ONLY = pytest.mark.skipif(
@@ -33,8 +33,29 @@ ROOT_ONLY = pytest.mark.skipif(
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-UNIT_PREFIX = "devcoordinator2-inttest"
-DEPLOY_PREFIX = "devcoordinator2-inttest-deploy"
+# A fresh pytest process owns a disjoint host namespace, so independent root
+# modules or separate governed invocations can overlap without unit/container
+# collisions. Tests inside one process still share their fixture deliberately.
+_PROCESS_NAMESPACE = str(os.getpid())
+UNIT_PREFIX = f"devcoordinator2-inttest-{_PROCESS_NAMESPACE}"
+DEPLOY_PREFIX = f"devcoordinator2-inttest-deploy-{_PROCESS_NAMESPACE}"
+_REQUEST_AS = """
+import socket
+import sys
+request = sys.stdin.buffer.readline()
+if not request.endswith(b"\\n"):
+    raise SystemExit(2)
+with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
+    connection.settimeout(900)
+    connection.connect(sys.argv[1])
+    connection.sendall(request)
+    connection.shutdown(socket.SHUT_WR)
+    while True:
+        block = connection.recv(65536)
+        if not block:
+            break
+        sys.stdout.buffer.write(block)
+"""
 
 
 def _caller() -> pwd.struct_passwd:
@@ -45,42 +66,21 @@ def _caller() -> pwd.struct_passwd:
 
 
 def call_as(uid: int, gid: int, sock_path: Path, request: dict) -> dict:
-    """Send one request from a forked child running as uid/gid."""
-    read_fd, write_fd = os.pipe()
-    pid = os.fork()
-    if pid == 0:
-        try:
-            os.close(read_fd)
-            os.setgroups([gid])
-            os.setgid(gid)
-            os.setuid(uid)
-            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
-                s.settimeout(900)
-                s.connect(str(sock_path))
-                s.sendall((json.dumps(request) + "\n").encode())
-                s.shutdown(socket.SHUT_WR)
-                data = b""
-                while True:
-                    part = s.recv(65536)
-                    if not part:
-                        break
-                    data += part
-            os.write(write_fd, data)
-            os._exit(0)
-        except Exception as exc:  # surfaced to the parent for diagnosis
-            os.write(write_fd, f"CHILD-ERROR: {exc!r}".encode())
-            os._exit(1)
-    os.close(write_fd)
-    chunks = b""
-    while True:
-        part = os.read(read_fd, 65536)
-        if not part:
-            break
-        chunks += part
-    os.close(read_fd)
-    _, status = os.waitpid(pid, 0)
-    assert status == 0, f"child failed (no response); raw={chunks!r}"
-    return json.loads(chunks)
+    """Send one request through a separately exec'd credential boundary.
+
+    setpriv performs the uid/gid transition before a fresh interpreter starts,
+    so this remains safe when the pytest process already owns threads.
+    """
+    proc = subprocess.run(
+        ["setpriv", f"--reuid={uid}", f"--regid={gid}", "--clear-groups", "--",
+         "/usr/bin/python3", "-c", _REQUEST_AS, str(sock_path)],
+        input=json.dumps(request) + "\n", capture_output=True, text=True,
+        timeout=900, check=False,
+    )
+    assert proc.returncode == 0, (
+        f"credential helper failed; stderr={proc.stderr[:1024]!r}; "
+        f"stdout={proc.stdout[:1024]!r}")
+    return json.loads(proc.stdout)
 
 
 def _request(command: str, args: dict | None = None) -> dict:
@@ -116,20 +116,26 @@ class Daemon:
         # A stale socket from a killed daemon would make readiness detection
         # lie; the new daemon re-creates it on bind.
         self.socket_path.unlink(missing_ok=True)
-        self.proc = subprocess.Popen(
-            [sys.executable, "-m", "devcoordinator2.daemon"],
-            env=self.env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-        )
-        deadline = time.monotonic() + 15
-        while time.monotonic() < deadline:
-            if self.socket_path.exists():
-                os.chmod(self.socket_path, 0o666)
-                return
-            if self.proc.poll() is not None:
-                out = self.proc.stdout.read().decode(errors="replace")
-                raise RuntimeError(f"daemon exited early:\n{out}")
-            time.sleep(0.1)
-        raise RuntimeError("daemon socket never appeared")
+        with DirectoryEvents(self.base) as events:
+            self.proc = subprocess.Popen(
+                [sys.executable, "-m", "devcoordinator2.daemon"],
+                env=self.env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            )
+            deadline = time.monotonic() + 15
+            while True:
+                if self.socket_path.exists():
+                    os.chmod(self.socket_path, 0o666)
+                    return
+                if self.proc.poll() is not None:
+                    out = self.proc.stdout.read().decode(errors="replace")
+                    raise RuntimeError(f"daemon exited early:\n{out}")
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise RuntimeError("daemon socket event never arrived")
+                try:
+                    events.wait(remaining)
+                except TimeoutError as exc:
+                    raise RuntimeError("daemon socket event never arrived") from exc
 
     def kill_hard(self):
         self.proc.send_signal(signal.SIGKILL)
@@ -206,13 +212,21 @@ def _call(world, command, args=None):
 def _wait_status(world, path: Path, terminal: set[str], timeout=30) -> dict:
     deadline = time.monotonic() + timeout
     last = None
-    while time.monotonic() < deadline:
-        resp = _call(world, "test.status", {"path": str(path)})
-        assert resp["ok"], resp
-        last = resp["result"]
-        if last["status"] in terminal:
-            return last
-        time.sleep(0.3)
+    current = path / ".devcoordinator" / "test" / "current"
+    while True:
+        with DirectoryEvents(current) as events:
+            resp = _call(world, "test.status", {"path": str(path)})
+            assert resp["ok"], resp
+            last = resp["result"]
+            if last["status"] in terminal:
+                return last
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            try:
+                events.wait(remaining)
+            except TimeoutError:
+                break
     raise AssertionError(f"status never reached {terminal}; last={last}")
 
 
@@ -222,4 +236,3 @@ def _units() -> list[str]:
          f"{UNIT_PREFIX}-*.service"],
         capture_output=True, text=True).stdout
     return [line.split()[0] for line in out.splitlines() if line.split()]
-
