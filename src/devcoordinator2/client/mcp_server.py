@@ -13,6 +13,7 @@ from typing import Any
 
 from devcoordinator2 import __version__
 from devcoordinator2.client.common import DaemonUnavailable, call
+from devcoordinator2.operations import policy_for
 from devcoordinator2.paths import load_instance_config
 
 SUPPORTED_PROTOCOL_VERSIONS = ("2025-06-18", "2025-03-26", "2024-11-05")
@@ -88,6 +89,11 @@ TOOLS = [
             "path": _PATH,
             "reason": {"type": "string", "minLength": 3, "maxLength": 256}},
                         "required": ["path"]},
+    },
+    {
+        "name": "test_list",
+        "description": "Current governed test run for every registered worktree.",
+        "inputSchema": {"type": "object", "properties": {}},
     },
     {
         "name": "repository_list",
@@ -368,6 +374,11 @@ _TOOL_TO_COMMAND = {
     "decision_record": "decision.record", "decision_tail": "decision.tail",
     "decision_search": "decision.search", "decision_summarize": "decision.summarize",
 }
+
+for _tool in TOOLS:
+    _command = _TOOL_TO_COMMAND.get(_tool["name"])
+    if _command is not None:
+        _tool["annotations"] = policy_for(_command).mcp_annotations()
 
 
 class McpServer:

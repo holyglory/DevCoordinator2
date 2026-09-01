@@ -37,3 +37,12 @@ def test_registry_contains_no_implicit_or_unknown_policy_values():
 
     with pytest.raises(KeyError, match="has no authority/effect policy"):
         policy_for("unregistered.command")
+
+
+def test_every_mcp_tool_uses_registered_effect_annotations():
+    from devcoordinator2.client.mcp_server import _TOOL_TO_COMMAND, TOOLS
+
+    by_name = {tool["name"]: tool for tool in TOOLS}
+    assert set(by_name) == set(_TOOL_TO_COMMAND)
+    for name, command in _TOOL_TO_COMMAND.items():
+        assert by_name[name]["annotations"] == policy_for(command).mcp_annotations()
