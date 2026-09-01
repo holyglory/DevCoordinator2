@@ -15,7 +15,8 @@ pub const MAX_FAILURE_INDEX: usize = 128;
 pub const MAX_REASON_BYTES: usize = 512;
 pub const MAX_ARG_BYTES: usize = 4096;
 pub const MAX_CASE_ARG_BYTES: usize = 64 * 1024;
-pub const MAX_CASE_ARGS: usize = 256;
+pub const MAX_COMMAND_ARGS: usize = 256;
+pub const MAX_CASE_ARGS: usize = 64;
 
 /// A schema marker that can only deserialize the current executor contract.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -109,7 +110,7 @@ pub struct CheckPlan {
     pub invalidates: Vec<String>,
     pub cwd: String,
     pub env: BTreeMap<String, String>,
-    pub timeout_seconds: u64,
+    pub timeout_seconds: Option<u64>,
     pub completion: CompletionMode,
     pub on_failure: FailureMode,
     pub produces: Vec<String>,
@@ -179,6 +180,9 @@ impl ExecutionPlan {
         if self.checks.is_empty() {
             return Err(ContractError::new("executor plan has no checks"));
         }
+        if self.checks.len() > 256 {
+            return Err(ContractError::new("executor plan exceeds 256 checks"));
+        }
         if self.origin_run_id.is_some() != (self.proof == ProofKind::Retry) {
             return Err(ContractError::new(
                 "origin_run_id is required only for retry proof",
@@ -227,6 +231,9 @@ impl ExecutionPlan {
         let selected: BTreeSet<&str> = self.selection.iter().map(String::as_str).collect();
         if selected.len() != self.selection.len() {
             return Err(ContractError::new("selection contains duplicate checks"));
+        }
+        if self.selection.len() > 256 {
+            return Err(ContractError::new("selection exceeds 256 checks"));
         }
         for name in &self.selection {
             if !names.contains_key(name.as_str()) {
@@ -338,9 +345,11 @@ fn validate_check(check: &CheckPlan) -> Result<(), ContractError> {
     if check.cwd != "." {
         validate_relative_path("cwd", &check.cwd)?;
     }
-    if !(1..=86_400).contains(&check.timeout_seconds) {
+    if let Some(timeout_seconds) = check.timeout_seconds
+        && !(1..=21_600).contains(&timeout_seconds)
+    {
         return Err(ContractError::new(format!(
-            "check {:?} timeout_seconds must be in [1, 86400]",
+            "check {:?} timeout_seconds must be null or in [1, 21600]",
             check.name
         )));
     }
@@ -403,6 +412,12 @@ fn validate_check(check: &CheckPlan) -> Result<(), ContractError> {
         }
     }
     let produces: BTreeSet<&str> = check.produces.iter().map(String::as_str).collect();
+    if check.produces.len() > 16 {
+        return Err(ContractError::new(format!(
+            "check {:?} declares more than 16 artifacts",
+            check.name
+        )));
+    }
     if produces.len() != check.produces.len() {
         return Err(ContractError::new(format!(
             "check {:?} repeats an artifact path",
@@ -441,7 +456,7 @@ pub fn validate_cases(cases: &[CaseSpec]) -> Result<(), ContractError> {
         }
         let mut total = 0usize;
         for arg in &case.args {
-            if arg.as_bytes().contains(&0) || arg.len() > MAX_ARG_BYTES {
+            if arg.is_empty() || arg.as_bytes().contains(&0) || arg.len() > MAX_ARG_BYTES {
                 return Err(ContractError::new(format!(
                     "case {:?} contains an invalid argument",
                     case.id
@@ -460,9 +475,9 @@ pub fn validate_cases(cases: &[CaseSpec]) -> Result<(), ContractError> {
 }
 
 fn validate_command(check: &str, command: &[String]) -> Result<(), ContractError> {
-    if command.is_empty() || command.len() > MAX_CASE_ARGS {
+    if command.is_empty() || command.len() > MAX_COMMAND_ARGS {
         return Err(ContractError::new(format!(
-            "check {check:?} command must contain 1..={MAX_CASE_ARGS} arguments"
+            "check {check:?} command must contain 1..={MAX_COMMAND_ARGS} arguments"
         )));
     }
     for (index, arg) in command.iter().enumerate() {
@@ -633,8 +648,6 @@ pub enum RunStatus {
     Running,
     Passed,
     Failed,
-    Cancelled,
-    Unsafe,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -665,15 +678,22 @@ pub struct CheckReport {
     pub tier: ValidationTier,
     pub role: CheckRole,
     pub status: LeafStatus,
-    pub started_at_unix_ms: Option<u64>,
-    pub finished_at_unix_ms: Option<u64>,
-    pub duration_ms: Option<u64>,
+    pub started_at: Option<String>,
+    pub finished_at: Option<String>,
+    pub duration_seconds: Option<f64>,
     pub exit_code: Option<i32>,
     pub reason: Option<String>,
     pub artifacts: Vec<ArtifactReceipt>,
     pub output_ref: String,
-    pub output: OutputStats,
+    pub stdout_bytes_observed: u64,
+    pub stdout_bytes_retained: u64,
+    pub stdout_truncated: bool,
+    pub stderr_bytes_observed: u64,
+    pub stderr_bytes_retained: u64,
+    pub stderr_truncated: bool,
+    pub case_count: u32,
     pub cases: Vec<CaseReport>,
+    pub cases_truncated: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -698,16 +718,26 @@ pub struct ExecutionReport {
     pub selection: Vec<String>,
     pub origin_run_id: Option<String>,
     pub status: RunStatus,
-    pub started_at_unix_ms: u64,
-    pub finished_at_unix_ms: Option<u64>,
-    pub duration_ms: u64,
+    pub started_at: String,
+    pub finished_at: Option<String>,
+    pub duration_seconds: f64,
     pub source_digest: String,
     pub config_digest: String,
     pub source_changed: bool,
+    pub unsafe_reason: Option<String>,
+    pub capacity: CapacityReport,
     pub counts: BTreeMap<String, u32>,
     pub checks: Vec<CheckReport>,
     pub failure_index: Vec<FailureIndexEntry>,
     pub failure_index_truncated: bool,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CapacityReport {
+    pub learned_capacity: Option<u32>,
+    pub effective_capacity: Option<u32>,
+    pub capacity_wait_count: u64,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -763,7 +793,7 @@ mod tests {
             invalidates: Vec::new(),
             cwd: ".".into(),
             env: BTreeMap::new(),
-            timeout_seconds: 30,
+            timeout_seconds: Some(30),
             completion: CompletionMode::Process,
             on_failure: FailureMode::Continue,
             produces: Vec::new(),

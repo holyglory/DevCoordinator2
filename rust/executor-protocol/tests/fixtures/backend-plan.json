@@ -1,0 +1,63 @@
+{
+  "schema": 2,
+  "run_id": "run-golden-1",
+  "test": "release",
+  "worktree_root": "/tmp/repository",
+  "current_dir": "/tmp/repository/.devcoordinator/run-golden-1",
+  "requested_tier": "release",
+  "readiness_eligible": true,
+  "proof": "complete",
+  "selection": [],
+  "origin_run_id": null,
+  "source_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "config_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "reused": {},
+  "checks": [
+    {
+      "name": "source-preflight",
+      "tier": "development",
+      "role": "preflight",
+      "after": [],
+      "requires": [],
+      "invalidates": ["unit"],
+      "cwd": ".",
+      "env": {},
+      "timeout_seconds": null,
+      "completion": "process",
+      "on_failure": "continue",
+      "produces": [],
+      "command": ["python3", "-m", "compileall", "src"]
+    },
+    {
+      "name": "unit",
+      "tier": "development",
+      "role": "work",
+      "after": [],
+      "requires": ["source-preflight"],
+      "invalidates": [],
+      "cwd": ".",
+      "env": {"CI": "1"},
+      "timeout_seconds": 600,
+      "completion": "process",
+      "on_failure": "continue",
+      "produces": [],
+      "command": ["python3", "-m", "pytest", "-q"]
+    },
+    {
+      "name": "browser-cases",
+      "tier": "release",
+      "role": "work",
+      "after": ["unit"],
+      "requires": [],
+      "invalidates": [],
+      "cwd": ".",
+      "env": {},
+      "timeout_seconds": 900,
+      "completion": "process",
+      "on_failure": "continue",
+      "produces": [],
+      "discover": ["node", "scripts/list-browser-cases.mjs"],
+      "case_command": ["node", "scripts/run-browser-case.mjs"]
+    }
+  ]
+}
