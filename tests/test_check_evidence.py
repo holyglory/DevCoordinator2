@@ -10,12 +10,13 @@ from pathlib import Path
 import pytest
 
 from devcoordinator2.check_evidence import (
+    EXECUTOR_BINARY,
     EvidenceError,
     receipts_match,
     source_digest,
 )
 from devcoordinator2.daemon import tests_support
-from devcoordinator2.daemon.repoconfig import CheckSpec
+from devcoordinator2.daemon.repoconfig import CheckSpec, load_test_spec
 from devcoordinator2.daemon.repoconfig import TestSpec as GovernedTestSpec
 from devcoordinator2.daemon.tests_lifecycle import TestLifecycle as GovernedTestLifecycle
 from devcoordinator2.protocol import ProtocolError
@@ -86,6 +87,38 @@ def test_report_reader_accepts_only_strict_executor_schema_two(tmp_path):
         assert tests_support.read_check_report(dir_fd) is None
     finally:
         os.close(dir_fd)
+
+
+def test_python_backend_plan_is_accepted_by_release_rust_executor(tmp_path):
+    repo = repository(tmp_path)
+    (repo / ".devcoordinator.toml").write_text('''
+schema = 2
+[test.complete]
+[[test.complete.check]]
+name = "preflight"
+tier = "development"
+role = "preflight"
+command = ["true"]
+invalidates = ["unit"]
+[[test.complete.check]]
+name = "unit"
+tier = "release"
+command = ["true"]
+''')
+    spec = load_test_spec(repo, None)
+    current = repo / ".devcoordinator" / "test" / "current"
+    current.mkdir(parents=True)
+    plan = GovernedTestLifecycle._build_plan(
+        spec, spec.checks, spec.checks, "tcross-language", repo, current,
+        source_digest(repo), (), None, None, "release")
+    plan_path = current / "plan.json"
+    plan_path.write_text(json.dumps(plan), encoding="utf-8")
+    validated = subprocess.run(
+        [str(EXECUTOR_BINARY), "validate", str(plan_path)],
+        capture_output=True, text=True, timeout=30, check=False)
+    assert validated.returncode == 0, validated.stderr
+    assert json.loads(validated.stdout) == {
+        "schema": 2, "valid": True, "test": "complete", "declared_checks": 2}
 
 
 def test_artifact_receipts_are_exact_and_refuse_symlinks(tmp_path):
