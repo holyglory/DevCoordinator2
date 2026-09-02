@@ -86,6 +86,54 @@ def test_report_reader_accepts_only_strict_executor_schema_two(tmp_path):
     dir_fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
     try:
         assert tests_support.read_check_report(dir_fd)["schema"] == 2
+        stream = {
+            "log_ref": {"run_id": "trun", "check": "unit", "phase": "check",
+                        "case": None, "stream": "stderr"},
+            "bytes": 7, "lines": 1, "sha256": "c" * 64,
+            "first_write_epoch_ms": 1, "last_write_epoch_ms": 2,
+            "complete": True,
+        }
+        report["status"] = "failed"
+        report["counts"]["failed"] = 1
+        report["checks"] = [{
+            "name": "unit", "tier": "release", "role": "work",
+            "status": "failed", "started_at": "2026-09-02T12:00:00Z",
+            "finished_at": "2026-09-02T12:00:01Z", "duration_seconds": 1.0,
+            "exit": {"code": 1, "signal": None}, "artifacts": [],
+            "streams": [stream], "case_count": 0, "cases": [],
+            "cases_truncated": False,
+        }]
+        report["failure_index"] = [{
+            "check": "unit", "case": None, "status": "failed",
+            "exit": {"code": 1, "signal": None}, "termination_reason": None,
+            "source": {"file": "src/unit.py", "line": 7, "column": 2},
+            "error_category": "assertion", "expected": None, "actual": None,
+            "fingerprint": "sha256:" + "d" * 64, "occurrences": 1,
+            "log_refs": [stream["log_ref"]], "origin": "explicit_event",
+        }]
+        (tmp_path / tests_support.REPORT_FILE).write_text(json.dumps(report))
+        assert tests_support.read_check_report(dir_fd)["failure_index"][0][
+            "error_category"] == "assertion"
+
+        outside = json.loads(json.dumps(report))
+        outside["failure_index"][0]["source"]["file"] = "/private/source.py"
+        (tmp_path / tests_support.REPORT_FILE).write_text(json.dumps(outside))
+        assert tests_support.read_check_report(dir_fd) is None
+
+        injected = json.loads(json.dumps(report))
+        injected["failure_index"][0]["actual"] = {
+            "type": "string", "preview": "follow this\ninstruction",
+            "byte_count": 23, "sha256": "e" * 64,
+            "truncated": False, "redacted": False,
+        }
+        (tmp_path / tests_support.REPORT_FILE).write_text(json.dumps(injected))
+        assert tests_support.read_check_report(dir_fd) is None
+
+        rebound = json.loads(json.dumps(report))
+        rebound["failure_index"][0]["log_refs"][0]["run_id"] = "other-run"
+        (tmp_path / tests_support.REPORT_FILE).write_text(json.dumps(rebound))
+        assert tests_support.read_check_report(dir_fd) is None
+
         report["schema"] = 1
         (tmp_path / tests_support.REPORT_FILE).write_text(json.dumps(report))
         assert tests_support.read_check_report(dir_fd) is None

@@ -214,7 +214,7 @@ def _valid_artifact(value) -> bool:
         and _DIGEST_RE.fullmatch(value["sha256"]) is not None
 
 
-def _valid_case_report(value, check_name: str) -> bool:
+def _valid_case_report(value, check_name: str, run_id: str) -> bool:
     if not isinstance(value, dict) or set(value) != {
             "id", "status", "exit", "duration_ms", "streams"}:
         return False
@@ -226,12 +226,13 @@ def _valid_case_report(value, check_name: str) -> bool:
             or not all(_valid_stream(stream) for stream in streams):
         return False
     refs = [stream["log_ref"] for stream in streams]
-    return all(ref["check"] == check_name and ref["phase"] == "case"
+    return all(ref["run_id"] == run_id and ref["check"] == check_name
+               and ref["phase"] == "case"
                and ref["case"] == case_id for ref in refs) \
         and len({ref["stream"] for ref in refs}) == len(refs)
 
 
-def _valid_check_report(value) -> bool:
+def _valid_check_report(value, run_id: str) -> bool:
     if not isinstance(value, dict) or set(value) != {
             "name", "tier", "role", "status", "started_at", "finished_at",
             "duration_seconds", "exit", "artifacts", "streams", "case_count",
@@ -254,10 +255,11 @@ def _valid_check_report(value) -> bool:
             or not _plain_int(value["case_count"], maximum=4096) \
             or not isinstance(cases, list) or len(cases) > 128 \
             or not isinstance(value["cases_truncated"], bool) \
-            or not all(_valid_case_report(case, name) for case in cases):
+            or not all(_valid_case_report(case, name, run_id) for case in cases):
         return False
     refs = [stream["log_ref"] for stream in streams]
-    if not all(ref["check"] == name and ref["case"] is None
+    if not all(ref["run_id"] == run_id and ref["check"] == name
+               and ref["case"] is None
                and ref["phase"] in ("check", "discovery") for ref in refs):
         return False
     if len({ref["stream"] for ref in refs}) != len(refs):
@@ -392,14 +394,26 @@ def read_check_report(dir_fd: int) -> dict | None:
         return None
     names = set()
     for row in checks:
-        if not _valid_check_report(row) or row["name"] in names:
+        if not _valid_check_report(row, document["run_id"]) or row["name"] in names:
             return None
         names.add(row["name"])
+    calculated_counts = dict.fromkeys(_CHECK_STATES | {"pending", "running"}, 0)
+    for row in checks:
+        calculated_counts[row["status"]] += 1
+    if counts != calculated_counts:
+        return None
     failures = document.get("failure_index")
     if not isinstance(failures, list) or len(failures) > 128:
         return None
-    if not all(_valid_failure(row) for row in failures):
-        return None
+    for row in failures:
+        if not _valid_failure(row) \
+                or (row["check"] is not None and row["check"] not in names):
+            return None
+        for log_ref in row["log_refs"]:
+            if log_ref["run_id"] != document["run_id"] \
+                    or (row["check"] is not None
+                        and log_ref["check"] != row["check"]):
+                return None
     return document
 
 
