@@ -4,7 +4,7 @@
 //! returns only content-free catalogue rows or explicitly requested bounded
 //! slices selected by logical run/check/phase/case/stream identities.
 
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, BinaryHeap, VecDeque};
 use std::fmt;
 use std::fs::File;
 use std::io::{BufReader, Read, Seek, SeekFrom};
@@ -13,13 +13,13 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use devcoordinator2_executor_protocol::{
-    DiagnosticReportFormat, FailureIndexEntry, LogPhase, LogRef, LogStream,
+    DiagnosticReportFormat, FailureIndexEntry, LogPhase, LogRef, LogStream, MAX_DIAGNOSTIC_EVENTS,
 };
 use rustix::fs::{self as unix_fs, AtFlags, Dir, FileType, FlockOperation, Mode, OFlags};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::diagnostics::diagnostic_rank;
+use crate::diagnostics::{diagnostic_fingerprint, diagnostic_rank};
 use crate::log_store::{LeafLogMetadata, LeafSelector, RunLogMetadata, StreamMetadata};
 use crate::retention::{RetentionEntry, RetentionPolicy, select_expired};
 
@@ -254,6 +254,7 @@ struct InventoryLeaf {
     selector: LeafSelector,
     metadata: LeafLogMetadata,
     relative_components: Vec<String>,
+    directory_identity: (u64, u64),
     active: bool,
     streams: BTreeMap<LogStream, StreamMetadata>,
 }
@@ -304,7 +305,19 @@ struct CursorPayload {
     snapshot_lines: u64,
     position: u64,
     byte_position: u64,
+    auxiliary_position: u64,
+    auxiliary_byte_position: u64,
+    pending_line_end: Option<u64>,
+    emitted_through_line: u64,
     query_sha256: String,
+}
+
+#[derive(Clone)]
+struct RetentionLocation {
+    run_id: String,
+    components: Vec<String>,
+    run_identity: (u64, u64),
+    leaf_identity: (u64, u64),
 }
 
 /// Execute one content-free catalogue or explicit bounded log query.
@@ -385,8 +398,9 @@ pub fn prune_logs(
             .map_err(|_| LogQueryError::ArgsInvalid)?,
     };
     let mut entries = Vec::new();
-    let mut locations = BTreeMap::<PathBuf, Vec<String>>::new();
+    let mut locations = BTreeMap::<PathBuf, RetentionLocation>::new();
     for run in &inventory.runs {
+        let run_identity = file_identity(&run.directory)?;
         if let Some(finished) = run.metadata.finished_at_epoch_ms
             && finished > now_ms
         {
@@ -400,7 +414,16 @@ pub fn prune_logs(
             };
             let components = vec![run.metadata.run_id.clone(), "executor".into()];
             let directory = relative_leaf_path(&run.metadata.run_id, &components);
-            locations.insert(directory.clone(), components);
+            let executor = required_store_entry(open_dir(&run.directory, "executor"))?;
+            locations.insert(
+                directory.clone(),
+                RetentionLocation {
+                    run_id: run.metadata.run_id.clone(),
+                    components,
+                    run_identity,
+                    leaf_identity: file_identity(&executor)?,
+                },
+            );
             entries.push(RetentionEntry {
                 run_id: run.metadata.run_id.clone(),
                 test: run.metadata.test.clone(),
@@ -422,7 +445,15 @@ pub fn prune_logs(
                 return Err(LogQueryError::StoreMalformed);
             }
             let directory = relative_leaf_path(&leaf.run_id, &leaf.relative_components);
-            locations.insert(directory.clone(), leaf.relative_components.clone());
+            locations.insert(
+                directory.clone(),
+                RetentionLocation {
+                    run_id: leaf.run_id.clone(),
+                    components: leaf.relative_components.clone(),
+                    run_identity,
+                    leaf_identity: leaf.directory_identity,
+                },
+            );
             entries.push(RetentionEntry {
                 run_id: leaf.run_id.clone(),
                 test: leaf.test.clone(),
@@ -440,14 +471,29 @@ pub fn prune_logs(
     let garbage = ensure_dir(&inventory.logs_dir, ".garbage")?;
     let recovered_garbage = recover_garbage(&garbage)?;
     let mut removed = 0_u64;
+    let mut retained_active = u64::try_from(decision.retained_active).unwrap_or(u64::MAX);
     for victim in &decision.victims {
-        let components = locations.get(victim).ok_or(LogQueryError::StoreMalformed)?;
-        rename_leaf_to_garbage(&inventory.runs_dir, &garbage, components)?;
+        let location = locations.get(victim).ok_or(LogQueryError::StoreMalformed)?;
+        let Some(_run_guard) = lock_and_revalidate_victim(
+            &inventory.runs_dir,
+            location,
+            request.active_run_id.as_deref(),
+        )?
+        else {
+            retained_active = retained_active.saturating_add(1);
+            continue;
+        };
+        rename_leaf_to_garbage(
+            &inventory.runs_dir,
+            &garbage,
+            &location.components,
+            location.leaf_identity,
+        )?;
         removed = removed.saturating_add(1);
     }
     Ok(LogPruneResult {
         removed_leaf_folders: removed,
-        retained_active: u64::try_from(decision.retained_active).unwrap_or(u64::MAX),
+        retained_active,
         next_expiry_at: decision.next_age_expiry_ms.map(iso_from_epoch_ms),
         recovered_garbage,
     })
@@ -550,6 +596,9 @@ fn validate_query_request(request: &LogQueryRequest) -> Result<(), LogQueryError
             }
             validate_max_bytes(options.max_bytes.unwrap_or(32_768))?;
             reject_options(options, &["cursor", "limit", "context_lines", "max_bytes"])?;
+            if request.selector.phase.is_none() || request.selector.stream.is_none() {
+                return Err(LogQueryError::ArgsInvalid);
+            }
         }
     }
     Ok(())
@@ -663,19 +712,21 @@ fn scan_store(
             return Err(LogQueryError::StoreMalformed);
         }
     }
-    let runs_dir = open_dir(&logs_dir, "runs")?;
+    let runs_dir = required_store_entry(open_dir(&logs_dir, "runs"))?;
     let mut runs = Vec::new();
     for run_id in directory_names(&runs_dir)? {
-        validate_run_id(&run_id)?;
-        let run_dir = open_dir(&runs_dir, &run_id)?;
-        let metadata: RunLogMetadata = read_json(&run_dir, "run.json", MAX_METADATA_BYTES)?;
+        validate_run_id(&run_id).map_err(|_| LogQueryError::StoreMalformed)?;
+        let run_dir = required_store_entry(open_dir(&runs_dir, &run_id))?;
+        let metadata: RunLogMetadata =
+            required_store_entry(read_json(&run_dir, "run.json", MAX_METADATA_BYTES))?;
         metadata
             .validate()
             .map_err(|_| LogQueryError::StoreMalformed)?;
         if metadata.run_id != run_id {
             return Err(LogQueryError::StoreMalformed);
         }
-        let active = active_run_id == Some(run_id.as_str()) || run_is_locked(&run_dir)?;
+        let active = active_run_id == Some(run_id.as_str())
+            || required_store_entry(run_is_locked(&run_dir))?;
         let executor_streams = scan_executor_streams(&run_dir)?;
         let leaves = scan_run_leaves(&run_dir, &metadata, active)?;
         runs.push(InventoryRun {
@@ -691,6 +742,16 @@ fn scan_store(
         logs_dir,
         runs_dir,
         runs,
+    })
+}
+
+fn required_store_entry<T>(result: Result<T, LogQueryError>) -> Result<T, LogQueryError> {
+    result.map_err(|error| {
+        if error == LogQueryError::LogNotFound {
+            LogQueryError::StoreMalformed
+        } else {
+            error
+        }
     })
 }
 
@@ -710,12 +771,12 @@ fn scan_run_leaves(
     }
     let mut leaves = Vec::new();
     if names.iter().any(|name| name == "checks") {
-        let checks = open_dir(run_dir, "checks")?;
+        let checks = required_store_entry(open_dir(run_dir, "checks"))?;
         for check_name in directory_names(&checks)? {
             if !valid_check(&check_name) {
                 return Err(LogQueryError::StoreMalformed);
             }
-            let check_dir = open_dir(&checks, &check_name)?;
+            let check_dir = required_store_entry(open_dir(&checks, &check_name))?;
             for child in directory_names(&check_dir)? {
                 match child.as_str() {
                     "check" | "discovery" => {
@@ -724,7 +785,7 @@ fn scan_run_leaves(
                         } else {
                             LogPhase::Discovery
                         };
-                        let directory = open_dir(&check_dir, &child)?;
+                        let directory = required_store_entry(open_dir(&check_dir, &child))?;
                         scan_leaf(
                             &directory,
                             run,
@@ -741,12 +802,12 @@ fn scan_run_leaves(
                         )?;
                     }
                     "cases" => {
-                        let cases = open_dir(&check_dir, "cases")?;
+                        let cases = required_store_entry(open_dir(&check_dir, "cases"))?;
                         for case_id in directory_names(&cases)? {
                             if !valid_case(&case_id) {
                                 return Err(LogQueryError::StoreMalformed);
                             }
-                            let directory = open_dir(&cases, &case_id)?;
+                            let directory = required_store_entry(open_dir(&cases, &case_id))?;
                             scan_leaf(
                                 &directory,
                                 run,
@@ -783,7 +844,7 @@ fn scan_executor_streams(
     if !run_names.iter().any(|name| name == "executor") {
         return Ok(BTreeMap::new());
     }
-    let directory = open_dir(run_dir, "executor")?;
+    let directory = required_store_entry(open_dir(run_dir, "executor"))?;
     let names = directory_names(&directory)?;
     if names
         .iter()
@@ -797,7 +858,7 @@ fn scan_executor_streams(
         if !names.iter().any(|candidate| candidate == &name) {
             continue;
         }
-        let file = open_file(&directory, &name)?;
+        let file = required_store_entry(open_file(&directory, &name))?;
         let metadata = file.metadata().map_err(|_| LogQueryError::Unavailable)?;
         if !metadata.is_file() {
             return Err(LogQueryError::StoreMalformed);
@@ -881,11 +942,18 @@ fn scan_leaf(
             exit: devcoordinator2_executor_protocol::DiagnosticExit::default(),
             started_at_epoch_ms: run.started_at_epoch_ms,
             finished_at_epoch_ms: None,
+            process_started: true,
             complete: false,
             structured_evidence_formats: Vec::new(),
             structured_evidence_count: 0,
         },
-        Err(error) => return Err(error),
+        Err(error) => {
+            return Err(if error == LogQueryError::LogNotFound {
+                LogQueryError::StoreMalformed
+            } else {
+                error
+            });
+        }
     };
     metadata
         .validate()
@@ -894,13 +962,37 @@ fn scan_leaf(
         return Err(LogQueryError::StoreMalformed);
     }
     let mut streams = BTreeMap::new();
+    let has_any_stream_entry = names.iter().any(|name| {
+        matches!(
+            name.as_str(),
+            "stdout.log"
+                | "stdout.lines"
+                | "stdout.meta.json"
+                | "stderr.log"
+                | "stderr.lines"
+                | "stderr.meta.json"
+        )
+    });
+    if !active && !metadata.process_started && !has_any_stream_entry {
+        leaves.push(InventoryLeaf {
+            run_id: run.run_id.clone(),
+            test: run.test.clone(),
+            selector,
+            metadata,
+            relative_components,
+            directory_identity: file_identity(leaf_dir)?,
+            active,
+            streams,
+        });
+        return Ok(());
+    }
     for stream in [LogStream::Stdout, LogStream::Stderr] {
         let stem = stream_name(stream);
         let metadata_name = format!("{stem}.meta.json");
         if !names.iter().any(|name| name == &metadata_name) {
             let log_name = format!("{stem}.log");
             if active && names.iter().any(|name| name == &log_name) {
-                let file = open_file(leaf_dir, &log_name)?;
+                let file = required_store_entry(open_file(leaf_dir, &log_name))?;
                 let details = file.metadata().map_err(|_| LogQueryError::Unavailable)?;
                 if !details.is_file() {
                     return Err(LogQueryError::StoreMalformed);
@@ -931,7 +1023,7 @@ fn scan_leaf(
             return Err(LogQueryError::StoreMalformed);
         }
         let stream_metadata: StreamMetadata =
-            read_json(leaf_dir, &metadata_name, MAX_METADATA_BYTES)?;
+            required_store_entry(read_json(leaf_dir, &metadata_name, MAX_METADATA_BYTES))?;
         validate_stream_metadata(leaf_dir, &selector, stream, &stream_metadata)?;
         streams.insert(stream, stream_metadata);
     }
@@ -941,6 +1033,7 @@ fn scan_leaf(
         selector,
         metadata,
         relative_components,
+        directory_identity: file_identity(leaf_dir)?,
         active,
         streams,
     });
@@ -963,17 +1056,108 @@ fn validate_stream_metadata(
     {
         return Err(LogQueryError::StoreMalformed);
     }
-    let stream_file = open_file(leaf_dir, &format!("{}.log", stream_name(stream)))?;
+    let stream_file =
+        required_store_entry(open_file(leaf_dir, &format!("{}.log", stream_name(stream))))?;
     let stream_stat = stream_file
         .metadata()
         .map_err(|_| LogQueryError::Unavailable)?;
-    if !stream_stat.is_file() || stream_stat.len() != metadata.bytes {
+    if !stream_stat.is_file()
+        || stream_stat.len() != metadata.bytes
+        || stream_stat.mode() & 0o077 != 0
+        || (metadata.bytes == 0
+            && (metadata.lines != 0
+                || metadata.first_write_epoch_ms.is_some()
+                || metadata.last_write_epoch_ms.is_some()))
+        || (metadata.bytes > 0
+            && (metadata.lines == 0
+                || metadata.lines > metadata.bytes
+                || metadata.first_write_epoch_ms.is_none()
+                || metadata.last_write_epoch_ms.is_none()))
+        || metadata
+            .first_write_epoch_ms
+            .zip(metadata.last_write_epoch_ms)
+            .is_some_and(|(first, last)| first > last || last > epoch_ms())
+    {
         return Err(LogQueryError::StoreMalformed);
     }
-    let index = open_file(leaf_dir, &format!("{}.lines", stream_name(stream)))?;
+    let index = required_store_entry(open_file(
+        leaf_dir,
+        &format!("{}.lines", stream_name(stream)),
+    ))?;
     let index_stat = index.metadata().map_err(|_| LogQueryError::Unavailable)?;
-    if !index_stat.is_file() || index_stat.len() % 16 != 0 {
+    if !index_stat.is_file() || index_stat.mode() & 0o077 != 0 || index_stat.len() % 16 != 0 {
         return Err(LogQueryError::StoreMalformed);
+    }
+    let (actual_lines, actual_sha256) = inspect_complete_file(&stream_file, metadata.bytes)?;
+    if actual_lines != metadata.lines || actual_sha256 != metadata.sha256 {
+        return Err(LogQueryError::StoreMalformed);
+    }
+    validate_sparse_index(&stream_file, &index, metadata.bytes, metadata.lines)?;
+    Ok(())
+}
+
+fn validate_sparse_index(
+    stream: &File,
+    index: &File,
+    snapshot_bytes: u64,
+    total_lines: u64,
+) -> Result<(), LogQueryError> {
+    let expected_records = if total_lines == 0 {
+        0
+    } else {
+        (total_lines - 1) / crate::log_store::LINE_INDEX_STRIDE + 1
+    };
+    let index_metadata = index.metadata().map_err(|_| LogQueryError::Unavailable)?;
+    if index_metadata.len() != expected_records.saturating_mul(16) {
+        return Err(LogQueryError::StoreMalformed);
+    }
+    if snapshot_bytes == 0 {
+        return Ok(());
+    }
+    let mut stream = stream.try_clone().map_err(|_| LogQueryError::Unavailable)?;
+    let mut index = index.try_clone().map_err(|_| LogQueryError::Unavailable)?;
+    stream
+        .seek(SeekFrom::Start(0))
+        .map_err(|_| LogQueryError::Unavailable)?;
+    index
+        .seek(SeekFrom::Start(0))
+        .map_err(|_| LogQueryError::Unavailable)?;
+    let mut position = 0_u64;
+    let mut line = 1_u64;
+    let mut at_line_start = true;
+    let mut remaining = snapshot_bytes;
+    let mut buffer = [0_u8; READ_BLOCK_BYTES];
+    while remaining > 0 {
+        let read = stream
+            .read(&mut buffer[..remaining.min(READ_BLOCK_BYTES as u64) as usize])
+            .map_err(|_| LogQueryError::Unavailable)?;
+        if read == 0 {
+            return Err(LogQueryError::StoreMalformed);
+        }
+        for byte in &buffer[..read] {
+            if at_line_start {
+                if (line - 1) % crate::log_store::LINE_INDEX_STRIDE == 0 {
+                    let mut record = [0_u8; 16];
+                    index
+                        .read_exact(&mut record)
+                        .map_err(|_| LogQueryError::StoreMalformed)?;
+                    let indexed_line =
+                        u64::from_le_bytes(record[..8].try_into().expect("line index width"));
+                    let indexed_offset =
+                        u64::from_le_bytes(record[8..].try_into().expect("line index width"));
+                    if indexed_line != line || indexed_offset != position {
+                        return Err(LogQueryError::StoreMalformed);
+                    }
+                }
+                at_line_start = false;
+            }
+            position = position.saturating_add(1);
+            if *byte == b'\n' {
+                line = line.saturating_add(1);
+                at_line_start = true;
+            }
+        }
+        remaining -= read as u64;
     }
     Ok(())
 }
@@ -1001,7 +1185,8 @@ fn query_catalog(
     let mut entries = Vec::new();
     let executor_selector = LeafSelector::executor();
     if selector_matches(&request.selector, &executor_selector) {
-        let executor_rank = executor_depth_rank(&inventory.runs, &run.metadata.run_id);
+        let executor_rank =
+            executor_depth_rank(&inventory.runs, &run.metadata.run_id, &run.metadata.test);
         for (stream, snapshot) in &run.executor_streams {
             if request
                 .selector
@@ -1071,7 +1256,8 @@ fn query_catalog(
                 }),
                 depth_rank: rank,
                 structured_evidence: StructuredEvidenceSummary {
-                    available: leaf.metadata.structured_evidence_count > 0,
+                    available: leaf.metadata.structured_evidence_count > 0
+                        || !leaf.metadata.structured_evidence_formats.is_empty(),
                     formats: leaf.metadata.structured_evidence_formats.clone(),
                     count: leaf.metadata.structured_evidence_count,
                 },
@@ -1128,6 +1314,10 @@ fn query_catalog(
             snapshot_lines: 0,
             position: index as u64,
             byte_position: 0,
+            auxiliary_position: 0,
+            auxiliary_byte_position: 0,
+            pending_line_end: None,
+            emitted_through_line: 0,
             query_sha256: digest,
         })?)
     } else {
@@ -1143,14 +1333,20 @@ fn query_tail(
     run: &InventoryRun,
     request: &LogQueryRequest,
 ) -> Result<ContentResult, LogQueryError> {
-    let selected = select_stream(run, request, request.options.cursor.is_some())?;
+    let mut selected = select_stream(run, request, request.options.cursor.is_some())?;
     let max_bytes = validate_max_bytes(request.options.max_bytes.unwrap_or(32_768))?;
     let requested_lines = request.options.lines.unwrap_or(50);
     let digest = query_digest(request, &run.metadata.run_id)?;
     let cursor = content_cursor(request, &selected, &digest)?;
-    let end_line = cursor
-        .as_ref()
-        .map_or(selected.metadata.lines, |cursor| cursor.position);
+    clamp_to_cursor_snapshot(&mut selected, cursor.as_ref())?;
+    if cursor.as_ref().is_some_and(|cursor| {
+        cursor.auxiliary_byte_position != 0 || cursor.emitted_through_line != 0
+    }) {
+        return Err(LogQueryError::CursorStale);
+    }
+    let end_line = cursor.as_ref().map_or(selected.metadata.lines, |cursor| {
+        cursor.pending_line_end.unwrap_or(cursor.position)
+    });
     if end_line == 0 || selected.metadata.lines == 0 {
         return Ok(ContentResult {
             segments: Vec::new(),
@@ -1160,11 +1356,17 @@ fn query_tail(
             response_truncated: false,
         });
     }
-    let continuation = cursor.as_ref().filter(|cursor| cursor.byte_position > 0);
+    let continuation = cursor
+        .as_ref()
+        .filter(|cursor| cursor.pending_line_end.is_some());
     let start_line = continuation.map_or_else(
         || end_line.saturating_sub(requested_lines - 1).max(1),
-        |_| end_line,
+        |cursor| cursor.position,
     );
+    let window_start = continuation
+        .map(|cursor| cursor.auxiliary_position)
+        .filter(|line| *line > 0 && *line <= start_line)
+        .unwrap_or(start_line);
     let read = read_line_interval_from(
         &selected,
         start_line,
@@ -1172,21 +1374,31 @@ fn query_tail(
         max_bytes,
         continuation.map(|cursor| cursor.byte_position),
     )?;
-    let response_truncated = read.truncated || start_line > 1;
+    let response_truncated = read.truncated || window_start > 1;
     let next_cursor = if read.truncated {
-        Some(make_content_cursor(
+        let ended_mid_line = read.bytes.last().is_some_and(|byte| *byte != b'\n');
+        let next_line = if ended_mid_line {
+            read.line_end
+        } else {
+            read.line_end.saturating_add(1)
+        };
+        Some(make_content_cursor_with_state(
             request,
             &selected,
             &digest,
-            read.line_end,
+            next_line,
             read.byte_end,
+            window_start,
+            0,
+            Some(end_line),
+            0,
         )?)
-    } else if start_line > 1 {
+    } else if window_start > 1 {
         Some(make_content_cursor(
             request,
             &selected,
             &digest,
-            start_line - 1,
+            window_start - 1,
             0,
         )?)
     } else {
@@ -1205,7 +1417,7 @@ fn query_range(
     run: &InventoryRun,
     request: &LogQueryRequest,
 ) -> Result<ContentResult, LogQueryError> {
-    let selected = select_stream(run, request, request.options.cursor.is_some())?;
+    let mut selected = select_stream(run, request, request.options.cursor.is_some())?;
     let max_bytes = validate_max_bytes(
         request
             .options
@@ -1214,6 +1426,15 @@ fn query_range(
     )?;
     let digest = query_digest(request, &run.metadata.run_id)?;
     let cursor = content_cursor(request, &selected, &digest)?;
+    clamp_to_cursor_snapshot(&mut selected, cursor.as_ref())?;
+    if cursor.as_ref().is_some_and(|cursor| {
+        cursor.auxiliary_position != 0
+            || cursor.auxiliary_byte_position != 0
+            || cursor.pending_line_end.is_some()
+            || cursor.emitted_through_line != 0
+    }) {
+        return Err(LogQueryError::CursorStale);
+    }
     if let (Some(configured_start), Some(configured_end)) =
         (request.options.line_start, request.options.line_end)
     {
@@ -1311,7 +1532,7 @@ fn query_search(
     run: &InventoryRun,
     request: &LogQueryRequest,
 ) -> Result<SearchResult, LogQueryError> {
-    let selected = select_stream(run, request, request.options.cursor.is_some())?;
+    let mut selected = select_stream(run, request, request.options.cursor.is_some())?;
     let max_bytes = validate_max_bytes(request.options.max_bytes.unwrap_or(32_768))?;
     let text = request
         .options
@@ -1324,68 +1545,180 @@ fn query_search(
     let context = request.options.context_lines.unwrap_or(2);
     let digest = query_digest(request, &run.metadata.run_id)?;
     let cursor = content_cursor(request, &selected, &digest)?;
-    let start_byte = cursor.as_ref().map_or(0, |value| value.byte_position);
-    let start_line = cursor.as_ref().map_or(1, |value| value.position.max(1));
-    let scan = find_literal_lines(
-        &selected.file,
-        selected.snapshot_bytes,
-        start_byte,
-        start_line,
-        needle,
-        maximum.saturating_add(1),
-    )?;
-    let has_more = scan.len() > maximum;
-    let returned = &scan[..scan.len().min(maximum)];
-    let intervals = merge_context_intervals(returned, context, selected.metadata.lines);
+    clamp_to_cursor_snapshot(&mut selected, cursor.as_ref())?;
     let mut matches = Vec::new();
     let mut used = 0usize;
-    let mut next_budget_position = None;
-    for (start, end) in intervals {
-        if used >= max_bytes {
-            next_budget_position = Some((start, line_offset(&selected, start)?));
-            break;
+    let mut emitted_through = cursor
+        .as_ref()
+        .map_or(0, |value| value.emitted_through_line);
+    let mut scan_line = cursor.as_ref().map_or(1, |value| value.position.max(1));
+    let mut scan_byte = cursor.as_ref().map_or(0, |value| value.byte_position);
+    let mut next_state: Option<(u64, u64, u64, u64, Option<u64>, u64)> = None;
+
+    if let Some(cursor) = cursor.as_ref()
+        && let Some(pending_end) = cursor.pending_line_end
+    {
+        if cursor.auxiliary_position == 0 || cursor.position == 0 || pending_end < cursor.position {
+            return Err(LogQueryError::CursorStale);
         }
-        let read = read_line_interval(&selected, start, end, max_bytes - used)?;
+        let read = read_line_interval_from(
+            &selected,
+            cursor.position,
+            pending_end,
+            (max_bytes - used).min(4 * 1024),
+            Some(cursor.byte_position),
+        )?;
         used = used.saturating_add(read.bytes.len());
-        if read.truncated {
-            let same_line = read.bytes.last().is_some_and(|byte| *byte != b'\n');
-            next_budget_position = Some((
-                if same_line {
-                    read.line_end
-                } else {
-                    read.line_end.saturating_add(1)
-                },
-                read.byte_end,
-            ));
+        let read_truncated = read.truncated;
+        let read_byte_end = read.byte_end;
+        let ended_mid_line = read_truncated && read.bytes.last().is_some_and(|byte| *byte != b'\n');
+        let next_line = if ended_mid_line {
+            read.line_end
+        } else {
+            read.line_end.saturating_add(1)
+        };
+        let segment = read.segment(false);
+        if !search_page_fits(
+            std::slice::from_ref(&segment),
+            selected.snapshot_bytes,
+            selected.metadata.lines,
+        )? {
+            return Err(LogQueryError::Unavailable);
         }
-        matches.push(read.segment(false));
-        if next_budget_position.is_some() {
-            break;
+        matches.push(segment);
+        if read_truncated && next_line <= pending_end {
+            next_state = Some((
+                next_line,
+                read_byte_end,
+                cursor.auxiliary_position,
+                cursor.auxiliary_byte_position,
+                Some(pending_end),
+                emitted_through,
+            ));
+        } else {
+            emitted_through = emitted_through.max(pending_end);
+            scan_line = cursor.auxiliary_position;
+            scan_byte = cursor.auxiliary_byte_position;
+        }
+    } else if cursor.as_ref().is_some_and(|cursor| {
+        cursor.auxiliary_position != 0
+            || cursor.auxiliary_byte_position != 0
+            || cursor.pending_line_end.is_some()
+    }) {
+        return Err(LogQueryError::CursorStale);
+    }
+
+    if next_state.is_none() && scan_byte < selected.snapshot_bytes {
+        let scan = find_literal_lines(
+            &selected.file,
+            selected.snapshot_bytes,
+            scan_byte,
+            scan_line,
+            needle,
+            maximum.saturating_add(1),
+        )?;
+        let returned_len = scan.len().min(maximum);
+        for index in 0..returned_len {
+            let hit = scan[index];
+            let resume = scan.get(index + 1).copied().unwrap_or(LineHit {
+                line: selected.metadata.lines.saturating_add(1),
+                byte_start: selected.snapshot_bytes,
+            });
+            let start = hit
+                .line
+                .saturating_sub(context)
+                .max(1)
+                .max(emitted_through.saturating_add(1));
+            let end = hit
+                .line
+                .saturating_add(context)
+                .min(selected.metadata.lines);
+            if start > end {
+                continue;
+            }
+            if used >= max_bytes {
+                next_state = Some((hit.line, hit.byte_start, 0, 0, None, emitted_through));
+                break;
+            }
+            let read = read_line_interval(&selected, start, end, (max_bytes - used).min(4 * 1024))?;
+            let read_truncated = read.truncated;
+            let read_len = read.bytes.len();
+            let ended_mid_line =
+                read_truncated && read.bytes.last().is_some_and(|byte| *byte != b'\n');
+            let next_line = if ended_mid_line {
+                read.line_end
+            } else {
+                read.line_end.saturating_add(1)
+            };
+            let read_byte_end = read.byte_end;
+            let segment = read.segment(false);
+            let mut trial = matches.clone();
+            trial.push(segment.clone());
+            if !search_page_fits(&trial, selected.snapshot_bytes, selected.metadata.lines)? {
+                next_state = Some((hit.line, hit.byte_start, 0, 0, None, emitted_through));
+                break;
+            }
+            used = used.saturating_add(read_len);
+            matches.push(segment);
+            if read_truncated && next_line <= end {
+                next_state = Some((
+                    next_line,
+                    read_byte_end,
+                    resume.line,
+                    resume.byte_start,
+                    Some(end),
+                    emitted_through,
+                ));
+                break;
+            }
+            emitted_through = emitted_through.max(end);
+        }
+        if next_state.is_none() && scan.len() > maximum {
+            let next = scan[maximum];
+            next_state = Some((next.line, next.byte_start, 0, 0, None, emitted_through));
         }
     }
-    let next_cursor = if let Some((line, byte)) = next_budget_position {
-        Some(make_content_cursor(
-            request, &selected, &digest, line, byte,
-        )?)
-    } else if has_more {
-        let next = scan[maximum];
-        Some(make_content_cursor(
-            request,
-            &selected,
-            &digest,
-            next.line,
-            next.byte_start,
-        )?)
-    } else {
-        None
-    };
+    let next_cursor = next_state
+        .map(|(line, byte, aux_line, aux_byte, pending_end, emitted)| {
+            make_content_cursor_with_state(
+                request,
+                &selected,
+                &digest,
+                line,
+                byte,
+                aux_line,
+                aux_byte,
+                pending_end,
+                emitted,
+            )
+        })
+        .transpose()?;
     Ok(SearchResult {
         matches,
         snapshot_bytes: selected.snapshot_bytes,
         snapshot_lines: selected.metadata.lines,
+        response_truncated: next_cursor.is_some(),
         next_cursor,
-        response_truncated: has_more || next_budget_position.is_some(),
     })
+}
+
+fn search_page_fits(
+    matches: &[LogSegment],
+    snapshot_bytes: u64,
+    snapshot_lines: u64,
+) -> Result<bool, LogQueryError> {
+    let reserved_cursor = "x".repeat(MAX_CURSOR_BYTES);
+    let result = SearchResult {
+        matches: matches.to_vec(),
+        snapshot_bytes,
+        snapshot_lines,
+        next_cursor: Some(reserved_cursor),
+        response_truncated: true,
+    };
+    Ok(serde_json::to_vec(&result)
+        .map_err(|_| LogQueryError::Unavailable)?
+        .len()
+        <= MAX_QUERY_RESULT_BYTES)
 }
 
 fn query_failure_context(
@@ -1403,79 +1736,167 @@ fn query_failure_context(
             .cmp(&diagnostic_rank(right))
             .then_with(|| left.fingerprint.cmp(&right.fingerprint))
     });
-    let failure_more = failures.len() > limit;
-    failures.truncate(limit);
-
-    let selected = select_optional_stream(run, request)?;
-    let Some(selected) = selected else {
-        return Ok(FailureContextResult {
-            failures,
-            contexts: Vec::new(),
-            snapshot_bytes: None,
-            snapshot_lines: None,
-            next_cursor: None,
-            response_truncated: failure_more,
-        });
-    };
+    let mut selected = select_stream(run, request, request.options.cursor.is_some())?;
     let cursor = content_cursor(request, &selected, &digest)?;
-    let start_byte = cursor.as_ref().map_or(0, |value| value.byte_position);
-    let start_line = cursor.as_ref().map_or(1, |value| value.position.max(1));
+    clamp_to_cursor_snapshot(&mut selected, cursor.as_ref())?;
+    if cursor.as_ref().is_some_and(|cursor| {
+        cursor.auxiliary_byte_position != 0 || cursor.emitted_through_line != 0
+    }) {
+        return Err(LogQueryError::CursorStale);
+    }
     let hits = find_failure_lines(
         &selected.file,
         selected.snapshot_bytes,
-        start_byte,
-        start_line,
-        limit.saturating_add(1),
+        0,
+        1,
+        MAX_DIAGNOSTIC_EVENTS,
     )?;
-    let has_more = hits.len() > limit;
-    let returned = &hits[..hits.len().min(limit)];
-    let intervals = merge_ranked_intervals(returned, context_lines, selected.metadata.lines);
+    let intervals = merge_ranked_intervals(&hits, context_lines, selected.metadata.lines);
+    let total_items = failures.len().saturating_add(intervals.len());
+    let mut item = usize::try_from(cursor.as_ref().map_or(0, |cursor| cursor.position))
+        .map_err(|_| LogQueryError::CursorStale)?;
+    if item > total_items {
+        return Err(LogQueryError::CursorStale);
+    }
+    if cursor
+        .as_ref()
+        .is_some_and(|cursor| cursor.pending_line_end.is_some() && item < failures.len())
+    {
+        return Err(LogQueryError::CursorStale);
+    }
+    let mut returned_failures = Vec::new();
     let mut contexts = Vec::new();
-    let mut used = 0usize;
-    let mut next_budget_position = None;
-    for interval in intervals {
-        if used >= max_bytes {
-            next_budget_position = Some((interval.start, line_offset(&selected, interval.start)?));
+    let mut used_bytes = 0usize;
+    let mut returned_items = 0usize;
+    let mut next_partial: Option<(u64, u64)> = None;
+    while item < total_items && returned_items < limit {
+        if item < failures.len() {
+            let candidate = failures[item].clone();
+            let mut trial = returned_failures.clone();
+            trial.push(candidate.clone());
+            if !failure_page_fits(
+                &trial,
+                &contexts,
+                selected.snapshot_bytes,
+                selected.metadata.lines,
+            )? {
+                if returned_items == 0 {
+                    return Err(LogQueryError::Unavailable);
+                }
+                break;
+            }
+            returned_failures.push(candidate);
+            item += 1;
+            returned_items += 1;
+            continue;
+        }
+        let interval = &intervals[item - failures.len()];
+        if used_bytes >= max_bytes {
             break;
         }
-        let read = read_line_interval(&selected, interval.start, interval.end, max_bytes - used)?;
-        used = used.saturating_add(read.bytes.len());
-        if read.truncated {
-            next_budget_position = Some((read.line_end, read.byte_end));
-        }
+        let (start_line, byte_override) = if let Some(cursor) = cursor.as_ref()
+            && item == usize::try_from(cursor.position).unwrap_or(usize::MAX)
+            && let Some(pending_end) = cursor.pending_line_end
+        {
+            if pending_end != interval.end
+                || cursor.auxiliary_position < interval.start
+                || cursor.auxiliary_position > interval.end
+            {
+                return Err(LogQueryError::CursorStale);
+            }
+            (cursor.auxiliary_position, Some(cursor.byte_position))
+        } else {
+            (interval.start, None)
+        };
+        let read = read_line_interval_from(
+            &selected,
+            start_line,
+            interval.end,
+            (max_bytes - used_bytes).min(4 * 1024),
+            byte_override,
+        )?;
+        let read_truncated = read.truncated;
+        let read_len = read.bytes.len();
+        let read_byte_end = read.byte_end;
+        let ended_mid_line = read_truncated && read.bytes.last().is_some_and(|byte| *byte != b'\n');
+        let next_line = if ended_mid_line {
+            read.line_end
+        } else {
+            read.line_end.saturating_add(1)
+        };
         let mut segment = read.segment(false);
         segment.rank = Some(interval.rank);
-        segment.fingerprint = Some(interval.fingerprint);
+        segment.fingerprint = Some(interval.fingerprint.clone());
         segment.occurrences = Some(interval.occurrences);
-        contexts.push(segment);
-        if next_budget_position.is_some() {
+        let mut trial = contexts.clone();
+        trial.push(segment.clone());
+        if !failure_page_fits(
+            &returned_failures,
+            &trial,
+            selected.snapshot_bytes,
+            selected.metadata.lines,
+        )? {
+            if returned_items == 0 {
+                return Err(LogQueryError::Unavailable);
+            }
             break;
         }
+        contexts.push(segment);
+        used_bytes = used_bytes.saturating_add(read_len);
+        returned_items += 1;
+        if read_truncated && next_line <= interval.end {
+            next_partial = Some((next_line, read_byte_end));
+            break;
+        }
+        item += 1;
     }
-    let next_cursor = if let Some((line, byte)) = next_budget_position {
-        Some(make_content_cursor(
-            request, &selected, &digest, line, byte,
-        )?)
-    } else if has_more {
-        let next = &hits[limit];
-        Some(make_content_cursor(
+    let has_more = next_partial.is_some() || item < total_items;
+    let next_cursor = if has_more {
+        let (pending_line, pending_byte, pending_end) = next_partial
+            .map(|(line, byte)| (line, byte, Some(intervals[item - failures.len()].end)))
+            .unwrap_or((0, 0, None));
+        Some(make_content_cursor_with_state(
             request,
             &selected,
             &digest,
-            next.line,
-            next.byte_start,
+            u64::try_from(item).map_err(|_| LogQueryError::Unavailable)?,
+            pending_byte,
+            pending_line,
+            0,
+            pending_end,
+            0,
         )?)
     } else {
         None
     };
     Ok(FailureContextResult {
-        failures,
+        failures: returned_failures,
         contexts,
         snapshot_bytes: Some(selected.snapshot_bytes),
         snapshot_lines: Some(selected.metadata.lines),
         next_cursor,
-        response_truncated: failure_more || has_more || next_budget_position.is_some(),
+        response_truncated: has_more,
     })
+}
+
+fn failure_page_fits(
+    failures: &[FailureIndexEntry],
+    contexts: &[LogSegment],
+    snapshot_bytes: u64,
+    snapshot_lines: u64,
+) -> Result<bool, LogQueryError> {
+    let result = FailureContextResult {
+        failures: failures.to_vec(),
+        contexts: contexts.to_vec(),
+        snapshot_bytes: Some(snapshot_bytes),
+        snapshot_lines: Some(snapshot_lines),
+        next_cursor: Some("x".repeat(MAX_CURSOR_BYTES)),
+        response_truncated: true,
+    };
+    Ok(serde_json::to_vec(&result)
+        .map_err(|_| LogQueryError::Unavailable)?
+        .len()
+        <= MAX_QUERY_RESULT_BYTES)
 }
 
 struct SelectedStream {
@@ -1539,61 +1960,6 @@ fn select_stream(
         });
     };
     open_selected_stream(run, leaf, stream)
-}
-
-fn select_optional_stream(
-    run: &InventoryRun,
-    request: &LogQueryRequest,
-) -> Result<Option<SelectedStream>, LogQueryError> {
-    if request.selector.phase.is_some() && request.selector.stream.is_some() {
-        return select_stream(run, request, request.options.cursor.is_some()).map(Some);
-    }
-    if request.selector.check.is_none()
-        && request
-            .selector
-            .phase
-            .is_none_or(|phase| phase == LogPhase::Executor)
-    {
-        for stream in [LogStream::Stderr, LogStream::Stdout] {
-            if run.executor_streams.contains_key(&stream)
-                && request
-                    .selector
-                    .stream
-                    .is_none_or(|expected| expected == stream)
-            {
-                let mut exact = request.clone();
-                exact.selector.phase = Some(LogPhase::Executor);
-                exact.selector.stream = Some(stream);
-                return select_stream(run, &exact, request.options.cursor.is_some()).map(Some);
-            }
-        }
-    }
-    let mut candidates = Vec::new();
-    for leaf in &run.leaves {
-        if selector_matches(&request.selector, &leaf.selector) {
-            for stream in [LogStream::Stderr, LogStream::Stdout] {
-                if leaf.streams.contains_key(&stream)
-                    && request
-                        .selector
-                        .stream
-                        .is_none_or(|expected| expected == stream)
-                {
-                    candidates.push((leaf, stream));
-                }
-            }
-        }
-    }
-    candidates.sort_by(|(left_leaf, left_stream), (right_leaf, right_stream)| {
-        log_ref(&left_leaf.run_id, &left_leaf.selector, *left_stream).cmp(&log_ref(
-            &right_leaf.run_id,
-            &right_leaf.selector,
-            *right_stream,
-        ))
-    });
-    candidates
-        .first()
-        .map(|(leaf, stream)| open_selected_stream(run, leaf, *stream))
-        .transpose()
 }
 
 fn open_selected_stream(
@@ -1666,6 +2032,26 @@ fn load_structured_failures(
             entry
                 .validate()
                 .map_err(|_| LogQueryError::StoreMalformed)?;
+            let case_is_bound = leaf.selector.case_id.as_deref().is_none_or(|case_id| {
+                entry.case.as_deref().is_some_and(|reported| {
+                    reported == case_id
+                        || reported
+                            .strip_prefix(case_id)
+                            .is_some_and(|suffix| suffix.starts_with(" :: "))
+                })
+            });
+            if entry.check != leaf.selector.check
+                || !case_is_bound
+                || entry.fingerprint != diagnostic_fingerprint(&entry)
+                || entry.log_refs.iter().any(|reference| {
+                    reference.run_id != leaf.run_id
+                        || reference.check != leaf.selector.check
+                        || reference.phase != leaf.selector.phase
+                        || reference.case != leaf.selector.case_id
+                })
+            {
+                return Err(LogQueryError::StoreMalformed);
+            }
             if let Some(existing) = grouped.get_mut(&entry.fingerprint) {
                 existing.occurrences = existing.occurrences.saturating_add(entry.occurrences);
                 for reference in entry.log_refs.drain(..) {
@@ -1691,7 +2077,6 @@ struct LineHit {
 #[derive(Clone)]
 struct RankedHit {
     line: u64,
-    byte_start: u64,
     rank: u8,
     fingerprint: String,
     occurrences: u64,
@@ -2027,22 +2412,6 @@ fn kmp_prefix(needle: &[u8]) -> Vec<usize> {
     prefix
 }
 
-fn merge_context_intervals(hits: &[LineHit], context: u64, total_lines: u64) -> Vec<(u64, u64)> {
-    let mut result: Vec<(u64, u64)> = Vec::new();
-    for hit in hits {
-        let start = hit.line.saturating_sub(context).max(1);
-        let end = hit.line.saturating_add(context).min(total_lines);
-        if let Some(last) = result.last_mut()
-            && start <= last.1.saturating_add(1)
-        {
-            last.1 = last.1.max(end);
-        } else {
-            result.push((start, end));
-        }
-    }
-    result
-}
-
 fn find_failure_lines(
     file: &File,
     snapshot_bytes: u64,
@@ -2055,14 +2424,14 @@ fn find_failure_lines(
         .seek(SeekFrom::Start(start_byte))
         .map_err(|_| LogQueryError::Unavailable)?;
     let mut remaining = snapshot_bytes.saturating_sub(start_byte);
-    let mut position = start_byte;
     let mut line = start_line;
     let mut unique = BTreeMap::<String, RankedHit>::new();
-    let mut final_lines = VecDeque::<(u64, u64, Vec<u8>)>::new();
+    let mut worst = BinaryHeap::<(u8, u64, String)>::new();
+    let mut recognized_lines = BTreeSet::new();
+    let mut final_lines = VecDeque::<(u64, Vec<u8>)>::new();
     while remaining > 0 {
         let mut raw = Vec::new();
         let mut byte = [0_u8; 1];
-        let line_start = position;
         while remaining > 0 {
             let read = reader
                 .read(&mut byte)
@@ -2070,7 +2439,6 @@ fn find_failure_lines(
             if read == 0 {
                 return Err(LogQueryError::StoreMalformed);
             }
-            position += 1;
             remaining -= 1;
             if raw.len() < 4096 {
                 raw.push(byte[0]);
@@ -2081,12 +2449,13 @@ fn find_failure_lines(
         }
         let text = String::from_utf8_lossy(&raw);
         if !text.trim().is_empty() {
-            final_lines.push_back((line, line_start, raw.clone()));
+            final_lines.push_back((line, raw.clone()));
             while final_lines.len() > 3 {
                 final_lines.pop_front();
             }
         }
         if let Some(rank) = recognized_rank(&text) {
+            recognized_lines.insert(line);
             let normalized = text.trim().to_ascii_lowercase();
             let fingerprint = format!(
                 "sha256:{}",
@@ -2097,24 +2466,24 @@ fn find_failure_lines(
                         .collect::<Vec<_>>(),
                 ))
             );
-            if let Some(existing) = unique.get_mut(&fingerprint) {
-                existing.occurrences = existing.occurrences.saturating_add(1);
-            } else if unique.len() < 4096 {
-                unique.insert(
-                    fingerprint.clone(),
-                    RankedHit {
-                        line,
-                        byte_start: line_start,
-                        rank,
-                        fingerprint,
-                        occurrences: 1,
-                    },
-                );
-            }
+            insert_ranked_hit(
+                &mut unique,
+                &mut worst,
+                RankedHit {
+                    line,
+                    rank,
+                    fingerprint,
+                    occurrences: 1,
+                },
+                maximum,
+            );
         }
         line += 1;
     }
-    for (line, byte_start, raw) in final_lines {
+    for (line, raw) in final_lines {
+        if recognized_lines.contains(&line) {
+            continue;
+        }
         let normalized = String::from_utf8_lossy(&raw).trim().to_ascii_lowercase();
         let fingerprint = format!(
             "sha256:{}",
@@ -2125,13 +2494,17 @@ fn find_failure_lines(
                     .collect::<Vec<_>>(),
             ))
         );
-        unique.entry(fingerprint.clone()).or_insert(RankedHit {
-            line,
-            byte_start,
-            rank: 7,
-            fingerprint,
-            occurrences: 1,
-        });
+        insert_ranked_hit(
+            &mut unique,
+            &mut worst,
+            RankedHit {
+                line,
+                rank: 7,
+                fingerprint,
+                occurrences: 1,
+            },
+            maximum,
+        );
     }
     let mut output: Vec<_> = unique.into_values().collect();
     output.sort_by(|left, right| {
@@ -2142,6 +2515,39 @@ fn find_failure_lines(
     });
     output.truncate(maximum);
     Ok(output)
+}
+
+fn insert_ranked_hit(
+    unique: &mut BTreeMap<String, RankedHit>,
+    worst: &mut BinaryHeap<(u8, u64, String)>,
+    candidate: RankedHit,
+    maximum: usize,
+) {
+    if let Some(existing) = unique.get_mut(&candidate.fingerprint) {
+        existing.occurrences = existing.occurrences.saturating_add(candidate.occurrences);
+        return;
+    }
+    if maximum == 0 {
+        return;
+    }
+    let key = (
+        candidate.rank,
+        candidate.line,
+        candidate.fingerprint.clone(),
+    );
+    if unique.len() >= maximum {
+        let Some(current_worst) = worst.peek() else {
+            return;
+        };
+        if key >= *current_worst {
+            return;
+        }
+        if let Some((_, _, fingerprint)) = worst.pop() {
+            unique.remove(&fingerprint);
+        }
+    }
+    worst.push(key);
+    unique.insert(candidate.fingerprint.clone(), candidate);
 }
 
 fn recognized_rank(text: &str) -> Option<u8> {
@@ -2185,7 +2591,8 @@ fn merge_ranked_intervals(
     context: u64,
     total_lines: u64,
 ) -> Vec<RankedInterval> {
-    hits.iter()
+    let mut candidates: Vec<_> = hits
+        .iter()
         .map(|hit| RankedInterval {
             start: hit.line.saturating_sub(context).max(1),
             end: hit.line.saturating_add(context).min(total_lines),
@@ -2193,7 +2600,42 @@ fn merge_ranked_intervals(
             fingerprint: hit.fingerprint.clone(),
             occurrences: hit.occurrences,
         })
-        .collect()
+        .collect();
+    candidates.sort_by(|left, right| {
+        left.start
+            .cmp(&right.start)
+            .then_with(|| left.end.cmp(&right.end))
+            .then_with(|| left.rank.cmp(&right.rank))
+            .then_with(|| left.fingerprint.cmp(&right.fingerprint))
+    });
+    let mut merged: Vec<RankedInterval> = Vec::new();
+    for candidate in candidates {
+        if let Some(previous) = merged.last_mut()
+            && candidate.start <= previous.end
+        {
+            previous.end = previous.end.max(candidate.end);
+            previous.rank = previous.rank.min(candidate.rank);
+            previous.occurrences = previous.occurrences.saturating_add(candidate.occurrences);
+            let mut fingerprints = [
+                previous.fingerprint.as_str(),
+                candidate.fingerprint.as_str(),
+            ];
+            fingerprints.sort_unstable();
+            previous.fingerprint = format!(
+                "sha256:{}",
+                lower_hex(&Sha256::digest(fingerprints.join("\0").as_bytes(),)),
+            );
+        } else {
+            merged.push(candidate);
+        }
+    }
+    merged.sort_by(|left, right| {
+        left.rank
+            .cmp(&right.rank)
+            .then_with(|| left.start.cmp(&right.start))
+            .then_with(|| left.fingerprint.cmp(&right.fingerprint))
+    });
+    merged
 }
 
 fn selector_matches(filter: &LogQuerySelector, selector: &LeafSelector) -> bool {
@@ -2252,10 +2694,15 @@ fn depth_ranks(runs: &[InventoryRun]) -> BTreeMap<(String, String), u64> {
     output
 }
 
-fn executor_depth_rank(runs: &[InventoryRun], target_run: &str) -> Option<u64> {
+fn executor_depth_rank(runs: &[InventoryRun], target_run: &str, target_test: &str) -> Option<u64> {
     let mut completed: Vec<&InventoryRun> = runs
         .iter()
-        .filter(|run| run.metadata.complete && !run.active && !run.executor_streams.is_empty())
+        .filter(|run| {
+            run.metadata.test == target_test
+                && run.metadata.complete
+                && !run.active
+                && !run.executor_streams.is_empty()
+        })
         .collect();
     completed.sort_by(|left, right| {
         right
@@ -2325,12 +2772,55 @@ fn content_cursor(
     Ok(Some(cursor))
 }
 
+fn clamp_to_cursor_snapshot(
+    selected: &mut SelectedStream,
+    cursor: Option<&CursorPayload>,
+) -> Result<(), LogQueryError> {
+    let Some(cursor) = cursor else {
+        return Ok(());
+    };
+    if cursor.snapshot_bytes > selected.snapshot_bytes
+        || cursor.snapshot_lines > selected.metadata.lines
+    {
+        return Err(LogQueryError::CursorStale);
+    }
+    selected.snapshot_bytes = cursor.snapshot_bytes;
+    selected.metadata.bytes = cursor.snapshot_bytes;
+    selected.metadata.lines = cursor.snapshot_lines;
+    Ok(())
+}
+
 fn make_content_cursor(
     request: &LogQueryRequest,
     selected: &SelectedStream,
     digest: &str,
     position: u64,
     byte_position: u64,
+) -> Result<String, LogQueryError> {
+    make_content_cursor_with_state(
+        request,
+        selected,
+        digest,
+        position,
+        byte_position,
+        0,
+        0,
+        None,
+        0,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn make_content_cursor_with_state(
+    request: &LogQueryRequest,
+    selected: &SelectedStream,
+    digest: &str,
+    position: u64,
+    byte_position: u64,
+    auxiliary_position: u64,
+    auxiliary_byte_position: u64,
+    pending_line_end: Option<u64>,
+    emitted_through_line: u64,
 ) -> Result<String, LogQueryError> {
     encode_cursor(&CursorPayload {
         schema: 2,
@@ -2343,6 +2833,10 @@ fn make_content_cursor(
         snapshot_lines: selected.metadata.lines,
         position,
         byte_position,
+        auxiliary_position,
+        auxiliary_byte_position,
+        pending_line_end,
+        emitted_through_line,
         query_sha256: digest.to_owned(),
     })
 }
@@ -2361,6 +2855,12 @@ fn verify_catalog_cursor(
         || cursor.run_id != run_id
         || (cursor.device, cursor.inode) != identity
         || cursor.snapshot_bytes != entries
+        || cursor.snapshot_lines != 0
+        || cursor.byte_position != 0
+        || cursor.auxiliary_position != 0
+        || cursor.auxiliary_byte_position != 0
+        || cursor.pending_line_end.is_some()
+        || cursor.emitted_through_line != 0
         || cursor.query_sha256 != digest
     {
         return Err(LogQueryError::CursorStale);
@@ -2539,6 +3039,35 @@ fn run_is_locked(run_dir: &File) -> Result<bool, LogQueryError> {
     }
 }
 
+fn lock_and_revalidate_victim(
+    runs: &File,
+    location: &RetentionLocation,
+    active_run_id: Option<&str>,
+) -> Result<Option<File>, LogQueryError> {
+    if active_run_id == Some(location.run_id.as_str()) {
+        return Ok(None);
+    }
+    let run = required_store_entry(open_dir(runs, &location.run_id))?;
+    if file_identity(&run)? != location.run_identity {
+        return Err(LogQueryError::StoreMalformed);
+    }
+    let lock = required_store_entry(open_file(&run, "active.lock"))?;
+    match unix_fs::flock(&lock, FlockOperation::NonBlockingLockExclusive) {
+        Ok(()) => {}
+        Err(error)
+            if error == rustix::io::Errno::AGAIN || error == rustix::io::Errno::WOULDBLOCK =>
+        {
+            return Ok(None);
+        }
+        Err(_) => return Err(LogQueryError::Unavailable),
+    }
+    let leaf = required_store_entry(open_leaf_components(&run, &location.components[1..]))?;
+    if file_identity(&leaf)? != location.leaf_identity {
+        return Err(LogQueryError::StoreMalformed);
+    }
+    Ok(Some(lock))
+}
+
 fn file_identity(file: &File) -> Result<(u64, u64), LogQueryError> {
     let metadata = file.metadata().map_err(|_| LogQueryError::Unavailable)?;
     Ok((metadata.dev(), metadata.ino()))
@@ -2562,6 +3091,7 @@ fn rename_leaf_to_garbage(
     runs: &File,
     garbage: &File,
     components: &[String],
+    expected_identity: (u64, u64),
 ) -> Result<(), LogQueryError> {
     if components.len() < 2 {
         return Err(LogQueryError::StoreMalformed);
@@ -2571,11 +3101,19 @@ fn rename_leaf_to_garbage(
         parent = open_dir(&parent, component)?;
     }
     let leaf = components.last().ok_or(LogQueryError::StoreMalformed)?;
+    let opened_leaf = required_store_entry(open_dir(&parent, leaf))?;
+    if file_identity(&opened_leaf)? != expected_identity {
+        return Err(LogQueryError::StoreMalformed);
+    }
     let identity = components.join("/");
     let digest = lower_hex(&Sha256::digest(identity.as_bytes()));
     let garbage_name = format!("g-{}-{:016x}", &digest[..16], epoch_ms());
     unix_fs::renameat(&parent, leaf, garbage, garbage_name.as_str())
         .map_err(|_| LogQueryError::Unavailable)?;
+    let moved = required_store_entry(open_dir(garbage, &garbage_name))?;
+    if file_identity(&moved)? != expected_identity {
+        return Err(LogQueryError::StoreMalformed);
+    }
     parent.sync_all().map_err(|_| LogQueryError::Unavailable)?;
     garbage.sync_all().map_err(|_| LogQueryError::Unavailable)?;
     delete_tree_at(garbage, &garbage_name)?;
@@ -2792,7 +3330,7 @@ fn base64_url_decode(input: &str) -> Option<Vec<u8>> {
 mod tests {
     use super::*;
     use std::fs;
-    use std::os::unix::fs::symlink;
+    use std::os::unix::fs::{PermissionsExt, symlink};
     use std::sync::atomic::{AtomicU64, Ordering};
 
     use crate::log_store::RunLogLease;
@@ -2868,6 +3406,7 @@ mod tests {
                 exit: DiagnosticExit::default(),
                 started_at_epoch_ms: finished_at_ms.saturating_sub(100),
                 finished_at_epoch_ms: (!active).then_some(finished_at_ms),
+                process_started: true,
                 complete: !active,
                 structured_evidence_formats: Vec::new(),
                 structured_evidence_count: 0,
@@ -3390,6 +3929,8 @@ mod tests {
             .join("checks/unit/cases/case-1/stdout.log");
         let replacement = stream.with_file_name("replacement");
         fs::write(&replacement, payload).expect("replacement");
+        fs::set_permissions(&replacement, fs::Permissions::from_mode(0o600))
+            .expect("private replacement");
         fs::rename(&replacement, &stream).expect("replace");
         assert_eq!(
             execute_log_query(&root, query),
@@ -3483,6 +4024,8 @@ mod tests {
         assert_eq!(fs::read(&outside).expect("outside"), b"must survive");
         fs::remove_file(&stream).expect("unlink attack");
         fs::write(&stream, b"safe\n").expect("restore stream");
+        fs::set_permissions(&stream, fs::Permissions::from_mode(0o600))
+            .expect("private restored stream");
         let garbage =
             root.join(".devcoordinator/test/logs/.garbage/g-aaaaaaaaaaaaaaaa-0000000000000001");
         fs::create_dir_all(&garbage).expect("garbage");
@@ -3554,6 +4097,231 @@ mod tests {
         assert_eq!(
             execute_log_query(&root, query),
             Err(LogQueryError::CursorStale)
+        );
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn never_started_terminal_leaf_has_no_streams_but_started_leaf_requires_them() {
+        let root = temporary("no-stream-leaf");
+        let run = "run-local-no-stream".to_owned();
+        let run_dir = root.join(".devcoordinator/test/logs/runs").join(&run);
+        fs::create_dir(&run_dir).expect("run directory");
+        let lease = RunLogLease::acquire(&run_dir, &run).expect("lease");
+        lease
+            .publish_leaf_metadata(&LeafLogMetadata {
+                schema: 2,
+                selector: LeafSelector::check("unit").expect("selector"),
+                status: LeafStatus::Reused,
+                exit: DiagnosticExit::default(),
+                started_at_epoch_ms: 1,
+                finished_at_epoch_ms: Some(1),
+                process_started: false,
+                complete: true,
+                structured_evidence_formats: Vec::new(),
+                structured_evidence_count: 0,
+            })
+            .expect("leaf metadata");
+        lease
+            .publish_run_metadata(&RunLogMetadata {
+                schema: 2,
+                run_id: run.clone(),
+                test: "complete".into(),
+                started_at_epoch_ms: 1,
+                finished_at_epoch_ms: Some(2),
+                status: RunStatus::Passed,
+                complete: true,
+            })
+            .expect("run metadata");
+        drop(lease);
+        let mut catalog = request(LogQueryOperation::Catalog, &run, LogQueryOptions::default());
+        catalog.selector.phase = Some(LogPhase::Check);
+        catalog.selector.case_id = None;
+        assert!(matches!(
+            execute_log_query(&root, catalog),
+            Ok(LogQueryResult::Catalog(CatalogResult { entries, .. })) if entries.is_empty()
+        ));
+
+        let leaf_path = run_dir.join("checks/unit/check/leaf.json");
+        let mut metadata: LeafLogMetadata =
+            serde_json::from_slice(&fs::read(&leaf_path).expect("leaf JSON")).expect("metadata");
+        metadata.process_started = true;
+        fs::write(&leaf_path, serde_json::to_vec(&metadata).expect("encode"))
+            .expect("replace metadata");
+        assert_eq!(
+            execute_log_query(
+                &root,
+                request(LogQueryOperation::Catalog, &run, LogQueryOptions::default())
+            ),
+            Err(LogQueryError::StoreMalformed)
+        );
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn tail_cursor_advances_across_newline_without_repeating_lines() {
+        let root = temporary("tail-pages");
+        let (run, _) = create_run(&root, 40, "case-1", b"aa\nbb\ncc\n", epoch_ms(), false);
+        let mut query = request(
+            LogQueryOperation::Tail,
+            &run,
+            LogQueryOptions {
+                lines: Some(3),
+                max_bytes: Some(3),
+                ..LogQueryOptions::default()
+            },
+        );
+        let mut lines = Vec::new();
+        loop {
+            let page = content(execute_log_query(&root, query.clone()).expect("tail page"));
+            lines.push((
+                page.segments[0].line_start,
+                page.segments[0].text.clone().expect("text"),
+            ));
+            let Some(cursor) = page.next_cursor else {
+                break;
+            };
+            query.options.cursor = Some(cursor);
+        }
+        assert_eq!(
+            lines,
+            vec![(1, "aa\n".into()), (2, "bb\n".into()), (3, "cc\n".into())]
+        );
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn search_cursor_finishes_a_long_matching_line_before_scanning_onward() {
+        let root = temporary("search-pending");
+        let mut payload = b"needle".to_vec();
+        payload.extend(std::iter::repeat_n(b'x', 9_000));
+        payload.extend_from_slice(b"\nneedle\n");
+        let (run, _) = create_run(&root, 41, "case-1", &payload, epoch_ms(), false);
+        let mut query = request(
+            LogQueryOperation::Search,
+            &run,
+            LogQueryOptions {
+                text: Some("needle".into()),
+                max_matches: Some(1),
+                context_lines: Some(0),
+                max_bytes: Some(4_096),
+                ..LogQueryOptions::default()
+            },
+        );
+        let mut expected_start = 0_u64;
+        let mut saw_second_line = false;
+        loop {
+            let LogQueryResult::Search(page) =
+                execute_log_query(&root, query.clone()).expect("search page")
+            else {
+                panic!("search result")
+            };
+            for segment in page.matches {
+                if segment.line_start == 1 {
+                    assert_eq!(segment.byte_start, expected_start);
+                    expected_start = segment.byte_end;
+                } else if segment.line_start == 2 {
+                    saw_second_line = true;
+                }
+            }
+            let Some(cursor) = page.next_cursor else {
+                break;
+            };
+            query.options.cursor = Some(cursor);
+        }
+        assert_eq!(expected_start, 9_007);
+        assert!(saw_second_line);
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn failure_context_pages_ranked_items_by_index_without_looping() {
+        let root = temporary("failure-pages");
+        let payload = b"process exited 1\nordinary\nassertion failed\n";
+        let (run, _) = create_run(&root, 42, "case-1", payload, epoch_ms(), false);
+        let mut query = request(
+            LogQueryOperation::FailureContext,
+            &run,
+            LogQueryOptions {
+                limit: Some(1),
+                context_lines: Some(0),
+                max_bytes: Some(1024),
+                ..LogQueryOptions::default()
+            },
+        );
+        let LogQueryResult::FailureContext(first) =
+            execute_log_query(&root, query.clone()).expect("first page")
+        else {
+            panic!("failure context")
+        };
+        assert_eq!(first.contexts[0].line_start, 3);
+        query.options.cursor = first.next_cursor;
+        let LogQueryResult::FailureContext(second) =
+            execute_log_query(&root, query).expect("second page")
+        else {
+            panic!("failure context")
+        };
+        assert_eq!(second.contexts[0].line_start, 1);
+        assert_ne!(
+            first.contexts[0].fingerprint,
+            second.contexts[0].fingerprint
+        );
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn escaped_search_output_is_paged_below_the_serialized_response_limit() {
+        let root = temporary("escaped-budget");
+        let mut payload = Vec::new();
+        for _ in 0..100 {
+            payload.extend(std::iter::repeat_n(0_u8, 300));
+            payload.extend_from_slice(b"needle\n");
+        }
+        let (run, _) = create_run(&root, 43, "case-1", &payload, epoch_ms(), false);
+        let LogQueryResult::Search(result) = execute_log_query(
+            &root,
+            request(
+                LogQueryOperation::Search,
+                &run,
+                LogQueryOptions {
+                    text: Some("needle".into()),
+                    max_matches: Some(100),
+                    context_lines: Some(0),
+                    max_bytes: Some(MAX_QUERY_CONTENT_BYTES as u64),
+                    ..LogQueryOptions::default()
+                },
+            ),
+        )
+        .expect("bounded escaped page") else {
+            panic!("search result")
+        };
+        assert!(result.next_cursor.is_some());
+        assert!(serde_json::to_vec(&result).expect("JSON").len() <= MAX_QUERY_RESULT_BYTES);
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn prune_distinguishes_an_absent_store_from_a_corrupt_run() {
+        let root = temporary("prune-missing");
+        fs::remove_dir_all(root.join(".devcoordinator/test/logs")).expect("remove store");
+        let request = LogPruneRequest {
+            schema: 2,
+            repository_id: "raaaaaaaaaaaaaaaa".into(),
+            max_age_seconds: 86_400,
+            case_depth: 3,
+            active_run_id: None,
+        };
+        assert_eq!(
+            prune_logs(&root, request.clone())
+                .expect("absent store")
+                .removed_leaf_folders,
+            0
+        );
+        let runs = root.join(".devcoordinator/test/logs/runs");
+        fs::create_dir_all(runs.join("corrupt-run")).expect("corrupt run");
+        assert_eq!(
+            prune_logs(&root, request),
+            Err(LogQueryError::StoreMalformed)
         );
         fs::remove_dir_all(root).expect("cleanup");
     }
