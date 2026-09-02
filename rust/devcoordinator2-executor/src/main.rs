@@ -7,6 +7,9 @@ use std::sync::Arc;
 
 use devcoordinator2_executor_core::{
     Cancellation, Executor, LocalPermitProvider, PermitProvider, UnixPermitProvider,
+    log_query::{
+        LogPruneRequest, LogQueryRequest, execute_log_query, prune_logs,
+    },
     protocol::{ArtifactReceipt, CompletionEvent, EventStatus, ExecutionPlan, MAX_REPORT_BYTES},
     receipts_match, source_digest,
 };
@@ -66,6 +69,8 @@ async fn dispatch(args: Vec<std::ffi::OsString>) -> Result<i32, String> {
         "source-digest" => source_digest_command(&args[1..]),
         "receipts-match" => receipts_match_command(&args[1..]),
         "emit-event" => emit_event_command(&args[1..]),
+        "log-query" => log_query_command(&args[1..]),
+        "log-prune" => log_prune_command(&args[1..]),
         _ => Err(usage()),
     }
 }
@@ -194,6 +199,76 @@ fn emit_event_command(args: &[std::ffi::OsString]) -> Result<i32, String> {
     Ok(0)
 }
 
+fn log_query_command(args: &[std::ffi::OsString]) -> Result<i32, String> {
+    let (worktree, payload) = bridge_request(args)?;
+    let request: Result<LogQueryRequest, _> = serde_json::from_slice(&payload);
+    match request {
+        Ok(request) => match execute_log_query(&worktree, request) {
+            Ok(result) => {
+                println!("{}", json!({"schema": 2, "ok": true, "result": result}));
+                Ok(0)
+            }
+            Err(error) => {
+                println!(
+                    "{}",
+                    json!({"schema": 2, "ok": false, "error": {"code": error.code()}})
+                );
+                Ok(1)
+            }
+        },
+        Err(_) => {
+            println!(
+                "{}",
+                json!({"schema": 2, "ok": false, "error": {"code": "args_invalid"}})
+            );
+            Ok(1)
+        }
+    }
+}
+
+fn log_prune_command(args: &[std::ffi::OsString]) -> Result<i32, String> {
+    let (worktree, payload) = bridge_request(args)?;
+    let request: Result<LogPruneRequest, _> = serde_json::from_slice(&payload);
+    match request {
+        Ok(request) => match prune_logs(&worktree, request) {
+            Ok(result) => {
+                println!("{}", json!({"schema": 2, "ok": true, "result": result}));
+                Ok(0)
+            }
+            Err(error) => {
+                println!(
+                    "{}",
+                    json!({"schema": 2, "ok": false, "error": {"code": error.code()}})
+                );
+                Ok(1)
+            }
+        },
+        Err(_) => {
+            println!(
+                "{}",
+                json!({"schema": 2, "ok": false, "error": {"code": "args_invalid"}})
+            );
+            Ok(1)
+        }
+    }
+}
+
+fn bridge_request(args: &[std::ffi::OsString]) -> Result<(PathBuf, Vec<u8>), String> {
+    if args.len() != 4 || args[0] != "--worktree" || args[2] != "--request" || args[3] != "-" {
+        return Err(usage());
+    }
+    let worktree = absolute_directory(Path::new(&args[1]))?;
+    let mut payload = Vec::new();
+    std::io::stdin()
+        .take(65_537)
+        .read_to_end(&mut payload)
+        .map_err(|error| format!("cannot read log request: {error}"))?;
+    if payload.len() > 65_536 {
+        return Err("log request exceeds 64 KiB".into());
+    }
+    Ok((worktree, payload))
+}
+
 fn exact_flag(args: &[std::ffi::OsString], flag: &str) -> Result<PathBuf, String> {
     if args.len() != 2 || args[0] != flag {
         return Err(usage());
@@ -223,6 +298,8 @@ fn usage() -> String {
         "  devcoordinator2-executor source-digest --worktree PATH",
         "  devcoordinator2-executor receipts-match --worktree PATH --receipts FILE_OR_-",
         "  devcoordinator2-executor emit-event passed|failed|unsafe [REASON]",
+        "  devcoordinator2-executor log-query --worktree PATH --request -",
+        "  devcoordinator2-executor log-prune --worktree PATH --request -",
     ]
     .join("\n")
 }

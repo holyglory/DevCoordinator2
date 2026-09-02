@@ -7,6 +7,7 @@ mod capacity;
 pub mod diagnostics;
 mod error;
 mod evidence;
+pub mod log_query;
 mod log_store;
 mod process;
 mod retention;
