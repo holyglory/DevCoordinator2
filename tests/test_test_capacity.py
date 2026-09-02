@@ -114,6 +114,8 @@ def _write_plan(repository: Path, run_id: str, commands: list[list[str]],
                 source_digest: str) -> Path:
     current = repository / ".devcoordinator" / run_id
     current.mkdir(parents=True, exist_ok=True)
+    log_dir = repository / ".devcoordinator" / "test" / "logs" / "runs" / run_id
+    log_dir.mkdir(parents=True, mode=0o700, exist_ok=True)
     plan_path = repository / ".devcoordinator" / "plans" / f"{run_id}.json"
     plan_path.parent.mkdir(parents=True, exist_ok=True)
     checks = []
@@ -131,6 +133,7 @@ def _write_plan(repository: Path, run_id: str, commands: list[list[str]],
             "completion": "process",
             "on_failure": "continue",
             "produces": [],
+            "diagnostic_sources": [],
             "command": command,
             "discover": None,
             "case_command": None,
@@ -142,6 +145,7 @@ def _write_plan(repository: Path, run_id: str, commands: list[list[str]],
         "test": "capacity",
         "worktree_root": str(repository),
         "current_dir": str(current),
+        "log_dir": str(log_dir),
         "requested_tier": "development",
         "readiness_eligible": False,
         "proof": "complete",
