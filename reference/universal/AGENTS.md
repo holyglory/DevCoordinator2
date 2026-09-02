@@ -203,6 +203,19 @@
   technical detail. Do not make the user decode the table to understand where
   development is going.
 
+## Delegate only contract-ready work
+
+- Do not delegate implementation until shared schemas, directory layouts,
+  ownership boundaries, and one cross-component acceptance fixture are fixed.
+- Work is independently ready only when it has no unresolved shared-interface
+  decision and no overlapping mutable-file ownership.
+- For a tightly coupled subsystem, use at most two implementation agents plus
+  one integrator. This ownership bound does not cap genuinely independent work
+  or the host-wide execution scheduler.
+- Subagents must not spawn further implementation agents unless the parent
+  explicitly authorizes that specific independent branch.
+- The parent remains the sole integration owner.
+
 ## Parallelize independent work and first-failure fixing
 
 - Before substantive multi-step work, identify the dependencies and

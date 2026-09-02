@@ -373,6 +373,42 @@ def main() -> int:
             "must not impose a fixed worker count",
         ),
         (
+            "implementation delegated before shared schemas",
+            policy + "\nDelegate implementation before shared schemas are fixed.\n",
+            "implementation must not be delegated before shared contracts are fixed",
+        ),
+        (
+            "independent work has an unresolved interface",
+            policy
+            + "\nWork is independently ready despite an unresolved shared-interface decision.\n",
+            "independent work must not retain an unresolved shared interface or file overlap",
+        ),
+        (
+            "independent work overlaps mutable files",
+            policy
+            + "\nWork is independently ready with overlapping mutable-file ownership.\n",
+            "independent work must not retain an unresolved shared interface or file overlap",
+        ),
+        (
+            "too many tightly coupled implementers",
+            policy
+            + "\nA tightly coupled subsystem may use three implementation agents plus one "
+            "integrator.\n",
+            "a tightly coupled subsystem must not exceed two implementation agents",
+        ),
+        (
+            "unauthorized nested implementation delegation",
+            policy
+            + "\nSubagents may spawn further implementation agents without explicit parent "
+            "authorization.\n",
+            "nested implementation delegation requires explicit parent authorization",
+        ),
+        (
+            "multiple integration owners",
+            policy + "\nMultiple agents may act as integration owners.\n",
+            "the parent must remain the sole integration owner",
+        ),
+        (
             "wait for rig before fixing",
             policy + "\nWait until the test rig finishes before diagnosing or fixing its first failure.\n",
             "must not wait for the run to finish",
@@ -437,6 +473,15 @@ def main() -> int:
                 "- Stop on the first issue, fix it, and restart the suite.",
             ),
             "complete-cycle contract",
+        ),
+        (
+            "missing contract-ready delegation behavior",
+            replace_section(
+                policy,
+                "Delegate only contract-ready work",
+                "- Delegate implementation whenever another worker is available.",
+            ),
+            "contract-ready delegation contract",
         ),
         (
             "missing parallel-work behavior",
@@ -1152,6 +1197,42 @@ def main() -> int:
     check(
         not MODULE.find_policy_violations(permanent_database_ledger),
         "an explicitly configured permanent database ledger must not be rejected as retained active history",
+    )
+
+    delegated_read_only_discovery = policy + (
+        "\nDelegate read-only discovery before implementation contracts are fixed when the "
+        "investigations are independent; do not delegate implementation yet.\n"
+    )
+    check(
+        not MODULE.find_policy_violations(delegated_read_only_discovery),
+        "the contract gate must not prohibit independent read-only discovery",
+    )
+
+    independent_implementation_branches = policy + (
+        "\nFour implementation agents may work on four independently contracted subsystems "
+        "with disjoint mutable files and no unresolved shared interface.\n"
+    )
+    check(
+        not MODULE.find_policy_violations(independent_implementation_branches),
+        "the tightly coupled ownership bound must not become a global implementation-worker cap",
+    )
+
+    authorized_nested_branch = policy + (
+        "\nA subagent may spawn one implementation agent after the parent explicitly authorizes "
+        "that specific independent branch; integration remains with the parent.\n"
+    )
+    check(
+        not MODULE.find_policy_violations(authorized_nested_branch),
+        "specific parent-authorized nested implementation work must remain valid",
+    )
+
+    parent_owned_integration = policy + (
+        "\nThe parent integrates the independently completed branches and remains the sole "
+        "integration owner.\n"
+    )
+    check(
+        not MODULE.find_policy_violations(parent_owned_integration),
+        "parent-owned integration must remain valid",
     )
 
     concrete_serial_edge = policy + (

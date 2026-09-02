@@ -17,6 +17,7 @@ REQUIRED_SECTIONS = (
     "Ground security-posture decisions in confirmed assumptions",
     "Keep decisions compact and usable",
     "Implement the exact scope",
+    "Delegate only contract-ready work",
     "Parallelize independent work and first-failure fixing",
     "Finish diagnostic cycles before batch fixing",
     "Keep behavior truthful",
@@ -673,6 +674,69 @@ def find_policy_violations(text: str) -> list[str]:
             r"\s+supported\s+formats\s+with\s+a\s+more\s+complete\s+implementation",
         )
 
+    delegation = bodies["Delegate only contract-ready work"]
+    if delegation:
+        _require_terms(
+            violations,
+            delegation,
+            "contract-ready delegation contract",
+            (
+                "do not delegate implementation until",
+                "shared schemas",
+                "directory layouts",
+                "ownership boundaries",
+                "one cross-component acceptance fixture",
+                "are fixed",
+                "work is independently ready only when",
+                "no unresolved shared-interface decision",
+                "no overlapping mutable-file ownership",
+                "tightly coupled subsystem",
+                "at most two implementation agents plus one integrator",
+                "ownership bound does not cap genuinely independent work",
+                "host-wide execution scheduler",
+                "subagents must not spawn further implementation agents",
+                "parent explicitly authorizes that specific independent branch",
+                "parent remains the sole integration owner",
+            ),
+        )
+        _require_pattern(
+            violations,
+            delegation,
+            "implementation delegation must wait for fixed shared contracts and an acceptance fixture",
+            r"do\s+not\s+delegate\s+implementation\s+until.{0,120}shared\s+schemas"
+            r".{0,120}directory\s+layouts.{0,120}ownership\s+boundaries.{0,160}"
+            r"one\s+cross-component\s+acceptance\s+fixture\s+are\s+fixed",
+        )
+        _require_pattern(
+            violations,
+            delegation,
+            "independent readiness must exclude unresolved interfaces and overlapping files",
+            r"independently\s+ready\s+only\s+when.{0,160}no\s+unresolved"
+            r"\s+shared-interface\s+decision.{0,160}no\s+overlapping"
+            r"\s+mutable-file\s+ownership",
+        )
+        _require_pattern(
+            violations,
+            delegation,
+            "tightly coupled implementation must have at most two implementers and one integrator",
+            r"tightly\s+coupled\s+subsystem.{0,120}at\s+most\s+two"
+            r"\s+implementation\s+agents\s+plus\s+one\s+integrator",
+        )
+        _require_pattern(
+            violations,
+            delegation,
+            "nested implementation delegation requires specific parent authorization",
+            r"subagents\s+must\s+not\s+spawn\s+further\s+implementation\s+agents"
+            r".{0,180}parent\s+explicitly\s+authorizes\s+that\s+specific"
+            r"\s+independent\s+branch",
+        )
+        _require_pattern(
+            violations,
+            delegation,
+            "the parent must remain the sole integration owner",
+            r"parent\s+remains\s+the\s+sole\s+integration\s+owner",
+        )
+
     parallel = bodies["Parallelize independent work and first-failure fixing"]
     if parallel:
         _require_terms(
@@ -1103,6 +1167,11 @@ def find_policy_violations(text: str) -> list[str]:
         (r"(?i)(?<!never )(?<!do not )(?<!must not )\bfix\s+each\s+(?:error|failure|gap).{0,100}\brestart\b", "diagnostic findings must be batch-fixed after the evidence pass"),
         (r"(?i)(?<!do not )(?<!never )\b(?:set|define|require|allocate)\b.{0,100}\b(?:cpu|memory|api|cost)\s+(?:limit|budget)s?\b", "parallel scheduling must not invent resource or API budgets"),
         (r"(?i)\b(?:always\s+use|use\s+exactly|require\s+exactly|limit\s+(?:the\s+)?(?:pool|run)\s+to)\s+\d+\s+(?:workers|agents)\b", "parallel scheduling must not impose a fixed worker count"),
+        (r"(?i)(?<!do not )\bdelegate\s+implementation\b.{0,120}\bbefore\b.{0,120}\b(?:shared\s+schemas?|directory\s+layouts?|ownership\s+boundaries|cross-component\s+acceptance\s+fixtures?)\b.{0,80}\b(?:is|are)\s+fixed\b", "implementation must not be delegated before shared contracts are fixed"),
+        (r"(?i)\bwork\s+is\s+independently\s+ready\b.{0,120}\b(?:despite|with)\b.{0,120}\b(?:an?\s+)?(?:unresolved\s+shared-interface\s+decision|overlapping\s+mutable-file\s+ownership)\b", "independent work must not retain an unresolved shared interface or file overlap"),
+        (r"(?i)\btightly\s+coupled\s+subsystem\b.{0,140}\b(?:use|uses|assign|assigns|spawn|spawns|delegate\s+to|delegates\s+to)\b.{0,40}\b(?:three|four|five|six|seven|eight|nine|[3-9]|\d{2,})\s+implementation\s+agents\b", "a tightly coupled subsystem must not exceed two implementation agents"),
+        (r"(?i)\bsubagents?\s+(?:may|can|should|must)\s+spawn\b.{0,80}\b(?:further\s+|additional\s+|more\s+)?implementation\s+agents\b.{0,140}\bwithout\b.{0,60}\bparent\b.{0,60}\b(?:explicit\s+)?authoriz", "nested implementation delegation requires explicit parent authorization"),
+        (r"(?i)(?:\bparent\s+(?:may|can|should)\s+(?:share|delegate|transfer)\b.{0,80}\bintegration\s+ownership\b|\bmultiple\s+(?:agents|subagents|workers)\s+(?:may|can|should)\s+(?:act|serve|work)\s+as\b.{0,40}\bintegration\s+owners?\b)", "the parent must remain the sole integration owner"),
         (r"(?i)\bwait\s+until\b.{0,120}\b(?:test|suite|rig|run|audit)\b.{0,80}\b(?:finishes|completes|ends)\b.{0,120}\bbefore\b.{0,80}\b(?:diagnos|fix|repair)", "first-failure diagnosis and fixing must not wait for the run to finish"),
         (r"(?i)\b(?:cancel|stop|abort)\b.{0,100}\b(?:siblings?|other\s+(?:safe|independent)\s+work)\b.{0,80}\b(?:after|when|on)\b.{0,60}\bfailure\b", "an ordinary failure must not cancel safe sibling work"),
         (r"(?i)(?<!do not )(?<!never )\b(?:apply|inject|merge)\b.{0,80}\bfix(?:es)?\b.{0,100}\b(?:original|sealed|running)\b.{0,80}\b(?:test|suite|rig|run|surface)\b", "concurrent fixes must not alter the sealed running evidence surface"),
