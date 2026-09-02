@@ -28,6 +28,10 @@ _FIELDS = (
     "proof", "selection", "origin_run_id", "requested_tier", "readiness_eligible",
     "check_report_ref", "log_catalog_ref",
 )
+_REMOVED_LOG_FIELDS = frozenset({
+    "stdout_bytes_retained", "stderr_bytes_retained",
+    "stdout_truncated", "stderr_truncated",
+})
 
 
 def build(run_id: str, test: str, status: str, started_at: str,
@@ -118,6 +122,8 @@ def read(path: Path) -> dict[str, Any] | None:
     except (OSError, json.JSONDecodeError, UnicodeDecodeError):
         return None
     if not isinstance(data, dict):
+        return None
+    if _REMOVED_LOG_FIELDS.intersection(data):
         return None
     if data.get("schema_version") != RESULT_SCHEMA_VERSION:
         return None
