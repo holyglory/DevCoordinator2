@@ -9,8 +9,7 @@ import math
 import os
 import re
 import stat
-from pathlib import Path
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 
 from devcoordinator2.daemon import docker_cli, securefs, summary
 from devcoordinator2.daemon.db import Database

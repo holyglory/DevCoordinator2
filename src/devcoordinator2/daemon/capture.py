@@ -10,9 +10,9 @@ from __future__ import annotations
 
 import os
 import threading
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from collections.abc import Callable
 from typing import BinaryIO
 
 _CHUNK = 65536

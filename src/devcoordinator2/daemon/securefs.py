@@ -12,8 +12,8 @@ import re
 import stat
 import threading
 import time
-from typing import BinaryIO
 from pathlib import Path
+from typing import BinaryIO
 
 
 class SecureFsError(Exception):
