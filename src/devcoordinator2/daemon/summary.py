@@ -26,6 +26,7 @@ _FIELDS = (
     "duration_seconds", "exit_code", "stdout_bytes_observed",
     "stderr_bytes_observed", "caller_uid", "client",
     "proof", "selection", "origin_run_id", "requested_tier", "readiness_eligible",
+    "check_report_ref", "log_catalog_ref",
 )
 
 
@@ -57,6 +58,8 @@ def build(run_id: str, test: str, status: str, started_at: str,
         "origin_run_id": origin_run_id,
         "requested_tier": requested_tier,
         "readiness_eligible": proof == "complete" and requested_tier == "release",
+        "check_report_ref": "check-report.json",
+        "log_catalog_ref": {"run_id": run_id},
     }
 
 
@@ -121,6 +124,9 @@ def read(path: Path) -> dict[str, Any] | None:
     if any(f not in data for f in _FIELDS):
         return None
     if data.get("status") not in STATUSES:
+        return None
+    if data.get("check_report_ref") != "check-report.json" \
+            or data.get("log_catalog_ref") != {"run_id": data.get("run_id")}:
         return None
     if data.get("proof") not in ("complete", "selected", "retry") \
             or data.get("requested_tier") not in (

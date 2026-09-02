@@ -106,9 +106,11 @@ a native select.
    history.
 5. **Tests** — the current/most-recent run collection remains first: result,
    requested development/pre-merge/release tier, readiness eligibility, and
-   duration; stdout/stderr tails load only on demand (bounded). Administrators
-   stop a running test or start a prior worktree at a selected tier, with
-   release selected by default. The adjacent **Capacity** action opens a
+   duration. **Logs** opens a focused catalogue-first dialog; raw content loads
+   only after an explicit bounded case/stream action and is labelled untrusted.
+   **Log retention** edits the host age/depth boundaries and re-reads the stored
+   state. Administrators stop a running test or start a prior worktree at a
+   selected tier, with release selected by default. The adjacent **Capacity** action opens a
    focused dialog showing learned/effective capacity, the optional maximum,
    active/waiting leaves, admission pause state, and the last adjustment's
    measured evidence. Saving or clearing the host-wide maximum acts directly.
@@ -185,9 +187,10 @@ explicit permission-denied notice instead of partial data.
 | Apply / rollback | `deployment.apply` / `deployment.rollback` | status re-read |
 | Remove deployment — keep data / Remove deployment and delete data | `deployment.remove {delete_data: false|true}` | list re-read |
 | Component logs | `deployment.logs` | tail rendered on demand |
-| Test stdout/stderr | `test.output {tail_bytes: 16384}` | bounded tail rendered |
+| Test logs | `test.log.catalog` followed only by an explicit bounded `tail`, `search`, `range`, or `failure_context` | metadata loads first; selected case/stream content renders with stable line and byte coordinates |
 | Test start/stop | `test.start {tier}` / `test.stop` | list re-read; the selected tier is recorded |
 | Test capacity | `test.capacity.get` / `test.capacity.set {cap: integer|null}` | dialog and Tests action re-read learned/effective capacity and the administrator maximum |
+| Test log retention | `test.log.retention.get` / `test.log.retention.set {max_age_seconds, case_depth}` | focused dialog re-reads the stored age/depth boundaries; active logs remain protected |
 | Container remove (orphaned/test only) | `health.container_remove {container_id}` | inventory re-read |
 | Bug report / close | `bug.report` / `bug.close` | list re-read |
 | Invite, remove user, set/remove grant | `user.invite`, `user.remove`, `grant.set`, `grant.remove` | administration re-read |
@@ -217,7 +220,7 @@ alerts), empty, partial analytics, error, loading, permission-denied — at 1280
 390×844 for every destination, checking: no horizontal document overflow,
 no clipped headline text, no off-canvas controls outside scroll containers,
 explicit empty/error/loading/denied states, humanized large numbers; and
-clicks through stop/start/logs/remove/test output/bug report/invite/
+clicks through stop/start/logs/remove/test catalogue and bounded retrieval/bug report/invite/
 container removal proving each calls the API with the expected arguments
 and re-renders — including Progress period/release-work/exact-value/Plan
 continuation, the Plan drag-and-drop (reorder and cross-release),

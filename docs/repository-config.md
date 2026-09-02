@@ -77,7 +77,9 @@ worker-budget, resource-lock, CPU, memory, or client-override field. If two
 checks cannot safely overlap for correctness, declare their real completion or
 success dependency. Every leaf receives an isolated
 `DEVCOORDINATOR_CHECK_SCRATCH`, the shared
-`DEVCOORDINATOR_SHARED_ARTIFACTS`, and its exact run/check identity.
+`DEVCOORDINATOR_SHARED_ARTIFACTS`, a private
+`DEVCOORDINATOR_DIAGNOSTICS_DIR`, a dedicated inherited structured-diagnostic
+descriptor, and its exact run/check/case identity.
 
 `diagnostic_sources` optionally declares structured reports written below the
 leaf-specific `DEVCOORDINATOR_DIAGNOSTICS_DIR`. A declaration contains exactly
@@ -109,6 +111,12 @@ bounded case IDs). Each case contributes only an argument array appended to the
 reviewed `case_command`; it cannot replace the command, cwd, environment, or
 expand recursively.
 
+Each direct check, discovery step, and expanded case writes byte-complete
+stdout and stderr directly to its own stable run folder. There is no stream
+size cap and no interleaved aggregate copy. Repository configuration does not
+control retention: administrators own the host-wide age and history-depth
+boundaries, which default to 24 hours and three runs for each logical case.
+
 An ephemeral PostgreSQL is one throwaway instance per run: a Docker
 container carrying the exact run identity in daemon-owned labels, data on
 tmpfs, published on loopback only, credentials generated per run. The test
@@ -116,8 +124,10 @@ process receives `PGHOST`, `PGPORT`, `PGUSER`, `PGPASSWORD`, `PGDATABASE`,
 and `DATABASE_URL` through a caller-owned 0600 environment file (never via
 argv or the unit's public environment). The container is removed on
 completion, timeout, cancellation, supersession, daemon recovery, or the
-next start. Declared and injected environment values never appear in
-summaries, logs, metrics, or agent results.
+next start. The Coordinator never copies declared or injected environment
+values into summaries, metadata, metrics, or agent results. Commands must not
+print those values because their stdout and stderr are retained byte-completely
+as private cold evidence.
 
 Official PostgreSQL tags use the established preloaded-image path. A compatible
 image outside that namespace must be immutable: the daemon pulls the exact
@@ -158,7 +168,7 @@ Validation rules:
   diagnostics-relative path; absolute paths, traversal, and backslashes are
   rejected.
 - `DEVCOORDINATOR_*` environment names are reserved for exact runner identity,
-  scratch, artifact, and event delivery.
+  scratch, artifact, diagnostic, log, manifest, and event delivery.
 - Unknown keys anywhere are rejected (`repository_config_invalid`), so
   typos never silently change meaning.
 

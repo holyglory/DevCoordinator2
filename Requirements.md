@@ -417,8 +417,10 @@ not contradict them.
 3. Child process runs with all four UIDs of the caller (REQ-TEST-03).
 4. A sleeping test with a short timeout ends `timed-out` with an empty
    cgroup; `test stop` ends `cancelled` with an empty cgroup (REQ-TEST-04).
-5. `test status` after success carries no log text; `test output` returns a
-   bounded tail with truncation flags (REQ-TEST-05, REQ-TEST-07).
+5. `test status` carries only structured diagnostics and logical log
+   references; catalogue-first tail/search/range/failure-context requests are
+   bounded while their stored per-case streams remain complete
+   (REQ-TEST-05, REQ-TEST-19 through REQ-TEST-22).
 6. `summary.json` matches the schema and is replaced atomically under crash
    injection (REQ-TEST-06, REQ-REL-04).
 7. Daemon killed mid-test and restarted: run is `interrupted`, unit

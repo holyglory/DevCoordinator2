@@ -221,10 +221,6 @@ class TestLifecycle:
                     run, spec.name, "running", started_at, caller.uid, client,
                     proof=proof, selection=requested,
                     origin_run_id=retry_run_id, requested_tier=tier)
-                initial.update(
-                    check_report_ref=tests_support.REPORT_FILE,
-                    log_catalog_ref={"run_id": run},
-                )
                 summary.write_atomic_at(dir_fd, initial,
                                         owner=(caller.uid, caller.gid))
                 admission.started(run, unit)

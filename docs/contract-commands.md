@@ -8,8 +8,10 @@ behavior exists.
 
 The CLI maps `devcoordinator2 test start …` to command `test.start`; the MCP
 server exposes the same commands as tools `test_start`, `test_retry`,
-`test_status`, `test_output`, `test_stop`, `test_capacity_get`,
-`test_capacity_set`, `repository_list`. All three
+`test_status`, `test_log_catalog`, `test_log_tail`, `test_log_search`,
+`test_log_range`, `test_log_failure_context`, `test_log_retention_get`,
+`test_log_retention_set`, `test_stop`, `test_capacity_get`,
+`test_capacity_set`, and `repository_list`. All three
 surfaces return the identical result JSON.
 
 ## ping
@@ -80,9 +82,13 @@ Successful runs carry **no log text**. Error: `test_not_found`.
 Graph status additionally carries `requested_tier`, `readiness_eligible`, `proof`
 (`complete|selected|retry`), `selection`,
 `origin_run_id`, `check_summary`, ordered `checks` (state, monotonic duration,
-exit code, bounded reason, declared artifact receipts, output reference), a
-bounded `failure_index`, `source_changed`, `unsafe_reason`, and
-`check_report_path`. The referenced Rust check report is schema 2 only; schema
+exit status, declared artifact receipts, and logical log references), a
+bounded structured `failure_index`, and `source_changed`. Each failure entry
+contains check/case, exit code or signal, typed termination reason, normalized
+source location when supplied, error category, bounded expected/actual values,
+duplicate fingerprint/count, origin, and supporting logical log references.
+It contains no raw output, stack, absolute path, or arbitrary reason prose. The
+referenced Rust check report is schema 2 only; schema
 1/Python reports are rejected rather than translated. It includes
 `capacity {learned_capacity, effective_capacity, capacity_wait_count}` plus
 bounded preflight/check/case counts. States are `pending|running|passed|failed|reused|`
@@ -96,8 +102,9 @@ summary.json fields (result schema 2; schema 1 is not read or translated):
 `status` (`running|passed|failed|timed-out|cancelled|interrupted|superseded`),
 `started_at`, `finished_at` (null while running), `duration_seconds`,
 `exit_code` (null unless exited), `stdout_bytes_observed`,
-`stdout_bytes_retained`, `stderr_bytes_observed`, `stderr_bytes_retained`,
-`stdout_truncated`, `stderr_truncated`, `caller_uid`, `client`.
+`stderr_bytes_observed`, `caller_uid`, `client`, `check_report_ref`, and
+`log_catalog_ref`. Retained-byte and truncation compatibility fields are not
+accepted; complete per-leaf metadata lives in the log catalogue.
 
 ## test.capacity.get | test.capacity.set
 
@@ -112,16 +119,44 @@ reason, previous_capacity, new_capacity, cap, p95_cpu_percent,
 p95_memory_percent, saturation_fraction, epoch_seconds}`. Evidence values may
 be null when unavailable. CLI equivalents are `test capacity show|set|clear`.
 
-## test.output
+## test.log.catalog
 
-Args:
-- `path` (required)
-- `stream` — `"stdout"` or `"stderr"` (required)
-- `tail_bytes` — 1..65536, default 16384
-- `check` — optional governed check name; omitted returns the aggregate stream
+Args: `path` plus optional `run_id` (current by default), `check`,
+`phase` (`executor|check|discovery|case`), `case`, `stream`, opaque `cursor`,
+and `limit` (1..100). The result is a stable page of content-free entries:
+logical `log_ref`, bytes, lines, first/last byte times, complete/truncated
+state, SHA-256, age expiry, depth rank/limit, and structured-evidence
+availability, plus `next_cursor`. It never returns log text or an absolute
+path.
 
-Result: `{"run_id", "stream", "check", "tail": "<utf-8, lossy-decoded>",
-"tail_bytes": n, "truncated_before_tail": bool, "log_path": "…"}`
+## test.log.tail | search | range | failure_context
+
+All retrieval is bound to one authorized logical reference and one immutable
+snapshot, with a complete encoded response below 64 KiB:
+
+- `tail` requires `phase` and `stream`, defaults to 50 lines, and accepts
+  `max_bytes` up to 48 KiB.
+- `search` additionally requires literal `text`; it accepts bounded match and
+  surrounding-line counts. Metacharacters are ordinary bytes, not a regular
+  expression.
+- `range` accepts exactly one inclusive line interval or zero-based half-open
+  byte interval. Binary byte results use base64.
+- `failure_context` selects deterministic recognized failure references and
+  returns bounded line-addressed excerpts; it never invokes a language model.
+
+Every content row carries one-based line numbers and zero-based byte offsets.
+`next_cursor` continues without rereading; a changed or expired target returns
+`cursor_stale` or `log_expired`. Returned text is explicitly untrusted test
+output.
+
+## test.log.retention.get | test.log.retention.set
+
+`get` takes no arguments. `set` requires positive `max_age_seconds` and
+`case_depth`; defaults are 86,400 seconds and three histories per logical case.
+A completed leaf is removed when it exceeds either boundary. Changing the
+setting wakes cleanup immediately; active runs are never removed. Both return
+the stored settings and last bounded cleanup state. This requested
+administrator action is immediate and has no second confirmation dialog.
 
 ## test.stop
 
