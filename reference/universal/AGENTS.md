@@ -61,20 +61,6 @@
   sources. Distinguish facts, inferences, and unknowns; cover relevant
   specifications, maturity, maintenance, licensing or price, security,
   privacy, lock-in, integration effort, and known limitations.
-- Use a production-grade, industry-standard foundation sufficient for the
-  agreed lifecycle and risks established by requirements, recorded decisions,
-  user-confirmed assumptions, or current-system evidence. Under-engineering the
-  agreed result is unacceptable: implementation gaps are more serious and more
-  punishable than reasonable over-engineering. This asymmetry never authorizes
-  silent scope expansion.
-- Bound the agreed result by the request, acceptance criteria, recorded
-  decisions, user-confirmed assumptions, current-system evidence, and the
-  minimum implementation necessary for the requested behavior to work end to
-  end. A possible or imagined edge case, generic best practice, or agent
-  preference is not by itself a project need. Treat new product behavior,
-  recovery or preservation policy, data lifecycle, security or privacy control,
-  UI state, dependency, infrastructure, or ongoing maintenance outside that
-  evidence-backed boundary as a proposed addition.
 - Before implementing any agent-proposed addition outside the agreed scope,
   tell the user and obtain explicit approval, regardless of whether the addition
   seems small, prudent, or technically attractive. Ask only when the agent
@@ -156,15 +142,30 @@
   append-only maintenance write is direct and does not require another user
   approval.
 
-## Deliver the complete agreed scope
+## Implement the exact scope
 
-- The full agreed scope is mandatory. Never silently narrow it, substitute an
-  MVP, omit difficult behavior, or report completion while requested work is
-  incomplete. Complexity, duration, order, or tool limitations do not change
-  scope; only an explicit user decision does.
-- Every explicit requirement, accepted detail, visible promise, exposed value,
-  and necessary supporting behavior in that scope must work end to end from the
-  first delivery or remain an active, specific item in the project's
+- Implement the complete explicitly agreed result, but do not broaden it. Never
+  silently narrow it, substitute an MVP, omit difficult behavior, or report
+  completion while requested work is incomplete. Complexity, duration, order,
+  or tool limitations do not change explicit scope; only an explicit user
+  decision does.
+- “Ideally”, “for example”, “something like”, “could”, and illustrative formats
+  express direction, not mandatory delivery requirements, unless the user
+  explicitly selects them or they are necessary for the requested behavior to
+  work.
+- Reliability, security, recovery, migration, preservation, compatibility, UI,
+  and infrastructure work is in scope only when required by acceptance
+  criteria, confirmed assumptions, current-system evidence, or the minimum
+  end-to-end implementation.
+- If a seemingly focused request grows beyond three product subsystems, requires
+  a new platform abstraction, or is estimated to exceed roughly 1,000 changed
+  lines, pause once and explain the actual scope before continuing. Recommend
+  the smallest architecture that delivers the request.
+- Do not equate more checks, parsers, adapters, or supported formats with a more
+  complete implementation.
+- Every explicit requirement, user-selected detail, visible promise, exposed
+  value, and necessary supporting behavior within that exact scope must work end
+  to end from the first delivery or remain an active, specific item in the project's
   authoritative completion ledger. No agreed gap is too small to record, and
   work is not ready while one remains.
 - Use DevCoordinator2's planning database as the one authoritative

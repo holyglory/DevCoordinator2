@@ -225,19 +225,60 @@ def main() -> int:
             "hypothetical engineering must not expand scope automatically",
         ),
         (
-            "softened under-engineering rule",
-            policy.replace(
-                "Under-engineering the\n  agreed result is unacceptable",
-                "Under-engineering the\n  agreed result is merely unfortunate",
-                1,
-            ),
-            "under-engineering must be unacceptable",
+            "explicit work made optional",
+            policy + "\nUnder-engineering is acceptable for explicitly agreed work.\n",
+            "explicitly agreed work must remain mandatory",
         ),
         (
-            "inverted under-engineering asymmetry",
+            "old under-engineering asymmetry restored",
             policy
-            + "\nImplementation gaps are less serious and less punishable than extra work.\n",
-            "implementation gaps must remain the more serious failure",
+            + "\nImplementation gaps are more punishable than reasonable "
+            "over-engineering.\n",
+            "scope policy must not rank under-engineering against over-engineering",
+        ),
+        (
+            "reverse engineering asymmetry introduced",
+            policy
+            + "\nReasonable over-engineering is more serious than under-engineering.\n",
+            "scope policy must not rank under-engineering against over-engineering",
+        ),
+        (
+            "illustrative direction made mandatory",
+            policy.replace(
+                "express direction, not mandatory delivery requirements",
+                "are mandatory delivery requirements",
+                1,
+            ),
+            "tentative or illustrative language must not become mandatory by default",
+        ),
+        (
+            "supporting work made automatically in scope",
+            policy.replace(
+                "work is in scope only when required by acceptance",
+                "work is always in scope regardless of acceptance",
+                1,
+            ),
+            "supporting engineering must not enter scope without a confirmed requirement or necessity",
+        ),
+        (
+            "hidden large scope continues without explanation",
+            policy.replace(
+                "pause once and explain the actual scope before continuing",
+                "continue without a pause or scope explanation",
+                1,
+            ),
+            "hidden large scope must not continue without one scope explanation",
+        ),
+        (
+            "extra machinery treated as completeness",
+            policy.replace(
+                "Do not equate more checks, parsers, adapters, or supported formats with a more\n"
+                "  complete implementation.",
+                "More checks, parsers, adapters, and supported formats always make an\n"
+                "  implementation more complete.",
+                1,
+            ),
+            "extra machinery must not be treated as proof of completeness",
         ),
         (
             "silent expansion allowed",
@@ -428,10 +469,10 @@ def main() -> int:
             "missing database-only completion ledger",
             replace_section(
                 policy,
-                "Deliver the complete agreed scope",
+                "Implement the exact scope",
                 "- Keep a historical list of completed work and call partial work done.",
             ),
-            "complete-delivery contract",
+            "exact-scope contract",
         ),
         (
             "missing permanent database-ledger history",
@@ -440,7 +481,7 @@ def main() -> int:
                 "Delete issues and prior events after release",
                 1,
             ),
-            "complete-delivery contract",
+            "exact-scope contract",
         ),
         (
             "missing scoped issue-ledger schema",
@@ -1057,6 +1098,33 @@ def main() -> int:
     check(
         not MODULE.find_policy_violations(necessary_in_scope_detail),
         "a necessary in-scope implementation detail must not trigger expansion approval",
+    )
+
+    selected_illustrative_format = policy + (
+        "\nThe user explicitly selected the illustrated CSV format, so that format is now "
+        "an agreed delivery requirement.\n"
+    )
+    check(
+        not MODULE.find_policy_violations(selected_illustrative_format),
+        "a user-selected illustrative detail must be allowed to become explicit scope",
+    )
+
+    modest_focused_request = policy + (
+        "\nA focused request contained within two product subsystems may proceed without the "
+        "large-scope pause when no other material scope question remains.\n"
+    )
+    check(
+        not MODULE.find_policy_violations(modest_focused_request),
+        "a focused request below every scope-pause signal must remain valid",
+    )
+
+    explicitly_required_checks = policy + (
+        "\nAcceptance criteria may explicitly require several checks. Those checks remain in "
+        "scope, but their count alone is not proof that the implementation is complete.\n"
+    )
+    check(
+        not MODULE.find_policy_violations(explicitly_required_checks),
+        "explicitly required checks must remain valid without becoming a completeness proxy",
     )
 
     declined_optional_idea = policy + (
