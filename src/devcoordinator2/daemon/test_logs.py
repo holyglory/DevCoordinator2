@@ -12,6 +12,7 @@ import json
 import os
 import re
 import signal
+import stat
 import subprocess
 import threading
 from dataclasses import dataclass
@@ -378,9 +379,26 @@ class TestLogService:
         next_expiry_at: str | None = None
         errors: list[dict[str, str]] = []
         error_count = 0
+        skipped_missing_worktrees = 0
         for row in self._db.query(
                 "SELECT worktree_path,repository_id FROM worktrees ORDER BY worktree_id"):
             worktree = Path(row["worktree_path"])
+            try:
+                details = worktree.lstat()
+            except FileNotFoundError:
+                skipped_missing_worktrees += 1
+                continue
+            except OSError:
+                details = None
+            if details is None or stat.S_ISLNK(details.st_mode) \
+                    or not stat.S_ISDIR(details.st_mode):
+                error_count += 1
+                if len(errors) < 64:
+                    errors.append({
+                        "repository_id": row["repository_id"],
+                        "code": "test_log_unavailable",
+                    })
+                continue
             active_run_id = None
             current = read_summary(test_dir(worktree) / "summary.json")
             if current is not None and current.get("status") == "running":
@@ -416,6 +434,7 @@ class TestLogService:
             "removed_leaf_folders": removed,
             "retained_active": retained_active,
             "next_expiry_at": next_expiry_at,
+            "skipped_missing_worktrees": skipped_missing_worktrees,
             "errors": errors,
             "errors_truncated": error_count > len(errors),
         }

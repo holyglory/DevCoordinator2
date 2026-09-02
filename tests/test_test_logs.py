@@ -200,6 +200,21 @@ def test_maintenance_includes_archived_registered_worktrees(world):
     assert calls[0][1]["repository_id"] == world.registration.repository_id
 
 
+def test_maintenance_skips_a_registered_worktree_that_no_longer_exists(world):
+    missing = world.repo.parent / "removed-worktree"
+    with world.db.transaction() as connection:
+        connection.execute(
+            "UPDATE worktrees SET worktree_path=? WHERE worktree_id=?",
+            (str(missing), world.registration.worktree_id),
+        )
+    world.service._bridge_runner = lambda *_args: (_ for _ in ()).throw(
+        AssertionError("missing worktree must not invoke the cleanup bridge"))
+    result = world.service.run_maintenance_once()
+    assert result["errors"] == []
+    assert result["skipped_missing_worktrees"] == 1
+    assert world.service.retention()["last_cleanup_error_code"] is None
+
+
 def test_bridge_drains_oversized_streams_without_buffering_them_all(tmp_path):
     program = tmp_path / "noisy_bridge.py"
     program.write_text(
