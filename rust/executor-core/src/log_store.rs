@@ -17,7 +17,10 @@ use rustix::fs::{self as unix_fs, AtFlags, FlockOperation, Mode, OFlags};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use devcoordinator2_executor_protocol::{LogPhase, LogStream};
+use devcoordinator2_executor_protocol::{
+    DiagnosticExit, DiagnosticReportFormat, LeafStatus, LogPhase, LogStream, MAX_DIAGNOSTIC_EVENTS,
+    MAX_DIAGNOSTIC_SOURCES, RunStatus,
+};
 
 /// One sparse index entry is retained for every 256th logical line.
 pub const LINE_INDEX_STRIDE: u64 = 256;
@@ -27,6 +30,7 @@ static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 /// A validated selector for exactly one executor, check, discovery, or case
 /// folder. Callers cannot construct path components through this type.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct LeafSelector {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub check: Option<String>,
@@ -92,6 +96,7 @@ impl LeafSelector {
 /// incomplete. It deliberately contains neither stream bytes nor command,
 /// environment, caller, or arbitrary error text.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct StreamMetadata {
     pub schema: u8,
     pub selector: LeafSelector,
@@ -105,6 +110,98 @@ pub struct StreamMetadata {
     pub sha256: String,
     pub line_index_stride: u64,
     pub line_index_format: String,
+}
+
+/// Content-free lifecycle metadata for one governed run.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RunLogMetadata {
+    pub schema: u8,
+    pub run_id: String,
+    pub test: String,
+    pub started_at_epoch_ms: u64,
+    pub finished_at_epoch_ms: Option<u64>,
+    pub status: RunStatus,
+    pub complete: bool,
+}
+
+impl RunLogMetadata {
+    pub fn validate(&self) -> Result<(), LogStoreError> {
+        if self.schema != 2 {
+            return Err(LogStoreError::InvalidMetadata("schema must be 2"));
+        }
+        validate_run_id(&self.run_id)?;
+        validate_test(&self.test)?;
+        validate_lifecycle(
+            self.started_at_epoch_ms,
+            self.finished_at_epoch_ms,
+            self.complete,
+        )?;
+        if self.complete == matches!(self.status, RunStatus::Running) {
+            return Err(LogStoreError::InvalidMetadata(
+                "run status and completion state disagree",
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// Content-free lifecycle and structured-evidence metadata for one leaf.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct LeafLogMetadata {
+    pub schema: u8,
+    pub selector: LeafSelector,
+    pub status: LeafStatus,
+    pub exit: DiagnosticExit,
+    pub started_at_epoch_ms: u64,
+    pub finished_at_epoch_ms: Option<u64>,
+    pub complete: bool,
+    pub structured_evidence_formats: Vec<DiagnosticReportFormat>,
+    pub structured_evidence_count: u64,
+}
+
+impl LeafLogMetadata {
+    pub fn validate(&self) -> Result<(), LogStoreError> {
+        if self.schema != 2 {
+            return Err(LogStoreError::InvalidMetadata("schema must be 2"));
+        }
+        LeafSelector::new(
+            self.selector.check.clone(),
+            self.selector.phase,
+            self.selector.case_id.clone(),
+        )?;
+        self.exit
+            .validate()
+            .map_err(|_| LogStoreError::InvalidMetadata("diagnostic exit is invalid"))?;
+        validate_lifecycle(
+            self.started_at_epoch_ms,
+            self.finished_at_epoch_ms,
+            self.complete,
+        )?;
+        if self.complete != self.status.is_terminal() {
+            return Err(LogStoreError::InvalidMetadata(
+                "leaf status and completion state disagree",
+            ));
+        }
+        if self.structured_evidence_formats.len() > MAX_DIAGNOSTIC_SOURCES
+            || self.structured_evidence_count > MAX_DIAGNOSTIC_EVENTS as u64
+        {
+            return Err(LogStoreError::InvalidMetadata(
+                "structured evidence metadata exceeds its bound",
+            ));
+        }
+        if self
+            .structured_evidence_formats
+            .windows(2)
+            .any(|pair| pair[0] >= pair[1])
+        {
+            return Err(LogStoreError::InvalidMetadata(
+                "structured evidence formats must be sorted and unique",
+            ));
+        }
+        Ok(())
+    }
 }
 
 /// The exact storage operation whose failure invalidated a stream.
@@ -136,6 +233,7 @@ pub enum LogStoreError {
     InvalidRunId,
     InvalidComponent(&'static str),
     InvalidSelector(&'static str),
+    InvalidMetadata(&'static str),
     LeaseContended,
     Io {
         operation: &'static str,
@@ -150,9 +248,10 @@ pub enum LogStoreError {
 impl LogStoreError {
     pub const fn code(&self) -> &'static str {
         match self {
-            Self::InvalidRunId | Self::InvalidComponent(_) | Self::InvalidSelector(_) => {
-                "args_invalid"
-            }
+            Self::InvalidRunId
+            | Self::InvalidComponent(_)
+            | Self::InvalidSelector(_)
+            | Self::InvalidMetadata(_) => "args_invalid",
             Self::LeaseContended => "test_log_run_active",
             Self::Io { .. } => "test_log_unavailable",
             Self::StorageIncomplete { .. } => "test_log_storage_incomplete",
@@ -172,6 +271,7 @@ impl fmt::Display for LogStoreError {
                 write!(formatter, "invalid governed-test {component} component")
             }
             Self::InvalidSelector(reason) => write!(formatter, "invalid log selector: {reason}"),
+            Self::InvalidMetadata(reason) => write!(formatter, "invalid log metadata: {reason}"),
             Self::LeaseContended => formatter.write_str("governed-test run is already active"),
             Self::Io { operation, source } => write!(formatter, "{operation} failed: {source}"),
             Self::StorageIncomplete { operation, source } => write!(
@@ -198,6 +298,7 @@ impl Error for LogStoreError {
 /// dropped; the advisory lock itself is held by `_lease` for this value's
 /// lifetime.
 pub struct RunLogLease {
+    run_id: String,
     run_dir: File,
     _lease: File,
 }
@@ -236,9 +337,33 @@ impl RunLogLease {
             source,
         })?;
         Ok(Self {
+            run_id: run_id.into(),
             run_dir,
             _lease: lease,
         })
+    }
+
+    /// Atomically publish the current content-free run lifecycle state.
+    pub fn publish_run_metadata(&self, metadata: &RunLogMetadata) -> Result<(), LogStoreError> {
+        metadata.validate()?;
+        if metadata.run_id != self.run_id {
+            return Err(LogStoreError::InvalidMetadata(
+                "run metadata does not match the active lease",
+            ));
+        }
+        publish_typed_metadata(&self.run_dir, "run.json", metadata)
+    }
+
+    /// Atomically publish the current content-free state for exactly one leaf.
+    pub fn publish_leaf_metadata(&self, metadata: &LeafLogMetadata) -> Result<(), LogStoreError> {
+        metadata.validate()?;
+        let selector = LeafSelector::new(
+            metadata.selector.check.clone(),
+            metadata.selector.phase,
+            metadata.selector.case_id.clone(),
+        )?;
+        let leaf_dir = self.open_leaf(&selector)?;
+        publish_typed_metadata(&leaf_dir, "leaf.json", metadata)
     }
 
     /// Create a new 0600 stream and its new 0600 sparse index in one leaf.
@@ -561,6 +686,25 @@ fn atomic_write_relative(parent: &File, name: &str, payload: &[u8]) -> io::Resul
     result
 }
 
+fn publish_typed_metadata<T: Serialize>(
+    parent: &File,
+    name: &str,
+    metadata: &T,
+) -> Result<(), LogStoreError> {
+    let mut payload =
+        serde_json::to_vec(metadata).map_err(|source| LogStoreError::StorageIncomplete {
+            operation: IncompleteOperation::MetadataPublish,
+            source: io::Error::other(source),
+        })?;
+    payload.push(b'\n');
+    atomic_write_relative(parent, name, &payload).map_err(|source| {
+        LogStoreError::StorageIncomplete {
+            operation: IncompleteOperation::MetadataPublish,
+            source,
+        }
+    })
+}
+
 fn validate_run_id(value: &str) -> Result<(), LogStoreError> {
     let bytes = value.as_bytes();
     let valid = bytes.len() == 24
@@ -602,6 +746,37 @@ fn validate_case(value: &str) -> Result<(), LogStoreError> {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(*byte, b'.' | b'_' | b'-'))
     {
         return Err(LogStoreError::InvalidComponent("case"));
+    }
+    Ok(())
+}
+
+fn validate_test(value: &str) -> Result<(), LogStoreError> {
+    let bytes = value.as_bytes();
+    if !(1..=32).contains(&bytes.len())
+        || !bytes[0].is_ascii_lowercase() && !bytes[0].is_ascii_digit()
+        || !bytes
+            .iter()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || *byte == b'-')
+    {
+        return Err(LogStoreError::InvalidComponent("test"));
+    }
+    Ok(())
+}
+
+fn validate_lifecycle(
+    started_at_epoch_ms: u64,
+    finished_at_epoch_ms: Option<u64>,
+    complete: bool,
+) -> Result<(), LogStoreError> {
+    if complete != finished_at_epoch_ms.is_some() {
+        return Err(LogStoreError::InvalidMetadata(
+            "completion and finish time disagree",
+        ));
+    }
+    if finished_at_epoch_ms.is_some_and(|finished| finished < started_at_epoch_ms) {
+        return Err(LogStoreError::InvalidMetadata(
+            "finish time precedes start time",
+        ));
     }
     Ok(())
 }
@@ -933,6 +1108,182 @@ mod tests {
             assert!(!metadata.file_type().is_symlink());
             assert_eq!(metadata.mode() & 0o777, 0o600);
         }
+        drop(lease);
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn run_and_leaf_metadata_publish_atomic_final_state() {
+        let root = temporary("lifecycle-final");
+        let run = run_id(10);
+        let lease = acquire(&root, &run);
+        let run_dir = root.join("runs").join(&run);
+        let running = RunLogMetadata {
+            schema: 2,
+            run_id: run.clone(),
+            test: "release".into(),
+            started_at_epoch_ms: 100,
+            finished_at_epoch_ms: None,
+            status: RunStatus::Running,
+            complete: false,
+        };
+        lease
+            .publish_run_metadata(&running)
+            .expect("running run metadata");
+        let initial_inode = fs::metadata(run_dir.join("run.json"))
+            .expect("initial metadata")
+            .ino();
+        let finished = RunLogMetadata {
+            finished_at_epoch_ms: Some(200),
+            status: RunStatus::Passed,
+            complete: true,
+            ..running
+        };
+        lease
+            .publish_run_metadata(&finished)
+            .expect("finished run metadata");
+        let final_inode = fs::metadata(run_dir.join("run.json"))
+            .expect("final metadata")
+            .ino();
+        assert_ne!(initial_inode, final_inode);
+        let decoded: RunLogMetadata =
+            serde_json::from_slice(&fs::read(run_dir.join("run.json")).expect("run metadata"))
+                .expect("decode run metadata");
+        assert_eq!(decoded, finished);
+
+        let selector = LeafSelector::case("unit", "atomic").expect("selector");
+        let active_leaf = LeafLogMetadata {
+            schema: 2,
+            selector: selector.clone(),
+            status: LeafStatus::Running,
+            exit: DiagnosticExit::default(),
+            started_at_epoch_ms: 110,
+            finished_at_epoch_ms: None,
+            complete: false,
+            structured_evidence_formats: vec![],
+            structured_evidence_count: 0,
+        };
+        lease
+            .publish_leaf_metadata(&active_leaf)
+            .expect("active leaf metadata");
+        let final_leaf = LeafLogMetadata {
+            status: LeafStatus::Passed,
+            exit: DiagnosticExit {
+                code: Some(0),
+                signal: None,
+            },
+            finished_at_epoch_ms: Some(190),
+            complete: true,
+            ..active_leaf
+        };
+        lease
+            .publish_leaf_metadata(&final_leaf)
+            .expect("final leaf metadata");
+        let leaf_path = stream_path(&root, &run, "unit", "atomic", "leaf.json");
+        let decoded: LeafLogMetadata =
+            serde_json::from_slice(&fs::read(leaf_path).expect("leaf metadata"))
+                .expect("decode leaf metadata");
+        assert_eq!(decoded, final_leaf);
+        assert!(fs::read_dir(&run_dir).expect("run directory").all(|entry| {
+            !entry
+                .expect("entry")
+                .file_name()
+                .to_string_lossy()
+                .contains(".tmp")
+        }));
+        drop(lease);
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn empty_leaf_has_typed_metadata_without_stream_files() {
+        let root = temporary("empty-leaf");
+        let run = run_id(11);
+        let lease = acquire(&root, &run);
+        let metadata = LeafLogMetadata {
+            schema: 2,
+            selector: LeafSelector::case("unit", "empty").expect("selector"),
+            status: LeafStatus::Passed,
+            exit: DiagnosticExit {
+                code: Some(0),
+                signal: None,
+            },
+            started_at_epoch_ms: 300,
+            finished_at_epoch_ms: Some(301),
+            complete: true,
+            structured_evidence_formats: vec![],
+            structured_evidence_count: 0,
+        };
+        lease
+            .publish_leaf_metadata(&metadata)
+            .expect("empty leaf metadata");
+        let leaf_dir = stream_path(&root, &run, "unit", "empty", "leaf.json")
+            .parent()
+            .expect("leaf parent")
+            .to_path_buf();
+        assert!(leaf_dir.join("leaf.json").is_file());
+        assert!(!leaf_dir.join("stdout.log").exists());
+        assert!(!leaf_dir.join("stderr.log").exists());
+        drop(lease);
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn lifecycle_metadata_is_bounded_and_contains_no_execution_content() {
+        let root = temporary("lifecycle-privacy");
+        let run = run_id(12);
+        let lease = acquire(&root, &run);
+        let run_metadata = RunLogMetadata {
+            schema: 2,
+            run_id: run.clone(),
+            test: "pre-merge".into(),
+            started_at_epoch_ms: 400,
+            finished_at_epoch_ms: Some(500),
+            status: RunStatus::Failed,
+            complete: true,
+        };
+        lease
+            .publish_run_metadata(&run_metadata)
+            .expect("run metadata");
+        let leaf_metadata = LeafLogMetadata {
+            schema: 2,
+            selector: LeafSelector::case("browser", "login").expect("selector"),
+            status: LeafStatus::Failed,
+            exit: DiagnosticExit {
+                code: Some(1),
+                signal: None,
+            },
+            started_at_epoch_ms: 410,
+            finished_at_epoch_ms: Some(490),
+            complete: true,
+            structured_evidence_formats: vec![
+                DiagnosticReportFormat::Junit,
+                DiagnosticReportFormat::PlaywrightJson,
+            ],
+            structured_evidence_count: 2,
+        };
+        lease
+            .publish_leaf_metadata(&leaf_metadata)
+            .expect("leaf metadata");
+        let mut encoded =
+            fs::read_to_string(root.join("runs").join(&run).join("run.json")).expect("run JSON");
+        encoded.push_str(
+            &fs::read_to_string(stream_path(&root, &run, "browser", "login", "leaf.json"))
+                .expect("leaf JSON"),
+        );
+        for forbidden in [
+            "raw-private-sentinel",
+            "command",
+            "environment",
+            "caller",
+            "stdout",
+            "stderr",
+            "message",
+            "reason",
+        ] {
+            assert!(!encoded.contains(forbidden), "unexpected field {forbidden}");
+        }
+        assert!(encoded.len() < 2_048);
         drop(lease);
         fs::remove_dir_all(root).expect("cleanup");
     }
