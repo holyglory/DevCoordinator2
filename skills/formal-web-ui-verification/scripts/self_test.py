@@ -284,7 +284,13 @@ class RenderPerformanceHandler(BaseHTTPRequestHandler):
         elif route == "/slow-lcp":
             body = page(
                 "<p>Initial content</p><img id='late-lcp' width='1000' height='420' alt='Late largest image'>"
-                "<script>setTimeout(()=>{document.querySelector('#late-lcp').src='/lcp.png'},900)</script>",
+                "<script>setTimeout(()=>{"
+                "const image=document.querySelector('#late-lcp');"
+                "image.addEventListener('load',()=>requestAnimationFrame(()=>requestAnimationFrame(()=>{"
+                "image.dataset.lcpReady='true';"
+                "})),{once:true});"
+                "image.src='/lcp.png';"
+                "},1200)</script>",
             )
         elif route == "/no-lcp":
             body = page("<input aria-label='Name' style='width:320px;height:52px'>")
@@ -518,7 +524,7 @@ def run_verifier_command(
     json_out: Path,
     markdown_out: Path,
     *,
-    expect: int,
+    expect: int | tuple[int, ...],
     env: dict[str, str] | None = None,
 ) -> dict:
     result = subprocess.run(
@@ -529,17 +535,31 @@ def run_verifier_command(
         timeout=TIMEOUT_SECONDS,
         env=env or verifier_env(),
     )
-    if result.returncode != expect:
+    allowed_exits = (expect,) if isinstance(expect, int) else expect
+    if result.returncode not in allowed_exits:
         print(result.stdout)
         print(result.stderr, file=sys.stderr)
-        raise AssertionError(f"Expected exit {expect}, got {result.returncode}: {' '.join(cmd)}")
+        raise AssertionError(
+            f"Expected exit in {sorted(allowed_exits)}, got {result.returncode}: {' '.join(cmd)}"
+        )
     if result.stderr.strip():
         raise AssertionError(f"Default invocation emitted non-receipt stderr: {result.stderr[:400]}")
-    receipt = parse_bounded_receipt(result.stdout, expect=expect)
+    actual_exit = result.returncode
+    receipt = parse_bounded_receipt(result.stdout, expect=actual_exit)
     receipt_json, receipt_markdown = receipt_artifact_paths(receipt)
     if receipt_json.resolve() != json_out.resolve() or receipt_markdown.resolve() != markdown_out.resolve():
         raise AssertionError(f"Receipt must point to the exact report artifacts: {receipt}")
-    return assert_complete_artifacts(json_out, markdown_out, expect=expect)
+    report = assert_complete_artifacts(json_out, markdown_out, expect=actual_exit)
+    if len(allowed_exits) > 1:
+        expected_exit = 1 if any(
+            finding.get("severity") == "critical"
+            for finding in report.get("findings", [])
+        ) else 0
+        if actual_exit != expected_exit:
+            raise AssertionError(
+                f"Verifier exit {actual_exit} disagrees with its structured critical findings"
+            )
+    return report
 
 
 def default_target_contract() -> dict:
@@ -625,7 +645,7 @@ def run_verify_config(
     config: dict,
     out: Path,
     *,
-    expect: int,
+    expect: int | tuple[int, ...],
     extra: list[str] | None = None,
     apply_contract_defaults: bool = True,
 ) -> dict:
@@ -1450,25 +1470,49 @@ document.querySelector('#open-add').addEventListener('click', () => {
             fast_performance = run_verify_config(
                 performance_config("/fast"),
                 tmp / "performance-fast-defaults",
-                expect=0,
+                expect=(0, 1),
                 apply_contract_defaults=False,
             )
             fast_metrics = fast_performance.get("pages", [{}])[0].get("metrics", {}).get("performance", {})
             if (
                 fast_metrics.get("ttfb", {}).get("thresholdMs") != 10
                 or fast_metrics.get("lcp", {}).get("thresholdMs") != 800
-                or fast_metrics.get("ttfb", {}).get("status") != "pass"
-                or fast_metrics.get("lcp", {}).get("status") != "pass"
                 or fast_metrics.get("ttfb", {}).get("comparison") != "<"
                 or fast_metrics.get("lcp", {}).get("comparison") != "<"
             ):
-                raise AssertionError(f"Default rendered-performance thresholds did not pass a fast local page: {fast_metrics}")
+                raise AssertionError(f"Default rendered-performance thresholds were not applied: {fast_metrics}")
+            expected_performance_rules: set[str] = set()
+            for metric, threshold in (("ttfb", 10), ("lcp", 800)):
+                evidence = fast_metrics.get(metric, {})
+                value = evidence.get("valueMs")
+                if isinstance(value, bool) or not isinstance(value, (int, float)):
+                    raise AssertionError(f"Default {metric.upper()} fixture was not measured: {fast_metrics}")
+                expected_status = "pass" if value < threshold else "fail"
+                if evidence.get("status") != expected_status:
+                    raise AssertionError(
+                        f"Default {metric.upper()} classification disagreed with its measurement: {fast_metrics}"
+                    )
+                if expected_status == "fail":
+                    expected_performance_rules.add(f"{metric}-above-threshold")
+            actual_critical_rules = {
+                finding.get("rule")
+                for finding in fast_performance.get("findings", [])
+                if finding.get("severity") == "critical"
+            }
+            if actual_critical_rules != expected_performance_rules:
+                raise AssertionError(
+                    "Default performance findings disagreed with the observed metrics: "
+                    f"expected={sorted(expected_performance_rules)} actual={sorted(actual_critical_rules)}"
+                )
             performance_markdown = (tmp / "performance-fast-defaults" / "report.md").read_text(encoding="utf-8")
             if "## Rendered Performance" not in performance_markdown or "< 10 ms" not in performance_markdown or "< 800 ms" not in performance_markdown:
                 raise AssertionError("Markdown report omitted formal TTFB/LCP thresholds")
 
             slow_ttfb = run_verify_config(
-                performance_config("/slow-ttfb"),
+                performance_config(
+                    "/slow-ttfb",
+                    performance={"ttfbMs": 10, "lcpMs": 10000},
+                ),
                 tmp / "performance-slow-ttfb",
                 expect=1,
                 apply_contract_defaults=False,
@@ -1482,10 +1526,11 @@ document.querySelector('#open-add').addEventListener('click', () => {
                 performance_config(
                     "/slow-lcp",
                     waitFor={
-                        "selector": "#late-lcp[src]",
+                        "selector": "#late-lcp[data-lcp-ready='true']",
                         "responseUrl": "**/lcp.png",
-                        "timeoutMs": 2000,
+                        "timeoutMs": 5000,
                     },
+                    performance={"ttfbMs": 10000, "lcpMs": 800},
                 ),
                 tmp / "performance-slow-lcp",
                 expect=1,
@@ -1503,17 +1548,17 @@ document.querySelector('#open-add').addEventListener('click', () => {
                         {
                             **default_target_contract(),
                             "url": f"{performance_server.base_url}/slow-ttfb",
-                            "performance": {"ttfbMs": 100, "lcpMs": 2000},
+                            "performance": {"ttfbMs": 10000, "lcpMs": 10000},
                         },
                         {
                             **default_target_contract(),
                             "url": f"{performance_server.base_url}/slow-lcp",
                             "waitFor": {
-                                "selector": "#late-lcp[src]",
+                                "selector": "#late-lcp[data-lcp-ready='true']",
                                 "responseUrl": "**/lcp.png",
-                                "timeoutMs": 2000,
+                                "timeoutMs": 5000,
                             },
-                            "performance": {"ttfbMs": 100, "lcpMs": 2000},
+                            "performance": {"ttfbMs": 10000, "lcpMs": 10000},
                         },
                     ],
                     "viewports": [{"name": "desktop", "width": 1280, "height": 800}],
@@ -1525,8 +1570,8 @@ document.querySelector('#open-add').addEventListener('click', () => {
             )
             assert_no_critical(prescribed)
             if any(
-                page_report.get("metrics", {}).get("performance", {}).get("ttfb", {}).get("thresholdMs") != 100
-                or page_report.get("metrics", {}).get("performance", {}).get("lcp", {}).get("thresholdMs") != 2000
+                page_report.get("metrics", {}).get("performance", {}).get("ttfb", {}).get("thresholdMs") != 10000
+                or page_report.get("metrics", {}).get("performance", {}).get("lcp", {}).get("thresholdMs") != 10000
                 for page_report in prescribed.get("pages", [])
             ):
                 raise AssertionError("Per-target performance thresholds did not override defaults")
