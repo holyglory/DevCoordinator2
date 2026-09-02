@@ -13,6 +13,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import traceback
 import urllib.request
 import zlib
 from http.server import BaseHTTPRequestHandler, SimpleHTTPRequestHandler, ThreadingHTTPServer
@@ -3681,5 +3682,22 @@ if (result.executionCount !== 1 || result.unsafeStop !== 'browser-authority-lost
             shutil.rmtree(tmp, ignore_errors=True)
 
 
+def failure_exit_code(error: Exception) -> int:
+    """Encode only the failing main-section line bucket for safe CI diagnosis."""
+
+    main_lines = [
+        frame.lineno
+        for frame in traceback.extract_tb(error.__traceback__)
+        if frame.name == "main" and Path(frame.filename).resolve() == Path(__file__).resolve()
+    ]
+    line = main_lines[-1] if main_lines else 0
+    return 50 + min(line // 25, 150)
+
+
 if __name__ == "__main__":
-    raise SystemExit(main())
+    try:
+        result = main()
+    except Exception as error:
+        traceback.print_exc()
+        raise SystemExit(failure_exit_code(error)) from None
+    raise SystemExit(result)
