@@ -599,9 +599,7 @@ class TestLifecycle:
             projected = {key: row.get(key) for key in (
                 "name", "status", "started_at", "finished_at",
                 "duration_seconds", "exit_code", "output_ref", "log_refs",
-                "stdout_bytes_observed", "stdout_bytes_retained",
-                "stdout_truncated", "stderr_bytes_observed",
-                "stderr_bytes_retained", "stderr_truncated",
+                "stdout_bytes_observed", "stderr_bytes_observed",
             )}
             artifacts = row.get("artifacts", [])
             projected["artifacts"] = artifacts[:8] if isinstance(artifacts, list) else []
@@ -615,21 +613,10 @@ class TestLifecycle:
         for row in all_failures[:64]:
             if isinstance(row, dict):
                 failures.append({key: row.get(key) for key in (
-                    "check", "case", "status", "output_ref", "log_refs",
+                    "check", "case", "status", "exit", "termination_reason", "source",
+                    "error_category", "expected", "actual", "fingerprint", "occurrences",
+                    "log_refs", "origin",
                 )})
-        diagnostic_index = []
-        all_diagnostics = report.get("diagnostic_index", [])
-        if not isinstance(all_diagnostics, list):
-            all_diagnostics = []
-        safe_diagnostic_fields = (
-            "check", "case", "status", "exit", "termination_reason", "source",
-            "error_category", "expected", "actual", "fingerprint", "occurrences",
-            "log_refs",
-        )
-        for row in all_diagnostics[:64]:
-            if isinstance(row, dict):
-                diagnostic_index.append({key: row.get(key)
-                                         for key in safe_diagnostic_fields})
         return {
             "requested_tier": report.get("requested_tier"),
             "readiness_eligible": bool(report.get("readiness_eligible")),
@@ -640,8 +627,6 @@ class TestLifecycle:
             "checks_truncated": len(all_checks) > 64,
             "failure_index": failures,
             "failure_index_truncated": bool(report.get("failure_index_truncated")),
-            "diagnostic_index": diagnostic_index,
-            "diagnostic_index_truncated": len(all_diagnostics) > 64,
             "source_changed": bool(report.get("source_changed")),
             "execution_capacity": report.get("capacity"),
             "capacity_wait_count": (
@@ -655,6 +640,9 @@ class TestLifecycle:
         """Remove legacy private paths and unclassified prose before a status reply."""
         for private_field in ("summary_path", "check_report_path", "unsafe_reason"):
             document.pop(private_field, None)
+        for stream in ("stdout", "stderr"):
+            document.pop(f"{stream}_bytes_retained", None)
+            document.pop(f"{stream}_truncated", None)
         if document.get("termination_reason") not in {
                 None, "operator_cancelled", "superseded", "timed_out", "interrupted"}:
             document.pop("termination_reason", None)
@@ -664,6 +652,9 @@ class TestLifecycle:
                 for row in rows:
                     if isinstance(row, dict):
                         row.pop("reason", None)
+                        for stream in ("stdout", "stderr"):
+                            row.pop(f"{stream}_bytes_retained", None)
+                            row.pop(f"{stream}_truncated", None)
 
     @staticmethod
     def _aggregate_output_projection(checks: list) -> dict:
@@ -672,10 +663,7 @@ class TestLifecycle:
             observed = sum(
                 row.get(f"{stream}_bytes_observed", 0)
                 for row in checks if isinstance(row, dict))
-            retained = observed
             result[f"{stream}_bytes_observed"] = observed
-            result[f"{stream}_bytes_retained"] = retained
-            result[f"{stream}_truncated"] = False
         return result
 
     # -- restart recovery --------------------------------------------------

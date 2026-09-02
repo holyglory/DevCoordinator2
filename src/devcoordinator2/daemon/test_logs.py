@@ -35,7 +35,7 @@ MAX_SEARCH_BYTES = 4_096
 MAX_CATALOG_LIMIT = 100
 MAX_MATCHES = 100
 MAX_CONTEXT_LINES = 100
-MAX_CONTENT_BYTES = 65_536
+MAX_CONTENT_BYTES = 48 * 1024
 MAX_COORDINATE = (1 << 63) - 1
 
 _EXECUTOR_BINARY = (
@@ -69,6 +69,14 @@ def _positive_int(value: Any, label: str, maximum: int) -> int:
             or not 1 <= value <= maximum:
         raise ProtocolError(
             "args_invalid", f"'{label}' must be an integer in 1..{maximum}")
+    return value
+
+
+def _nonnegative_int(value: Any, label: str, maximum: int) -> int:
+    if not isinstance(value, int) or isinstance(value, bool) \
+            or not 0 <= value <= maximum:
+        raise ProtocolError(
+            "args_invalid", f"'{label}' must be an integer in 0..{maximum}")
     return value
 
 
@@ -160,9 +168,8 @@ def validate_log_request(operation: str, args: dict[str, Any]) -> dict[str, Any]
             "text": text,
             "max_matches": _positive_int(
                 args.get("max_matches", 20), "max_matches", MAX_MATCHES),
-            "context_lines": _positive_int(
-                args.get("context_lines", 2) + 1,
-                "context_lines_plus_one", MAX_CONTEXT_LINES + 1) - 1,
+            "context_lines": _nonnegative_int(
+                args.get("context_lines", 2), "context_lines", MAX_CONTEXT_LINES),
             "max_bytes": _positive_int(
                 args.get("max_bytes", 32_768), "max_bytes", MAX_CONTENT_BYTES),
         })
@@ -198,9 +205,8 @@ def validate_log_request(operation: str, args: dict[str, Any]) -> dict[str, Any]
     else:
         options.update({
             "limit": _positive_int(args.get("limit", 20), "limit", MAX_MATCHES),
-            "context_lines": _positive_int(
-                args.get("context_lines", 2) + 1,
-                "context_lines_plus_one", MAX_CONTEXT_LINES + 1) - 1,
+            "context_lines": _nonnegative_int(
+                args.get("context_lines", 2), "context_lines", MAX_CONTEXT_LINES),
             "max_bytes": _positive_int(
                 args.get("max_bytes", 32_768), "max_bytes", MAX_CONTENT_BYTES),
         })
@@ -332,14 +338,26 @@ class TestLogService:
         }
 
     def _maintenance_loop(self) -> None:
-        retry_seconds: float | None = None
+        wait_seconds: float | None = None
         while not self._stop.is_set():
-            self._wake.wait(retry_seconds)
+            self._wake.wait(wait_seconds)
             self._wake.clear()
             if self._stop.is_set():
                 return
             result = self.run_maintenance_once()
-            retry_seconds = 60.0 if result["errors"] else None
+            if result["errors"]:
+                wait_seconds = 60.0
+                continue
+            next_expiry = result.get("next_expiry_at")
+            if not isinstance(next_expiry, str):
+                wait_seconds = None
+                continue
+            try:
+                deadline = datetime.fromisoformat(next_expiry.replace("Z", "+00:00"))
+                wait_seconds = max(
+                    0.0, (deadline - datetime.now(UTC)).total_seconds())
+            except ValueError:
+                wait_seconds = 60.0
 
     def _resolve(self, path: Path, caller) -> tuple[Path, str]:
         if caller.identity is not None:

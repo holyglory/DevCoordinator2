@@ -77,6 +77,11 @@ def test_selector_relationships_are_strict(args):
         validate_log_request("tail", args)
 
 
+def test_context_lines_rejects_boolean_values():
+    with pytest.raises(ProtocolError, match="context_lines"):
+        validate_log_request("failure_context", {"context_lines": False})
+
+
 def test_query_defaults_and_literal_search_are_forwarded_as_typed_json(world, monkeypatch):
     captured = {}
 
@@ -163,3 +168,24 @@ def test_public_status_projection_removes_paths_and_arbitrary_reasons():
     assert "traceback" not in encoded
     assert "assertion" not in encoded
     assert document["failure_index"][0]["case"] == "a"
+
+
+def test_failure_projection_is_structured_and_has_no_parallel_diagnostic_index():
+    failure = {
+        "check": "unit", "case": "parser-17", "status": "failed",
+        "exit": {"code": 1, "signal": None}, "termination_reason": None,
+        "source": {"file": "src/parser.rs", "line": 81, "column": 9},
+        "error_category": "assertion", "expected": None, "actual": None,
+        "fingerprint": "sha256:" + "a" * 64, "occurrences": 2,
+        "log_refs": [{"run_id": "t20260902T010203Z-abcdef", "check": "unit",
+                      "phase": "case", "case": "parser-17", "stream": "stderr"}],
+        "origin": "junit", "reason": "must never escape",
+    }
+    projected = _TestLifecycle._report_projection({
+        "checks": [], "failure_index": [failure], "failure_index_truncated": False,
+        "counts": {}, "capacity": {},
+    })
+    assert projected["failure_index"][0]["fingerprint"] == failure["fingerprint"]
+    assert projected["failure_index"][0]["origin"] == "junit"
+    assert "reason" not in projected["failure_index"][0]
+    assert "diagnostic_index" not in projected

@@ -149,11 +149,11 @@ def test_report_projection_reports_complete_aggregate_leaf_output_counts():
         },
     })
     assert projected["stdout_bytes_observed"] == 6 * 1024 * 1024
-    assert projected["stdout_bytes_retained"] == 6 * 1024 * 1024
-    assert projected["stdout_truncated"] is False
     assert projected["stderr_bytes_observed"] == 2
-    assert projected["stderr_bytes_retained"] == 2
-    assert projected["stderr_truncated"] is False
+    assert "stdout_bytes_retained" not in projected
+    assert "stdout_truncated" not in projected
+    assert "stderr_bytes_retained" not in projected
+    assert "stderr_truncated" not in projected
 
 
 def test_artifact_receipts_are_exact_and_refuse_symlinks(tmp_path):
@@ -208,12 +208,13 @@ def test_retry_plan_reuses_only_matching_declared_artifacts(tmp_path):
         name="build", tier="development", role="work", command=("true",),
         discover=None, case_command=None, cases=(), cwd=repo, env={}, after=(),
         requires=(), completion="process", on_failure="continue",
-        produces=("build.bin",), timeout_seconds=None, invalidates=())
+        produces=("build.bin",), timeout_seconds=None, invalidates=(),
+        diagnostic_sources=())
     failed = CheckSpec(
         name="unit", tier="release", role="work", command=("false",),
         discover=None, case_command=None, cases=(), cwd=repo, env={}, after=(),
         requires=("build",), completion="process", on_failure="continue", produces=(),
-        timeout_seconds=30, invalidates=())
+        timeout_seconds=30, invalidates=(), diagnostic_sources=())
     spec = GovernedTestSpec(
         name="complete", cwd=repo, timeout_seconds=600, env={},
         checks=(build, failed), config_digest="b" * 64)
@@ -252,7 +253,7 @@ def test_retry_requires_a_failed_check_from_complete_matching_evidence(tmp_path)
         name="unit", tier="release", role="work", command=("true",),
         discover=None, case_command=None, cases=(), cwd=repo, env={}, after=(),
         requires=(), completion="process", on_failure="continue", produces=(),
-        timeout_seconds=None, invalidates=())
+        timeout_seconds=None, invalidates=(), diagnostic_sources=())
     spec = GovernedTestSpec(
         name="complete", cwd=repo, timeout_seconds=600, env={},
         checks=(check,), config_digest="b" * 64)
@@ -274,7 +275,7 @@ def test_requested_tier_is_monotonic_and_selection_cannot_escape_it(tmp_path):
         name="unit", tier="development", role="work", command=("true",),
         discover=None, case_command=None, cases=(), cwd=repo, env={}, after=(),
         requires=(), completion="process", on_failure="continue", produces=(),
-        timeout_seconds=None, invalidates=())
+        timeout_seconds=None, invalidates=(), diagnostic_sources=())
     premerge = replace(
         development, name="browser", tier="pre-merge", requires=("unit",))
     release = replace(
