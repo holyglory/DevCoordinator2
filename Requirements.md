@@ -19,18 +19,20 @@ not contradict them.
   non-root caller (all four UIDs), never as root or the daemon identity.
 - **REQ-TEST-04** (P1, in scope): Timeout (`RuntimeMaxSec`) and cancellation
   kill every process in the unit cgroup; cleanup is proven, not assumed.
-- **REQ-TEST-05** (P1, in scope): Successful status responses contain no log
-  text. Diagnostics are explicitly requested as a bounded stdout/stderr tail
-  (≤ 64 KiB) or read from the exact result file paths returned.
-- **REQ-TEST-06** (P1, in scope): `summary.json` is atomically replaced and
-  contains: schema version, run ID, named test, status (running | passed |
-  failed | timed-out | cancelled | interrupted | superseded), start/finish/
-  duration, exit code, observed and retained stdout/stderr byte counts,
-  explicit truncation flags, plus caller UID and descriptive client
-  (deliberate extension, see DecisionHistory).
-- **REQ-TEST-07** (P1, in scope): Output capture retains at most 4 MiB per
-  stream while continuing to drain and count, so a noisy process can never
-  block or fill the server.
+- **REQ-TEST-05** (P1, in scope; revised 2026-09-02): Successful status
+  responses contain no log text. Terminal responses contain only bounded
+  structured diagnostics and stable log references; raw stdout, stderr, stack
+  traces, and arbitrary error prose require an explicit bounded log request.
+- **REQ-TEST-06** (P1, in scope; revised 2026-09-02): `summary.json` is
+  atomically replaced and contains: schema version, run ID, named test, status
+  (running | passed | failed | timed-out | cancelled | interrupted |
+  superseded), start/finish/duration, exit code, complete per-stream byte and
+  line counts, content hashes and log references, structured diagnostics,
+  caller UID, and descriptive client. Retained-byte and truncation fields are
+  not part of the current contract because governed logs are complete.
+- **REQ-TEST-07** (P1, superseded 2026-09-02): The former 4 MiB per-stream
+  storage cap is removed. REQ-TEST-19 and REQ-TEST-20 now bound storage by
+  completed-history retention and bound model-facing retrieval separately.
 - **REQ-TEST-08** (P1, in scope): On daemon restart, a complete atomic
   summary is imported as-is; unfinished test units are stopped and marked
   `interrupted`. Nothing is resurrected, migrated, or retried.
@@ -112,6 +114,44 @@ not contradict them.
   bounded IDs and arguments to that command, cannot replace cwd/environment or
   recursively expand, and each receives central admission, process ownership,
   deadline, logs, result, and cleanup.
+- **REQ-TEST-19** (2026-09-02, in scope): The Rust execution plane drains and
+  retains every byte of stdout and stderr for every governed check, discovery
+  step, and expanded case, with no per-stream byte or line limit. Each leaf's
+  streams live in its own stable run-relative folder and carry exact byte and
+  line counts, first/last timestamps, and SHA-256 hashes. A storage write or
+  sync failure makes the affected evidence unsafe rather than silently
+  truncating it. Aggregate views may index or reference leaf streams but must
+  not become a second lossy source of truth.
+- **REQ-TEST-20** (2026-09-02, in scope): DevCoordinator tracks every governed
+  log folder and regularly removes only inactive completed history that is
+  older than either configured boundary: 24 hours or the newest three retained
+  runs for the same repository/test/check/case identity by default. Both
+  boundaries are administrator-configurable, persist across restart, and are
+  visible through CLI, MCP, and Console. Cleanup is exact-target, path-contained,
+  crash-safe, and never removes the active run or the newest protected history.
+- **REQ-TEST-21** (2026-09-02, in scope): Normal completion exposes a bounded
+  ordered diagnostic index containing failed check/case identity, exit status,
+  timeout or cancellation category, structured source file and line when
+  supplied, error category, structured expected and actual values, a stable
+  duplicate-group fingerprint, and supporting log references. It contains no
+  raw stdout/stderr, stack trace, or unclassified error prose. Rust ingests
+  declared JUnit XML, Playwright JSON, Rust JSON records, and a bounded inherited
+  DevCoordinator diagnostic-event channel; malformed or unavailable evidence
+  is reported as a structured evidence condition rather than scraped from
+  console text. Ranking is deterministic: explicit failure events, assertions,
+  compiler diagnostics, panic/exception headers, first relevant stack frames,
+  process termination, browser console/network failures, final non-empty lines;
+  repeated entries collapse by fingerprint and count.
+- **REQ-TEST-22** (2026-09-02, in scope): `test log catalog`, `tail`, `search`,
+  `range`, and `failure-context` expose progressive log disclosure for one
+  authorized run/check/case/stream. Catalogue results contain names, exact byte
+  and line counts, time range, complete/truncation state, SHA-256, expiry, and
+  structured-evidence availability without log content. Retrieval always has a
+  strict response-byte ceiling and stable line/cursor coordinates: tail defaults
+  to 50 lines; search is fixed-string by default with bounded matches and
+  context; range reads an exact line or byte interval; failure-context applies
+  the deterministic REQ-TEST-21 ranking. No command performs language-model
+  summarization or returns an unbounded stream.
 
 ## Deployments (REQ-DEPLOY, P3)
 

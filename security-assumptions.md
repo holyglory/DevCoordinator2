@@ -66,6 +66,30 @@ untracked `instance/` directory and in the installed instance configuration
   input, path escape, and lost replies are credible operational failures and
   are handled as such, not as security incidents.
 
+## Governed test-log evidence
+
+- The owner requires byte-complete stdout and stderr for governed checks and
+  cases. The former per-stream storage cap is removed; storage growth is
+  controlled by automatic completed-history retention, defaulting to 24 hours
+  and the newest three runs for each repository/test/check/case identity
+  (DC2-2026-09-02-PROGRESSIVE-TEST-LOGS).
+- Complete streams are potentially sensitive owner-local cold evidence. They
+  remain in caller-owned, mode-0600 repository state and are never included in
+  ordinary status, completion, metrics, decision history, Console HTML, or
+  model-facing results. The Coordinator does not claim to redact arbitrary
+  subprocess output; governed commands remain responsible for not writing
+  credentials or upstream secrets.
+- Authenticated administrators and trusted local callers may discover this
+  evidence through a content-free catalogue and explicitly request bounded
+  portions of one exact run, check, case, and stream. Every lookup is
+  repository-authorized and realpath-contained. Search is fixed-string by
+  default, and no retrieval or failure summary invokes a language model.
+- Structured diagnostics retain only validated bounded fields supplied through
+  declared report formats or the inherited diagnostic channel. Unknown console
+  text is not promoted into ordinary results. Source locations are
+  repository-relative; log references are run-relative and never disclose a
+  private absolute path through the public edge.
+
 ## Codex usage analytics boundary
 
 - The owner explicitly authorizes the root daemon to read the content-free
@@ -179,3 +203,7 @@ Also review it before exposing Codex usage to viewers, returning per-user or
 raw collector detail, adding an exporter or network collector, supporting a
 Codex usage schema or taxonomy beyond the explicitly reviewed versions, or
 configuring a usage source owned outside the confirmed same-owner boundary.
+Review it before exposing complete test streams outside the trusted local or
+administrator boundary, retaining them outside caller-owned repository state,
+adding non-deterministic or model-generated failure interpretation, or changing
+the requirement that governed commands keep credentials out of their output.
