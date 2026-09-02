@@ -5,10 +5,12 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import re
 import stat
 from pathlib import Path
+from pathlib import PurePosixPath
 
 from devcoordinator2.daemon import docker_cli, securefs, summary
 from devcoordinator2.daemon.db import Database
@@ -29,10 +31,239 @@ HISTORY_FIELDS = (
 )
 log = logging.getLogger("devcoordinator2.tests")
 _DIGEST_RE = re.compile(r"[0-9a-f]{64}$")
+_FINGERPRINT_RE = re.compile(r"sha256:[0-9a-f]{64}$")
+_IDENTITY_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+_CHECK_RE = re.compile(r"[a-z0-9][a-z0-9-]{0,63}$")
 _CHECK_STATES = frozenset({
     "pending", "running", "passed", "failed", "not_meaningful",
     "cancelled", "unsafe", "reused", "invalidated", "timed_out",
 })
+_FAILURE_STATES = _CHECK_STATES - {"pending", "running", "passed", "reused"}
+_LOG_PHASES = frozenset({"executor", "check", "discovery", "case"})
+_LOG_STREAMS = frozenset({"stdout", "stderr"})
+_ERROR_CATEGORIES = frozenset({
+    "assertion", "compiler", "panic", "exception", "stack_frame", "timeout",
+    "cancellation", "process_exit", "browser_console", "network_request",
+    "structured_evidence_invalid", "log_storage", "source_changed", "artifact",
+    "dependency", "internal",
+})
+_TERMINATION_REASONS = frozenset({
+    "deadline_exceeded", "user_cancelled", "superseded", "run_cancelled",
+    "daemon_interrupted", "unsafe_stop",
+})
+_DIAGNOSTIC_ORIGINS = frozenset({
+    "explicit_event", "junit", "playwright_json", "rust_json", "executor",
+})
+_VALUE_TYPES = frozenset({"null", "boolean", "number", "string", "json"})
+
+
+def _plain_int(value, *, minimum: int = 0, maximum: int | None = None) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) \
+        and value >= minimum and (maximum is None or value <= maximum)
+
+
+def _valid_exit(value) -> bool:
+    if not isinstance(value, dict) or set(value) != {"code", "signal"}:
+        return False
+    code, signal = value["code"], value["signal"]
+    if code is not None and not _plain_int(code, minimum=-(1 << 31), maximum=(1 << 31) - 1):
+        return False
+    if signal is not None and not _plain_int(signal, minimum=1, maximum=127):
+        return False
+    return code is None or signal is None
+
+
+def _valid_log_ref(value) -> bool:
+    if not isinstance(value, dict) or set(value) != {
+            "run_id", "check", "phase", "case", "stream"}:
+        return False
+    run_id, check, phase = value["run_id"], value["check"], value["phase"]
+    case, stream = value["case"], value["stream"]
+    if not isinstance(run_id, str) or not _IDENTITY_RE.fullmatch(run_id) \
+            or phase not in _LOG_PHASES or stream not in _LOG_STREAMS:
+        return False
+    if phase == "executor":
+        return check is None and case is None
+    if not isinstance(check, str) or not _CHECK_RE.fullmatch(check):
+        return False
+    if phase in ("check", "discovery"):
+        return case is None
+    return isinstance(case, str) and _IDENTITY_RE.fullmatch(case) is not None
+
+
+def _valid_stream(value) -> bool:
+    if not isinstance(value, dict) or set(value) != {
+            "log_ref", "bytes", "lines", "sha256", "first_write_epoch_ms",
+            "last_write_epoch_ms", "complete"}:
+        return False
+    size, lines = value["bytes"], value["lines"]
+    first, last = value["first_write_epoch_ms"], value["last_write_epoch_ms"]
+    if not _valid_log_ref(value["log_ref"]) \
+            or not _plain_int(size) or not _plain_int(lines) \
+            or not isinstance(value["sha256"], str) \
+            or not _DIGEST_RE.fullmatch(value["sha256"]) \
+            or not isinstance(value["complete"], bool):
+        return False
+    if lines > size or (size == 0 and lines != 0):
+        return False
+    if (first is None) != (last is None):
+        return False
+    if size == 0:
+        return first is None
+    return _plain_int(first) and _plain_int(last) and last >= first
+
+
+def _valid_source(value) -> bool:
+    if value is None:
+        return True
+    if not isinstance(value, dict) or set(value) != {"file", "line", "column"}:
+        return False
+    path = value["file"]
+    if not isinstance(path, str) or not path or len(path.encode()) > 512 \
+            or "\\" in path or "\0" in path:
+        return False
+    parsed = PurePosixPath(path)
+    if parsed.is_absolute() or any(part in ("", ".", "..") for part in parsed.parts) \
+            or parsed.as_posix() != path:
+        return False
+    return _plain_int(value["line"], minimum=1) \
+        and (value["column"] is None or _plain_int(value["column"], minimum=1))
+
+
+def _valid_diagnostic_value(value) -> bool:
+    if value is None:
+        return True
+    if not isinstance(value, dict) or set(value) != {
+            "type", "preview", "byte_count", "sha256", "truncated", "redacted"}:
+        return False
+    preview = value["preview"]
+    if value["type"] not in _VALUE_TYPES or not _plain_int(value["byte_count"]) \
+            or not isinstance(value["sha256"], str) \
+            or not _DIGEST_RE.fullmatch(value["sha256"]) \
+            or not isinstance(value["truncated"], bool) \
+            or not isinstance(value["redacted"], bool):
+        return False
+    if preview is not None and (
+            not isinstance(preview, str) or len(preview.encode()) > 256
+            or any(ord(character) < 32 or ord(character) == 127
+                   for character in preview)):
+        return False
+    return not value["redacted"] or preview is None
+
+
+def _valid_failure(value) -> bool:
+    if not isinstance(value, dict) or set(value) != {
+            "check", "case", "status", "exit", "termination_reason", "source",
+            "error_category", "expected", "actual", "fingerprint", "occurrences",
+            "log_refs", "origin"}:
+        return False
+    check, case = value["check"], value["case"]
+    if check is not None and (not isinstance(check, str) or not _CHECK_RE.fullmatch(check)):
+        return False
+    if case is not None and (
+            check is None or not isinstance(case, str) or not case
+            or len(case.encode()) > 256
+            or any(ord(character) < 32 or ord(character) == 127
+                   for character in case)):
+        return False
+    refs = value["log_refs"]
+    return value["status"] in _FAILURE_STATES \
+        and _valid_exit(value["exit"]) \
+        and (value["termination_reason"] is None
+             or value["termination_reason"] in _TERMINATION_REASONS) \
+        and _valid_source(value["source"]) \
+        and value["error_category"] in _ERROR_CATEGORIES \
+        and _valid_diagnostic_value(value["expected"]) \
+        and _valid_diagnostic_value(value["actual"]) \
+        and isinstance(value["fingerprint"], str) \
+        and _FINGERPRINT_RE.fullmatch(value["fingerprint"]) is not None \
+        and _plain_int(value["occurrences"], minimum=1) \
+        and isinstance(refs, list) and len(refs) <= 16 \
+        and all(_valid_log_ref(ref) for ref in refs) \
+        and len({json.dumps(ref, sort_keys=True) for ref in refs}) == len(refs) \
+        and value["origin"] in _DIAGNOSTIC_ORIGINS
+
+
+def _valid_optional_timestamp(value) -> bool:
+    return value is None or (
+        isinstance(value, str) and 1 <= len(value) <= 64
+        and "\n" not in value and "\r" not in value
+    )
+
+
+def _valid_duration(value) -> bool:
+    return value is None or (
+        isinstance(value, int | float) and not isinstance(value, bool)
+        and math.isfinite(value) and value >= 0
+    )
+
+
+def _valid_artifact(value) -> bool:
+    if not isinstance(value, dict) or set(value) != {"path", "size", "sha256"}:
+        return False
+    path = value["path"]
+    if not isinstance(path, str) or not path or len(path.encode()) > 256 \
+            or "\\" in path or "\0" in path:
+        return False
+    parsed = PurePosixPath(path)
+    return not parsed.is_absolute() \
+        and all(part not in ("", ".", "..") for part in parsed.parts) \
+        and parsed.as_posix() == path \
+        and _plain_int(value["size"]) \
+        and isinstance(value["sha256"], str) \
+        and _DIGEST_RE.fullmatch(value["sha256"]) is not None
+
+
+def _valid_case_report(value, check_name: str) -> bool:
+    if not isinstance(value, dict) or set(value) != {
+            "id", "status", "exit", "duration_ms", "streams"}:
+        return False
+    case_id, streams = value["id"], value["streams"]
+    if not isinstance(case_id, str) or not _IDENTITY_RE.fullmatch(case_id) \
+            or value["status"] not in _CHECK_STATES or not _valid_exit(value["exit"]) \
+            or not _plain_int(value["duration_ms"]) \
+            or not isinstance(streams, list) or len(streams) > 2 \
+            or not all(_valid_stream(stream) for stream in streams):
+        return False
+    refs = [stream["log_ref"] for stream in streams]
+    return all(ref["check"] == check_name and ref["phase"] == "case"
+               and ref["case"] == case_id for ref in refs) \
+        and len({ref["stream"] for ref in refs}) == len(refs)
+
+
+def _valid_check_report(value) -> bool:
+    if not isinstance(value, dict) or set(value) != {
+            "name", "tier", "role", "status", "started_at", "finished_at",
+            "duration_seconds", "exit", "artifacts", "streams", "case_count",
+            "cases", "cases_truncated"}:
+        return False
+    name, streams, cases = value["name"], value["streams"], value["cases"]
+    if not isinstance(name, str) or not _CHECK_RE.fullmatch(name) \
+            or value["tier"] not in ("development", "pre-merge", "release") \
+            or value["role"] not in ("work", "preflight") \
+            or value["status"] not in _CHECK_STATES \
+            or not _valid_optional_timestamp(value["started_at"]) \
+            or not _valid_optional_timestamp(value["finished_at"]) \
+            or not _valid_duration(value["duration_seconds"]) \
+            or not _valid_exit(value["exit"]) \
+            or not isinstance(value["artifacts"], list) \
+            or len(value["artifacts"]) > 16 \
+            or not all(_valid_artifact(item) for item in value["artifacts"]) \
+            or not isinstance(streams, list) or len(streams) > 2 \
+            or not all(_valid_stream(stream) for stream in streams) \
+            or not _plain_int(value["case_count"], maximum=4096) \
+            or not isinstance(cases, list) or len(cases) > 128 \
+            or not isinstance(value["cases_truncated"], bool) \
+            or not all(_valid_case_report(case, name) for case in cases):
+        return False
+    refs = [stream["log_ref"] for stream in streams]
+    if not all(ref["check"] == name and ref["case"] is None
+               and ref["phase"] in ("check", "discovery") for ref in refs):
+        return False
+    if len({ref["stream"] for ref in refs}) != len(refs):
+        return False
+    return value["case_count"] >= len(cases) \
+        and value["cases_truncated"] == (value["case_count"] > len(cases))
 
 
 def _read_json_at(dir_fd: int, name: str, max_bytes: int = 2 * 1024 * 1024) \
@@ -93,14 +324,23 @@ def write_check_plan(dir_fd: int, document: dict,
 
 def read_check_report(dir_fd: int) -> dict | None:
     document = _read_json_at(dir_fd, REPORT_FILE)
-    if document is None or document.get("schema") != 2 \
+    if document is None or set(document) != {
+            "schema", "run_id", "test", "requested_tier", "readiness_eligible",
+            "proof", "selection", "origin_run_id", "status", "started_at",
+            "finished_at", "duration_seconds", "source_digest", "config_digest",
+            "source_changed", "capacity", "counts", "checks", "failure_index",
+            "failure_index_truncated"} \
+            or document.get("schema") != 2 \
             or document.get("proof") not in ("complete", "selected", "retry") \
             or document.get("status") not in ("running", "passed", "failed") \
             or not isinstance(document.get("run_id"), str) \
+            or not _IDENTITY_RE.fullmatch(document["run_id"]) \
             or not isinstance(document.get("test"), str) \
+            or not _CHECK_RE.fullmatch(document["test"]) \
             or not isinstance(document.get("selection"), list) \
             or len(document["selection"]) > 256 \
-            or not all(isinstance(name, str) for name in document["selection"]) \
+            or not all(isinstance(name, str) and _CHECK_RE.fullmatch(name)
+                       for name in document["selection"]) \
             or document.get("requested_tier") not in (
                 "development", "pre-merge", "release") \
             or not isinstance(document.get("readiness_eligible"), bool) \
@@ -111,9 +351,11 @@ def read_check_report(dir_fd: int) -> dict | None:
             or not _DIGEST_RE.fullmatch(document["source_digest"]) \
             or not isinstance(document.get("config_digest"), str) \
             or not _DIGEST_RE.fullmatch(document["config_digest"]) \
-            or (document.get("unsafe_reason") is not None
-                and (not isinstance(document["unsafe_reason"], str)
-                     or len(document["unsafe_reason"]) > 512)) \
+            or not isinstance(document.get("source_changed"), bool) \
+            or not _valid_optional_timestamp(document.get("started_at")) \
+            or not _valid_optional_timestamp(document.get("finished_at")) \
+            or not _valid_duration(document.get("duration_seconds")) \
+            or not isinstance(document.get("failure_index_truncated"), bool) \
             or not isinstance(document.get("counts"), dict):
         return None
     capacity = document.get("capacity")
@@ -150,53 +392,14 @@ def read_check_report(dir_fd: int) -> dict | None:
         return None
     names = set()
     for row in checks:
-        if not isinstance(row, dict) or not isinstance(row.get("name"), str) \
-                or row["name"] in names or row.get("status") not in _CHECK_STATES \
-                or (row.get("reason") is not None
-                    and (not isinstance(row["reason"], str)
-                         or len(row["reason"]) > 512)) \
-                or (row.get("exit_code") is not None
-                    and not isinstance(row["exit_code"], int)) \
-                or (row.get("duration_seconds") is not None
-                    and not isinstance(row["duration_seconds"], int | float)) \
-                or row.get("output_ref") != f"checks/{row.get('name')}":
+        if not _valid_check_report(row) or row["name"] in names:
             return None
-        for stream in ("stdout", "stderr"):
-            observed = row.get(f"{stream}_bytes_observed")
-            retained = row.get(f"{stream}_bytes_retained")
-            truncated = row.get(f"{stream}_truncated")
-            if (observed is not None and (not isinstance(observed, int) or observed < 0)) \
-                    or (retained is not None
-                        and (not isinstance(retained, int) or retained < 0)) \
-                    or (observed is not None and retained is not None
-                        and retained > observed) \
-                    or (truncated is not None and not isinstance(truncated, bool)):
-                return None
         names.add(row["name"])
-        artifacts = row.get("artifacts")
-        if not isinstance(artifacts, list) or len(artifacts) > 16:
-            return None
-        for artifact in artifacts:
-            if not isinstance(artifact, dict) \
-                    or not isinstance(artifact.get("path"), str) \
-                    or len(artifact["path"]) > 256 \
-                    or not isinstance(artifact.get("size"), int) \
-                    or artifact["size"] < 0 \
-                    or not isinstance(artifact.get("sha256"), str) \
-                    or not _DIGEST_RE.fullmatch(artifact["sha256"]):
-                return None
     failures = document.get("failure_index")
-    if not isinstance(failures, list) or len(failures) > 129:
+    if not isinstance(failures, list) or len(failures) > 128:
         return None
-    for row in failures:
-        if not isinstance(row, dict) \
-                or row.get("status") not in _CHECK_STATES \
-                or (row.get("check") is not None
-                    and not isinstance(row["check"], str)) \
-                or (row.get("reason") is not None
-                    and (not isinstance(row["reason"], str)
-                         or len(row["reason"]) > 512)):
-            return None
+    if not all(_valid_failure(row) for row in failures):
+        return None
     return document
 
 
@@ -253,14 +456,9 @@ def _evidence_row(report: dict) -> dict:
             "name": row.get("name"),
             "status": row.get("status"),
             "duration_seconds": row.get("duration_seconds"),
-            "exit_code": row.get("exit_code"),
+            "exit": row.get("exit"),
             "artifacts": row.get("artifacts", []),
-            "stdout_bytes_observed": row.get("stdout_bytes_observed"),
-            "stdout_bytes_retained": row.get("stdout_bytes_retained"),
-            "stdout_truncated": row.get("stdout_truncated"),
-            "stderr_bytes_observed": row.get("stderr_bytes_observed"),
-            "stderr_bytes_retained": row.get("stderr_bytes_retained"),
-            "stderr_truncated": row.get("stderr_truncated"),
+            "streams": row.get("streams", []),
         })
     return {
         "run_id": report.get("run_id"),

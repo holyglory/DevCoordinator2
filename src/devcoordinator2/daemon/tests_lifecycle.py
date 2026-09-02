@@ -632,20 +632,23 @@ class TestLifecycle:
             if not isinstance(row, dict):
                 continue
             projected = {key: row.get(key) for key in (
-                "name", "status", "started_at", "finished_at",
-                "duration_seconds", "exit_code", "output_ref", "log_refs",
-                "stdout_bytes_observed", "stderr_bytes_observed",
+                "name", "tier", "role", "status", "started_at", "finished_at",
+                "duration_seconds", "exit", "streams", "case_count",
             )}
             artifacts = row.get("artifacts", [])
             projected["artifacts"] = artifacts[:8] if isinstance(artifacts, list) else []
             projected["artifacts_truncated"] = isinstance(artifacts, list) \
                 and len(artifacts) > 8
+            cases = row.get("cases", [])
+            projected["cases"] = cases[:32] if isinstance(cases, list) else []
+            projected["cases_truncated"] = bool(row.get("cases_truncated")) \
+                or (isinstance(cases, list) and len(cases) > 32)
             checks.append(projected)
         failures = []
         all_failures = report.get("failure_index", [])
         if not isinstance(all_failures, list):
             all_failures = []
-        for row in all_failures[:64]:
+        for row in all_failures[:16]:
             if isinstance(row, dict):
                 failures.append({key: row.get(key) for key in (
                     "check", "case", "status", "exit", "termination_reason", "source",
@@ -696,12 +699,25 @@ class TestLifecycle:
 
     @staticmethod
     def _aggregate_output_projection(checks: list) -> dict:
-        result = {}
+        result = {"stdout_bytes_observed": 0, "stderr_bytes_observed": 0}
+        streams = []
+        for row in checks:
+            if not isinstance(row, dict):
+                continue
+            if isinstance(row.get("streams"), list):
+                streams.extend(row["streams"])
+            for case in row.get("cases", []) if isinstance(row.get("cases"), list) else []:
+                if isinstance(case, dict) and isinstance(case.get("streams"), list):
+                    streams.extend(case["streams"])
         for stream in ("stdout", "stderr"):
-            observed = sum(
-                row.get(f"{stream}_bytes_observed", 0)
-                for row in checks if isinstance(row, dict))
-            result[f"{stream}_bytes_observed"] = observed
+            result[f"{stream}_bytes_observed"] = sum(
+                row.get("bytes", 0)
+                for row in streams
+                if isinstance(row, dict)
+                and isinstance(row.get("log_ref"), dict)
+                and row["log_ref"].get("stream") == stream
+                and isinstance(row.get("bytes"), int)
+            )
         return result
 
     # -- restart recovery --------------------------------------------------
