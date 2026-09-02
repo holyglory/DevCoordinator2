@@ -932,6 +932,7 @@ fn scan_leaf(
         "stderr.meta.json",
         "diagnostics.json",
         "diagnostics",
+        "evidence",
     ];
     if names.iter().any(|name| !allowed.contains(&name.as_str())) {
         return Err(LogQueryError::StoreMalformed);

@@ -32,6 +32,13 @@ Complete logs are written once, directly to stable caller-owned storage:
     stderr.lines
     stderr.meta.json
     diagnostics.json
+    evidence/
+      journey-evidence.json
+      report.json
+      report.md
+      review-queue.json
+      progress.jsonl
+      screenshots/*.png
   checks/<check>/discovery/
     ...
   checks/<check>/cases/<case-id>/
@@ -42,6 +49,12 @@ There is no aggregate copy of child output. Direct checks use phase `check` and
 no case ID; fan-out setup uses phase `discovery`; expanded leaves use phase
 `case` and their declared case ID. The Python systemd wrapper streams its own
 small output to the `executor` folder without a size cap.
+
+The optional `evidence/` directory belongs to that exact leaf. The executor
+passes its absolute location only through `DEVCOORDINATOR_EVIDENCE_DIR`; the
+formal Web UI verifier writes the bundle there automatically. Log catalogue
+metadata remains content-free and ignores the evidence payload, while the same
+leaf retention decision removes the logs and visual bundle together.
 
 Every stream file is created mode 0600 without following symlinks. The writer
 retains every byte, updates SHA-256 and exact LF-defined line counts, records
@@ -152,6 +165,29 @@ offsets. Opaque cursors bind the selector, stream device/inode, snapshot size,
 next coordinate, and query digest. Earlier coordinates remain valid while an
 active file appends. Replacement or expiry produces `cursor_stale` or
 `log_expired`, never an unrelated read.
+
+## Visual journey evidence and feedback
+
+`test.evidence.get` returns a path-free, privacy-safe projection of one exact
+retained run's formal UI bundles. Each step names its route, declared state,
+viewport, timing, action kinds/outcomes, finding kinds, review state, and
+available screenshot identities. It never returns selectors, action values,
+entered values, placeholders, or a filesystem path.
+
+`test.evidence.image` accepts one returned image identity plus a zero-based
+offset and returns at most 180 KiB of verified source bytes as base64. Before
+disclosure, the daemon reopens the exact run/check/phase/case evidence folder
+without following symlinks, validates the PNG dimensions and recorded size,
+and hashes the complete image. Missing retention, an unknown identity, and a
+changed image return distinct `test_evidence_expired`,
+`test_evidence_not_found`, and `test_evidence_tampered` errors.
+
+The administrator-only feedback operations are
+`test.evidence.feedback.create`, `.reply`, `.edit`, `.state`, and `.delete`.
+Creation validates normalized overlay geometry, atomically creates a Plan
+`user_feedback` task, and links the discussion to the immutable image hash.
+Resolve/reopen changes the linked task between done and planned; explicit
+author deletion drops it without erasing Plan or feedback event history.
 
 ## Retention
 

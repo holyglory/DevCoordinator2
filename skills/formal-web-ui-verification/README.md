@@ -106,7 +106,7 @@ expected source value.
 
 The default invocation creates a unique external artifact directory (normally
 under the system temporary root), writes complete `report.json` and `report.md`
-files, `review-queue.json`, bounded `progress.jsonl`, and screenshot pairs, then prints one bounded JSON
+files, `journey-evidence.json`, `review-queue.json`, bounded `progress.jsonl`, and screenshot pairs, then prints one bounded JSON
 receipt with the exit code, coverage, counts, directory, and filenames. Use
 `--json-out` and `--markdown-out` to select known artifact paths; supplying one
 derives the other. Setup/configuration failures use the same bounded receipt and
@@ -116,6 +116,12 @@ effective-config SHA-256 hashes, requested and final paths, every exact
 route/state/viewport cell, sampled-only width coverage, and per-cell
 deployment/source binding status. A sign-in redirect or stale bound deployment
 does not count as checked coverage.
+
+When the verifier runs as a governed DevCoordinator2 check, its automatic
+bundle is written to the private run-leaf evidence directory. The
+`journey-evidence.json` file is the Console-facing, path-free index of ordered
+route/state/viewport cells and their immutable masked screenshots; it expires
+with the same age/depth policy as that run's logs.
 
 Advanced execution, ownership, authentication, changed-selection, cache, and
 readiness schemas are documented in

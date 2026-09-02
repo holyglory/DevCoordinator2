@@ -145,6 +145,19 @@ clearer task caption or explanation. Request and completion are permanent
 as a changed title or outcome. The task rows and all earlier history are
 preserved during the version 10→11 upgrade.
 
+## Schema version 15 (screenshot-anchored Plan feedback, 2026-09-02)
+
+Visual annotations are a durable context layer for ordinary Plan
+`user_feedback` tasks, not a second completion ledger. The evidence PNG stays
+in disposable retained test storage; its immutable run/cell/image identity,
+normalized overlay, and discussion persist in the authority database.
+
+| Table | Fields | Status |
+|---|---|---|
+| `visual_feedback` | feedback_id PK, unique task_id FK, repository/worktree/run/check/phase/case identity, formal run/cell/review identity, screenshot kind/SHA/image id, normalized geometry JSON, root comment id, created/updated/deleted attribution | done |
+| `visual_feedback_comments` | comment_id PK, feedback_id FK, per-thread sequence, current plain body, created/updated/deleted attribution; unique thread sequence | done |
+| `visual_feedback_events` | append-only event_id, feedback/comment identity, event, before/after value, actor, time | done |
+
 ## Reserved ID-prefix namespace
 
 Deterministic opaque TEXT IDs; later phases never migrate existing IDs.
@@ -163,6 +176,8 @@ Deterministic opaque TEXT IDs; later phases never migrate existing IDs.
 | `p` | plan task | random at creation | 8 (done) |
 | `v` | release / preview release | random at creation | 8 (done) |
 | `n` | decision | random at creation | 8 (done) |
+| `f` | screenshot feedback thread | random at creation | 15 (done) |
+| `m` | screenshot feedback comment | random at creation | 15 (done) |
 
 ## Later-phase entities (from the handover's durable-state list)
 

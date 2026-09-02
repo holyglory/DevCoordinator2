@@ -26,6 +26,8 @@ const RECEIPT_MAX_BYTES = 2048;
 const DEFAULT_ARTIFACT_PREFIX = "formal-web-ui-verification-";
 const REPORT_SCHEMA_VERSION = 2;
 const REVIEW_QUEUE_SCHEMA_VERSION = 1;
+const JOURNEY_EVIDENCE_SCHEMA_VERSION = 1;
+const JOURNEY_EVIDENCE_KIND = "formal-web-ui-journey-evidence";
 const MANUAL_REVIEW_SCHEMA_VERSION = 1;
 const MANUAL_REVIEW_KIND = "formal-web-ui-manual-review";
 const REVIEW_QUEUE_KIND = "formal-web-ui-review-queue";
@@ -73,6 +75,7 @@ Options:
   --json-out <path>                 Override the auto-created JSON artifact path.
   --markdown-out <path>             Override the auto-created Markdown artifact path.
   --review-queue-out <path>         Override the generated changed-visual-review queue path.
+  --journey-evidence-out <path>     Override the retained Console journey-evidence manifest path.
   --progress-out <path>             Override the bounded JSON-lines progress artifact path.
   --receipt-only                    Deprecated no-op; bounded receipt output is already the default.
   --human-readable-stdout           Human-only compatibility mode: print the full Markdown report instead of the bounded JSON receipt.
@@ -104,6 +107,26 @@ function pathIsWithin(candidate, root) {
 
 function createDefaultArtifacts() {
   const cwd = fs.realpathSync.native(process.cwd());
+  const governedEvidence = process.env.DEVCOORDINATOR_EVIDENCE_DIR;
+  if (governedEvidence) {
+    if (!path.isAbsolute(governedEvidence)) {
+      throw new Error("DEVCOORDINATOR_EVIDENCE_DIR must be absolute");
+    }
+    fs.mkdirSync(governedEvidence, { recursive: true, mode: 0o700 });
+    const directory = fs.realpathSync.native(governedEvidence);
+    fs.chmodSync(directory, 0o700);
+    return {
+      directory,
+      jsonOut: path.join(directory, "report.json"),
+      markdownOut: path.join(directory, "report.md"),
+      reviewQueueOut: path.join(directory, "review-queue.json"),
+      journeyEvidenceOut: path.join(directory, "journey-evidence.json"),
+      progressOut: path.join(directory, "progress.jsonl"),
+      screenshotDir: path.join(directory, "screenshots"),
+      automatic: true,
+      governed: true,
+    };
+  }
   const roots = [os.tmpdir(), path.join(os.homedir(), ".cache")];
   let lastError;
   for (const candidate of [...new Set(roots.map((item) => path.resolve(item)))]) {
@@ -118,6 +141,7 @@ function createDefaultArtifacts() {
         jsonOut: path.join(directory, "report.json"),
         markdownOut: path.join(directory, "report.md"),
         reviewQueueOut: path.join(directory, "review-queue.json"),
+        journeyEvidenceOut: path.join(directory, "journey-evidence.json"),
         progressOut: path.join(directory, "progress.jsonl"),
         screenshotDir: path.join(directory, "screenshots"),
         automatic: true,
@@ -154,6 +178,10 @@ function resolveArtifactPaths(config, cli, defaults) {
         cli.reviewQueueOut ?? config.reviewQueueOut ?? defaults.reviewQueueOut,
         "reviewQueueOut",
       ),
+      journeyEvidenceOut: normalizeOutputPath(
+        cli.journeyEvidenceOut ?? config.journeyEvidenceOut ?? defaults.journeyEvidenceOut,
+        "journeyEvidenceOut",
+      ),
       progressOut: normalizeOutputPath(
         cli.progressOut ?? config.progressOut ?? defaults.progressOut,
         "progressOut",
@@ -176,6 +204,10 @@ function resolveArtifactPaths(config, cli, defaults) {
     reviewQueueOut: normalizeOutputPath(
       cli.reviewQueueOut ?? config.reviewQueueOut ?? path.join(path.dirname(jsonOut), "review-queue.json"),
       "reviewQueueOut",
+    ),
+    journeyEvidenceOut: normalizeOutputPath(
+      cli.journeyEvidenceOut ?? config.journeyEvidenceOut ?? path.join(path.dirname(jsonOut), "journey-evidence.json"),
+      "journeyEvidenceOut",
     ),
     progressOut: normalizeOutputPath(
       cli.progressOut ?? config.progressOut ?? path.join(path.dirname(jsonOut), "progress.jsonl"),
@@ -251,6 +283,7 @@ function parseArgs(argv) {
     repoRoot: undefined,
     reviewAgainst: undefined,
     reviewQueueOut: undefined,
+    journeyEvidenceOut: undefined,
     progressOut: undefined,
     concurrency: undefined,
     changedPaths: [],
@@ -285,6 +318,8 @@ function parseArgs(argv) {
       cli.markdownOut = next();
     } else if (arg === "--review-queue-out") {
       cli.reviewQueueOut = next();
+    } else if (arg === "--journey-evidence-out") {
+      cli.journeyEvidenceOut = next();
     } else if (arg === "--progress-out") {
       cli.progressOut = next();
     } else if (arg === "--concurrency") {
@@ -1422,7 +1457,13 @@ function normalizeConfig(config, cli, artifacts) {
   )) {
     throw new Error("playwrightModuleDir must be a non-empty path string");
   }
-  const artifactFiles = [artifacts.jsonOut, artifacts.markdownOut, artifacts.reviewQueueOut, artifacts.progressOut];
+  const artifactFiles = [
+    artifacts.jsonOut,
+    artifacts.markdownOut,
+    artifacts.reviewQueueOut,
+    artifacts.journeyEvidenceOut,
+    artifacts.progressOut,
+  ];
   if (new Set(artifactFiles).size !== artifactFiles.length) {
     throw new Error("JSON, Markdown, and review-queue artifact paths must be distinct");
   }
@@ -1449,6 +1490,7 @@ function normalizeConfig(config, cli, artifacts) {
     jsonOut: artifacts.jsonOut,
     markdownOut: artifacts.markdownOut,
     reviewQueueOut: artifacts.reviewQueueOut,
+    journeyEvidenceOut: artifacts.journeyEvidenceOut,
     progressOut: artifacts.progressOut,
     humanReadableStdout: cli.humanReadableStdout,
     browserExecutable: cli.browserExecutable || config.browserExecutable,
@@ -4278,9 +4320,11 @@ async function captureEvidenceScreenshot(page, target, viewport, config, cellId,
     kind,
     path: file,
     mime: "image/png",
+    size: buffer.length,
     sha256: sha256(buffer),
     width: dimensions.width,
     height: dimensions.height,
+    capturedAt: new Date().toISOString(),
   };
 }
 
@@ -5101,6 +5145,115 @@ function writeReviewQueueArtifact(queue, reviewQueueOut) {
   return sha256(bytes);
 }
 
+function journeyScreenshotDescriptor(evidenceOut, screenshot) {
+  if (!screenshot || typeof screenshot.path !== "string") return null;
+  const root = path.dirname(evidenceOut);
+  let absolute;
+  let details;
+  try {
+    const original = fs.lstatSync(screenshot.path);
+    if (!original.isFile() || original.isSymbolicLink()) return null;
+    absolute = fs.realpathSync.native(screenshot.path);
+    details = fs.lstatSync(absolute);
+  } catch {
+    return null;
+  }
+  if (!details.isFile() || details.isSymbolicLink() || !pathIsWithin(absolute, root)) {
+    return null;
+  }
+  const relative = path.relative(root, absolute).split(path.sep).join("/");
+  if (!relative || relative === ".." || relative.startsWith("../")) return null;
+  return {
+    kind: screenshot.kind,
+    path: relative,
+    mime: "image/png",
+    size: details.size,
+    sha256: screenshot.sha256,
+    width: screenshot.width,
+    height: screenshot.height,
+    capturedAt: screenshot.capturedAt || null,
+  };
+}
+
+function writeJourneyEvidenceArtifact(report, evidenceOut) {
+  const reviewByCell = new Map(
+    (report.review?.cells || []).map((cell) => [cell.reviewCellKey, cell]),
+  );
+  const cells = report.pages.map((page) => {
+    const review = reviewByCell.get(page.review?.reviewCellKey);
+    const screenshots = {
+      viewport: journeyScreenshotDescriptor(evidenceOut, page.screenshots?.viewport),
+      fullPage: journeyScreenshotDescriptor(evidenceOut, page.screenshots?.fullPage),
+    };
+    const findings = [];
+    const seenFindings = new Set();
+    for (const finding of page.findings || []) {
+      const key = `${finding.severity}:${finding.rule}`;
+      if (seenFindings.has(key) || findings.length >= 64) continue;
+      seenFindings.add(key);
+      findings.push({ severity: finding.severity, rule: finding.rule });
+    }
+    return {
+      cellId: page.cellId,
+      reviewCellKey: page.review?.reviewCellKey || null,
+      planIndex: page.execution?.planIndex ?? null,
+      targetName: page.target?.name || "Unnamed target",
+      primaryJourney: page.target?.primaryJourney || null,
+      stateName: page.target?.stateName || "base",
+      requestedPath: page.requestedPath || null,
+      finalPath: page.finalPath || null,
+      viewport: page.viewport,
+      startedAt: page.startedAt || null,
+      endedAt: page.endedAt || null,
+      durationMs: page.durationMs ?? null,
+      outcome: page.outcome,
+      httpStatus: page.status,
+      sourceBindingStatus: page.sourceBinding?.status || "unbound",
+      review: review ? {
+        status: review.status,
+        decision: review.decision || null,
+      } : null,
+      actions: (page.actionTimings || []).slice(0, 128).map((action) => ({
+        index: action.index,
+        action: action.action,
+        outcome: action.outcome,
+        durationMs: action.durationMs,
+      })),
+      findings,
+      screenshots,
+    };
+  });
+  const manifest = {
+    schemaVersion: JOURNEY_EVIDENCE_SCHEMA_VERSION,
+    kind: JOURNEY_EVIDENCE_KIND,
+    runId: report.runId,
+    governedRunId: process.env.DEVCOORDINATOR_RUN_ID || null,
+    governedCheck: process.env.DEVCOORDINATOR_CHECK_NAME || null,
+    generatedAt: report.generatedAt,
+    browser: report.browser,
+    coverage: {
+      checkedPages: report.coverage?.checkedPages ?? 0,
+      plannedPages: report.plan?.plannedPageCount ?? report.pages.length,
+      failed: Boolean(report.coverage?.failed),
+      readinessEligible: Boolean(report.coverage?.readinessEligible),
+    },
+    cells,
+  };
+  fs.mkdirSync(path.dirname(evidenceOut), { recursive: true, mode: 0o700 });
+  const bytes = Buffer.from(`${JSON.stringify(manifest, null, 2)}\n`, "utf8");
+  fs.writeFileSync(evidenceOut, bytes, { mode: 0o600 });
+  return {
+    path: evidenceOut,
+    sha256: sha256(bytes),
+    size: bytes.length,
+    cellCount: cells.length,
+    screenshotCount: cells.reduce(
+      (count, cell) => count + Number(Boolean(cell.screenshots.viewport)) + Number(Boolean(cell.screenshots.fullPage)),
+      0,
+    ),
+  };
+}
+
 function summarizeCoverage(pages, config, planCells, review, selection = null) {
   const checkedPages = pages.filter((page) => page.outcome === "checked");
   const failures = [];
@@ -5405,6 +5558,9 @@ function artifactReceipt(artifacts) {
     if (artifacts.reviewQueueOut && fs.existsSync(artifacts.reviewQueueOut)) {
       receipt.reviewQueue = path.relative(jsonDirectory, artifacts.reviewQueueOut) || path.basename(artifacts.reviewQueueOut);
     }
+    if (artifacts.journeyEvidenceOut && fs.existsSync(artifacts.journeyEvidenceOut)) {
+      receipt.journeyEvidence = path.relative(jsonDirectory, artifacts.journeyEvidenceOut) || path.basename(artifacts.journeyEvidenceOut);
+    }
     if (artifacts.screenshotDir && fs.existsSync(artifacts.screenshotDir)) {
       receipt.screenshots = path.relative(jsonDirectory, artifacts.screenshotDir) || path.basename(artifacts.screenshotDir);
     }
@@ -5418,6 +5574,9 @@ function artifactReceipt(artifacts) {
     markdown: artifacts.markdownOut,
     ...(artifacts.reviewQueueOut && fs.existsSync(artifacts.reviewQueueOut)
       ? { reviewQueue: artifacts.reviewQueueOut }
+      : {}),
+    ...(artifacts.journeyEvidenceOut && fs.existsSync(artifacts.journeyEvidenceOut)
+      ? { journeyEvidence: artifacts.journeyEvidenceOut }
       : {}),
     ...(artifacts.screenshotDir && fs.existsSync(artifacts.screenshotDir)
       ? { screenshots: artifacts.screenshotDir }
@@ -5436,6 +5595,7 @@ function emitReceipt(receipt) {
           json: path.basename(receipt.artifacts.json || "report.json"),
           markdown: path.basename(receipt.artifacts.markdown || "report.md"),
           reviewQueue: path.basename(receipt.artifacts.reviewQueue || "review-queue.json"),
+          journeyEvidence: path.basename(receipt.artifacts.journeyEvidence || "journey-evidence.json"),
           screenshots: path.basename(receipt.artifacts.screenshots || "screenshots"),
           progress: path.basename(receipt.artifacts.progress || "progress.jsonl"),
           pathOmittedForBound: true,
@@ -6165,6 +6325,7 @@ async function main() {
   report.generatedAt = report.endedAt;
   report.durationMs = Math.max(0, Date.parse(report.endedAt) - Date.parse(report.startedAt));
   finalizeProgress(config, report);
+  report.evidence.journey = writeJourneyEvidenceArtifact(report, config.journeyEvidenceOut);
   const markdown = markdownReport(report);
   writeReportArtifacts(report, markdown, activeArtifacts);
   const failThreshold = SEVERITY_ORDER[config.rules.failOn];

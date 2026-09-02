@@ -152,6 +152,29 @@ not contradict them.
   context; range reads an exact line or byte interval; failure-context applies
   the deterministic REQ-TEST-21 ranking. No command performs language-model
   summarization or returns an unbounded stream.
+- **REQ-TEST-23** (2026-09-02, done): A formal Web UI check running under the
+  governed executor receives one private run/leaf evidence directory and
+  publishes `journey-evidence.json` there. The strict manifest orders every
+  declared route/state/viewport cell, records only action kinds/outcomes and
+  finding kinds, and binds its masked viewport/full-page PNGs by actual size,
+  dimensions, and SHA-256. It contains no action values, selectors,
+  credentials, entered values, placeholders, or absolute paths. The complete
+  bundle is retained and pruned with that exact log leaf.
+- **REQ-TEST-24** (2026-09-02, done): An authenticated Console administrator or
+  trusted local caller can list one exact retained run's privacy-safe journey
+  metadata and request one exact screenshot in bounded chunks. Every request
+  is repository/worktree/run/check/leaf/image-bound, uses no-follow contained
+  reads, validates PNG dimensions and the manifest SHA-256 before disclosure,
+  returns no private filesystem path, and distinguishes absent/expired,
+  unknown, and tampered evidence. The edge keeps no repository filesystem
+  authority.
+- **REQ-TEST-25** (2026-09-02, done): A Console annotation never modifies its
+  evidence PNG. Creating one validates bounded normalized geometry and plain
+  feedback text, atomically creates an ordinary repository `user_feedback`
+  Plan task, and stores the screenshot anchor and discussion alongside that
+  task. Replies, author edits, resolve/reopen, and explicit author deletion are
+  persistent; resolving/reopening/dropping the annotation updates the linked
+  Plan task, and the original task/event history is never erased.
 
 ## Deployments (REQ-DEPLOY, P3)
 

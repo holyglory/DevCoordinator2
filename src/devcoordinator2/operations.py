@@ -80,6 +80,20 @@ OPERATIONS: dict[str, OperationPolicy] = {
         "server", "administrator", "read", idempotent=True),
     "test.log.retention.set": _policy(
         "server", "administrator", "destructive", idempotent=True),
+    "test.evidence.get": _policy(
+        "repository", "administrator", "read", idempotent=True),
+    "test.evidence.image": _policy(
+        "repository", "administrator", "read", idempotent=True),
+    "test.evidence.feedback.create": _policy(
+        "repository", "administrator", "append"),
+    "test.evidence.feedback.reply": _policy(
+        "repository", "administrator", "append"),
+    "test.evidence.feedback.edit": _policy(
+        "repository", "administrator", "reversible"),
+    "test.evidence.feedback.state": _policy(
+        "repository", "administrator", "reversible", idempotent=True),
+    "test.evidence.feedback.delete": _policy(
+        "repository", "administrator", "destructive", idempotent=True),
     "test.stop": _policy("repository", "administrator", "destructive", idempotent=True),
     "test.list": _policy("server", "administrator", "read", idempotent=True),
     "test.capacity.get": _policy("server", "administrator", "read", idempotent=True),

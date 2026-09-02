@@ -403,6 +403,16 @@ def verifier_env() -> dict[str, str]:
     # The command carries an explicit module directory. Leaving NODE_PATH in
     # the child would hide regressions back to cwd/environment-only discovery.
     env.pop("NODE_PATH", None)
+    # A governed self-test is a wrapper that launches many independent verifier
+    # fixtures; nested verifier runs must not all claim the wrapper leaf's one
+    # production evidence bundle. The dedicated governed-evidence case below
+    # adds exact identities back for the single run that proves integration.
+    for name in (
+        "DEVCOORDINATOR_EVIDENCE_DIR",
+        "DEVCOORDINATOR_RUN_ID",
+        "DEVCOORDINATOR_CHECK_NAME",
+    ):
+        env.pop(name, None)
     return env
 
 
@@ -500,6 +510,34 @@ def assert_complete_artifacts(json_out: Path, markdown_out: Path, *, expect: int
         queue = json.loads(queue_path.read_text(encoding="utf-8"))
         if queue.get("kind") != "formal-web-ui-review-queue" or queue.get("runId") != report.get("runId"):
             raise AssertionError(f"Review queue does not belong to the report: {queue_path}")
+        journey = report.get("evidence", {}).get("journey", {})
+        journey_path = Path(str(journey.get("path", "")))
+        if (
+            not journey_path.is_file()
+            or hashlib.sha256(journey_path.read_bytes()).hexdigest() != journey.get("sha256")
+        ):
+            raise AssertionError(f"Journey evidence is missing or not hash-bound: {journey_path}")
+        journey_payload = json.loads(journey_path.read_text(encoding="utf-8"))
+        if (
+            journey_payload.get("kind") != "formal-web-ui-journey-evidence"
+            or journey_payload.get("runId") != report.get("runId")
+            or len(journey_payload.get("cells", [])) != len(report.get("pages", []))
+            or journey.get("cellCount") != len(report.get("pages", []))
+        ):
+            raise AssertionError(f"Journey evidence does not bind the complete run: {journey_path}")
+        journey_root = journey_path.parent.resolve()
+        for cell in journey_payload.get("cells", []):
+            for screenshot in (cell.get("screenshots") or {}).values():
+                if screenshot is None:
+                    continue
+                screenshot_path = (journey_root / screenshot.get("path", "")).resolve()
+                if (
+                    not screenshot_path.is_relative_to(journey_root)
+                    or not screenshot_path.is_file()
+                    or hashlib.sha256(screenshot_path.read_bytes()).hexdigest()
+                    != screenshot.get("sha256")
+                ):
+                    raise AssertionError(f"Journey screenshot is not confined and hash-bound: {screenshot}")
         for page_report in report.get("pages", []):
             if page_report.get("outcome") != "checked":
                 continue
@@ -783,6 +821,7 @@ def main() -> int:
             or "sourceBinding" not in skill_contract
             or "journey_review_contract.md" not in skill_contract
             or "review-queue.json" not in skill_contract
+            or "journey-evidence.json" not in skill_contract
             or "formal_web_ui_review.py" not in skill_contract
             or "secondary-workflow-precedes-primary" not in skill_contract
             or "insufficient-text-contrast" not in skill_contract
@@ -1737,6 +1776,40 @@ if (result.executionCount !== 1 || result.unsafeStop !== 'browser-authority-lost
             raise AssertionError(f"Default artifacts must use a unique per-run directory: {automatic_receipt}")
         if automatic_json.resolve().is_relative_to(audited_worktree.resolve()):
             raise AssertionError("Default artifacts must stay outside the audited repository")
+
+        governed_dir = tmp / "governed-run" / "checks" / "formal-ui" / "check" / "evidence"
+        governed_env = verifier_env()
+        governed_env.update({
+            "DEVCOORDINATOR_EVIDENCE_DIR": str(governed_dir),
+            "DEVCOORDINATOR_RUN_ID": "t20260902T010203Z-abcdef",
+            "DEVCOORDINATOR_CHECK_NAME": "formal-ui",
+        })
+        governed = subprocess.run(
+            verifier_command("--config", str(clean_contract_config)),
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=TIMEOUT_SECONDS,
+            env=governed_env,
+            cwd=audited_worktree,
+        )
+        if governed.returncode != 0 or governed.stderr.strip():
+            raise AssertionError(
+                f"Governed evidence run failed: {governed.returncode}; {governed.stderr!r}")
+        governed_receipt = parse_bounded_receipt(governed.stdout, expect=0)
+        governed_json, governed_markdown = receipt_artifact_paths(governed_receipt)
+        governed_report = assert_complete_artifacts(
+            governed_json, governed_markdown, expect=0)
+        governed_journey = json.loads(
+            (governed_dir / "journey-evidence.json").read_text(encoding="utf-8"))
+        if (
+            governed_json.parent.resolve() != governed_dir.resolve()
+            or governed_journey.get("governedRunId") != "t20260902T010203Z-abcdef"
+            or governed_journey.get("governedCheck") != "formal-ui"
+            or governed_report.get("evidence", {}).get("journey", {}).get("path")
+            != str(governed_dir / "journey-evidence.json")
+        ):
+            raise AssertionError("Governed run evidence did not use and bind its exact leaf directory")
 
         # Commands published while receipt mode was opt-in remain safe: the
         # old CLI flag is accepted as a no-op, never as an output-mode switch.

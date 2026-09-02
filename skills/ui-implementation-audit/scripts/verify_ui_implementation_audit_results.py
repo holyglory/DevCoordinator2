@@ -726,7 +726,7 @@ def verify_aux_report(path: Path, manifest: dict, expected_sections: list[str], 
                 if "blocked" not in formal_body.lower() or bodies.get("findings", "").strip() == "No findings.":
                     issues.append({"path": str(path), "section": "Formal Evidence", "reason": "missing manifest-bound formal config must be BLOCKED with a finding"})
             else:
-                missing_formal_kinds = sorted({"formal-web-verifier", "review-queue", "manual-review"} - formal_kinds)
+                missing_formal_kinds = sorted({"formal-web-verifier", "journey-evidence", "review-queue", "manual-review"} - formal_kinds)
                 if missing_formal_kinds:
                     issues.append({"path": str(path), "section": "Formal Evidence", "reason": "web/hybrid audit must cite imported formal evidence", "missing_kinds": missing_formal_kinds})
         elif formal_body.strip() != "Formal Web UI verification not applicable to declared native platform.":
@@ -738,7 +738,7 @@ def verify_aux_report(path: Path, manifest: dict, expected_sections: list[str], 
             if native_evidence_required(manifest):
                 required_kinds.add("native-snapshot")
             if web_evidence_required(manifest) and manifest.get("_formal_config") is not None:
-                required_kinds.update({"formal-web-verifier", "review-queue", "manual-review"})
+                required_kinds.update({"formal-web-verifier", "journey-evidence", "review-queue", "manual-review"})
             for issue in audit_evidence.validate_references(text, evidence_records, required_kinds=required_kinds):
                 issues.append({"path": str(path), "section": "Visual Evidence", **issue})
             for index, row in enumerate(rendered_rows, start=1):
@@ -886,7 +886,7 @@ def verify_final_report(manifest_path: Path, manifest: dict) -> list[dict]:
     referenced = audit_evidence.evidence_references(text)
     referenced_kinds = {evidence_records[item].get("kind") for item in referenced if item in evidence_records}
     if web_evidence_required(manifest) and manifest.get("_formal_config") is not None:
-        missing = sorted({"formal-web-verifier", "review-queue", "manual-review"} - referenced_kinds)
+        missing = sorted({"formal-web-verifier", "journey-evidence", "review-queue", "manual-review"} - referenced_kinds)
         if missing:
             issues.append({"path": str(path), "section": "Visual Audit Findings", "reason": "final report must cite the imported formal evidence chain", "missing_kinds": missing})
     if web_evidence_required(manifest) and manifest.get("_formal_config") is None:

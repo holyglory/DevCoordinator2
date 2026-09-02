@@ -160,6 +160,40 @@ setting wakes cleanup immediately; active runs are never removed. Both return
 the stored settings and last bounded cleanup state. This requested
 administrator action is immediate and has no second confirmation dialog.
 
+## test.evidence.get | test.evidence.image
+
+`get` requires `path` and `run_id`. It returns one path-free projection of the
+retained formal-UI bundles for that worktree/run: repository/worktree/run
+identity, bundle check/phase/case and formal-run metadata, ordered cells,
+available viewport/full-page screenshot identities, and linked screenshot
+feedback. It returns no image bytes, selector, action value, entered value, or
+absolute path. A retained run with no valid bundle returns
+`status: "unavailable"` plus bounded content-free issue codes.
+
+`image` requires `path`, `run_id`, and an `image_id` returned by `get`; optional
+`offset` defaults to zero and `max_bytes` is 1..184320. The result is
+`{image_id,mime,sha256,total_bytes,offset,bytes,base64,next_offset}`. Every
+request revalidates the exact confined PNG and its complete SHA-256 before
+returning one bounded chunk. Errors distinguish `test_evidence_expired`,
+`test_evidence_not_found`, and `test_evidence_tampered`.
+
+## test.evidence.feedback.*
+
+All operations require `path` and `run_id` and are administrator-only.
+
+- `create` requires one valid `image_id`, 3..2000 characters of plain `body`,
+  and 1..64 normalized marks (`pin|rectangle|arrow|freehand|highlight|text`).
+  It atomically creates a Plan `user_feedback` task and returns the thread.
+- `reply` requires `feedback_id` and `body`.
+- `edit` requires `feedback_id`, `comment_id`, and `body`; only that comment's
+  author may edit it. Editing the root comment also updates the Plan task title
+  and outcome.
+- `state` requires `feedback_id` and `state: open|resolved`; the linked task
+  becomes planned or done.
+- `delete` requires `feedback_id`; only the annotation author may invoke the
+  explicitly labelled destructive action. It drops the linked task but keeps
+  permanent task and feedback event history.
+
 ## test.stop
 
 Args: `path` (required), optional one-line `reason` (3..256 characters).

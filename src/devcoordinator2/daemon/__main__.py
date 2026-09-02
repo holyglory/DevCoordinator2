@@ -20,6 +20,7 @@ from devcoordinator2.daemon.registry import Registry
 from devcoordinator2.daemon.server import Server
 from devcoordinator2.daemon.telegram import Telegram
 from devcoordinator2.daemon.test_capacity import CapacityBroker
+from devcoordinator2.daemon.test_evidence import TestEvidenceService
 from devcoordinator2.daemon.test_logs import TestLogService
 from devcoordinator2.daemon.tests_lifecycle import TestLifecycle
 from devcoordinator2.daemon.usage_api import build_usage_handlers
@@ -41,6 +42,7 @@ def main() -> int:
     registry = Registry(db)
     capacity = CapacityBroker(db, config.capacity_socket_path)
     test_logs = TestLogService(db, registry)
+    test_evidence = TestEvidenceService(db, registry)
     lifecycle = TestLifecycle(config, registry, capacity, test_logs)
     lifecycle.recover()
     test_logs.start()
@@ -48,7 +50,8 @@ def main() -> int:
     deployments = Deployments(config, db, registry)
     deployments.start_expiry_thread()
     handlers = build_handlers(
-        config, registry, lifecycle, deployments, db, capacity, test_logs)
+        config, registry, lifecycle, deployments, db, capacity, test_logs,
+        test_evidence)
     sampler = Sampler(config, db)
     sampler.start()
     handlers.update(build_health_handlers(config, db, registry, sampler))

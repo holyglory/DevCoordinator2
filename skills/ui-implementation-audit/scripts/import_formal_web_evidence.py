@@ -133,21 +133,27 @@ def merge_records(existing: list[dict], imported: list[dict]) -> list[dict]:
     return [by_id[key] for key in sorted(by_id)]
 
 
-def import_bundle(audit_root: Path, run_id: str, report_path: Path, queue_path: Path, review_path: Path) -> dict:
+def import_bundle(audit_root: Path, run_id: str, report_path: Path,
+                  journey_path: Path, queue_path: Path, review_path: Path) -> dict:
     root = audit_root.resolve()
     manifest_path = root / EVIDENCE_FILE
     manifest = load_object(manifest_path, EVIDENCE_FILE)
     if manifest.get("schema_version") != 1 or manifest.get("run_id") != run_id:
         raise ValueError("visual evidence manifest schema or audit run id does not match")
     report_resolved, _ = confined_path(root, report_path, "formal report")
+    journey_resolved, _ = confined_path(root, journey_path, "formal journey evidence")
     queue_resolved, _ = confined_path(root, queue_path, "formal review queue")
     review_resolved, _ = confined_path(root, review_path, "formal manual review")
     report = load_object(report_resolved, "formal report")
+    journey = load_object(journey_resolved, "formal journey evidence")
     queue = load_object(queue_resolved, "formal review queue")
     review = load_object(review_resolved, "formal manual review")
     formal_run_id = report.get("runId")
     if report.get("schemaVersion") != 2 or not isinstance(formal_run_id, str):
         raise ValueError("formal report must use schemaVersion 2 and contain runId")
+    if journey.get("kind") != "formal-web-ui-journey-evidence" \
+            or journey.get("runId") != formal_run_id:
+        raise ValueError("journey evidence does not belong to the formal report")
     if queue.get("kind") != "formal-web-ui-review-queue" or queue.get("runId") != formal_run_id:
         raise ValueError("review queue does not belong to the formal report")
     if review.get("kind") != "formal-web-ui-manual-review" or review.get("reviewedRunId") != formal_run_id:
@@ -162,6 +168,7 @@ def import_bundle(audit_root: Path, run_id: str, report_path: Path, queue_path: 
         raise ValueError("formal report contains no checked pages to import")
     imported = [
         json_record(root, report_resolved, "formal-web", "formal-web-verifier", formal=report),
+        json_record(root, journey_resolved, "formal-journey-evidence", "journey-evidence"),
         json_record(root, queue_resolved, "formal-review-queue", "review-queue"),
         json_record(root, review_resolved, "formal-manual-review", "manual-review"),
     ]
@@ -189,11 +196,14 @@ def main() -> int:
     parser.add_argument("--audit-root", type=Path, required=True)
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--formal-report", type=Path, required=True)
+    parser.add_argument("--journey-evidence", type=Path, required=True)
     parser.add_argument("--review-queue", type=Path, required=True)
     parser.add_argument("--manual-review", type=Path, required=True)
     args = parser.parse_args()
     try:
-        result = import_bundle(args.audit_root, args.run_id, args.formal_report, args.review_queue, args.manual_review)
+        result = import_bundle(
+            args.audit_root, args.run_id, args.formal_report,
+            args.journey_evidence, args.review_queue, args.manual_review)
         print(json.dumps(result, sort_keys=True))
         return 0
     except (OSError, ValueError) as error:

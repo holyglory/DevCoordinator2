@@ -859,6 +859,31 @@ time.sleep(30)
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn governed_leaf_exposes_a_private_retained_evidence_directory() {
+    let repository = Repository::new("visual-evidence-directory");
+    let script = r#"
+import os, pathlib
+root = pathlib.Path(os.environ["DEVCOORDINATOR_EVIDENCE_DIR"])
+root.mkdir(parents=True)
+root.joinpath("journey-evidence.json").write_text('{"kind":"fixture"}')
+"#;
+    let report = execute(plan(
+        &repository,
+        "run-visual-evidence-directory",
+        vec![direct("formal-ui", python(script))],
+    ))
+    .await;
+    assert_eq!(report.checks[0].status, LeafStatus::Passed);
+    let evidence = repository
+        .logs("run-visual-evidence-directory")
+        .join("checks/formal-ui/check/evidence/journey-evidence.json");
+    assert_eq!(
+        fs::read_to_string(evidence).expect("retained journey evidence"),
+        "{\"kind\":\"fixture\"}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn direct_discovery_and_case_logs_use_distinct_stable_leaves() {
     let repository = Repository::new("phase-layout");
     let discovery = r#"

@@ -35,6 +35,11 @@ const P_C2 = 'p1111111111111103'; const P_G1 = 'p1111111111111104';
 const P_D1 = 'p1111111111111105'; const P_FB = 'p1111111111111106';
 const P_LT = 'p1111111111111107'; const P_UNSIZED = 'p1111111111111108';
 const P_UNSIZED_PARENT = 'p1111111111111109';
+const TEST_RUN = 't20260101T000100Z-def456';
+const ONE_PIXEL_PNG = Buffer.from(
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk/x8AAusB9Y9Z4rUAAAAASUVORK5CYII=',
+  'base64',
+);
 
 const progressFixture = (scenario, period = 'day') => {
   const spec = { hour: [3600000, 24], day: [86400000, 7], week: [604800000, 8] }[period];
@@ -245,7 +250,7 @@ const fixtures = (scenario) => {
     'health.history': { subject_kind: 'component', subject_id: `${DEP}/api`, metric: 'cpu_percent', minutes: 60, points: scenario.empty ? [] : points, truncated: false },
     'test.list': { runs: scenario.empty ? [] : [
       { run_id: 't20260101T000000Z-abc123', test: 'unit', requested_tier: 'pre-merge', readiness_eligible: false, status: 'running', started_at: new Date().toISOString(), finished_at: null, duration_seconds: null, exit_code: null, stdout_bytes_observed: 123456789, stderr_bytes_observed: 0, display_name: 'repo-one', worktree_path: '/srv/repos/repo-one', repository_id: REPO, worktree_id: 'w1' },
-      { run_id: 't20260101T000100Z-def456', test: 'integration-with-a-long-name', requested_tier: 'release', readiness_eligible: true, status: 'failed', started_at: new Date(Date.now() - 3600000).toISOString(), finished_at: new Date().toISOString(), duration_seconds: 3599.123, exit_code: 1, stdout_bytes_observed: 10, stderr_bytes_observed: 8388608, display_name: LONG, worktree_path: `/srv/repos/${LONG}`, repository_id: 'r2', worktree_id: 'w2' }] },
+      { run_id: TEST_RUN, test: 'ui-release', requested_tier: 'release', readiness_eligible: true, status: 'failed', started_at: new Date(Date.now() - 3600000).toISOString(), finished_at: new Date().toISOString(), duration_seconds: 3599.123, exit_code: 1, stdout_bytes_observed: 10, stderr_bytes_observed: 8388608, display_name: LONG, worktree_path: `/srv/repos/${LONG}`, repository_id: 'r2', worktree_id: 'w2' }] },
     'test.capacity.get': {
       learned_capacity: 96, effective_capacity: 80, cap: 80, active: scenario.empty ? 0 : 52,
       waiting: scenario.empty ? 0 : 11, paused: false,
@@ -287,7 +292,7 @@ const fixtures = (scenario) => {
     'bug.list': { bugs: scenario.empty ? [] : [{ bug_id: 'b0123456789ab', component: 'api', summary: 'Returns 500 on /export when the report is large', expected: '200 with CSV', actual: '500', steps: '1. open /export 2. choose all-time 3. submit', opened_at: '2026-08-20T10:00:00Z', last_seen_at: new Date().toISOString(), occurrences: 42, reporter: 'dev@example.test', correlations: { deployment_id: DEP } }], store: '/bugs' },
     'user.list': { users: [{ user_id: 'u1', email: 'owner@example.test', administrator: true, grants: [], last_seen_at: new Date().toISOString() }, { user_id: 'u2', email: `${'verylongmailboxname'.repeat(3)}@example.test`, administrator: false, grants: [{ deployment_id: DEP, role: 'operator', granted_at: 't' }], last_seen_at: null }], invitations: [{ invitation_id: 'i1', email: 'new@example.test', administrator: false, grants: [{ deployment_id: DEP, role: 'viewer' }], created_at: 't', created_by: 'owner', expires_at: '2026-09-06T00:00:00Z' }], roles: ['access', 'viewer', 'operator', 'administrator'], owners: ['owner@example.test'] },
     'telegram.list': { configured: true, chats: [{ chat_id: 4242, email: 'owner@example.test', label: 'Owner', linked_at: 't', subscriptions: ['server', `deployment:${DEP}`] }], outbox_pending: 0, last_poll_at: new Date().toISOString(), last_error: null },
-    ping: { daemon_version: '0.1.0', schema_version: 14, socket: '/run/x.sock' },
+    ping: { daemon_version: '0.1.0', schema_version: 15, socket: '/run/x.sock' },
     'plan.overview': {
       repository_id: REPO, display_name: 'repo-one',
       releases: scenario.empty ? [] : [
@@ -342,8 +347,9 @@ const SCENARIOS = {
   progressPartial: { identity: 'owner@example.test', admin: true, partial: true, targetedOnly: true },
   progressReference: { identity: 'owner@example.test', admin: true, progressReference: true, targetedOnly: true },
 };
-const VIEWS = ['#/deployments', `#/deployments/${DEP}`, '#/plan', `#/plan/${REPO}`, '#/progress', `#/progress/${REPO}`, '#/usage', `#/usage/${REPO}`, '#/decisions', `#/decisions/${REPO}`, '#/tests', '#/health', '#/health/containers', '#/bugs', '#/admin'];
+const VIEWS = ['#/deployments', `#/deployments/${DEP}`, '#/plan', `#/plan/${REPO}`, '#/progress', `#/progress/${REPO}`, '#/usage', `#/usage/${REPO}`, '#/decisions', `#/decisions/${REPO}`, '#/tests', `#/tests/${TEST_RUN}`, '#/health', '#/health/containers', '#/bugs', '#/admin'];
 const VIEWPORTS = { wide: { width: 1280, height: 800 }, narrow: { width: 390, height: 844 } };
+const EVIDENCE_WIDE = { width: 1440, height: 1024 };
 const destinationHref = (view) => {
   if (view.startsWith('#/deployments')) return '#/deployments';
   if (view.startsWith('#/plan')) return '#/plan';
@@ -356,7 +362,7 @@ const destinationHref = (view) => {
   return '#/admin';
 };
 const PROJECT_DETAIL_VIEWS = new Set([`#/plan/${REPO}`, `#/progress/${REPO}`, `#/usage/${REPO}`, `#/decisions/${REPO}`]);
-const ADMIN_ONLY = ['health.summary', 'health.containers', 'health.container_remove', 'user.list', 'user.invite', 'user.remove', 'grant.set', 'grant.remove', 'test.list', 'test.start', 'test.stop', 'test.log.catalog', 'test.log.tail', 'test.log.search', 'test.log.range', 'test.log.failure_context', 'test.log.retention.get', 'test.log.retention.set', 'test.capacity.get', 'test.capacity.set', 'deployment.apply', 'deployment.rollback', 'deployment.remove', 'deployment.set_domain', 'task.create', 'task.update', 'release.create', 'release.update', 'release.request', 'release.deliver', 'decision.record', 'decision.summarize'];
+const ADMIN_ONLY = ['health.summary', 'health.containers', 'health.container_remove', 'user.list', 'user.invite', 'user.remove', 'grant.set', 'grant.remove', 'test.list', 'test.start', 'test.stop', 'test.log.catalog', 'test.log.tail', 'test.log.search', 'test.log.range', 'test.log.failure_context', 'test.log.retention.get', 'test.log.retention.set', 'test.evidence.get', 'test.evidence.image', 'test.evidence.feedback.create', 'test.evidence.feedback.reply', 'test.evidence.feedback.edit', 'test.evidence.feedback.state', 'test.evidence.feedback.delete', 'test.capacity.get', 'test.capacity.set', 'deployment.apply', 'deployment.rollback', 'deployment.remove', 'deployment.set_domain', 'task.create', 'task.update', 'release.create', 'release.update', 'release.request', 'release.deliver', 'decision.record', 'decision.summarize'];
 const OPERATOR_ONLY = ['usage.repositories', 'usage.repository', 'progress.repositories', 'progress.repository'];
 
 async function startFakeDaemon(dir) {
@@ -367,7 +373,41 @@ async function startFakeDaemon(dir) {
   const settledWaiters = new Set();
   const receivedWaiters = new Set();
   const delayedReplies = new Set();
-  const mutable = { stopped: false, serviceStopped: false, taskUpdates: new Map(), createdTasks: [], previewRequested: false, failNextTaskUpdate: false, usageCollectionReads: 0, capacityCap: 80, logAge: 86400, logDepth: 3 };
+  const mutable = { stopped: false, serviceStopped: false, taskUpdates: new Map(), createdTasks: [], previewRequested: false, failNextTaskUpdate: false, usageCollectionReads: 0, capacityCap: 80, logAge: 86400, logDepth: 3, evidenceImage: ONE_PIXEL_PNG, evidenceWidth: 1, evidenceHeight: 1, evidenceFeedback: [], feedbackSequence: 0 };
+  const evidenceImage = (imageId, kind = 'viewport') => ({
+    status: 'available', image_id: imageId, kind, mime: 'image/png',
+    size: mutable.evidenceImage.length,
+    sha256: crypto.createHash('sha256').update(mutable.evidenceImage).digest('hex'),
+    width: mutable.evidenceWidth, height: mutable.evidenceHeight,
+    captured_at: new Date(Date.now() - 120000).toISOString(),
+  });
+  const evidenceCell = (index, stateName, viewport, imageId, finding = null) => ({
+    cell_id: `cell-${index}-${viewport.name}`,
+    review_cell_key: String(index).repeat(64).slice(0, 64),
+    plan_index: index,
+    target_name: `Sign in [${stateName}]`, primary_journey: 'sign-in',
+    state_name: stateName, requested_path: '/sign-in', final_path: '/sign-in',
+    viewport, started_at: new Date(Date.now() - 180000).toISOString(),
+    ended_at: new Date(Date.now() - 120000).toISOString(), duration_ms: 2100 + index,
+    outcome: 'checked', http_status: 200, source_binding_status: 'matched',
+    review: { status: 'review-required', decision: null },
+    actions: [{ index: 0, action: 'click', outcome: 'completed', duration_ms: 16 }],
+    findings: finding ? [{ severity: 'warning', rule: finding }] : [],
+    screenshots: { viewport: evidenceImage(imageId), full_page: evidenceImage(`${imageId.slice(0, 63)}f`, 'full-page') },
+  });
+  const evidenceResult = () => ({
+    repository_id: REPO, worktree_id: 'w1', run_id: TEST_RUN, status: 'available',
+    bundles: [{ formal_run_id: 'formal-web-ui-fixture', generated_at: new Date().toISOString(),
+      browser: 'playwright-managed-browser', check: 'formal-ui', phase: 'check', case: null,
+      coverage: { checked_pages: 4, planned_pages: 4, failed: false, readiness_eligible: false },
+      cells: [
+        evidenceCell(0, 'base', { name: 'desktop', width: 1280, height: 800 }, '1'.repeat(64)),
+        evidenceCell(0, 'base', { name: 'mobile', width: 390, height: 844 }, '2'.repeat(64)),
+        evidenceCell(1, 'invalid-password', { name: 'desktop', width: 1280, height: 800 }, '3'.repeat(64), 'insufficient-text-contrast'),
+        evidenceCell(1, 'invalid-password', { name: 'mobile', width: 390, height: 844 }, '4'.repeat(64), 'insufficient-text-contrast'),
+      ] }], feedback: structuredClone(mutable.evidenceFeedback), issues: [],
+    issues_truncated: false, image_count: 8,
+  });
   const planOverview = () => {
     const result = fixtures(scenario)['plan.overview'];
     result.tasks = result.tasks
@@ -445,6 +485,64 @@ async function startFakeDaemon(dir) {
         mutable.logAge = req.args.max_age_seconds; mutable.logDepth = req.args.case_depth;
         return reply({ ok: true, result: { ...fixtures(scenario)['test.log.retention.get'], max_age_seconds: mutable.logAge, case_depth: mutable.logDepth, cleanup_requested: true } });
       }
+      if (cmd === 'test.evidence.get') return reply({ ok: true, result: evidenceResult() });
+      if (cmd === 'test.evidence.image') {
+        const start = req.args.offset || 0;
+        const end = Math.min(mutable.evidenceImage.length, start + (req.args.max_bytes || 184320));
+        return reply({ ok: true, result: {
+          image_id: req.args.image_id, mime: 'image/png',
+          sha256: crypto.createHash('sha256').update(mutable.evidenceImage).digest('hex'),
+          total_bytes: mutable.evidenceImage.length, offset: start, bytes: end - start,
+          base64: mutable.evidenceImage.subarray(start, end).toString('base64'),
+          next_offset: end < mutable.evidenceImage.length ? end : null,
+        } });
+      }
+      if (cmd === 'test.evidence.feedback.create') {
+        mutable.feedbackSequence += 1;
+        const feedbackId = `f${String(mutable.feedbackSequence).padStart(16, '0')}`;
+        const taskId = `pvisual${String(mutable.feedbackSequence).padStart(10, '0')}`;
+        const commentId = `mroot${String(mutable.feedbackSequence).padStart(11, '0')}`;
+        const now = new Date().toISOString();
+        const feedback = {
+          feedback_id: feedbackId, task_id: taskId, task_status: 'planned', state: 'open',
+          run_id: TEST_RUN, check: 'formal-ui', phase: 'check', case: null,
+          formal_run_id: 'formal-web-ui-fixture', cell_id: 'cell-1-desktop',
+          review_cell_key: '1'.repeat(64), image_id: req.args.image_id,
+          screenshot_kind: 'viewport', screenshot_sha256: crypto.createHash('sha256').update(mutable.evidenceImage).digest('hex'),
+          marks: structuredClone(req.args.marks), author: scenario.identity,
+          created_at: now, updated_at: now, can_delete: true,
+          comments: [{ comment_id: commentId, body: req.args.body, author: scenario.identity,
+            created_at: now, updated_at: now, deleted: false, can_edit: true }],
+          comments_truncated: false,
+        };
+        mutable.evidenceFeedback.push(feedback);
+        mutable.createdTasks.push({ task_id: taskId, parent_task_id: null, release_id: null,
+          seq: 200 + mutable.feedbackSequence, position: 200 + mutable.feedbackSequence,
+          title: `Review: ${req.args.body}`, impact: 'The tested page needs visual attention.',
+          status: 'planned', kind: 'user_feedback', estimated_loc: null,
+          elaboration_needed: false });
+        return reply({ ok: true, result: { task_id: taskId, feedback_id: feedbackId,
+          position: 200 + mutable.feedbackSequence, feedback: structuredClone(feedback) } });
+      }
+      if (cmd.startsWith('test.evidence.feedback.')) {
+        const feedback = mutable.evidenceFeedback.find((item) => item.feedback_id === req.args.feedback_id);
+        if (!feedback) return reply({ ok: false, error: { code: 'args_invalid', message: 'feedback missing', detail: '' } });
+        const now = new Date().toISOString();
+        if (cmd.endsWith('.reply')) {
+          feedback.comments.push({ comment_id: `mreply${String(feedback.comments.length).padStart(10, '0')}`,
+            body: req.args.body, author: scenario.identity, created_at: now,
+            updated_at: now, deleted: false, can_edit: true });
+        } else if (cmd.endsWith('.edit')) {
+          const comment = feedback.comments.find((item) => item.comment_id === req.args.comment_id);
+          if (comment) { comment.body = req.args.body; comment.updated_at = now; }
+        } else if (cmd.endsWith('.state')) {
+          feedback.state = req.args.state; feedback.task_status = req.args.state === 'resolved' ? 'done' : 'planned';
+        } else if (cmd.endsWith('.delete')) {
+          feedback.state = 'deleted'; feedback.task_status = 'dropped'; feedback.can_delete = false;
+        }
+        feedback.updated_at = now;
+        return reply({ ok: true, result: { feedback: structuredClone(feedback) } });
+      }
       if (['deployment.restart', 'deployment.apply', 'deployment.rollback', 'deployment.remove', 'bug.report', 'bug.close', 'user.invite', 'user.remove', 'grant.set', 'grant.remove', 'telegram.link', 'telegram.subscribe', 'telegram.unsubscribe', 'test.stop', 'test.start', 'health.container_remove'].includes(cmd)) return reply({ ok: true, result: { state: 'done', status: 'done' } });
       if (cmd === 'plan.overview' && !req.args.repository_id) return reply({ ok: true, result: fixtures(scenario)['plan.overview-list'] });
       if (cmd === 'plan.overview') return reply({ ok: true, result: planOverview() });
@@ -489,7 +587,8 @@ async function startFakeDaemon(dir) {
   return {
     socketPath,
     calls,
-    setScenario: (s) => { for (const release of delayedReplies) release(); delayedReplies.clear(); scenario = s; mutable.stopped = false; mutable.serviceStopped = false; mutable.taskUpdates.clear(); mutable.createdTasks.length = 0; mutable.previewRequested = false; mutable.failNextTaskUpdate = false; mutable.usageCollectionReads = 0; mutable.capacityCap = 80; mutable.logAge = 86400; mutable.logDepth = 3; calls.length = 0; },
+    setScenario: (s) => { for (const release of delayedReplies) release(); delayedReplies.clear(); scenario = s; mutable.stopped = false; mutable.serviceStopped = false; mutable.taskUpdates.clear(); mutable.createdTasks.length = 0; mutable.previewRequested = false; mutable.failNextTaskUpdate = false; mutable.usageCollectionReads = 0; mutable.capacityCap = 80; mutable.logAge = 86400; mutable.logDepth = 3; mutable.evidenceFeedback.length = 0; mutable.feedbackSequence = 0; calls.length = 0; },
+    setEvidenceImage: (bytes, width, height) => { mutable.evidenceImage = Buffer.from(bytes); mutable.evidenceWidth = width; mutable.evidenceHeight = height; },
     failNextTaskUpdate: () => { mutable.failNextTaskUpdate = true; },
     releaseDelayed: () => { for (const release of delayedReplies) release(); delayedReplies.clear(); },
     waitForReceivedAfter: (after) => {
@@ -537,20 +636,43 @@ async function main() {
     const { cookie } = sessions.issue({ sub: 'sub', email: scenario.identity, name: 'Verifier' });
     const holdView = process.env.CONSOLE_VERIFY_HOLD_VIEW || `#/deployments/${DEP}`;
     const targetUrl = `http://${HOST}:${port}/${holdView}`;
+    if (holdView.startsWith('#/tests/')) {
+      const captureBrowser = await pw.chromium.launch({ args: [`--host-resolver-rules=MAP *.${BASE} 127.0.0.1`] });
+      const captureContext = await captureBrowser.newContext({ viewport: EVIDENCE_WIDE });
+      await captureContext.addCookies([{ name: 'dc2_session', value: cookie.split(';')[0].split('=')[1], domain: `.${BASE}`, path: '/' }]);
+      const capturePage = await captureContext.newPage();
+      await capturePage.goto(`http://${HOST}:${port}/#/tests`);
+      await capturePage.waitForSelector('.tests-tablewrap');
+      await capturePage.evaluate(() => document.querySelector('#toasts')?.replaceChildren());
+      daemon.setEvidenceImage(
+        await capturePage.screenshot({ type: 'png' }),
+        EVIDENCE_WIDE.width,
+        EVIDENCE_WIDE.height,
+      );
+      await captureBrowser.close();
+    }
     let previewServer = null;
     let previewUrl = targetUrl;
     if (process.env.CONSOLE_VERIFY_SHARE_PREVIEW === '1') {
       const [sessionCookie] = cookie.split(';');
-      previewServer = http.createServer((_request, response) => {
-        response.writeHead(302, {
-          location: targetUrl,
-          'set-cookie': `${sessionCookie}; Path=/; HttpOnly; SameSite=Lax`,
-          'cache-control': 'no-store',
+      previewServer = http.createServer((request, response) => {
+        const upstream = http.request({
+          host: '127.0.0.1', port, method: request.method, path: request.url,
+          headers: { ...request.headers, host: HOST, cookie: sessionCookie },
+        }, (incoming) => {
+          response.writeHead(incoming.statusCode || 502, {
+            ...incoming.headers, 'cache-control': 'no-store',
+          });
+          incoming.pipe(response);
         });
-        response.end();
+        upstream.on('error', (error) => {
+          if (!response.headersSent) response.writeHead(502, { 'content-type': 'text/plain' });
+          response.end(`Preview proxy unavailable: ${error.message}`);
+        });
+        request.pipe(upstream);
       });
       await new Promise((resolve) => previewServer.listen(0, '127.0.0.1', resolve));
-      previewUrl = `http://127.0.0.1:${previewServer.address().port}/`;
+      previewUrl = `http://127.0.0.1:${previewServer.address().port}/${holdView}`;
     }
     const receipt = {
       url: previewUrl,
@@ -616,7 +738,7 @@ async function main() {
           const doc = document.documentElement;
           const overflow = doc.scrollWidth - window.innerWidth;
           const clipped = [...document.querySelectorAll('.tile .v, .health-capacity-value strong, .health-status-item > span, .health-storage-breakdown dt, .health-storage-breakdown dd, h1, .page-heading > strong, .toast')].filter((el) => el.scrollWidth > el.clientWidth + 1).map((el) => el.textContent.slice(0, 40));
-          const buttons = [...document.querySelectorAll('button')].map((b) => ({ text: b.textContent.trim(), visible: b.offsetParent !== null, disabled: b.disabled, x: b.getBoundingClientRect().right, scrollable: !!b.closest('.tablewrap, .gantt-viewport, .usage-chart-scroll') }));
+          const buttons = [...document.querySelectorAll('button')].map((b) => ({ text: b.textContent.trim(), visible: b.offsetParent !== null, disabled: b.disabled, x: b.getBoundingClientRect().right, scrollable: !!b.closest('.tablewrap, .gantt-viewport, .usage-chart-scroll, .evidence-toolbar, .evidence-variants, #evidence-step-list') }));
           const offscreen = buttons.filter((b) => b.visible && b.x > window.innerWidth + 1 && !b.scrollable);
           const planControls = document.querySelectorAll('[data-move-task], [data-drag-task], #comment-form, [data-cmd="release.request"]').length;
           const elaborationControls = document.querySelectorAll('[data-elaborate-task]').length;
@@ -686,7 +808,7 @@ async function main() {
           check(`${label}: project context uses one custom DOM picker`, metrics.projectPickerCount === 1 && metrics.projectNativeSelectCount === 0, JSON.stringify({ pickers: metrics.projectPickerCount, nativeSelects: metrics.projectNativeSelectCount }));
         }
         if (scenarioName === 'loading') check(`${label}: loading state visible`, metrics.skeleton || /Loading/.test(metrics.text));
-        if (scenarioName === 'empty' && !view.includes(DEP) && view !== '#/admin') check(`${label}: explicit empty state`, /No (deployments|test runs|open bugs|containers|repositories|plan|decisions|provider-reported|open work)/.test(metrics.text), metrics.text.slice(0, 120));
+        if (scenarioName === 'empty' && !view.includes(DEP) && view !== '#/admin') check(`${label}: explicit empty state`, /No (deployments|test runs|visual evidence|open bugs|containers|repositories|plan|decisions|provider-reported|open work)/.test(metrics.text), metrics.text.slice(0, 120));
         if (scenarioName === 'error') check(`${label}: error state with retry`, /Could not load|Cannot reach/.test(metrics.text) && /Retry/.test(metrics.text), metrics.text.slice(0, 120));
         if (scenarioName === 'denied' && (view === '#/admin' || view === '#/tests' || view === '#/health/containers')) check(`${label}: permission denied shown`, /Permission denied/.test(metrics.notice), metrics.notice.slice(0, 120));
         if (scenarioName === 'denied' && view.startsWith('#/usage')) check(`${label}: usage requires operator access`, /Permission denied/.test(metrics.notice), metrics.notice.slice(0, 120));
@@ -985,8 +1107,10 @@ async function main() {
     && /Readiness proof/.test(await page.locator('.tests-tablewrap tbody tr').nth(1).innerText()));
   await page.click('#test-log-retention-open');
   await page.waitForSelector('dialog#test-log-retention-dialog[open]');
-  await page.fill('#test-log-retention-form [name=max_age_hours]', '2');
-  await page.fill('#test-log-retention-form [name=case_depth]', '5');
+  const retentionAge = page.locator('#test-log-retention-form [name=max_age_hours]');
+  const retentionDepth = page.locator('#test-log-retention-form [name=case_depth]');
+  await retentionAge.fill('2'); await retentionAge.blur();
+  await retentionDepth.fill('5'); await retentionDepth.blur();
   check('interaction: retention form accepts both edited boundaries',
     await page.inputValue('#test-log-retention-form [name=max_age_hours]') === '2'
     && await page.inputValue('#test-log-retention-form [name=case_depth]') === '5',
@@ -1061,6 +1185,188 @@ async function main() {
   await waitForSettledCall(daemon, page, 'test.start');
   check('interaction: starting a test sends the selected validation tier',
     daemon.calls.some((call) => call.command === 'test.start' && call.args.tier === 'pre-merge'));
+
+  // The visual evidence workspace uses a real capture as its fake-daemon image
+  // so geometry, drawing, zoom, responsive layout, and image chunk assembly are
+  // exercised against realistic pixels rather than a placeholder.
+  await page.setViewportSize(EVIDENCE_WIDE);
+  await page.evaluate(() => document.querySelector('#toasts')?.replaceChildren());
+  const testedPage = await page.screenshot({ type: 'png' });
+  daemon.setEvidenceImage(testedPage, EVIDENCE_WIDE.width, EVIDENCE_WIDE.height);
+  daemon.calls.length = 0;
+  await page.goto(`http://${HOST}:${port}/#/tests/${TEST_RUN}`);
+  await page.waitForSelector('#evidence-image:not([hidden])');
+  await page.waitForFunction(() => document.querySelector('#evidence-canvas')?.dataset.draftCount === '0');
+  check('visual evidence: metadata loads before bounded image chunks',
+    daemon.calls.findIndex((call) => call.command === 'test.evidence.get') >= 0
+    && daemon.calls.findIndex((call) => call.command === 'test.evidence.image')
+      > daemon.calls.findIndex((call) => call.command === 'test.evidence.get'));
+  check('visual evidence: the real screenshot is primary with journey and capture context',
+    await page.locator('.evidence-step').count() === 2
+    && await page.locator('#evidence-image').count() === 1
+    && /Step 1 of 2/.test(await page.innerText('#evidence-current'))
+    && /Capture details/.test(await page.innerText('#evidence-inspector')));
+  await page.screenshot({ path: path.join(OUT, 'test-evidence-review-wide.png'), fullPage: true });
+
+  await page.click('[data-evidence-step="step-2"]');
+  await page.waitForFunction(() => /Step 2 of 2/.test(document.querySelector('#evidence-current')?.textContent || ''));
+  check('interaction: selecting a journey step updates locally without another metadata read',
+    daemon.calls.filter((call) => call.command === 'test.evidence.get').length === 1
+    && /Invalid password/.test(await page.innerText('#evidence-current')));
+  await page.click('[data-evidence-prev]');
+  await page.waitForFunction(() => /Step 1 of 2/.test(document.querySelector('#evidence-current')?.textContent || ''));
+  await page.click('[data-evidence-next]');
+  await page.waitForFunction(() => /Step 2 of 2/.test(document.querySelector('#evidence-current')?.textContent || ''));
+  check('interaction: previous and next controls traverse the same ordered journey locally',
+    daemon.calls.filter((call) => call.command === 'test.evidence.get').length === 1);
+  await page.click('[data-evidence-viewport="mobile"]');
+  await page.waitForFunction(() => /390 × 844/.test(document.querySelector('#evidence-inspector')?.textContent || ''));
+  check('interaction: viewport comparison keeps the same journey moment',
+    /Invalid password/.test(await page.innerText('#evidence-current'))
+    && await page.locator('.evidence-variant.active').count() === 1);
+  await page.click('[data-evidence-viewport="desktop"]');
+  await page.waitForSelector('#evidence-image:not([hidden])');
+  await page.click('[data-evidence-kind="full_page"]');
+  await page.waitForSelector('#evidence-image:not([hidden])');
+  check('interaction: full-page evidence switches without re-reading the journey manifest',
+    daemon.calls.filter((call) => call.command === 'test.evidence.get').length === 1);
+  await page.click('[data-evidence-kind="viewport"]');
+  await page.waitForSelector('#evidence-image:not([hidden])');
+  await page.click('[data-evidence-finding="insufficient-text-contrast"]');
+  check('interaction: an automatic finding returns focus to its exact capture',
+    await page.locator('[data-evidence-finding].active').count() === 1
+    && await page.locator('#evidence-canvas:focus').count() === 1);
+
+  const draw = async (tool, from, to = null) => {
+    await page.click(`[data-evidence-tool="${tool}"]`);
+    const box = await page.locator('#evidence-canvas').boundingBox();
+    const start = { x: box.x + box.width * from[0], y: box.y + box.height * from[1] };
+    if (!to) { await page.mouse.click(start.x, start.y); return; }
+    const finish = { x: box.x + box.width * to[0], y: box.y + box.height * to[1] };
+    await page.mouse.move(start.x, start.y); await page.mouse.down();
+    await page.mouse.move(finish.x, finish.y, { steps: 6 }); await page.mouse.up();
+  };
+  await draw('pin', [.2, .2]);
+  await draw('rectangle', [.32, .3], [.55, .44]);
+  await draw('arrow', [.65, .2], [.55, .34]);
+  await draw('freehand', [.18, .62], [.42, .67]);
+  await draw('highlight', [.52, .62], [.78, .62]);
+  await draw('text', [.35, .78]);
+  await page.fill('.evidence-text-entry', 'Needs more space');
+  await page.press('.evidence-text-entry', 'Enter');
+  check('interaction: every drawing tool creates editable normalized markup',
+    await page.getAttribute('#evidence-canvas', 'data-draft-count') === '6');
+  await page.click('[data-evidence-tool="select"]');
+  let canvasBox = await page.locator('#evidence-canvas').boundingBox();
+  await page.mouse.click(canvasBox.x + canvasBox.width * .42, canvasBox.y + canvasBox.height * .36);
+  check('interaction: Select targets a draft annotation',
+    Boolean(await page.getAttribute('#evidence-canvas', 'data-selected-mark')));
+  await page.keyboard.press('ArrowRight');
+  await page.mouse.move(canvasBox.x + canvasBox.width * .42, canvasBox.y + canvasBox.height * .36);
+  await page.mouse.down();
+  await page.mouse.move(canvasBox.x + canvasBox.width * .47, canvasBox.y + canvasBox.height * .41, { steps: 5 });
+  await page.mouse.up();
+  await page.mouse.move(canvasBox.x + canvasBox.width * .60, canvasBox.y + canvasBox.height * .49);
+  await page.mouse.down();
+  await page.mouse.move(canvasBox.x + canvasBox.width * .70, canvasBox.y + canvasBox.height * .56, { steps: 5 });
+  await page.mouse.up();
+  check('interaction: selected marks support pointer move, resize, and keyboard nudging',
+    await page.getAttribute('#evidence-canvas', 'data-draft-count') === '6');
+  await page.mouse.click(canvasBox.x + canvasBox.width * .35, canvasBox.y + canvasBox.height * .78);
+  await page.keyboard.press('Delete');
+  check('interaction: Delete removes only the selected unsaved mark',
+    await page.getAttribute('#evidence-canvas', 'data-draft-count') === '5');
+  await page.click('[data-evidence-undo]');
+  check('interaction: undo restores the deleted draft mark',
+    await page.getAttribute('#evidence-canvas', 'data-draft-count') === '6');
+  await page.click('[data-evidence-redo]');
+  check('interaction: redo reapplies the draft deletion',
+    await page.getAttribute('#evidence-canvas', 'data-draft-count') === '5');
+  await page.click('[data-evidence-undo]');
+  await page.click('[data-evidence-zoom-in]');
+  const zoomedEvidenceValue = await page.textContent('#evidence-zoom-value');
+  check('interaction: zoom changes the evidence canvas without changing the screenshot',
+    zoomedEvidenceValue === '125%', zoomedEvidenceValue);
+  canvasBox = await page.locator('#evidence-canvas').boundingBox();
+  await page.locator('#evidence-canvas').focus();
+  await page.keyboard.down('Space');
+  await page.mouse.move(canvasBox.x + canvasBox.width * .75, canvasBox.y + canvasBox.height * .5);
+  await page.mouse.down();
+  await page.mouse.move(canvasBox.x + canvasBox.width * .45, canvasBox.y + canvasBox.height * .5, { steps: 6 });
+  await page.mouse.up(); await page.keyboard.up('Space');
+  check('interaction: Space-drag pans a zoomed screenshot',
+    await page.evaluate(() => document.querySelector('#evidence-scroll').scrollLeft > 0));
+  await page.click('[data-evidence-fit]');
+  const fittedEvidenceValue = await page.textContent('#evidence-zoom-value');
+  check('interaction: fit restores the full screenshot view',
+    fittedEvidenceValue === '100%', fittedEvidenceValue);
+  await page.click('[data-evidence-clear]');
+  check('interaction: Clear removes only unsaved markup',
+    await page.getAttribute('#evidence-canvas', 'data-draft-count') === '0');
+  await page.selectOption('#evidence-color', '#ef4444');
+  await draw('pin', [.55, .18]);
+  await page.selectOption('#evidence-color', '#f59e0b');
+  await draw('rectangle', [.30, .12], [.64, .20]);
+  await page.selectOption('#evidence-color', '#4c8dff');
+  await draw('arrow', [.76, .09], [.65, .16]);
+  await page.fill('#evidence-feedback-create [name=body]', 'The primary action needs stronger contrast.');
+  await page.click('#evidence-feedback-create button[type=submit]');
+  await waitForSettledCall(daemon, page, 'test.evidence.feedback.create');
+  const createdFeedback = daemon.calls.find((call) => call.command === 'test.evidence.feedback.create');
+  check('interaction: a marked suggestion creates screenshot feedback with normalized geometry',
+    createdFeedback && createdFeedback.args.marks.length === 3
+    && new Set(createdFeedback.args.marks.map((mark) => mark.type)).size === 3
+    && createdFeedback.args.marks.some((mark) => mark.type === 'pin' && mark.color === '#ef4444')
+    && createdFeedback.args.marks[0].x >= 0 && createdFeedback.args.marks[0].x <= 1);
+  check('visual evidence: saved feedback exposes its real Plan continuation',
+    await page.locator('[data-evidence-open-task]').count() === 1
+    && /Discussion/.test(await page.innerText('#evidence-inspector')));
+  await page.screenshot({ path: path.join(OUT, 'test-evidence-review-feedback-wide.png'), fullPage: true });
+  await page.click('[data-evidence-open-task]');
+  await page.waitForSelector('.plan-workspace');
+  check('interaction: screenshot feedback opens its exact selected Plan task',
+    /The primary action needs stronger contrast/.test(await page.innerText('.plan-selection')));
+  await page.goto(`http://${HOST}:${port}/#/tests/${TEST_RUN}`);
+  await page.waitForSelector('#evidence-image:not([hidden])');
+  await page.click('[data-evidence-feedback]');
+  await page.fill('#evidence-feedback-reply [name=body]', 'Please use the standard primary button treatment.');
+  await page.click('#evidence-feedback-reply button[type=submit]');
+  await waitForSettledCall(daemon, page, 'test.evidence.feedback.reply');
+  check('interaction: replies persist in the selected screenshot thread',
+    await page.locator('.evidence-comment').count() === 2);
+  await page.locator('[data-evidence-edit-comment]').first().click();
+  await page.fill('.evidence-comment-edit [name=body]', 'The primary action needs the normal contrast.');
+  await page.click('.evidence-comment-edit button[type=submit]');
+  await waitForSettledCall(daemon, page, 'test.evidence.feedback.edit');
+  check('interaction: the author can edit their saved wording',
+    /normal contrast/.test(await page.innerText('.evidence-comment')));
+  await page.click('[data-evidence-state="resolved"]');
+  await waitForSettledCall(daemon, page, (call) => call.command === 'test.evidence.feedback.state' && call.args.state === 'resolved');
+  check('interaction: resolving feedback resolves its linked Plan work',
+    /resolved/.test(await page.innerText('.evidence-thread-state')));
+  await page.click('[data-evidence-state="open"]');
+  await waitForSettledCall(daemon, page, (call) => call.command === 'test.evidence.feedback.state' && call.args.state === 'open');
+  check('interaction: resolved feedback can be reopened',
+    /open/.test(await page.innerText('.evidence-thread-state')));
+  await page.setViewportSize(VIEWPORTS.narrow);
+  await page.evaluate(() => document.querySelector('.evidence-page')?.classList.remove('inspector-open'));
+  await page.click('[data-evidence-inspector-toggle]');
+  const narrowEvidence = await page.evaluate(() => ({
+    overflow: document.documentElement.scrollWidth - innerWidth,
+    inspectorOpen: document.querySelector('.evidence-page')?.classList.contains('inspector-open'),
+    canvasWidth: document.querySelector('#evidence-canvas')?.getBoundingClientRect().width,
+  }));
+  check('visual evidence: narrow layout keeps the canvas reachable and uses the feedback bottom sheet',
+    narrowEvidence.overflow <= 0 && narrowEvidence.inspectorOpen && narrowEvidence.canvasWidth > 250,
+    JSON.stringify(narrowEvidence));
+  await page.screenshot({ path: path.join(OUT, 'test-evidence-review-narrow.png'), fullPage: true });
+  await page.setViewportSize(VIEWPORTS.wide);
+  await page.click('[data-evidence-delete]');
+  await waitForSettledCall(daemon, page, 'test.evidence.feedback.delete');
+  check('interaction: the explicit delete action removes the annotation and drops its Plan task',
+    await page.locator('.evidence-thread').count() === 0
+    && daemon.calls.some((call) => call.command === 'test.evidence.feedback.delete'));
+
   await page.goto(`http://${HOST}:${port}/#/bugs`);
   await page.waitForSelector('#bug-form');
   for (const [f, v] of [['component', 'api'], ['summary', 'verify'], ['expected', 'a'], ['actual', 'b'], ['steps', 'c']]) await page.fill(`#bug-form [name=${f}]`, v);
@@ -1075,7 +1381,7 @@ async function main() {
   check('interaction: invite form calls user.invite', daemon.calls.some((c) => c.command === 'user.invite' && c.args.email === 'new2@example.test'));
   await page.waitForFunction(() => /daemon 0\.1\.0/.test(document.querySelector('#server')?.textContent || ''), null, { timeout: 10000 });
   check('admin: the Server line renders daemon version, schema, and route generation',
-    /daemon 0\.1\.0 · schema 14 · route document generation 1/.test(await page.innerText('#server')),
+    /daemon 0\.1\.0 · schema 15 · route document generation 1/.test(await page.innerText('#server')),
     await page.innerText('#server'));
   await page.goto(`http://${HOST}:${port}/#/health/containers`);
   await page.waitForSelector('button[data-cmd="health.container_remove"]');

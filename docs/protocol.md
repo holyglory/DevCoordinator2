@@ -73,6 +73,9 @@ Stable snake_case, terminal (no retry/queue semantics):
 | `repository_archive_blocked` | open work, live resources, or invalid replacement prevents archival |
 | `worktree_busy` | per-worktree start lock not acquired within the bounded wait |
 | `test_not_found` | no current test run for the worktree |
+| `test_evidence_expired` | the exact retained visual run is unavailable under current retention |
+| `test_evidence_not_found` | the requested screenshot identity is absent from that run |
+| `test_evidence_tampered` | the screenshot no longer matches its recorded size, dimensions, or SHA-256 |
 | `test_start_failed` | terminal launch failure (never `queued`) |
 | `tests_draining` | a normal Coordinator upgrade has closed test admission; never queued |
 | `unit_stop_failed` | prior unit would not stop / cgroup not proven empty |

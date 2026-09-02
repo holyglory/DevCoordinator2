@@ -83,6 +83,7 @@ pub(crate) struct ProcessRequest {
     pub scratch: PathBuf,
     pub shared_artifacts: PathBuf,
     pub diagnostics_dir: PathBuf,
+    pub evidence_dir: PathBuf,
     pub log_lease: Arc<RunLogLease>,
     pub log_selector: LeafSelector,
     pub timeout_seconds: Option<u64>,
@@ -239,7 +240,9 @@ pub(crate) async fn run_process(
             };
         }
     };
-    if let Err(error) = prepare_diagnostics_directory(&request.diagnostics_dir).await {
+    if let Err(error) =
+        prepare_private_directory(&request.diagnostics_dir, "diagnostic report").await
+    {
         drop(stdout_writer);
         drop(stderr_writer);
         return ProcessResult {
@@ -296,28 +299,22 @@ pub(crate) async fn run_process(
     result
 }
 
-async fn prepare_diagnostics_directory(path: &PathBuf) -> Result<(), ExecutorError> {
-    tokio::fs::create_dir_all(path).await.map_err(|error| {
-        ExecutorError::new(format!(
-            "cannot create diagnostic report directory: {error}"
-        ))
-    })?;
+async fn prepare_private_directory(path: &PathBuf, label: &str) -> Result<(), ExecutorError> {
+    tokio::fs::create_dir_all(path)
+        .await
+        .map_err(|error| ExecutorError::new(format!("cannot create {label} directory: {error}")))?;
     let diagnostics_metadata = tokio::fs::symlink_metadata(path).await.map_err(|error| {
-        ExecutorError::new(format!(
-            "cannot inspect diagnostic report directory: {error}"
-        ))
+        ExecutorError::new(format!("cannot inspect {label} directory: {error}"))
     })?;
     if !diagnostics_metadata.is_dir() || diagnostics_metadata.file_type().is_symlink() {
-        return Err(ExecutorError::new(
-            "diagnostic report directory is not a real directory",
-        ));
+        return Err(ExecutorError::new(format!(
+            "{label} directory is not a real directory"
+        )));
     }
     tokio::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
         .await
         .map_err(|error| {
-            ExecutorError::new(format!(
-                "cannot protect diagnostic report directory: {error}"
-            ))
+            ExecutorError::new(format!("cannot protect {label} directory: {error}"))
         })?;
     Ok(())
 }
@@ -340,6 +337,7 @@ async fn spawn_process(
         .env("DEVCOORDINATOR_CHECK_SCRATCH", &request.scratch)
         .env("DEVCOORDINATOR_SHARED_ARTIFACTS", &request.shared_artifacts)
         .env("DEVCOORDINATOR_DIAGNOSTICS_DIR", &request.diagnostics_dir)
+        .env("DEVCOORDINATOR_EVIDENCE_DIR", &request.evidence_dir)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

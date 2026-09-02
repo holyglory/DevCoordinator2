@@ -29,6 +29,10 @@ _LOG_SELECTOR = {
     "stream": {"type": "string", "enum": ["stdout", "stderr"]},
     "cursor": {"type": "string", "maxLength": 4096},
 }
+_EVIDENCE_REF = {
+    "path": _PATH,
+    "run_id": {"type": "string", "minLength": 1, "maxLength": 128},
+}
 
 TOOLS = [
     {
@@ -159,6 +163,80 @@ TOOLS = [
                                 "maximum": 315360000},
             "case_depth": {"type": "integer", "minimum": 1, "maximum": 65535},
         }, "required": ["max_age_seconds", "case_depth"],
+           "additionalProperties": False},
+    },
+    {
+        "name": "test_evidence_get",
+        "description": (
+            "List privacy-safe retained UI journey cells, screenshot metadata, "
+            "and linked owner feedback for one governed run. Returns no image bytes."),
+        "inputSchema": {"type": "object", "properties": _EVIDENCE_REF,
+                        "required": ["path", "run_id"],
+                        "additionalProperties": False},
+    },
+    {
+        "name": "test_evidence_image",
+        "description": "Read one integrity-checked screenshot chunk as bounded base64.",
+        "inputSchema": {"type": "object", "properties": {
+            **_EVIDENCE_REF,
+            "image_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+            "offset": {"type": "integer", "minimum": 0, "default": 0},
+            "max_bytes": {"type": "integer", "minimum": 1,
+                          "maximum": 184320, "default": 184320},
+        }, "required": ["path", "run_id", "image_id"],
+           "additionalProperties": False},
+    },
+    {
+        "name": "test_evidence_feedback_create",
+        "description": (
+            "Create a Plan user-feedback task anchored to one exact retained screenshot."),
+        "inputSchema": {"type": "object", "properties": {
+            **_EVIDENCE_REF,
+            "image_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+            "body": {"type": "string", "minLength": 3, "maxLength": 2000},
+            "marks": {"type": "array", "minItems": 1, "maxItems": 64,
+                      "items": {"type": "object"}},
+        }, "required": ["path", "run_id", "image_id", "body", "marks"],
+           "additionalProperties": False},
+    },
+    {
+        "name": "test_evidence_feedback_reply",
+        "description": "Reply to one screenshot feedback thread.",
+        "inputSchema": {"type": "object", "properties": {
+            **_EVIDENCE_REF,
+            "feedback_id": {"type": "string"},
+            "body": {"type": "string", "minLength": 3, "maxLength": 2000},
+        }, "required": ["path", "run_id", "feedback_id", "body"],
+           "additionalProperties": False},
+    },
+    {
+        "name": "test_evidence_feedback_edit",
+        "description": "Edit one comment written by the current administrator.",
+        "inputSchema": {"type": "object", "properties": {
+            **_EVIDENCE_REF,
+            "feedback_id": {"type": "string"},
+            "comment_id": {"type": "string"},
+            "body": {"type": "string", "minLength": 3, "maxLength": 2000},
+        }, "required": ["path", "run_id", "feedback_id", "comment_id", "body"],
+           "additionalProperties": False},
+    },
+    {
+        "name": "test_evidence_feedback_state",
+        "description": "Resolve or reopen screenshot feedback and its linked Plan task.",
+        "inputSchema": {"type": "object", "properties": {
+            **_EVIDENCE_REF,
+            "feedback_id": {"type": "string"},
+            "state": {"type": "string", "enum": ["open", "resolved"]},
+        }, "required": ["path", "run_id", "feedback_id", "state"],
+           "additionalProperties": False},
+    },
+    {
+        "name": "test_evidence_feedback_delete",
+        "description": "Explicitly delete the current administrator's annotation.",
+        "inputSchema": {"type": "object", "properties": {
+            **_EVIDENCE_REF,
+            "feedback_id": {"type": "string"},
+        }, "required": ["path", "run_id", "feedback_id"],
            "additionalProperties": False},
     },
     {
@@ -466,6 +544,13 @@ _TOOL_TO_COMMAND = {
     "test_log_failure_context": "test.log.failure_context",
     "test_log_retention_show": "test.log.retention.get",
     "test_log_retention_set": "test.log.retention.set",
+    "test_evidence_get": "test.evidence.get",
+    "test_evidence_image": "test.evidence.image",
+    "test_evidence_feedback_create": "test.evidence.feedback.create",
+    "test_evidence_feedback_reply": "test.evidence.feedback.reply",
+    "test_evidence_feedback_edit": "test.evidence.feedback.edit",
+    "test_evidence_feedback_state": "test.evidence.feedback.state",
+    "test_evidence_feedback_delete": "test.evidence.feedback.delete",
     "test_stop": "test.stop",
     "test_list": "test.list",
     "test_capacity_show": "test.capacity.get",

@@ -104,7 +104,7 @@ node "$FORMAL_WEB_UI_SKILL_DIR/scripts/formal_web_ui_verify.mjs" \
 Artifact-first output is the software-owned default. With no output paths, the
 verifier creates a unique directory under a safe external runtime root
 (normally the system temporary directory) outside the current audited worktree,
-writes complete `report.json`, `report.md`, `review-queue.json`, bounded
+writes complete `report.json`, `report.md`, `journey-evidence.json`, `review-queue.json`, bounded
 `progress.jsonl`, and redacted
 initial/full-page screenshot artifacts, and emits one bounded JSON receipt
 naming them. Exit codes `0`/`1`/`2`/`3` are preserved. `--json-out` and
@@ -113,6 +113,15 @@ location; if only one is supplied, the verifier derives its companion path.
 Store verbose wrapper, browser, or self-test output under the task's cold log
 directory and inspect only the receipt and targeted report sections in routine
 context.
+
+Inside a governed DevCoordinator2 check, the executor supplies one private
+run/leaf evidence directory. With no explicit output override, the verifier
+writes its complete bundle there, including a strict path-free
+`journey-evidence.json` manifest. That manifest orders every declared
+route/state/viewport cell, binds its masked screenshots by SHA-256 and actual
+dimensions, and omits action values and selectors. The Console may replay this
+manifest while the owning run remains within test-log retention; the original
+PNG files never become editable review state.
 
 Full Markdown stdout is compatibility behavior for an attended human terminal
 only. It requires the explicit `--human-readable-stdout` opt-in and still writes
@@ -259,7 +268,7 @@ skill; callers can always provide explicit `--url` targets instead.
      allowances must name a selector and a reason.
 
 4. **Report evidence**
-   - Keep the complete JSON, Markdown, review queue, and screenshot pairs at the
+   - Keep the complete JSON, Markdown, journey-evidence manifest, review queue, and screenshot pairs at the
      receipt-named artifact paths. Do not paste full artifacts into chat or a
      parent-agent result.
      Return only the outcome, exit code, checked/skipped page counts, critical
@@ -521,7 +530,8 @@ native control text; an overflowing declared exception becomes an
   images after automatic tests; screenshot pixel drift never justifies opening
   an unchanged cell.
 - Keep generated reports outside the product repo unless the user asks to save
-  them there.
+  them there. The executor-supplied private governed-run evidence directory is
+  the reviewed exception; it is retained and pruned with that exact run leaf.
 - For agent-driven runs, keep the default bounded receipt output. A full
   Markdown stdout payload is a context-budget failure even when the report is
   otherwise valid; `--human-readable-stdout` is human-only compatibility.

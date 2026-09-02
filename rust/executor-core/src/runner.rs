@@ -1338,6 +1338,7 @@ fn process_request(
         current.join("scratch").join(&check.name)
     };
     let diagnostics_dir = leaf_log_directory(log_dir, &log_selector).join("diagnostics");
+    let evidence_dir = leaf_log_directory(log_dir, &log_selector).join("evidence");
     ProcessRequest {
         run_id: plan.run_id.clone(),
         check_name: check.name.clone(),
@@ -1348,6 +1349,7 @@ fn process_request(
         scratch,
         shared_artifacts: current.join("artifacts"),
         diagnostics_dir,
+        evidence_dir,
         log_lease,
         log_selector,
         timeout_seconds: check.timeout_seconds,

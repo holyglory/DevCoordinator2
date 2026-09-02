@@ -45,7 +45,7 @@ def _optional_str(args: dict[str, Any], key: str) -> str | None:
 
 def build_handlers(config: InstanceConfig, registry: Registry,
                    lifecycle=None, deployments=None, db=None,
-                   capacity=None, test_logs=None) -> dict[str, Handler]:
+                   capacity=None, test_logs=None, test_evidence=None) -> dict[str, Handler]:
     def ping(args: dict[str, Any], caller: Caller) -> dict[str, Any]:
         _no_args(args)
         return {"daemon_version": __version__, "schema_version": SCHEMA_VERSION,
@@ -255,6 +255,56 @@ def build_handlers(config: InstanceConfig, registry: Registry,
             "test.log.failure_context": log_handler("failure_context"),
             "test.log.retention.get": test_log_retention_get,
             "test.log.retention.set": test_log_retention_set,
+        })
+
+    if test_evidence is not None:
+        def evidence_get(args: dict[str, Any], caller: Caller) -> dict[str, Any]:
+            path = _require_path(args, {"path", "run_id"})
+            return test_evidence.get(path, args.get("run_id"), caller)
+
+        def evidence_image(args: dict[str, Any], caller: Caller) -> dict[str, Any]:
+            path = _require_path(
+                args, {"path", "run_id", "image_id", "offset", "max_bytes"})
+            return test_evidence.image(
+                path, {key: value for key, value in args.items() if key != "path"}, caller)
+
+        def feedback_create(args: dict[str, Any], caller: Caller) -> dict[str, Any]:
+            path = _require_path(
+                args, {"path", "run_id", "image_id", "body", "marks"})
+            return test_evidence.create_feedback(
+                path, {key: value for key, value in args.items() if key != "path"}, caller)
+
+        def feedback_reply(args: dict[str, Any], caller: Caller) -> dict[str, Any]:
+            path = _require_path(
+                args, {"path", "run_id", "feedback_id", "body"})
+            return test_evidence.reply(
+                path, {key: value for key, value in args.items() if key != "path"}, caller)
+
+        def feedback_edit(args: dict[str, Any], caller: Caller) -> dict[str, Any]:
+            path = _require_path(
+                args, {"path", "run_id", "feedback_id", "comment_id", "body"})
+            return test_evidence.edit(
+                path, {key: value for key, value in args.items() if key != "path"}, caller)
+
+        def feedback_state(args: dict[str, Any], caller: Caller) -> dict[str, Any]:
+            path = _require_path(
+                args, {"path", "run_id", "feedback_id", "state"})
+            return test_evidence.set_state(
+                path, {key: value for key, value in args.items() if key != "path"}, caller)
+
+        def feedback_delete(args: dict[str, Any], caller: Caller) -> dict[str, Any]:
+            path = _require_path(args, {"path", "run_id", "feedback_id"})
+            return test_evidence.delete(
+                path, {key: value for key, value in args.items() if key != "path"}, caller)
+
+        handlers.update({
+            "test.evidence.get": evidence_get,
+            "test.evidence.image": evidence_image,
+            "test.evidence.feedback.create": feedback_create,
+            "test.evidence.feedback.reply": feedback_reply,
+            "test.evidence.feedback.edit": feedback_edit,
+            "test.evidence.feedback.state": feedback_state,
+            "test.evidence.feedback.delete": feedback_delete,
         })
 
     if capacity is not None:

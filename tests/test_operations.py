@@ -27,6 +27,11 @@ def test_effect_hints_stay_truthful_for_read_destructive_and_external_operations
     assert policy_for("test.log.catalog").read_only is True
     assert policy_for("test.log.failure_context").read_only is True
     assert policy_for("test.log.retention.set").effect == "destructive"
+    assert policy_for("test.evidence.get").read_only is True
+    assert policy_for("test.evidence.image").read_only is True
+    assert policy_for("test.evidence.feedback.create").effect == "append"
+    assert policy_for("test.evidence.feedback.edit").effect == "reversible"
+    assert policy_for("test.evidence.feedback.delete").effect == "destructive"
     assert "test.output" not in OPERATIONS
 
 

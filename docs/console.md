@@ -114,6 +114,19 @@ a native select.
    focused dialog showing learned/effective capacity, the optional maximum,
    active/waiting leaves, admission pause state, and the last adjustment's
    measured evidence. Saving or clearing the host-wide maximum acts directly.
+   Every run also offers **Evidence**. A retained formal UI bundle opens as the
+   selected three-zone review board: ordered journey states and viewport
+   choices on the left, the immutable screenshot and complete annotation
+   toolbar as the dominant centre workspace, and capture facts, automatic
+   finding kinds, and discussion on the right. Viewport/full-page and
+   desktop/mobile changes are local. On narrow screens the journey becomes a
+   horizontal step picker and the inspector becomes a focused bottom sheet.
+   Select, pin, rectangle, arrow, freehand, highlight, text, colour,
+   undo/redo, zoom, fit, pan, and clear are functional. Saving a marked
+   suggestion atomically creates a Plan `user_feedback` task; replies, author
+   edits, resolve/reopen, and explicitly labelled author deletion remain linked
+   to the exact screenshot. Missing, expired, invalid, tampered, or unauthorized
+   evidence is stated honestly and never replaced with a mock image.
 6. **Health** — host condition first as one aligned capacity group (CPU,
    memory, root filesystem, load/swap) beside a separate operational-status
    group (unhealthy deployments, critical alerts, active tests, total
@@ -191,6 +204,11 @@ explicit permission-denied notice instead of partial data.
 | Test start/stop | `test.start {tier}` / `test.stop` | list re-read; the selected tier is recorded |
 | Test capacity | `test.capacity.get` / `test.capacity.set {cap: integer|null}` | dialog and Tests action re-read learned/effective capacity and the administrator maximum |
 | Test log retention | `test.log.retention.get` / `test.log.retention.set {max_age_seconds, case_depth}` | focused dialog re-reads the stored age/depth boundaries; active logs remain protected |
+| Open visual journey evidence | `test.evidence.get {path, run_id}` followed by bounded `test.evidence.image` chunks for the selected image only | opens the exact run, orders declared route/state/viewport cells, verifies and renders the immutable screenshot without exposing a path |
+| Select journey step, viewport, or viewport/full-page capture | — (client-side) | only the review board selection, thumbnails, capture facts, findings, overlays, and discussion change; the Tests collection is not re-read |
+| Draw screenshot feedback | — (client-side draft) | select/move/resize/delete draft, pin, rectangle, arrow, freehand, highlight, text, colour, undo/redo, zoom, fit, Space-pan, and clear update the canvas truthfully; Clear affects unsaved marks only |
+| Create screenshot feedback | `test.evidence.feedback.create {path, run_id, image_id, body, marks}` | creates the visible thread and an exact repository Plan `user_feedback` task in one transaction |
+| Reply/edit/resolve/reopen/delete screenshot feedback | `test.evidence.feedback.reply/edit/state/delete` | the thread re-renders; root edits update Plan wording, resolve/reopen updates task state, and explicit author deletion drops the task while retaining history |
 | Container remove (orphaned/test only) | `health.container_remove {container_id}` | inventory re-read |
 | Bug report / close | `bug.report` / `bug.close` | list re-read |
 | Invite, remove user, set/remove grant | `user.invite`, `user.remove`, `grant.set`, `grant.remove` | administration re-read |
@@ -222,6 +240,10 @@ no clipped headline text, no off-canvas controls outside scroll containers,
 explicit empty/error/loading/denied states, humanized large numbers; and
 clicks through stop/start/logs/remove/test catalogue and bounded retrieval/bug report/invite/
 container removal proving each calls the API with the expected arguments
+— including visual-evidence metadata-before-image loading, every annotation
+tool, local step/viewport/capture switching, feedback creation into Plan,
+reply/edit/resolve/reopen/delete, immutable-image behaviour, and the narrow
+feedback bottom sheet —
 and re-renders — including Progress period/release-work/exact-value/Plan
 continuation, the Plan drag-and-drop (reorder and cross-release),
 move pop-up, preview request, feedback form, task drop, decision

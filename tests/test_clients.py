@@ -51,7 +51,7 @@ def test_cli_ping_and_register_roundtrip(live, capsys):
     assert rc == 0
     response = json.loads(capsys.readouterr().out)
     assert response["ok"] is True
-    assert response["result"]["schema_version"] == 14
+    assert response["result"]["schema_version"] == 15
 
     rc = cli.main(["repository", "register", str(live.repo)])
     assert rc == 0
@@ -148,6 +148,21 @@ def test_governed_check_cli_argument_mapping(tmp_path):
     ])
     assert cli._to_call(retention) == ("test.log.retention.set", {
         "max_age_seconds": 7200, "case_depth": 5})
+    evidence = cli.build_parser().parse_args([
+        "test", "evidence", "show", path,
+        "--run-id", "t20260902T010203Z-abcdef",
+    ])
+    assert cli._to_call(evidence) == ("test.evidence.get", {
+        "path": path, "run_id": "t20260902T010203Z-abcdef"})
+    feedback = cli.build_parser().parse_args([
+        "test", "evidence", "feedback", "create", path,
+        "--run-id", "t20260902T010203Z-abcdef",
+        "--image-id", "a" * 64, "--body", "Increase button contrast",
+        "--marks-json", '[{"id":"m1","type":"pin","color":"#f59e0b","x":0.5,"y":0.5}]',
+    ])
+    command, arguments = cli._to_call(feedback)
+    assert command == "test.evidence.feedback.create"
+    assert arguments["marks"][0]["type"] == "pin"
     stop = cli.build_parser().parse_args([
         "test", "stop", path, "--reason", "operator cancelled upgrade",
     ])
@@ -341,6 +356,10 @@ def test_mcp_plan_tools_present_owner_controls_absent(live):
     assert {"plan_overview", "task_create", "task_update", "task_history",
             "release_create", "release_deliver", "decision_record",
             "decision_tail", "decision_search", "decision_summarize"} <= tools
+    assert {"test_evidence_get", "test_evidence_image",
+            "test_evidence_feedback_create", "test_evidence_feedback_reply",
+            "test_evidence_feedback_edit", "test_evidence_feedback_state",
+            "test_evidence_feedback_delete"} <= tools
     # The owner's ASAP button and chart reshaping are not agent tools.
     assert "release_request" not in tools and "release_update" not in tools
     assert listed["task_update"]["inputSchema"]["properties"][

@@ -12,7 +12,7 @@ import threading
 from contextlib import contextmanager
 from pathlib import Path
 
-SCHEMA_VERSION = 14
+SCHEMA_VERSION = 15
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (
@@ -473,6 +473,65 @@ CREATE INDEX IF NOT EXISTS test_log_retention_events_time
   ON test_log_retention_events(event_id);
 """
 
+# Schema 15: immutable screenshot anchors and their owner/agent discussion.
+# The linked Plan task remains the authoritative completion item; these tables
+# retain only the visual context and comment projection needed to act on it.
+_SCHEMA_V15 = """
+CREATE TABLE IF NOT EXISTS visual_feedback (
+  feedback_id       TEXT PRIMARY KEY,
+  task_id           TEXT NOT NULL UNIQUE REFERENCES tasks(task_id),
+  repository_id     TEXT NOT NULL REFERENCES repositories(repository_id),
+  worktree_id       TEXT NOT NULL,
+  run_id            TEXT NOT NULL,
+  check_name        TEXT NOT NULL,
+  phase             TEXT NOT NULL,
+  case_id           TEXT,
+  formal_run_id     TEXT NOT NULL,
+  cell_id           TEXT NOT NULL,
+  review_cell_key   TEXT,
+  screenshot_kind   TEXT NOT NULL,
+  screenshot_sha256 TEXT NOT NULL,
+  image_id          TEXT NOT NULL,
+  geometry_json     TEXT NOT NULL,
+  root_comment_id   TEXT NOT NULL,
+  created_at        TEXT NOT NULL,
+  created_by        TEXT NOT NULL,
+  updated_at        TEXT NOT NULL,
+  deleted_at        TEXT,
+  deleted_by        TEXT
+);
+CREATE INDEX IF NOT EXISTS visual_feedback_run
+  ON visual_feedback(repository_id, worktree_id, run_id);
+CREATE INDEX IF NOT EXISTS visual_feedback_image
+  ON visual_feedback(image_id);
+CREATE TABLE IF NOT EXISTS visual_feedback_comments (
+  comment_id  TEXT PRIMARY KEY,
+  feedback_id TEXT NOT NULL REFERENCES visual_feedback(feedback_id),
+  seq         INTEGER NOT NULL,
+  body        TEXT NOT NULL,
+  created_at  TEXT NOT NULL,
+  created_by  TEXT NOT NULL,
+  updated_at  TEXT NOT NULL,
+  deleted_at  TEXT,
+  deleted_by  TEXT,
+  UNIQUE(feedback_id, seq)
+);
+CREATE INDEX IF NOT EXISTS visual_feedback_comments_thread
+  ON visual_feedback_comments(feedback_id, created_at);
+CREATE TABLE IF NOT EXISTS visual_feedback_events (
+  event_id    INTEGER PRIMARY KEY AUTOINCREMENT,
+  feedback_id TEXT NOT NULL REFERENCES visual_feedback(feedback_id),
+  event       TEXT NOT NULL,
+  comment_id  TEXT,
+  from_value  TEXT,
+  to_value    TEXT,
+  actor       TEXT NOT NULL,
+  at          TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS visual_feedback_events_thread
+  ON visual_feedback_events(feedback_id, event_id);
+"""
+
 
 class SchemaMismatch(Exception):
     pass
@@ -536,6 +595,7 @@ class Database:
             self._conn.executescript(_SCHEMA_V12)
             self._conn.executescript(_SCHEMA_V13)
             self._conn.executescript(_SCHEMA_V14)
+            self._conn.executescript(_SCHEMA_V15)
             self._conn.execute(
                 "INSERT OR REPLACE INTO meta(key, value) VALUES('schema_version', ?)",
                 (str(SCHEMA_VERSION),),

@@ -167,6 +167,7 @@ python3 skills/ui-implementation-audit/scripts/import_formal_web_evidence.py \
   --audit-root /tmp/ui-implementation-audit-run \
   --run-id <audit-run-id> \
   --formal-report /tmp/ui-implementation-audit-run/artifacts/report.json \
+  --journey-evidence /tmp/ui-implementation-audit-run/artifacts/journey-evidence.json \
   --review-queue /tmp/ui-implementation-audit-run/artifacts/review-queue.json \
   --manual-review /tmp/ui-implementation-audit-run/artifacts/manual-review.json
 ```

@@ -946,6 +946,7 @@ def write_visual_evidence(out: Path, manifest: dict, *, route: str = "/dashboard
     mobile = artifacts / "mobile.png"
     mobile_full = artifacts / "mobile-full.png"
     formal = artifacts / "formal-web.json"
+    journey_evidence = artifacts / "journey-evidence.json"
     review_queue = artifacts / "review-queue.json"
     manual_review = artifacts / "manual-review.json"
     write_bytes(desktop, PNG_1X1)
@@ -1045,6 +1046,44 @@ def write_visual_evidence(out: Path, manifest: dict, *, route: str = "/dashboard
             indent=2,
         ),
     )
+    write(
+        journey_evidence,
+        json.dumps(
+            {
+                "schemaVersion": 1,
+                "kind": "formal-web-ui-journey-evidence",
+                "runId": "formal-self-test",
+                "governedRunId": None,
+                "governedCheck": None,
+                "generatedAt": "2026-07-10T00:00:00Z",
+                "browser": "chromium",
+                "coverage": {
+                    "checkedPages": 2, "plannedPages": 2,
+                    "failed": False, "readinessEligible": True,
+                },
+                "cells": [
+                    {
+                        "cellId": page["cellId"],
+                        "targetName": "Dashboard",
+                        "stateName": "base",
+                        "outcome": "checked",
+                        "screenshots": {
+                            role: {
+                                **page["screenshots"][role],
+                                "path": Path(page["screenshots"][role]["path"]).name,
+                                "size": Path(page["screenshots"][role]["path"]).stat().st_size,
+                                "kind": "viewport" if role == "viewport" else "full-page",
+                                "capturedAt": "2026-07-10T00:00:00Z",
+                            }
+                            for role in ("viewport", "fullPage")
+                        },
+                    }
+                    for page in pages
+                ],
+            },
+            indent=2,
+        ),
+    )
     formal_sha = hashlib.sha256(formal.read_bytes()).hexdigest()
     write(
         manual_review,
@@ -1093,6 +1132,8 @@ def write_visual_evidence(out: Path, manifest: dict, *, route: str = "/dashboard
             manifest["run_id"],
             "--formal-report",
             str(formal),
+            "--journey-evidence",
+            str(journey_evidence),
             "--review-queue",
             str(review_queue),
             "--manual-review",
@@ -1103,7 +1144,7 @@ def write_visual_evidence(out: Path, manifest: dict, *, route: str = "/dashboard
 
 def formal_evidence_section() -> str:
     return """## Formal Evidence
-Imported formal evidence: evidence:formal-web, evidence:formal-review-queue, and evidence:formal-manual-review. Coverage checked desktop and mobile states with no critical findings, no carried gaps, no visible scrollbars, and no palette risks.
+Imported formal evidence: evidence:formal-web, evidence:formal-journey-evidence, evidence:formal-review-queue, and evidence:formal-manual-review. Coverage checked desktop and mobile states with no critical findings, no carried gaps, no visible scrollbars, and no palette risks.
 """
 
 
@@ -1260,9 +1301,9 @@ Blocked until runtime formal verification and tests can run.
 def write_final_report(out: Path, manifest: dict) -> None:
     platform = manifest["ui_implementation_audit"]["ui_platform"]
     if platform == "hybrid":
-        visual_evidence = "evidence:formal-web, evidence:formal-review-queue, evidence:formal-manual-review, evidence:formal-desktop-cell-viewport, evidence:formal-mobile-cell-viewport, and evidence:native-main"
+        visual_evidence = "evidence:formal-web, evidence:formal-journey-evidence, evidence:formal-review-queue, evidence:formal-manual-review, evidence:formal-desktop-cell-viewport, evidence:formal-mobile-cell-viewport, and evidence:native-main"
     elif platform == "web":
-        visual_evidence = "evidence:formal-web, evidence:formal-review-queue, evidence:formal-manual-review, evidence:formal-desktop-cell-viewport, and evidence:formal-mobile-cell-viewport"
+        visual_evidence = "evidence:formal-web, evidence:formal-journey-evidence, evidence:formal-review-queue, evidence:formal-manual-review, evidence:formal-desktop-cell-viewport, and evidence:formal-mobile-cell-viewport"
     else:
         visual_evidence = "evidence:native-main"
     write(
@@ -1669,7 +1710,7 @@ def main() -> int:
             "final-report.md" in skill_contract and "filename-bearing `REPORT_SAVED`" in skill_contract,
             "skill must keep complete results in cold artifacts with filename-bearing receipts",
         )
-        for token in ("review-queue.json", "formal_web_ui_review.py", "formal-evidence chain", "import_formal_web_evidence.py"):
+        for token in ("journey-evidence", "review-queue.json", "formal_web_ui_review.py", "formal-evidence chain", "import_formal_web_evidence.py"):
             check(token in skill_contract, f"skill contract should preserve changed-review rule: {token}")
         agent_metadata = (ROOT / "agents" / "openai.yaml").read_text(encoding="utf-8")
         check(
@@ -1808,6 +1849,8 @@ def main() -> int:
                 manifest["run_id"],
                 "--formal-report",
                 str(out / "artifacts" / "formal-web.json"),
+                "--journey-evidence",
+                str(out / "artifacts" / "journey-evidence.json"),
                 "--review-queue",
                 str(out / "artifacts" / "review-queue.json"),
                 "--manual-review",
@@ -1844,6 +1887,8 @@ def main() -> int:
                 manifest["run_id"],
                 "--formal-report",
                 str(importer_tamper_out / "artifacts" / "formal-web.json"),
+                "--journey-evidence",
+                str(importer_tamper_out / "artifacts" / "journey-evidence.json"),
                 "--review-queue",
                 str(importer_tamper_out / "artifacts" / "review-queue.json"),
                 "--manual-review",

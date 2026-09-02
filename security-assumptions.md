@@ -129,6 +129,24 @@ untracked `instance/` directory and in the installed instance configuration
 - A source/deployment binding is successful only when a value observed from
   the rendered deployment matches the declared source value. Missing or stale
   evidence remains a coverage failure.
+- Governed formal-verification bundles live only inside the owning caller's
+  private retained run leaf and expire with its test-log age/depth policy.
+  Public Console access is administrator-only, matching complete test logs;
+  deployment viewers and operators cannot list screenshots or comments.
+- The edge receives screenshot bytes only through bounded authenticated JSON
+  requests. It never gains filesystem visibility into repository test state.
+  The root daemon opens an exact repository/worktree/run/check/leaf/image with
+  no-follow traversal, validates PNG metadata and the recorded SHA-256, and
+  discloses at most 180 KiB of source bytes per response. Ordinary metadata
+  contains no absolute path.
+- Screenshot annotations are normalized geometry overlays in the authority
+  database, never mutations of the evidence PNG. A top-level annotation is
+  atomically linked to an ordinary Plan `user_feedback` task; replies and state
+  changes retain attributable history. Only the author may edit their comment
+  or explicitly delete their annotation, while every Console administrator may
+  resolve or reopen the feedback under the existing administrator authority
+  decision (DC2-2026-09-01-IMMEDIATE-ADMIN-ACTIONS,
+  DC2-2026-09-02-VISUAL-EVIDENCE-ACCESS).
 
 ## Operating mode
 

@@ -23,6 +23,7 @@ ALLOWED_KINDS = {
     "formal-web-verifier",
     "review-queue",
     "manual-review",
+    "journey-evidence",
 }
 IMAGE_KINDS = {"screenshot", "native-snapshot"}
 SHA256_VALUE_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -236,6 +237,70 @@ def _validate_manual_review(path: Path, record_id: str) -> tuple[dict[str, Any] 
     return payload, issues
 
 
+def _validate_journey_evidence(path: Path, record_id: str) \
+        -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
+    payload, issues = _load_json_artifact(path, record_id, "journey evidence")
+    if payload is None:
+        return None, issues
+    if payload.get("schemaVersion") != 1 \
+            or payload.get("kind") != "formal-web-ui-journey-evidence":
+        issues.append({"record": record_id, "field": "schema/kind",
+                       "reason": "unsupported formal journey-evidence manifest"})
+    if not isinstance(payload.get("runId"), str) or not payload.get("runId"):
+        issues.append({"record": record_id, "field": "runId",
+                       "reason": "journey evidence requires a formal run id"})
+    for field in ("governedRunId", "governedCheck"):
+        value = payload.get(field)
+        if value is not None and (not isinstance(value, str) or not value):
+            issues.append({"record": record_id, "field": field,
+                           "reason": "governed identity must be null or non-empty text"})
+    cells = payload.get("cells")
+    if not isinstance(cells, list) or len(cells) > 512:
+        issues.append({"record": record_id, "field": "cells",
+                       "reason": "journey evidence cells must be a bounded list"})
+        cells = []
+    seen: set[str] = set()
+    for index, cell in enumerate(cells):
+        if not isinstance(cell, dict):
+            issues.append({"record": record_id, "field": f"cells[{index}]",
+                           "reason": "must be an object"})
+            continue
+        cell_id = cell.get("cellId")
+        if not isinstance(cell_id, str) or not cell_id or cell_id in seen:
+            issues.append({"record": record_id,
+                           "field": f"cells[{index}].cellId",
+                           "reason": "must be unique and non-empty"})
+        else:
+            seen.add(cell_id)
+        for field in ("targetName", "stateName", "outcome"):
+            if not isinstance(cell.get(field), str) or not cell.get(field):
+                issues.append({"record": record_id,
+                               "field": f"cells[{index}].{field}",
+                               "reason": "must be non-empty text"})
+        screenshots = cell.get("screenshots")
+        if not isinstance(screenshots, dict):
+            issues.append({"record": record_id,
+                           "field": f"cells[{index}].screenshots",
+                           "reason": "must preserve viewport/full-page evidence"})
+            continue
+        for name in ("viewport", "fullPage"):
+            screenshot = screenshots.get(name)
+            if screenshot is None:
+                continue
+            if not isinstance(screenshot, dict) \
+                    or not SHA256_VALUE_RE.fullmatch(str(screenshot.get("sha256", ""))):
+                issues.append({"record": record_id,
+                               "field": f"cells[{index}].screenshots.{name}",
+                               "reason": "must bind a screenshot SHA-256"})
+            raw_path = screenshot.get("path") if isinstance(screenshot, dict) else None
+            if not isinstance(raw_path, str) or not raw_path \
+                    or Path(raw_path).is_absolute() or ".." in Path(raw_path).parts:
+                issues.append({"record": record_id,
+                               "field": f"cells[{index}].screenshots.{name}.path",
+                               "reason": "must be a confined path relative to the bundle"})
+    return payload, issues
+
+
 def validate_visual_evidence_manifest(
     audit_root: Path,
     expected_run_id: str,
@@ -267,6 +332,7 @@ def validate_visual_evidence_manifest(
     formal_payloads: dict[str, dict[str, Any]] = {}
     queue_payloads: dict[str, dict[str, Any]] = {}
     review_payloads: dict[str, dict[str, Any]] = {}
+    journey_payloads: dict[str, dict[str, Any]] = {}
     for index, record in enumerate(artifacts):
         if not isinstance(record, dict):
             issues.append({"path": str(path), "record": index, "reason": "artifact record must be an object"})
@@ -299,12 +365,12 @@ def validate_visual_evidence_manifest(
         actual_mime = _detected_mime(data)
         if record.get("mime") != actual_mime:
             issues.append({"path": str(path), "record": record_id, "field": "mime", "expected": actual_mime, "actual": record.get("mime")})
-        metadata_fields = ("captured_by",) if kind in {"review-queue", "manual-review"} else ("route", "state", "captured_by")
+        metadata_fields = ("captured_by",) if kind in {"review-queue", "manual-review", "journey-evidence"} else ("route", "state", "captured_by")
         for field in metadata_fields:
             if not isinstance(record.get(field), str) or len(record.get(field, "").strip()) < 2:
                 issues.append({"path": str(path), "record": record_id, "field": field, "reason": "must be a non-empty metadata string"})
         viewport = record.get("viewport")
-        if kind in {"review-queue", "manual-review"}:
+        if kind in {"review-queue", "manual-review", "journey-evidence"}:
             viewport = None
         elif not isinstance(viewport, dict):
             issues.append({"path": str(path), "record": record_id, "field": "viewport", "reason": "must be an object"})
@@ -358,11 +424,43 @@ def validate_visual_evidence_manifest(
                 issues.extend(review_issues)
                 if loaded is not None:
                     review_payloads[record_id] = loaded
+        if kind == "journey-evidence":
+            if actual_mime != "application/json":
+                issues.append({"path": str(path), "record": record_id,
+                               "field": "mime",
+                               "reason": "journey evidence must be JSON"})
+            else:
+                loaded, journey_issues = _validate_journey_evidence(
+                    artifact_path, record_id)
+                issues.extend(journey_issues)
+                if loaded is not None:
+                    journey_payloads[record_id] = loaded
     screenshot_shas = {
         actual_shas[record_id]
         for record_id, record in records.items()
         if record.get("kind") in IMAGE_KINDS and record_id in actual_shas
     }
+    for journey_id, journey_payload in journey_payloads.items():
+        matching_reports = [
+            report_id for report_id, report in formal_payloads.items()
+            if report.get("runId") == journey_payload.get("runId")
+        ]
+        if not matching_reports:
+            issues.append({"path": str(path), "record": journey_id,
+                           "reason": "journey evidence has no registered formal report for the same run"})
+        for index, cell in enumerate(journey_payload.get("cells", [])):
+            if not isinstance(cell, dict):
+                continue
+            screenshots = cell.get("screenshots") if isinstance(cell.get("screenshots"), dict) else {}
+            for name in ("viewport", "fullPage"):
+                screenshot = screenshots.get(name)
+                if isinstance(screenshot, dict) \
+                        and screenshot.get("sha256") not in screenshot_shas:
+                    issues.append({
+                        "path": str(path), "record": journey_id,
+                        "field": f"cells[{index}].screenshots.{name}.sha256",
+                        "reason": "journey screenshot hash is not registered as screenshot evidence",
+                    })
     for review_id, review_payload in review_payloads.items():
         report_matches = [
             record_id

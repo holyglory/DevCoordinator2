@@ -125,7 +125,7 @@ do not duplicate those rendered judgments.
      screenshots. Finalize decisions with `formal_web_ui_review.py`.
    - Import the completed formal bundle into `visual_evidence.json` using
      `scripts/import_formal_web_evidence.py`; do not transcribe its screenshot,
-     queue, or review records manually.
+     journey-evidence, queue, or review records manually.
    - For native/hybrid, register real `native-snapshot` evidence.
    - Compare rendered results against journeys and mockups. Missing mockups are
      labelled `mockup target missing`, not silently replaced by taste.
@@ -187,6 +187,7 @@ python3 "$UI_IMPLEMENTATION_AUDIT_SKILL_DIR/scripts/import_formal_web_evidence.p
   --audit-root <audit-output> \
   --run-id <audit-run-id> \
   --formal-report <audit-output>/artifacts/report.json \
+  --journey-evidence <audit-output>/artifacts/journey-evidence.json \
   --review-queue <audit-output>/artifacts/review-queue.json \
   --manual-review <audit-output>/artifacts/manual-review.json
 ```

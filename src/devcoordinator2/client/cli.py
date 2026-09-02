@@ -107,6 +107,51 @@ def build_parser() -> argparse.ArgumentParser:
     _add_common(retention_set, with_path=False)
     retention_set.add_argument("--max-age-seconds", type=int, required=True)
     retention_set.add_argument("--case-depth", type=int, required=True)
+    evidence = test_sub.add_parser(
+        "evidence", help="retained visual UI journeys and screenshot feedback")
+    evidence_sub = evidence.add_subparsers(dest="evidence_action", required=True)
+    evidence_show = evidence_sub.add_parser(
+        "show", help="show retained journey steps and screenshot metadata")
+    _add_common(evidence_show)
+    evidence_show.add_argument("--run-id", required=True)
+    evidence_image = evidence_sub.add_parser(
+        "image", help="read one verified screenshot chunk")
+    _add_common(evidence_image)
+    evidence_image.add_argument("--run-id", required=True)
+    evidence_image.add_argument("--image-id", required=True)
+    evidence_image.add_argument("--offset", type=int, default=0)
+    evidence_image.add_argument("--max-bytes", type=int, default=184320)
+    feedback = evidence_sub.add_parser(
+        "feedback", help="create or update screenshot-anchored Plan feedback")
+    feedback_sub = feedback.add_subparsers(dest="feedback_action", required=True)
+    feedback_create = feedback_sub.add_parser("create")
+    _add_common(feedback_create)
+    feedback_create.add_argument("--run-id", required=True)
+    feedback_create.add_argument("--image-id", required=True)
+    feedback_create.add_argument("--body", required=True)
+    feedback_create.add_argument(
+        "--marks-json", required=True,
+        help="JSON array of normalized screenshot annotation marks")
+    feedback_reply = feedback_sub.add_parser("reply")
+    _add_common(feedback_reply)
+    feedback_reply.add_argument("--run-id", required=True)
+    feedback_reply.add_argument("--feedback-id", required=True)
+    feedback_reply.add_argument("--body", required=True)
+    feedback_edit = feedback_sub.add_parser("edit")
+    _add_common(feedback_edit)
+    feedback_edit.add_argument("--run-id", required=True)
+    feedback_edit.add_argument("--feedback-id", required=True)
+    feedback_edit.add_argument("--comment-id", required=True)
+    feedback_edit.add_argument("--body", required=True)
+    feedback_state = feedback_sub.add_parser("state")
+    _add_common(feedback_state)
+    feedback_state.add_argument("--run-id", required=True)
+    feedback_state.add_argument("--feedback-id", required=True)
+    feedback_state.add_argument("state", choices=["open", "resolved"])
+    feedback_delete = feedback_sub.add_parser("delete")
+    _add_common(feedback_delete)
+    feedback_delete.add_argument("--run-id", required=True)
+    feedback_delete.add_argument("--feedback-id", required=True)
     stop = test_sub.add_parser("stop", help="cancel the current run")
     _add_common(stop)
     stop.add_argument("--reason", default=None,
@@ -383,6 +428,32 @@ def _to_call(ns: argparse.Namespace) -> tuple[str, dict]:
                 args.update(limit=ns.limit, context_lines=ns.context_lines,
                             max_bytes=ns.max_bytes)
             return f"test.log.{ns.log_action.replace('-', '_')}", args
+        case ("test", "evidence"):
+            args = {**path_args, "run_id": ns.run_id}
+            if ns.evidence_action == "show":
+                return "test.evidence.get", args
+            if ns.evidence_action == "image":
+                return "test.evidence.image", {
+                    **args, "image_id": ns.image_id, "offset": ns.offset,
+                    "max_bytes": ns.max_bytes,
+                }
+            action = ns.feedback_action
+            args["feedback_id"] = getattr(ns, "feedback_id", None)
+            if args["feedback_id"] is None:
+                args.pop("feedback_id")
+            if action == "create":
+                try:
+                    marks = json.loads(ns.marks_json)
+                except json.JSONDecodeError as exc:
+                    raise SystemExit(f"--marks-json must be valid JSON: {exc}") from exc
+                args.update(image_id=ns.image_id, body=ns.body, marks=marks)
+            elif action == "reply":
+                args["body"] = ns.body
+            elif action == "edit":
+                args.update(comment_id=ns.comment_id, body=ns.body)
+            elif action == "state":
+                args["state"] = ns.state
+            return f"test.evidence.feedback.{action}", args
         case ("test", "stop"):
             return "test.stop", ({**path_args, "reason": ns.reason}
                                  if ns.reason else path_args)

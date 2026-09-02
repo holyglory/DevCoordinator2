@@ -1,3 +1,63 @@
+# Visual test evidence review design QA
+
+final result: passed
+
+## Comparison target
+
+- Source visual truth: `/home/DevCoordinator2/console/design-reference/test-evidence-review-option-3.png`, the third displayed Product Design direction selected by the owner.
+- Browser-rendered implementation: `/tmp/dc2-visual-evidence-console-release/test-evidence-review-feedback-wide.png`.
+- Source pixels: 1487 × 1058. Implementation pixels and CSS viewport: 1440 × 1024 at device scale factor 1. Their aspect ratios differ by less than 0.1%, so the source was judged proportionally at the implementation viewport without crop or frame distortion.
+- State: dark Console, failed UI test run, selected invalid-password journey step, desktop viewport capture, one open feedback thread, and visible pin/rectangle/arrow annotations.
+- Full-view comparison: both artifacts were opened together at original resolution. The final implementation preserves the selected three-zone hierarchy, dominant screenshot, ordered journey rail, compact run context, complete tool strip, capture/finding inspector, annotation discussion, and viewport comparison.
+- Focused comparison: the original-resolution full views keep the toolbar, journey rows, capture facts, annotations, comment actions, and official icons legible; separate crops were not needed.
+
+## Findings
+
+- No actionable P0, P1, or P2 difference remains.
+- The generated concept includes an **Export evidence bundle** control. It is intentionally absent because the owner requested viewing and commenting, not export; adding an inert or unrequested export path would be false product behaviour.
+- The source shows thirteen synthetic steps and three separate comments. The implementation renders the real manifest count and uses one end-to-end fixture thread with three marks; production content grows from factual test evidence rather than invented rows.
+- The implementation uses the existing Console's text status badges instead of generated checkmark glyphs and keeps the established global header. This is deliberate product-system fidelity, not visual drift.
+
+## Required fidelity surfaces
+
+- Fonts and typography: the existing system font stack, weights, compact labels, monospaced run identity, truncation, and wrapping match the Console. Formal checks found no measurable text-contrast failure after the first correction.
+- Spacing and layout rhythm: desktop matches the selected left/canvas/right proportions. Run facts were compressed into the header so the screenshot begins near the source position. At 1180 px and below, the three-column board becomes a horizontal journey picker plus a non-overlapping feedback tray; exact 1179/1180/1181 and 559/560/561 samples pass.
+- Colors and tokens: navy/slate surfaces, cool dividers, blue selection, green pass, amber review, red failure, and annotation colours reuse the product tokens. There are no gradients or decorative effects absent from the Console.
+- Image quality and asset fidelity: evidence PNGs retain their native aspect ratio and become zoomable rather than cropped. All interface icons are official Tabler assets under the repository's existing license; no inline or handcrafted substitute is used.
+- Copy and content: every visible run, route, state, viewport, time, finding, and comment comes from the API or user input. Missing, invalid, expired, tampered, and unauthorized evidence use honest states.
+- States and interactions: select/move/resize/delete, pin, rectangle, arrow, freehand, highlight, text, colour, undo/redo, zoom, fit, Space-pan, clear, step/capture/viewport switching, finding focus, task creation, replies, edits, Plan continuation, resolve/reopen, deletion, and the mobile feedback sheet are all exercised through the rendered UI.
+
+## Browser evidence
+
+- Complete current-source Console matrix: 1,625 checks, zero failures in `/tmp/dc2-visual-evidence-console-release/report.json`.
+- Final focused interaction inventory: 283 checks, zero failures in `/tmp/dc2-visual-evidence-design-final/report.json`.
+- Final formal run `formal-web-ui-mtkn9iwc`: 8/8 exact cells at 390, 559/560/561, 1179/1180/1181, and 1440 px; zero critical findings and passing coverage.
+- All sixteen final viewport/full-page images were inspected; eight pass decisions were finalized with zero gaps in `/tmp/formal-web-ui-verification-jdsp9G/manual-review.json`.
+- Browser console and network failures: none in the complete and focused Console passes.
+
+## Comparison history
+
+1. The first formal capture exposed measurable low-contrast metadata, nested scrolling, collapsed-sheet occlusion, toolbar clipping, and document overflow. The palette, mobile scroll ownership, toolbar sizing, and tray layout were corrected before review.
+2. The first visually clean breakpoint set still made the three-column canvas too narrow at 901 px. The full desktop board now begins above 1180 px; 1180 and below use the readable tablet/mobile composition.
+3. The first source comparison showed a separate four-item run-facts row pushing the screenshot below the source hierarchy. Tier, readiness, and recency moved into the compact run line. The final same-state comparison found no remaining P0/P1/P2 mismatch.
+
+## Implementation checklist
+
+- [x] Match the owner-selected review-board hierarchy and existing Console design system.
+- [x] Keep factual screenshots dominant and immutable.
+- [x] Make every visible review and annotation control work end to end.
+- [x] Turn top-level screenshot suggestions into ordinary Plan feedback.
+- [x] Preserve desktop, tablet, mobile, empty, error, permission, tamper, and retention behaviour.
+- [x] Pass formal geometry/contrast/performance checks and finalized manual image review.
+
+## Follow-up polish
+
+- No follow-up is required for the requested page.
+
+---
+
+## Archived prior design QA
+
 # Repository deployments dashboard design QA
 
 final result: passed

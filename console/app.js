@@ -28,6 +28,23 @@ const state = {
   planScrollLeft: 0,
   planScrollTop: 0,
   planRequestedTaskId: null,
+  evidenceRunId: null,
+  evidenceRun: null,
+  evidenceData: null,
+  evidenceSteps: [],
+  evidenceStepKey: null,
+  evidenceViewport: null,
+  evidenceScreenshotKind: 'viewport',
+  evidenceTool: 'select',
+  evidenceColor: '#f59e0b',
+  evidenceZoom: 1,
+  evidenceDraftMarks: [],
+  evidenceUndo: [],
+  evidenceRedo: [],
+  evidenceSelectedMarkId: null,
+  evidenceSelectedFeedbackId: null,
+  evidenceImageUrls: new Map(),
+  evidenceImagePromises: new Map(),
 };
 const RANGES = {
   '1h': { minutes: 60, points: 60 },
@@ -844,14 +861,775 @@ function openTestLogRetentionDialog(retention, opener) {
   dlg.showModal(); requestAnimationFrame(() => $('[name=max_age_hours]', dlg)?.focus());
 }
 
-const viewTests = guard(async () => {
+const EVIDENCE_TOOLS = [
+  ['select', 'pointer', 'Select'],
+  ['pin', 'message-plus', 'Pin comment'],
+  ['rectangle', 'square', 'Rectangle'],
+  ['arrow', 'arrow-right', 'Arrow'],
+  ['freehand', 'pencil', 'Freehand'],
+  ['highlight', 'highlight', 'Highlight'],
+  ['text', 'letter-t', 'Text'],
+];
+const EVIDENCE_COLORS = [
+  ['#4c8dff', 'Blue'], ['#f59e0b', 'Amber'], ['#ef4444', 'Red'],
+  ['#22c55e', 'Green'], ['#a855f7', 'Purple'], ['#f8fafc', 'White'],
+];
+
+function resetEvidenceImages() {
+  for (const url of state.evidenceImageUrls.values()) URL.revokeObjectURL(url);
+  state.evidenceImageUrls.clear(); state.evidenceImagePromises.clear();
+}
+
+function resetEvidenceDraft() {
+  state.evidenceDraftMarks = [];
+  state.evidenceUndo = [];
+  state.evidenceRedo = [];
+  state.evidenceSelectedMarkId = null;
+  state.evidenceSelectedFeedbackId = null;
+  state.evidenceZoom = 1;
+}
+
+function evidenceStepLabel(value) {
+  const text = String(value || 'Base state').replace(/[-_]+/g, ' ').trim();
+  return text ? text.charAt(0).toUpperCase() + text.slice(1) : 'Base state';
+}
+
+function evidenceSteps(data) {
+  const groups = new Map();
+  for (const bundle of data.bundles || []) {
+    for (const cell of bundle.cells || []) {
+      const targetBase = String(cell.target_name || '').replace(/\s+\[[^\]]+\]$/, '');
+      const identity = [bundle.formal_run_id, cell.primary_journey, targetBase,
+        cell.state_name, cell.requested_path].join('\u0000');
+      if (!groups.has(identity)) {
+        groups.set(identity, {
+          key: `step-${groups.size + 1}`,
+          index: groups.size,
+          label: evidenceStepLabel(cell.state_name),
+          target: targetBase || cell.target_name,
+          journey: cell.primary_journey || targetBase || 'UI journey',
+          route: cell.final_path || cell.requested_path || 'Route unavailable',
+          variants: [],
+        });
+      }
+      groups.get(identity).variants.push({ ...cell, bundle });
+    }
+  }
+  const steps = [...groups.values()];
+  for (const step of steps) {
+    step.variants.sort((left, right) => (right.viewport?.width || 0) - (left.viewport?.width || 0));
+    step.result = step.variants.some((cell) => cell.outcome !== 'checked' || (cell.findings || []).some((finding) => finding.severity === 'critical')) ? 'failed'
+      : step.variants.some((cell) => (cell.findings || []).length || (cell.review?.decision && cell.review.decision !== 'pass')) ? 'attention'
+        : 'passed';
+    step.duration = Math.max(...step.variants.map((cell) => cell.duration_ms || 0));
+  }
+  return steps;
+}
+
+function currentEvidenceSelection() {
+  const step = state.evidenceSteps.find((item) => item.key === state.evidenceStepKey)
+    || state.evidenceSteps[0];
+  if (!step) return { step: null, cell: null, screenshot: null };
+  const cell = step.variants.find((item) => item.viewport?.name === state.evidenceViewport)
+    || step.variants[0];
+  let kind = state.evidenceScreenshotKind;
+  let screenshot = cell.screenshots?.[kind];
+  if (!screenshot || screenshot.status !== 'available') {
+    kind = kind === 'viewport' ? 'full_page' : 'viewport';
+    screenshot = cell.screenshots?.[kind];
+  }
+  if (!screenshot || screenshot.status !== 'available') screenshot = null;
+  state.evidenceStepKey = step.key;
+  state.evidenceViewport = cell.viewport?.name || null;
+  state.evidenceScreenshotKind = kind;
+  return { step, cell, screenshot };
+}
+
+async function evidenceImageUrl(run, image) {
+  if (!image?.image_id) throw new ApiError('test_evidence_not_found', 'Screenshot unavailable');
+  if (state.evidenceImageUrls.has(image.image_id)) return state.evidenceImageUrls.get(image.image_id);
+  if (state.evidenceImagePromises.has(image.image_id)) return state.evidenceImagePromises.get(image.image_id);
+  const promise = (async () => {
+    const chunks = []; let offset = 0; let mime = image.mime || 'image/png';
+    do {
+      const result = await api('test.evidence.image', {
+        path: run.worktree_path, run_id: run.run_id, image_id: image.image_id,
+        offset, max_bytes: 184320,
+      });
+      mime = result.mime || mime;
+      const binary = atob(result.base64 || '');
+      const bytes = new Uint8Array(binary.length);
+      for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+      chunks.push(bytes);
+      offset = result.next_offset;
+    } while (offset != null);
+    const url = URL.createObjectURL(new Blob(chunks, { type: mime }));
+    state.evidenceImageUrls.set(image.image_id, url);
+    state.evidenceImagePromises.delete(image.image_id);
+    return url;
+  })().catch((error) => {
+    state.evidenceImagePromises.delete(image.image_id); throw error;
+  });
+  state.evidenceImagePromises.set(image.image_id, promise);
+  return promise;
+}
+
+function evidenceResultMark(result) {
+  if (result === 'passed') return '<span class="evidence-result ok">Passed</span>';
+  if (result === 'attention') return '<span class="evidence-result warn">Review</span>';
+  return '<span class="evidence-result bad">Failed</span>';
+}
+
+function renderEvidenceRail() {
+  return state.evidenceSteps.map((step, index) => {
+    const active = step.key === state.evidenceStepKey;
+    const preview = step.variants.find((cell) => cell.screenshots?.viewport?.status === 'available')
+      || step.variants.find((cell) => cell.screenshots?.full_page?.status === 'available');
+    const image = preview?.screenshots?.viewport?.status === 'available'
+      ? preview.screenshots.viewport : preview?.screenshots?.full_page;
+    return `<button type="button" class="evidence-step${active ? ' active' : ''}" data-evidence-step="${esc(step.key)}" aria-pressed="${active}">
+      <span class="evidence-step-thumb">${image ? `<img alt="" data-evidence-thumb="${esc(image.image_id)}">` : '<span>Unavailable</span>'}</span>
+      <span class="evidence-step-copy"><strong><i>${index + 1}</i>${esc(step.label)}</strong><small>${esc(step.route)}</small><span>${step.variants.map((cell) => `<b>${esc(cell.viewport?.name || 'viewport')}</b>`).join('')} · ${step.duration ? `${(step.duration / 1000).toFixed(1)}s` : '—'}</span></span>
+      ${evidenceResultMark(step.result)}
+    </button>`;
+  }).join('');
+}
+
+function renderEvidenceVariants(step, selectedCell) {
+  return step.variants.map((cell) => {
+    const image = cell.screenshots?.viewport?.status === 'available'
+      ? cell.screenshots.viewport : cell.screenshots?.full_page;
+    const active = cell === selectedCell;
+    return `<button type="button" class="evidence-variant${active ? ' active' : ''}" data-evidence-viewport="${esc(cell.viewport?.name || '')}" aria-pressed="${active}">
+      <span>${image ? `<img alt="${esc(`${step.label}, ${cell.viewport?.name || 'viewport'}`)}" data-evidence-thumb="${esc(image.image_id)}">` : '<span class="muted">Screenshot unavailable</span>'}</span>
+      <strong>${esc(cell.viewport?.name || 'Viewport')}</strong><small>${esc(cell.viewport?.width)} × ${esc(cell.viewport?.height)}</small>
+    </button>`;
+  }).join('');
+}
+
+function evidenceFindingLabel(rule) {
+  return ({
+    'tiny-interactive-target': 'Small interactive target',
+    'insufficient-text-contrast': 'Low text contrast',
+    'declared-theme-contradiction': 'Theme contradiction',
+    'document-horizontal-overflow': 'Horizontal page overflow',
+    'nested-horizontal-scrollbars': 'Nested horizontal scrolling',
+    'triple-nested-vertical-scrollbars': 'Too many vertical scroll areas',
+    'clipped-x': 'Content clipped horizontally',
+    'clipped-y': 'Content clipped vertically',
+    'clipped-by-ancestor': 'Content cut by its container',
+    'occluded': 'Content covered by another element',
+    'partially-occluded': 'Content partly covered',
+    'broken-image': 'Broken image',
+    'broken-video': 'Broken video',
+    'ttfb-above-threshold': 'Slow server response',
+    'lcp-above-threshold': 'Slow main content rendering',
+    'performance-metric-unavailable': 'Performance evidence unavailable',
+  })[rule] || evidenceStepLabel(rule);
+}
+
+function evidenceFeedbackForImage(imageId) {
+  return (state.evidenceData?.feedback || []).filter((item) => item.image_id === imageId && item.state !== 'deleted');
+}
+
+function renderEvidenceInspector(run, step, cell, screenshot) {
+  const threads = evidenceFeedbackForImage(screenshot?.image_id);
+  const selected = threads.find((item) => item.feedback_id === state.evidenceSelectedFeedbackId);
+  const findings = cell.findings || [];
+  const capture = `<section class="evidence-inspector-section"><h2>Capture details</h2><dl class="evidence-capture-facts">
+    <div><dt>Viewport</dt><dd>${esc(cell.viewport?.name || '—')} · ${esc(cell.viewport?.width)} × ${esc(cell.viewport?.height)}</dd></div>
+    <div><dt>Route</dt><dd>${esc(cell.final_path || cell.requested_path || '—')}</dd></div>
+    <div><dt>State</dt><dd>${esc(step.label)}</dd></div>
+    <div><dt>Captured</dt><dd>${esc(screenshot?.captured_at ? ago(screenshot.captured_at) : 'Unavailable')}</dd></div>
+    <div><dt>Duration</dt><dd>${cell.duration_ms == null ? '—' : `${(cell.duration_ms / 1000).toFixed(1)}s`}</dd></div>
+    <div><dt>Result</dt><dd>${badge(cell.outcome === 'checked' ? 'checked' : cell.outcome, cell.outcome === 'checked' ? 'ok' : 'bad')}</dd></div>
+  </dl></section>`;
+  const automatic = `<section class="evidence-inspector-section"><h2>Automated findings <span>${findings.length}</span></h2>${findings.length ? `<ul class="evidence-findings">${findings.map((finding) => `<li class="${esc(finding.severity)}"><button type="button" data-evidence-finding="${esc(finding.rule)}"><i></i><span><strong>${esc(evidenceFindingLabel(finding.rule))}</strong><small>${esc(finding.severity)}</small></span></button></li>`).join('')}</ul><p class="muted evidence-finding-note" id="evidence-finding-note">Choose a finding to return focus to its capture.</p>` : '<p class="muted">No automatic visual findings for this capture.</p>'}</section>`;
+  const threadList = `<section class="evidence-inspector-section evidence-annotations"><h2>Annotations <span>${threads.length}</span></h2>${threads.length ? threads.map((thread, index) => `<button type="button" class="evidence-thread-summary${selected?.feedback_id === thread.feedback_id ? ' active' : ''}" data-evidence-feedback="${esc(thread.feedback_id)}"><i>${index + 1}</i><span><strong>${esc(thread.comments[0]?.body || 'Visual feedback')}</strong><small>${esc(thread.state)} · ${esc(thread.author)}</small></span></button>`).join('') : '<p class="muted">No feedback on this screenshot yet.</p>'}</section>`;
+  if (!selected) {
+    return `${capture}${automatic}${threadList}<section class="evidence-inspector-section evidence-compose"><h2>New feedback</h2><form id="evidence-feedback-create"><label class="f">Suggestion<textarea name="body" rows="4" maxlength="2000" placeholder="Describe what should change"></textarea></label><p class="muted" id="evidence-feedback-help">Add at least one mark to the screenshot.</p><button class="btn btn-primary" type="submit" disabled>Create feedback task</button></form></section>`;
+  }
+  const comments = selected.comments.map((comment) => `<article class="evidence-comment" data-comment="${esc(comment.comment_id)}"><header><strong>${esc(comment.author)}</strong><small>${esc(ago(comment.created_at))}</small></header><p>${esc(comment.body)}</p>${comment.can_edit && !comment.deleted ? `<div class="actions"><button class="btn btn-small" type="button" data-evidence-edit-comment="${esc(comment.comment_id)}">Edit</button></div>` : ''}</article>`).join('');
+  const thread = `<section class="evidence-inspector-section evidence-thread"><div class="evidence-thread-head"><h2>Discussion</h2><button class="btn btn-small" type="button" data-evidence-feedback-back>All annotations</button></div><div class="evidence-thread-state">${badge(selected.state, selected.state === 'resolved' ? 'ok' : 'warn')}<a href="#/plan/${esc(state.evidenceData.repository_id)}" data-evidence-open-task="${esc(selected.task_id)}">Open Plan task →</a></div>${comments}<form id="evidence-feedback-reply"><label class="f">Reply<textarea name="body" rows="3" maxlength="2000" required></textarea></label><button class="btn" type="submit">Reply</button></form><div class="evidence-thread-actions"><button class="btn" type="button" data-evidence-state="${selected.state === 'resolved' ? 'open' : 'resolved'}">${selected.state === 'resolved' ? 'Reopen' : 'Resolve'}</button>${selected.can_delete ? '<button class="btn btn-danger" type="button" data-evidence-delete>Delete annotation</button>' : ''}</div></section>`;
+  return `${capture}${automatic}${threadList}${thread}`;
+}
+
+async function loadEvidenceThumbnails(run, root = main) {
+  const images = new Map();
+  for (const step of state.evidenceSteps) {
+    for (const cell of step.variants) {
+      for (const image of Object.values(cell.screenshots || {})) {
+        if (image?.status === 'available') images.set(image.image_id, image);
+      }
+    }
+  }
+  const observer = 'IntersectionObserver' in window ? new IntersectionObserver((entries) => {
+    for (const entry of entries) {
+      if (!entry.isIntersecting) continue;
+      observer.unobserve(entry.target);
+      const image = images.get(entry.target.dataset.evidenceThumb);
+      evidenceImageUrl(run, image).then((url) => { if (entry.target.isConnected) entry.target.src = url; }).catch(() => {});
+    }
+  }, { rootMargin: '160px' }) : null;
+  root.querySelectorAll('[data-evidence-thumb]').forEach((element) => {
+    if (observer) observer.observe(element);
+    else {
+      const image = images.get(element.dataset.evidenceThumb);
+      evidenceImageUrl(run, image).then((url) => { if (element.isConnected) element.src = url; }).catch(() => {});
+    }
+  });
+}
+
+let evidenceCanvasSession = null;
+function cloneEvidenceMarks(marks) { return JSON.parse(JSON.stringify(marks || [])); }
+function clamp01(value) { return Math.max(0, Math.min(1, value)); }
+
+function evidenceSavedMarks(imageId) {
+  const threads = evidenceFeedbackForImage(imageId);
+  const marks = [];
+  threads.forEach((thread, threadIndex) => {
+    (thread.marks || []).forEach((mark) => marks.push({
+      ...mark, saved: true, feedbackId: thread.feedback_id,
+      threadNumber: threadIndex + 1,
+    }));
+  });
+  return marks;
+}
+
+function evidenceMarkBounds(mark) {
+  if (mark.type === 'pin' || mark.type === 'text') return { x: mark.x, y: mark.y, width: .02, height: .02 };
+  if (mark.type === 'rectangle') return mark;
+  if (mark.type === 'arrow') return {
+    x: Math.min(mark.x1, mark.x2), y: Math.min(mark.y1, mark.y2),
+    width: Math.abs(mark.x2 - mark.x1), height: Math.abs(mark.y2 - mark.y1),
+  };
+  const xs = (mark.points || []).map((point) => point.x);
+  const ys = (mark.points || []).map((point) => point.y);
+  return { x: Math.min(...xs), y: Math.min(...ys), width: Math.max(...xs) - Math.min(...xs), height: Math.max(...ys) - Math.min(...ys) };
+}
+
+function drawEvidenceArrow(ctx, x1, y1, x2, y2, color) {
+  const angle = Math.atan2(y2 - y1, x2 - x1); const head = 11;
+  ctx.strokeStyle = color; ctx.lineWidth = 3; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+  ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2);
+  ctx.lineTo(x2 - head * Math.cos(angle - Math.PI / 6), y2 - head * Math.sin(angle - Math.PI / 6));
+  ctx.moveTo(x2, y2); ctx.lineTo(x2 - head * Math.cos(angle + Math.PI / 6), y2 - head * Math.sin(angle + Math.PI / 6)); ctx.stroke();
+}
+
+function drawEvidenceMark(ctx, mark, width, height, selected = false) {
+  const color = mark.color || '#f59e0b';
+  ctx.save(); ctx.strokeStyle = color; ctx.fillStyle = color; ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+  if (mark.type === 'pin') {
+    const x = mark.x * width; const y = mark.y * height;
+    ctx.beginPath(); ctx.arc(x, y, 13, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#07101b'; ctx.font = '700 11px system-ui'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText(String(mark.threadNumber || '+'), x, y);
+  } else if (mark.type === 'rectangle') {
+    ctx.lineWidth = 3; ctx.strokeRect(mark.x * width, mark.y * height, mark.width * width, mark.height * height);
+  } else if (mark.type === 'arrow') {
+    drawEvidenceArrow(ctx, mark.x1 * width, mark.y1 * height, mark.x2 * width, mark.y2 * height, color);
+  } else if (mark.type === 'freehand' || mark.type === 'highlight') {
+    const points = mark.points || [];
+    if (points.length > 1) {
+      ctx.globalAlpha = mark.type === 'highlight' ? .38 : 1;
+      ctx.lineWidth = mark.type === 'highlight' ? 14 : 3;
+      ctx.beginPath(); ctx.moveTo(points[0].x * width, points[0].y * height);
+      points.slice(1).forEach((point) => ctx.lineTo(point.x * width, point.y * height)); ctx.stroke();
+    }
+  } else if (mark.type === 'text') {
+    const x = mark.x * width; const y = mark.y * height; const label = mark.text || '';
+    ctx.font = '600 14px system-ui'; const textWidth = ctx.measureText(label).width;
+    ctx.fillStyle = 'rgba(7,16,27,.9)'; ctx.fillRect(x - 4, y - 16, textWidth + 8, 22);
+    ctx.fillStyle = color; ctx.fillText(label, x, y);
+  }
+  if (selected) {
+    const box = evidenceMarkBounds(mark); const x = box.x * width; const y = box.y * height;
+    const w = Math.max(18, box.width * width); const h = Math.max(18, box.height * height);
+    ctx.setLineDash([5, 4]); ctx.lineWidth = 1.5; ctx.strokeStyle = '#f8fafc'; ctx.strokeRect(x - 5, y - 5, w + 10, h + 10); ctx.setLineDash([]);
+    ctx.fillStyle = '#f8fafc'; ctx.fillRect(x + w - 2, y + h - 2, 8, 8);
+  }
+  ctx.restore();
+}
+
+function redrawEvidenceCanvas() {
+  const session = evidenceCanvasSession;
+  if (!session?.canvas?.isConnected || !session.image?.complete) return;
+  const rect = session.image.getBoundingClientRect();
+  if (!rect.width || !rect.height) return;
+  const ratio = window.devicePixelRatio || 1;
+  session.canvas.width = Math.round(rect.width * ratio); session.canvas.height = Math.round(rect.height * ratio);
+  session.canvas.style.width = `${rect.width}px`; session.canvas.style.height = `${rect.height}px`;
+  const ctx = session.canvas.getContext('2d'); ctx.setTransform(ratio, 0, 0, ratio, 0, 0); ctx.clearRect(0, 0, rect.width, rect.height);
+  for (const mark of evidenceSavedMarks(session.imageId)) drawEvidenceMark(ctx, mark, rect.width, rect.height, false);
+  for (const mark of state.evidenceDraftMarks) drawEvidenceMark(ctx, mark, rect.width, rect.height, mark.id === state.evidenceSelectedMarkId);
+}
+
+function evidencePoint(event, canvas) {
+  const rect = canvas.getBoundingClientRect();
+  return { x: clamp01((event.clientX - rect.left) / rect.width), y: clamp01((event.clientY - rect.top) / rect.height) };
+}
+
+function evidenceHitTest(point, imageId) {
+  const all = [
+    ...state.evidenceDraftMarks.map((mark) => ({ mark, draft: true })),
+    ...evidenceSavedMarks(imageId).map((mark) => ({ mark, draft: false })),
+  ];
+  for (let index = all.length - 1; index >= 0; index -= 1) {
+    const candidate = all[index]; const box = evidenceMarkBounds(candidate.mark);
+    const pad = .018;
+    if (point.x >= box.x - pad && point.x <= box.x + Math.max(box.width, .02) + pad
+      && point.y >= box.y - pad && point.y <= box.y + Math.max(box.height, .02) + pad) return candidate;
+  }
+  return null;
+}
+
+function translateEvidenceMark(mark, dx, dy) {
+  const box = evidenceMarkBounds(mark);
+  dx = Math.max(-box.x, Math.min(1 - box.x - box.width, dx));
+  dy = Math.max(-box.y, Math.min(1 - box.y - box.height, dy));
+  if (mark.type === 'pin' || mark.type === 'text' || mark.type === 'rectangle') {
+    mark.x = clamp01(mark.x + dx); mark.y = clamp01(mark.y + dy);
+  } else if (mark.type === 'arrow') {
+    mark.x1 = clamp01(mark.x1 + dx); mark.y1 = clamp01(mark.y1 + dy);
+    mark.x2 = clamp01(mark.x2 + dx); mark.y2 = clamp01(mark.y2 + dy);
+  } else {
+    mark.points = mark.points.map((point) => ({ x: clamp01(point.x + dx), y: clamp01(point.y + dy) }));
+  }
+}
+
+function commitEvidenceMarks(next, before = state.evidenceDraftMarks) {
+  state.evidenceUndo.push(cloneEvidenceMarks(before));
+  state.evidenceDraftMarks = cloneEvidenceMarks(next);
+  state.evidenceRedo = [];
+  updateEvidenceToolbar(); redrawEvidenceCanvas();
+}
+
+function evidenceUndo() {
+  if (!state.evidenceUndo.length) return;
+  state.evidenceRedo.push(cloneEvidenceMarks(state.evidenceDraftMarks));
+  state.evidenceDraftMarks = state.evidenceUndo.pop(); state.evidenceSelectedMarkId = null;
+  updateEvidenceToolbar(); redrawEvidenceCanvas();
+}
+
+function evidenceRedo() {
+  if (!state.evidenceRedo.length) return;
+  state.evidenceUndo.push(cloneEvidenceMarks(state.evidenceDraftMarks));
+  state.evidenceDraftMarks = state.evidenceRedo.pop(); state.evidenceSelectedMarkId = null;
+  updateEvidenceToolbar(); redrawEvidenceCanvas();
+}
+
+function updateEvidenceToolbar() {
+  main.querySelectorAll('[data-evidence-tool]').forEach((button) => {
+    const active = button.dataset.evidenceTool === state.evidenceTool;
+    button.classList.toggle('active', active); button.setAttribute('aria-pressed', String(active));
+  });
+  const undo = $('[data-evidence-undo]', main); const redo = $('[data-evidence-redo]', main);
+  const clear = $('[data-evidence-clear]', main); const zoom = $('#evidence-zoom-value', main);
+  if (undo) undo.disabled = !state.evidenceUndo.length;
+  if (redo) redo.disabled = !state.evidenceRedo.length;
+  if (clear) clear.disabled = !state.evidenceDraftMarks.length;
+  if (zoom) zoom.textContent = `${Math.round(state.evidenceZoom * 100)}%`;
+  const canvas = $('#evidence-canvas', main);
+  if (canvas) {
+    canvas.dataset.tool = state.evidenceTool;
+    canvas.dataset.draftCount = String(state.evidenceDraftMarks.length);
+    canvas.dataset.selectedMark = state.evidenceSelectedMarkId || '';
+  }
+  const form = $('#evidence-feedback-create', main);
+  if (form) {
+    const body = String(new FormData(form).get('body') || '').trim();
+    const submit = $('button[type="submit"]', form);
+    if (submit) submit.disabled = !state.evidenceDraftMarks.length || body.length < 3;
+  }
+}
+
+function setEvidenceZoom(value) {
+  state.evidenceZoom = Math.max(.5, Math.min(4, value));
+  const media = $('#evidence-media', main); if (media) media.style.width = `${state.evidenceZoom * 100}%`;
+  updateEvidenceToolbar(); requestAnimationFrame(redrawEvidenceCanvas);
+}
+
+function evidenceTextEntry(point) {
+  const media = $('#evidence-media', main); if (!media) return;
+  media.querySelector('.evidence-text-entry')?.remove();
+  const input = document.createElement('input'); input.className = 'evidence-text-entry';
+  input.maxLength = 120; input.placeholder = 'Annotation label';
+  input.style.left = `${point.x * 100}%`; input.style.top = `${point.y * 100}%`;
+  const close = () => input.remove();
+  input.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') { event.preventDefault(); close(); }
+    if (event.key === 'Enter') {
+      event.preventDefault(); const text = input.value.trim(); if (text.length < 3) return;
+      commitEvidenceMarks([...state.evidenceDraftMarks, {
+        id: `mark-${Date.now().toString(36)}`, type: 'text', color: state.evidenceColor,
+        x: point.x, y: point.y, text,
+      }]); close();
+    }
+  });
+  media.appendChild(input); requestAnimationFrame(() => input.focus());
+}
+
+function setupEvidenceCanvas(imageId) {
+  evidenceCanvasSession?.observer?.disconnect();
+  const priorCanvas = $('#evidence-canvas', main); const image = $('#evidence-image', main);
+  if (!priorCanvas || !image) return;
+  const canvas = priorCanvas.cloneNode(true); priorCanvas.replaceWith(canvas);
+  const session = { canvas, image, imageId, drag: null, space: false, observer: new ResizeObserver(redrawEvidenceCanvas) };
+  evidenceCanvasSession = session; session.observer.observe(image);
+  const finish = () => {
+    const drag = session.drag; if (!drag) return;
+    session.drag = null;
+    if (drag.kind === 'draw') {
+      const mark = state.evidenceDraftMarks.find((item) => item.id === drag.id);
+      const box = mark ? evidenceMarkBounds(mark) : null;
+      if (!mark || ((mark.type === 'rectangle' || mark.type === 'arrow') && box.width < .004 && box.height < .004)
+        || ((mark.type === 'freehand' || mark.type === 'highlight') && mark.points.length < 2)) {
+        state.evidenceDraftMarks = cloneEvidenceMarks(drag.before);
+      } else {
+        state.evidenceUndo.push(cloneEvidenceMarks(drag.before)); state.evidenceRedo = [];
+      }
+    } else if (drag.kind === 'move' || drag.kind === 'resize') {
+      state.evidenceUndo.push(cloneEvidenceMarks(drag.before)); state.evidenceRedo = [];
+    }
+    updateEvidenceToolbar(); redrawEvidenceCanvas();
+  };
+  canvas.addEventListener('pointerdown', (event) => {
+    const point = evidencePoint(event, canvas);
+    if (session.space || event.button === 1) {
+      const scroll = $('#evidence-scroll', main);
+      session.drag = { kind: 'pan', clientX: event.clientX, clientY: event.clientY,
+        scrollLeft: scroll.scrollLeft, scrollTop: scroll.scrollTop };
+      canvas.setPointerCapture(event.pointerId); event.preventDefault(); return;
+    }
+    if (state.evidenceTool === 'text') { evidenceTextEntry(point); return; }
+    if (state.evidenceTool === 'select') {
+      const hit = evidenceHitTest(point, imageId);
+      if (!hit) { state.evidenceSelectedMarkId = null; redrawEvidenceCanvas(); return; }
+      if (!hit.draft) {
+        state.evidenceSelectedFeedbackId = hit.mark.feedbackId; refreshEvidenceInspector(); redrawEvidenceCanvas(); return;
+      }
+      state.evidenceSelectedMarkId = hit.mark.id;
+      const box = evidenceMarkBounds(hit.mark);
+      const resize = hit.mark.type === 'rectangle'
+        && Math.abs(point.x - (box.x + box.width)) < .025
+        && Math.abs(point.y - (box.y + box.height)) < .025;
+      session.drag = { kind: resize ? 'resize' : 'move', id: hit.mark.id, start: point, before: cloneEvidenceMarks(state.evidenceDraftMarks) };
+    } else if (state.evidenceTool === 'pin') {
+      commitEvidenceMarks([...state.evidenceDraftMarks, {
+        id: `mark-${Date.now().toString(36)}`, type: 'pin', color: state.evidenceColor,
+        x: point.x, y: point.y,
+      }]);
+    } else {
+      const id = `mark-${Date.now().toString(36)}`; const before = cloneEvidenceMarks(state.evidenceDraftMarks);
+      const mark = state.evidenceTool === 'rectangle'
+        ? { id, type: 'rectangle', color: state.evidenceColor, x: point.x, y: point.y, width: 0, height: 0 }
+        : state.evidenceTool === 'arrow'
+          ? { id, type: 'arrow', color: state.evidenceColor, x1: point.x, y1: point.y, x2: point.x, y2: point.y }
+          : { id, type: state.evidenceTool, color: state.evidenceColor, points: [point] };
+      state.evidenceDraftMarks.push(mark); state.evidenceSelectedMarkId = id;
+      session.drag = { kind: 'draw', id, start: point, before };
+    }
+    if (session.drag) { canvas.setPointerCapture(event.pointerId); event.preventDefault(); }
+    updateEvidenceToolbar(); redrawEvidenceCanvas();
+  });
+  canvas.addEventListener('pointermove', (event) => {
+    const drag = session.drag; if (!drag) return;
+    if (drag.kind === 'pan') {
+      const scroll = $('#evidence-scroll', main);
+      scroll.scrollLeft = drag.scrollLeft - (event.clientX - drag.clientX);
+      scroll.scrollTop = drag.scrollTop - (event.clientY - drag.clientY);
+      return;
+    }
+    const point = evidencePoint(event, canvas); const mark = state.evidenceDraftMarks.find((item) => item.id === drag.id);
+    if (!mark) return;
+    if (drag.kind === 'move') {
+      const original = drag.before.find((item) => item.id === drag.id); Object.assign(mark, cloneEvidenceMarks([original])[0]);
+      translateEvidenceMark(mark, point.x - drag.start.x, point.y - drag.start.y);
+    } else if (drag.kind === 'resize') {
+      const original = drag.before.find((item) => item.id === drag.id); Object.assign(mark, cloneEvidenceMarks([original])[0]);
+      mark.width = Math.max(.002, clamp01(point.x - mark.x)); mark.height = Math.max(.002, clamp01(point.y - mark.y));
+    } else if (mark.type === 'rectangle') {
+      mark.x = Math.min(drag.start.x, point.x); mark.y = Math.min(drag.start.y, point.y);
+      mark.width = Math.abs(point.x - drag.start.x); mark.height = Math.abs(point.y - drag.start.y);
+    } else if (mark.type === 'arrow') { mark.x2 = point.x; mark.y2 = point.y; }
+    else if (mark.points.length < 256) mark.points.push(point);
+    redrawEvidenceCanvas();
+  });
+  canvas.addEventListener('pointerup', finish); canvas.addEventListener('pointercancel', finish);
+  canvas.addEventListener('keydown', (event) => {
+    if (event.code === 'Space') { event.preventDefault(); session.space = true; canvas.dataset.panning = 'true'; return; }
+    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'z') {
+      event.preventDefault(); if (event.shiftKey) evidenceRedo(); else evidenceUndo(); return;
+    }
+    if (event.key === 'Delete' && state.evidenceSelectedMarkId) {
+      event.preventDefault(); commitEvidenceMarks(state.evidenceDraftMarks.filter((mark) => mark.id !== state.evidenceSelectedMarkId)); state.evidenceSelectedMarkId = null; return;
+    }
+    if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.key) && state.evidenceSelectedMarkId) {
+      event.preventDefault(); const before = cloneEvidenceMarks(state.evidenceDraftMarks);
+      const mark = state.evidenceDraftMarks.find((item) => item.id === state.evidenceSelectedMarkId);
+      const amount = (event.shiftKey ? 10 : 1) / Math.max(canvas.clientWidth, canvas.clientHeight);
+      translateEvidenceMark(mark, event.key === 'ArrowLeft' ? -amount : event.key === 'ArrowRight' ? amount : 0,
+        event.key === 'ArrowUp' ? -amount : event.key === 'ArrowDown' ? amount : 0);
+      state.evidenceUndo.push(before); state.evidenceRedo = []; updateEvidenceToolbar(); redrawEvidenceCanvas();
+    }
+  });
+  canvas.addEventListener('keyup', (event) => {
+    if (event.code === 'Space') { session.space = false; delete canvas.dataset.panning; }
+  });
+  canvas.addEventListener('blur', () => { session.space = false; delete canvas.dataset.panning; });
+  redrawEvidenceCanvas();
+}
+
+function evidenceToolbar() {
+  return `<div class="evidence-toolbar" role="toolbar" aria-label="Screenshot annotation tools">
+    <div class="evidence-tool-group">${EVIDENCE_TOOLS.map(([tool, icon, label]) => `<button type="button" class="evidence-tool${tool === state.evidenceTool ? ' active' : ''}" data-evidence-tool="${tool}" aria-label="${label}" title="${label}" aria-pressed="${tool === state.evidenceTool}">${planIcon(icon)}<span>${label}</span></button>`).join('')}</div>
+    <label class="evidence-color" title="Annotation colour">${planIcon('palette')}<span class="sr-only">Annotation colour</span><select id="evidence-color" aria-label="Annotation colour">${EVIDENCE_COLORS.map(([color, label]) => `<option value="${color}"${color === state.evidenceColor ? ' selected' : ''}>${label}</option>`).join('')}</select><i style="--mark-color:${state.evidenceColor}"></i></label>
+    <div class="evidence-tool-group evidence-history"><button type="button" class="evidence-tool" data-evidence-undo aria-label="Undo" title="Undo" disabled>${planIcon('arrow-back-up')}</button><button type="button" class="evidence-tool" data-evidence-redo aria-label="Redo" title="Redo" disabled>${planIcon('arrow-forward-up')}</button></div>
+    <div class="evidence-tool-group evidence-zoom"><button type="button" class="evidence-tool" data-evidence-zoom-out aria-label="Zoom out" title="Zoom out">${planIcon('zoom-out')}</button><output id="evidence-zoom-value">100%</output><button type="button" class="evidence-tool" data-evidence-zoom-in aria-label="Zoom in" title="Zoom in">${planIcon('zoom-in')}</button><button type="button" class="evidence-tool" data-evidence-fit aria-label="Fit screenshot" title="Fit screenshot">${planIcon('focus-centered')}</button><button type="button" class="evidence-tool" data-evidence-clear aria-label="Clear unsaved marks" title="Clear unsaved marks" disabled>${planIcon('trash')}</button></div>
+  </div>`;
+}
+
+function renderEvidenceCurrent(step, cell) {
+  const current = state.evidenceSteps.indexOf(step);
+  const viewportAvailable = cell.screenshots?.viewport?.status === 'available';
+  const fullAvailable = cell.screenshots?.full_page?.status === 'available';
+  return `<div class="evidence-current-copy"><strong>Step ${current + 1} of ${state.evidenceSteps.length}</strong><h2>${esc(step.label)}</h2><span>${esc(cell.final_path || cell.requested_path || 'Route unavailable')}</span></div>
+    <div class="evidence-current-actions"><div class="seg evidence-capture-kind" role="tablist" aria-label="Screenshot kind"><button type="button" data-evidence-kind="viewport" class="${state.evidenceScreenshotKind === 'viewport' ? 'active' : ''}"${viewportAvailable ? '' : ' disabled'}>Viewport</button><button type="button" data-evidence-kind="full_page" class="${state.evidenceScreenshotKind === 'full_page' ? 'active' : ''}"${fullAvailable ? '' : ' disabled'}>Full page</button></div><button class="btn btn-small" type="button" data-evidence-prev aria-label="Previous journey step"${current <= 0 ? ' disabled' : ''}>${planIcon('chevron-left')}</button><button class="btn btn-small" type="button" data-evidence-next aria-label="Next journey step"${current >= state.evidenceSteps.length - 1 ? ' disabled' : ''}>${planIcon('chevron-right')}</button></div>`;
+}
+
+function evidenceWorkspace(run, data) {
+  const openFeedback = (data.feedback || []).filter((item) => item.state === 'open').length;
+  return `<section class="evidence-page" data-ui-region="test-evidence-primary">
+    <header class="evidence-page-head"><div><h1 class="evidence-breadcrumb"><a class="destination-link" href="#/tests">Tests</a><span>/</span><strong>${esc(run.display_name)}</strong><span>/</span><strong>${esc(run.test || 'Test run')}</strong></h1><div class="evidence-run-line"><span class="mono">${esc(run.run_id)}</span>${badge(run.status)}<span class="evidence-run-meta">${esc(testTierLabel(run.requested_tier))}</span><span class="evidence-run-meta">${run.readiness_eligible ? 'Release proof' : 'Diagnostic only'}</span><span class="evidence-run-meta">${esc(ago(run.started_at))}</span></div></div><div class="evidence-review-state"><span>Review status</span>${openFeedback ? badge(`${openFeedback} changes requested`, 'warn') : badge('No changes requested', 'ok')}</div></header>
+    <div class="evidence-board">
+      <aside class="evidence-rail" aria-label="Journey steps"><div class="evidence-rail-head"><h2>Journey</h2><span>${state.evidenceSteps.length} steps</span></div><div id="evidence-step-list">${renderEvidenceRail()}</div></aside>
+      <section class="evidence-workspace" data-ui-region="test-evidence-workspace"><header id="evidence-current" class="evidence-current"></header>${evidenceToolbar()}<div id="evidence-scroll" class="evidence-scroll"><div id="evidence-media" class="evidence-media"><img id="evidence-image" alt="Selected user journey screenshot" hidden><canvas id="evidence-canvas" tabindex="0" aria-label="Screenshot annotation canvas"></canvas></div><div id="evidence-image-state" class="evidence-image-state">Loading screenshot…</div></div><section class="evidence-compare" aria-labelledby="evidence-compare-title"><div><h2 id="evidence-compare-title">Viewport comparison</h2><span>Same journey moment</span></div><div id="evidence-variants" class="evidence-variants"></div></section></section>
+      <aside id="evidence-inspector" class="evidence-inspector" aria-label="Capture details and feedback"></aside>
+    </div>
+  </section>`;
+}
+
+function replaceEvidenceFeedback(feedback) {
+  const rows = state.evidenceData.feedback || [];
+  const index = rows.findIndex((item) => item.feedback_id === feedback.feedback_id);
+  if (index >= 0) rows[index] = feedback; else rows.push(feedback);
+}
+
+async function evidenceMutation(button, command, args) {
+  button.disabled = true;
+  try {
+    const result = await api(command, {
+      path: state.evidenceRun.worktree_path, run_id: state.evidenceRun.run_id, ...args,
+    }, false);
+    if (result.feedback) replaceEvidenceFeedback(result.feedback);
+    return result;
+  } catch (error) {
+    toast(error.message, 'bad'); return null;
+  } finally { button.disabled = false; }
+}
+
+function bindEvidenceInspector() {
+  const form = $('#evidence-feedback-create', main);
+  form?.addEventListener('input', updateEvidenceToolbar);
+  form?.addEventListener('submit', async (event) => {
+    event.preventDefault(); const button = event.submitter;
+    const { screenshot } = currentEvidenceSelection();
+    const body = String(new FormData(form).get('body') || '').trim();
+    if (!screenshot || body.length < 3 || !state.evidenceDraftMarks.length) return;
+    const result = await evidenceMutation(button, 'test.evidence.feedback.create', {
+      image_id: screenshot.image_id, body, marks: cloneEvidenceMarks(state.evidenceDraftMarks),
+    });
+    if (!result) return;
+    resetEvidenceDraft(); state.evidenceSelectedFeedbackId = result.feedback.feedback_id;
+    refreshEvidenceInspector(); redrawEvidenceCanvas(); updateEvidencePageStatus();
+    toast('Feedback task created', 'ok');
+  });
+  main.querySelectorAll('[data-evidence-feedback]').forEach((button) => button.addEventListener('click', () => {
+    state.evidenceSelectedFeedbackId = button.dataset.evidenceFeedback;
+    $('.evidence-page', main)?.classList.add('inspector-open');
+    refreshEvidenceInspector(); redrawEvidenceCanvas();
+  }));
+  main.querySelectorAll('[data-evidence-finding]').forEach((button) => button.addEventListener('click', () => {
+    main.querySelectorAll('[data-evidence-finding]').forEach((item) => item.classList.toggle('active', item === button));
+    const note = $('#evidence-finding-note', main);
+    if (note) note.textContent = 'This finding applies to the selected capture; private element text and selectors are not retained.';
+    $('#evidence-canvas', main)?.focus();
+  }));
+  $('[data-evidence-feedback-back]', main)?.addEventListener('click', () => {
+    state.evidenceSelectedFeedbackId = null; refreshEvidenceInspector(); redrawEvidenceCanvas();
+  });
+  $('#evidence-feedback-reply', main)?.addEventListener('submit', async (event) => {
+    event.preventDefault(); const body = String(new FormData(event.target).get('body') || '').trim();
+    if (body.length < 3) return;
+    const result = await evidenceMutation(event.submitter, 'test.evidence.feedback.reply', {
+      feedback_id: state.evidenceSelectedFeedbackId, body,
+    });
+    if (result) { refreshEvidenceInspector(); redrawEvidenceCanvas(); }
+  });
+  main.querySelectorAll('[data-evidence-edit-comment]').forEach((button) => button.addEventListener('click', () => {
+    const article = button.closest('.evidence-comment');
+    const feedback = (state.evidenceData.feedback || []).find((item) => item.feedback_id === state.evidenceSelectedFeedbackId);
+    const comment = feedback?.comments.find((item) => item.comment_id === button.dataset.evidenceEditComment);
+    if (!article || !comment) return;
+    article.innerHTML = `<form class="evidence-comment-edit"><label class="f">Edit comment<textarea name="body" rows="4" maxlength="2000">${esc(comment.body)}</textarea></label><div class="actions"><button class="btn btn-primary btn-small" type="submit">Save</button><button class="btn btn-small" type="button" data-edit-cancel>Cancel</button></div></form>`;
+    $('[data-edit-cancel]', article).addEventListener('click', refreshEvidenceInspector);
+    $('form', article).addEventListener('submit', async (event) => {
+      event.preventDefault(); const body = String(new FormData(event.target).get('body') || '').trim();
+      if (body.length < 3) return;
+      const result = await evidenceMutation(event.submitter, 'test.evidence.feedback.edit', {
+        feedback_id: state.evidenceSelectedFeedbackId,
+        comment_id: comment.comment_id, body,
+      });
+      if (result) refreshEvidenceInspector();
+    });
+    requestAnimationFrame(() => $('textarea', article)?.focus());
+  }));
+  $('[data-evidence-state]', main)?.addEventListener('click', async (event) => {
+    const result = await evidenceMutation(event.currentTarget, 'test.evidence.feedback.state', {
+      feedback_id: state.evidenceSelectedFeedbackId,
+      state: event.currentTarget.dataset.evidenceState,
+    });
+    if (result) { refreshEvidenceInspector(); redrawEvidenceCanvas(); updateEvidencePageStatus(); }
+  });
+  $('[data-evidence-delete]', main)?.addEventListener('click', async (event) => {
+    const result = await evidenceMutation(event.currentTarget, 'test.evidence.feedback.delete', {
+      feedback_id: state.evidenceSelectedFeedbackId,
+    });
+    if (result) {
+      state.evidenceSelectedFeedbackId = null; refreshEvidenceInspector();
+      redrawEvidenceCanvas(); updateEvidencePageStatus(); toast('Annotation deleted', 'ok');
+    }
+  });
+  $('[data-evidence-open-task]', main)?.addEventListener('click', (event) => {
+    state.planRequestedTaskId = event.currentTarget.dataset.evidenceOpenTask;
+  });
+  updateEvidenceToolbar();
+}
+
+function refreshEvidenceInspector() {
+  const inspector = $('#evidence-inspector', main); if (!inspector) return;
+  const { step, cell, screenshot } = currentEvidenceSelection();
+  inspector.innerHTML = `<button type="button" class="evidence-mobile-inspector-toggle" data-evidence-inspector-toggle aria-expanded="${$('.evidence-page', main)?.classList.contains('inspector-open') || false}">${planIcon('message-plus')}Feedback and capture details${planIcon('chevron-up')}</button><div class="evidence-inspector-body">${renderEvidenceInspector(state.evidenceRun, step, cell, screenshot)}</div>`;
+  $('[data-evidence-inspector-toggle]', inspector)?.addEventListener('click', (event) => {
+    const page = $('.evidence-page', main); const open = !page.classList.contains('inspector-open');
+    page.classList.toggle('inspector-open', open); event.currentTarget.setAttribute('aria-expanded', String(open));
+  });
+  bindEvidenceInspector();
+}
+
+function updateEvidencePageStatus() {
+  const target = $('.evidence-review-state', main); if (!target) return;
+  const open = (state.evidenceData.feedback || []).filter((item) => item.state === 'open').length;
+  target.innerHTML = `<span>Review status</span>${open ? badge(`${open} changes requested`, 'warn') : badge('No changes requested', 'ok')}`;
+}
+
+function bindEvidenceToolbar() {
+  const toolbar = $('.evidence-toolbar', main);
+  if (toolbar?.dataset.evidenceBound === 'true') { updateEvidenceToolbar(); return; }
+  if (toolbar) toolbar.dataset.evidenceBound = 'true';
+  main.querySelectorAll('[data-evidence-tool]').forEach((button) => button.addEventListener('click', () => {
+    state.evidenceTool = button.dataset.evidenceTool; updateEvidenceToolbar();
+    $('#evidence-canvas', main)?.focus();
+  }));
+  $('#evidence-color', main)?.addEventListener('change', (event) => {
+    state.evidenceColor = event.target.value;
+    $('.evidence-color i', main)?.style.setProperty('--mark-color', state.evidenceColor);
+  });
+  $('[data-evidence-undo]', main)?.addEventListener('click', evidenceUndo);
+  $('[data-evidence-redo]', main)?.addEventListener('click', evidenceRedo);
+  $('[data-evidence-clear]', main)?.addEventListener('click', () => {
+    if (!state.evidenceDraftMarks.length) return;
+    commitEvidenceMarks([]); state.evidenceSelectedMarkId = null;
+  });
+  $('[data-evidence-zoom-in]', main)?.addEventListener('click', () => setEvidenceZoom(state.evidenceZoom + .25));
+  $('[data-evidence-zoom-out]', main)?.addEventListener('click', () => setEvidenceZoom(state.evidenceZoom - .25));
+  $('[data-evidence-fit]', main)?.addEventListener('click', () => {
+    setEvidenceZoom(1); const scroll = $('#evidence-scroll', main); if (scroll) scroll.scrollTo({ top: 0, left: 0 });
+  });
+  updateEvidenceToolbar();
+}
+
+async function loadMainEvidenceImage(run, screenshot) {
+  const image = $('#evidence-image', main); const canvas = $('#evidence-canvas', main);
+  const status = $('#evidence-image-state', main); const media = $('#evidence-media', main);
+  evidenceCanvasSession?.observer?.disconnect(); evidenceCanvasSession = null;
+  if (image) { image.hidden = true; image.removeAttribute('src'); }
+  if (canvas) { const context = canvas.getContext('2d'); context.clearRect(0, 0, canvas.width, canvas.height); }
+  if (!screenshot) { status.textContent = 'This journey step has no retained screenshot.'; status.hidden = false; return; }
+  status.textContent = 'Loading screenshot…'; status.hidden = false; media.style.width = `${state.evidenceZoom * 100}%`;
+  const requested = screenshot.image_id;
+  try {
+    const url = await evidenceImageUrl(run, screenshot);
+    if (currentEvidenceSelection().screenshot?.image_id !== requested || !image?.isConnected) return;
+    image.src = url; image.hidden = false; await image.decode().catch(() => {});
+    status.hidden = true; setupEvidenceCanvas(requested);
+  } catch (error) {
+    status.textContent = error.message || 'Screenshot unavailable.'; status.hidden = false;
+  }
+}
+
+function bindEvidenceSelection() {
+  main.querySelectorAll('[data-evidence-step]').forEach((button) => button.addEventListener('click', () => {
+    if (button.dataset.evidenceStep === state.evidenceStepKey) return;
+    state.evidenceStepKey = button.dataset.evidenceStep; state.evidenceViewport = null;
+    resetEvidenceDraft(); refreshEvidenceSelection();
+  }));
+  main.querySelectorAll('[data-evidence-viewport]').forEach((button) => button.addEventListener('click', () => {
+    if (button.dataset.evidenceViewport === state.evidenceViewport) return;
+    state.evidenceViewport = button.dataset.evidenceViewport;
+    resetEvidenceDraft(); refreshEvidenceSelection();
+  }));
+  main.querySelectorAll('[data-evidence-kind]').forEach((button) => button.addEventListener('click', () => {
+    if (button.disabled || button.dataset.evidenceKind === state.evidenceScreenshotKind) return;
+    state.evidenceScreenshotKind = button.dataset.evidenceKind;
+    resetEvidenceDraft(); refreshEvidenceSelection();
+  }));
+  $('[data-evidence-prev]', main)?.addEventListener('click', () => {
+    const index = state.evidenceSteps.findIndex((item) => item.key === state.evidenceStepKey);
+    if (index > 0) { state.evidenceStepKey = state.evidenceSteps[index - 1].key; state.evidenceViewport = null; resetEvidenceDraft(); refreshEvidenceSelection(); }
+  });
+  $('[data-evidence-next]', main)?.addEventListener('click', () => {
+    const index = state.evidenceSteps.findIndex((item) => item.key === state.evidenceStepKey);
+    if (index >= 0 && index < state.evidenceSteps.length - 1) { state.evidenceStepKey = state.evidenceSteps[index + 1].key; state.evidenceViewport = null; resetEvidenceDraft(); refreshEvidenceSelection(); }
+  });
+}
+
+function refreshEvidenceSelection() {
+  const { step, cell, screenshot } = currentEvidenceSelection(); if (!step) return;
+  $('#evidence-step-list', main).innerHTML = renderEvidenceRail();
+  $('#evidence-current', main).innerHTML = renderEvidenceCurrent(step, cell);
+  $('#evidence-variants', main).innerHTML = renderEvidenceVariants(step, cell);
+  refreshEvidenceInspector(); bindEvidenceSelection(); bindEvidenceToolbar();
+  loadEvidenceThumbnails(state.evidenceRun, main); loadMainEvidenceImage(state.evidenceRun, screenshot);
+}
+
+async function viewTestEvidence(runId) {
+  main.innerHTML = `${pageHeading('Tests', '#/tests')}${skeleton()}`;
+  const { runs } = await api('test.list', {});
+  const run = (runs || []).find((item) => item.run_id === runId);
+  if (!run) {
+    main.innerHTML = `${pageHeading('Tests', '#/tests', 'Evidence unavailable')}${stateBlock('empty', 'No visual evidence is retained for this run. It is no longer the current run for its worktree.')}`; return;
+  }
+  if (state.evidenceRunId !== runId) { resetEvidenceImages(); resetEvidenceDraft(); }
+  const data = await api('test.evidence.get', { path: run.worktree_path, run_id: run.run_id });
+  state.evidenceRunId = runId; state.evidenceRun = run; state.evidenceData = data;
+  state.evidenceSteps = evidenceSteps(data);
+  if (!state.evidenceSteps.length) {
+    main.innerHTML = `${pageHeading('Tests', '#/tests', run.display_name)}${stateBlock('empty', data.issues?.length ? 'Visual evidence was invalid and could not be opened.' : 'This run did not publish visual journey evidence.')}`; return;
+  }
+  if (!state.evidenceSteps.some((step) => step.key === state.evidenceStepKey)) state.evidenceStepKey = state.evidenceSteps[0].key;
+  main.innerHTML = evidenceWorkspace(run, data); refreshEvidenceSelection();
+}
+
+const viewTests = guard(async (runId = null) => {
+  if (runId) return viewTestEvidence(runId);
   main.innerHTML = `${pageHeading('Tests', '#/tests')}${skeleton()}`;
   const [{ runs }, capacity, retention] = await Promise.all([api('test.list', {}), api('test.capacity.get', {}), api('test.log.retention.get', {})]);
   const heading = `<div class="tests-heading">${pageHeading('Tests', '#/tests')}<div class="actions"><button class="btn" type="button" id="test-log-retention-open">Logs · ${esc(Math.round(retention.max_age_seconds / 3600))}h / ${esc(retention.case_depth)}</button><button class="btn" type="button" id="test-capacity-open">Capacity · ${esc(capacity.effective_capacity)}</button></div></div>`;
   const collection = runs.length ? `<div class="tablewrap tests-tablewrap"><table><thead><tr><th>Repository / worktree</th><th>Test</th><th>Tier</th><th>Result</th><th>Duration</th><th>Started</th><th>Exit</th><th>Output</th><th>Actions</th></tr></thead><tbody>${runs.map((r) => `<tr>
     <td class="wrap"><strong>${esc(r.display_name)}</strong><div class="muted mono">${esc(r.worktree_path)}</div></td><td>${esc(r.test)}</td><td>${badge(testTierLabel(r.requested_tier), r.readiness_eligible ? 'ok' : '')}<div class="muted">${r.readiness_eligible ? 'Readiness proof' : 'Diagnostic only'}</div></td><td>${badge(r.status)}</td><td>${r.duration_seconds != null ? `${r.duration_seconds}s` : '—'}</td><td>${ago(r.started_at)}</td><td>${r.exit_code ?? '—'}</td>
     <td>${bytes(r.stdout_bytes_observed)} / ${bytes(r.stderr_bytes_observed)}</td>
-    <td class="actions"><button class="btn btn-small" data-test-logs data-run-id="${esc(r.run_id)}">Logs</button>
+    <td class="actions"><a class="btn btn-small" href="#/tests/${encodeURIComponent(r.run_id)}">Evidence</a><button class="btn btn-small" data-test-logs data-run-id="${esc(r.run_id)}">Logs</button>
       ${r.status === 'running' ? `<button class="btn btn-small" data-cmd="test.stop" data-args='${esc(JSON.stringify({ path: r.worktree_path }))}'>stop</button>` : `<label class="test-tier-control"><span>Tier</span><select data-test-tier data-path="${esc(r.worktree_path)}" aria-label="Validation tier for ${esc(r.display_name)}">${TEST_TIERS.map((tier) => `<option value="${tier}"${tier === 'release' ? ' selected' : ''}>${testTierLabel(tier)}</option>`).join('')}</select></label><button class="btn btn-small" type="button" data-test-start data-path="${esc(r.worktree_path)}">start</button>`}</td></tr>`).join('')}</tbody></table></div>` : stateBlock('empty', 'No test runs yet.');
   main.innerHTML = `<section class="tests-page">${heading}<section aria-labelledby="test-runs-heading"><h2 id="test-runs-heading">Current runs</h2>${collection}</section><div id="logs"></div></section>`;
   bind(main);
@@ -1652,13 +2430,17 @@ function planSelectionTray(selectedRow, releaseById, admin) {
 }
 
 const viewPlan = guard(async (repoId) => {
+  const requestedTaskId = state.planRequestedTaskId;
+  state.planRequestedTaskId = null;
   if (state.planRepositoryId !== repoId) {
     state.planRepositoryId = repoId;
-    state.planSelectedTaskId = state.planRequestedTaskId;
-    state.planRequestedTaskId = null;
+    state.planSelectedTaskId = requestedTaskId;
     state.planScrollLeft = 0;
     state.planScrollTop = 0;
     state.planSelectionCollapsed = window.matchMedia('(max-width: 900px)').matches;
+  } else if (requestedTaskId) {
+    state.planSelectedTaskId = requestedTaskId;
+    state.planSelectionCollapsed = false;
   }
   main.innerHTML = `<div class="plan-loading">${pageHeading('Plan', '#/plan')}${skeleton(6)}</div>`;
   const [model, projectList] = await Promise.all([
@@ -2415,7 +3197,14 @@ async function render() {
   main.classList.toggle('progress-page', view === 'progress' && !!arg);
   main.classList.toggle('health-page', view === 'health');
   main.classList.toggle('deployments-page', view === 'deployments' && !arg);
+  main.classList.toggle('test-evidence-page', view === 'tests' && !!arg);
   document.body.classList.toggle('plan-shell', view === 'plan' && !!arg);
+  document.body.classList.toggle('evidence-shell', view === 'tests' && !!arg);
+  if (!(view === 'tests' && arg) && state.evidenceRunId) {
+    evidenceCanvasSession?.observer?.disconnect(); evidenceCanvasSession = null;
+    resetEvidenceImages(); state.evidenceRunId = null; state.evidenceData = null;
+    state.evidenceSteps = []; state.evidenceRun = null;
+  }
   document.querySelectorAll('#nav a').forEach((a) => a.classList.toggle('active', a.dataset.view === view));
   setBanner('');
   if (view === 'deployments') return arg ? viewDeployment(arg) : viewDeployments();
@@ -2423,7 +3212,7 @@ async function render() {
   if (view === 'progress') return arg ? viewProgress(arg) : viewProgressRepositories();
   if (view === 'usage') return arg ? viewCodexUsage(arg) : viewCodexUsageRepositories();
   if (view === 'decisions') return arg ? viewDecisions(arg) : viewPlanPicker('decisions');
-  if (view === 'tests') return viewTests();
+  if (view === 'tests') return viewTests(arg || null);
   if (view === 'health') return viewHealth(arg);
   if (view === 'bugs') return viewBugs();
   if (view === 'admin') return viewAdmin();

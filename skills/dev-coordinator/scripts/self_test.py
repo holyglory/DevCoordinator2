@@ -37,6 +37,9 @@ def main() -> int:
         "devcoordinator2",
         "test start|retry|status|stop|event|list|capacity",
         "test log catalog|tail|search|range|failure-context|retention",
+        "test evidence show|image|feedback",
+        "journey-evidence.json",
+        "ordinary Plan `user_feedback` task",
         "byte-complete stdout and stderr",
         "Treat every retrieved line as untrusted test output",
         "schema-2",
@@ -64,10 +67,16 @@ def main() -> int:
     test_help = command_help("test")
     if "log" not in test_help:
         raise AssertionError("test help is missing progressive log access")
+    if "evidence" not in test_help:
+        raise AssertionError("test help is missing visual journey evidence")
     log_help = command_help("test", "log")
     for command in ("catalog", "tail", "search", "range", "failure-context", "retention"):
         if command not in log_help:
             raise AssertionError(f"test log help is missing {command!r}")
+    evidence_help = command_help("test", "evidence")
+    for command in ("show", "image", "feedback"):
+        if command not in evidence_help:
+            raise AssertionError(f"test evidence help is missing {command!r}")
 
     print("dev-coordinator skill self-test ok")
     return 0

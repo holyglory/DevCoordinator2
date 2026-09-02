@@ -305,6 +305,12 @@ resource URL.
   PNG. Native control values, placeholders, selected labels, and declarative
   fill payloads are removed or masked. Add `screenshotMasks` with a reason for
   other sensitive regions.
+- Every run also produces `journey-evidence.json`: an ordered, path-free
+  Console index of the declared route/state/viewport cells, action kinds and
+  outcomes, automatic finding kinds, and the two screenshot integrity records.
+  It omits selectors and every action value. A governed check stores the bundle
+  under its private run leaf so log retention removes the manifest and images
+  together.
 - Screenshot SHA-256 values bind evidence integrity only. Pixel changes never
   enter the manual-review queue.
 

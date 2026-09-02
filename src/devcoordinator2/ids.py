@@ -53,6 +53,16 @@ def decision_id() -> str:
     return "n" + secrets.token_hex(8)
 
 
+def feedback_id() -> str:
+    """Screenshot-anchored feedback thread (schema 15)."""
+    return "f" + secrets.token_hex(8)
+
+
+def comment_id() -> str:
+    """Message inside a screenshot feedback thread (schema 15)."""
+    return "m" + secrets.token_hex(8)
+
+
 def unit_name(prefix: str, wt_id: str, suffix: str) -> str:
     return f"{prefix}-{wt_id}-{suffix}.service"
 

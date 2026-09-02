@@ -227,3 +227,27 @@ def test_guard_plan_reads_follow_repository_grants(world):
     assert handlers["release.request"]({}, public("owner@example.test")) == {
         "ok": "release.request"}
     assert handlers["task.create"]({}, local()) == {"ok": "task.create"}
+
+
+def test_visual_test_evidence_is_administrator_only(world):
+    names = [
+        "test.evidence.get", "test.evidence.image",
+        "test.evidence.feedback.create", "test.evidence.feedback.reply",
+        "test.evidence.feedback.edit", "test.evidence.feedback.state",
+        "test.evidence.feedback.delete",
+    ]
+    handlers = guard(
+        {name: (lambda args, caller, command=name: {"ok": command}) for name in names}
+        | public_commands(world.access),
+        world.access, world.db,
+    )
+    handlers["user.invite"](
+        {"email": "v@example.test",
+         "grants": [{"deployment_id": "d1", "role": "operator"}]}, local())
+    handlers["user.accept_invitation"](
+        {"email": "v@example.test"}, public("v@example.test"))
+    for name in names:
+        with pytest.raises(ProtocolError, match="requires administrator"):
+            handlers[name]({}, public("v@example.test"))
+        assert handlers[name]({}, public("owner@example.test")) == {"ok": name}
+        assert handlers[name]({}, local()) == {"ok": name}

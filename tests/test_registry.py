@@ -166,7 +166,7 @@ def test_schema_v1_upgrades_in_place_preserving_repositories(tmp_path: Path):
         conn.execute("DROP TABLE deployments")
     db.close()
     db = Database(path)
-    assert db.query("SELECT value FROM meta WHERE key='schema_version'")[0]["value"] == "14"
+    assert db.query("SELECT value FROM meta WHERE key='schema_version'")[0]["value"] == "15"
     assert db.query("SELECT repository_id FROM repositories")[0]["repository_id"] == "r1"
     assert db.query("SELECT count(*) AS n FROM deployments")[0]["n"] == 0
     tables = {row["name"] for row in db.query(
@@ -185,7 +185,7 @@ def test_schema_v10_adds_persistent_elaboration_requests(tmp_path: Path):
     db = Database(path)
     columns = {row["name"] for row in db.query("PRAGMA table_info(tasks)")}
     assert "elaboration_needed" in columns
-    assert db.query("SELECT value FROM meta WHERE key='schema_version'")[0]["value"] == "14"
+    assert db.query("SELECT value FROM meta WHERE key='schema_version'")[0]["value"] == "15"
     db.close()
 
 
@@ -219,5 +219,38 @@ def test_schema_v12_adds_capacity_without_touching_permanent_history(tmp_path: P
         "SELECT name FROM sqlite_master WHERE type='table'")}
     assert {"test_capacity_state", "test_capacity_events"} <= tables
     assert db.query("SELECT value FROM meta WHERE key='schema_version'")[0]["value"] \
-        == "14"
+        == "15"
+    db.close()
+
+
+def test_schema_v14_adds_visual_feedback_without_touching_plan_history(tmp_path: Path):
+    path = tmp_path / "db.sqlite3"
+    db = Database(path)
+    with db.transaction() as conn:
+        conn.execute(
+            "INSERT INTO repositories(repository_id,root_path,display_name,registered_at,"
+            " registered_by_uid,last_seen_at)"
+            " VALUES('rvisual','/visual','Visual','t',1,'t')"
+        )
+        conn.execute(
+            "INSERT INTO tasks(task_id,repository_id,seq,position,title,outcome,kind,status,"
+            " created_at,created_by,updated_at)"
+            " VALUES('pvisual','rvisual',1,1,'Keep this feedback','Permanent outcome',"
+            " 'user_feedback','planned','t','fixture','t')"
+        )
+        conn.execute("DROP TABLE visual_feedback_events")
+        conn.execute("DROP TABLE visual_feedback_comments")
+        conn.execute("DROP TABLE visual_feedback")
+        conn.execute("UPDATE meta SET value='14' WHERE key='schema_version'")
+    db.close()
+
+    db = Database(path)
+    assert db.query("SELECT outcome FROM tasks WHERE task_id='pvisual'")[0]["outcome"] \
+        == "Permanent outcome"
+    tables = {row["name"] for row in db.query(
+        "SELECT name FROM sqlite_master WHERE type='table'")}
+    assert {"visual_feedback", "visual_feedback_comments",
+            "visual_feedback_events"} <= tables
+    assert db.query("SELECT value FROM meta WHERE key='schema_version'")[0]["value"] \
+        == "15"
     db.close()
