@@ -134,7 +134,7 @@ impl RunLogMetadata {
         validate_run_id(&self.run_id)?;
         validate_test(&self.test)?;
         validate_time_order(self.started_at_epoch_ms, self.finished_at_epoch_ms)?;
-        if self.finished_at_epoch_ms.is_some() != !matches!(self.status, RunStatus::Running) {
+        if self.finished_at_epoch_ms.is_some() == matches!(self.status, RunStatus::Running) {
             return Err(LogStoreError::InvalidMetadata(
                 "run status and finish time disagree",
             ));
