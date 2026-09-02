@@ -244,6 +244,24 @@
 - Prefer event-driven readiness. A timeout may be a longer failure deadline,
   but no deliberate sleep or polling interval may exceed 100 ms.
 
+## Validate at semantic checkpoints
+
+- Do not run the complete test suite after each plan item, file edit, commit,
+  or delegated result.
+- During implementation, run only cheap checks and focused tests that can
+  invalidate the current design or changed behavior.
+- Complete each coherent implementation batch before broader validation.
+- Run pre-merge validation once shared interfaces and integrations are stable.
+- Run one fresh complete release pass over a frozen candidate.
+- When a complete pass finds ordinary failures, let the sealed pass finish and
+  collect every safe finding. Isolated diagnosis and repair may begin while it
+  continues, but reconcile every finding, batch the fixes, use focused checks
+  during repair, and then run one final complete pass.
+- One agent owns complete-suite execution. Delegated agents run only their
+  focused checks unless explicitly assigned the sealed integration pass.
+- Changes only to test plumbing do not trigger another complete release pass
+  until the implementation and test infrastructure are both frozen.
+
 ## Finish diagnostic cycles before batch fixing
 
 - For a finite full test, debug, reproduction, audit, migration-rehearsal, or
@@ -262,10 +280,6 @@
   and fix the batch, and rerun the complete relevant cycle. Focused checks may
   accelerate development between the two full passes, but do not replace the
   final full pass.
-- Use explicit validation tiers when the project declares them: development
-  for fast changed-work feedback, pre-merge for broader integration, and one
-  fresh complete release pass over a frozen candidate for readiness. Do not
-  rerun release proof after every intermediate verifier or harness repair.
 - During a deployment already included in the agreed task, if a test server or
   other non-production target can be deployed safely and is useful despite
   known gaps, deploy it, tell the user what remains, and let their testing

@@ -19,6 +19,7 @@ REQUIRED_SECTIONS = (
     "Implement the exact scope",
     "Delegate only contract-ready work",
     "Parallelize independent work and first-failure fixing",
+    "Validate at semantic checkpoints",
     "Finish diagnostic cycles before batch fixing",
     "Keep behavior truthful",
     "Prohibit unimplemented product behavior",
@@ -791,6 +792,87 @@ def find_policy_violations(text: str) -> list[str]:
             r".{0,300}sealed\s+run\s+continues\s+unchanged",
         )
 
+    validation = bodies["Validate at semantic checkpoints"]
+    if validation:
+        _require_terms(
+            violations,
+            validation,
+            "semantic-checkpoint validation contract",
+            (
+                "do not run the complete test suite after each plan item, file edit, commit, or delegated result",
+                "during implementation",
+                "only cheap checks and focused tests",
+                "invalidate the current design or changed behavior",
+                "complete each coherent implementation batch before broader validation",
+                "run pre-merge validation once shared interfaces and integrations are stable",
+                "run one fresh complete release pass over a frozen candidate",
+                "complete pass finds ordinary failures",
+                "let the sealed pass finish",
+                "collect every safe finding",
+                "isolated diagnosis and repair may begin while it continues",
+                "reconcile every finding",
+                "batch the fixes",
+                "focused checks during repair",
+                "one final complete pass",
+                "one agent owns complete-suite execution",
+                "delegated agents run only their focused checks",
+                "unless explicitly assigned the sealed integration pass",
+                "changes only to test plumbing do not trigger another complete release pass",
+                "implementation and test infrastructure are both frozen",
+            ),
+        )
+        _require_pattern(
+            violations,
+            validation,
+            "complete suites must not run after every small implementation step",
+            r"do\s+not\s+run\s+the\s+complete\s+test\s+suite\s+after\s+each"
+            r"\s+plan\s+item,\s+file\s+edit,\s+commit,\s+or\s+delegated\s+result",
+        )
+        _require_pattern(
+            violations,
+            validation,
+            "implementation feedback must stay focused until a coherent batch is complete",
+            r"during\s+implementation.{0,140}only\s+cheap\s+checks\s+and\s+focused"
+            r"\s+tests.{0,180}invalidate\s+the\s+current\s+design\s+or\s+changed"
+            r"\s+behavior.{0,180}complete\s+each\s+coherent\s+implementation"
+            r"\s+batch\s+before\s+broader\s+validation",
+        )
+        _require_pattern(
+            violations,
+            validation,
+            "pre-merge and release validation must wait for stable frozen checkpoints",
+            r"pre-merge\s+validation\s+once\s+shared\s+interfaces\s+and\s+integrations"
+            r"\s+are\s+stable.{0,180}one\s+fresh\s+complete\s+release\s+pass"
+            r"\s+over\s+a\s+frozen\s+candidate",
+        )
+        _require_pattern(
+            violations,
+            validation,
+            "a failed complete pass must stay sealed and lead to one batched final pass",
+            r"complete\s+pass\s+finds\s+ordinary\s+failures.{0,160}let\s+the\s+sealed"
+            r"\s+pass\s+finish.{0,120}collect\s+every\s+safe\s+finding.{0,220}"
+            r"isolated\s+diagnosis\s+and\s+repair\s+may\s+begin\s+while\s+it"
+            r"\s+continues.{0,180}reconcile\s+every\s+finding.{0,100}batch\s+the"
+            r"\s+fixes.{0,140}focused\s+checks\s+during\s+repair.{0,140}one\s+final"
+            r"\s+complete\s+pass",
+        )
+        _require_pattern(
+            violations,
+            validation,
+            "one agent must own complete-suite execution",
+            r"one\s+agent\s+owns\s+complete-suite\s+execution.{0,180}delegated\s+agents"
+            r"\s+run\s+only\s+their\s+focused\s+checks.{0,180}unless\s+explicitly"
+            r"\s+assigned\s+the\s+sealed\s+integration\s+pass",
+        )
+        _require_pattern(
+            violations,
+            validation,
+            "test-plumbing changes must wait for both frozen surfaces before another release pass",
+            r"changes\s+only\s+to\s+test\s+plumbing\s+do\s+not\s+trigger\s+another"
+            r"\s+complete\s+release\s+pass.{0,180}until\s+the\s+implementation\s+and"
+            r"\s+test\s+infrastructure\s+are\s+both\s+frozen",
+        )
+
     cycle = bodies["Finish diagnostic cycles before batch fixing"]
     if cycle:
         _require_terms(
@@ -815,12 +897,6 @@ def find_policy_violations(text: str) -> list[str]:
                 "deploy it",
                 "tell the user what remains",
                 "incomplete test deployment",
-                "explicit validation tiers",
-                "development",
-                "pre-merge",
-                "fresh complete release pass",
-                "frozen candidate",
-                "do not rerun release proof after every intermediate",
             ),
         )
         _require_pattern(
@@ -1165,6 +1241,12 @@ def find_policy_violations(text: str) -> list[str]:
         (r"(?i)\b(?:the\s+)?user\s+(?:must|should|needs?\s+to|has\s+to)\s+(?:repeat|copy|paste|type|transcribe|reply\s+with)\b.{0,140}\b(?:internal\s+identifier|digest|uuid|command|confirmation\s+(?:phrase|string)|technical\s+incantation|exact\s+phrase)\b", "users must never repeat internal identifiers or prescribed technical phrases"),
         (r"(?i)(?<!never )(?<!do not )(?<!must not )\bstop\s+(?:the\s+)?(?:test|suite|debug|audit|rehearsal|deployment|cycle|pass)\s+at\s+(?:the\s+)?first\b", "diagnostic cycles must not stop at the first ordinary failure"),
         (r"(?i)(?<!never )(?<!do not )(?<!must not )\bfix\s+each\s+(?:error|failure|gap).{0,100}\brestart\b", "diagnostic findings must be batch-fixed after the evidence pass"),
+        (r"(?i)(?<!do not )(?<!never )\b(?:run|rerun)\s+(?:the\s+)?complete\s+(?:test\s+)?suite\b.{0,100}\bafter\s+(?:each|every)\s+(?:plan\s+item|file\s+edit|commit|delegated\s+result)\b", "complete suites must not run after every small implementation step"),
+        (r"(?i)\b(?:run|start|perform)\s+broad(?:er)?\s+validation\b.{0,120}\bbefore\b.{0,100}\b(?:complete|completing|finish|finishing)\s+(?:a|the)\s+coherent\s+(?:implementation\s+)?batch\b", "broader validation must wait for a coherent implementation batch"),
+        (r"(?i)\b(?:run|start|perform)\s+pre-merge\s+validation\b.{0,120}\bbefore\b.{0,120}\bshared\s+interfaces\s+and\s+integrations\b.{0,80}\b(?:are\s+)?stable\b", "pre-merge validation must wait for stable shared interfaces and integrations"),
+        (r"(?i)\b(?:multiple|two|all|every)\s+agents?\b.{0,120}\b(?:may|can|should|must|will)?\s*(?:own|run|execute)\b.{0,100}\bcomplete(?:-suite|\s+(?:test\s+)?suite)\b", "only one agent may own complete-suite execution"),
+        (r"(?i)\bdelegated\s+agents?\s+(?:may|can|should|must|will)\s+(?:run|execute)\b.{0,100}\b(?:complete\s+(?:test\s+)?suite|complete-suite|full\s+(?:test\s+)?suite)\b.{0,160}\bwithout\b.{0,100}\b(?:explicit(?:ly)?\s+)?assign", "delegated agents need explicit assignment for the sealed integration pass"),
+        (r"(?i)\b(?:test[- ]plumbing-only|changes?\s+only\s+to\s+test\s+plumbing)\b.{0,120}\b(?:trigger|triggers|require|requires)\b.{0,100}\banother\s+complete\s+release\s+pass\b.{0,160}\bbefore\b.{0,120}\b(?:implementation\s+and\s+test\s+infrastructure|both)\b.{0,80}\bfrozen\b", "test-plumbing-only changes must not trigger release proof before both surfaces freeze"),
         (r"(?i)(?<!do not )(?<!never )\b(?:set|define|require|allocate)\b.{0,100}\b(?:cpu|memory|api|cost)\s+(?:limit|budget)s?\b", "parallel scheduling must not invent resource or API budgets"),
         (r"(?i)\b(?:always\s+use|use\s+exactly|require\s+exactly|limit\s+(?:the\s+)?(?:pool|run)\s+to)\s+\d+\s+(?:workers|agents)\b", "parallel scheduling must not impose a fixed worker count"),
         (r"(?i)(?<!do not )\bdelegate\s+implementation\b.{0,120}\bbefore\b.{0,120}\b(?:shared\s+schemas?|directory\s+layouts?|ownership\s+boundaries|cross-component\s+acceptance\s+fixtures?)\b.{0,80}\b(?:is|are)\s+fixed\b", "implementation must not be delegated before shared contracts are fixed"),

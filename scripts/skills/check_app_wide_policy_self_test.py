@@ -358,6 +358,58 @@ def main() -> int:
             "must not stop at the first ordinary failure",
         ),
         (
+            "complete suite after every plan item",
+            policy + "\nRun the complete test suite after every plan item.\n",
+            "complete suites must not run after every small implementation step",
+        ),
+        (
+            "complete suite after every file edit",
+            policy + "\nRun the complete test suite after every file edit.\n",
+            "complete suites must not run after every small implementation step",
+        ),
+        (
+            "complete suite after every commit",
+            policy + "\nRerun the complete test suite after each commit.\n",
+            "complete suites must not run after every small implementation step",
+        ),
+        (
+            "complete suite after every delegated result",
+            policy + "\nRun the complete suite after each delegated result.\n",
+            "complete suites must not run after every small implementation step",
+        ),
+        (
+            "broad validation before coherent batch",
+            policy
+            + "\nRun broader validation before completing a coherent implementation batch.\n",
+            "broader validation must wait for a coherent implementation batch",
+        ),
+        (
+            "pre-merge validation before stable interfaces",
+            policy
+            + "\nRun pre-merge validation before shared interfaces and integrations are "
+            "stable.\n",
+            "pre-merge validation must wait for stable shared interfaces and integrations",
+        ),
+        (
+            "multiple complete-suite owners",
+            policy + "\nMultiple agents may own complete-suite execution.\n",
+            "only one agent may own complete-suite execution",
+        ),
+        (
+            "delegated unassigned complete-suite run",
+            policy
+            + "\nDelegated agents may run the complete test suite without explicit assignment "
+            "to the sealed integration pass.\n",
+            "delegated agents need explicit assignment for the sealed integration pass",
+        ),
+        (
+            "test plumbing prematurely restarts release proof",
+            policy
+            + "\nTest-plumbing-only changes require another complete release pass before the "
+            "implementation and test infrastructure are both frozen.\n",
+            "test-plumbing-only changes must not trigger release proof before both surfaces freeze",
+        ),
+        (
             "invented CPU budget",
             policy + "\nDefine a CPU budget for every parallel task before scheduling it.\n",
             "must not invent resource or API budgets",
@@ -466,6 +518,15 @@ def main() -> int:
             "decision-memory contract",
         ),
         (
+            "missing semantic-checkpoint validation behavior",
+            replace_section(
+                policy,
+                "Validate at semantic checkpoints",
+                "- Run the complete suite after every implementation step.",
+            ),
+            "semantic-checkpoint validation contract",
+        ),
+        (
             "missing complete-cycle behavior",
             replace_section(
                 policy,
@@ -502,13 +563,13 @@ def main() -> int:
             "parallel-work contract",
         ),
         (
-            "missing validation tiers",
+            "missing stable pre-merge checkpoint",
             policy.replace(
-                "Use explicit validation tiers",
-                "Use one validation mode",
+                "Run pre-merge validation once shared interfaces and integrations are stable",
+                "Run pre-merge validation before shared interfaces and integrations are stable",
                 1,
             ),
-            "complete-cycle contract",
+            "semantic-checkpoint validation contract",
         ),
         (
             "missing database-only completion ledger",
@@ -1233,6 +1294,42 @@ def main() -> int:
     check(
         not MODULE.find_policy_violations(parent_owned_integration),
         "parent-owned integration must remain valid",
+    )
+
+    focused_implementation_feedback = policy + (
+        "\nDuring implementation, run a focused contract test after the changed behavior when "
+        "it can invalidate the current design; complete the coherent batch before broadening.\n"
+    )
+    check(
+        not MODULE.find_policy_violations(focused_implementation_feedback),
+        "cheap focused feedback during implementation must remain valid",
+    )
+
+    frozen_candidate_after_final_commit = policy + (
+        "\nAfter the final commit freezes the candidate, one agent runs the fresh complete "
+        "release pass; ordinary commits do not each trigger that suite.\n"
+    )
+    check(
+        not MODULE.find_policy_violations(frozen_candidate_after_final_commit),
+        "one release pass after the final frozen commit must remain valid",
+    )
+
+    assigned_delegated_integration_pass = policy + (
+        "\nA delegated agent explicitly assigned the sealed integration pass may own that "
+        "complete-suite execution while every other delegated agent runs focused checks.\n"
+    )
+    check(
+        not MODULE.find_policy_violations(assigned_delegated_integration_pass),
+        "an explicitly assigned delegated integration-pass owner must remain valid",
+    )
+
+    frozen_test_plumbing_release = policy + (
+        "\nOnce the implementation and repaired test infrastructure are both frozen, include "
+        "the test-plumbing fix in the one final complete release pass.\n"
+    )
+    check(
+        not MODULE.find_policy_violations(frozen_test_plumbing_release),
+        "a final release pass after both implementation and test plumbing freeze must remain valid",
     )
 
     concrete_serial_edge = policy + (
