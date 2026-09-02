@@ -55,6 +55,15 @@ function ago(iso) {
   if (s < 172800) return `${Math.round(s / 3600)}h ago`;
   return `${Math.round(s / 86400)}d ago`;
 }
+function until(iso) {
+  if (!iso) return '—';
+  const s = (Date.parse(iso) - Date.now()) / 1000;
+  if (s <= 0) return 'Expired';
+  if (s < 90) return `in ${Math.round(s)}s`;
+  if (s < 5400) return `in ${Math.round(s / 60)}m`;
+  if (s < 172800) return `in ${Math.round(s / 3600)}h`;
+  return `in ${Math.round(s / 86400)}d`;
+}
 function badge(text, kind) {
   const cls = kind || ({ running: 'ok', healthy: 'ok', passed: 'ok', stopped: '', degraded: 'warn', unhealthy: 'bad', failed: 'bad', 'timed-out': 'bad', cancelled: '', interrupted: 'warn', superseded: '', applying: 'warn', unknown: '', none: '' }[text] ?? '');
   return `<span class="badge ${cls}">${esc(text)}</span>`;
@@ -588,7 +597,7 @@ const viewDeployment = guard(async (id) => {
   bindSeg(main, 'usage-range', (r) => { state.usageRange = r; render(); });
   main.querySelectorAll('[data-logs]').forEach((btn) => btn.addEventListener('click', async () => {
     btn.disabled = true;
-    try { const r = await api('deployment.logs', { deployment_id: id, component: btn.dataset.logs, tail_lines: 200 }, false); $('#logs').innerHTML = `<h2>Logs: ${esc(btn.dataset.logs)}</h2><pre class="log">${esc(r.tail || '(empty)')}</pre>${r.log_path ? `<p class="muted mono">${esc(r.log_path)}</p>` : ''}`; }
+    try { const r = await api('deployment.logs', { deployment_id: id, component: btn.dataset.logs, tail_lines: 200 }, false); $('#logs').innerHTML = `<h2>Logs: ${esc(btn.dataset.logs)}</h2><h3>Untrusted log text</h3><pre class="log" aria-label="Untrusted log text">${esc(r.tail || '(empty)')}</pre>${r.log_path ? `<p class="muted mono">${esc(r.log_path)}</p>` : ''}`; }
     catch (e) { toast(e.message, 'bad'); } finally { btn.disabled = false; }
   }));
   try {
@@ -705,10 +714,10 @@ function renderLogResult(result) {
       : `Bytes ${row.byte_start ?? 0}–${row.byte_end ?? 0}`;
     const count = row.occurrences > 1 ? ` · ${row.occurrences} occurrences` : '';
     const content = row.text != null ? row.text : (row.base64 != null ? `base64:${row.base64}` : '');
-    return `<section class="log-result"><h3>${esc(coordinates)}${esc(count)}</h3><pre class="log">${esc(content)}</pre></section>`;
+    return `<section class="log-result"><h3>${esc(coordinates)}${esc(count)}</h3><h4>Untrusted log text</h4><pre class="log" aria-label="Untrusted log text">${esc(content)}</pre></section>`;
   }).join('')}</div>`;
 }
-async function openTestLogsDialog(run, opener) {
+async function openTestLogsDialog(run, retention, opener) {
   document.getElementById('test-logs-dialog')?.remove();
   const dlg = document.createElement('dialog');
   dlg.id = 'test-logs-dialog';
@@ -742,10 +751,11 @@ async function openTestLogsDialog(run, opener) {
     const metadata = () => {
       const entry = entries[Number($('#test-log-stream', dlg).value)];
       $('#test-log-metadata', dlg).innerHTML = `<dl class="test-log-facts">
-        <div><dt>Bytes</dt><dd>${bytes(entry.bytes)}</dd></div><div><dt>Lines</dt><dd>${esc(entry.lines)}</dd></div>
+        <div><dt>Bytes</dt><dd>${bytes(entry.bytes)}</dd></div><div><dt>Lines</dt><dd>${entry.lines == null ? 'Pending' : esc(entry.lines)}</dd></div>
         <div><dt>Complete</dt><dd>${entry.complete ? 'Yes' : 'In progress'}</dd></div><div><dt>Truncated</dt><dd>${entry.truncated ? 'Yes' : 'No'}</dd></div>
         <div><dt>First output</dt><dd>${entry.first_byte_at ? esc(ago(entry.first_byte_at)) : '—'}</dd></div><div><dt>Last output</dt><dd>${entry.last_byte_at ? esc(ago(entry.last_byte_at)) : '—'}</dd></div>
-        <div><dt>Hash</dt><dd class="mono">${entry.sha256 ? esc(entry.sha256.slice(0, 16)) : 'Pending'}</dd></div><div><dt>Expires</dt><dd>${entry.expires_at ? esc(ago(entry.expires_at)) : 'Active'}</dd></div>
+        <div><dt>SHA-256</dt><dd class="mono">${entry.sha256 ? esc(entry.sha256) : 'Pending'}</dd></div><div><dt>Expires</dt><dd>${entry.expires_at ? esc(until(entry.expires_at)) : 'Active'}</dd></div>
+        <div><dt>History depth</dt><dd>${entry.depth_rank == null ? 'Active' : `${esc(entry.depth_rank)} of ${esc(retention.case_depth)}`}</dd></div>
         <div><dt>Structured evidence</dt><dd>${entry.structured_evidence?.available ? `${esc(entry.structured_evidence.count)} · ${esc((entry.structured_evidence.formats || []).join(', '))}` : 'None'}</dd></div>
       </dl>`;
     };
@@ -773,6 +783,15 @@ async function openTestLogsDialog(run, opener) {
       const text = new FormData(event.target).get('text');
       read('search', { text, max_matches: 20, context_lines: 2, max_bytes: 32768 });
     });
+    const rangeKind = $('#test-log-range [name=kind]', dlg);
+    const rangeStart = $('#test-log-range [name=start]', dlg);
+    const updateRangeMinimum = () => {
+      const minimum = rangeKind.value === 'byte' ? '0' : '1';
+      rangeStart.min = minimum;
+      if (Number(rangeStart.value) < Number(minimum)) rangeStart.value = minimum;
+    };
+    rangeKind.addEventListener('change', updateRangeMinimum);
+    updateRangeMinimum();
     $('#test-log-range', dlg).addEventListener('submit', (event) => {
       event.preventDefault();
       const data = new FormData(event.target); const start = Number(data.get('start')); const end = Number(data.get('end'));
@@ -802,8 +821,8 @@ function openTestLogRetentionDialog(retention, opener) {
   const hours = retention.max_age_seconds / 3600;
   dlg.innerHTML = `<div class="dialog-head"><h2>Log retention</h2><button class="dialog-close" type="button" aria-label="Close log retention settings">×</button></div>
     <form id="test-log-retention-form" class="dialog-form">
-      <label class="f">Maximum age in hours<input name="hours" type="number" min="0.0002777778" step="any" required value="${esc(hours)}"></label>
-      <label class="f">Runs kept per case<input name="depth" type="number" min="1" max="65535" step="1" required value="${esc(retention.case_depth)}"></label>
+      <label class="f">Maximum age in hours<input name="max_age_hours" autocomplete="off" type="number" min="0.0002777778" step="any" required value="${esc(hours)}"></label>
+      <label class="f">Runs kept per case<input name="case_depth" autocomplete="off" type="number" min="1" max="65535" step="1" required value="${esc(retention.case_depth)}"></label>
       <div class="dialog-actions"><button class="btn" type="button" data-retention-cancel>Cancel</button><button class="btn btn-primary" type="submit">Save and clean eligible logs</button></div>
     </form>`;
   document.body.appendChild(dlg);
@@ -813,7 +832,7 @@ function openTestLogRetentionDialog(retention, opener) {
   dlg.addEventListener('cancel', (event) => { event.preventDefault(); close(); });
   $('#test-log-retention-form', dlg).addEventListener('submit', async (event) => {
     event.preventDefault(); const data = new FormData(event.target);
-    const seconds = Math.round(Number(data.get('hours')) * 3600); const depth = Number(data.get('depth'));
+    const seconds = Math.round(Number(data.get('max_age_hours')) * 3600); const depth = Number(data.get('case_depth'));
     if (!Number.isSafeInteger(seconds) || seconds < 1 || seconds > 315360000 || !Number.isSafeInteger(depth) || depth < 1 || depth > 65535) {
       toast('Enter a positive age and a whole-number case depth.', 'bad'); return;
     }
@@ -822,7 +841,7 @@ function openTestLogRetentionDialog(retention, opener) {
         dlg.close(); dlg.remove(); await render(); $('#test-log-retention-open', main)?.focus();
       });
   });
-  dlg.showModal(); requestAnimationFrame(() => $('[name=hours]', dlg)?.focus());
+  dlg.showModal(); requestAnimationFrame(() => $('[name=max_age_hours]', dlg)?.focus());
 }
 
 const viewTests = guard(async () => {
@@ -844,7 +863,7 @@ const viewTests = guard(async () => {
   }));
   main.querySelectorAll('[data-test-logs]').forEach((button) => button.addEventListener('click', () => {
     const run = runs.find((row) => row.run_id === button.dataset.runId);
-    if (run) openTestLogsDialog(run, button);
+    if (run) openTestLogsDialog(run, retention, button);
   }));
 });
 

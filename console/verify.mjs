@@ -936,6 +936,8 @@ async function main() {
   check('tests: log catalogue exposes counts, completion, hash, expiry, and structured evidence without an absolute path',
     /8(?:\.0)? MiB/.test(logMetadata) && /42,?000/.test(logMetadata) && /Complete\s+Yes/.test(logMetadata)
     && /Truncated\s+No/.test(logMetadata) && /junit/.test(logMetadata)
+    && new RegExp(`a{64}`).test(logMetadata) && /Expires\s+in /.test(logMetadata)
+    && /History depth\s+1 of 3/.test(logMetadata)
     && !(await page.innerText('#test-logs-dialog')).includes('/srv/repos/'), logMetadata);
   await page.click('[data-log-read="tail"]');
   await page.waitForSelector('#test-log-read-result pre.log');
@@ -943,6 +945,9 @@ async function main() {
     && c.args.check === 'unit' && c.args.phase === 'case' && c.args.case === 'parser-17'
     && c.args.stream === 'stderr' && c.args.lines === 50 && c.args.max_bytes === 32768));
   check('tests: retrieved output carries stable line coordinates', /Lines 41999–42000/.test(await page.innerText('#test-log-read-result')));
+  check('tests: every retrieved stream is explicitly labelled untrusted',
+    await page.locator('#test-log-read-result pre[aria-label="Untrusted log text"]').count() === 1
+    && /Untrusted log text/.test(await page.innerText('#test-log-read-result')));
   await page.fill('#test-log-search [name=text]', '[literal].*');
   await page.click('#test-log-search button[type=submit]');
   await page.waitForSelector('#test-log-next');
@@ -957,6 +962,15 @@ async function main() {
   await waitForSettledCall(daemon, page, 'test.log.range');
   check('interaction: exact line range is bounded below the response envelope', daemon.calls.some((c) => c.command === 'test.log.range'
     && c.args.line_start === 40 && c.args.line_end === 50 && c.args.max_bytes === 49152));
+  await page.selectOption('#test-log-range [name=kind]', 'byte');
+  check('tests: byte ranges permit the required zero-based start',
+    await page.getAttribute('#test-log-range [name=start]', 'min') === '0');
+  await page.fill('#test-log-range [name=start]', '0');
+  await page.fill('#test-log-range [name=end]', '4');
+  await page.click('#test-log-range button[type=submit]');
+  await waitForSettledCall(daemon, page, (call) => call.command === 'test.log.range' && call.args.byte_start === 0);
+  check('interaction: exact byte range uses zero-based half-open coordinates', daemon.calls.some((c) => c.command === 'test.log.range'
+    && c.args.byte_start === 0 && c.args.byte_end === 4 && c.args.max_bytes === 49152));
   await page.click('[data-log-read="failure_context"]');
   await waitForSettledCall(daemon, page, 'test.log.failure_context');
   check('interaction: failure context calls the deterministic Coordinator operation', daemon.calls.some((c) => c.command === 'test.log.failure_context'
@@ -971,12 +985,17 @@ async function main() {
     && /Readiness proof/.test(await page.locator('.tests-tablewrap tbody tr').nth(1).innerText()));
   await page.click('#test-log-retention-open');
   await page.waitForSelector('dialog#test-log-retention-dialog[open]');
-  await page.fill('#test-log-retention-form [name=hours]', '2');
-  await page.fill('#test-log-retention-form [name=depth]', '5');
+  await page.fill('#test-log-retention-form [name=max_age_hours]', '2');
+  await page.fill('#test-log-retention-form [name=case_depth]', '5');
+  check('interaction: retention form accepts both edited boundaries',
+    await page.inputValue('#test-log-retention-form [name=max_age_hours]') === '2'
+    && await page.inputValue('#test-log-retention-form [name=case_depth]') === '5',
+  `${await page.inputValue('#test-log-retention-form [name=max_age_hours]')} / ${await page.inputValue('#test-log-retention-form [name=case_depth]')}`);
   await page.click('#test-log-retention-form button[type=submit]');
   await waitForSettledCall(daemon, page, 'test.log.retention.set');
   check('interaction: retention saves both boundaries directly and schedules cleanup', daemon.calls.some((c) => c.command === 'test.log.retention.set'
-    && c.args.max_age_seconds === 7200 && c.args.case_depth === 5));
+    && c.args.max_age_seconds === 7200 && c.args.case_depth === 5),
+  JSON.stringify(daemon.calls.filter((c) => c.command === 'test.log.retention.set').map((c) => c.args)));
   check('interaction: saving retention returns focus to the Log retention action', await page.locator('#test-log-retention-open:focus').count() === 1);
   await page.click('#test-log-retention-open');
   await page.waitForSelector('dialog#test-log-retention-dialog[open]');
