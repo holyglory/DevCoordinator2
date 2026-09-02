@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -13,7 +14,7 @@ from devcoordinator2.daemon.handlers import build_handlers
 from devcoordinator2.daemon.registry import Registry
 from devcoordinator2.daemon.server import Caller
 from devcoordinator2.daemon.test_logs import TestLogService as _TestLogService
-from devcoordinator2.daemon.test_logs import validate_log_request
+from devcoordinator2.daemon.test_logs import _run_bridge, validate_log_request
 from devcoordinator2.daemon.tests_lifecycle import TestLifecycle as _TestLifecycle
 from devcoordinator2.paths import InstanceConfig
 from devcoordinator2.protocol import ProtocolError
@@ -85,17 +86,18 @@ def test_context_lines_rejects_boolean_values():
 def test_query_defaults_and_literal_search_are_forwarded_as_typed_json(world, monkeypatch):
     captured = {}
 
-    def fake_run(argv, **kwargs):
+    def fake_run(argv, payload):
         captured["argv"] = argv
-        captured["request"] = json.loads(kwargs["input"])
+        captured["request"] = json.loads(payload)
         result = {"schema": 2, "ok": True, "result": {
             "matches": [{"line_start": 8, "line_end": 8, "byte_start": 50,
                          "byte_end": 62, "text": "[literal].*"}],
             "next_cursor": None,
         }}
-        return SimpleNamespace(returncode=0, stdout=json.dumps(result).encode(), stderr=b"")
+        return SimpleNamespace(returncode=0, stdout=json.dumps(result).encode(),
+                               stderr_oversized=False)
 
-    monkeypatch.setattr(subprocess, "run", fake_run)
+    world.service._bridge_runner = fake_run
     result = world.service.query("search", world.repo, {
         "check": "unit", "phase": "check", "stream": "stderr",
         "text": "[literal].*",
@@ -115,9 +117,9 @@ def test_query_defaults_and_literal_search_are_forwarded_as_typed_json(world, mo
 def test_bridge_never_relays_stderr_or_unknown_error_prose(world, monkeypatch):
     response = {"schema": 2, "ok": False,
                 "error": {"code": "not-a-public-code", "message": "hostile raw text"}}
-    monkeypatch.setattr(subprocess, "run", lambda *a, **k: SimpleNamespace(
+    world.service._bridge_runner = lambda *a, **k: SimpleNamespace(
         returncode=2, stdout=json.dumps(response).encode(),
-        stderr=b"stack trace and arbitrary process output"))
+        stderr_oversized=True)
     with pytest.raises(ProtocolError) as caught:
         world.service.query(
             "catalog", world.repo, {}, _caller(identity="owner@example.test"))
@@ -127,15 +129,70 @@ def test_bridge_never_relays_stderr_or_unknown_error_prose(world, monkeypatch):
 
 
 def test_public_identity_must_use_one_exact_registered_worktree(world, monkeypatch):
-    monkeypatch.setattr(subprocess, "run", lambda *a, **k: SimpleNamespace(
+    world.service._bridge_runner = lambda *a, **k: SimpleNamespace(
         returncode=0, stdout=b'{"schema":2,"ok":true,"result":{"entries":[]}}',
-        stderr=b""))
+        stderr_oversized=False)
     assert world.service.query(
         "catalog", world.repo, {}, _caller(identity="owner@example.test")) == {"entries": []}
     with pytest.raises(ProtocolError, match="registered worktree"):
         world.service.query(
             "catalog", world.repo / "subdirectory", {},
             _caller(identity="owner@example.test"))
+
+
+def test_catalog_injects_the_persisted_retention_policy(world):
+    captured = {}
+
+    def fake_run(_argv, payload):
+        captured.update(json.loads(payload))
+        return SimpleNamespace(
+            returncode=0,
+            stdout=b'{"schema":2,"ok":true,"result":{"entries":[]}}',
+            stderr_oversized=False,
+        )
+
+    world.service.set_retention(7_200, 5, "owner")
+    world.service._bridge_runner = fake_run
+    world.service.query(
+        "catalog", world.repo, {}, _caller(identity="owner@example.test"))
+    assert captured["options"]["max_age_seconds"] == 7_200
+    assert captured["options"]["case_depth"] == 5
+
+
+def test_maintenance_includes_archived_registered_worktrees(world):
+    with world.db.transaction() as connection:
+        connection.execute(
+            "UPDATE repositories SET archived_at='2026-09-02T00:00:00Z'"
+            " WHERE repository_id=?", (world.registration.repository_id,))
+    calls = []
+
+    def fake_run(argv, payload):
+        calls.append((argv, json.loads(payload)))
+        response = {"schema": 2, "ok": True, "result": {
+            "removed_leaf_folders": 0, "retained_active": 0,
+            "next_expiry_at": None,
+        }}
+        return SimpleNamespace(returncode=0, stdout=json.dumps(response).encode(),
+                               stderr_oversized=False)
+
+    world.service._bridge_runner = fake_run
+    result = world.service.run_maintenance_once()
+    assert result["errors"] == []
+    assert len(calls) == 1
+    assert calls[0][1]["repository_id"] == world.registration.repository_id
+
+
+def test_bridge_drains_oversized_streams_without_buffering_them_all(tmp_path):
+    program = tmp_path / "noisy_bridge.py"
+    program.write_text(
+        "import sys\nsys.stdin.buffer.read()\n"
+        "sys.stdout.buffer.write(b'x' * 200000)\n"
+        "sys.stderr.buffer.write(b'y' * 200000)\n",
+        encoding="utf-8",
+    )
+    result = _run_bridge([sys.executable, str(program)], b"{}")
+    assert len(result.stdout) == 65_537
+    assert result.stderr_oversized is True
 
 
 def test_handlers_replace_test_output_and_validate_retention(world):

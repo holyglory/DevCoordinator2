@@ -11,8 +11,10 @@ from __future__ import annotations
 import json
 import os
 import re
+import signal
 import subprocess
 import threading
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -58,6 +60,77 @@ _BRIDGE_ERROR_MESSAGES = {
     "cursor_stale": "The log cursor no longer identifies this stream snapshot.",
     "structured_evidence_invalid": "Structured test evidence is invalid.",
 }
+
+
+@dataclass(frozen=True)
+class _BridgeResult:
+    returncode: int
+    stdout: bytes
+    stderr_oversized: bool
+
+
+def _run_bridge(argv: list[str], payload: bytes) -> _BridgeResult:
+    """Drain both child pipes fully while retaining only one bounded reply."""
+    process = subprocess.Popen(
+        argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        start_new_session=True, env={"PATH": "/usr/bin:/bin"},
+    )
+    if process.stdin is None or process.stdout is None or process.stderr is None:
+        process.kill()
+        raise OSError("Rust log bridge pipes are unavailable")
+    stdout = bytearray()
+    stderr = bytearray()
+    drain_failed = threading.Event()
+
+    def drain(pipe, target: bytearray) -> None:
+        try:
+            while True:
+                block = pipe.read(65_536)
+                if not block:
+                    break
+                remaining = MAX_BRIDGE_BYTES + 1 - len(target)
+                if remaining > 0:
+                    target.extend(block[:remaining])
+        except OSError:
+            drain_failed.set()
+        finally:
+            pipe.close()
+
+    threads = [
+        threading.Thread(target=drain, args=(process.stdout, stdout), daemon=True),
+        threading.Thread(target=drain, args=(process.stderr, stderr), daemon=True),
+    ]
+    for thread in threads:
+        thread.start()
+    try:
+        try:
+            process.stdin.write(payload)
+            process.stdin.close()
+        except (BrokenPipeError, OSError):
+            try:
+                process.stdin.close()
+            except OSError:
+                pass
+        try:
+            returncode = process.wait(timeout=60)
+        except subprocess.TimeoutExpired:
+            os.killpg(process.pid, signal.SIGTERM)
+            try:
+                process.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                os.killpg(process.pid, signal.SIGKILL)
+                process.wait(timeout=2)
+            raise
+    finally:
+        for thread in threads:
+            thread.join(timeout=5)
+    if any(thread.is_alive() for thread in threads) or drain_failed.is_set():
+        raise OSError("Rust log bridge output drain failed")
+    return _BridgeResult(
+        returncode=returncode,
+        stdout=bytes(stdout),
+        stderr_oversized=len(stderr) > MAX_BRIDGE_BYTES,
+    )
 
 
 def _now_iso() -> str:
@@ -216,10 +289,11 @@ def validate_log_request(operation: str, args: dict[str, Any]) -> dict[str, Any]
 
 class TestLogService:
     def __init__(self, db: Database, registry: Registry,
-                 executor_binary: Path = _EXECUTOR_BINARY):
+                 executor_binary: Path = _EXECUTOR_BINARY, bridge_runner=None):
         self._db = db
         self._registry = registry
         self._executor_binary = executor_binary
+        self._bridge_runner = bridge_runner or _run_bridge
         self._wake = threading.Event()
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
@@ -266,6 +340,12 @@ class TestLogService:
         worktree, repository_id = self._resolve(path, caller)
         request = validate_log_request(operation, args)
         request["repository_id"] = repository_id
+        if operation == "catalog":
+            retention = self.retention()
+            request["options"].update(
+                max_age_seconds=retention["max_age_seconds"],
+                case_depth=retention["case_depth"],
+            )
         return self._invoke("log-query", worktree, request)
 
     def start(self) -> None:
@@ -294,10 +374,9 @@ class TestLogService:
         retained_active = 0
         next_expiry_at: str | None = None
         errors: list[dict[str, str]] = []
+        error_count = 0
         for row in self._db.query(
-                "SELECT w.worktree_path,w.repository_id FROM worktrees w"
-                " JOIN repositories r ON r.repository_id=w.repository_id"
-                " WHERE r.archived_at IS NULL ORDER BY w.worktree_id"):
+                "SELECT worktree_path,repository_id FROM worktrees ORDER BY worktree_id"):
             worktree = Path(row["worktree_path"])
             active_run_id = None
             current = read_summary(test_dir(worktree) / "summary.json")
@@ -319,6 +398,7 @@ class TestLogService:
                         next_expiry_at is None or candidate < next_expiry_at):
                     next_expiry_at = candidate
             except ProtocolError as exc:
+                error_count += 1
                 if len(errors) < 64:
                     errors.append({"repository_id": row["repository_id"], "code": exc.code})
         now = _now_iso()
@@ -334,7 +414,7 @@ class TestLogService:
             "retained_active": retained_active,
             "next_expiry_at": next_expiry_at,
             "errors": errors,
-            "errors_truncated": len(errors) == 64,
+            "errors_truncated": error_count > len(errors),
         }
 
     def _maintenance_loop(self) -> None:
@@ -355,7 +435,7 @@ class TestLogService:
             try:
                 deadline = datetime.fromisoformat(next_expiry.replace("Z", "+00:00"))
                 wait_seconds = max(
-                    0.0, (deadline - datetime.now(UTC)).total_seconds())
+                    0.1, (deadline - datetime.now(UTC)).total_seconds())
             except ValueError:
                 wait_seconds = 60.0
 
@@ -393,17 +473,14 @@ class TestLogService:
         if len(payload) > MAX_BRIDGE_BYTES:
             raise ProtocolError("args_invalid", "The log request is too large.")
         try:
-            proc = subprocess.run(
+            proc = self._bridge_runner(
                 [str(self._executor_binary), command, "--worktree", str(worktree),
-                 "--request", "-"],
-                input=payload, capture_output=True, timeout=60, check=False,
-                env={"PATH": "/usr/bin:/bin", "HOME": "/root"},
-            )
+                 "--request", "-"], payload)
         except (OSError, subprocess.TimeoutExpired) as exc:
             raise ProtocolError(
                 "test_log_unavailable", _BRIDGE_ERROR_MESSAGES["test_log_unavailable"]
             ) from exc
-        if len(proc.stdout) > MAX_BRIDGE_BYTES or len(proc.stderr) > MAX_BRIDGE_BYTES:
+        if len(proc.stdout) > MAX_BRIDGE_BYTES or proc.stderr_oversized:
             raise ProtocolError(
                 "test_log_unavailable", "The Rust log bridge returned an oversized response.")
         try:
