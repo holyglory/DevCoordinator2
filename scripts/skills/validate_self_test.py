@@ -275,6 +275,7 @@ def test_real_rust_invalidation(base: Path) -> None:
     }
     plan_path = current / "plan.json"
     plan_path.write_text(json.dumps(plan), encoding="utf-8")
+    Path(plan["log_dir"]).mkdir(parents=True, mode=0o700)
     command([str(executor), "run-local", str(plan_path)], cwd=repository, expected=1)
     report = json.loads((current / "check-report.json").read_text(encoding="utf-8"))
     states = {row["name"]: row["status"] for row in report["checks"]}
@@ -289,7 +290,7 @@ def test_real_rust_invalidation(base: Path) -> None:
     check(not forbidden_marker.exists(), "invalidated expensive work executed")
     check(report["source_changed"] is False, "cold validation artifacts changed source digest")
     check(
-        (current / "checks" / "gate" / "stderr.log").is_file(),
+        (Path(plan["log_dir"]) / "checks" / "gate" / "check" / "stderr.log").is_file(),
         "failed leaf did not retain a cold log",
     )
 

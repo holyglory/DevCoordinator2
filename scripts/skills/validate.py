@@ -500,6 +500,8 @@ def run_complete_validation(executor: Path = EXECUTOR) -> int:
         )
         plan_path = current_dir / "validation-plan.json"
         _write_plan(plan_path, plan)
+        log_dir = Path(plan["log_dir"])
+        log_dir.mkdir(parents=True, mode=0o700)
         completed = subprocess.run(
             executor_argv(executor, plan_path),
             cwd=ROOT,

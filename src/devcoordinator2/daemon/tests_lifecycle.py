@@ -411,12 +411,11 @@ class TestLifecycle:
         rows = tests_support.list_current(self._registry._db, self._runs)
         for row in rows:
             handle = self._runs.get(row["worktree_id"])
-            if handle is None or handle.final_status is not None \
-                    or handle.dir_fd is None or row.get("status") != "running":
-                continue
-            report = tests_support.read_check_report(handle.dir_fd)
-            if report is not None:
-                row.update(self._report_projection(report))
+            if handle is not None and handle.final_status is None \
+                    and handle.dir_fd is not None and row.get("status") == "running":
+                report = tests_support.read_check_report(handle.dir_fd)
+                if report is not None:
+                    row.update(self._report_projection(report))
             self._sanitize_public_result(row)
         if self._capacity is not None:
             capacity = self._capacity.snapshot()
@@ -662,7 +661,10 @@ class TestLifecycle:
             "checks": checks,
             "checks_truncated": len(all_checks) > 64,
             "failure_index": failures,
-            "failure_index_truncated": bool(report.get("failure_index_truncated")),
+            "failure_index_truncated": (
+                bool(report.get("failure_index_truncated"))
+                or len(all_failures) > len(failures)
+            ),
             "source_changed": bool(report.get("source_changed")),
             "execution_capacity": report.get("capacity"),
             "capacity_wait_count": (
