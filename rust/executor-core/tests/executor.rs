@@ -398,6 +398,50 @@ async fn logs_are_drained_but_retained_to_the_fixed_cap() {
         .len(),
         4 * 1024 * 1024
     );
+    assert_eq!(
+        fs::metadata(repository.current("run-logs").join("stdout.log"))
+            .expect("aggregate stdout log")
+            .len(),
+        4 * 1024 * 1024
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_leaf_output_is_retained_in_run_aggregate_streams() {
+    let repository = Repository::new("aggregate-logs");
+    let one = direct(
+        "one",
+        python("import sys; print('one-out'); print('one-err', file=sys.stderr)"),
+    );
+    let two = direct(
+        "two",
+        python("import sys; print('two-out'); print('two-err', file=sys.stderr)"),
+    );
+    let report = execute(plan(&repository, "run-aggregate-logs", vec![one, two])).await;
+    assert_eq!(report.status, RunStatus::Passed);
+    let stdout = fs::read_to_string(repository.current("run-aggregate-logs").join("stdout.log"))
+        .expect("aggregate stdout");
+    let stderr = fs::read_to_string(repository.current("run-aggregate-logs").join("stderr.log"))
+        .expect("aggregate stderr");
+    assert!(stdout.contains("one-out") && stdout.contains("two-out"));
+    assert!(stderr.contains("one-err") && stderr.contains("two-err"));
+    assert_eq!(
+        u64::try_from(stdout.len()).expect("stdout length"),
+        report
+            .checks
+            .iter()
+            .map(|check| check.stdout_bytes_observed)
+            .sum::<u64>()
+    );
+    assert_eq!(
+        fs::read_to_string(
+            repository
+                .current("run-aggregate-logs")
+                .join("checks/one/stdout.log")
+        )
+        .expect("one stdout"),
+        "one-out\n"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

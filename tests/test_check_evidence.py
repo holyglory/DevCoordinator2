@@ -121,6 +121,41 @@ command = ["true"]
         "schema": 2, "valid": True, "test": "complete", "declared_checks": 2}
 
 
+def test_report_projection_uses_bounded_aggregate_leaf_output_counts():
+    checks = [{
+        "name": name,
+        "status": "passed",
+        "stdout_bytes_observed": 3 * 1024 * 1024,
+        "stdout_bytes_retained": 3 * 1024 * 1024,
+        "stdout_truncated": False,
+        "stderr_bytes_observed": 1,
+        "stderr_bytes_retained": 1,
+        "stderr_truncated": False,
+        "artifacts": [],
+    } for name in ("one", "two")]
+    projected = GovernedTestLifecycle._report_projection({
+        "requested_tier": "release",
+        "readiness_eligible": True,
+        "proof": "complete",
+        "selection": [],
+        "counts": {},
+        "checks": checks,
+        "failure_index": [],
+        "failure_index_truncated": False,
+        "capacity": {
+            "learned_capacity": 8,
+            "effective_capacity": 8,
+            "capacity_wait_count": 0,
+        },
+    })
+    assert projected["stdout_bytes_observed"] == 6 * 1024 * 1024
+    assert projected["stdout_bytes_retained"] == 4 * 1024 * 1024
+    assert projected["stdout_truncated"] is True
+    assert projected["stderr_bytes_observed"] == 2
+    assert projected["stderr_bytes_retained"] == 2
+    assert projected["stderr_truncated"] is False
+
+
 def test_artifact_receipts_are_exact_and_refuse_symlinks(tmp_path):
     repo = repository(tmp_path)
     artifact = repo / "build.bin"

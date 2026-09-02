@@ -273,9 +273,9 @@ class TestLifecycle:
                     raise ProtocolError(
                         "test_start_failed",
                         f"cannot spawn systemd-run: {exc}") from exc
-                out = capture.Drainer(proc.stdout, current / "stdout.log",
+                out = capture.Drainer(proc.stdout, current / "executor-stdout.log",
                                       owner=(caller.uid, caller.gid))
-                err = capture.Drainer(proc.stderr, current / "stderr.log",
+                err = capture.Drainer(proc.stderr, current / "executor-stderr.log",
                                       owner=(caller.uid, caller.gid))
                 out.start()
                 err.start()
@@ -408,6 +408,14 @@ class TestLifecycle:
 
     def list_current(self) -> list[dict]:
         rows = tests_support.list_current(self._registry._db, self._runs)
+        for row in rows:
+            handle = self._runs.get(row["worktree_id"])
+            if handle is None or handle.final_status is not None \
+                    or handle.dir_fd is None or row.get("status") != "running":
+                continue
+            report = tests_support.read_check_report(handle.dir_fd)
+            if report is not None:
+                row.update(self._report_projection(report))
         if self._capacity is not None:
             capacity = self._capacity.snapshot()
             for row in rows:
@@ -656,7 +664,21 @@ class TestLifecycle:
             "capacity_wait_count": (
                 report.get("capacity", {}).get("capacity_wait_count", 0)
                 if isinstance(report.get("capacity"), dict) else 0),
+            **TestLifecycle._aggregate_output_projection(all_checks),
         }
+
+    @staticmethod
+    def _aggregate_output_projection(checks: list) -> dict:
+        result = {}
+        for stream in ("stdout", "stderr"):
+            observed = sum(
+                row.get(f"{stream}_bytes_observed", 0)
+                for row in checks if isinstance(row, dict))
+            retained = min(observed, capture.LOG_CAP_BYTES)
+            result[f"{stream}_bytes_observed"] = observed
+            result[f"{stream}_bytes_retained"] = retained
+            result[f"{stream}_truncated"] = observed > retained
+        return result
 
     # -- restart recovery --------------------------------------------------
 
@@ -805,7 +827,7 @@ class TestLifecycle:
         if rc == 0 or (unit_ran and 0 < exec_status < 200):
             return  # completed run; the reaper writes the terminal summary
         detail_bytes, _ = capture.tail_file(
-            handle.worktree_root / ".devcoordinator/test/current/stderr.log",
+            handle.worktree_root / ".devcoordinator/test/current/executor-stderr.log",
             2048)
         systemd_unit.reset_failed(handle.unit)
         self._finalize(handle)  # leaves an honest terminal summary behind

@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::process::Stdio;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use devcoordinator2_executor_protocol::{
@@ -21,7 +22,7 @@ use rustix::process::{Pid, Signal, kill_process_group};
 use tokio::fs::File;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::process::{Child, Command};
-use tokio::sync::watch;
+use tokio::sync::{Mutex, watch};
 use tokio::task::JoinHandle;
 use tokio::time::{Instant, timeout};
 
@@ -76,6 +77,8 @@ pub(crate) struct ProcessRequest {
     pub shared_artifacts: PathBuf,
     pub stdout_path: PathBuf,
     pub stderr_path: PathBuf,
+    pub aggregate_stdout: Arc<AggregateSink>,
+    pub aggregate_stderr: Arc<AggregateSink>,
     pub stdout_cap: usize,
     pub stderr_cap: usize,
     pub timeout_seconds: Option<u64>,
@@ -144,6 +147,58 @@ struct StreamStats {
     observed: u64,
     retained: u64,
     truncated: bool,
+}
+
+pub(crate) struct AggregateSink {
+    file: Mutex<File>,
+    retained: AtomicU64,
+    cap: u64,
+}
+
+impl AggregateSink {
+    pub(crate) fn create(path: &Path, cap: usize) -> Result<Arc<Self>, ExecutorError> {
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .mode(0o600)
+            .open(path)
+            .map_err(|error| ExecutorError::new(format!("cannot open aggregate log: {error}")))?;
+        Ok(Arc::new(Self {
+            file: Mutex::new(File::from_std(file)),
+            retained: AtomicU64::new(0),
+            cap: u64::try_from(cap).unwrap_or(u64::MAX),
+        }))
+    }
+
+    async fn append(&self, block: &[u8]) -> Result<(), ExecutorError> {
+        let reserved = loop {
+            let retained = self.retained.load(Ordering::Acquire);
+            let remaining = self.cap.saturating_sub(retained);
+            if remaining == 0 {
+                return Ok(());
+            }
+            let reserved = remaining.min(u64::try_from(block.len()).unwrap_or(u64::MAX));
+            if self
+                .retained
+                .compare_exchange_weak(
+                    retained,
+                    retained.saturating_add(reserved),
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                )
+                .is_ok()
+            {
+                break usize::try_from(reserved).unwrap_or(block.len());
+            }
+        };
+        self.file
+            .lock()
+            .await
+            .write_all(&block[..reserved])
+            .await
+            .map_err(|error| ExecutorError::new(format!("cannot write aggregate log: {error}")))
+    }
 }
 
 pub(crate) async fn run_process(
@@ -304,8 +359,12 @@ async fn spawn_process(request: &ProcessRequest) -> Result<SpawnedProcess, Execu
     let stderr_path = request.stderr_path.clone();
     let stdout_cap = request.stdout_cap;
     let stderr_cap = request.stderr_cap;
-    let stdout = tokio::spawn(async move { pump(stdout, &stdout_path, stdout_cap).await });
-    let stderr = tokio::spawn(async move { pump(stderr, &stderr_path, stderr_cap).await });
+    let aggregate_stdout = request.aggregate_stdout.clone();
+    let aggregate_stderr = request.aggregate_stderr.clone();
+    let stdout =
+        tokio::spawn(async move { pump(stdout, &stdout_path, stdout_cap, aggregate_stdout).await });
+    let stderr =
+        tokio::spawn(async move { pump(stderr, &stderr_path, stderr_cap, aggregate_stderr).await });
     let event_reader = event_read.map(|fd| File::from_std(std::fs::File::from(fd)));
     let manifest = manifest_read.map(|fd| {
         tokio::spawn(async move { capture_manifest(File::from_std(std::fs::File::from(fd))).await })
@@ -639,6 +698,7 @@ async fn pump<R: AsyncRead + Unpin>(
     mut reader: R,
     path: &Path,
     cap: usize,
+    aggregate: Arc<AggregateSink>,
 ) -> Result<StreamStats, ExecutorError> {
     let standard = std::fs::OpenOptions::new()
         .create(true)
@@ -659,6 +719,7 @@ async fn pump<R: AsyncRead + Unpin>(
             break;
         }
         stats.observed = stats.observed.saturating_add(read as u64);
+        aggregate.append(&block[..read]).await?;
         let remaining = cap.saturating_sub(stats.retained as usize);
         if remaining > 0 {
             let keep = read.min(remaining);

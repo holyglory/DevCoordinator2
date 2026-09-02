@@ -17,8 +17,8 @@ use crate::evidence::{
     artifact_receipts, receipts_match, source_digest, write_bytes_atomic, write_json_atomic,
 };
 use crate::process::{
-    CHECK_LOG_CAP_BYTES, Cancellation, EventService, ProcessRequest, ProcessResult, ProcessStatus,
-    ServiceExit, run_process, signal_group,
+    AggregateSink, CHECK_LOG_CAP_BYTES, Cancellation, EventService, ProcessRequest, ProcessResult,
+    ProcessStatus, ServiceExit, run_process, signal_group,
 };
 
 const SERVICE_TERMINATION_GRACE: Duration = Duration::from_secs(2);
@@ -74,6 +74,10 @@ impl Executor {
                     ExecutorError::new(format!("cannot create run artifacts: {error}"))
                 })?;
         }
+        let aggregate_stdout =
+            AggregateSink::create(&current.join("stdout.log"), CHECK_LOG_CAP_BYTES)?;
+        let aggregate_stderr =
+            AggregateSink::create(&current.join("stderr.log"), CHECK_LOG_CAP_BYTES)?;
 
         let digest_root = root.clone();
         let initial_digest = tokio::task::spawn_blocking(move || source_digest(&digest_root))
@@ -148,6 +152,8 @@ impl Executor {
                     let permits = self.permits.clone();
                     let cancellation = self.cancellation.clone();
                     let capacity = capacity.clone();
+                    let aggregate_stdout = aggregate_stdout.clone();
+                    let aggregate_stderr = aggregate_stderr.clone();
                     running.spawn(async move {
                         let outcome = execute_check(
                             plan,
@@ -157,6 +163,8 @@ impl Executor {
                             permits,
                             cancellation,
                             capacity,
+                            aggregate_stdout,
+                            aggregate_stderr,
                         )
                         .await;
                         (name, outcome)
@@ -488,6 +496,7 @@ fn ready_checks(
         .collect()
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn execute_check(
     plan: Arc<ExecutionPlan>,
     check: CheckPlan,
@@ -496,6 +505,8 @@ async fn execute_check(
     permits: Arc<dyn PermitProvider>,
     cancellation: Cancellation,
     capacity: Arc<Mutex<CapacityReport>>,
+    aggregate_stdout: Arc<AggregateSink>,
+    aggregate_stderr: Arc<AggregateSink>,
 ) -> CheckOutcome {
     let started = Instant::now();
     if let Some(command) = &check.command {
@@ -504,6 +515,8 @@ async fn execute_check(
             &check,
             &root,
             &current,
+            aggregate_stdout.clone(),
+            aggregate_stderr.clone(),
             &check.name,
             command.clone(),
             check.completion,
@@ -536,6 +549,8 @@ async fn execute_check(
             permits,
             cancellation,
             capacity,
+            aggregate_stdout,
+            aggregate_stderr,
             started,
         )
         .await
@@ -583,6 +598,8 @@ async fn execute_fanout(
     permits: Arc<dyn PermitProvider>,
     cancellation: Cancellation,
     capacity: Arc<Mutex<CapacityReport>>,
+    aggregate_stdout: Arc<AggregateSink>,
+    aggregate_stderr: Arc<AggregateSink>,
     started: Instant,
 ) -> CheckOutcome {
     let mut aggregate = OutputStats::default();
@@ -594,6 +611,8 @@ async fn execute_fanout(
             check,
             root,
             current,
+            aggregate_stdout.clone(),
+            aggregate_stderr.clone(),
             &format!("{}/discovery", check.name),
             check.discover.clone().unwrap_or_default(),
             CompletionMode::Process,
@@ -674,6 +693,8 @@ async fn execute_fanout(
         let cancellation = cancellation.clone();
         let capacity = capacity.clone();
         let case_command = case_command.clone();
+        let aggregate_stdout = aggregate_stdout.clone();
+        let aggregate_stderr = aggregate_stderr.clone();
         tasks.spawn(async move {
             run_case(
                 &plan,
@@ -685,6 +706,8 @@ async fn execute_fanout(
                 permits,
                 cancellation,
                 capacity,
+                aggregate_stdout,
+                aggregate_stderr,
             )
             .await
         });
@@ -835,6 +858,8 @@ async fn run_case(
     permits: Arc<dyn PermitProvider>,
     cancellation: Cancellation,
     capacity: Arc<Mutex<CapacityReport>>,
+    aggregate_stdout: Arc<AggregateSink>,
+    aggregate_stderr: Arc<AggregateSink>,
 ) -> CaseOutcome {
     let started = Instant::now();
     let mut command = base_command.to_vec();
@@ -845,6 +870,8 @@ async fn run_case(
         check,
         root,
         current,
+        aggregate_stdout,
+        aggregate_stderr,
         &leaf,
         command,
         CompletionMode::Process,
@@ -874,6 +901,8 @@ fn process_request(
     check: &CheckPlan,
     root: &Path,
     current: &Path,
+    aggregate_stdout: Arc<AggregateSink>,
+    aggregate_stderr: Arc<AggregateSink>,
     leaf: &str,
     command: Vec<String>,
     completion: CompletionMode,
@@ -913,6 +942,8 @@ fn process_request(
         shared_artifacts: current.join("artifacts"),
         stdout_path: output_dir.join(stdout_filename),
         stderr_path: output_dir.join(stderr_filename),
+        aggregate_stdout,
+        aggregate_stderr,
         stdout_cap,
         stderr_cap: CHECK_LOG_CAP_BYTES,
         timeout_seconds: check.timeout_seconds,
