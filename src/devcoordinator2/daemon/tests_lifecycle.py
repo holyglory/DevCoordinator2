@@ -198,6 +198,12 @@ class TestLifecycle:
             except securefs.SecureFsError as exc:
                 raise ProtocolError("test_start_failed", str(exc)) from exc
             run = ids.run_id()
+            try:
+                log_dir = securefs.create_test_log_run_dir(
+                    worktree_root, run, caller.uid, caller.gid)
+            except securefs.SecureFsError as exc:
+                securefs.remove_test_dir(worktree_root)
+                raise ProtocolError("test_start_failed", str(exc)) from exc
             unit = ids.unit_name(self._config.unit_prefix, reg.worktree_id,
                                  run[1:])
             started_at = _now_iso()
@@ -206,6 +212,7 @@ class TestLifecycle:
             admitted = False
             capacity_registered = False
             proc = None
+            containers: list[str] = []
             try:
                 proof = "retry" if retry_run_id is not None \
                     else ("selected" if requested else "complete")
@@ -216,6 +223,7 @@ class TestLifecycle:
                     origin_run_id=retry_run_id, requested_tier=tier)
                 initial.update(
                     check_report_ref=tests_support.REPORT_FILE,
+                    log_catalog_ref={"run_id": run},
                 )
                 summary.write_atomic_at(dir_fd, initial,
                                         owner=(caller.uid, caller.gid))
@@ -230,7 +238,6 @@ class TestLifecycle:
                     capacity_registered = True
                     env["DEVCOORDINATOR_CAPACITY_SOCKET"] = str(
                         self._capacity.socket_path)
-                containers: list[str] = []
                 if spec.postgres is not None:
                     labels = docker_cli.managed_labels(
                         instance=self._config.unit_prefix,
@@ -254,7 +261,7 @@ class TestLifecycle:
                     _write_env_file(dir_fd, env, (caller.uid, caller.gid))
                     env_file = current / _ENV_FILE
                 plan = self._build_plan(
-                    spec, configured, selected, run, worktree_root, current,
+                    spec, configured, selected, run, worktree_root, current, log_dir,
                     source_fingerprint, requested, origin, retry_run_id, tier)
                 tests_support.write_check_plan(
                     dir_fd, plan, (caller.uid, caller.gid))
@@ -274,9 +281,9 @@ class TestLifecycle:
                     raise ProtocolError(
                         "test_start_failed",
                         f"cannot spawn systemd-run: {exc}") from exc
-                out = capture.Drainer(proc.stdout, current / "executor-stdout.log",
+                out = capture.Drainer(proc.stdout, log_dir / "executor" / "stdout.log",
                                       owner=(caller.uid, caller.gid))
-                err = capture.Drainer(proc.stderr, current / "executor-stderr.log",
+                err = capture.Drainer(proc.stderr, log_dir / "executor" / "stderr.log",
                                       owner=(caller.uid, caller.gid))
                 out.start()
                 err.start()
@@ -303,6 +310,11 @@ class TestLifecycle:
                     self._capacity.unregister_run(run)
                 _remove_containers(containers)
                 os.close(dir_fd)
+                if proc is None:
+                    try:
+                        securefs.remove_test_log_run_dir(worktree_root, run)
+                    except securefs.SecureFsError:
+                        pass
                 if isinstance(exc, ProtocolError):
                     raise
                 raise ProtocolError("test_start_failed", str(exc)) from exc
@@ -518,7 +530,7 @@ class TestLifecycle:
     @staticmethod
     def _build_plan(spec: TestSpec, configured: tuple[CheckSpec, ...],
                     selected: tuple[CheckSpec, ...], run_id: str,
-                    worktree_root: Path, current: Path,
+                    worktree_root: Path, current: Path, log_dir: Path,
                     source_fingerprint: str, requested: tuple[str, ...],
                     origin: dict | None, origin_run_id: str | None,
                     requested_tier: str) -> dict:
@@ -556,6 +568,10 @@ class TestLifecycle:
                 "completion": check.completion,
                 "on_failure": check.on_failure,
                 "produces": list(check.produces),
+                "diagnostic_sources": [
+                    {"format": source.format, "path": source.path}
+                    for source in check.diagnostic_sources
+                ],
                 "timeout_seconds": check.timeout_seconds,
             }
             if check.command is not None:
@@ -581,6 +597,7 @@ class TestLifecycle:
             "origin_run_id": origin_run_id,
             "worktree_root": str(worktree_root),
             "current_dir": str(current),
+            "log_dir": str(log_dir),
             "source_digest": source_fingerprint,
             "config_digest": spec.config_digest,
             "checks": rows,
@@ -865,8 +882,7 @@ class TestLifecycle:
                 handle.run_id, handle.test, status, handle.started_at,
                 handle.caller_uid, handle.client, finished_at=finished_at,
                 duration_seconds=duration, exit_code=exit_code,
-                stdout_observed=out.observed, stdout_retained=out.retained,
-                stderr_observed=err.observed, stderr_retained=err.retained,
+                stdout_observed=out.observed, stderr_observed=err.observed,
                 proof=handle.proof, selection=handle.selection,
                 origin_run_id=handle.origin_run_id,
                 requested_tier=handle.requested_tier,

@@ -110,6 +110,7 @@ command = ["true"]
     current.mkdir(parents=True)
     plan = GovernedTestLifecycle._build_plan(
         spec, spec.checks, spec.checks, "tcross-language", repo, current,
+        current / "logs" / "runs" / "tcross-language",
         source_digest(repo), (), None, None, "release")
     plan_path = current / "plan.json"
     plan_path.write_text(json.dumps(plan), encoding="utf-8")
@@ -232,6 +233,7 @@ def test_retry_plan_reuses_only_matching_declared_artifacts(tmp_path):
         origin, "torigin", "unit", spec, "a" * 64, (build, failed))
     plan = GovernedTestLifecycle._build_plan(
         spec, (build, failed), (build, failed), "tretry", repo, current,
+        current / "logs" / "runs" / "tretry",
         "a" * 64, ("unit",), origin, "torigin", "release")
     assert plan["schema"] == 2
     assert plan["requested_tier"] == "release"
@@ -243,6 +245,7 @@ def test_retry_plan_reuses_only_matching_declared_artifacts(tmp_path):
     artifact.write_bytes(b"stale")
     stale = GovernedTestLifecycle._build_plan(
         spec, (build, failed), (build, failed), "tretry2", repo, current,
+        current / "logs" / "runs" / "tretry2",
         "a" * 64, ("unit",), origin, "torigin", "release")
     assert stale["reused"] == {}
 

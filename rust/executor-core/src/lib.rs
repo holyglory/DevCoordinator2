@@ -19,8 +19,8 @@ pub use devcoordinator2_executor_protocol as protocol;
 pub use error::ExecutorError;
 pub use evidence::{artifact_receipts, receipts_match, source_digest};
 pub use log_store::{
-    CompleteLogWriter, IncompleteOperation, LeafSelector, LogStoreError, RunLogLease,
-    StreamMetadata,
+    CompleteLogWriter, IncompleteOperation, LeafLogMetadata, LeafSelector, LogStoreError,
+    RunLogLease, RunLogMetadata, StreamMetadata,
 };
 pub use process::Cancellation;
 pub use retention::{

@@ -19,19 +19,18 @@ def test_build_and_roundtrip(tmp_path: Path):
     loaded = summary.read(path)
     assert loaded == doc
     assert loaded["schema_version"] == 2
-    assert loaded["stdout_truncated"] is False
+    assert loaded["stdout_bytes_observed"] == 0
 
 
-def test_truncation_flags():
+def test_complete_stream_counts():
     doc = summary.build(
         run_id="t1", test="unit", status="failed",
         started_at="2026-08-22T00:00:00Z", caller_uid=1000, client="other",
         finished_at="2026-08-22T00:01:00Z", duration_seconds=60.0,
-        exit_code=1, stdout_observed=10_000_000, stdout_retained=4_194_304,
-        stderr_observed=10, stderr_retained=10,
+        exit_code=1, stdout_observed=10_000_000, stderr_observed=10,
     )
-    assert doc["stdout_truncated"] is True
-    assert doc["stderr_truncated"] is False
+    assert doc["stdout_bytes_observed"] == 10_000_000
+    assert doc["stderr_bytes_observed"] == 10
 
 
 def test_replacement_is_atomic(tmp_path: Path):

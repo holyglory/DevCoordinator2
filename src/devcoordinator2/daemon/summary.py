@@ -24,8 +24,7 @@ STATUSES = TERMINAL_STATUSES | {"running"}
 _FIELDS = (
     "schema_version", "run_id", "test", "status", "started_at", "finished_at",
     "duration_seconds", "exit_code", "stdout_bytes_observed",
-    "stdout_bytes_retained", "stderr_bytes_observed", "stderr_bytes_retained",
-    "stdout_truncated", "stderr_truncated", "caller_uid", "client",
+    "stderr_bytes_observed", "caller_uid", "client",
     "proof", "selection", "origin_run_id", "requested_tier", "readiness_eligible",
 )
 
@@ -33,8 +32,7 @@ _FIELDS = (
 def build(run_id: str, test: str, status: str, started_at: str,
           caller_uid: int, client: str, *, finished_at: str | None = None,
           duration_seconds: float | None = None, exit_code: int | None = None,
-          stdout_observed: int = 0, stdout_retained: int = 0,
-          stderr_observed: int = 0, stderr_retained: int = 0,
+          stdout_observed: int = 0, stderr_observed: int = 0,
           proof: str = "complete", selection: tuple[str, ...] = (),
           origin_run_id: str | None = None,
           requested_tier: str = "release") -> dict[str, Any]:
@@ -51,11 +49,7 @@ def build(run_id: str, test: str, status: str, started_at: str,
         "duration_seconds": duration_seconds,
         "exit_code": exit_code,
         "stdout_bytes_observed": stdout_observed,
-        "stdout_bytes_retained": stdout_retained,
         "stderr_bytes_observed": stderr_observed,
-        "stderr_bytes_retained": stderr_retained,
-        "stdout_truncated": stdout_observed > stdout_retained,
-        "stderr_truncated": stderr_observed > stderr_retained,
         "caller_uid": caller_uid,
         "client": client,
         "proof": proof,

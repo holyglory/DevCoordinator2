@@ -371,6 +371,7 @@ requires=["browser"]
         spec.checks, (), "development")
     plan = GovernedTestLifecycle._build_plan(
         spec, spec.checks, selected, "trun", tmp_path, tmp_path / "current",
+        tmp_path / "logs" / "runs" / "trun",
         "a" * 64, (), None, None, "development")
     assert [row["name"] for row in plan["checks"]] == ["source", "unit"]
     assert plan["checks"][0]["invalidates"] == []
