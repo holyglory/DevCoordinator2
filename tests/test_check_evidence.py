@@ -121,7 +121,7 @@ command = ["true"]
         "schema": 2, "valid": True, "test": "complete", "declared_checks": 2}
 
 
-def test_report_projection_uses_bounded_aggregate_leaf_output_counts():
+def test_report_projection_reports_complete_aggregate_leaf_output_counts():
     checks = [{
         "name": name,
         "status": "passed",
@@ -149,8 +149,8 @@ def test_report_projection_uses_bounded_aggregate_leaf_output_counts():
         },
     })
     assert projected["stdout_bytes_observed"] == 6 * 1024 * 1024
-    assert projected["stdout_bytes_retained"] == 4 * 1024 * 1024
-    assert projected["stdout_truncated"] is True
+    assert projected["stdout_bytes_retained"] == 6 * 1024 * 1024
+    assert projected["stdout_truncated"] is False
     assert projected["stderr_bytes_observed"] == 2
     assert projected["stderr_bytes_retained"] == 2
     assert projected["stderr_truncated"] is False

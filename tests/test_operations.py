@@ -24,6 +24,10 @@ def test_effect_hints_stay_truthful_for_read_destructive_and_external_operations
     assert policy_for("deployment.remove").mcp_annotations()["destructiveHint"] is True
     assert policy_for("telegram.subscribe").mcp_annotations()["openWorldHint"] is True
     assert policy_for("test.capacity.set").effect == "reversible"
+    assert policy_for("test.log.catalog").read_only is True
+    assert policy_for("test.log.failure_context").read_only is True
+    assert policy_for("test.log.retention.set").effect == "destructive"
+    assert "test.output" not in OPERATIONS
 
 
 def test_registry_contains_no_implicit_or_unknown_policy_values():

@@ -5,10 +5,10 @@ from pathlib import Path
 from devcoordinator2.daemon.capture import Drainer, tail_file
 
 
-def test_drainer_caps_but_keeps_counting(tmp_path: Path):
+def test_drainer_retains_every_byte_and_uses_private_mode(tmp_path: Path):
     log = tmp_path / "stdout.log"
     read_fd, write_fd = os.pipe()
-    drainer = Drainer(os.fdopen(read_fd, "rb"), log, cap=1000)
+    drainer = Drainer(os.fdopen(read_fd, "rb"), log)
     drainer.start()
     payload = b"x" * 5000
     with os.fdopen(write_fd, "wb") as w:
@@ -16,8 +16,9 @@ def test_drainer_caps_but_keeps_counting(tmp_path: Path):
     drainer.join(5)
     counts = drainer.counts
     assert counts.observed == 5000
-    assert counts.retained == 1000
-    assert log.stat().st_size == 1000
+    assert counts.retained == 5000
+    assert log.read_bytes() == payload
+    assert log.stat().st_mode & 0o777 == 0o600
 
 
 def test_noisy_child_never_blocks(tmp_path: Path):
@@ -27,13 +28,14 @@ def test_noisy_child_never_blocks(tmp_path: Path):
         ["dd", "if=/dev/zero", "bs=64k", "count=512", "status=none"],
         stdout=subprocess.PIPE,
     )
-    drainer = Drainer(child.stdout, log, cap=4096)
+    drainer = Drainer(child.stdout, log)
     drainer.start()
     assert child.wait(timeout=30) == 0
     drainer.join(10)
     counts = drainer.counts
     assert counts.observed == 64 * 1024 * 512
-    assert counts.retained == 4096
+    assert counts.retained == counts.observed
+    assert log.stat().st_size == counts.observed
 
 
 def test_live_output_visible_before_child_exits(tmp_path: Path):

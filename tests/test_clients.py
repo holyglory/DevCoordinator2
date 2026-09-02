@@ -51,7 +51,7 @@ def test_cli_ping_and_register_roundtrip(live, capsys):
     assert rc == 0
     response = json.loads(capsys.readouterr().out)
     assert response["ok"] is True
-    assert response["result"]["schema_version"] == 13
+    assert response["result"]["schema_version"] == 14
 
     rc = cli.main(["repository", "register", str(live.repo)])
     assert rc == 0
@@ -112,11 +112,41 @@ def test_governed_check_cli_argument_mapping(tmp_path):
     ])
     assert cli._to_call(retry) == ("test.retry", {
         "path": path, "test": "complete", "run_id": "torigin", "check": "unit"})
-    output = cli.build_parser().parse_args([
-        "test", "output", path, "--stream", "stderr", "--check", "unit",
+    catalog = cli.build_parser().parse_args([
+        "test", "log", "catalog", path, "--run-id", "t20260902T010203Z-abcdef",
+        "--check", "unit", "--phase", "case", "--case", "parser-17",
+        "--stream", "stderr",
     ])
-    assert cli._to_call(output) == ("test.output", {
-        "path": path, "stream": "stderr", "tail_bytes": 16384, "check": "unit"})
+    assert cli._to_call(catalog) == ("test.log.catalog", {
+        "path": path, "run_id": "t20260902T010203Z-abcdef", "check": "unit",
+        "phase": "case", "case": "parser-17", "stream": "stderr", "limit": 100})
+    tail = cli.build_parser().parse_args([
+        "test", "log", "tail", path, "--check", "unit", "--phase", "check",
+        "--stream", "stderr",
+    ])
+    assert cli._to_call(tail) == ("test.log.tail", {
+        "path": path, "check": "unit", "phase": "check", "stream": "stderr",
+        "lines": 50, "max_bytes": 32768})
+    search = cli.build_parser().parse_args([
+        "test", "log", "search", path, "--check", "unit", "--phase", "check",
+        "--stream", "stdout", "--text", "[literal].*",
+    ])
+    assert cli._to_call(search)[0] == "test.log.search"
+    exact_range = cli.build_parser().parse_args([
+        "test", "log", "range", path, "--check", "unit", "--phase", "check",
+        "--stream", "stdout", "--line-start", "40", "--line-end", "60",
+    ])
+    assert cli._to_call(exact_range)[1]["line_start"] == 40
+    context = cli.build_parser().parse_args([
+        "test", "log", "failure-context", path, "--check", "unit",
+    ])
+    assert cli._to_call(context)[0] == "test.log.failure_context"
+    retention = cli.build_parser().parse_args([
+        "test", "log", "retention", "set", "--max-age-seconds", "7200",
+        "--case-depth", "5",
+    ])
+    assert cli._to_call(retention) == ("test.log.retention.set", {
+        "max_age_seconds": 7200, "case_depth": 5})
     stop = cli.build_parser().parse_args([
         "test", "stop", path, "--reason", "operator cancelled upgrade",
     ])
@@ -217,7 +247,10 @@ def test_mcp_full_session(live):
     assert init["protocolVersion"] == "2025-06-18"
     assert init["serverInfo"]["name"] == "devcoordinator2"
     tools = {t["name"] for t in replies[1]["result"]["tools"]}
-    assert {"test_start", "test_retry", "test_status", "test_output", "test_stop",
+    assert {"test_start", "test_retry", "test_status", "test_log_catalog",
+            "test_log_tail", "test_log_search", "test_log_range",
+            "test_log_failure_context", "test_log_retention_show",
+            "test_log_retention_set", "test_stop",
             "test_list", "test_capacity_show", "test_capacity_set",
             "test_capacity_clear",
             "repository_list", "repository_archive", "repository_unarchive",

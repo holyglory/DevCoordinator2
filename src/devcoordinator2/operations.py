@@ -70,7 +70,16 @@ OPERATIONS: dict[str, OperationPolicy] = {
     "test.start": _policy("repository", "administrator", "destructive"),
     "test.retry": _policy("repository", "administrator", "destructive"),
     "test.status": _policy("repository", "administrator", "read", idempotent=True),
-    "test.output": _policy("repository", "administrator", "read", idempotent=True),
+    "test.log.catalog": _policy("repository", "administrator", "read", idempotent=True),
+    "test.log.tail": _policy("repository", "administrator", "read", idempotent=True),
+    "test.log.search": _policy("repository", "administrator", "read", idempotent=True),
+    "test.log.range": _policy("repository", "administrator", "read", idempotent=True),
+    "test.log.failure_context": _policy(
+        "repository", "administrator", "read", idempotent=True),
+    "test.log.retention.get": _policy(
+        "server", "administrator", "read", idempotent=True),
+    "test.log.retention.set": _policy(
+        "server", "administrator", "destructive", idempotent=True),
     "test.stop": _policy("repository", "administrator", "destructive", idempotent=True),
     "test.list": _policy("server", "administrator", "read", idempotent=True),
     "test.capacity.get": _policy("server", "administrator", "read", idempotent=True),

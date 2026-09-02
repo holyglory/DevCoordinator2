@@ -20,6 +20,15 @@ SUPPORTED_PROTOCOL_VERSIONS = ("2025-06-18", "2025-03-26", "2024-11-05")
 
 _PATH = {"type": "string",
          "description": "Absolute path inside the target Git worktree"}
+_LOG_SELECTOR = {
+    "path": _PATH,
+    "run_id": {"type": "string", "description": "Retained run; current when omitted"},
+    "check": {"type": "string"},
+    "phase": {"type": "string", "enum": ["executor", "check", "discovery", "case"]},
+    "case": {"type": "string"},
+    "stream": {"type": "string", "enum": ["stdout", "stderr"]},
+    "cursor": {"type": "string", "maxLength": 4096},
+}
 
 TOOLS = [
     {
@@ -69,21 +78,88 @@ TOOLS = [
                         "required": ["path"]},
     },
     {
-        "name": "test_output",
-        "description": ("Bounded tail of the current run's stdout or stderr "
-                        "plus the full log file path."),
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "path": _PATH,
-                "stream": {"type": "string", "enum": ["stdout", "stderr"]},
-                "tail_bytes": {"type": "integer", "minimum": 1,
-                               "maximum": 65536, "default": 16384},
-                "check": {"type": "string",
-                          "description": "Optional governed check name"},
-            },
-            "required": ["path", "stream"],
-        },
+        "name": "test_log_catalog",
+        "description": ("List retained check, case, and stream metadata without reading "
+                        "log content. Catalogue before requesting a bounded slice."),
+        "inputSchema": {"type": "object", "properties": {
+            **_LOG_SELECTOR,
+            "limit": {"type": "integer", "minimum": 1, "maximum": 100,
+                      "default": 100},
+        }, "required": ["path"], "additionalProperties": False},
+    },
+    {
+        "name": "test_log_tail",
+        "description": "Read a bounded final-line slice from one exact retained stream.",
+        "inputSchema": {"type": "object", "properties": {
+            **_LOG_SELECTOR,
+            "lines": {"type": "integer", "minimum": 1, "maximum": 5000,
+                      "default": 50},
+            "max_bytes": {"type": "integer", "minimum": 1, "maximum": 65536,
+                          "default": 32768},
+        }, "required": ["path", "phase", "stream"],
+           "additionalProperties": False},
+    },
+    {
+        "name": "test_log_search",
+        "description": ("Search one exact stream literally, with bounded matches and "
+                        "stable line/byte coordinates. Input is never a regular expression."),
+        "inputSchema": {"type": "object", "properties": {
+            **_LOG_SELECTOR,
+            "text": {"type": "string", "minLength": 1, "maxLength": 4096},
+            "max_matches": {"type": "integer", "minimum": 1, "maximum": 100,
+                            "default": 20},
+            "context_lines": {"type": "integer", "minimum": 0, "maximum": 100,
+                              "default": 2},
+            "max_bytes": {"type": "integer", "minimum": 1, "maximum": 65536,
+                          "default": 32768},
+        }, "required": ["path", "phase", "stream", "text"],
+           "additionalProperties": False},
+    },
+    {
+        "name": "test_log_range",
+        "description": ("Read one exact bounded line or byte interval. Supply both ends "
+                        "of exactly one interval kind."),
+        "inputSchema": {"type": "object", "properties": {
+            **_LOG_SELECTOR,
+            "line_start": {"type": "integer", "minimum": 1},
+            "line_end": {"type": "integer", "minimum": 1},
+            "byte_start": {"type": "integer", "minimum": 0},
+            "byte_end": {"type": "integer", "minimum": 0},
+            "max_bytes": {"type": "integer", "minimum": 1, "maximum": 65536,
+                          "default": 65536},
+        }, "required": ["path", "phase", "stream"],
+           "additionalProperties": False},
+    },
+    {
+        "name": "test_log_failure_context",
+        "description": ("Return deterministically ranked, bounded failure excerpts with "
+                        "stable coordinates; no model-generated summary."),
+        "inputSchema": {"type": "object", "properties": {
+            **_LOG_SELECTOR,
+            "limit": {"type": "integer", "minimum": 1, "maximum": 100,
+                      "default": 20},
+            "context_lines": {"type": "integer", "minimum": 0, "maximum": 100,
+                              "default": 2},
+            "max_bytes": {"type": "integer", "minimum": 1, "maximum": 65536,
+                          "default": 32768},
+        }, "required": ["path"], "additionalProperties": False},
+    },
+    {
+        "name": "test_log_retention_show",
+        "description": "Show host-wide completed-log age and per-case history depth.",
+        "inputSchema": {"type": "object", "properties": {},
+                        "additionalProperties": False},
+    },
+    {
+        "name": "test_log_retention_set",
+        "description": ("Set both positive retention boundaries. Lowering either value "
+                        "schedules immediate irreversible cleanup of eligible completed logs."),
+        "inputSchema": {"type": "object", "properties": {
+            "max_age_seconds": {"type": "integer", "minimum": 1,
+                                "maximum": 315360000},
+            "case_depth": {"type": "integer", "minimum": 1, "maximum": 65535},
+        }, "required": ["max_age_seconds", "case_depth"],
+           "additionalProperties": False},
     },
     {
         "name": "test_stop",
@@ -383,7 +459,13 @@ _TOOL_TO_COMMAND = {
     "test_start": "test.start",
     "test_retry": "test.retry",
     "test_status": "test.status",
-    "test_output": "test.output",
+    "test_log_catalog": "test.log.catalog",
+    "test_log_tail": "test.log.tail",
+    "test_log_search": "test.log.search",
+    "test_log_range": "test.log.range",
+    "test_log_failure_context": "test.log.failure_context",
+    "test_log_retention_show": "test.log.retention.get",
+    "test_log_retention_set": "test.log.retention.set",
     "test_stop": "test.stop",
     "test_list": "test.list",
     "test_capacity_show": "test.capacity.get",

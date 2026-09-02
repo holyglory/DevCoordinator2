@@ -45,7 +45,7 @@ def _optional_str(args: dict[str, Any], key: str) -> str | None:
 
 def build_handlers(config: InstanceConfig, registry: Registry,
                    lifecycle=None, deployments=None, db=None,
-                   capacity=None) -> dict[str, Handler]:
+                   capacity=None, test_logs=None) -> dict[str, Handler]:
     def ping(args: dict[str, Any], caller: Caller) -> dict[str, Any]:
         _no_args(args)
         return {"daemon_version": __version__, "schema_version": SCHEMA_VERSION,
@@ -176,21 +176,6 @@ def build_handlers(config: InstanceConfig, registry: Registry,
             path = _require_path(args, {"path"})
             return lifecycle.status(path, caller)
 
-        def test_output(args: dict[str, Any], caller: Caller) -> dict[str, Any]:
-            path = _require_path(args, {"path", "stream", "tail_bytes", "check"})
-            stream = args.get("stream")
-            if stream not in ("stdout", "stderr"):
-                raise ProtocolError("args_invalid",
-                                    "'stream' must be 'stdout' or 'stderr'")
-            tail_bytes = args.get("tail_bytes", 16384)
-            if not isinstance(tail_bytes, int) or not (1 <= tail_bytes <= 65536):
-                raise ProtocolError("args_invalid",
-                                    "'tail_bytes' must be an integer in 1..65536")
-            check = args.get("check")
-            if check is not None and not isinstance(check, str):
-                raise ProtocolError("args_invalid", "'check' must be a string")
-            return lifecycle.output(path, stream, tail_bytes, caller, check)
-
         def test_stop(args: dict[str, Any], caller: Caller) -> dict[str, Any]:
             path = _require_path(args, {"path", "reason"})
             reason = args.get("reason")
@@ -209,9 +194,67 @@ def build_handlers(config: InstanceConfig, registry: Registry,
             "test.start": test_start,
             "test.retry": test_retry,
             "test.status": test_status,
-            "test.output": test_output,
             "test.stop": test_stop,
             "test.list": test_list,
+        })
+
+    if test_logs is not None:
+        log_args = {
+            "catalog": {
+                "run_id", "check", "phase", "case", "stream", "cursor", "limit",
+            },
+            "tail": {
+                "run_id", "check", "phase", "case", "stream", "cursor", "lines",
+                "max_bytes",
+            },
+            "search": {
+                "run_id", "check", "phase", "case", "stream", "cursor", "text",
+                "max_matches", "context_lines", "max_bytes",
+            },
+            "range": {
+                "run_id", "check", "phase", "case", "stream", "cursor",
+                "line_start", "line_end", "byte_start", "byte_end", "max_bytes",
+            },
+            "failure_context": {
+                "run_id", "check", "phase", "case", "stream", "cursor", "limit",
+                "context_lines", "max_bytes",
+            },
+        }
+
+        def log_handler(operation: str):
+            def handle(args: dict[str, Any], caller: Caller) -> dict[str, Any]:
+                allowed = {"path", *log_args[operation]}
+                path = _require_path(args, allowed)
+                return test_logs.query(
+                    operation, path,
+                    {key: value for key, value in args.items() if key != "path"},
+                    caller,
+                )
+            return handle
+
+        def test_log_retention_get(args: dict[str, Any], caller: Caller) -> dict[str, Any]:
+            _no_args(args)
+            return test_logs.retention()
+
+        def test_log_retention_set(args: dict[str, Any], caller: Caller) -> dict[str, Any]:
+            unknown = set(args) - {"max_age_seconds", "case_depth"}
+            if unknown:
+                raise ProtocolError("args_invalid", f"unknown args: {sorted(unknown)}")
+            if set(args) != {"max_age_seconds", "case_depth"}:
+                raise ProtocolError(
+                    "args_invalid", "max_age_seconds and case_depth are required")
+            actor = caller.identity or f"uid:{caller.uid}"
+            return test_logs.set_retention(
+                args["max_age_seconds"], args["case_depth"], actor)
+
+        handlers.update({
+            "test.log.catalog": log_handler("catalog"),
+            "test.log.tail": log_handler("tail"),
+            "test.log.search": log_handler("search"),
+            "test.log.range": log_handler("range"),
+            "test.log.failure_context": log_handler("failure_context"),
+            "test.log.retention.get": test_log_retention_get,
+            "test.log.retention.set": test_log_retention_set,
         })
 
     if capacity is not None:

@@ -31,7 +31,6 @@ from devcoordinator2.daemon import (
 from devcoordinator2.daemon.gitinfo import GitResolveError, resolve_worktree
 from devcoordinator2.daemon.registry import Registry
 from devcoordinator2.daemon.repoconfig import (
-    CHECK_NAME_RE,
     VALIDATION_TIERS,
     CheckSpec,
     ConfigError,
@@ -112,7 +111,8 @@ class _RunHandle:
 
 
 class TestLifecycle:
-    def __init__(self, config: InstanceConfig, registry: Registry, capacity=None):
+    def __init__(self, config: InstanceConfig, registry: Registry, capacity=None,
+                 test_logs=None):
         self._config = config
         self._registry = registry
         self._locks: dict[str, threading.Lock] = {}
@@ -120,6 +120,7 @@ class TestLifecycle:
         self._runs: dict[str, _RunHandle] = {}  # worktree_id -> live handle
         self._admission = test_admission.TestAdmission(config.socket_path.parent)
         self._capacity = capacity
+        self._test_logs = test_logs
 
     # -- public operations -------------------------------------------------
 
@@ -214,7 +215,7 @@ class TestLifecycle:
                     proof=proof, selection=requested,
                     origin_run_id=retry_run_id, requested_tier=tier)
                 initial.update(
-                    check_report_path=str(current / tests_support.REPORT_FILE),
+                    check_report_ref=tests_support.REPORT_FILE,
                 )
                 summary.write_atomic_at(dir_fd, initial,
                                         owner=(caller.uid, caller.gid))
@@ -329,7 +330,7 @@ class TestLifecycle:
                 "requested_tier": tier,
                 "readiness_eligible": readiness_eligible,
                 "unit": unit,
-                "summary_path": str(handle.summary_path),
+                "summary_ref": "summary.json",
             }
         finally:
             if admission_entered:
@@ -351,41 +352,10 @@ class TestLifecycle:
                 report = tests_support.read_check_report(handle.dir_fd)
                 if report is not None:
                     doc.update(self._report_projection(report))
-        doc["summary_path"] = str(test_dir(worktree_root) / "summary.json")
+        self._sanitize_public_result(doc)
         if self._capacity is not None:
             doc["capacity"] = self._capacity.snapshot()
         return doc
-
-    def output(self, path: Path, stream: str, tail_bytes: int,
-               caller: Caller, check_name: str | None = None) -> dict:
-        worktree_root, _ = self._resolve(path, caller)
-        current = test_dir(worktree_root)
-        doc = summary.read(current / "summary.json")
-        if doc is None:
-            raise ProtocolError("test_not_found",
-                                "no current test run for this worktree")
-        if check_name is not None:
-            if not CHECK_NAME_RE.fullmatch(check_name):
-                raise ProtocolError("args_invalid", "invalid check name")
-            relative = ("checks", check_name, f"{stream}.log")
-            log_path = current / "checks" / check_name / f"{stream}.log"
-        else:
-            relative = (f"{stream}.log",)
-            log_path = current / f"{stream}.log"
-        try:
-            tail, truncated_before = securefs.tail_test_file(
-                worktree_root, relative, tail_bytes)
-        except securefs.SecureFsError as exc:
-            raise ProtocolError("test_not_found", str(exc)) from exc
-        return {
-            "run_id": doc["run_id"],
-            "stream": stream,
-            "check": check_name,
-            "tail": tail.decode("utf-8", errors="replace"),
-            "tail_bytes": len(tail),
-            "truncated_before_tail": truncated_before,
-            "log_path": str(log_path),
-        }
 
     def stop(self, path: Path, caller: Caller,
              reason: str | None = None) -> dict:
@@ -416,6 +386,7 @@ class TestLifecycle:
             report = tests_support.read_check_report(handle.dir_fd)
             if report is not None:
                 row.update(self._report_projection(report))
+            self._sanitize_public_result(row)
         if self._capacity is not None:
             capacity = self._capacity.snapshot()
             for row in rows:
@@ -430,9 +401,7 @@ class TestLifecycle:
         doc = summary.read(test_dir(worktree_root) / "summary.json")
         if doc is None:
             return None
-        return {"status": doc["status"],
-                "run_id": doc["run_id"],
-                "summary_path": str(test_dir(worktree_root) / "summary.json")}
+        return {"status": doc["status"], "run_id": doc["run_id"]}
 
     @staticmethod
     def _configured_checks(spec: TestSpec) -> tuple[CheckSpec, ...]:
@@ -629,7 +598,7 @@ class TestLifecycle:
                 continue
             projected = {key: row.get(key) for key in (
                 "name", "status", "started_at", "finished_at",
-                "duration_seconds", "exit_code", "reason", "output_ref",
+                "duration_seconds", "exit_code", "output_ref", "log_refs",
                 "stdout_bytes_observed", "stdout_bytes_retained",
                 "stdout_truncated", "stderr_bytes_observed",
                 "stderr_bytes_retained", "stderr_truncated",
@@ -646,8 +615,21 @@ class TestLifecycle:
         for row in all_failures[:64]:
             if isinstance(row, dict):
                 failures.append({key: row.get(key) for key in (
-                    "check", "status", "reason", "output_ref",
+                    "check", "case", "status", "output_ref", "log_refs",
                 )})
+        diagnostic_index = []
+        all_diagnostics = report.get("diagnostic_index", [])
+        if not isinstance(all_diagnostics, list):
+            all_diagnostics = []
+        safe_diagnostic_fields = (
+            "check", "case", "status", "exit", "termination_reason", "source",
+            "error_category", "expected", "actual", "fingerprint", "occurrences",
+            "log_refs",
+        )
+        for row in all_diagnostics[:64]:
+            if isinstance(row, dict):
+                diagnostic_index.append({key: row.get(key)
+                                         for key in safe_diagnostic_fields})
         return {
             "requested_tier": report.get("requested_tier"),
             "readiness_eligible": bool(report.get("readiness_eligible")),
@@ -658,8 +640,9 @@ class TestLifecycle:
             "checks_truncated": len(all_checks) > 64,
             "failure_index": failures,
             "failure_index_truncated": bool(report.get("failure_index_truncated")),
+            "diagnostic_index": diagnostic_index,
+            "diagnostic_index_truncated": len(all_diagnostics) > 64,
             "source_changed": bool(report.get("source_changed")),
-            "unsafe_reason": report.get("unsafe_reason"),
             "execution_capacity": report.get("capacity"),
             "capacity_wait_count": (
                 report.get("capacity", {}).get("capacity_wait_count", 0)
@@ -668,16 +651,31 @@ class TestLifecycle:
         }
 
     @staticmethod
+    def _sanitize_public_result(document: dict) -> None:
+        """Remove legacy private paths and unclassified prose before a status reply."""
+        for private_field in ("summary_path", "check_report_path", "unsafe_reason"):
+            document.pop(private_field, None)
+        if document.get("termination_reason") not in {
+                None, "operator_cancelled", "superseded", "timed_out", "interrupted"}:
+            document.pop("termination_reason", None)
+        for collection in ("checks", "failure_index"):
+            rows = document.get(collection)
+            if isinstance(rows, list):
+                for row in rows:
+                    if isinstance(row, dict):
+                        row.pop("reason", None)
+
+    @staticmethod
     def _aggregate_output_projection(checks: list) -> dict:
         result = {}
         for stream in ("stdout", "stderr"):
             observed = sum(
                 row.get(f"{stream}_bytes_observed", 0)
                 for row in checks if isinstance(row, dict))
-            retained = min(observed, capture.LOG_CAP_BYTES)
+            retained = observed
             result[f"{stream}_bytes_observed"] = observed
             result[f"{stream}_bytes_retained"] = retained
-            result[f"{stream}_truncated"] = observed > retained
+            result[f"{stream}_truncated"] = False
         return result
 
     # -- restart recovery --------------------------------------------------
@@ -865,6 +863,10 @@ class TestLifecycle:
                 status, exit_code = "passed", 0
             else:
                 status, exit_code = "failed", rc
+            wrapper_out, wrapper_err = handle.out.counts, handle.err.counts
+            if wrapper_out.retained != wrapper_out.observed \
+                    or wrapper_err.retained != wrapper_err.observed:
+                status, exit_code = "failed", rc
             handle.final_status = status
         try:
             _remove_containers(handle.containers)
@@ -882,16 +884,12 @@ class TestLifecycle:
                 requested_tier=handle.requested_tier,
             )
             doc.update(
-                termination_reason=handle.stop_detail,
-                check_report_path=str(
-                    handle.worktree_root / ".devcoordinator" / "test" / "current"
-                    / tests_support.REPORT_FILE),
+                termination_reason=("operator_cancelled" if handle.stop_detail else None),
+                check_report_ref=tests_support.REPORT_FILE,
             )
             if report is not None:
                 doc.update(self._report_projection(report))
-                doc["check_report_path"] = str(
-                    handle.worktree_root / ".devcoordinator" / "test" / "current"
-                    / tests_support.REPORT_FILE)
+                doc["check_report_ref"] = tests_support.REPORT_FILE
                 try:
                     # Retry evidence must be durable before the terminal summary
                     # becomes observable to a new caller.
@@ -923,6 +921,9 @@ class TestLifecycle:
                            repository_id=handle.repository_id,
                            duration_seconds=duration, caller_uid=handle.caller_uid,
                            client=handle.client, worktree=str(handle.worktree_root))
+            if self._test_logs is not None:
+                self._test_logs.notify_run_finished(
+                    handle.worktree_root, handle.run_id)
         finally:
             if self._capacity is not None:
                 self._capacity.unregister_run(handle.run_id)

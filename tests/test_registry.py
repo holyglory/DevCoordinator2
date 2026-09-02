@@ -166,7 +166,7 @@ def test_schema_v1_upgrades_in_place_preserving_repositories(tmp_path: Path):
         conn.execute("DROP TABLE deployments")
     db.close()
     db = Database(path)
-    assert db.query("SELECT value FROM meta WHERE key='schema_version'")[0]["value"] == "13"
+    assert db.query("SELECT value FROM meta WHERE key='schema_version'")[0]["value"] == "14"
     assert db.query("SELECT repository_id FROM repositories")[0]["repository_id"] == "r1"
     assert db.query("SELECT count(*) AS n FROM deployments")[0]["n"] == 0
     tables = {row["name"] for row in db.query(
@@ -185,7 +185,7 @@ def test_schema_v10_adds_persistent_elaboration_requests(tmp_path: Path):
     db = Database(path)
     columns = {row["name"] for row in db.query("PRAGMA table_info(tasks)")}
     assert "elaboration_needed" in columns
-    assert db.query("SELECT value FROM meta WHERE key='schema_version'")[0]["value"] == "13"
+    assert db.query("SELECT value FROM meta WHERE key='schema_version'")[0]["value"] == "14"
     db.close()
 
 
@@ -219,5 +219,5 @@ def test_schema_v12_adds_capacity_without_touching_permanent_history(tmp_path: P
         "SELECT name FROM sqlite_master WHERE type='table'")}
     assert {"test_capacity_state", "test_capacity_events"} <= tables
     assert db.query("SELECT value FROM meta WHERE key='schema_version'")[0]["value"] \
-        == "13"
+        == "14"
     db.close()

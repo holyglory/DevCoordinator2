@@ -29,6 +29,19 @@ def _add_common(parser: argparse.ArgumentParser, with_path: bool = True):
                         help="descriptive client session/task id")
 
 
+def _add_log_selector(parser: argparse.ArgumentParser, *, stream_required: bool) -> None:
+    _add_common(parser)
+    parser.add_argument("--run-id", default=None,
+                        help="retained run (default: current run)")
+    parser.add_argument("--check", default=None)
+    parser.add_argument("--phase", choices=["executor", "check", "discovery", "case"],
+                        required=stream_required)
+    parser.add_argument("--case", default=None)
+    parser.add_argument("--stream", choices=["stdout", "stderr"],
+                        required=stream_required)
+    parser.add_argument("--cursor", default=None)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="devcoordinator2")
     sub = parser.add_subparsers(dest="group", required=True)
@@ -57,12 +70,43 @@ def build_parser() -> argparse.ArgumentParser:
     retry.add_argument("--run-id", required=True)
     retry.add_argument("--check", required=True)
     _add_common(test_sub.add_parser("status", help="current run summary"))
-    output = test_sub.add_parser("output", help="bounded log tail")
-    _add_common(output)
-    output.add_argument("--stream", choices=["stdout", "stderr"],
-                        default="stdout")
-    output.add_argument("--tail-bytes", type=int, default=16384)
-    output.add_argument("--check", default=None, help="one governed check")
+    logs = test_sub.add_parser("log", help="progressive governed-test log access")
+    log_sub = logs.add_subparsers(dest="log_action", required=True)
+    catalog = log_sub.add_parser("catalog", help="content-free retained log catalogue")
+    _add_log_selector(catalog, stream_required=False)
+    catalog.add_argument("--limit", type=int, default=100)
+    tail = log_sub.add_parser("tail", help="bounded final lines of one stream")
+    _add_log_selector(tail, stream_required=True)
+    tail.add_argument("--lines", type=int, default=50)
+    tail.add_argument("--max-bytes", type=int, default=32768)
+    search = log_sub.add_parser("search", help="bounded literal search of one stream")
+    _add_log_selector(search, stream_required=True)
+    search.add_argument("--text", required=True)
+    search.add_argument("--max-matches", type=int, default=20)
+    search.add_argument("--context-lines", type=int, default=2)
+    search.add_argument("--max-bytes", type=int, default=32768)
+    exact_range = log_sub.add_parser("range", help="one exact bounded line or byte interval")
+    _add_log_selector(exact_range, stream_required=True)
+    exact_range.add_argument("--line-start", type=int, default=None)
+    exact_range.add_argument("--line-end", type=int, default=None)
+    exact_range.add_argument("--byte-start", type=int, default=None)
+    exact_range.add_argument("--byte-end", type=int, default=None)
+    exact_range.add_argument("--max-bytes", type=int, default=65536)
+    failure = log_sub.add_parser(
+        "failure-context", help="deterministically ranked bounded failure excerpts")
+    _add_log_selector(failure, stream_required=False)
+    failure.add_argument("--limit", type=int, default=20)
+    failure.add_argument("--context-lines", type=int, default=2)
+    failure.add_argument("--max-bytes", type=int, default=32768)
+    retention = log_sub.add_parser("retention", help="host log retention settings")
+    retention_sub = retention.add_subparsers(dest="retention_action", required=True)
+    _add_common(retention_sub.add_parser("show", help="show retention boundaries"),
+                with_path=False)
+    retention_set = retention_sub.add_parser(
+        "set", help="set age and history-depth boundaries and schedule cleanup")
+    _add_common(retention_set, with_path=False)
+    retention_set.add_argument("--max-age-seconds", type=int, required=True)
+    retention_set.add_argument("--case-depth", type=int, required=True)
     stop = test_sub.add_parser("stop", help="cancel the current run")
     _add_common(stop)
     stop.add_argument("--reason", default=None,
@@ -309,12 +353,36 @@ def _to_call(ns: argparse.Namespace) -> tuple[str, dict]:
             return "test.retry", args
         case ("test", "status"):
             return "test.status", path_args
-        case ("test", "output"):
-            args = {**path_args, "stream": ns.stream,
-                    "tail_bytes": ns.tail_bytes}
-            if ns.check:
-                args["check"] = ns.check
-            return "test.output", args
+        case ("test", "log"):
+            if ns.log_action == "retention":
+                if ns.retention_action == "show":
+                    return "test.log.retention.get", {}
+                return "test.log.retention.set", {
+                    "max_age_seconds": ns.max_age_seconds,
+                    "case_depth": ns.case_depth,
+                }
+            args = dict(path_args)
+            for key in ("run_id", "check", "phase", "case", "stream", "cursor"):
+                value = getattr(ns, key, None)
+                if value is not None:
+                    args[key] = value
+            if ns.log_action == "catalog":
+                args["limit"] = ns.limit
+            elif ns.log_action == "tail":
+                args.update(lines=ns.lines, max_bytes=ns.max_bytes)
+            elif ns.log_action == "search":
+                args.update(text=ns.text, max_matches=ns.max_matches,
+                            context_lines=ns.context_lines, max_bytes=ns.max_bytes)
+            elif ns.log_action == "range":
+                for key in ("line_start", "line_end", "byte_start", "byte_end"):
+                    value = getattr(ns, key)
+                    if value is not None:
+                        args[key] = value
+                args["max_bytes"] = ns.max_bytes
+            else:
+                args.update(limit=ns.limit, context_lines=ns.context_lines,
+                            max_bytes=ns.max_bytes)
+            return f"test.log.{ns.log_action.replace('-', '_')}", args
         case ("test", "stop"):
             return "test.stop", ({**path_args, "reason": ns.reason}
                                  if ns.reason else path_args)
