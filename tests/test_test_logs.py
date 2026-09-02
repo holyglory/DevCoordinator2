@@ -83,6 +83,14 @@ def test_context_lines_rejects_boolean_values():
         validate_log_request("failure_context", {"context_lines": False})
 
 
+def test_query_accepts_generic_schema_two_run_identity():
+    request = validate_log_request(
+        "catalog", {"run_id": "skills-20260902T120000Z-123-abcdef"})
+    assert request["selector"]["run_id"] == "skills-20260902T120000Z-123-abcdef"
+    with pytest.raises(ProtocolError, match="run_id"):
+        validate_log_request("catalog", {"run_id": "../escape"})
+
+
 def test_query_defaults_and_literal_search_are_forwarded_as_typed_json(world, monkeypatch):
     captured = {}
 

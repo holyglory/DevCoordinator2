@@ -44,7 +44,7 @@ _EXECUTOR_BINARY = (
     Path(__file__).resolve().parents[3] / "target" / "release"
     / "devcoordinator2-executor"
 )
-_RUN_ID_RE = re.compile(r"t[0-9]{8}T[0-9]{6}Z-[0-9a-f]{6}$")
+_RUN_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 _CHECK_RE = re.compile(r"[a-z0-9][a-z0-9-]{0,63}$")
 _CASE_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 _PHASES = frozenset({"executor", "check", "discovery", "case"})
@@ -181,7 +181,7 @@ def validate_log_request(operation: str, args: dict[str, Any]) -> dict[str, Any]
     if unknown:
         raise ProtocolError("args_invalid", f"unknown args: {sorted(unknown)}")
 
-    run_id = _optional_text(args.get("run_id"), "run_id", 64)
+    run_id = _optional_text(args.get("run_id"), "run_id", 128)
     if run_id is not None and not _RUN_ID_RE.fullmatch(run_id):
         raise ProtocolError("args_invalid", "'run_id' is invalid")
     check = _optional_text(args.get("check"), "check", 64)
