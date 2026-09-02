@@ -1,9 +1,13 @@
 use std::fs;
+use std::io::Write;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use devcoordinator2_executor_core::artifact_receipts;
+use devcoordinator2_executor_core::{
+    LeafLogMetadata, LeafSelector, RunLogLease, RunLogMetadata, artifact_receipts,
+    protocol::{DiagnosticExit, LeafStatus, LogStream, RunStatus},
+};
 
 static SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
@@ -55,6 +59,36 @@ fn json_stdout(output: std::process::Output) -> serde_json::Value {
         String::from_utf8_lossy(&output.stderr)
     );
     serde_json::from_slice(&output.stdout).expect("JSON stdout")
+}
+
+fn bridge(
+    repository: &Repository,
+    command: &str,
+    request: serde_json::Value,
+) -> (i32, serde_json::Value) {
+    let mut child = Command::new(binary())
+        .args([command, "--worktree"])
+        .arg(&repository.0)
+        .args(["--request", "-"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn log bridge");
+    child
+        .stdin
+        .take()
+        .expect("stdin")
+        .write_all(&serde_json::to_vec(&request).expect("request JSON"))
+        .expect("write request");
+    let output = child.wait_with_output().expect("bridge output");
+    let value = serde_json::from_slice(&output.stdout).unwrap_or_else(|error| {
+        panic!(
+            "invalid bridge JSON: {error}; stderr={}",
+            String::from_utf8_lossy(&output.stderr)
+        )
+    });
+    (output.status.code().expect("exit code"), value)
 }
 
 #[test]
@@ -132,4 +166,113 @@ fn governed_run_fails_closed_without_capacity_broker() {
         String::from_utf8_lossy(&output.stderr)
             .contains("DEVCOORDINATOR_CAPACITY_SOCKET is required")
     );
+}
+
+#[test]
+fn log_query_and_prune_commands_use_real_bounded_json_bridge() {
+    let repository = Repository::new();
+    let run_id = "t20260902T120000Z-123abc";
+    let run_dir = repository
+        .0
+        .join(".devcoordinator/test/logs/runs")
+        .join(run_id);
+    fs::create_dir_all(&run_dir).expect("run directory");
+    let lease = RunLogLease::acquire(&run_dir, run_id).expect("run lease");
+    lease
+        .publish_run_metadata(&RunLogMetadata {
+            schema: 2,
+            run_id: run_id.into(),
+            test: "unit".into(),
+            started_at_epoch_ms: 1,
+            finished_at_epoch_ms: Some(2),
+            status: RunStatus::Passed,
+            complete: true,
+        })
+        .expect("run metadata");
+    let selector = LeafSelector::check("main").expect("selector");
+    for (stream, payload) in [
+        (LogStream::Stdout, b"first\nFINAL-SENTINEL\n".as_slice()),
+        (LogStream::Stderr, b"".as_slice()),
+    ] {
+        let mut writer = lease
+            .create_stream(selector.clone(), stream)
+            .expect("stream");
+        writer.write_all(payload).expect("complete stream");
+        writer.seal().expect("seal stream");
+    }
+    lease
+        .publish_leaf_metadata(&LeafLogMetadata {
+            schema: 2,
+            selector,
+            status: LeafStatus::Passed,
+            exit: DiagnosticExit {
+                code: Some(0),
+                signal: None,
+            },
+            started_at_epoch_ms: 1,
+            finished_at_epoch_ms: Some(2),
+            complete: true,
+            structured_evidence_formats: Vec::new(),
+            structured_evidence_count: 0,
+        })
+        .expect("leaf metadata");
+    drop(lease);
+
+    let repository_id = "r0123456789abcdef";
+    let (code, catalog) = bridge(
+        &repository,
+        "log-query",
+        serde_json::json!({
+            "schema": 2,
+            "operation": "catalog",
+            "repository_id": repository_id,
+            "selector": {"run_id": run_id, "check": "main", "phase": "check"},
+            "options": {"limit": 100, "max_age_seconds": 86400, "case_depth": 3}
+        }),
+    );
+    assert_eq!(code, 0);
+    assert_eq!(catalog["schema"], 2);
+    assert_eq!(catalog["ok"], true);
+    assert_eq!(
+        catalog["result"]["entries"]
+            .as_array()
+            .expect("entries")
+            .len(),
+        2
+    );
+    assert!(catalog.to_string().len() < 65_536);
+
+    let (code, tail) = bridge(
+        &repository,
+        "log-query",
+        serde_json::json!({
+            "schema": 2,
+            "operation": "tail",
+            "repository_id": repository_id,
+            "selector": {
+                "run_id": run_id, "check": "main", "phase": "check",
+                "stream": "stdout"
+            },
+            "options": {"lines": 50, "max_bytes": 32768}
+        }),
+    );
+    assert_eq!(code, 0);
+    assert_eq!(tail["ok"], true);
+    assert!(tail.to_string().contains("FINAL-SENTINEL"));
+    assert!(tail.to_string().len() < 65_536);
+
+    let (code, pruned) = bridge(
+        &repository,
+        "log-prune",
+        serde_json::json!({
+            "schema": 2,
+            "repository_id": repository_id,
+            "max_age_seconds": 1,
+            "case_depth": 3
+        }),
+    );
+    assert_eq!(code, 0);
+    assert_eq!(pruned["ok"], true);
+    assert_eq!(pruned["result"]["removed_leaf_folders"], 1);
+    assert!(!run_dir.join("checks/main/check").exists());
 }
