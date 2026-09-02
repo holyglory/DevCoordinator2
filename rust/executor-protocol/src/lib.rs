@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
-use std::path::{Component, Path};
+use std::path::{Component, Path, PathBuf};
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 
@@ -17,6 +17,12 @@ pub const MAX_ARG_BYTES: usize = 4096;
 pub const MAX_CASE_ARG_BYTES: usize = 64 * 1024;
 pub const MAX_COMMAND_ARGS: usize = 256;
 pub const MAX_CASE_ARGS: usize = 64;
+pub const MAX_DIAGNOSTIC_SOURCES: usize = 8;
+pub const MAX_DIAGNOSTIC_EVENTS: usize = 4096;
+pub const MAX_DIAGNOSTIC_PREVIEW_BYTES: usize = 256;
+pub const MAX_DIAGNOSTIC_NAME_BYTES: usize = 256;
+pub const MAX_DIAGNOSTIC_PATH_BYTES: usize = 512;
+pub const MAX_DIAGNOSTIC_LOG_REFS: usize = 16;
 
 /// A schema marker that can only deserialize the current executor contract.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -84,6 +90,218 @@ pub enum FailureMode {
     Stop,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum DiagnosticReportFormat {
+    Junit,
+    PlaywrightJson,
+    RustJson,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct DiagnosticReportSource {
+    pub format: DiagnosticReportFormat,
+    pub path: String,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LogPhase {
+    Executor,
+    Check,
+    Discovery,
+    Case,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LogStream {
+    Stdout,
+    Stderr,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct LogRef {
+    pub run_id: String,
+    pub check: Option<String>,
+    pub phase: LogPhase,
+    pub case: Option<String>,
+    pub stream: LogStream,
+}
+
+impl LogRef {
+    pub fn validate(&self) -> Result<(), ContractError> {
+        validate_identity("log run_id", &self.run_id, 128)?;
+        match self.phase {
+            LogPhase::Executor => {
+                if self.check.is_some() || self.case.is_some() {
+                    return Err(ContractError::new(
+                        "executor log references cannot name a check or case",
+                    ));
+                }
+            }
+            LogPhase::Check | LogPhase::Discovery => {
+                let Some(check) = &self.check else {
+                    return Err(ContractError::new(
+                        "check and discovery log references require a check",
+                    ));
+                };
+                validate_name("log check", check, 64)?;
+                if self.case.is_some() {
+                    return Err(ContractError::new(
+                        "only case log references may name a case",
+                    ));
+                }
+            }
+            LogPhase::Case => {
+                let Some(check) = &self.check else {
+                    return Err(ContractError::new("case log references require a check"));
+                };
+                let Some(case) = &self.case else {
+                    return Err(ContractError::new("case log references require a case"));
+                };
+                validate_name("log check", check, 64)?;
+                validate_case_id(case)?;
+            }
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ErrorCategory {
+    Assertion,
+    Compiler,
+    Panic,
+    Exception,
+    StackFrame,
+    Timeout,
+    Cancellation,
+    ProcessExit,
+    BrowserConsole,
+    NetworkRequest,
+    StructuredEvidenceInvalid,
+    LogStorage,
+    SourceChanged,
+    Artifact,
+    Dependency,
+    Internal,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TerminationReason {
+    DeadlineExceeded,
+    UserCancelled,
+    Superseded,
+    RunCancelled,
+    DaemonInterrupted,
+    UnsafeStop,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DiagnosticOrigin {
+    ExplicitEvent,
+    Junit,
+    PlaywrightJson,
+    RustJson,
+    Executor,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DiagnosticValueType {
+    Null,
+    Boolean,
+    Number,
+    String,
+    Json,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct DiagnosticValue {
+    #[serde(rename = "type")]
+    pub value_type: DiagnosticValueType,
+    pub preview: Option<String>,
+    pub sha256: String,
+    pub byte_count: u64,
+    pub truncated: bool,
+    pub redacted: bool,
+}
+
+impl DiagnosticValue {
+    pub fn validate(&self) -> Result<(), ContractError> {
+        validate_digest("diagnostic value sha256", &self.sha256)?;
+        if self.redacted && self.preview.is_some() {
+            return Err(ContractError::new(
+                "redacted diagnostic values cannot include a preview",
+            ));
+        }
+        if let Some(preview) = &self.preview {
+            if preview.len() > MAX_DIAGNOSTIC_PREVIEW_BYTES
+                || preview.chars().any(char::is_control)
+                || u64::try_from(preview.len()).unwrap_or(u64::MAX) > self.byte_count
+            {
+                return Err(ContractError::new(
+                    "diagnostic value preview is not a bounded single-line value",
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SourceLocation {
+    pub file: String,
+    pub line: u32,
+    pub column: Option<u32>,
+}
+
+impl SourceLocation {
+    pub fn validate(&self) -> Result<(), ContractError> {
+        if self.file.len() > MAX_DIAGNOSTIC_PATH_BYTES {
+            return Err(ContractError::new(
+                "diagnostic source path exceeds 512 bytes",
+            ));
+        }
+        validate_relative_path("diagnostic source", &self.file)?;
+        if self.line == 0 || self.column == Some(0) {
+            return Err(ContractError::new(
+                "diagnostic source line and column are one-based",
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct DiagnosticExit {
+    pub code: Option<i32>,
+    pub signal: Option<u8>,
+}
+
+impl DiagnosticExit {
+    pub fn validate(&self) -> Result<(), ContractError> {
+        if self.code.is_some() && self.signal.is_some() {
+            return Err(ContractError::new(
+                "diagnostic exit cannot contain both a code and signal",
+            ));
+        }
+        if self.signal == Some(0) || self.signal.is_some_and(|signal| signal > 127) {
+            return Err(ContractError::new("diagnostic signal must be in [1, 127]"));
+        }
+        Ok(())
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ArtifactReceipt {
@@ -114,6 +332,8 @@ pub struct CheckPlan {
     pub completion: CompletionMode,
     pub on_failure: FailureMode,
     pub produces: Vec<String>,
+    #[serde(default)]
+    pub diagnostic_sources: Vec<DiagnosticReportSource>,
     pub command: Option<Vec<String>>,
     pub discover: Option<Vec<String>>,
     pub case_command: Option<Vec<String>>,
@@ -134,6 +354,7 @@ pub struct ExecutionPlan {
     pub test: String,
     pub worktree_root: String,
     pub current_dir: String,
+    pub log_dir: String,
     pub requested_tier: ValidationTier,
     pub readiness_eligible: bool,
     pub proof: ProofKind,
@@ -211,9 +432,19 @@ impl ExecutionPlan {
         }
         if !Path::new(&self.worktree_root).is_absolute()
             || !Path::new(&self.current_dir).is_absolute()
+            || !Path::new(&self.log_dir).is_absolute()
         {
             return Err(ContractError::new(
-                "worktree_root and current_dir must be absolute paths",
+                "worktree_root, current_dir, and log_dir must be absolute paths",
+            ));
+        }
+        let normalized_root = normalize_absolute_path(Path::new(&self.worktree_root))
+            .ok_or_else(|| ContractError::new("worktree_root cannot escape its filesystem root"))?;
+        let normalized_log = normalize_absolute_path(Path::new(&self.log_dir))
+            .ok_or_else(|| ContractError::new("log_dir cannot escape its filesystem root"))?;
+        if normalized_log == normalized_root || !normalized_log.starts_with(&normalized_root) {
+            return Err(ContractError::new(
+                "log_dir must be contained below worktree_root",
             ));
         }
 
@@ -427,6 +658,28 @@ fn validate_check(check: &CheckPlan) -> Result<(), ContractError> {
     for path in &check.produces {
         validate_relative_path("artifact", path)?;
     }
+    if check.diagnostic_sources.len() > MAX_DIAGNOSTIC_SOURCES {
+        return Err(ContractError::new(format!(
+            "check {:?} declares more than {MAX_DIAGNOSTIC_SOURCES} diagnostic sources",
+            check.name
+        )));
+    }
+    let mut diagnostic_sources = BTreeSet::new();
+    for source in &check.diagnostic_sources {
+        if source.path.len() > MAX_DIAGNOSTIC_PATH_BYTES {
+            return Err(ContractError::new(format!(
+                "check {:?} diagnostic source path exceeds 512 bytes",
+                check.name
+            )));
+        }
+        validate_relative_path("diagnostic report", &source.path)?;
+        if !diagnostic_sources.insert((source.format, source.path.as_str())) {
+            return Err(ContractError::new(format!(
+                "check {:?} repeats a diagnostic source",
+                check.name
+            )));
+        }
+    }
     if let Some(cases) = &check.cases {
         validate_cases(cases)?;
     }
@@ -550,6 +803,27 @@ fn validate_digest(kind: &str, value: &str) -> Result<(), ContractError> {
     Ok(())
 }
 
+fn validate_fingerprint(value: &str) -> Result<(), ContractError> {
+    let Some(digest) = value.strip_prefix("sha256:") else {
+        return Err(ContractError::new(
+            "diagnostic fingerprint must use the sha256 scheme",
+        ));
+    };
+    validate_digest("diagnostic fingerprint", digest)
+}
+
+fn validate_diagnostic_name(kind: &str, value: &str) -> Result<(), ContractError> {
+    if value.is_empty()
+        || value.len() > MAX_DIAGNOSTIC_NAME_BYTES
+        || value.chars().any(char::is_control)
+    {
+        return Err(ContractError::new(format!(
+            "{kind} is not a bounded single-line name"
+        )));
+    }
+    Ok(())
+}
+
 fn validate_relative_path(kind: &str, value: &str) -> Result<(), ContractError> {
     let path = Path::new(value);
     let valid = !value.is_empty()
@@ -565,6 +839,27 @@ fn validate_relative_path(kind: &str, value: &str) -> Result<(), ContractError> 
         )));
     }
     Ok(())
+}
+
+fn normalize_absolute_path(path: &Path) -> Option<PathBuf> {
+    if !path.is_absolute() {
+        return None;
+    }
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::Prefix(prefix) => normalized.push(prefix.as_os_str()),
+            Component::RootDir => normalized.push(component.as_os_str()),
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if !normalized.pop() {
+                    return None;
+                }
+            }
+            Component::Normal(part) => normalized.push(part),
+        }
+    }
+    Some(normalized)
 }
 
 fn ensure_acyclic(graph: &[Vec<usize>], checks: &[CheckPlan]) -> Result<(), ContractError> {
@@ -702,8 +997,74 @@ pub struct FailureIndexEntry {
     pub check: Option<String>,
     pub case: Option<String>,
     pub status: LeafStatus,
-    pub reason: String,
-    pub output_ref: Option<String>,
+    pub exit: DiagnosticExit,
+    pub termination_reason: Option<TerminationReason>,
+    pub source: Option<SourceLocation>,
+    pub error_category: ErrorCategory,
+    pub expected: Option<DiagnosticValue>,
+    pub actual: Option<DiagnosticValue>,
+    pub fingerprint: String,
+    pub occurrences: u32,
+    pub log_refs: Vec<LogRef>,
+    pub origin: DiagnosticOrigin,
+}
+
+impl FailureIndexEntry {
+    pub fn validate(&self) -> Result<(), ContractError> {
+        if let Some(check) = &self.check {
+            validate_name("diagnostic check", check, 64)?;
+        }
+        if let Some(case) = &self.case {
+            if self.check.is_none() {
+                return Err(ContractError::new(
+                    "diagnostic case cannot be present without a check",
+                ));
+            }
+            validate_diagnostic_name("diagnostic case", case)?;
+        }
+        if !matches!(
+            self.status,
+            LeafStatus::Failed
+                | LeafStatus::TimedOut
+                | LeafStatus::Invalidated
+                | LeafStatus::NotMeaningful
+                | LeafStatus::Cancelled
+                | LeafStatus::Unsafe
+        ) {
+            return Err(ContractError::new(
+                "failure diagnostics require a terminal non-success status",
+            ));
+        }
+        self.exit.validate()?;
+        if let Some(source) = &self.source {
+            source.validate()?;
+        }
+        if let Some(expected) = &self.expected {
+            expected.validate()?;
+        }
+        if let Some(actual) = &self.actual {
+            actual.validate()?;
+        }
+        validate_fingerprint(&self.fingerprint)?;
+        if self.occurrences == 0 {
+            return Err(ContractError::new(
+                "diagnostic occurrence count must be positive",
+            ));
+        }
+        if self.log_refs.len() > MAX_DIAGNOSTIC_LOG_REFS {
+            return Err(ContractError::new(format!(
+                "diagnostic has more than {MAX_DIAGNOSTIC_LOG_REFS} log references"
+            )));
+        }
+        let mut refs = BTreeSet::new();
+        for log_ref in &self.log_refs {
+            log_ref.validate()?;
+            if !refs.insert(log_ref) {
+                return Err(ContractError::new("diagnostic repeats a log reference"));
+            }
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -748,6 +1109,104 @@ pub struct CompletionEvent {
     pub check: String,
     pub status: EventStatus,
     pub reason: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct DiagnosticEvent {
+    pub schema: Schema2,
+    pub run_id: String,
+    pub check: String,
+    pub case: Option<String>,
+    pub status: LeafStatus,
+    pub exit: DiagnosticExit,
+    pub termination_reason: Option<TerminationReason>,
+    pub source: Option<SourceLocation>,
+    pub error_category: ErrorCategory,
+    pub expected: Option<DiagnosticValue>,
+    pub actual: Option<DiagnosticValue>,
+    pub log_refs: Vec<LogRef>,
+}
+
+impl DiagnosticEvent {
+    pub fn from_json(
+        input: &[u8],
+        expected_run_id: &str,
+        expected_check: &str,
+        expected_case: Option<&str>,
+    ) -> Result<Self, ContractError> {
+        if input.len() > MAX_EVENT_BYTES {
+            return Err(ContractError::new("diagnostic event exceeds 4096 bytes"));
+        }
+        let event: Self = serde_json::from_slice(input)
+            .map_err(|_| ContractError::new("diagnostic event is not valid schema-2 JSON"))?;
+        event.validate(expected_run_id, expected_check, expected_case)?;
+        Ok(event)
+    }
+
+    pub fn validate(
+        &self,
+        expected_run_id: &str,
+        expected_check: &str,
+        expected_case: Option<&str>,
+    ) -> Result<(), ContractError> {
+        validate_identity("diagnostic run_id", &self.run_id, 128)?;
+        validate_name("diagnostic check", &self.check, 64)?;
+        if self.run_id != expected_run_id
+            || self.check != expected_check
+            || self.case.as_deref() != expected_case
+        {
+            return Err(ContractError::new(
+                "diagnostic event identity does not match its execution leaf",
+            ));
+        }
+        if let Some(case) = &self.case {
+            validate_case_id(case)?;
+        }
+        if !matches!(
+            self.status,
+            LeafStatus::Failed | LeafStatus::TimedOut | LeafStatus::Cancelled | LeafStatus::Unsafe
+        ) {
+            return Err(ContractError::new(
+                "diagnostic events require a failed, timed_out, cancelled, or unsafe status",
+            ));
+        }
+        self.exit.validate()?;
+        if let Some(source) = &self.source {
+            source.validate()?;
+        }
+        if let Some(expected) = &self.expected {
+            expected.validate()?;
+        }
+        if let Some(actual) = &self.actual {
+            actual.validate()?;
+        }
+        if self.log_refs.len() > MAX_DIAGNOSTIC_LOG_REFS {
+            return Err(ContractError::new(format!(
+                "diagnostic event has more than {MAX_DIAGNOSTIC_LOG_REFS} log references"
+            )));
+        }
+        let mut refs = BTreeSet::new();
+        for log_ref in &self.log_refs {
+            log_ref.validate()?;
+            if log_ref.run_id != self.run_id || log_ref.check.as_deref() != Some(&self.check) {
+                return Err(ContractError::new(
+                    "diagnostic event log reference belongs to another leaf",
+                ));
+            }
+            if log_ref.case != self.case {
+                return Err(ContractError::new(
+                    "diagnostic event case log reference belongs to another case",
+                ));
+            }
+            if !refs.insert(log_ref) {
+                return Err(ContractError::new(
+                    "diagnostic event repeats a log reference",
+                ));
+            }
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -797,6 +1256,7 @@ mod tests {
             completion: CompletionMode::Process,
             on_failure: FailureMode::Continue,
             produces: Vec::new(),
+            diagnostic_sources: Vec::new(),
             command: Some(vec!["true".into()]),
             discover: None,
             case_command: None,
@@ -811,6 +1271,7 @@ mod tests {
             test: "complete".into(),
             worktree_root: "/tmp/repo".into(),
             current_dir: "/tmp/repo/.devcoordinator/current".into(),
+            log_dir: "/tmp/repo/.devcoordinator/test/logs/runs/run-1".into(),
             requested_tier: ValidationTier::Release,
             readiness_eligible: true,
             proof: ProofKind::Complete,
@@ -906,5 +1367,146 @@ mod tests {
             ],
         };
         assert!(validate_cases(&manifest.cases).is_err());
+    }
+
+    #[test]
+    fn log_directory_is_required_and_must_remain_below_the_worktree() {
+        let valid = plan(vec![check("unit", ValidationTier::Development)]);
+        valid.validate().expect("contained log directory accepted");
+
+        let json = serde_json::to_value(&valid).expect("serialize plan");
+        let mut missing = json.clone();
+        missing.as_object_mut().expect("object").remove("log_dir");
+        let encoded = serde_json::to_vec(&missing).expect("encode missing plan");
+        assert!(ExecutionPlan::from_json(&encoded).is_err());
+
+        let mut escaped = valid.clone();
+        escaped.log_dir = "/tmp/repo/../outside".into();
+        assert!(escaped.validate().is_err());
+
+        let mut normalized = valid;
+        normalized.log_dir =
+            "/tmp/repo/.devcoordinator/../.devcoordinator/test/logs/runs/run-1".into();
+        normalized
+            .validate()
+            .expect("lexically normalized contained path accepted");
+    }
+
+    #[test]
+    fn diagnostic_sources_are_strict_bounded_and_relative() {
+        let mut unit = check("unit", ValidationTier::Development);
+        unit.diagnostic_sources = vec![DiagnosticReportSource {
+            format: DiagnosticReportFormat::Junit,
+            path: "junit/results.xml".into(),
+        }];
+        plan(vec![unit.clone()])
+            .validate()
+            .expect("one relative source accepted");
+
+        unit.diagnostic_sources
+            .push(unit.diagnostic_sources[0].clone());
+        assert!(plan(vec![unit]).validate().is_err());
+
+        let mut escaped = check("unit", ValidationTier::Development);
+        escaped.diagnostic_sources = vec![DiagnosticReportSource {
+            format: DiagnosticReportFormat::PlaywrightJson,
+            path: "../report.json".into(),
+        }];
+        assert!(plan(vec![escaped]).validate().is_err());
+    }
+
+    fn log_ref(case: Option<&str>) -> LogRef {
+        LogRef {
+            run_id: "run-1".into(),
+            check: Some("unit".into()),
+            phase: if case.is_some() {
+                LogPhase::Case
+            } else {
+                LogPhase::Check
+            },
+            case: case.map(str::to_owned),
+            stream: LogStream::Stderr,
+        }
+    }
+
+    #[test]
+    fn log_references_enforce_phase_identity() {
+        log_ref(Some("parser-17"))
+            .validate()
+            .expect("complete case selector accepted");
+        let mut missing_case = log_ref(Some("parser-17"));
+        missing_case.case = None;
+        assert!(missing_case.validate().is_err());
+        let executor = LogRef {
+            run_id: "run-1".into(),
+            check: Some("unit".into()),
+            phase: LogPhase::Executor,
+            case: None,
+            stream: LogStream::Stdout,
+        };
+        assert!(executor.validate().is_err());
+    }
+
+    #[test]
+    fn diagnostic_event_is_identity_bound_and_rejects_raw_prose() {
+        let event = serde_json::json!({
+            "schema": 2,
+            "run_id": "run-1",
+            "check": "unit",
+            "case": "parser-17",
+            "status": "failed",
+            "exit": {"code": 1, "signal": null},
+            "termination_reason": null,
+            "source": {"file": "src/parser.rs", "line": 81, "column": 9},
+            "error_category": "assertion",
+            "expected": null,
+            "actual": null,
+            "log_refs": [log_ref(Some("parser-17"))]
+        });
+        let encoded = serde_json::to_vec(&event).expect("event JSON");
+        DiagnosticEvent::from_json(&encoded, "run-1", "unit", Some("parser-17"))
+            .expect("matching event accepted");
+        assert!(DiagnosticEvent::from_json(&encoded, "other", "unit", Some("parser-17")).is_err());
+
+        let mut with_message = event;
+        with_message
+            .as_object_mut()
+            .expect("object")
+            .insert("message".into(), serde_json::json!("raw stack trace"));
+        let encoded = serde_json::to_vec(&with_message).expect("event JSON");
+        assert!(DiagnosticEvent::from_json(&encoded, "run-1", "unit", Some("parser-17")).is_err());
+    }
+
+    #[test]
+    fn diagnostic_values_and_sources_are_bounded() {
+        let value = DiagnosticValue {
+            value_type: DiagnosticValueType::String,
+            preview: Some("ready".into()),
+            sha256: "a".repeat(64),
+            byte_count: 5,
+            truncated: false,
+            redacted: false,
+        };
+        value.validate().expect("bounded value accepted");
+        let mut multiline = value;
+        multiline.preview = Some("first\nsecond".into());
+        assert!(multiline.validate().is_err());
+
+        SourceLocation {
+            file: "src/parser.rs".into(),
+            line: 1,
+            column: None,
+        }
+        .validate()
+        .expect("relative source accepted");
+        assert!(
+            SourceLocation {
+                file: "/etc/passwd".into(),
+                line: 1,
+                column: None,
+            }
+            .validate()
+            .is_err()
+        );
     }
 }

@@ -4,6 +4,7 @@
 //! eventual Rust daemon can link the engine without depending on the CLI.
 
 mod capacity;
+pub mod diagnostics;
 mod error;
 mod evidence;
 mod process;

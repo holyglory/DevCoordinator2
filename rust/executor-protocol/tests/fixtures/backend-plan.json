@@ -4,6 +4,7 @@
   "test": "release",
   "worktree_root": "/tmp/repository",
   "current_dir": "/tmp/repository/.devcoordinator/run-golden-1",
+  "log_dir": "/tmp/repository/.devcoordinator/test/logs/runs/run-golden-1",
   "requested_tier": "release",
   "readiness_eligible": true,
   "proof": "complete",
