@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import signal
 import socket
 import subprocess
@@ -86,14 +87,16 @@ def _eventually(predicate, timeout=2.0):
 
 @pytest.fixture(scope="module")
 def rust_executor():
+    cargo = shutil.which("cargo")
+    assert cargo is not None, "Cargo is required for the Rust capacity integration"
     build = subprocess.run(
-        ["/usr/bin/cargo", "build", "--locked", "--package",
+        [cargo, "build", "--locked", "--release", "--package",
          "devcoordinator2-executor"],
         cwd=ROOT, capture_output=True, text=True, timeout=300, check=False,
     )
     assert build.returncode == 0, (
         f"Rust executor build failed: {build.stderr[-4096:]}")
-    binary = ROOT / "target" / "debug" / "devcoordinator2-executor"
+    binary = ROOT / "target" / "release" / "devcoordinator2-executor"
     assert binary.is_file() and os.access(binary, os.X_OK)
     return binary
 
