@@ -7,9 +7,7 @@ use std::sync::Arc;
 
 use devcoordinator2_executor_core::{
     Cancellation, Executor, LocalPermitProvider, PermitProvider, UnixPermitProvider,
-    log_query::{
-        LogPruneRequest, LogQueryRequest, execute_log_query, prune_logs,
-    },
+    log_query::{LogPruneRequest, LogQueryRequest, execute_log_query, prune_logs},
     protocol::{ArtifactReceipt, CompletionEvent, EventStatus, ExecutionPlan, MAX_REPORT_BYTES},
     receipts_match, source_digest,
 };
