@@ -123,17 +123,22 @@ command = ["true"]
 
 
 def test_report_projection_reports_complete_aggregate_leaf_output_counts():
-    checks = [{
-        "name": name,
-        "status": "passed",
-        "stdout_bytes_observed": 3 * 1024 * 1024,
-        "stdout_bytes_retained": 3 * 1024 * 1024,
-        "stdout_truncated": False,
-        "stderr_bytes_observed": 1,
-        "stderr_bytes_retained": 1,
-        "stderr_truncated": False,
-        "artifacts": [],
-    } for name in ("one", "two")]
+    def stream(check, name, size):
+        return {
+            "log_ref": {"run_id": "run-1", "check": check, "phase": "check",
+                        "case": None, "stream": name},
+            "bytes": size, "lines": 1, "sha256": "a" * 64,
+            "first_write_epoch_ms": 1, "last_write_epoch_ms": 1,
+            "complete": True,
+        }
+
+    checks = [
+        {"name": name, "status": "passed", "streams": [
+            stream(name, "stdout", 3 * 1024 * 1024),
+            stream(name, "stderr", 1),
+        ], "artifacts": [], "cases": []}
+        for name in ("one", "two")
+    ]
     projected = GovernedTestLifecycle._report_projection({
         "requested_tier": "release",
         "readiness_eligible": True,
@@ -181,7 +186,8 @@ def test_evidence_store_keeps_only_bounded_content_free_fields(tmp_path):
         "requested_tier": "release", "readiness_eligible": True,
         "checks": [{
             "name": "unit", "status": "failed", "duration_seconds": 1.2,
-            "exit_code": 1, "artifacts": [], "reason": "private detail",
+            "exit": {"code": 1, "signal": None}, "artifacts": [], "streams": [],
+            "reason": "private detail",
             "command": ["secret-command"],
         }],
     }
@@ -189,10 +195,7 @@ def test_evidence_store_keeps_only_bounded_content_free_fields(tmp_path):
     stored = tests_support.find_evidence(repo, "trun")
     assert stored["checks"] == [{
         "name": "unit", "status": "failed", "duration_seconds": 1.2,
-        "exit_code": 1, "artifacts": [],
-        "stdout_bytes_observed": None, "stdout_bytes_retained": None,
-        "stdout_truncated": None, "stderr_bytes_observed": None,
-        "stderr_bytes_retained": None, "stderr_truncated": None,
+        "exit": {"code": 1, "signal": None}, "artifacts": [], "streams": [],
     }]
     assert "private detail" not in (repo / ".devcoordinator/test/evidence.json").read_text()
     assert "secret-command" not in (repo / ".devcoordinator/test/evidence.json").read_text()

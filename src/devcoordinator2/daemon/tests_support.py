@@ -145,6 +145,7 @@ def _valid_diagnostic_value(value) -> bool:
         return False
     if preview is not None and (
             not isinstance(preview, str) or len(preview.encode()) > 256
+            or len(preview.encode()) > value["byte_count"]
             or any(ord(character) < 32 or ord(character) == 127
                    for character in preview)):
         return False
