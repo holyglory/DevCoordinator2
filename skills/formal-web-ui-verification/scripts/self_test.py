@@ -743,7 +743,7 @@ def require_scrollbar(report: dict, selector_suffix: str, axis: str, depth: int)
 
 
 def main() -> int:
-    tmp = Path(tempfile.mkdtemp(prefix="fwv-"))
+    tmp = Path(tempfile.mkdtemp(prefix="fwv-")).resolve()
     server = None
     try:
         skill_contract = (ROOT / "SKILL.md").read_text(encoding="utf-8")

@@ -3853,6 +3853,8 @@ def verify_with_receipt_data(
     *,
     skip_current_hash_check: bool = False,
 ) -> tuple[dict, dict | None]:
+    manifest_path = manifest_path.expanduser().resolve()
+    reports = [path.expanduser().resolve() for path in reports]
     manifest_bytes_before, manifest_identity_before = merge_findings.read_stable_regular_file(
         manifest_path,
         "audit manifest",
@@ -4220,6 +4222,8 @@ def verify(
     skip_current_hash_check: bool = False,
     batch_id: str | None = None,
 ) -> dict:
+    manifest_path = manifest_path.expanduser().resolve()
+    reports = [path.expanduser().resolve() for path in reports]
     verification_batch_id = batch_id
     manifest = load_manifest(manifest_path)
     expected_source_files = manifest["expected_files"]

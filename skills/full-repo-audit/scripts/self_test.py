@@ -1993,7 +1993,7 @@ CREATE MATERIALIZED VIEW reporting.total_summary AS SELECT 42;
 
     with self_test_workspace() as tmp:
         set_scenario("fixture generation and primary queue build")
-        base = Path(tmp)
+        base = Path(tmp).resolve()
         scenario_runner = ScenarioRunner()
         fixture = base / "fixture"
         output = base / "audit-output"
@@ -6513,6 +6513,8 @@ export function ComposedControls({ name, volume, raw, setValue }) {
         journey_report_for_drift = output / "reports" / "journey_audit.md"
         original_journey_for_drift = journey_report_for_drift.read_text(encoding="utf-8")
         original_verify = verify_module.verify
+        aliased_base = base.with_name(f"{base.name}-alias")
+        aliased_base.symlink_to(base, target_is_directory=True)
 
         def mutate_authorized_report_after_verify(*args, **kwargs):
             result = original_verify(*args, **kwargs)
@@ -6523,7 +6525,7 @@ export function ComposedControls({ name, volume, raw, setValue }) {
         try:
             try:
                 verify_module.verify_with_receipt_data(
-                    output / "manifest.json",
+                    aliased_base / output.relative_to(base) / "manifest.json",
                     reports_for_receipt,
                 )
             except ValueError as exc:
@@ -6538,6 +6540,7 @@ export function ComposedControls({ name, volume, raw, setValue }) {
         finally:
             verify_module.verify = original_verify
             write(journey_report_for_drift, original_journey_for_drift)
+            aliased_base.unlink()
         scenario_runner.raise_if_failed()
 
     print("self-test ok")
