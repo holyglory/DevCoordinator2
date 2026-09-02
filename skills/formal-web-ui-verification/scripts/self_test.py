@@ -3682,22 +3682,56 @@ if (result.executionCount !== 1 || result.unsafeStop !== 'browser-authority-lost
             shutil.rmtree(tmp, ignore_errors=True)
 
 
+FAILURE_EXIT_BASE = 20
+FAILURE_BUCKET_LINES = 20
+FAILURE_MAX_BUCKET = 220
+
+
+def failure_exit_code_for_line(line: int) -> int:
+    relative_line = max(0, line - main.__code__.co_firstlineno)
+    return FAILURE_EXIT_BASE + min(
+        relative_line // FAILURE_BUCKET_LINES,
+        FAILURE_MAX_BUCKET,
+    )
+
+
 def failure_exit_code(error: Exception) -> int:
-    """Encode only the failing main-section line bucket for safe CI diagnosis."""
+    """Encode only the failing main-section bucket for safe CI diagnosis."""
 
     main_lines = [
         frame.lineno
         for frame in traceback.extract_tb(error.__traceback__)
         if frame.name == "main" and Path(frame.filename).resolve() == Path(__file__).resolve()
     ]
-    line = main_lines[-1] if main_lines else 0
-    return 50 + min(line // 25, 150)
+    line = main_lines[-1] if main_lines else main.__code__.co_firstlineno
+    return failure_exit_code_for_line(line)
+
+
+def validate_failure_classifier() -> None:
+    """Guard the diagnostic range without executing or exposing a failure."""
+
+    start = main.__code__.co_firstlineno
+    end = failure_exit_code_for_line.__code__.co_firstlineno - 1
+    if failure_exit_code_for_line(start) != FAILURE_EXIT_BASE:
+        raise AssertionError("failure classifier base changed")
+    if failure_exit_code_for_line(start + FAILURE_BUCKET_LINES) != FAILURE_EXIT_BASE + 1:
+        raise AssertionError("failure classifier bucket changed")
+    if end - start >= FAILURE_BUCKET_LINES * FAILURE_MAX_BUCKET:
+        raise AssertionError("failure classifier range is exhausted")
+
+
+def retain_failure_traceback(error: Exception) -> None:
+    """Keep governed output content-free; direct developer runs retain stderr."""
+
+    if not os.environ.get("DEVCOORDINATOR_CHECK_SCRATCH"):
+        traceback.print_exception(error)
 
 
 if __name__ == "__main__":
     try:
+        validate_failure_classifier()
         result = main()
     except Exception as error:
-        traceback.print_exc()
+        retain_failure_traceback(error)
         raise SystemExit(failure_exit_code(error)) from None
     raise SystemExit(result)
