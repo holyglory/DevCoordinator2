@@ -8,6 +8,7 @@ pub mod diagnostics;
 mod error;
 mod evidence;
 mod process;
+mod retention;
 mod runner;
 
 pub use capacity::{
@@ -17,4 +18,8 @@ pub use devcoordinator2_executor_protocol as protocol;
 pub use error::ExecutorError;
 pub use evidence::{artifact_receipts, receipts_match, source_digest};
 pub use process::Cancellation;
+pub use retention::{
+    DEFAULT_HISTORY_DEPTH, DEFAULT_MAX_AGE_SECONDS, RetentionDecision, RetentionEntry,
+    RetentionPolicy, select_expired,
+};
 pub use runner::Executor;
