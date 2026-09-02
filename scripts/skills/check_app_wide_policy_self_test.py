@@ -225,19 +225,60 @@ def main() -> int:
             "hypothetical engineering must not expand scope automatically",
         ),
         (
-            "softened under-engineering rule",
-            policy.replace(
-                "Under-engineering the\n  agreed result is unacceptable",
-                "Under-engineering the\n  agreed result is merely unfortunate",
-                1,
-            ),
-            "under-engineering must be unacceptable",
+            "explicit work made optional",
+            policy + "\nUnder-engineering is acceptable for explicitly agreed work.\n",
+            "explicitly agreed work must remain mandatory",
         ),
         (
-            "inverted under-engineering asymmetry",
+            "old under-engineering asymmetry restored",
             policy
-            + "\nImplementation gaps are less serious and less punishable than extra work.\n",
-            "implementation gaps must remain the more serious failure",
+            + "\nImplementation gaps are more punishable than reasonable "
+            "over-engineering.\n",
+            "scope policy must not rank under-engineering against over-engineering",
+        ),
+        (
+            "reverse engineering asymmetry introduced",
+            policy
+            + "\nReasonable over-engineering is more serious than under-engineering.\n",
+            "scope policy must not rank under-engineering against over-engineering",
+        ),
+        (
+            "illustrative direction made mandatory",
+            policy.replace(
+                "express direction, not mandatory delivery requirements",
+                "are mandatory delivery requirements",
+                1,
+            ),
+            "tentative or illustrative language must not become mandatory by default",
+        ),
+        (
+            "supporting work made automatically in scope",
+            policy.replace(
+                "work is in scope only when required by acceptance",
+                "work is always in scope regardless of acceptance",
+                1,
+            ),
+            "supporting engineering must not enter scope without a confirmed requirement or necessity",
+        ),
+        (
+            "hidden large scope continues without explanation",
+            policy.replace(
+                "pause once and explain the actual scope before continuing",
+                "continue without a pause or scope explanation",
+                1,
+            ),
+            "hidden large scope must not continue without one scope explanation",
+        ),
+        (
+            "extra machinery treated as completeness",
+            policy.replace(
+                "Do not equate more checks, parsers, adapters, or supported formats with a more\n"
+                "  complete implementation.",
+                "More checks, parsers, adapters, and supported formats always make an\n"
+                "  implementation more complete.",
+                1,
+            ),
+            "extra machinery must not be treated as proof of completeness",
         ),
         (
             "silent expansion allowed",
@@ -332,6 +373,42 @@ def main() -> int:
             "must not impose a fixed worker count",
         ),
         (
+            "implementation delegated before shared schemas",
+            policy + "\nDelegate implementation before shared schemas are fixed.\n",
+            "implementation must not be delegated before shared contracts are fixed",
+        ),
+        (
+            "independent work has an unresolved interface",
+            policy
+            + "\nWork is independently ready despite an unresolved shared-interface decision.\n",
+            "independent work must not retain an unresolved shared interface or file overlap",
+        ),
+        (
+            "independent work overlaps mutable files",
+            policy
+            + "\nWork is independently ready with overlapping mutable-file ownership.\n",
+            "independent work must not retain an unresolved shared interface or file overlap",
+        ),
+        (
+            "too many tightly coupled implementers",
+            policy
+            + "\nA tightly coupled subsystem may use three implementation agents plus one "
+            "integrator.\n",
+            "a tightly coupled subsystem must not exceed two implementation agents",
+        ),
+        (
+            "unauthorized nested implementation delegation",
+            policy
+            + "\nSubagents may spawn further implementation agents without explicit parent "
+            "authorization.\n",
+            "nested implementation delegation requires explicit parent authorization",
+        ),
+        (
+            "multiple integration owners",
+            policy + "\nMultiple agents may act as integration owners.\n",
+            "the parent must remain the sole integration owner",
+        ),
+        (
             "wait for rig before fixing",
             policy + "\nWait until the test rig finishes before diagnosing or fixing its first failure.\n",
             "must not wait for the run to finish",
@@ -398,6 +475,15 @@ def main() -> int:
             "complete-cycle contract",
         ),
         (
+            "missing contract-ready delegation behavior",
+            replace_section(
+                policy,
+                "Delegate only contract-ready work",
+                "- Delegate implementation whenever another worker is available.",
+            ),
+            "contract-ready delegation contract",
+        ),
+        (
             "missing parallel-work behavior",
             replace_section(
                 policy,
@@ -428,10 +514,10 @@ def main() -> int:
             "missing database-only completion ledger",
             replace_section(
                 policy,
-                "Deliver the complete agreed scope",
+                "Implement the exact scope",
                 "- Keep a historical list of completed work and call partial work done.",
             ),
-            "complete-delivery contract",
+            "exact-scope contract",
         ),
         (
             "missing permanent database-ledger history",
@@ -440,7 +526,7 @@ def main() -> int:
                 "Delete issues and prior events after release",
                 1,
             ),
-            "complete-delivery contract",
+            "exact-scope contract",
         ),
         (
             "missing scoped issue-ledger schema",
@@ -1059,6 +1145,33 @@ def main() -> int:
         "a necessary in-scope implementation detail must not trigger expansion approval",
     )
 
+    selected_illustrative_format = policy + (
+        "\nThe user explicitly selected the illustrated CSV format, so that format is now "
+        "an agreed delivery requirement.\n"
+    )
+    check(
+        not MODULE.find_policy_violations(selected_illustrative_format),
+        "a user-selected illustrative detail must be allowed to become explicit scope",
+    )
+
+    modest_focused_request = policy + (
+        "\nA focused request contained within two product subsystems may proceed without the "
+        "large-scope pause when no other material scope question remains.\n"
+    )
+    check(
+        not MODULE.find_policy_violations(modest_focused_request),
+        "a focused request below every scope-pause signal must remain valid",
+    )
+
+    explicitly_required_checks = policy + (
+        "\nAcceptance criteria may explicitly require several checks. Those checks remain in "
+        "scope, but their count alone is not proof that the implementation is complete.\n"
+    )
+    check(
+        not MODULE.find_policy_violations(explicitly_required_checks),
+        "explicitly required checks must remain valid without becoming a completeness proxy",
+    )
+
     declined_optional_idea = policy + (
         "\nThe agent may notice an optional enhancement, decline to implement it, and continue "
         "without interrupting the user.\n"
@@ -1084,6 +1197,42 @@ def main() -> int:
     check(
         not MODULE.find_policy_violations(permanent_database_ledger),
         "an explicitly configured permanent database ledger must not be rejected as retained active history",
+    )
+
+    delegated_read_only_discovery = policy + (
+        "\nDelegate read-only discovery before implementation contracts are fixed when the "
+        "investigations are independent; do not delegate implementation yet.\n"
+    )
+    check(
+        not MODULE.find_policy_violations(delegated_read_only_discovery),
+        "the contract gate must not prohibit independent read-only discovery",
+    )
+
+    independent_implementation_branches = policy + (
+        "\nFour implementation agents may work on four independently contracted subsystems "
+        "with disjoint mutable files and no unresolved shared interface.\n"
+    )
+    check(
+        not MODULE.find_policy_violations(independent_implementation_branches),
+        "the tightly coupled ownership bound must not become a global implementation-worker cap",
+    )
+
+    authorized_nested_branch = policy + (
+        "\nA subagent may spawn one implementation agent after the parent explicitly authorizes "
+        "that specific independent branch; integration remains with the parent.\n"
+    )
+    check(
+        not MODULE.find_policy_violations(authorized_nested_branch),
+        "specific parent-authorized nested implementation work must remain valid",
+    )
+
+    parent_owned_integration = policy + (
+        "\nThe parent integrates the independently completed branches and remains the sole "
+        "integration owner.\n"
+    )
+    check(
+        not MODULE.find_policy_violations(parent_owned_integration),
+        "parent-owned integration must remain valid",
     )
 
     concrete_serial_edge = policy + (
