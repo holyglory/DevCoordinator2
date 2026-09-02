@@ -14,7 +14,6 @@ import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[2]
 HARNESS = ROOT / "full_repo_harness"
 EXECUTOR = ROOT / "target" / "release" / "devcoordinator2-executor"
@@ -47,7 +46,9 @@ def check_repository_layout() -> None:
     if actual != expected:
         missing = sorted(expected - actual)
         unexpected = sorted(actual - expected)
-        raise SystemExit(f"Canonical skill set mismatch; missing={missing}, unexpected={unexpected}")
+        raise SystemExit(
+            f"Canonical skill set mismatch; missing={missing}, unexpected={unexpected}"
+        )
     for skill in SKILLS:
         required = [
             skill / "SKILL.md",
@@ -94,10 +95,14 @@ def check_include_glob_exclusions() -> None:
         (repository / "src").mkdir(parents=True)
         (repository / "node_modules" / "pkg").mkdir(parents=True)
         (repository / "src" / "app.py").write_text("print(1)\n", encoding="utf-8")
-        (repository / "node_modules" / "pkg" / "index.py").write_text("print(2)\n", encoding="utf-8")
+        (repository / "node_modules" / "pkg" / "index.py").write_text(
+            "print(2)\n", encoding="utf-8"
+        )
         identity = [
-            "-c", "user.name=agent-skills-validate",
-            "-c", "user.email=validate@example.invalid",
+            "-c",
+            "user.name=agent-skills-validate",
+            "-c",
+            "user.email=validate@example.invalid",
         ]
         _run_internal(["git", "init", "-q"], cwd=repository)
         _run_internal(["git", "add", "src/app.py"], cwd=repository)
@@ -108,9 +113,12 @@ def check_include_glob_exclusions() -> None:
             [
                 sys.executable,
                 "skills/full-repo-audit/scripts/build_audit_batches.py",
-                "--repo", str(repository),
-                "--out", str(broad),
-                "--include-glob", "**/*.py",
+                "--repo",
+                str(repository),
+                "--out",
+                str(broad),
+                "--include-glob",
+                "**/*.py",
             ]
         )
         broad_manifest = json.loads((broad / "manifest.json").read_text(encoding="utf-8"))
@@ -123,9 +131,12 @@ def check_include_glob_exclusions() -> None:
             [
                 sys.executable,
                 "skills/full-repo-audit/scripts/build_audit_batches.py",
-                "--repo", str(repository),
-                "--out", str(explicit),
-                "--include-glob", "node_modules/**/*.py",
+                "--repo",
+                str(repository),
+                "--out",
+                str(explicit),
+                "--include-glob",
+                "node_modules/**/*.py",
             ]
         )
         explicit_manifest = json.loads((explicit / "manifest.json").read_text(encoding="utf-8"))
@@ -158,7 +169,8 @@ def check_interaction_label_parity() -> None:
         for verifier in (skill / "scripts").glob("verify_*.py"):
             if "INTERACTION_CHECKLIST_LABELS" in verifier.read_text(encoding="utf-8"):
                 raise SystemExit(
-                    f"{verifier} redefines INTERACTION_CHECKLIST_LABELS; import the shared constant"
+                    f"{verifier} redefines INTERACTION_CHECKLIST_LABELS; "
+                    "import the shared constant"
                 )
 
 
@@ -200,7 +212,9 @@ def check_changed_visual_review_parity() -> None:
         text = path.read_text(encoding="utf-8")
         missing = [token for token in tokens if token not in text]
         if missing:
-            raise SystemExit(f"Changed visual-review contract drift in {path}: missing={missing}")
+            raise SystemExit(
+                f"Changed visual-review contract drift in {path}: missing={missing}"
+            )
 
 
 INTERNAL_CHECKS = {
@@ -231,7 +245,7 @@ def _plan_check(
         "invalidates": list(invalidates or []),
         "cwd": ".",
         "env": dict(env or {"PYTHONDONTWRITEBYTECODE": "1"}),
-        "timeout_seconds": None,
+        "timeout_seconds": 900,
         "completion": "process",
         "on_failure": "continue",
         "produces": [],
@@ -244,24 +258,46 @@ def validation_checks(*, pycache_root: Path) -> list[dict]:
 
     python = sys.executable
     internal = lambda name: [  # noqa: E731 - compact declarative command factory
-        python, "scripts/skills/validate.py", "--internal-check", name]
+        python,
+        "scripts/skills/validate.py",
+        "--internal-check",
+        name,
+    ]
     preflight_commands = (
         ("repository-layout", internal("repository-layout")),
         ("validator-self-test", [python, "scripts/skills/validate_self_test.py"]),
         ("policy-self-test", [python, "scripts/skills/check_app_wide_policy_self_test.py"]),
         ("policy", [python, "scripts/skills/check_app_wide_policy.py"]),
-        ("neutrality-self-test", [python, "scripts/skills/check_agent_neutrality_self_test.py"]),
+        (
+            "neutrality-self-test",
+            [python, "scripts/skills/check_agent_neutrality_self_test.py"],
+        ),
         ("neutrality", [python, "scripts/skills/check_agent_neutrality.py"]),
         ("ledger-self-test", [python, "scripts/skills/check_user_issue_ledgers_self_test.py"]),
         ("ledgers", [python, "scripts/skills/check_user_issue_ledgers.py"]),
-        ("freshness-self-test", [python, "scripts/skills/check_repository_freshness_self_test.py"]),
-        ("boundaries-self-test", [python, "scripts/skills/check_repository_boundaries_self_test.py"]),
-        ("boundaries", [python, "scripts/skills/check_repository_boundaries.py", "--repo", str(ROOT)]),
+        (
+            "freshness-self-test",
+            [python, "scripts/skills/check_repository_freshness_self_test.py"],
+        ),
+        (
+            "boundaries-self-test",
+            [python, "scripts/skills/check_repository_boundaries_self_test.py"],
+        ),
+        (
+            "boundaries",
+            [python, "scripts/skills/check_repository_boundaries.py", "--repo", str(ROOT)],
+        ),
         ("ci-security-self-test", [python, "scripts/skills/check_ci_security_self_test.py"]),
         ("ci-security", [python, "scripts/skills/check_ci_security.py"]),
         ("canonical-harness", internal("canonical-harness")),
-        ("public-artifact-self-test", [python, "scripts/skills/self_test_public_artifact_guard.py"]),
-        ("public-artifacts", [python, "scripts/skills/public_artifact_guard.py", "--repo", str(ROOT)]),
+        (
+            "public-artifact-self-test",
+            [python, "scripts/skills/self_test_public_artifact_guard.py"],
+        ),
+        (
+            "public-artifacts",
+            [python, "scripts/skills/public_artifact_guard.py", "--repo", str(ROOT)],
+        ),
     )
     target_commands = [
         ("interaction-parity", internal("interaction-parity")),
@@ -272,8 +308,10 @@ def validation_checks(*, pycache_root: Path) -> list[dict]:
         ("merge-findings", [python, "scripts/skills/merge_findings_self_test.py"]),
     ]
     target_commands.extend(
-        (f"skill-{skill.name}", [
-            python, str(skill.relative_to(ROOT) / "scripts" / "self_test.py")])
+        (
+            f"skill-{skill.name}",
+            [python, str(skill.relative_to(ROOT) / "scripts" / "self_test.py")],
+        )
         for skill in SKILLS
     )
     target_names = [name for name, _command in target_commands]
@@ -299,22 +337,24 @@ def validation_checks(*, pycache_root: Path) -> list[dict]:
         )
         for name, command in target_commands
     )
-    checks.append(_plan_check(
-        "python-compile",
-        [
-            python,
-            "-m",
-            "compileall",
-            "-q",
-            "scripts",
-            "full_repo_harness",
-            *[f"skills/{name}/scripts" for name in SKILL_NAMES],
-        ],
-        tier="release",
-        role="work",
-        requires=preflight_names,
-        env={"PYTHONPYCACHEPREFIX": str(pycache_root)},
-    ))
+    checks.append(
+        _plan_check(
+            "python-compile",
+            [
+                python,
+                "-m",
+                "compileall",
+                "-q",
+                "scripts",
+                "full_repo_harness",
+                *[f"skills/{name}/scripts" for name in SKILL_NAMES],
+            ],
+            tier="release",
+            role="work",
+            requires=preflight_names,
+            env={"PYTHONPYCACHEPREFIX": str(pycache_root)},
+        )
+    )
     return checks
 
 
@@ -360,14 +400,18 @@ def _source_digest(executor: Path) -> str:
     )
     if completed.returncode != 0:
         raise RuntimeError(
-            "Rust source digest failed: " + (completed.stderr.strip()[-1000:] or "no detail"))
+            "Rust source digest failed: " + (completed.stderr.strip()[-1000:] or "no detail")
+        )
     try:
         receipt = json.loads(completed.stdout)
         digest = receipt["sha256"]
     except (json.JSONDecodeError, KeyError, TypeError) as error:
         raise RuntimeError("Rust source digest returned an invalid receipt") from error
-    if not isinstance(digest, str) or len(digest) != 64 \
-            or any(character not in "0123456789abcdef" for character in digest):
+    if (
+        not isinstance(digest, str)
+        or len(digest) != 64
+        or any(character not in "0123456789abcdef" for character in digest)
+    ):
         raise RuntimeError("Rust source digest returned an invalid sha256")
     return digest
 
@@ -410,7 +454,8 @@ def bounded_receipt(report: dict, report_path: Path) -> dict:
         "schema": 2,
         "status": report.get("status"),
         "checks": len(report.get("checks", []))
-        if isinstance(report.get("checks"), list) else 0,
+        if isinstance(report.get("checks"), list)
+        else 0,
         "counts": report.get("counts", {}),
         "failure_index": retained,
         "failure_index_truncated": bool(report.get("failure_index_truncated"))
@@ -456,7 +501,8 @@ def run_complete_validation(executor: Path = EXECUTOR) -> int:
             detail = completed.stderr.strip()[-1000:]
             raise RuntimeError(
                 "Rust executor did not publish check-report.json: "
-                + (detail or "no diagnostic"))
+                + (detail or "no diagnostic")
+            )
         report = _read_report(report_path)
     except RuntimeError as error:
         print(str(error), file=sys.stderr)
@@ -485,7 +531,7 @@ def run_internal_check(name: str) -> int:
     except SystemExit as error:
         print(str(error) or f"internal validation check exited {error.code}", file=sys.stderr)
         return 1
-    except Exception as error:  # noqa: BLE001 - leaf reports one bounded failure
+    except Exception as error:
         print(f"{type(error).__name__}: {error}", file=sys.stderr)
         return 1
     print(json.dumps({"schema": 2, "check": name, "status": "passed"}))

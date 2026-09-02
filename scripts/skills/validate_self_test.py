@@ -10,7 +10,6 @@ import sys
 import tempfile
 from pathlib import Path
 
-
 SCRIPT = Path(__file__).with_name("validate.py")
 SPEC = importlib.util.spec_from_file_location("agent_skills_validate", SCRIPT)
 if SPEC is None or SPEC.loader is None:
@@ -24,7 +23,9 @@ def check(condition: bool, message: str) -> None:
         raise AssertionError(message)
 
 
-def command(argv: list[str], *, cwd: Path, expected: int = 0) -> subprocess.CompletedProcess[str]:
+def command(
+    argv: list[str], *, cwd: Path, expected: int = 0
+) -> subprocess.CompletedProcess[str]:
     completed = subprocess.run(
         argv,
         cwd=cwd,
@@ -60,36 +61,51 @@ def test_plan_contract(base: Path) -> None:
         source_digest="a" * 64,
     )
     check(plan["schema"] == 2 and plan["proof"] == "complete", "plan is not strict schema 2")
-    check(plan["requested_tier"] == "release" and plan["readiness_eligible"] is True,
-          "complete validation must request release proof")
+    check(
+        plan["requested_tier"] == "release" and plan["readiness_eligible"] is True,
+        "complete validation must request release proof",
+    )
     checks = plan["checks"]
     preflights = [row for row in checks if row["role"] == "preflight"]
     targets = [row for row in checks if row["role"] == "work"]
     preflight_names = {row["name"] for row in preflights}
     target_names = {row["name"] for row in targets}
     check(len(preflights) >= 10 and len(targets) >= 10, "complete validation coverage shrank")
-    check(all(set(row["invalidates"]) == target_names for row in preflights),
-          "each cheap preflight must invalidate every expensive target")
-    check(all(set(row["requires"]) == preflight_names for row in targets),
-          "every expensive target must require every invalidating preflight")
-    check(all(row["on_failure"] == "continue" for row in checks),
-          "all-settled validation must not fail-fast siblings")
+    check(
+        all(set(row["invalidates"]) == target_names for row in preflights),
+        "each cheap preflight must invalidate every expensive target",
+    )
+    check(
+        all(set(row["requires"]) == preflight_names for row in targets),
+        "every expensive target must require every invalidating preflight",
+    )
+    check(
+        all(row["on_failure"] == "continue" for row in checks),
+        "all-settled validation must not fail-fast siblings",
+    )
+    check(
+        all(row["timeout_seconds"] == 900 for row in checks),
+        "every direct validation leaf must have a bounded failure deadline",
+    )
     declared = {argument for row in checks for argument in row["command"]}
     for skill in MODULE.SKILL_NAMES:
         expected = f"skills/{skill}/scripts/self_test.py"
         check(expected in declared, f"missing complete self-test for {skill}")
-    check(MODULE.executor_argv(Path("/executor"), base / "plan.json") == [
-        "/executor", "run-local", str(base / "plan.json")],
+    check(
+        MODULE.executor_argv(Path("/executor"), base / "plan.json")
+        == ["/executor", "run-local", str(base / "plan.json")],
         "top-level validation must dispatch only through Rust run-local",
     )
     workflow = (MODULE.ROOT / ".github" / "workflows" / "validate.yml").read_text(
-        encoding="utf-8")
-    check("cargo test --locked --workspace" in workflow,
-          "CI must test the Rust workspace")
-    check("cargo build --locked --release --package devcoordinator2-executor" in workflow,
-          "CI must build the release executor")
-    check(workflow.count("needs: rust") >= 2,
-          "Python and six-skill jobs must wait for Rust tests")
+        encoding="utf-8"
+    )
+    check("cargo test --locked --workspace" in workflow, "CI must test the Rust workspace")
+    release_build = "cargo build --locked --release --package devcoordinator2-executor"
+    check(
+        workflow.count(release_build) >= 3,
+        "each CI job that exercises the executor must build its release binary",
+    )
+    check("needs: rust" not in workflow, "independent CI jobs must start concurrently")
 
 
 def test_bounded_receipt(base: Path) -> None:
@@ -97,14 +113,17 @@ def test_bounded_receipt(base: Path) -> None:
         {"check": f"check-{index}", "status": "failed", "reason": "fixture"}
         for index in range(25)
     ]
-    receipt = MODULE.bounded_receipt({
-        "schema": 2,
-        "status": "failed",
-        "counts": {"failed": 25},
-        "checks": [{}] * 25,
-        "failure_index": failures,
-        "failure_index_truncated": False,
-    }, base / "check-report.json")
+    receipt = MODULE.bounded_receipt(
+        {
+            "schema": 2,
+            "status": "failed",
+            "counts": {"failed": 25},
+            "checks": [{}] * 25,
+            "failure_index": failures,
+            "failure_index_truncated": False,
+        },
+        base / "check-report.json",
+    )
     check(len(receipt["failure_index"]) == 20, "receipt failure index is not bounded")
     check(receipt["failure_index_truncated"] is True, "bounded receipt hid truncation")
     check(receipt["report"].endswith("check-report.json"), "receipt omitted report filename")
@@ -113,13 +132,25 @@ def test_bounded_receipt(base: Path) -> None:
 def test_changed_visual_parity(base: Path) -> None:
     parity_root = base / "parity"
     parity_files = {
-        "skills/formal-web-ui-verification/SKILL.md": "review-queue.json formal_web_ui_review.py secondary-workflow-precedes-primary declared-theme-contradiction",
-        "skills/user-journey-docs-audit/SKILL.md": "Formal Web UI verification handoff continuation anchor changed visual review",
+        "skills/formal-web-ui-verification/SKILL.md": (
+            "review-queue.json formal_web_ui_review.py "
+            "secondary-workflow-precedes-primary declared-theme-contradiction"
+        ),
+        "skills/user-journey-docs-audit/SKILL.md": (
+            "Formal Web UI verification handoff continuation anchor changed visual review"
+        ),
         "skills/ui-implementation-audit/SKILL.md": (
-            "import_formal_web_evidence.py runtime/user-selected manual-review"),
-        "skills/full-repo-audit/SKILL.md": "Changed Visual Review formal_web_ui_review.py manual-review",
-        "full_repo_harness/evidence.py": '"review-queue" "manual-review" formal-web-ui-manual-review',
-        "full_repo_harness/queue.py": "Changed Visual Review review-queue.json formal_web_ui_review.py",
+            "import_formal_web_evidence.py runtime/user-selected manual-review"
+        ),
+        "skills/full-repo-audit/SKILL.md": (
+            "Changed Visual Review formal_web_ui_review.py manual-review"
+        ),
+        "full_repo_harness/evidence.py": (
+            '"review-queue" "manual-review" formal-web-ui-manual-review'
+        ),
+        "full_repo_harness/queue.py": (
+            "Changed Visual Review review-queue.json formal_web_ui_review.py"
+        ),
     }
     for relative, content in parity_files.items():
         target = parity_root / relative
@@ -152,19 +183,33 @@ def test_real_rust_invalidation(base: Path) -> None:
     (repository / "source.txt").write_text("fixture\n", encoding="utf-8")
     command(["git", "init", "-q"], cwd=repository)
     command(["git", "add", "source.txt"], cwd=repository)
-    command([
-        "git", "-c", "user.name=validator-self-test",
-        "-c", "user.email=validator@example.invalid",
-        "commit", "-q", "-m", "fixture",
-    ], cwd=repository)
+    command(
+        [
+            "git",
+            "-c",
+            "user.name=validator-self-test",
+            "-c",
+            "user.email=validator@example.invalid",
+            "commit",
+            "-q",
+            "-m",
+            "fixture",
+        ],
+        cwd=repository,
+    )
     current = repository / ".devcoordinator" / "self-test"
     current.mkdir(parents=True)
     independent_marker = current / "independent-ran"
     forbidden_marker = current / "invalidated-ran"
 
-    def row(name: str, script: str, *, role: str = "work",
-            requires: list[str] | None = None,
-            invalidates: list[str] | None = None) -> dict:
+    def row(
+        name: str,
+        script: str,
+        *,
+        role: str = "work",
+        requires: list[str] | None = None,
+        invalidates: list[str] | None = None,
+    ) -> dict:
         return {
             "name": name,
             "tier": "development",
@@ -196,11 +241,16 @@ def test_real_rust_invalidation(base: Path) -> None:
         "config_digest": "b" * 64,
         "reused": {},
         "checks": [
-            row("gate", "raise SystemExit(7)", role="preflight",
-                invalidates=["expensive"]),
-            row("expensive", f"from pathlib import Path; Path({str(forbidden_marker)!r}).write_text('bad')",
-                requires=["gate"]),
-            row("independent", f"from pathlib import Path; Path({str(independent_marker)!r}).write_text('ok')"),
+            row("gate", "raise SystemExit(7)", role="preflight", invalidates=["expensive"]),
+            row(
+                "expensive",
+                f"from pathlib import Path; Path({str(forbidden_marker)!r}).write_text('bad')",
+                requires=["gate"],
+            ),
+            row(
+                "independent",
+                f"from pathlib import Path; Path({str(independent_marker)!r}).write_text('ok')",
+            ),
         ],
     }
     plan_path = current / "plan.json"
@@ -208,14 +258,20 @@ def test_real_rust_invalidation(base: Path) -> None:
     command([str(executor), "run-local", str(plan_path)], cwd=repository, expected=1)
     report = json.loads((current / "check-report.json").read_text(encoding="utf-8"))
     states = {row["name"]: row["status"] for row in report["checks"]}
-    check(states == {"gate": "failed", "expensive": "invalidated", "independent": "passed"},
-          f"Rust invalidation/all-settled states are wrong: {states}")
-    check(independent_marker.read_text(encoding="utf-8") == "ok",
-          "later independent work did not finish after the ordinary failure")
+    check(
+        states == {"gate": "failed", "expensive": "invalidated", "independent": "passed"},
+        f"Rust invalidation/all-settled states are wrong: {states}",
+    )
+    check(
+        independent_marker.read_text(encoding="utf-8") == "ok",
+        "later independent work did not finish after the ordinary failure",
+    )
     check(not forbidden_marker.exists(), "invalidated expensive work executed")
     check(report["source_changed"] is False, "cold validation artifacts changed source digest")
-    check((current / "checks" / "gate" / "stderr.log").is_file(),
-          "failed leaf did not retain a cold log")
+    check(
+        (current / "checks" / "gate" / "stderr.log").is_file(),
+        "failed leaf did not retain a cold log",
+    )
 
 
 def main() -> int:

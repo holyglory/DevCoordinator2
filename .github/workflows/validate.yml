@@ -31,7 +31,6 @@ jobs:
 
   product-python:
     name: Product Python
-    needs: rust
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -43,6 +42,8 @@ jobs:
           python-version: "3.13"
       - name: Install product test dependencies
         run: python -m pip install -e '.[dev]'
+      - name: Build release Rust executor for Python integration tests
+        run: cargo build --locked --release --package devcoordinator2-executor
       - name: Lint product source
         run: ruff check src tests scripts
       - name: Run product unit tests
@@ -67,7 +68,6 @@ jobs:
 
   six-skill-validation:
     name: Six canonical skills (${{ matrix.os }})
-    needs: rust
     strategy:
       fail-fast: false
       matrix:
