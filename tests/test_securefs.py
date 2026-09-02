@@ -1,4 +1,5 @@
 import os
+import stat
 from pathlib import Path
 
 import pytest
@@ -111,3 +112,35 @@ def test_test_output_tail_never_follows_a_caller_symlink(tmp_path: Path):
     with pytest.raises(securefs.SecureFsError):
         securefs.tail_test_file(
             tmp_path, ("checks", "unit", "stdout.log"), 65536)
+
+
+def test_stable_log_run_is_private_and_removed_by_exact_id(tmp_path: Path):
+    current = securefs.create_test_dir(tmp_path, os.getuid(), os.getgid())
+    run_id = "t20260902T120000Z-123abc"
+    run = securefs.create_test_log_run_dir(
+        tmp_path, run_id, os.getuid(), os.getgid())
+    assert run.is_dir()
+    assert stat.S_IMODE(run.stat().st_mode) == 0o700
+    assert stat.S_IMODE((run / "executor").stat().st_mode) == 0o700
+    (run / "executor" / "stdout.log").write_bytes(b"complete\n")
+    securefs.remove_test_dir(tmp_path)
+    assert not current.exists()
+    assert run.is_dir(), "current cleanup must preserve retained logs"
+    securefs.remove_test_log_run_dir(tmp_path, run_id)
+    assert not run.exists()
+
+
+def test_log_run_creation_rejects_invalid_ids_and_symlinked_store(tmp_path: Path):
+    securefs.create_test_dir(tmp_path, os.getuid(), os.getgid())
+    with pytest.raises(securefs.SecureFsError, match="invalid"):
+        securefs.create_test_log_run_dir(
+            tmp_path, "../escape", os.getuid(), os.getgid())
+
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    logs = tmp_path / ".devcoordinator" / "test" / "logs"
+    logs.symlink_to(outside, target_is_directory=True)
+    with pytest.raises(securefs.SecureFsError):
+        securefs.create_test_log_run_dir(
+            tmp_path, "t20260902T120000Z-456def", os.getuid(), os.getgid())
+    assert not any(outside.iterdir())

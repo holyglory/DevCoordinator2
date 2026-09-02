@@ -8,6 +8,7 @@ repository's .devcoordinator tree.
 from __future__ import annotations
 
 import os
+import re
 import stat
 import threading
 import time
@@ -20,6 +21,7 @@ class SecureFsError(Exception):
 
 _TEST_HISTORY_MAX_BYTES = 2 * 1024 * 1024
 _TEST_EVIDENCE_MAX_BYTES = 2 * 1024 * 1024
+_RUN_ID_RE = re.compile(r"t[0-9]{8}T[0-9]{6}Z-[0-9a-f]{6}$")
 
 
 def _open_dir(dir_fd: int | None, name: str | Path) -> int:
@@ -112,6 +114,74 @@ def create_test_dir(worktree_root: Path, uid: int, gid: int) -> Path:
     finally:
         os.close(fd)
     return current
+
+
+def create_test_log_run_dir(worktree_root: Path, run_id: str,
+                            uid: int, gid: int) -> Path:
+    """Create one stable private log run without following repository links."""
+    if not _RUN_ID_RE.fullmatch(run_id):
+        raise SecureFsError("invalid governed-test run identifier")
+    run_path = (worktree_root / ".devcoordinator" / "test" / "logs"
+                / "runs" / run_id)
+    root_fd = _open_dir(None, worktree_root)
+    opened: list[int] = []
+    fd = root_fd
+    try:
+        for name in (".devcoordinator", "test"):
+            child = _open_dir(fd, name)
+            opened.append(child)
+            fd = child
+        for name in ("logs", "runs"):
+            try:
+                os.mkdir(name, mode=0o711, dir_fd=fd)
+            except FileExistsError:
+                pass
+            child = _open_dir(fd, name)
+            opened.append(child)
+            fd = child
+        try:
+            os.mkdir(run_id, mode=0o700, dir_fd=fd)
+        except FileExistsError as exc:
+            raise SecureFsError("governed-test log run already exists") from exc
+        os.chown(run_id, uid, gid, dir_fd=fd, follow_symlinks=False)
+        run_fd = _open_dir(fd, run_id)
+        try:
+            os.mkdir("executor", mode=0o700, dir_fd=run_fd)
+            os.chown("executor", uid, gid, dir_fd=run_fd, follow_symlinks=False)
+            os.fsync(run_fd)
+        finally:
+            os.close(run_fd)
+        os.fsync(fd)
+    except OSError as exc:
+        raise SecureFsError(f"cannot create governed-test log run: {exc}") from exc
+    finally:
+        for opened_fd in reversed(opened):
+            os.close(opened_fd)
+        os.close(root_fd)
+    return run_path
+
+
+def remove_test_log_run_dir(worktree_root: Path, run_id: str) -> None:
+    """Remove one exact never-started log run during launch rollback."""
+    if not _RUN_ID_RE.fullmatch(run_id):
+        raise SecureFsError("invalid governed-test run identifier")
+    root_fd = _open_dir(None, worktree_root)
+    opened: list[int] = []
+    fd = root_fd
+    try:
+        try:
+            for name in (".devcoordinator", "test", "logs", "runs"):
+                child = _open_dir(fd, name)
+                opened.append(child)
+                fd = child
+        except SecureFsError:
+            return
+        _rmtree_at(fd, run_id)
+        os.fsync(fd)
+    finally:
+        for opened_fd in reversed(opened):
+            os.close(opened_fd)
+        os.close(root_fd)
 
 
 def read_test_history(worktree_root: Path) -> bytes | None:
