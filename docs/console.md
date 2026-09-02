@@ -226,8 +226,8 @@ filter/search/paging, and a plain-language proof that the agent-facing
 technical note never renders. Screenshots and `report.json` are written to
 `CONSOLE_VERIFY_OUT` (not committed). The Administration Server line is
 asserted to render the daemon version, schema, and served route-document
-generation (the edge accepts the dotless `ping` alongside `family.name`
-commands). The Plan interaction pass also proves select, pan, zoom, fit,
+generation (the edge accepts the dotless `ping` alongside dot-separated
+operation commands). The Plan interaction pass also proves select, pan, zoom, fit,
 minimap, navigator collapse/resize, hover, pointer resize success/cancel/failure,
 exact resize, persistence after reload, modal cancellation, unknown-size marks,
 first-estimate persistence, 111 simultaneous unknown verification jobs,

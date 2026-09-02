@@ -36,7 +36,8 @@ authenticated routes only), and a static file server for the Console.
 - `/api/<command>` (POST JSON args, session required): forwarded to the
   daemon with `client.identity = <signed-in e-mail>`; the daemon applies
   roles (`docs/contract-commands.md`). Command names must match
-  `family.name` grammar (lowercase, `[a-z_]` after the dot) or be exactly
+  dot-separated operation grammar such as `family.name` or
+  `family.area.action` (lowercase, `[a-z_]` after each dot) or be exactly
   `ping` — anything else is refused at the edge and never reaches the
   daemon. Public callers address deployments
   by `deployment_id`; actions on their behalf execute as the account that

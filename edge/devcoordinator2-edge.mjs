@@ -193,9 +193,10 @@ export async function createEdge(config, { log = console } = {}) {
       if (!identity) return writeJson(res, 401, { ok: false, error: { code: 'unauthenticated', message: 'sign in first' } });
       if (req.method !== 'POST') return writeJson(res, 405, { ok: false, error: { code: 'method_not_allowed' } });
       const command = url.pathname.slice('/api/'.length);
-      // family.name, plus the daemon's single dotless command; anything else
-      // is grammar garbage and never reaches the daemon.
-      if (!/^([a-z]+\.[a-z_]+|ping)$/.test(command)) return writeJson(res, 400, { ok: false, error: { code: 'args_invalid' } });
+      // One or more dot-separated operation segments, plus the daemon's
+      // single dotless command; anything else is grammar garbage and never
+      // reaches the daemon.
+      if (!/^([a-z]+(?:\.[a-z_]+)+|ping)$/.test(command)) return writeJson(res, 400, { ok: false, error: { code: 'args_invalid' } });
       let args;
       try { args = await readJsonBody(req); } catch { return writeJson(res, 400, { ok: false, error: { code: 'args_invalid', message: 'invalid JSON body' } }); }
       try {

@@ -130,6 +130,12 @@ test('sign-in admits the invited identity via the daemon and enforces grants per
   const api = await get('/api/deployment.list', { cookie: session, method: 'POST', body: {} });
   assert.equal(api.status, 200);
   assert.equal(JSON.parse(api.body).result.identity, 'dev@example.test');
+  const capacity = await get('/api/test.capacity.get', {
+    cookie: session, method: 'POST', body: {},
+  });
+  assert.equal(capacity.status, 200);
+  assert.equal(JSON.parse(capacity.body).result.echoed, 'test.capacity.get');
+  assert.ok(daemonCalls.some((c) => c.command === 'test.capacity.get'));
   assert.equal((await get('/api/deployment.list', { method: 'POST', body: {} })).status, 401);
   // ping is the daemon's one dotless command and passes; other dotless words
   // are grammar garbage and never reach the daemon.
@@ -138,6 +144,7 @@ test('sign-in admits the invited identity via the daemon and enforces grants per
   assert.ok(daemonCalls.some((c) => c.command === 'ping'));
   assert.equal((await get('/api/bogus', { cookie: session, method: 'POST' })).status, 400);
   assert.ok(!daemonCalls.some((c) => c.command === 'bogus'));
+  assert.equal((await get('/api/test..get', { cookie: session, method: 'POST' })).status, 400);
 });
 
 test('malformed, stale, or tampered route documents never clear served routes', async () => {

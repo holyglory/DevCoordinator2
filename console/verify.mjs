@@ -585,12 +585,17 @@ async function main() {
             daemon.releaseDelayed();
             await daemon.waitForReceivedAfter(callsBeforeNavigation + 1);
           }
-          await page.waitForFunction(() => document.querySelector('.skeleton')
-            || /Loading/.test(document.body.innerText)).catch(async (error) => {
-            const current = await page.evaluate(() => ({ hash: location.hash, text: document.body.innerText.slice(0, 400), html: document.querySelector('main')?.innerHTML.slice(0, 500) }));
-            throw new Error(`${label}: loading surface did not render: ${JSON.stringify(current)}`, { cause: error });
-          });
           await waitForRenderFrame(page);
+          const loading = await page.evaluate(() => ({
+            visible: Boolean(document.querySelector('.skeleton')) || /Loading/.test(document.body.innerText),
+            hash: location.hash,
+            text: document.body.innerText.slice(0, 400),
+            html: document.querySelector('main')?.innerHTML.slice(0, 500),
+          }));
+          if (!loading.visible) {
+            loading.calls = daemon.calls.slice(callsBeforeNavigation).map((call) => call.command);
+            throw new Error(`${label}: loading surface did not render: ${JSON.stringify(loading)}`);
+          }
         }
         else {
           await page.waitForFunction(() => !document.querySelector('.skeleton'), null, { timeout: 15000 }).catch(() => {});
