@@ -20,6 +20,8 @@ CHECK_NAME_RE = re.compile(r"[a-z0-9][a-z0-9-]{0,63}$")
 CASE_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 TIMEOUT_MIN, TIMEOUT_MAX, TIMEOUT_DEFAULT = 1, 21600, 600
 VALIDATION_TIERS = ("development", "pre-merge", "release")
+DIAGNOSTIC_REPORT_FORMATS = ("junit", "playwright-json", "rust-json")
+MAX_DIAGNOSTIC_SOURCES = 8
 _TIER_RANK = {tier: index for index, tier in enumerate(VALIDATION_TIERS)}
 POSTGRES_IMAGE_RE = re.compile(r"postgres:[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 POSTGRES_DIGEST_IMAGE_RE = re.compile(
@@ -54,6 +56,14 @@ class CaseSpec:
 
 
 @dataclass(frozen=True)
+class DiagnosticSourceSpec:
+    """One declared structured report below a leaf diagnostics directory."""
+
+    format: str
+    path: str
+
+
+@dataclass(frozen=True)
 class CheckSpec:
     """One check in a finite governed dependency graph."""
 
@@ -71,6 +81,7 @@ class CheckSpec:
     completion: str
     on_failure: str
     produces: tuple[str, ...]
+    diagnostic_sources: tuple[DiagnosticSourceSpec, ...]
     timeout_seconds: int | None
     invalidates: tuple[str, ...]
 
@@ -273,6 +284,42 @@ def _validate_artifact_path(label: str, value: str) -> str:
     return value
 
 
+def _validate_diagnostic_sources(label: str, value) \
+        -> tuple[DiagnosticSourceSpec, ...]:
+    if not isinstance(value, list):
+        raise ConfigError(f"{label} must be an array of report tables")
+    if len(value) > MAX_DIAGNOSTIC_SOURCES:
+        raise ConfigError(
+            f"{label} exceeds {MAX_DIAGNOSTIC_SOURCES} diagnostic sources")
+    sources: list[DiagnosticSourceSpec] = []
+    seen: set[tuple[str, str]] = set()
+    for index, raw in enumerate(value):
+        source_label = f"{label}[{index}]"
+        if not isinstance(raw, dict) or set(raw) != {"format", "path"}:
+            raise ConfigError(
+                f"{source_label} must contain exactly format and path")
+        report_format = raw["format"]
+        if report_format not in DIAGNOSTIC_REPORT_FORMATS:
+            raise ConfigError(
+                f"{source_label}.format must be 'junit', "
+                "'playwright-json', or 'rust-json'")
+        path = raw["path"]
+        parsed = Path(path) if isinstance(path, str) else None
+        if not isinstance(path, str) or not path or len(path.encode("utf-8")) > 512 \
+                or parsed is None or parsed.is_absolute() \
+                or "\\" in path or "\0" in path \
+                or any(part in ("", ".", "..") for part in parsed.parts) \
+                or parsed.as_posix() != path:
+            raise ConfigError(
+                f"{source_label}.path must be a normalized leaf diagnostics-relative path")
+        identity = (report_format, path)
+        if identity in seen:
+            raise ConfigError(f"{label} contains a duplicate diagnostic source")
+        seen.add(identity)
+        sources.append(DiagnosticSourceSpec(report_format, path))
+    return tuple(sources)
+
+
 def _validate_cases(label: str, value) -> tuple[CaseSpec, ...]:
     if not isinstance(value, list) or not value:
         raise ConfigError(f"{label} must be a non-empty array of case tables")
@@ -313,7 +360,7 @@ def _validate_checks(worktree_root: Path, test_name: str, default_cwd: Path,
     allowed = {
         "name", "tier", "role", "command", "discover", "case_command", "cases",
         "cwd", "env", "after", "requires", "completion", "on_failure", "produces",
-        "timeout_seconds", "invalidates",
+        "timeout_seconds", "invalidates", "diagnostic_sources",
     }
     for index, item in enumerate(raw):
         label = f"[test.{test_name}.check[{index}]]"
@@ -378,6 +425,8 @@ def _validate_checks(worktree_root: Path, test_name: str, default_cwd: Path,
             raise ConfigError(f"{label}.produces exceeds 16 paths")
         produces = tuple(_validate_artifact_path(
             f"{label}.produces", value) for value in produces_raw)
+        diagnostic_sources = _validate_diagnostic_sources(
+            f"{label}.diagnostic_sources", item.get("diagnostic_sources", []))
         timeout = item.get("timeout_seconds")
         if timeout is not None and (
                 not isinstance(timeout, int) or isinstance(timeout, bool)
@@ -406,6 +455,7 @@ def _validate_checks(worktree_root: Path, test_name: str, default_cwd: Path,
             completion=completion,
             on_failure=on_failure,
             produces=produces,
+            diagnostic_sources=diagnostic_sources,
             timeout_seconds=timeout,
             invalidates=invalidates,
         ))

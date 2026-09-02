@@ -59,6 +59,9 @@ tier = "release"
 command = ["node", "verify.mjs"]
 requires = ["server"]
 timeout_seconds = 900
+diagnostic_sources = [
+  { format = "playwright-json", path = "playwright/report.json" },
+]
 
 [[test.complete.check]]
 name = "locale-cases"
@@ -75,6 +78,14 @@ checks cannot safely overlap for correctness, declare their real completion or
 success dependency. Every leaf receives an isolated
 `DEVCOORDINATOR_CHECK_SCRATCH`, the shared
 `DEVCOORDINATOR_SHARED_ARTIFACTS`, and its exact run/check identity.
+
+`diagnostic_sources` optionally declares structured reports written below the
+leaf-specific `DEVCOORDINATOR_DIAGNOSTICS_DIR`. A declaration contains exactly
+`format` and `path`; formats are `junit`, `playwright-json`, and `rust-json`.
+Paths are normalized relative paths below that diagnostics directory, never
+repository or host paths. The Rust executor extracts only bounded typed failure
+fields for ordinary completion; raw report messages, stacks, stdout, and stderr
+remain cold evidence available through explicit bounded log reads.
 
 `completion = "process"` (default) uses the exact exit status. A long-lived
 setup uses `completion = "event"` and emits one identity-bound result with
@@ -142,6 +153,10 @@ Validation rules:
   static `cases`+`case_command`. Fan-out manifests and cases are finite,
   bounded, uniquely named, argument-only, and non-recursive.
 - Check `completion` is `process|event`; `on_failure` is `continue|stop`.
+- A check may declare at most eight unique `diagnostic_sources`. Every entry
+  has exactly one supported format and one normalized leaf
+  diagnostics-relative path; absolute paths, traversal, and backslashes are
+  rejected.
 - `DEVCOORDINATOR_*` environment names are reserved for exact runner identity,
   scratch, artifact, and event delivery.
 - Unknown keys anywhere are rejected (`repository_config_invalid`), so

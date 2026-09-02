@@ -42,6 +42,7 @@ def test_good_default_and_named(tmp_path):
     assert spec.checks[0].command == ("echo", "hello")
     assert spec.timeout_seconds == 30
     assert spec.env == {"CI": "1"}
+    assert spec.checks[0].diagnostic_sources == ()
     slow = load_test_spec(root, "slow")
     assert slow.cwd == (tmp_path / "sub").resolve()
     assert slow.timeout_seconds == 600
@@ -50,6 +51,55 @@ def test_good_default_and_named(tmp_path):
         ("unit", ("release",), True),
         ("slow", ("development",), False),
     ]
+
+
+def test_structured_diagnostic_sources_are_typed_and_ordered(tmp_path):
+    root = write(tmp_path, '''
+schema = 2
+[test.unit]
+[[test.unit.check]]
+name = "main"
+tier = "release"
+command = ["pytest"]
+diagnostic_sources = [
+  { format = "junit", path = "pytest/results.xml" },
+  { format = "playwright-json", path = "browser/report.json" },
+  { format = "rust-json", path = "rust/events.jsonl" },
+]
+''')
+    sources = load_test_spec(root, None).checks[0].diagnostic_sources
+    assert [(source.format, source.path) for source in sources] == [
+        ("junit", "pytest/results.xml"),
+        ("playwright-json", "browser/report.json"),
+        ("rust-json", "rust/events.jsonl"),
+    ]
+
+
+@pytest.mark.parametrize("declaration,fragment", [
+    ('[{ format="tap", path="report.tap" }]', "format must be"),
+    ('[{ format="junit", path="report.xml", extra=true }]',
+     "exactly format and path"),
+    ('[{ format="junit", path="report.xml" }, '
+     '{ format="junit", path="report.xml" }]', "duplicate diagnostic source"),
+    ('[{ format="junit", path="../report.xml" }]',
+     "leaf diagnostics-relative"),
+    ('[{ format="junit", path="/tmp/report.xml" }]',
+     "leaf diagnostics-relative"),
+    ('[{ format="junit", path="nested\\\\report.xml" }]',
+     "leaf diagnostics-relative"),
+])
+def test_structured_diagnostic_source_rejections(tmp_path, declaration, fragment):
+    root = write(tmp_path, f'''
+schema = 2
+[test.unit]
+[[test.unit.check]]
+name = "main"
+tier = "release"
+command = ["true"]
+diagnostic_sources = {declaration}
+''')
+    with pytest.raises(ConfigError, match=fragment):
+        load_test_spec(root, None)
 
 
 def test_single_test_needs_no_default(tmp_path):
