@@ -121,6 +121,7 @@ pub fn parse_diagnostic_event(
         &context.run_id,
         &context.check,
         context.case.as_deref(),
+        context.phase,
     )
     .map_err(|_| DiagnosticParseError::InvalidEvent)?;
     let mut log_refs = event.log_refs;

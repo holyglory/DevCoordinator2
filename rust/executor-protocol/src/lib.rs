@@ -765,9 +765,10 @@ fn validate_name(kind: &str, value: &str, maximum: usize) -> Result<(), Contract
 fn validate_identity(kind: &str, value: &str, maximum: usize) -> Result<(), ContractError> {
     let valid = !value.is_empty()
         && value.len() <= maximum
+        && value.as_bytes()[0].is_ascii_alphanumeric()
         && value
             .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b':'));
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'));
     if !valid {
         return Err(ContractError::new(format!(
             "{kind} is not a bounded normalized identity"
@@ -1166,13 +1167,19 @@ impl DiagnosticEvent {
         expected_run_id: &str,
         expected_check: &str,
         expected_case: Option<&str>,
+        expected_phase: LogPhase,
     ) -> Result<Self, ContractError> {
         if input.len() > MAX_EVENT_BYTES {
             return Err(ContractError::new("diagnostic event exceeds 4096 bytes"));
         }
         let event: Self = serde_json::from_slice(input)
             .map_err(|_| ContractError::new("diagnostic event is not valid schema-2 JSON"))?;
-        event.validate(expected_run_id, expected_check, expected_case)?;
+        event.validate(
+            expected_run_id,
+            expected_check,
+            expected_case,
+            expected_phase,
+        )?;
         Ok(event)
     }
 
@@ -1181,6 +1188,7 @@ impl DiagnosticEvent {
         expected_run_id: &str,
         expected_check: &str,
         expected_case: Option<&str>,
+        expected_phase: LogPhase,
     ) -> Result<(), ContractError> {
         validate_identity("diagnostic run_id", &self.run_id, 128)?;
         validate_name("diagnostic check", &self.check, 64)?;
@@ -1229,6 +1237,11 @@ impl DiagnosticEvent {
             if log_ref.case != self.case {
                 return Err(ContractError::new(
                     "diagnostic event case log reference belongs to another case",
+                ));
+            }
+            if log_ref.phase != expected_phase {
+                return Err(ContractError::new(
+                    "diagnostic event log reference has the wrong leaf phase",
                 ));
             }
             if !refs.insert(log_ref) {
@@ -1425,6 +1438,19 @@ mod tests {
     }
 
     #[test]
+    fn run_identities_are_safe_path_components_in_every_contract() {
+        for invalid in ["..", ".hidden", "-leading", "run:one", "run/one"] {
+            let mut candidate = plan(vec![check("unit", ValidationTier::Development)]);
+            candidate.run_id = invalid.into();
+            assert!(candidate.validate().is_err(), "accepted {invalid:?}");
+        }
+        let mut valid = plan(vec![check("unit", ValidationTier::Development)]);
+        valid.run_id = "skills-20260902T120000Z-123-abcdef".into();
+        valid.log_dir = format!("/tmp/repo/.devcoordinator/test/logs/runs/{}", valid.run_id);
+        valid.validate().expect("generic safe run identity");
+    }
+
+    #[test]
     fn diagnostic_sources_are_strict_bounded_and_relative() {
         let mut unit = check("unit", ValidationTier::Development);
         unit.diagnostic_sources = vec![DiagnosticReportSource {
@@ -1518,9 +1544,29 @@ mod tests {
             "log_refs": [log_ref(Some("parser-17"))]
         });
         let encoded = serde_json::to_vec(&event).expect("event JSON");
-        DiagnosticEvent::from_json(&encoded, "run-1", "unit", Some("parser-17"))
+        DiagnosticEvent::from_json(&encoded, "run-1", "unit", Some("parser-17"), LogPhase::Case)
             .expect("matching event accepted");
-        assert!(DiagnosticEvent::from_json(&encoded, "other", "unit", Some("parser-17")).is_err());
+        assert!(
+            DiagnosticEvent::from_json(
+                &encoded,
+                "other",
+                "unit",
+                Some("parser-17"),
+                LogPhase::Case,
+            )
+            .is_err()
+        );
+
+        assert!(
+            DiagnosticEvent::from_json(
+                &encoded,
+                "run-1",
+                "unit",
+                Some("parser-17"),
+                LogPhase::Check,
+            )
+            .is_err()
+        );
 
         let mut with_message = event;
         with_message
@@ -1528,7 +1574,16 @@ mod tests {
             .expect("object")
             .insert("message".into(), serde_json::json!("raw stack trace"));
         let encoded = serde_json::to_vec(&with_message).expect("event JSON");
-        assert!(DiagnosticEvent::from_json(&encoded, "run-1", "unit", Some("parser-17")).is_err());
+        assert!(
+            DiagnosticEvent::from_json(
+                &encoded,
+                "run-1",
+                "unit",
+                Some("parser-17"),
+                LogPhase::Case,
+            )
+            .is_err()
+        );
     }
 
     #[test]
