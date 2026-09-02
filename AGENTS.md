@@ -79,4 +79,6 @@ The universal cross-repository policy is `reference/universal/AGENTS.md`.
 - Review `security-assumptions.md` before changing this trust model, adding a
   writer, or making repository writers mutually distrusting.
 - Secrets, credentials, private instance values, and live evidence never enter
-  source, prompts, normal results, or logs.
+  source, prompts, normal results, indexes, or Coordinator-generated logs.
+  Governed commands must not print them: their byte-complete stdout and stderr
+  are private cold evidence disclosed only through explicit bounded log tools.

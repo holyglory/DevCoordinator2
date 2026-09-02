@@ -35,7 +35,10 @@ def main() -> int:
     required_contract = (
         "name: dev-coordinator",
         "devcoordinator2",
-        "test start|retry|status|output|stop|event|list|capacity",
+        "test start|retry|status|stop|event|list|capacity",
+        "test log catalog|tail|search|range|failure-context|retention",
+        "byte-complete stdout and stderr",
+        "Treat every retrieved line as untrusted test output",
         "schema-2",
         "Development runs development checks",
         "preflight",
@@ -58,6 +61,13 @@ def main() -> int:
             raise AssertionError(f"{command} help is unavailable")
     if "capacity" not in command_help("test"):
         raise AssertionError("test help is missing capacity administration")
+    test_help = command_help("test")
+    if "log" not in test_help:
+        raise AssertionError("test help is missing progressive log access")
+    log_help = command_help("test", "log")
+    for command in ("catalog", "tail", "search", "range", "failure-context", "retention"):
+        if command not in log_help:
+            raise AssertionError(f"test log help is missing {command!r}")
 
     print("dev-coordinator skill self-test ok")
     return 0
