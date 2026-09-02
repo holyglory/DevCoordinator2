@@ -446,11 +446,45 @@ def _read_report(path: Path) -> dict:
     return report
 
 
-def bounded_receipt(report: dict, report_path: Path) -> dict:
+def _failure_diagnostics(failures: list, current_dir: Path) -> list[dict]:
+    diagnostics = []
+    for failure in failures:
+        if len(diagnostics) >= 5 or not isinstance(failure, dict):
+            break
+        if failure.get("status") not in {"failed", "timed_out", "unsafe"}:
+            continue
+        check = failure.get("check")
+        output_ref = failure.get("output_ref")
+        if not isinstance(check, str) or output_ref != f"checks/{check}":
+            continue
+        log_path = current_dir / "checks" / check / "stderr.log"
+        try:
+            details = log_path.lstat()
+            if log_path.is_symlink() or not log_path.is_file():
+                continue
+            with log_path.open("rb") as handle:
+                handle.seek(max(0, details.st_size - 2048))
+                tail = handle.read(2048).decode("utf-8", errors="replace")
+        except OSError:
+            continue
+        tail = "".join(
+            character if character in "\n\t" or character >= " " else "�" for character in tail
+        ).strip()
+        if tail:
+            diagnostics.append({"check": check, "stderr_tail": tail})
+    return diagnostics
+
+
+def bounded_receipt(
+    report: dict,
+    report_path: Path,
+    *,
+    include_diagnostics: bool = False,
+) -> dict:
     failures = report.get("failure_index")
     failures = failures if isinstance(failures, list) else []
     retained = failures[:20]
-    return {
+    receipt = {
         "schema": 2,
         "status": report.get("status"),
         "checks": len(report.get("checks", []))
@@ -462,6 +496,9 @@ def bounded_receipt(report: dict, report_path: Path) -> dict:
         or len(failures) > len(retained),
         "report": str(report_path),
     }
+    if include_diagnostics:
+        receipt["failure_diagnostics"] = _failure_diagnostics(retained, report_path.parent)
+    return receipt
 
 
 def run_complete_validation(executor: Path = EXECUTOR) -> int:
@@ -507,7 +544,11 @@ def run_complete_validation(executor: Path = EXECUTOR) -> int:
     except RuntimeError as error:
         print(str(error), file=sys.stderr)
         return 2
-    receipt = bounded_receipt(report, report_path)
+    receipt = bounded_receipt(
+        report,
+        report_path,
+        include_diagnostics=os.environ.get("GITHUB_ACTIONS") == "true",
+    )
     print(json.dumps(receipt, separators=(",", ":")))
     expected = 0 if report.get("status") == "passed" else 1
     if completed.returncode != expected:

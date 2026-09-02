@@ -110,9 +110,17 @@ def test_plan_contract(base: Path) -> None:
 
 def test_bounded_receipt(base: Path) -> None:
     failures = [
-        {"check": f"check-{index}", "status": "failed", "reason": "fixture"}
+        {
+            "check": f"check-{index}",
+            "status": "failed",
+            "reason": "fixture",
+            "output_ref": f"checks/check-{index}",
+        }
         for index in range(25)
     ]
+    log = base / "checks" / "check-0" / "stderr.log"
+    log.parent.mkdir(parents=True)
+    log.write_text("bounded diagnostic marker\n", encoding="utf-8")
     receipt = MODULE.bounded_receipt(
         {
             "schema": 2,
@@ -123,10 +131,16 @@ def test_bounded_receipt(base: Path) -> None:
             "failure_index_truncated": False,
         },
         base / "check-report.json",
+        include_diagnostics=True,
     )
     check(len(receipt["failure_index"]) == 20, "receipt failure index is not bounded")
     check(receipt["failure_index_truncated"] is True, "bounded receipt hid truncation")
     check(receipt["report"].endswith("check-report.json"), "receipt omitted report filename")
+    check(
+        receipt["failure_diagnostics"]
+        == [{"check": "check-0", "stderr_tail": "bounded diagnostic marker"}],
+        "CI failure receipt omitted the bounded cold-log diagnostic",
+    )
 
 
 def test_changed_visual_parity(base: Path) -> None:
