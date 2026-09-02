@@ -285,9 +285,10 @@ struct StoreInventory {
 #[serde(deny_unknown_fields)]
 struct StoredDiagnostics {
     schema: u8,
+    check: Option<String>,
+    #[serde(rename = "case")]
+    case_id: Option<String>,
     entries: Vec<FailureIndexEntry>,
-    total_unique: u64,
-    truncated: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -872,7 +873,17 @@ fn scan_leaf(
     }
     let metadata: LeafLogMetadata = match read_json(leaf_dir, "leaf.json", MAX_METADATA_BYTES) {
         Ok(metadata) => metadata,
-        Err(LogQueryError::LogNotFound) if active => return Ok(()),
+        Err(LogQueryError::LogNotFound) if active => LeafLogMetadata {
+            schema: 2,
+            selector: selector.clone(),
+            status: devcoordinator2_executor_protocol::LeafStatus::Running,
+            exit: devcoordinator2_executor_protocol::DiagnosticExit::default(),
+            started_at_epoch_ms: run.started_at_epoch_ms,
+            finished_at_epoch_ms: None,
+            complete: false,
+            structured_evidence_formats: Vec::new(),
+            structured_evidence_count: 0,
+        },
         Err(error) => return Err(error),
     };
     metadata
@@ -886,6 +897,33 @@ fn scan_leaf(
         let stem = stream_name(stream);
         let metadata_name = format!("{stem}.meta.json");
         if !names.iter().any(|name| name == &metadata_name) {
+            let log_name = format!("{stem}.log");
+            if active && names.iter().any(|name| name == &log_name) {
+                let file = open_file(leaf_dir, &log_name)?;
+                let details = file.metadata().map_err(|_| LogQueryError::Unavailable)?;
+                if !details.is_file() {
+                    return Err(LogQueryError::StoreMalformed);
+                }
+                let (lines, sha256) = inspect_complete_file(&file, details.len())?;
+                streams.insert(
+                    stream,
+                    StreamMetadata {
+                        schema: 2,
+                        selector: selector.clone(),
+                        stream,
+                        bytes: details.len(),
+                        lines,
+                        first_write_epoch_ms: None,
+                        last_write_epoch_ms: None,
+                        complete: false,
+                        truncated: false,
+                        sha256,
+                        line_index_stride: crate::log_store::LINE_INDEX_STRIDE,
+                        line_index_format: "computed-active-v1".into(),
+                    },
+                );
+                continue;
+            }
             if active {
                 continue;
             }
@@ -1569,7 +1607,14 @@ fn open_selected_stream(
         .ok_or(LogQueryError::LogNotFound)?;
     let leaf_dir = open_leaf_components(&run.directory, &leaf.relative_components[1..])?;
     let file = open_file(&leaf_dir, &format!("{}.log", stream_name(stream)))?;
-    let index = open_file(&leaf_dir, &format!("{}.lines", stream_name(stream)))?;
+    let index = if metadata.line_index_format == "computed-active-v1" {
+        None
+    } else {
+        Some(open_file(
+            &leaf_dir,
+            &format!("{}.lines", stream_name(stream)),
+        )?)
+    };
     let identity = file_identity(&file)?;
     let size = file
         .metadata()
@@ -1583,7 +1628,7 @@ fn open_selected_stream(
         log_ref: log_ref(&leaf.run_id, &leaf.selector, stream),
         metadata,
         file,
-        index: Some(index),
+        index,
         device: identity.0,
         inode: identity.1,
         snapshot_bytes,
@@ -1610,8 +1655,9 @@ fn load_structured_failures(
                 }
             })?;
         if stored.schema != 2
-            || stored.total_unique < stored.entries.len() as u64
-            || stored.entries.len() as u64 > leaf.metadata.structured_evidence_count
+            || stored.check != leaf.selector.check
+            || stored.case_id != leaf.selector.case_id
+            || stored.entries.len() as u64 != leaf.metadata.structured_evidence_count
         {
             return Err(LogQueryError::StoreMalformed);
         }
@@ -3016,6 +3062,73 @@ mod tests {
     }
 
     #[test]
+    fn active_check_streams_are_visible_before_leaf_and_stream_metadata_seal() {
+        let root = temporary("active-check");
+        let run = run_id(33);
+        let run_dir = root.join(".devcoordinator/test/logs/runs").join(&run);
+        fs::create_dir(&run_dir).expect("run directory");
+        let lease = RunLogLease::acquire(&run_dir, &run).expect("lease");
+        lease
+            .publish_run_metadata(&RunLogMetadata {
+                schema: 2,
+                run_id: run.clone(),
+                test: "complete".into(),
+                started_at_epoch_ms: epoch_ms(),
+                finished_at_epoch_ms: None,
+                status: RunStatus::Running,
+                complete: false,
+            })
+            .expect("run metadata");
+        let selector = LeafSelector::case("unit", "case-1").expect("selector");
+        let mut stdout = lease
+            .create_stream(selector.clone(), LogStream::Stdout)
+            .expect("stdout");
+        let stderr = lease
+            .create_stream(selector, LogStream::Stderr)
+            .expect("stderr");
+        stdout
+            .write_all(b"still running\nsecond line\n")
+            .expect("active output");
+        let query = request(
+            LogQueryOperation::Catalog,
+            &run,
+            LogQueryOptions {
+                limit: Some(100),
+                ..LogQueryOptions::default()
+            },
+        );
+        let LogQueryResult::Catalog(catalogue) =
+            execute_log_query(&root, query).expect("catalogue")
+        else {
+            panic!("catalogue")
+        };
+        assert_eq!(catalogue.entries.len(), 1);
+        assert_eq!(catalogue.entries[0].lines, Some(2));
+        assert!(!catalogue.entries[0].complete);
+        assert!(catalogue.entries[0].sha256.is_none());
+        let tail = content(
+            execute_log_query(
+                &root,
+                request(
+                    LogQueryOperation::Tail,
+                    &run,
+                    LogQueryOptions {
+                        lines: Some(1),
+                        max_bytes: Some(1024),
+                        ..LogQueryOptions::default()
+                    },
+                ),
+            )
+            .expect("active tail"),
+        );
+        assert_eq!(tail.segments[0].text.as_deref(), Some("second line\n"));
+        drop(stderr);
+        drop(stdout);
+        drop(lease);
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
     fn literal_search_does_not_treat_metacharacters_as_a_pattern_and_pages() {
         let root = temporary("search");
         let payload = b"before\n[literal].* first\nnoise\n[literal].* second\nafter\n";
@@ -3218,9 +3331,9 @@ mod tests {
             leaf.join("diagnostics.json"),
             serde_json::to_vec(&StoredDiagnostics {
                 schema: 2,
+                check: Some("unit".into()),
+                case_id: Some("case-1".into()),
                 entries: vec![failure.clone()],
-                total_unique: 1,
-                truncated: false,
             })
             .expect("diagnostics"),
         )
