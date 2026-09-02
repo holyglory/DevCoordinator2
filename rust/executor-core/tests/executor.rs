@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 use std::fs;
+use std::os::unix::fs::symlink;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
@@ -90,6 +91,7 @@ fn dynamic_fanout(name: &str, discovery_script: &str) -> CheckPlan {
 }
 
 fn plan(repository: &Repository, run_id: &str, checks: Vec<CheckPlan>) -> ExecutionPlan {
+    fs::create_dir_all(repository.current(run_id)).expect("create run directory");
     ExecutionPlan {
         schema: Schema2,
         run_id: run_id.into(),
@@ -106,6 +108,26 @@ fn plan(repository: &Repository, run_id: &str, checks: Vec<CheckPlan>) -> Execut
         reused: BTreeMap::new(),
         checks,
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn symlinked_platform_ancestor_resolves_before_containment_check() {
+    let repository = Repository::new("symlink-ancestor");
+    let alias = repository.root.with_extension("alias");
+    symlink(&repository.root, &alias).expect("create worktree alias");
+    let mut execution_plan = plan(
+        &repository,
+        "run-symlink-ancestor",
+        vec![direct("check", python("raise SystemExit(0)"))],
+    );
+    execution_plan.worktree_root = alias.display().to_string();
+    execution_plan.current_dir = alias
+        .join(".devcoordinator/run-symlink-ancestor")
+        .display()
+        .to_string();
+    let report = execute(execution_plan).await;
+    assert_eq!(report.status, RunStatus::Passed);
+    fs::remove_file(alias).expect("remove worktree alias");
 }
 
 async fn execute(plan: ExecutionPlan) -> devcoordinator2_executor_core::protocol::ExecutionReport {

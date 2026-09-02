@@ -113,6 +113,7 @@ def _source_digest(executor: Path, repository: Path) -> str:
 def _write_plan(repository: Path, run_id: str, commands: list[list[str]],
                 source_digest: str) -> Path:
     current = repository / ".devcoordinator" / run_id
+    current.mkdir(parents=True, exist_ok=True)
     plan_path = repository / ".devcoordinator" / "plans" / f"{run_id}.json"
     plan_path.parent.mkdir(parents=True, exist_ok=True)
     checks = []

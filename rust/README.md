@@ -21,6 +21,10 @@ cargo run -p devcoordinator2-executor -- validate PLAN.json
 `run` requires the host broker in `DEVCOORDINATOR_CAPACITY_SOCKET` and fails
 closed when it is absent. Explicit `run-local` is the direct self-validation
 mode and admits all dependency-ready leaves locally.
+The control plane pre-creates `current_dir`; the executor resolves both plan
+paths before writing and refuses a missing or escaping run directory. This
+accepts platform path aliases such as macOS `/var` → `/private/var` without
+weakening containment.
 Repository commands remain argv arrays; the executor never invokes a shell.
 
 The Python control plane can request bounded content-free evidence without

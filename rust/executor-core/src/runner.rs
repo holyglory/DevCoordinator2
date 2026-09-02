@@ -47,20 +47,18 @@ impl Executor {
 
     pub async fn run(self) -> Result<ExecutionReport, ExecutorError> {
         let plan = Arc::new(self.plan);
-        let root = PathBuf::from(&plan.worktree_root)
-            .canonicalize()
-            .map_err(|error| ExecutorError::new(format!("cannot resolve worktree: {error}")))?;
+        let root_requested = PathBuf::from(&plan.worktree_root);
         let current_requested = PathBuf::from(&plan.current_dir);
-        if !current_requested.starts_with(&root) {
+        if !current_requested.starts_with(&root_requested) {
             return Err(ExecutorError::new(
-                "executor current_dir is outside the worktree",
+                "executor current_dir is outside the requested worktree",
             ));
         }
-        tokio::fs::create_dir_all(&current_requested)
-            .await
-            .map_err(|error| ExecutorError::new(format!("cannot create run directory: {error}")))?;
+        let root = root_requested
+            .canonicalize()
+            .map_err(|error| ExecutorError::new(format!("cannot resolve worktree: {error}")))?;
         let current = current_requested.canonicalize().map_err(|error| {
-            ExecutorError::new(format!("cannot resolve run directory: {error}"))
+            ExecutorError::new(format!("cannot resolve pre-created run directory: {error}"))
         })?;
         if !current.starts_with(&root) {
             return Err(ExecutorError::new(
