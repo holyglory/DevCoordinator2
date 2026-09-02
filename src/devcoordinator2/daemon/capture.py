@@ -12,6 +12,7 @@ import os
 import threading
 from dataclasses import dataclass
 from pathlib import Path
+from collections.abc import Callable
 from typing import BinaryIO
 
 _CHUNK = 65536
@@ -21,16 +22,18 @@ _CHUNK = 65536
 class StreamCounts:
     observed: int
     retained: int
+    error_code: str | None
 
 
 class Drainer:
-    def __init__(self, pipe: BinaryIO, log_path: Path,
-                 owner: tuple[int, int] | None = None):
+    def __init__(self, pipe: BinaryIO, log: BinaryIO,
+                 on_storage_error: Callable[[], None] | None = None):
         self._pipe = pipe
-        self._log_path = log_path
-        self._owner = owner
+        self._log = log
+        self._on_storage_error = on_storage_error
         self._observed = 0
         self._retained = 0
+        self._error_code: str | None = None
         self._lock = threading.Lock()
         self._thread = threading.Thread(target=self._run, daemon=True)
 
@@ -43,17 +46,26 @@ class Drainer:
     @property
     def counts(self) -> StreamCounts:
         with self._lock:
-            return StreamCounts(observed=self._observed, retained=self._retained)
+            return StreamCounts(
+                observed=self._observed,
+                retained=self._retained,
+                error_code=self._error_code,
+            )
+
+    def _record_storage_error(self) -> None:
+        with self._lock:
+            if self._error_code is not None:
+                return
+            self._error_code = "log_storage"
+        if self._on_storage_error is not None:
+            try:
+                self._on_storage_error()
+            except Exception:
+                pass
 
     def _run(self) -> None:
         try:
-            with open(self._log_path, "wb") as log:
-                try:
-                    os.fchmod(log.fileno(), 0o600)
-                    if self._owner is not None:
-                        os.fchown(log.fileno(), self._owner[0], self._owner[1])
-                except OSError:
-                    pass
+            with self._log as log:
                 # read1 returns as soon as any bytes are available (read
                 # would block until a full chunk), keeping on-demand tails
                 # fresh while a test is still running.
@@ -64,11 +76,14 @@ class Drainer:
                         break
                     with self._lock:
                         self._observed += len(chunk)
-                        log.write(chunk)
+                        written = log.write(chunk)
+                        if written != len(chunk):
+                            raise OSError("short governed-test log write")
                         log.flush()
-                        self._retained += len(chunk)
+                        self._retained += written
+                os.fsync(log.fileno())
         except (OSError, ValueError):
-            pass  # pipe closed underneath us; counts remain truthful
+            self._record_storage_error()
         finally:
             try:
                 self._pipe.close()

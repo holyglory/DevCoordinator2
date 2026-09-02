@@ -201,8 +201,16 @@ class TestLifecycle:
             try:
                 log_dir = securefs.create_test_log_run_dir(
                     worktree_root, run, caller.uid, caller.gid)
+                executor_stdout, executor_stderr = (
+                    securefs.create_test_executor_log_files(
+                        worktree_root, run, caller.uid, caller.gid)
+                )
             except securefs.SecureFsError as exc:
                 securefs.remove_test_dir(worktree_root)
+                try:
+                    securefs.remove_test_log_run_dir(worktree_root, run)
+                except securefs.SecureFsError:
+                    pass
                 raise ProtocolError("test_start_failed", str(exc)) from exc
             unit = ids.unit_name(self._config.unit_prefix, reg.worktree_id,
                                  run[1:])
@@ -277,10 +285,22 @@ class TestLifecycle:
                     raise ProtocolError(
                         "test_start_failed",
                         f"cannot spawn systemd-run: {exc}") from exc
-                out = capture.Drainer(proc.stdout, log_dir / "executor" / "stdout.log",
-                                      owner=(caller.uid, caller.gid))
-                err = capture.Drainer(proc.stderr, log_dir / "executor" / "stderr.log",
-                                      owner=(caller.uid, caller.gid))
+                capture_failed = threading.Event()
+
+                def stop_on_capture_failure() -> None:
+                    if capture_failed.is_set():
+                        return
+                    capture_failed.set()
+                    if proc is not None and proc.poll() is None:
+                        try:
+                            systemd_unit.stop_unit(unit)
+                        except systemd_unit.SystemdError:
+                            proc.terminate()
+
+                out = capture.Drainer(
+                    proc.stdout, executor_stdout, stop_on_capture_failure)
+                err = capture.Drainer(
+                    proc.stderr, executor_stderr, stop_on_capture_failure)
                 out.start()
                 err.start()
                 handle = _RunHandle(run, spec.name, unit, worktree_root,
@@ -305,6 +325,9 @@ class TestLifecycle:
                 if capacity_registered and self._capacity is not None:
                     self._capacity.unregister_run(run)
                 _remove_containers(containers)
+                for stream_file in (executor_stdout, executor_stderr):
+                    if not stream_file.closed:
+                        stream_file.close()
                 os.close(dir_fd)
                 if proc is None:
                     try:

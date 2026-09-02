@@ -12,6 +12,7 @@ import re
 import stat
 import threading
 import time
+from typing import BinaryIO
 from pathlib import Path
 
 
@@ -178,6 +179,61 @@ def remove_test_log_run_dir(worktree_root: Path, run_id: str) -> None:
             return
         _rmtree_at(fd, run_id)
         os.fsync(fd)
+    finally:
+        for opened_fd in reversed(opened):
+            os.close(opened_fd)
+        os.close(root_fd)
+
+
+def create_test_executor_log_files(worktree_root: Path, run_id: str,
+                                   uid: int, gid: int) \
+        -> tuple[BinaryIO, BinaryIO]:
+    """Create and hold the wrapper streams before caller code can run."""
+    if not _RUN_ID_RE.fullmatch(run_id):
+        raise SecureFsError("invalid governed-test run identifier")
+    root_fd = _open_dir(None, worktree_root)
+    opened: list[int] = []
+    fd = root_fd
+    stream_fds: list[int] = []
+    created_names: list[str] = []
+    stream_parent_ready = False
+    try:
+        for name in (
+                ".devcoordinator", "test", "logs", "runs", run_id, "executor"):
+            child = _open_dir(fd, name)
+            opened.append(child)
+            fd = child
+        stream_parent_ready = True
+        for name in ("stdout.log", "stderr.log"):
+            stream_fd = os.open(
+                name,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+                | os.O_CLOEXEC,
+                0o600,
+                dir_fd=fd,
+            )
+            os.fchmod(stream_fd, 0o600)
+            os.fchown(stream_fd, uid, gid)
+            stream_fds.append(stream_fd)
+            created_names.append(name)
+        os.fsync(fd)
+        stdout = os.fdopen(stream_fds.pop(0), "wb", buffering=0)
+        stderr = os.fdopen(stream_fds.pop(0), "wb", buffering=0)
+        return stdout, stderr
+    except OSError as exc:
+        for stream_fd in stream_fds:
+            try:
+                os.close(stream_fd)
+            except OSError:
+                pass
+        if stream_parent_ready:
+            for name in created_names:
+                try:
+                    os.unlink(name, dir_fd=fd)
+                except OSError:
+                    pass
+        raise SecureFsError(
+            f"cannot create governed-test executor log: {exc}") from exc
     finally:
         for opened_fd in reversed(opened):
             os.close(opened_fd)

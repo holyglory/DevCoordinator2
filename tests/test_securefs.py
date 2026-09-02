@@ -122,7 +122,17 @@ def test_stable_log_run_is_private_and_removed_by_exact_id(tmp_path: Path):
     assert run.is_dir()
     assert stat.S_IMODE(run.stat().st_mode) == 0o700
     assert stat.S_IMODE((run / "executor").stat().st_mode) == 0o700
-    (run / "executor" / "stdout.log").write_bytes(b"complete\n")
+    stdout, stderr = securefs.create_test_executor_log_files(
+        tmp_path, run_id, os.getuid(), os.getgid())
+    stdout.write(b"complete\n")
+    stderr.write(b"diagnostic\n")
+    stdout.close()
+    stderr.close()
+    assert stat.S_IMODE((run / "executor" / "stdout.log").stat().st_mode) == 0o600
+    assert stat.S_IMODE((run / "executor" / "stderr.log").stat().st_mode) == 0o600
+    with pytest.raises(securefs.SecureFsError):
+        securefs.create_test_executor_log_files(
+            tmp_path, run_id, os.getuid(), os.getgid())
     securefs.remove_test_dir(tmp_path)
     assert not current.exists()
     assert run.is_dir(), "current cleanup must preserve retained logs"
@@ -144,3 +154,17 @@ def test_log_run_creation_rejects_invalid_ids_and_symlinked_store(tmp_path: Path
         securefs.create_test_log_run_dir(
             tmp_path, "t20260902T120000Z-456def", os.getuid(), os.getgid())
     assert not any(outside.iterdir())
+
+
+def test_executor_log_creation_does_not_follow_a_substituted_stream(tmp_path: Path):
+    securefs.create_test_dir(tmp_path, os.getuid(), os.getgid())
+    run_id = "t20260902T120000Z-789abc"
+    run = securefs.create_test_log_run_dir(
+        tmp_path, run_id, os.getuid(), os.getgid())
+    outside = tmp_path / "outside.log"
+    outside.write_bytes(b"keep")
+    (run / "executor" / "stdout.log").symlink_to(outside)
+    with pytest.raises(securefs.SecureFsError):
+        securefs.create_test_executor_log_files(
+            tmp_path, run_id, os.getuid(), os.getgid())
+    assert outside.read_bytes() == b"keep"

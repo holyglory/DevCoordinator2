@@ -87,8 +87,8 @@ Each terminal diagnostic is bounded and typed:
   "termination_reason": null,
   "source": {"file": "src/parser.rs", "line": 81, "column": 9},
   "error_category": "assertion",
-  "expected": {"type": "string", "preview": "ready", "sha256": "...", "truncated": false},
-  "actual": {"type": "string", "preview": "pending", "sha256": "...", "truncated": false},
+  "expected": {"type": "string", "preview": "ready", "byte_count": 5, "sha256": "...", "truncated": false},
+  "actual": {"type": "string", "preview": "pending", "byte_count": 7, "sha256": "...", "truncated": false},
   "fingerprint": "sha256:...",
   "occurrences": 1,
   "log_refs": []
