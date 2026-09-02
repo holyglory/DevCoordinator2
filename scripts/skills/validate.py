@@ -232,6 +232,7 @@ def _plan_check(
     *,
     tier: str,
     role: str,
+    after: list[str] | None = None,
     requires: list[str] | None = None,
     invalidates: list[str] | None = None,
     env: dict[str, str] | None = None,
@@ -240,7 +241,7 @@ def _plan_check(
         "name": name,
         "tier": tier,
         "role": role,
-        "after": [],
+        "after": list(after or []),
         "requires": list(requires or []),
         "invalidates": list(invalidates or []),
         "cwd": ".",
@@ -317,6 +318,13 @@ def validation_checks(*, pycache_root: Path) -> list[dict]:
     target_names = [name for name, _command in target_commands]
     target_names.append("python-compile")
     preflight_names = [name for name, _command in preflight_commands]
+    formal_check = "skill-formal-web-ui-verification"
+    # This self-test measures a strict local TTFB. Other skill self-tests are
+    # a concrete shared CPU/browser conflict, so let those finish first while
+    # preserving completion-only, all-settled behavior.
+    formal_after = [
+        name for name in target_names if name.startswith("skill-") and name != formal_check
+    ]
     checks = [
         _plan_check(
             name,
@@ -333,6 +341,7 @@ def validation_checks(*, pycache_root: Path) -> list[dict]:
             command,
             tier="release",
             role="work",
+            after=formal_after if name == formal_check else None,
             requires=preflight_names,
         )
         for name, command in target_commands

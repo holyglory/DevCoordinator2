@@ -65,6 +65,9 @@ The universal cross-repository policy is `reference/universal/AGENTS.md`.
   expensive checks while unrelated siblings remain all-settled. Read bounded
   failures from its receipt and keep complete logs/report in the named
   `.devcoordinator/agent-validation/` run directory.
+- The Formal Web UI self-test runs after the other skill self-tests because it
+  measures a strict local response threshold; this is a concrete shared-host
+  measurement conflict, not a general reason to serialize validation.
 - Keep complete verbose output in cold logs and report bounded failure indexes.
 - Finish finite diagnostic passes after ordinary failures, batch fixes, then
   rerun the complete relevant pass.

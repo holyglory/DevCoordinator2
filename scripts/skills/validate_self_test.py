@@ -79,6 +79,20 @@ def test_plan_contract(base: Path) -> None:
         all(set(row["requires"]) == preflight_names for row in targets),
         "every expensive target must require every invalidating preflight",
     )
+    formal = next(row for row in targets if row["name"] == "skill-formal-web-ui-verification")
+    expected_formal_after = {
+        row["name"]
+        for row in targets
+        if row["name"].startswith("skill-") and row["name"] != formal["name"]
+    }
+    check(
+        set(formal["after"]) == expected_formal_after,
+        "performance-sensitive formal verification must follow other skill self-tests",
+    )
+    check(
+        all(not row["after"] for row in targets if row is not formal),
+        "only the measured-performance skill may serialize after sibling skill checks",
+    )
     check(
         all(row["on_failure"] == "continue" for row in checks),
         "all-settled validation must not fail-fast siblings",
