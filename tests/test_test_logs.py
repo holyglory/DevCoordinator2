@@ -80,7 +80,8 @@ def test_selector_relationships_are_strict(args):
 
 def test_context_lines_rejects_boolean_values():
     with pytest.raises(ProtocolError, match="context_lines"):
-        validate_log_request("failure_context", {"context_lines": False})
+        validate_log_request("failure_context", {
+            "phase": "executor", "stream": "stderr", "context_lines": False})
 
 
 def test_query_accepts_generic_schema_two_run_identity():

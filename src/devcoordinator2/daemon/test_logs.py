@@ -208,7 +208,7 @@ def validate_log_request(operation: str, args: dict[str, Any]) -> dict[str, Any]
         raise ProtocolError("args_invalid", "phase case requires check and case")
     if case is not None and phase != "case":
         raise ProtocolError("args_invalid", "'case' requires phase case")
-    if operation in ("tail", "search", "range"):
+    if operation in ("tail", "search", "range", "failure_context"):
         if phase is None or stream is None:
             raise ProtocolError(
                 "args_invalid", f"test log {operation} requires phase and stream")

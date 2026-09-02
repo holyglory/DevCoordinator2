@@ -94,7 +94,7 @@ def build_parser() -> argparse.ArgumentParser:
     exact_range.add_argument("--max-bytes", type=int, default=49152)
     failure = log_sub.add_parser(
         "failure-context", help="deterministically ranked bounded failure excerpts")
-    _add_log_selector(failure, stream_required=False)
+    _add_log_selector(failure, stream_required=True)
     failure.add_argument("--limit", type=int, default=20)
     failure.add_argument("--context-lines", type=int, default=2)
     failure.add_argument("--max-bytes", type=int, default=32768)

@@ -85,7 +85,7 @@ TOOLS = [
             **_LOG_SELECTOR,
             "limit": {"type": "integer", "minimum": 1, "maximum": 100,
                       "default": 100},
-        }, "required": ["path"], "additionalProperties": False},
+        }, "required": ["path", "phase", "stream"], "additionalProperties": False},
     },
     {
         "name": "test_log_tail",

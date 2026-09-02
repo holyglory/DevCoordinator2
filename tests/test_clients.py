@@ -139,6 +139,7 @@ def test_governed_check_cli_argument_mapping(tmp_path):
     assert cli._to_call(exact_range)[1]["line_start"] == 40
     context = cli.build_parser().parse_args([
         "test", "log", "failure-context", path, "--check", "unit",
+        "--phase", "check", "--stream", "stderr",
     ])
     assert cli._to_call(context)[0] == "test.log.failure_context"
     retention = cli.build_parser().parse_args([
