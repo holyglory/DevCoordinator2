@@ -867,6 +867,7 @@ fn scan_leaf(
         "stderr.lines",
         "stderr.meta.json",
         "diagnostics.json",
+        "diagnostics",
     ];
     if names.iter().any(|name| !allowed.contains(&name.as_str())) {
         return Err(LogQueryError::StoreMalformed);
@@ -2612,16 +2613,11 @@ fn valid_repository_id(value: &str) -> bool {
 
 fn validate_run_id(value: &str) -> Result<(), LogQueryError> {
     let bytes = value.as_bytes();
-    let valid = bytes.len() == 24
-        && bytes[0] == b't'
-        && bytes[1..9].iter().all(u8::is_ascii_digit)
-        && bytes[9] == b'T'
-        && bytes[10..16].iter().all(u8::is_ascii_digit)
-        && bytes[16] == b'Z'
-        && bytes[17] == b'-'
-        && bytes[18..]
+    let valid = (1..=128).contains(&bytes.len())
+        && bytes[0].is_ascii_alphanumeric()
+        && bytes
             .iter()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(byte));
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(*byte, b'.' | b'_' | b'-'));
     if valid {
         Ok(())
     } else {
@@ -2853,6 +2849,13 @@ mod tests {
             writer.write_all(content).expect("complete write");
             writer.seal().expect("sealed stream");
         }
+        fs::create_dir_all(
+            directory
+                .join("checks/unit/cases")
+                .join(case_id)
+                .join("diagnostics"),
+        )
+        .expect("diagnostics directory");
         lease
             .publish_leaf_metadata(&LeafLogMetadata {
                 schema: 2,
@@ -3557,6 +3560,9 @@ mod tests {
 
     #[test]
     fn epoch_format_and_base64_are_stable() {
+        assert!(validate_run_id("run-local-1").is_ok());
+        assert!(validate_run_id("skills-20260902T120000Z-123-abcdef").is_ok());
+        assert!(validate_run_id("../escape").is_err());
         assert_eq!(iso_from_epoch_ms(0), "1970-01-01T00:00:00Z");
         assert_eq!(
             iso_from_epoch_ms(1_700_000_000_123),
