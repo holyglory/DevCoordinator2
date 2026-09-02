@@ -668,7 +668,10 @@ fn validate_selector_filter(
         {
             return Err(LogQueryError::ArgsInvalid);
         }
-        Some(LogPhase::Case) if selector.check.is_none() || selector.case_id.is_none() => {
+        Some(LogPhase::Case)
+            if selector.check.is_none()
+                || (selector.case_id.is_none() && operation != LogQueryOperation::Catalog) =>
+        {
             return Err(LogQueryError::ArgsInvalid);
         }
         None if selector.case_id.is_some() => return Err(LogQueryError::ArgsInvalid),
@@ -1344,9 +1347,9 @@ fn query_tail(
     }) {
         return Err(LogQueryError::CursorStale);
     }
-    let end_line = cursor.as_ref().map_or(selected.metadata.lines, |cursor| {
-        cursor.pending_line_end.unwrap_or(cursor.position)
-    });
+    let end_line = cursor
+        .as_ref()
+        .map_or(selected.metadata.lines, |cursor| cursor.position);
     if end_line == 0 || selected.metadata.lines == 0 {
         return Ok(ContentResult {
             segments: Vec::new(),
@@ -1356,38 +1359,57 @@ fn query_tail(
             response_truncated: false,
         });
     }
-    let continuation = cursor
+    let end_line = end_line.min(selected.metadata.lines);
+    let pending = cursor
         .as_ref()
         .filter(|cursor| cursor.pending_line_end.is_some());
-    let start_line = continuation.map_or_else(
-        || end_line.saturating_sub(requested_lines - 1).max(1),
-        |cursor| cursor.position,
-    );
-    let window_start = continuation
+    let window_start = pending
         .map(|cursor| cursor.auxiliary_position)
-        .filter(|line| *line > 0 && *line <= start_line)
-        .unwrap_or(start_line);
-    let read = read_line_interval_from(
-        &selected,
-        start_line,
-        end_line.min(selected.metadata.lines),
-        max_bytes,
-        continuation.map(|cursor| cursor.byte_position),
+        .unwrap_or_else(|| end_line.saturating_sub(requested_lines - 1).max(1));
+    if window_start == 0 || window_start > end_line {
+        return Err(LogQueryError::CursorStale);
+    }
+    let interval_start = line_offset(&selected, window_start)?;
+    let natural_interval_end = if end_line == selected.metadata.lines {
+        selected.snapshot_bytes
+    } else {
+        line_offset(&selected, end_line.saturating_add(1))?
+    };
+    let interval_end = pending.map_or(natural_interval_end, |cursor| cursor.byte_position);
+    if interval_end <= interval_start || interval_end > natural_interval_end {
+        return Err(LogQueryError::CursorStale);
+    }
+    let tail_bytes = max_bytes.min(MAX_TEXT_BYTES);
+    let byte_start = interval_end
+        .saturating_sub(tail_bytes as u64)
+        .max(interval_start);
+    let bytes = read_bytes(
+        &selected.file,
+        byte_start,
+        interval_end.saturating_sub(byte_start),
     )?;
-    let response_truncated = read.truncated || window_start > 1;
-    let next_cursor = if read.truncated {
-        let ended_mid_line = read.bytes.last().is_some_and(|byte| *byte != b'\n');
-        let next_line = if ended_mid_line {
-            read.line_end
-        } else {
-            read.line_end.saturating_add(1)
-        };
+    let (line_start, _) = line_for_byte(&selected, byte_start)?;
+    let (line_end, _) = line_for_byte(&selected, interval_end.saturating_sub(1))?;
+    let segment = LogSegment {
+        line_start,
+        line_end,
+        byte_start,
+        byte_end: interval_end,
+        text: Some(String::from_utf8_lossy(&bytes).into_owned()),
+        base64: None,
+        rank: None,
+        fingerprint: None,
+        occurrences: None,
+    };
+    let omitted_in_window = byte_start > interval_start;
+    let response_truncated = omitted_in_window || window_start > 1;
+    let next_cursor = if omitted_in_window {
         Some(make_content_cursor_with_state(
             request,
             &selected,
             &digest,
-            next_line,
-            read.byte_end,
+            end_line,
+            byte_start,
             window_start,
             0,
             Some(end_line),
@@ -1405,7 +1427,7 @@ fn query_tail(
         None
     };
     Ok(ContentResult {
-        segments: vec![read.segment(false)],
+        segments: vec![segment],
         snapshot_bytes: selected.snapshot_bytes,
         snapshot_lines: selected.metadata.lines,
         next_cursor,
@@ -3517,7 +3539,7 @@ mod tests {
                     LogQueryOperation::Tail,
                     &run,
                     LogQueryOptions {
-                        lines: Some(1),
+                        lines: Some(2),
                         max_bytes: Some(1024),
                         ..LogQueryOptions::default()
                     },
@@ -3526,8 +3548,30 @@ mod tests {
             .expect("tail"),
         );
         assert_eq!(result.segments.len(), 1);
-        assert_eq!(result.segments[0].text.as_deref(), Some("FINAL-LINE\n"));
+        assert_eq!(result.segments[0].line_start, 1);
+        assert_eq!(result.segments[0].line_end, 2);
+        assert!(
+            result.segments[0]
+                .text
+                .as_deref()
+                .is_some_and(|text| text.ends_with("\nFINAL-LINE\n"))
+        );
         assert_eq!(result.segments[0].byte_end, payload.len() as u64);
+        assert_eq!(result.segments[0].byte_start, payload.len() as u64 - 1024);
+        let continuation = request(
+            LogQueryOperation::Tail,
+            &run,
+            LogQueryOptions {
+                cursor: result.next_cursor.clone(),
+                lines: Some(2),
+                max_bytes: Some(1024),
+                ..LogQueryOptions::default()
+            },
+        );
+        let earlier =
+            content(execute_log_query(&root, continuation.clone()).expect("earlier tail fragment"));
+        assert_eq!(earlier.segments[0].byte_end, result.segments[0].byte_start);
+        assert_eq!(earlier.segments[0].line_start, 1);
         fs::remove_dir_all(root).expect("cleanup");
     }
 
@@ -4185,7 +4229,70 @@ mod tests {
         }
         assert_eq!(
             lines,
-            vec![(1, "aa\n".into()), (2, "bb\n".into()), (3, "cc\n".into())]
+            vec![(3, "cc\n".into()), (2, "bb\n".into()), (1, "aa\n".into())]
+        );
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn catalogue_case_phase_filter_enumerates_all_cases_for_a_check() {
+        let root = temporary("catalog-cases");
+        let now = epoch_ms();
+        let (run, _) = create_run(&root, 44, "case-1", b"one\n", now, false);
+        let run_dir = root.join(".devcoordinator/test/logs/runs").join(&run);
+        let lease = RunLogLease::acquire(&run_dir, &run).expect("lease");
+        let selector = LeafSelector::case("unit", "case-2").expect("selector");
+        for stream in [LogStream::Stdout, LogStream::Stderr] {
+            let mut writer = lease
+                .create_stream(selector.clone(), stream)
+                .expect("stream");
+            writer.write_all(b"two\n").expect("write");
+            writer.seal().expect("seal");
+        }
+        fs::create_dir_all(run_dir.join("checks/unit/cases/case-2/diagnostics"))
+            .expect("diagnostics");
+        lease
+            .publish_leaf_metadata(&LeafLogMetadata {
+                schema: 2,
+                selector,
+                status: LeafStatus::Passed,
+                exit: DiagnosticExit::default(),
+                started_at_epoch_ms: now.saturating_sub(1),
+                finished_at_epoch_ms: Some(now),
+                process_started: true,
+                complete: true,
+                structured_evidence_formats: Vec::new(),
+                structured_evidence_count: 0,
+            })
+            .expect("leaf metadata");
+        drop(lease);
+        let mut query = request(LogQueryOperation::Catalog, &run, LogQueryOptions::default());
+        query.selector.case_id = None;
+        let LogQueryResult::Catalog(result) =
+            execute_log_query(&root, query).expect("case catalogue")
+        else {
+            panic!("catalogue")
+        };
+        let cases: BTreeSet<_> = result
+            .entries
+            .iter()
+            .filter_map(|entry| entry.log_ref.case.as_deref())
+            .collect();
+        assert_eq!(cases, BTreeSet::from(["case-1", "case-2"]));
+
+        let mut content = request(
+            LogQueryOperation::Tail,
+            &run,
+            LogQueryOptions {
+                lines: Some(1),
+                max_bytes: Some(1024),
+                ..LogQueryOptions::default()
+            },
+        );
+        content.selector.case_id = None;
+        assert_eq!(
+            execute_log_query(&root, content),
+            Err(LogQueryError::ArgsInvalid)
         );
         fs::remove_dir_all(root).expect("cleanup");
     }
