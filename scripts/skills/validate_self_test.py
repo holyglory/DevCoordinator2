@@ -62,6 +62,10 @@ def test_plan_contract(base: Path) -> None:
     )
     check(plan["schema"] == 2 and plan["proof"] == "complete", "plan is not strict schema 2")
     check(
+        plan["log_dir"] == str(current / "logs" / "runs" / "shape-only"),
+        "plan does not bind a stable per-run log directory",
+    )
+    check(
         plan["requested_tier"] == "release" and plan["readiness_eligible"] is True,
         "complete validation must request release proof",
     )
@@ -246,6 +250,7 @@ def test_real_rust_invalidation(base: Path) -> None:
         "test": "validator",
         "worktree_root": str(repository),
         "current_dir": str(current),
+        "log_dir": str(current / "logs" / "runs" / "validator-self-test"),
         "requested_tier": "release",
         "readiness_eligible": True,
         "proof": "complete",

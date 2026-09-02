@@ -381,6 +381,7 @@ def build_validation_plan(
         "test": "agent-skills",
         "worktree_root": str(ROOT),
         "current_dir": str(current_dir),
+        "log_dir": str(current_dir / "logs" / "runs" / run_id),
         "requested_tier": "release",
         "readiness_eligible": True,
         "proof": "complete",
