@@ -10,8 +10,9 @@ use std::time::Duration;
 use devcoordinator2_executor_core::{
     Cancellation, Executor, LocalPermitProvider,
     protocol::{
-        CaseSpec, CheckPlan, CheckRole, CompletionMode, ExecutionPlan, FailureMode, LeafStatus,
-        ProofKind, RunStatus, Schema2, ValidationTier,
+        CaseSpec, CheckPlan, CheckRole, CompletionMode, ErrorCategory, ExecutionPlan,
+        FailureIndexEntry, FailureMode, LeafStatus, LogPhase, ProofKind, RunStatus, Schema2,
+        TerminationReason, ValidationTier,
     },
     source_digest,
 };
@@ -71,6 +72,7 @@ fn direct(name: &str, command: Vec<String>) -> CheckPlan {
         completion: CompletionMode::Process,
         on_failure: FailureMode::Continue,
         produces: Vec::new(),
+        diagnostic_sources: Vec::new(),
         command: Some(command),
         discover: None,
         case_command: None,
@@ -98,6 +100,12 @@ fn plan(repository: &Repository, run_id: &str, checks: Vec<CheckPlan>) -> Execut
         test: "complete".into(),
         worktree_root: repository.root.display().to_string(),
         current_dir: repository.current(run_id).display().to_string(),
+        log_dir: repository
+            .root
+            .join(".devcoordinator/test/logs/runs")
+            .join(run_id)
+            .display()
+            .to_string(),
         requested_tier: ValidationTier::Development,
         readiness_eligible: false,
         proof: ProofKind::Complete,
@@ -123,6 +131,10 @@ async fn symlinked_platform_ancestor_resolves_before_containment_check() {
     execution_plan.worktree_root = alias.display().to_string();
     execution_plan.current_dir = alias
         .join(".devcoordinator/run-symlink-ancestor")
+        .display()
+        .to_string();
+    execution_plan.log_dir = alias
+        .join(".devcoordinator/test/logs/runs/run-symlink-ancestor")
         .display()
         .to_string();
     let report = execute(execution_plan).await;
@@ -154,6 +166,18 @@ fn status(
         .status
 }
 
+fn failure<'a>(
+    report: &'a devcoordinator2_executor_core::protocol::ExecutionReport,
+    check: Option<&str>,
+    case: Option<&str>,
+) -> &'a FailureIndexEntry {
+    report
+        .failure_index
+        .iter()
+        .find(|entry| entry.check.as_deref() == check && entry.case.as_deref() == case)
+        .expect("failure diagnostic")
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn failed_preflight_invalidates_only_its_targets_and_siblings_finish() {
     let repository = Repository::new("preflight");
@@ -173,6 +197,12 @@ async fn failed_preflight_invalidates_only_its_targets_and_siblings_finish() {
     assert_eq!(status(&report, "preflight"), LeafStatus::Failed);
     assert_eq!(status(&report, "target"), LeafStatus::Invalidated);
     assert_eq!(status(&report, "independent"), LeafStatus::Passed);
+    let process = failure(&report, Some("preflight"), None);
+    assert_eq!(process.error_category, ErrorCategory::ProcessExit);
+    assert_eq!(process.exit.code, Some(7));
+    let invalidated = failure(&report, Some("target"), None);
+    assert_eq!(invalidated.error_category, ErrorCategory::Dependency);
+    assert!(invalidated.log_refs.is_empty());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -221,6 +251,16 @@ async fn static_fanout_is_all_settled_and_case_reports_are_sorted() {
             .is_file()
     );
     assert_eq!(report.failure_index[0].case.as_deref(), Some("a-fail"));
+    let failed_case = failure(&report, Some("cases"), Some("a-fail"));
+    assert_eq!(failed_case.error_category, ErrorCategory::ProcessExit);
+    assert_eq!(failed_case.exit.code, Some(1));
+    assert!(
+        failed_case
+            .log_refs
+            .iter()
+            .all(|reference| reference.phase == LogPhase::Case
+                && reference.case.as_deref() == Some("a-fail"))
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -232,6 +272,17 @@ async fn oversized_dynamic_manifest_fails_without_starting_cases() {
     );
     let report = execute(plan(&repository, "run-manifest", vec![fanout])).await;
     assert_eq!(report.checks[0].status, LeafStatus::Failed);
+    let diagnostic = failure(&report, Some("cases"), None);
+    assert_eq!(
+        diagnostic.error_category,
+        ErrorCategory::StructuredEvidenceInvalid
+    );
+    assert!(
+        diagnostic
+            .log_refs
+            .iter()
+            .all(|reference| reference.phase == LogPhase::Discovery)
+    );
     assert!(
         report.checks[0]
             .reason
@@ -348,6 +399,12 @@ async fn leaf_deadline_terminates_a_signal_resistant_process_group() {
     assert_eq!(report.status, RunStatus::Failed);
     assert_eq!(report.checks[0].status, LeafStatus::TimedOut);
     assert!(report.duration_seconds < 5.0);
+    let diagnostic = failure(&report, Some("slow"), None);
+    assert_eq!(diagnostic.error_category, ErrorCategory::Timeout);
+    assert_eq!(
+        diagnostic.termination_reason,
+        Some(TerminationReason::DeadlineExceeded)
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -365,6 +422,11 @@ time.sleep(30)
     let report = execute(plan(&repository, "run-event-wrong", vec![service])).await;
     assert_eq!(report.status, RunStatus::Failed);
     assert_eq!(report.checks[0].status, LeafStatus::Unsafe);
+    let diagnostic = failure(&report, Some("service"), None);
+    assert_eq!(
+        diagnostic.error_category,
+        ErrorCategory::StructuredEvidenceInvalid
+    );
     assert!(
         report.checks[0]
             .reason
@@ -494,4 +556,59 @@ async fn external_cancellation_stops_running_leaf_and_finishes_report() {
     assert_eq!(report.status, RunStatus::Failed);
     assert_eq!(report.checks[0].status, LeafStatus::Cancelled);
     assert!(report.duration_seconds < 5.0);
+    let diagnostic = failure(&report, Some("slow"), None);
+    assert_eq!(diagnostic.error_category, ErrorCategory::Cancellation);
+    assert_eq!(
+        diagnostic.termination_reason,
+        Some(TerminationReason::RunCancelled)
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn missing_artifact_and_source_change_have_distinct_structured_categories() {
+    let artifact_repository = Repository::new("artifact-diagnostic");
+    let mut artifact = direct("artifact", python("raise SystemExit(0)"));
+    artifact.produces = vec!["missing.bin".into()];
+    let artifact_report = execute(plan(
+        &artifact_repository,
+        "run-artifact-diagnostic",
+        vec![artifact],
+    ))
+    .await;
+    let artifact_failure = failure(&artifact_report, Some("artifact"), None);
+    assert_eq!(artifact_failure.error_category, ErrorCategory::Artifact);
+    assert_eq!(artifact_failure.exit.code, Some(0));
+
+    let source_repository = Repository::new("source-diagnostic");
+    let mutate = direct(
+        "mutate",
+        python("from pathlib import Path; Path('README.md').write_text('changed')"),
+    );
+    let source_report = execute(plan(
+        &source_repository,
+        "run-source-diagnostic",
+        vec![mutate],
+    ))
+    .await;
+    assert!(source_report.source_changed);
+    assert_eq!(
+        failure(&source_report, None, None).error_category,
+        ErrorCategory::SourceChanged
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn signal_exit_is_structured_without_arbitrary_process_prose() {
+    let repository = Repository::new("signal-diagnostic");
+    let signalled = direct(
+        "signalled",
+        python("import os, signal; os.kill(os.getpid(), signal.SIGKILL)"),
+    );
+    let report = execute(plan(&repository, "run-signal-diagnostic", vec![signalled])).await;
+    let diagnostic = failure(&report, Some("signalled"), None);
+    assert_eq!(diagnostic.error_category, ErrorCategory::ProcessExit);
+    assert_eq!(diagnostic.exit.code, None);
+    assert_eq!(diagnostic.exit.signal, Some(9));
+    let encoded = serde_json::to_string(&report.failure_index).expect("diagnostic JSON");
+    assert!(!encoded.contains("process exited"));
 }

@@ -5,14 +5,17 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use devcoordinator2_executor_protocol::{
     ArtifactReceipt, CapacityReport, CaseManifest, CaseReport, CaseSpec, CheckPlan, CheckReport,
-    CompletionMode, ExecutionPlan, ExecutionReport, FailureIndexEntry, FailureMode, LeafStatus,
-    MAX_FAILURE_INDEX, MAX_MANIFEST_BYTES, MAX_REASON_BYTES, OutputStats, RunStatus, Schema2,
+    CompletionMode, DiagnosticExit, DiagnosticOrigin, ErrorCategory, ExecutionPlan,
+    ExecutionReport, FailureIndexEntry, FailureMode, LeafStatus, LogPhase, LogRef, LogStream,
+    MAX_DIAGNOSTIC_EVENTS, MAX_MANIFEST_BYTES, MAX_REASON_BYTES, OutputStats, RunStatus, Schema2,
+    TerminationReason,
 };
 use rustix::process::Signal;
 use tokio::task::JoinSet;
 
 use crate::ExecutorError;
 use crate::capacity::{CapacityObservation, PermitProvider};
+use crate::diagnostics::{diagnostic_fingerprint, normalize_diagnostics};
 use crate::evidence::{
     artifact_receipts, receipts_match, source_digest, write_bytes_atomic, write_json_atomic,
 };
@@ -119,7 +122,7 @@ impl Executor {
                     ExecutorError::new(format!("event service task failed: {error}"))
                 })?;
                 service_pgids.remove(&name);
-                mark_service_exit(&mut checks, &name, exit, false)?;
+                mark_service_exit(&mut checks, &plan.run_id, &name, exit, false)?;
                 if abort.is_none() {
                     abort = Some(Abort::Unsafe(format!(
                         "required long-lived check {name} exited"
@@ -127,13 +130,13 @@ impl Executor {
                     self.cancellation.cancel();
                 }
             }
-            mark_blocked(&mut checks, &invalidators);
+            mark_blocked(&mut checks, &invalidators, &plan.run_id);
             if self.cancellation.is_cancelled() && abort.is_none() {
                 abort = Some(Abort::Cancelled);
             }
             if abort.is_some() {
                 cancellation_seen = true;
-                mark_pending_cancelled(&mut checks, abort_reason(abort.as_ref()));
+                mark_pending_cancelled(&mut checks, &plan.run_id, abort_reason(abort.as_ref()));
             }
 
             if abort.is_none() {
@@ -218,7 +221,7 @@ impl Executor {
                         ExecutorError::new(format!("event service task failed: {error}"))
                     })?;
                     service_pgids.remove(&name);
-                    mark_service_exit(&mut checks, &name, exit, false)?;
+                    mark_service_exit(&mut checks, &plan.run_id, &name, exit, false)?;
                     if abort.is_none() {
                         abort = Some(Abort::Unsafe(format!(
                             "required long-lived check {name} exited"
@@ -235,7 +238,7 @@ impl Executor {
             }
         }
 
-        stop_services(&mut services, &mut service_pgids, &mut checks).await?;
+        stop_services(&mut services, &mut service_pgids, &mut checks, &plan.run_id).await?;
         let digest_root = root.clone();
         let final_digest = tokio::task::spawn_blocking(move || source_digest(&digest_root)).await;
         let (source_changed, source_error) = match final_digest {
@@ -305,6 +308,122 @@ enum Abort {
     Cancelled,
     Stopped(String),
     Unsafe(String),
+}
+
+#[allow(clippy::too_many_arguments)]
+fn failure_entry(
+    run_id: &str,
+    check: Option<&str>,
+    case: Option<&str>,
+    status: LeafStatus,
+    exit_code: Option<i32>,
+    termination_reason: Option<TerminationReason>,
+    error_category: ErrorCategory,
+    phase: Option<LogPhase>,
+) -> FailureIndexEntry {
+    let exit = match exit_code {
+        Some(value) if value < 0 => DiagnosticExit {
+            code: None,
+            signal: u8::try_from(value.unsigned_abs()).ok(),
+        },
+        code => DiagnosticExit { code, signal: None },
+    };
+    let log_refs = match (check, phase) {
+        (Some(check), Some(phase)) => [LogStream::Stdout, LogStream::Stderr]
+            .into_iter()
+            .map(|stream| LogRef {
+                run_id: run_id.to_owned(),
+                check: Some(check.to_owned()),
+                phase,
+                case: case.map(str::to_owned),
+                stream,
+            })
+            .collect(),
+        _ => Vec::new(),
+    };
+    let mut entry = FailureIndexEntry {
+        check: check.map(str::to_owned),
+        case: case.map(str::to_owned),
+        status,
+        exit,
+        termination_reason,
+        source: None,
+        error_category,
+        expected: None,
+        actual: None,
+        fingerprint: String::new(),
+        occurrences: 1,
+        log_refs,
+        origin: DiagnosticOrigin::Executor,
+    };
+    entry.fingerprint = diagnostic_fingerprint(&entry);
+    entry
+}
+
+fn process_failure_semantics(
+    process: &ProcessResult,
+    artifact_failure: bool,
+    completion: CompletionMode,
+) -> (Option<TerminationReason>, ErrorCategory) {
+    if artifact_failure {
+        return (None, ErrorCategory::Artifact);
+    }
+    if completion == CompletionMode::Event
+        && process.status == ProcessStatus::Failed
+        && !process.reason.as_deref().is_some_and(|reason| {
+            reason.contains("before its completion event")
+                || reason.contains("event process exited")
+        })
+    {
+        return (None, ErrorCategory::Exception);
+    }
+    leaf_failure_semantics(
+        process.status.into(),
+        process.exit_code,
+        process.reason.as_deref(),
+    )
+}
+
+fn leaf_failure_semantics(
+    status: LeafStatus,
+    exit_code: Option<i32>,
+    reason: Option<&str>,
+) -> (Option<TerminationReason>, ErrorCategory) {
+    match status {
+        LeafStatus::Failed if exit_code.is_some() => (None, ErrorCategory::ProcessExit),
+        LeafStatus::Failed => (None, ErrorCategory::Internal),
+        LeafStatus::TimedOut => (
+            Some(TerminationReason::DeadlineExceeded),
+            ErrorCategory::Timeout,
+        ),
+        LeafStatus::Cancelled => (
+            Some(TerminationReason::RunCancelled),
+            ErrorCategory::Cancellation,
+        ),
+        LeafStatus::Unsafe
+            if reason.is_some_and(|reason| {
+                reason.contains("leaf output")
+                    || reason.contains("retain leaf output")
+                    || reason.contains("sync leaf output")
+                    || reason.contains("stdout task")
+                    || reason.contains("stderr task")
+            }) =>
+        {
+            (
+                Some(TerminationReason::UnsafeStop),
+                ErrorCategory::LogStorage,
+            )
+        }
+        LeafStatus::Unsafe if reason.is_some_and(|reason| reason.contains("event")) => (
+            Some(TerminationReason::UnsafeStop),
+            ErrorCategory::StructuredEvidenceInvalid,
+        ),
+        LeafStatus::Unsafe => (Some(TerminationReason::UnsafeStop), ErrorCategory::Internal),
+        LeafStatus::Invalidated | LeafStatus::NotMeaningful => (None, ErrorCategory::Dependency),
+        LeafStatus::Pending | LeafStatus::Running | LeafStatus::Reused | LeafStatus::Passed => {
+            (None, ErrorCategory::Internal)
+        }
+    }
 }
 
 fn initialize_checks(
@@ -390,7 +509,11 @@ fn invalidator_map(checks: &[CheckRuntime]) -> BTreeMap<String, Vec<String>> {
     result
 }
 
-fn mark_blocked(checks: &mut [CheckRuntime], invalidators: &BTreeMap<String, Vec<String>>) {
+fn mark_blocked(
+    checks: &mut [CheckRuntime],
+    invalidators: &BTreeMap<String, Vec<String>>,
+    run_id: &str,
+) {
     let statuses: BTreeMap<String, LeafStatus> = checks
         .iter()
         .map(|check| (check.plan.name.clone(), check.report.status))
@@ -410,6 +533,7 @@ fn mark_blocked(checks: &mut [CheckRuntime], invalidators: &BTreeMap<String, Vec
             if !failed.is_empty() {
                 finish_blocked(
                     check,
+                    run_id,
                     LeafStatus::Invalidated,
                     format!(
                         "invalidating preflights did not pass: {}",
@@ -436,6 +560,7 @@ fn mark_blocked(checks: &mut [CheckRuntime], invalidators: &BTreeMap<String, Vec
         if all_terminal && !dependencies.is_empty() {
             finish_blocked(
                 check,
+                run_id,
                 LeafStatus::NotMeaningful,
                 format!("required checks did not pass: {}", dependencies.join(", ")),
             );
@@ -443,18 +568,34 @@ fn mark_blocked(checks: &mut [CheckRuntime], invalidators: &BTreeMap<String, Vec
     }
 }
 
-fn finish_blocked(check: &mut CheckRuntime, status: LeafStatus, reason: String) {
+fn finish_blocked(check: &mut CheckRuntime, run_id: &str, status: LeafStatus, reason: String) {
     check.report.status = status;
     check.report.finished_at = Some(iso_now());
     check.report.duration_seconds = Some(0.0);
     check.report.reason = Some(reason.clone());
-    check.failures.push(FailureIndexEntry {
-        check: Some(check.plan.name.clone()),
-        case: None,
+    let (termination_reason, error_category) = match status {
+        LeafStatus::Invalidated | LeafStatus::NotMeaningful => (None, ErrorCategory::Dependency),
+        LeafStatus::Cancelled => (
+            Some(TerminationReason::RunCancelled),
+            ErrorCategory::Cancellation,
+        ),
+        LeafStatus::TimedOut => (
+            Some(TerminationReason::DeadlineExceeded),
+            ErrorCategory::Timeout,
+        ),
+        LeafStatus::Unsafe => (Some(TerminationReason::UnsafeStop), ErrorCategory::Internal),
+        _ => (None, ErrorCategory::Internal),
+    };
+    check.failures.push(failure_entry(
+        run_id,
+        Some(&check.plan.name),
+        None,
         status,
-        reason: bounded_reason(&reason),
-        output_ref: Some(check.report.output_ref.clone()),
-    });
+        None,
+        termination_reason,
+        error_category,
+        None,
+    ));
 }
 
 fn ready_checks(
@@ -525,10 +666,12 @@ async fn execute_check(
         );
         let mut process = run_process(request, permits, cancellation).await;
         observe_capacity(&capacity, process.capacity);
+        let mut artifact_failure = false;
         let artifacts = if process.status == ProcessStatus::Passed {
             match artifact_receipts(&root, &check.produces) {
                 Ok(receipts) => receipts,
                 Err(error) => {
+                    artifact_failure = true;
                     process.status = ProcessStatus::Failed;
                     process.reason = Some(error.to_string());
                     Vec::new()
@@ -537,7 +680,14 @@ async fn execute_check(
         } else {
             Vec::new()
         };
-        direct_outcome(&check, process, artifacts, started.elapsed())
+        direct_outcome(
+            &plan.run_id,
+            &check,
+            process,
+            artifacts,
+            artifact_failure,
+            started.elapsed(),
+        )
     } else {
         execute_fanout(
             &plan,
@@ -556,21 +706,28 @@ async fn execute_check(
 }
 
 fn direct_outcome(
+    run_id: &str,
     check: &CheckPlan,
     mut process: ProcessResult,
     artifacts: Vec<ArtifactReceipt>,
+    artifact_failure: bool,
     duration: Duration,
 ) -> CheckOutcome {
     let status: LeafStatus = process.status.into();
     let mut failures = Vec::new();
     if !status.is_success() {
-        failures.push(FailureIndexEntry {
-            check: Some(check.name.clone()),
-            case: None,
+        let (termination_reason, error_category) =
+            process_failure_semantics(&process, artifact_failure, check.completion);
+        failures.push(failure_entry(
+            run_id,
+            Some(&check.name),
+            None,
             status,
-            reason: bounded_reason(process.reason.as_deref().unwrap_or("leaf failed")),
-            output_ref: Some(format!("checks/{}", check.name)),
-        });
+            process.exit_code,
+            termination_reason,
+            error_category,
+            Some(LogPhase::Check),
+        ));
     }
     CheckOutcome {
         status,
@@ -623,33 +780,54 @@ async fn execute_fanout(
         observe_capacity(&capacity, discovery.capacity);
         add_output(&mut aggregate, &discovery.output);
         if discovery.status != ProcessStatus::Passed {
-            return fanout_setup_failure(check, discovery, aggregate, started.elapsed());
+            return fanout_setup_failure(
+                &plan.run_id,
+                check,
+                discovery,
+                aggregate,
+                started.elapsed(),
+            );
         }
         let Some(manifest_capture) = discovery.manifest.take() else {
             return simple_outcome(
+                &plan.run_id,
                 check,
                 LeafStatus::Failed,
                 "case discovery closed without a descriptor manifest",
                 aggregate,
                 started.elapsed(),
+                None,
+                None,
+                ErrorCategory::StructuredEvidenceInvalid,
+                Some(LogPhase::Discovery),
             );
         };
         if manifest_capture.truncated || manifest_capture.observed > MAX_MANIFEST_BYTES as u64 {
             return simple_outcome(
+                &plan.run_id,
                 check,
                 LeafStatus::Failed,
                 "case manifest descriptor exceeds 2 MiB",
                 aggregate,
                 started.elapsed(),
+                None,
+                None,
+                ErrorCategory::StructuredEvidenceInvalid,
+                Some(LogPhase::Discovery),
             );
         }
         if manifest_capture.payload.is_empty() {
             return simple_outcome(
+                &plan.run_id,
                 check,
                 LeafStatus::Failed,
                 "case discovery descriptor closed without a manifest",
                 aggregate,
                 started.elapsed(),
+                None,
+                None,
+                ErrorCategory::StructuredEvidenceInvalid,
+                Some(LogPhase::Discovery),
             );
         }
         let path = current
@@ -659,22 +837,32 @@ async fn execute_fanout(
         if let Err(error) = write_bytes_atomic(&path, &manifest_capture.payload, MAX_MANIFEST_BYTES)
         {
             return simple_outcome(
+                &plan.run_id,
                 check,
                 LeafStatus::Unsafe,
                 &error.to_string(),
                 aggregate,
                 started.elapsed(),
+                None,
+                Some(TerminationReason::UnsafeStop),
+                ErrorCategory::LogStorage,
+                Some(LogPhase::Discovery),
             );
         }
         match CaseManifest::from_json(&manifest_capture.payload) {
             Ok(manifest) => manifest.cases,
             Err(error) => {
                 return simple_outcome(
+                    &plan.run_id,
                     check,
                     LeafStatus::Failed,
                     &error.to_string(),
                     aggregate,
                     started.elapsed(),
+                    None,
+                    None,
+                    ErrorCategory::StructuredEvidenceInvalid,
+                    Some(LogPhase::Discovery),
                 );
             }
         }
@@ -723,13 +911,21 @@ async fn execute_fanout(
     for outcome in &outcomes {
         add_output(&mut aggregate, &outcome.output);
         if !outcome.report.status.is_success() {
-            failures.push(FailureIndexEntry {
-                check: Some(check.name.clone()),
-                case: Some(outcome.report.id.clone()),
-                status: outcome.report.status,
-                reason: bounded_reason(outcome.reason.as_deref().unwrap_or("case failed")),
-                output_ref: Some(outcome.report.output_ref.clone()),
-            });
+            let (termination_reason, error_category) = leaf_failure_semantics(
+                outcome.report.status,
+                outcome.report.exit_code,
+                outcome.reason.as_deref(),
+            );
+            failures.push(failure_entry(
+                &plan.run_id,
+                Some(&check.name),
+                Some(&outcome.report.id),
+                outcome.report.status,
+                outcome.report.exit_code,
+                termination_reason,
+                error_category,
+                Some(LogPhase::Case),
+            ));
         }
     }
     let case_reports: Vec<CaseReport> = outcomes.into_iter().map(|row| row.report).collect();
@@ -768,13 +964,16 @@ async fn execute_fanout(
         (LeafStatus::Passed, None)
     };
     if status == LeafStatus::Unsafe && failures.is_empty() {
-        failures.push(FailureIndexEntry {
-            check: Some(check.name.clone()),
-            case: None,
+        failures.push(failure_entry(
+            &plan.run_id,
+            Some(&check.name),
+            None,
             status,
-            reason: bounded_reason(reason.as_deref().unwrap_or("case task became unsafe")),
-            output_ref: Some(format!("checks/{}", check.name)),
-        });
+            None,
+            Some(TerminationReason::UnsafeStop),
+            ErrorCategory::Internal,
+            None,
+        ));
     }
     let mut final_status = status;
     let mut final_reason = reason;
@@ -799,13 +998,16 @@ async fn execute_fanout(
     if let Err(error) = evidence_result {
         final_status = LeafStatus::Unsafe;
         final_reason = Some(error.to_string());
-        failures.push(FailureIndexEntry {
-            check: Some(check.name.clone()),
-            case: None,
-            status: LeafStatus::Unsafe,
-            reason: bounded_reason(&error.to_string()),
-            output_ref: Some(format!("checks/{}", check.name)),
-        });
+        failures.push(failure_entry(
+            &plan.run_id,
+            Some(&check.name),
+            None,
+            LeafStatus::Unsafe,
+            None,
+            Some(TerminationReason::UnsafeStop),
+            ErrorCategory::LogStorage,
+            None,
+        ));
     }
     let artifacts = if final_status == LeafStatus::Passed {
         match artifact_receipts(root, &check.produces) {
@@ -813,13 +1015,16 @@ async fn execute_fanout(
             Err(error) => {
                 final_status = LeafStatus::Failed;
                 final_reason = Some(error.to_string());
-                failures.push(FailureIndexEntry {
-                    check: Some(check.name.clone()),
-                    case: None,
-                    status: LeafStatus::Failed,
-                    reason: bounded_reason(&error.to_string()),
-                    output_ref: Some(format!("checks/{}", check.name)),
-                });
+                failures.push(failure_entry(
+                    &plan.run_id,
+                    Some(&check.name),
+                    None,
+                    LeafStatus::Failed,
+                    None,
+                    None,
+                    ErrorCategory::Artifact,
+                    None,
+                ));
                 Vec::new()
             }
         }
@@ -951,41 +1156,65 @@ fn process_request(
 }
 
 fn fanout_setup_failure(
+    run_id: &str,
     check: &CheckPlan,
     process: ProcessResult,
     output: OutputStats,
     duration: Duration,
 ) -> CheckOutcome {
     let status: LeafStatus = process.status.into();
+    let (termination_reason, error_category) =
+        process_failure_semantics(&process, false, CompletionMode::Process);
+    let exit_code = process.exit_code;
     let reason = process
         .reason
         .unwrap_or_else(|| "case discovery failed".into());
-    simple_outcome(check, status, &reason, output, duration)
+    simple_outcome(
+        run_id,
+        check,
+        status,
+        &reason,
+        output,
+        duration,
+        exit_code,
+        termination_reason,
+        error_category,
+        Some(LogPhase::Discovery),
+    )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn simple_outcome(
+    run_id: &str,
     check: &CheckPlan,
     status: LeafStatus,
     reason: &str,
     output: OutputStats,
     duration: Duration,
+    exit_code: Option<i32>,
+    termination_reason: Option<TerminationReason>,
+    error_category: ErrorCategory,
+    phase: Option<LogPhase>,
 ) -> CheckOutcome {
     CheckOutcome {
         status,
-        exit_code: None,
+        exit_code,
         reason: Some(bounded_reason(reason)),
         artifacts: Vec::new(),
         output,
         case_count: 0,
         cases: Vec::new(),
         cases_truncated: false,
-        failures: vec![FailureIndexEntry {
-            check: Some(check.name.clone()),
-            case: None,
+        failures: vec![failure_entry(
+            run_id,
+            Some(&check.name),
+            None,
             status,
-            reason: bounded_reason(reason),
-            output_ref: Some(format!("checks/{}", check.name)),
-        }],
+            exit_code,
+            termination_reason,
+            error_category,
+            phase,
+        )],
         service: None,
         duration_seconds: seconds(duration),
     }
@@ -1017,6 +1246,7 @@ fn apply_outcome(
 
 fn mark_service_exit(
     checks: &mut [CheckRuntime],
+    run_id: &str,
     name: &str,
     exit: ServiceExit,
     cleanup: bool,
@@ -1030,13 +1260,16 @@ fn mark_service_exit(
     if !cleanup {
         runtime.report.status = LeafStatus::Unsafe;
         runtime.report.reason = Some("long-lived check exited after its completion event".into());
-        runtime.failures.push(FailureIndexEntry {
-            check: Some(name.into()),
-            case: None,
-            status: LeafStatus::Unsafe,
-            reason: "long-lived check exited after its completion event".into(),
-            output_ref: Some(runtime.report.output_ref.clone()),
-        });
+        runtime.failures.push(failure_entry(
+            run_id,
+            Some(name),
+            None,
+            LeafStatus::Unsafe,
+            exit.exit_code,
+            Some(TerminationReason::UnsafeStop),
+            ErrorCategory::ProcessExit,
+            Some(LogPhase::Check),
+        ));
     }
     Ok(())
 }
@@ -1045,6 +1278,7 @@ async fn stop_services(
     services: &mut JoinSet<(String, ServiceExit)>,
     service_pgids: &mut BTreeMap<String, i32>,
     checks: &mut [CheckRuntime],
+    run_id: &str,
 ) -> Result<(), ExecutorError> {
     for pgid in service_pgids.values().copied() {
         signal_group(pgid, Signal::TERM)?;
@@ -1057,7 +1291,7 @@ async fn stop_services(
                     ExecutorError::new(format!("event service task failed: {error}"))
                 })?;
                 service_pgids.remove(&name);
-                mark_service_exit(checks, &name, exit, true)?;
+                mark_service_exit(checks, run_id, &name, exit, true)?;
             }
             Ok(None) => break,
             Err(_) => {
@@ -1069,7 +1303,7 @@ async fn stop_services(
                         ExecutorError::new(format!("event service task failed: {error}"))
                     })?;
                     service_pgids.remove(&name);
-                    mark_service_exit(checks, &name, exit, true)?;
+                    mark_service_exit(checks, run_id, &name, exit, true)?;
                 }
                 break;
             }
@@ -1078,10 +1312,10 @@ async fn stop_services(
     Ok(())
 }
 
-fn mark_pending_cancelled(checks: &mut [CheckRuntime], reason: &str) {
+fn mark_pending_cancelled(checks: &mut [CheckRuntime], run_id: &str, reason: &str) {
     for check in checks {
         if check.report.status == LeafStatus::Pending {
-            finish_blocked(check, LeafStatus::Cancelled, reason.into());
+            finish_blocked(check, run_id, LeafStatus::Cancelled, reason.into());
         }
     }
 }
@@ -1112,24 +1346,28 @@ fn write_report(
         failures.extend(check.failures.iter().cloned());
     }
     if source_changed {
-        failures.push(FailureIndexEntry {
-            check: None,
-            case: None,
-            status: if source_error.is_some() {
+        let unsafe_failure = source_error.is_some();
+        failures.push(failure_entry(
+            &plan.run_id,
+            None,
+            None,
+            if unsafe_failure {
                 LeafStatus::Unsafe
             } else {
                 LeafStatus::Failed
             },
-            reason: bounded_reason(
-                source_error
-                    .as_deref()
-                    .unwrap_or("repository source changed during the run"),
-            ),
-            output_ref: None,
-        });
+            None,
+            unsafe_failure.then_some(TerminationReason::UnsafeStop),
+            ErrorCategory::SourceChanged,
+            None,
+        ));
     }
-    let failure_index_truncated = failures.len() > MAX_FAILURE_INDEX;
-    failures.truncate(MAX_FAILURE_INDEX);
+    let candidate_truncated = failures.len() > MAX_DIAGNOSTIC_EVENTS;
+    failures.truncate(MAX_DIAGNOSTIC_EVENTS);
+    let normalized = normalize_diagnostics(failures)
+        .map_err(|error| ExecutorError::new(format!("cannot normalize diagnostics: {error}")))?;
+    let failure_index_truncated = candidate_truncated || normalized.truncated;
+    let failures = normalized.entries;
     let mut counts: BTreeMap<String, u32> = [
         "pending",
         "running",
