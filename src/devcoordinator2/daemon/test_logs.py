@@ -204,8 +204,11 @@ def validate_log_request(operation: str, args: dict[str, Any]) -> dict[str, Any]
     if phase in ("check", "discovery") and (check is None or case is not None):
         raise ProtocolError(
             "args_invalid", f"phase {phase} requires check and forbids case")
-    if phase == "case" and (check is None or case is None):
-        raise ProtocolError("args_invalid", "phase case requires check and case")
+    if phase == "case" and check is None:
+        raise ProtocolError("args_invalid", "phase case requires check")
+    if phase == "case" and case is None and operation != "catalog":
+        raise ProtocolError(
+            "args_invalid", f"test log {operation} requires one exact case")
     if case is not None and phase != "case":
         raise ProtocolError("args_invalid", "'case' requires phase case")
     if operation in ("tail", "search", "range", "failure_context"):

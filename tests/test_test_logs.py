@@ -84,6 +84,15 @@ def test_context_lines_rejects_boolean_values():
             "phase": "executor", "stream": "stderr", "context_lines": False})
 
 
+def test_catalog_can_enumerate_all_cases_but_content_requires_one_case():
+    request = validate_log_request(
+        "catalog", {"phase": "case", "check": "unit"})
+    assert request["selector"] == {"phase": "case", "check": "unit"}
+    with pytest.raises(ProtocolError, match="exact case"):
+        validate_log_request(
+            "tail", {"phase": "case", "check": "unit", "stream": "stdout"})
+
+
 def test_query_accepts_generic_schema_two_run_identity():
     request = validate_log_request(
         "catalog", {"run_id": "skills-20260902T120000Z-123-abcdef"})
