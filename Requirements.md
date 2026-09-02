@@ -114,7 +114,7 @@ not contradict them.
   bounded IDs and arguments to that command, cannot replace cwd/environment or
   recursively expand, and each receives central admission, process ownership,
   deadline, logs, result, and cleanup.
-- **REQ-TEST-19** (2026-09-02, in scope): The Rust execution plane drains and
+- **REQ-TEST-19** (2026-09-02, done): The Rust execution plane drains and
   retains every byte of stdout and stderr for every governed check, discovery
   step, and expanded case, with no per-stream byte or line limit. Each leaf's
   streams live in its own stable run-relative folder and carry exact byte and
@@ -122,14 +122,14 @@ not contradict them.
   sync failure makes the affected evidence unsafe rather than silently
   truncating it. Aggregate views may index or reference leaf streams but must
   not become a second lossy source of truth.
-- **REQ-TEST-20** (2026-09-02, in scope): DevCoordinator tracks every governed
+- **REQ-TEST-20** (2026-09-02, done): DevCoordinator tracks every governed
   log folder and regularly removes only inactive completed history that is
   older than either configured boundary: 24 hours or the newest three retained
   runs for the same repository/test/check/case identity by default. Both
   boundaries are administrator-configurable, persist across restart, and are
   visible through CLI, MCP, and Console. Cleanup is exact-target, path-contained,
   crash-safe, and never removes the active run or the newest protected history.
-- **REQ-TEST-21** (2026-09-02, in scope): Normal completion exposes a bounded
+- **REQ-TEST-21** (2026-09-02, done): Normal completion exposes a bounded
   ordered diagnostic index containing failed check/case identity, exit status,
   timeout or cancellation category, structured source file and line when
   supplied, error category, structured expected and actual values, a stable
@@ -142,7 +142,7 @@ not contradict them.
   compiler diagnostics, panic/exception headers, first relevant stack frames,
   process termination, browser console/network failures, final non-empty lines;
   repeated entries collapse by fingerprint and count.
-- **REQ-TEST-22** (2026-09-02, in scope): `test log catalog`, `tail`, `search`,
+- **REQ-TEST-22** (2026-09-02, done): `test log catalog`, `tail`, `search`,
   `range`, and `failure-context` expose progressive log disclosure for one
   authorized run/check/case/stream. Catalogue results contain names, exact byte
   and line counts, time range, complete/truncation state, SHA-256, expiry, and

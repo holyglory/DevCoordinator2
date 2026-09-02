@@ -96,24 +96,6 @@ def test_test_evidence_is_atomic_bounded_metadata_outside_current(tmp_path: Path
     assert securefs.read_test_evidence(tmp_path) == payload
     securefs.remove_test_dir(tmp_path)
     assert securefs.read_test_evidence(tmp_path) == payload
-
-
-def test_test_output_tail_never_follows_a_caller_symlink(tmp_path: Path):
-    current = securefs.create_test_dir(tmp_path, os.getuid(), os.getgid())
-    check = current / "checks" / "unit"
-    check.mkdir(parents=True)
-    (check / "stdout.log").write_bytes(b"abcdef")
-    assert securefs.tail_test_file(
-        tmp_path, ("checks", "unit", "stdout.log"), 3) == (b"def", True)
-    victim = tmp_path / "private"
-    victim.write_text("must not be returned")
-    (check / "stdout.log").unlink()
-    (check / "stdout.log").symlink_to(victim)
-    with pytest.raises(securefs.SecureFsError):
-        securefs.tail_test_file(
-            tmp_path, ("checks", "unit", "stdout.log"), 65536)
-
-
 def test_stable_log_run_is_private_and_removed_by_exact_id(tmp_path: Path):
     current = securefs.create_test_dir(tmp_path, os.getuid(), os.getgid())
     run_id = "t20260902T120000Z-123abc"

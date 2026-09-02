@@ -141,8 +141,10 @@ snapshot, with a complete encoded response below 64 KiB:
   expression.
 - `range` accepts exactly one inclusive line interval or zero-based half-open
   byte interval. Binary byte results use base64.
-- `failure_context` selects deterministic recognized failure references and
-  returns bounded line-addressed excerpts; it never invokes a language model.
+- `failure_context` requires one exact phase/stream selector, ranks recognized
+  failure references for that stream deterministically, and returns bounded
+  line-addressed excerpts; it never silently chooses another stream or invokes
+  a language model.
 
 Every content row carries one-based line numbers and zero-based byte offsets.
 `next_cursor` continues without rereading; a changed or expired target returns

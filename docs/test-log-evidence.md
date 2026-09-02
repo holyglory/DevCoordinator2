@@ -141,8 +141,9 @@ are paged in stable selector order.
 Every content read has a hard 64 KiB response ceiling. `tail` defaults to 50
 lines. `search` is literal fixed-string matching, defaults to 20 matches and
 two context lines, and never treats input as a regular expression. `range`
-accepts one exact line interval or byte interval. `failure-context` applies the
-ranking above and returns bounded line-addressed excerpts. Text reads use UTF-8
+accepts one exact line interval or byte interval. `failure-context` requires
+one exact phase and stream, applies the ranking above, and returns bounded
+line-addressed excerpts. Text reads use UTF-8
 replacement while reporting exact underlying byte coordinates; byte ranges may
 return base64 for exact binary evidence.
 
