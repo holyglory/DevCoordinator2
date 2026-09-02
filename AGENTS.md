@@ -55,8 +55,16 @@ The universal cross-repository policy is `reference/universal/AGENTS.md`.
 ## Validation
 
 - Run product lint/tests directly from this repository.
+- Before Python tests or complete skill validation, run
+  `cargo test --locked --workspace` and build the release
+  `devcoordinator2-executor`. The skill validator uses only its `run-local`
+  self-validation surface; it never self-hosts through the installed daemon.
 - Run `python3 scripts/skills/validate.py` for the six-skill, policy, canonical
-  ownership, and browser matrix.
+  ownership, and browser matrix. It submits one strict schema-2 plan to the
+  Rust executor; cheap policy, privacy, and ownership preflights invalidate
+  expensive checks while unrelated siblings remain all-settled. Read bounded
+  failures from its receipt and keep complete logs/report in the named
+  `.devcoordinator/agent-validation/` run directory.
 - Keep complete verbose output in cold logs and report bounded failure indexes.
 - Finish finite diagnostic passes after ordinary failures, batch fixes, then
   rerun the complete relevant pass.

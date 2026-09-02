@@ -64,6 +64,7 @@ root; copied standalone skill directories are unsupported.
 | Repository boundary | No live dependency on retired checkout, remote, paths, names, or release copies |
 | Shared harness | One root harness; no audit-skill vendored copies or fallback imports |
 | Canonical skills | Six complete in-repository self-tests through the live linked layout |
+| Execution | One strict schema-2 plan executed by Rust `run-local`; invalidating preflights and all-settled independent checks proven |
 | Coordinator skill | Current CLI, MCP, metadata, and skill contract agree |
 | Browser runtime | Locked Playwright/Chromium fixtures pass |
 | Link managers | Plan/apply/verify/rollback and source/target drift tests pass |

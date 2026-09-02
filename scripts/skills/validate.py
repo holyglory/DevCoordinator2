@@ -1,24 +1,24 @@
 #!/usr/bin/env python3
-"""Complete validation for the six DevCoordinator2 agent skills."""
+"""Declare and run complete six-skill validation through the Rust executor."""
 
 from __future__ import annotations
 
-import atexit
+import hashlib
 import json
 import os
-import shlex
+import secrets
 import shutil
 import subprocess
 import sys
 import tempfile
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Callable
 
 
 ROOT = Path(__file__).resolve().parents[2]
 HARNESS = ROOT / "full_repo_harness"
-PYCACHE_ROOT = Path(tempfile.mkdtemp(prefix="devcoordinator2-agent-validation-pycache-"))
-atexit.register(shutil.rmtree, PYCACHE_ROOT, True)
+EXECUTOR = ROOT / "target" / "release" / "devcoordinator2-executor"
+RUN_ROOT = ROOT / ".devcoordinator" / "agent-validation"
 SKILL_NAMES = (
     "dev-coordinator",
     "formal-web-ui-verification",
@@ -34,49 +34,6 @@ HARNESS_SKILL_NAMES = (
     "full-repo-test-coverage-audit",
     "ui-implementation-audit",
 )
-FAILURES: list[str] = []
-
-
-def run(
-    args: list[str],
-    *,
-    cwd: Path = ROOT,
-    extra_env: dict[str, str] | None = None,
-) -> bool:
-    """Run one command, retain its failure, and let the validation pass continue."""
-
-    rendered = shlex.join(args)
-    print("+", rendered, flush=True)
-    environment = dict(os.environ)
-    environment["PYTHONPYCACHEPREFIX"] = str(PYCACHE_ROOT)
-    if extra_env:
-        environment.update(extra_env)
-    completed = subprocess.run(args, cwd=cwd, env=environment, check=False)
-    if completed.returncode != 0:
-        FAILURES.append(f"command exited {completed.returncode}: {rendered}")
-        return False
-    return True
-
-
-def attempt(label: str, operation: Callable[[], object]) -> bool:
-    """Run an in-process check without aborting independent later checks."""
-
-    try:
-        operation()
-    except SystemExit as error:
-        detail = str(error) or f"exit {error.code}"
-        FAILURES.append(f"{label}: {detail}")
-        return False
-    except Exception as error:  # noqa: BLE001 - the pass must collect independent failures
-        FAILURES.append(f"{label}: {type(error).__name__}: {error}")
-        return False
-    return True
-
-
-def print_failure_summary() -> None:
-    print(f"validation failed with {len(FAILURES)} collected failure(s):", flush=True)
-    for index, failure in enumerate(FAILURES, start=1):
-        print(f"  {index}. {failure}", flush=True)
 
 
 def check_repository_layout() -> None:
@@ -120,6 +77,16 @@ def check_canonical_harness_ownership() -> None:
                 raise SystemExit(f"Skill still contains a shared-harness fallback: {script}")
 
 
+def _run_internal(args: list[str], *, cwd: Path = ROOT) -> None:
+    """Run one dependency inside a named executor-owned assertion leaf."""
+
+    environment = dict(os.environ)
+    environment["PYTHONDONTWRITEBYTECODE"] = "1"
+    completed = subprocess.run(args, cwd=cwd, env=environment, check=False)
+    if completed.returncode != 0:
+        raise SystemExit(f"internal command exited {completed.returncode}: {args[0]}")
+
+
 def check_include_glob_exclusions() -> None:
     temporary = Path(tempfile.mkdtemp(prefix="include-glob-exclusion-"))
     try:
@@ -132,12 +99,12 @@ def check_include_glob_exclusions() -> None:
             "-c", "user.name=agent-skills-validate",
             "-c", "user.email=validate@example.invalid",
         ]
-        run(["git", "init", "-q"], cwd=repository)
-        run(["git", "add", "src/app.py"], cwd=repository)
-        run(["git", *identity, "commit", "-q", "-m", "init"], cwd=repository)
+        _run_internal(["git", "init", "-q"], cwd=repository)
+        _run_internal(["git", "add", "src/app.py"], cwd=repository)
+        _run_internal(["git", *identity, "commit", "-q", "-m", "init"], cwd=repository)
 
         broad = temporary / "broad"
-        run(
+        _run_internal(
             [
                 sys.executable,
                 "skills/full-repo-audit/scripts/build_audit_batches.py",
@@ -152,7 +119,7 @@ def check_include_glob_exclusions() -> None:
             raise SystemExit("Broad --include-glob unexpectedly included node_modules")
 
         explicit = temporary / "explicit"
-        run(
+        _run_internal(
             [
                 sys.executable,
                 "skills/full-repo-audit/scripts/build_audit_batches.py",
@@ -236,52 +203,303 @@ def check_changed_visual_review_parity() -> None:
             raise SystemExit(f"Changed visual-review contract drift in {path}: missing={missing}")
 
 
-def main() -> int:
-    FAILURES.clear()
-    attempt("repository layout", check_repository_layout)
-    run([sys.executable, "scripts/skills/validate_self_test.py"])
-    run([sys.executable, "scripts/skills/check_app_wide_policy_self_test.py"])
-    run([sys.executable, "scripts/skills/check_app_wide_policy.py"])
-    run([sys.executable, "scripts/skills/check_agent_neutrality_self_test.py"])
-    run([sys.executable, "scripts/skills/check_agent_neutrality.py"])
-    run([sys.executable, "scripts/skills/check_user_issue_ledgers_self_test.py"])
-    run([sys.executable, "scripts/skills/check_user_issue_ledgers.py"])
-    run([sys.executable, "scripts/skills/check_repository_freshness_self_test.py"])
-    run([sys.executable, "scripts/skills/check_repository_boundaries_self_test.py"])
-    run([sys.executable, "scripts/skills/check_repository_boundaries.py", "--repo", str(ROOT)])
-    run([sys.executable, "scripts/skills/check_ci_security_self_test.py"])
-    run([sys.executable, "scripts/skills/check_ci_security.py"])
-    attempt("canonical harness ownership", check_canonical_harness_ownership)
-    attempt("interaction label parity", check_interaction_label_parity)
-    attempt("changed visual-review parity", check_changed_visual_review_parity)
-    attempt("include-glob exclusions", check_include_glob_exclusions)
-    run([sys.executable, "scripts/skills/self_test_manage_skill_links.py"])
-    run([sys.executable, "scripts/skills/manage_global_policy_self_test.py"])
-    run([sys.executable, "scripts/skills/merge_findings_self_test.py"])
-    run([sys.executable, "scripts/skills/self_test_public_artifact_guard.py"])
-    run([sys.executable, "scripts/skills/public_artifact_guard.py", "--repo", str(ROOT)])
-    for skill in SKILLS:
-        run([sys.executable, str(skill.relative_to(ROOT) / "scripts" / "self_test.py")])
+INTERNAL_CHECKS = {
+    "repository-layout": check_repository_layout,
+    "canonical-harness": check_canonical_harness_ownership,
+    "interaction-parity": check_interaction_label_parity,
+    "visual-review-parity": check_changed_visual_review_parity,
+    "include-glob-exclusions": check_include_glob_exclusions,
+}
 
-    run(
+
+def _plan_check(
+    name: str,
+    command: list[str],
+    *,
+    tier: str,
+    role: str,
+    requires: list[str] | None = None,
+    invalidates: list[str] | None = None,
+    env: dict[str, str] | None = None,
+) -> dict:
+    return {
+        "name": name,
+        "tier": tier,
+        "role": role,
+        "after": [],
+        "requires": list(requires or []),
+        "invalidates": list(invalidates or []),
+        "cwd": ".",
+        "env": dict(env or {"PYTHONDONTWRITEBYTECODE": "1"}),
+        "timeout_seconds": None,
+        "completion": "process",
+        "on_failure": "continue",
+        "produces": [],
+        "command": command,
+    }
+
+
+def validation_checks(*, pycache_root: Path) -> list[dict]:
+    """Return the complete, dependency-explicit six-skill validation graph."""
+
+    python = sys.executable
+    internal = lambda name: [  # noqa: E731 - compact declarative command factory
+        python, "scripts/skills/validate.py", "--internal-check", name]
+    preflight_commands = (
+        ("repository-layout", internal("repository-layout")),
+        ("validator-self-test", [python, "scripts/skills/validate_self_test.py"]),
+        ("policy-self-test", [python, "scripts/skills/check_app_wide_policy_self_test.py"]),
+        ("policy", [python, "scripts/skills/check_app_wide_policy.py"]),
+        ("neutrality-self-test", [python, "scripts/skills/check_agent_neutrality_self_test.py"]),
+        ("neutrality", [python, "scripts/skills/check_agent_neutrality.py"]),
+        ("ledger-self-test", [python, "scripts/skills/check_user_issue_ledgers_self_test.py"]),
+        ("ledgers", [python, "scripts/skills/check_user_issue_ledgers.py"]),
+        ("freshness-self-test", [python, "scripts/skills/check_repository_freshness_self_test.py"]),
+        ("boundaries-self-test", [python, "scripts/skills/check_repository_boundaries_self_test.py"]),
+        ("boundaries", [python, "scripts/skills/check_repository_boundaries.py", "--repo", str(ROOT)]),
+        ("ci-security-self-test", [python, "scripts/skills/check_ci_security_self_test.py"]),
+        ("ci-security", [python, "scripts/skills/check_ci_security.py"]),
+        ("canonical-harness", internal("canonical-harness")),
+        ("public-artifact-self-test", [python, "scripts/skills/self_test_public_artifact_guard.py"]),
+        ("public-artifacts", [python, "scripts/skills/public_artifact_guard.py", "--repo", str(ROOT)]),
+    )
+    target_commands = [
+        ("interaction-parity", internal("interaction-parity")),
+        ("visual-review-parity", internal("visual-review-parity")),
+        ("include-glob-exclusions", internal("include-glob-exclusions")),
+        ("skill-link-manager", [python, "scripts/skills/self_test_manage_skill_links.py"]),
+        ("global-policy-manager", [python, "scripts/skills/manage_global_policy_self_test.py"]),
+        ("merge-findings", [python, "scripts/skills/merge_findings_self_test.py"]),
+    ]
+    target_commands.extend(
+        (f"skill-{skill.name}", [
+            python, str(skill.relative_to(ROOT) / "scripts" / "self_test.py")])
+        for skill in SKILLS
+    )
+    target_names = [name for name, _command in target_commands]
+    target_names.append("python-compile")
+    preflight_names = [name for name, _command in preflight_commands]
+    checks = [
+        _plan_check(
+            name,
+            command,
+            tier="development",
+            role="preflight",
+            invalidates=target_names,
+        )
+        for name, command in preflight_commands
+    ]
+    checks.extend(
+        _plan_check(
+            name,
+            command,
+            tier="release",
+            role="work",
+            requires=preflight_names,
+        )
+        for name, command in target_commands
+    )
+    checks.append(_plan_check(
+        "python-compile",
         [
-            sys.executable,
+            python,
             "-m",
             "compileall",
+            "-q",
             "scripts",
             "full_repo_harness",
             *[f"skills/{name}/scripts" for name in SKILL_NAMES],
-        ]
-    )
+        ],
+        tier="release",
+        role="work",
+        requires=preflight_names,
+        env={"PYTHONPYCACHEPREFIX": str(pycache_root)},
+    ))
+    return checks
 
-    if FAILURES:
-        print_failure_summary()
+
+def build_validation_plan(
+    *,
+    run_id: str,
+    current_dir: Path,
+    source_digest: str,
+) -> dict:
+    checks = validation_checks(pycache_root=current_dir / "pycache")
+    contract = json.dumps(checks, sort_keys=True, separators=(",", ":")).encode()
+    return {
+        "schema": 2,
+        "run_id": run_id,
+        "test": "agent-skills",
+        "worktree_root": str(ROOT),
+        "current_dir": str(current_dir),
+        "requested_tier": "release",
+        "readiness_eligible": True,
+        "proof": "complete",
+        "selection": [],
+        "origin_run_id": None,
+        "source_digest": source_digest,
+        "config_digest": hashlib.sha256(contract).hexdigest(),
+        "reused": {},
+        "checks": checks,
+    }
+
+
+def executor_argv(executor: Path, plan_path: Path) -> list[str]:
+    """The only supported top-level scheduling surface for this validator."""
+
+    return [str(executor), "run-local", str(plan_path)]
+
+
+def _source_digest(executor: Path) -> str:
+    completed = subprocess.run(
+        [str(executor), "source-digest", "--worktree", str(ROOT)],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if completed.returncode != 0:
+        raise RuntimeError(
+            "Rust source digest failed: " + (completed.stderr.strip()[-1000:] or "no detail"))
+    try:
+        receipt = json.loads(completed.stdout)
+        digest = receipt["sha256"]
+    except (json.JSONDecodeError, KeyError, TypeError) as error:
+        raise RuntimeError("Rust source digest returned an invalid receipt") from error
+    if not isinstance(digest, str) or len(digest) != 64 \
+            or any(character not in "0123456789abcdef" for character in digest):
+        raise RuntimeError("Rust source digest returned an invalid sha256")
+    return digest
+
+
+def _write_plan(path: Path, plan: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=False)
+    payload = (json.dumps(plan, sort_keys=True, separators=(",", ":")) + "\n").encode()
+    temporary = path.with_name(f".{path.name}-{os.getpid()}")
+    try:
+        with temporary.open("xb") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    finally:
+        try:
+            temporary.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def _read_report(path: Path) -> dict:
+    try:
+        details = path.stat()
+        if not path.is_file() or details.st_size > 2 * 1024 * 1024:
+            raise RuntimeError("Rust validation report is unavailable or oversized")
+        report = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise RuntimeError("Rust validation report is unavailable or invalid") from error
+    if not isinstance(report, dict) or report.get("schema") != 2:
+        raise RuntimeError("Rust validation report is not schema 2")
+    return report
+
+
+def bounded_receipt(report: dict, report_path: Path) -> dict:
+    failures = report.get("failure_index")
+    failures = failures if isinstance(failures, list) else []
+    retained = failures[:20]
+    return {
+        "schema": 2,
+        "status": report.get("status"),
+        "checks": len(report.get("checks", []))
+        if isinstance(report.get("checks"), list) else 0,
+        "counts": report.get("counts", {}),
+        "failure_index": retained,
+        "failure_index_truncated": bool(report.get("failure_index_truncated"))
+        or len(failures) > len(retained),
+        "report": str(report_path),
+    }
+
+
+def run_complete_validation(executor: Path = EXECUTOR) -> int:
+    try:
+        executor.lstat()
+    except FileNotFoundError:
+        print(
+            "Rust executor is missing; run `cargo build --locked --release "
+            "--package devcoordinator2-executor` first.",
+            file=sys.stderr,
+        )
+        return 2
+    if executor.is_symlink() or not executor.is_file() or not os.access(executor, os.X_OK):
+        print("Rust executor must be a regular executable release binary.", file=sys.stderr)
+        return 2
+    timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    run_id = f"skills-{timestamp}-{os.getpid()}-{secrets.token_hex(3)}"
+    current_dir = RUN_ROOT / run_id
+    try:
+        digest = _source_digest(executor)
+        plan = build_validation_plan(
+            run_id=run_id,
+            current_dir=current_dir,
+            source_digest=digest,
+        )
+        plan_path = current_dir / "validation-plan.json"
+        _write_plan(plan_path, plan)
+        completed = subprocess.run(
+            executor_argv(executor, plan_path),
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        report_path = current_dir / "check-report.json"
+        if not report_path.is_file():
+            detail = completed.stderr.strip()[-1000:]
+            raise RuntimeError(
+                "Rust executor did not publish check-report.json: "
+                + (detail or "no diagnostic"))
+        report = _read_report(report_path)
+    except RuntimeError as error:
+        print(str(error), file=sys.stderr)
+        return 2
+    receipt = bounded_receipt(report, report_path)
+    print(json.dumps(receipt, separators=(",", ":")))
+    expected = 0 if report.get("status") == "passed" else 1
+    if completed.returncode != expected:
+        detail = completed.stderr.strip()[-1000:]
+        print(
+            f"Rust executor exit/report mismatch ({completed.returncode} != {expected}): "
+            f"{detail}",
+            file=sys.stderr,
+        )
+        return 2
+    return expected
+
+
+def run_internal_check(name: str) -> int:
+    operation = INTERNAL_CHECKS.get(name)
+    if operation is None:
+        print(f"unknown internal validation check: {name}", file=sys.stderr)
+        return 2
+    try:
+        operation()
+    except SystemExit as error:
+        print(str(error) or f"internal validation check exited {error.code}", file=sys.stderr)
         return 1
-
-    print(
-        f"validation ok ({len(SKILL_NAMES)} canonical linked skills; one shared harness)"
-    )
+    except Exception as error:  # noqa: BLE001 - leaf reports one bounded failure
+        print(f"{type(error).__name__}: {error}", file=sys.stderr)
+        return 1
+    print(json.dumps({"schema": 2, "check": name, "status": "passed"}))
     return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    arguments = list(sys.argv[1:] if argv is None else argv)
+    if arguments:
+        if len(arguments) == 2 and arguments[0] == "--internal-check":
+            return run_internal_check(arguments[1])
+        print("usage: validate.py [--internal-check NAME]", file=sys.stderr)
+        return 2
+    return run_complete_validation()
 
 
 if __name__ == "__main__":

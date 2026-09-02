@@ -31,6 +31,7 @@ def command_help(*args: str) -> str:
 
 def main() -> int:
     contract = SKILL.read_text(encoding="utf-8")
+    normalized_contract = " ".join(contract.split())
     required_contract = (
         "name: dev-coordinator",
         "devcoordinator2",
@@ -45,7 +46,7 @@ def main() -> int:
         "decision record|tail|search|summarize",
     )
     for token in required_contract:
-        if token not in contract:
+        if token not in normalized_contract:
             raise AssertionError(f"skill contract is missing {token!r}")
 
     root_help = command_help()
