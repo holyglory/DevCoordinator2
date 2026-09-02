@@ -1,6 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -40,6 +39,78 @@ pub struct Executor {
     cancellation: Cancellation,
 }
 
+struct RunMetadataGuard {
+    lease: Arc<RunLogLease>,
+    run_id: String,
+    test: String,
+    started_at_epoch_ms: u64,
+    finalized: bool,
+}
+
+impl RunMetadataGuard {
+    fn start(
+        lease: Arc<RunLogLease>,
+        run_id: &str,
+        test: &str,
+        started_at_epoch_ms: u64,
+    ) -> Result<Self, ExecutorError> {
+        let guard = Self {
+            lease,
+            run_id: run_id.to_owned(),
+            test: test.to_owned(),
+            started_at_epoch_ms,
+            finalized: false,
+        };
+        if let Err(error) = guard.lease.publish_run_metadata(&RunLogMetadata {
+            schema: 2,
+            run_id: run_id.to_owned(),
+            test: test.to_owned(),
+            started_at_epoch_ms,
+            finished_at_epoch_ms: None,
+            status: RunStatus::Running,
+            complete: false,
+        }) {
+            let error = ExecutorError::new(error.to_string());
+            drop(guard);
+            return Err(error);
+        }
+        Ok(guard)
+    }
+
+    fn finish(&mut self, status: RunStatus, complete: bool) -> Result<(), ExecutorError> {
+        self.lease
+            .publish_run_metadata(&RunLogMetadata {
+                schema: 2,
+                run_id: self.run_id.clone(),
+                test: self.test.clone(),
+                started_at_epoch_ms: self.started_at_epoch_ms,
+                finished_at_epoch_ms: Some(epoch_ms()),
+                status,
+                complete,
+            })
+            .map_err(|error| ExecutorError::new(error.to_string()))?;
+        self.finalized = true;
+        Ok(())
+    }
+}
+
+impl Drop for RunMetadataGuard {
+    fn drop(&mut self) {
+        if self.finalized {
+            return;
+        }
+        let _ = self.lease.publish_run_metadata(&RunLogMetadata {
+            schema: 2,
+            run_id: self.run_id.clone(),
+            test: self.test.clone(),
+            started_at_epoch_ms: self.started_at_epoch_ms,
+            finished_at_epoch_ms: Some(epoch_ms()),
+            status: RunStatus::Failed,
+            complete: false,
+        });
+    }
+}
+
 impl Executor {
     pub fn new(
         plan: ExecutionPlan,
@@ -58,6 +129,7 @@ impl Executor {
         let plan = Arc::new(self.plan);
         let root_requested = PathBuf::from(&plan.worktree_root);
         let current_requested = PathBuf::from(&plan.current_dir);
+        let log_requested = PathBuf::from(&plan.log_dir);
         if !current_requested.starts_with(&root_requested) {
             return Err(ExecutorError::new(
                 "executor current_dir is outside the requested worktree",
@@ -66,23 +138,14 @@ impl Executor {
         let root = root_requested
             .canonicalize()
             .map_err(|error| ExecutorError::new(format!("cannot resolve worktree: {error}")))?;
-        let current = current_requested.canonicalize().map_err(|error| {
-            ExecutorError::new(format!("cannot resolve pre-created run directory: {error}"))
-        })?;
-        if !current.starts_with(&root) {
-            return Err(ExecutorError::new(
-                "executor current_dir resolves outside the worktree",
-            ));
-        }
-        let log_requested = PathBuf::from(&plan.log_dir);
         if !log_requested.starts_with(&root_requested) {
             return Err(ExecutorError::new(
                 "executor log_dir is outside the requested worktree",
             ));
         }
-        let log_dir = log_requested.canonicalize().map_err(|error| {
+        let log_dir = Arc::new(log_requested.canonicalize().map_err(|error| {
             ExecutorError::new(format!("cannot resolve pre-created log directory: {error}"))
-        })?;
+        })?);
         if !log_dir.starts_with(&root) {
             return Err(ExecutorError::new(
                 "executor log_dir resolves outside the worktree",
@@ -92,6 +155,23 @@ impl Executor {
             RunLogLease::acquire(&log_dir, &plan.run_id)
                 .map_err(|error| ExecutorError::new(error.to_string()))?,
         );
+        let started_at = iso_now();
+        let started_epoch_ms = epoch_ms();
+        let started = Instant::now();
+        let mut run_metadata = RunMetadataGuard::start(
+            log_lease.clone(),
+            &plan.run_id,
+            &plan.test,
+            started_epoch_ms,
+        )?;
+        let current = current_requested.canonicalize().map_err(|error| {
+            ExecutorError::new(format!("cannot resolve pre-created run directory: {error}"))
+        })?;
+        if !current.starts_with(&root) {
+            return Err(ExecutorError::new(
+                "executor current_dir resolves outside the worktree",
+            ));
+        }
         for directory in ["checks", "scratch", "artifacts"] {
             tokio::fs::create_dir_all(current.join(directory))
                 .await
@@ -109,37 +189,8 @@ impl Executor {
             ));
         }
 
-        let started_at = iso_now();
-        let started_epoch_ms = epoch_ms();
-        let started = Instant::now();
         let capacity = Arc::new(Mutex::new(CapacityReport::default()));
         let mut checks = initialize_checks(&plan, &root, &started_at)?;
-        if log_lease
-            .publish_run_metadata(&RunLogMetadata {
-                schema: 2,
-                run_id: plan.run_id.clone(),
-                test: plan.test.clone(),
-                started_at_epoch_ms: started_epoch_ms,
-                finished_at_epoch_ms: None,
-                status: RunStatus::Running,
-                complete: false,
-            })
-            .is_err()
-        {
-            mark_run_log_failure(&mut checks, &plan.run_id);
-            return write_report(
-                &current.join("check-report.json"),
-                &plan,
-                &checks,
-                &capacity,
-                &started_at,
-                started,
-                RunStatus::Failed,
-                Some(iso_now()),
-                false,
-                None,
-            );
-        }
         publish_reused_leaf_metadata(&mut checks, &plan.run_id, &log_lease, started_epoch_ms);
         let report_path = current.join("check-report.json");
         write_report(
@@ -168,7 +219,7 @@ impl Executor {
                     ExecutorError::new(format!("event service task failed: {error}"))
                 })?;
                 service_pgids.remove(&name);
-                mark_service_exit(&mut checks, &plan, &log_lease, &name, exit, false)?;
+                mark_service_exit(&mut checks, &plan, &log_lease, &log_dir, &name, exit, false)?;
                 if abort.is_none() {
                     abort = Some(Abort::Unsafe(format!(
                         "required long-lived check {name} exited"
@@ -206,6 +257,7 @@ impl Executor {
                     let cancellation = self.cancellation.clone();
                     let capacity = capacity.clone();
                     let log_lease = log_lease.clone();
+                    let log_dir = log_dir.clone();
                     running.spawn(async move {
                         let outcome = execute_check(
                             plan,
@@ -216,6 +268,7 @@ impl Executor {
                             cancellation,
                             capacity,
                             log_lease,
+                            log_dir,
                         )
                         .await;
                         (name, outcome)
@@ -270,7 +323,15 @@ impl Executor {
                         ExecutorError::new(format!("event service task failed: {error}"))
                     })?;
                     service_pgids.remove(&name);
-                    mark_service_exit(&mut checks, &plan, &log_lease, &name, exit, false)?;
+                    mark_service_exit(
+                        &mut checks,
+                        &plan,
+                        &log_lease,
+                        &log_dir,
+                        &name,
+                        exit,
+                        false,
+                    )?;
                     if abort.is_none() {
                         abort = Some(Abort::Unsafe(format!(
                             "required long-lived check {name} exited"
@@ -293,6 +354,7 @@ impl Executor {
             &mut checks,
             &plan,
             &log_lease,
+            &log_dir,
         )
         .await?;
         let digest_root = root.clone();
@@ -314,7 +376,6 @@ impl Executor {
             RunStatus::Passed
         };
         let finished_at = iso_now();
-        let finished_epoch_ms = epoch_ms();
         let mut report = write_report(
             &report_path,
             &plan,
@@ -327,18 +388,7 @@ impl Executor {
             source_changed,
             source_error,
         )?;
-        if log_lease
-            .publish_run_metadata(&RunLogMetadata {
-                schema: 2,
-                run_id: plan.run_id.clone(),
-                test: plan.test.clone(),
-                started_at_epoch_ms: started_epoch_ms,
-                finished_at_epoch_ms: Some(finished_epoch_ms),
-                status,
-                complete: true,
-            })
-            .is_err()
-        {
+        if run_metadata.finish(status, true).is_err() {
             report.status = RunStatus::Failed;
             report.failure_index.push(failure_entry(
                 &plan.run_id,
@@ -596,24 +646,6 @@ fn invalidator_map(checks: &[CheckRuntime]) -> BTreeMap<String, Vec<String>> {
     result
 }
 
-fn mark_run_log_failure(checks: &mut [CheckRuntime], run_id: &str) {
-    for check in checks {
-        check.report.status = LeafStatus::Unsafe;
-        check.report.finished_at = Some(iso_now());
-        check.report.duration_seconds = Some(0.0);
-        check.failures.push(failure_entry(
-            run_id,
-            Some(&check.plan.name),
-            None,
-            LeafStatus::Unsafe,
-            None,
-            Some(TerminationReason::UnsafeStop),
-            ErrorCategory::LogStorage,
-            None,
-        ));
-    }
-}
-
 fn publish_reused_leaf_metadata(
     checks: &mut [CheckRuntime],
     run_id: &str,
@@ -633,6 +665,7 @@ fn publish_reused_leaf_metadata(
                 exit: DiagnosticExit::default(),
                 started_at_epoch_ms: started_epoch_ms,
                 finished_at_epoch_ms: Some(started_epoch_ms),
+                process_started: false,
                 complete: true,
                 structured_evidence_formats: Vec::new(),
                 structured_evidence_count: 0,
@@ -750,6 +783,7 @@ fn finish_blocked(
             exit: DiagnosticExit::default(),
             started_at_epoch_ms: check.started_epoch_ms.unwrap_or_else(epoch_ms),
             finished_at_epoch_ms: Some(epoch_ms()),
+            process_started: false,
             complete: true,
             structured_evidence_formats: Vec::new(),
             structured_evidence_count: 0,
@@ -819,6 +853,7 @@ async fn execute_check(
     cancellation: Cancellation,
     capacity: Arc<Mutex<CapacityReport>>,
     log_lease: Arc<RunLogLease>,
+    log_dir: Arc<PathBuf>,
 ) -> CheckOutcome {
     let started = Instant::now();
     let started_epoch_ms = epoch_ms();
@@ -830,6 +865,7 @@ async fn execute_check(
             &root,
             &current,
             log_lease.clone(),
+            &log_dir,
             selector.clone(),
             &check.name,
             command.clone(),
@@ -843,6 +879,7 @@ async fn execute_check(
             &check,
             &selector,
             &log_lease,
+            &log_dir,
             &mut process,
             started_epoch_ms,
         );
@@ -880,6 +917,7 @@ async fn execute_check(
             cancellation,
             capacity,
             log_lease,
+            log_dir,
             started,
             started_epoch_ms,
         )
@@ -919,6 +957,7 @@ async fn execute_fanout(
     cancellation: Cancellation,
     capacity: Arc<Mutex<CapacityReport>>,
     log_lease: Arc<RunLogLease>,
+    log_dir: Arc<PathBuf>,
     started: Instant,
     _started_epoch_ms: u64,
 ) -> CheckOutcome {
@@ -935,6 +974,7 @@ async fn execute_fanout(
             root,
             current,
             log_lease.clone(),
+            &log_dir,
             selector.clone(),
             &format!("{}/discovery", check.name),
             check.discover.clone().unwrap_or_default(),
@@ -948,6 +988,7 @@ async fn execute_fanout(
             check,
             &selector,
             &log_lease,
+            &log_dir,
             &mut discovery,
             discovery_started_epoch_ms,
         );
@@ -1063,6 +1104,7 @@ async fn execute_fanout(
         let capacity = capacity.clone();
         let case_command = case_command.clone();
         let log_lease = log_lease.clone();
+        let log_dir = log_dir.clone();
         tasks.spawn(async move {
             run_case(
                 &plan,
@@ -1075,6 +1117,7 @@ async fn execute_fanout(
                 cancellation,
                 capacity,
                 log_lease,
+                log_dir,
             )
             .await
         });
@@ -1226,6 +1269,7 @@ async fn run_case(
     cancellation: Cancellation,
     capacity: Arc<Mutex<CapacityReport>>,
     log_lease: Arc<RunLogLease>,
+    log_dir: Arc<PathBuf>,
 ) -> CaseOutcome {
     let started = Instant::now();
     let started_epoch_ms = epoch_ms();
@@ -1240,6 +1284,7 @@ async fn run_case(
         root,
         current,
         log_lease.clone(),
+        &log_dir,
         selector.clone(),
         &leaf,
         command,
@@ -1253,6 +1298,7 @@ async fn run_case(
         check,
         &selector,
         &log_lease,
+        &log_dir,
         &mut process,
         started_epoch_ms,
     );
@@ -1275,6 +1321,7 @@ fn process_request(
     root: &Path,
     current: &Path,
     log_lease: Arc<RunLogLease>,
+    log_dir: &Path,
     log_selector: LeafSelector,
     leaf: &str,
     command: Vec<String>,
@@ -1290,8 +1337,7 @@ fn process_request(
     } else {
         current.join("scratch").join(&check.name)
     };
-    let diagnostics_dir =
-        leaf_log_directory(Path::new(&plan.log_dir), &log_selector).join("diagnostics");
+    let diagnostics_dir = leaf_log_directory(log_dir, &log_selector).join("diagnostics");
     ProcessRequest {
         run_id: plan.run_id.clone(),
         check_name: check.name.clone(),
@@ -1315,13 +1361,14 @@ fn finalize_leaf_evidence(
     check: &CheckPlan,
     selector: &LeafSelector,
     log_lease: &RunLogLease,
+    log_dir: &Path,
     process: &mut ProcessResult,
     started_at_epoch_ms: u64,
 ) {
     if process.service.is_some() {
         return;
     }
-    supplement_stream_summaries(plan, selector, &mut process.streams);
+    supplement_stream_summaries(plan, log_dir, selector, &mut process.streams);
     if process.process_started
         && (process.streams.len() != 2 || process.streams.iter().any(|stream| !stream.complete))
     {
@@ -1335,12 +1382,10 @@ fn finalize_leaf_evidence(
         case: selector.case_id.clone(),
         phase: selector.phase,
     };
-    let diagnostics_dir =
-        leaf_log_directory(Path::new(&plan.log_dir), selector).join("diagnostics");
     let mut formats = Vec::new();
     let mut invalid = process.structured_evidence_invalid;
     for source in &check.diagnostic_sources {
-        match read_declared_diagnostics(&diagnostics_dir, source, &context) {
+        match read_declared_diagnostics(log_lease, selector, source, &context) {
             Ok(entries) => {
                 formats.push(source.format);
                 process.diagnostics.extend(entries);
@@ -1434,6 +1479,7 @@ fn finalize_leaf_evidence(
         exit: diagnostic_exit(process.exit_code),
         started_at_epoch_ms,
         finished_at_epoch_ms: Some(epoch_ms()),
+        process_started: process.process_started,
         complete,
         structured_evidence_formats: formats,
         structured_evidence_count: process.diagnostics.len() as u64,
@@ -1515,6 +1561,7 @@ fn record_leaf_postprocess_failure(
             exit: diagnostic_exit(process.exit_code),
             started_at_epoch_ms,
             finished_at_epoch_ms: Some(epoch_ms()),
+            process_started: process.process_started,
             complete,
             structured_evidence_formats: formats,
             structured_evidence_count: process.diagnostics.len() as u64,
@@ -1539,10 +1586,11 @@ fn record_leaf_postprocess_failure(
 
 fn supplement_stream_summaries(
     plan: &ExecutionPlan,
+    log_dir: &Path,
     selector: &LeafSelector,
     streams: &mut Vec<LogStreamSummary>,
 ) {
-    let leaf_dir = leaf_log_directory(Path::new(&plan.log_dir), selector);
+    let leaf_dir = leaf_log_directory(log_dir, selector);
     for stream in [LogStream::Stdout, LogStream::Stderr] {
         if streams
             .iter()
@@ -1583,31 +1631,15 @@ fn supplement_stream_summaries(
 }
 
 fn read_declared_diagnostics(
-    diagnostics_dir: &Path,
+    log_lease: &RunLogLease,
+    selector: &LeafSelector,
     source: &DiagnosticReportSource,
     context: &DiagnosticContext,
 ) -> Result<Vec<FailureIndexEntry>, ()> {
-    let root = diagnostics_dir.canonicalize().map_err(|_| ())?;
-    let candidate = diagnostics_dir.join(&source.path);
-    let metadata = fs::symlink_metadata(&candidate).map_err(|_| ())?;
-    if !metadata.is_file() || metadata.file_type().is_symlink() {
-        return Err(());
-    }
-    if metadata.len() > MAX_DECLARED_DIAGNOSTIC_REPORT_BYTES {
-        return Err(());
-    }
-    let resolved = candidate.canonicalize().map_err(|_| ())?;
-    if !resolved.starts_with(&root) {
-        return Err(());
-    }
-    let file = fs::File::open(resolved).map_err(|_| ())?;
-    let mut input = Vec::with_capacity(metadata.len().try_into().map_err(|_| ())?);
-    file.take(MAX_DECLARED_DIAGNOSTIC_REPORT_BYTES + 1)
-        .read_to_end(&mut input)
+    let relative = format!("diagnostics/{}", source.path);
+    let input = log_lease
+        .read_declared_report(selector, &relative, MAX_DECLARED_DIAGNOSTIC_REPORT_BYTES)
         .map_err(|_| ())?;
-    if input.len() as u64 > MAX_DECLARED_DIAGNOSTIC_REPORT_BYTES {
-        return Err(());
-    }
     parse_declared_report(source, &input, context)
         .map(|parsed| parsed.entries)
         .map_err(|_| ())
@@ -1733,6 +1765,7 @@ fn mark_service_exit(
     checks: &mut [CheckRuntime],
     plan: &ExecutionPlan,
     log_lease: &RunLogLease,
+    log_dir: &Path,
     name: &str,
     exit: ServiceExit,
     cleanup: bool,
@@ -1764,6 +1797,7 @@ fn mark_service_exit(
         &runtime.plan,
         &selector,
         log_lease,
+        log_dir,
         &mut process,
         runtime.started_epoch_ms.unwrap_or_else(epoch_ms),
     );
@@ -1788,6 +1822,7 @@ async fn stop_services(
     checks: &mut [CheckRuntime],
     plan: &ExecutionPlan,
     log_lease: &RunLogLease,
+    log_dir: &Path,
 ) -> Result<(), ExecutorError> {
     for pgid in service_pgids.values().copied() {
         signal_group(pgid, Signal::TERM)?;
@@ -1800,7 +1835,7 @@ async fn stop_services(
                     ExecutorError::new(format!("event service task failed: {error}"))
                 })?;
                 service_pgids.remove(&name);
-                mark_service_exit(checks, plan, log_lease, &name, exit, true)?;
+                mark_service_exit(checks, plan, log_lease, log_dir, &name, exit, true)?;
             }
             Ok(None) => break,
             Err(_) => {
@@ -1812,7 +1847,7 @@ async fn stop_services(
                         ExecutorError::new(format!("event service task failed: {error}"))
                     })?;
                     service_pgids.remove(&name);
-                    mark_service_exit(checks, plan, log_lease, &name, exit, true)?;
+                    mark_service_exit(checks, plan, log_lease, log_dir, &name, exit, true)?;
                 }
                 break;
             }

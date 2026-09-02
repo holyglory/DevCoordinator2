@@ -169,6 +169,22 @@ enum PumpError {
     Read(std::io::Error),
 }
 
+struct SpawnFailure {
+    error: ExecutorError,
+    streams: Vec<StreamMetadata>,
+    storage_failed: bool,
+}
+
+impl From<ExecutorError> for SpawnFailure {
+    fn from(error: ExecutorError) -> Self {
+        Self {
+            error,
+            streams: Vec::new(),
+            storage_failed: true,
+        }
+    }
+}
+
 pub(crate) async fn run_process(
     request: ProcessRequest,
     permits: Arc<dyn PermitProvider>,
@@ -188,6 +204,16 @@ pub(crate) async fn run_process(
         }
     };
     let capacity = permit.observation;
+    if let Err(error) = tokio::fs::create_dir_all(&request.scratch).await {
+        return ProcessResult {
+            capacity,
+            ..failure(
+                ProcessStatus::Failed,
+                None,
+                format!("cannot prepare leaf scratch directory: {error}"),
+            )
+        };
+    }
     let stdout_writer = match request
         .log_lease
         .create_stream(request.log_selector.clone(), LogStream::Stdout)
@@ -223,11 +249,23 @@ pub(crate) async fn run_process(
     }
     let spawned = match spawn_process(&request, stdout_writer, stderr_writer).await {
         Ok(spawned) => spawned,
-        Err(error) => {
-            return ProcessResult {
-                capacity,
-                ..storage_failure(None, format!("cannot start leaf: {error}"))
+        Err(spawn) => {
+            let mut result = if spawn.storage_failed {
+                storage_failure(None, format!("cannot start leaf: {}", spawn.error))
+            } else {
+                failure(
+                    ProcessStatus::Failed,
+                    None,
+                    format!("cannot start leaf: {}", spawn.error),
+                )
             };
+            result.capacity = capacity;
+            result.streams = spawn
+                .streams
+                .into_iter()
+                .map(|metadata| stream_summary(&request.run_id, metadata))
+                .collect();
+            return result;
         }
     };
     let mut result = match request.completion {
@@ -288,15 +326,10 @@ async fn spawn_process(
     request: &ProcessRequest,
     stdout_writer: CompleteLogWriter,
     stderr_writer: CompleteLogWriter,
-) -> Result<SpawnedProcess, ExecutorError> {
+) -> Result<SpawnedProcess, SpawnFailure> {
     if request.command.is_empty() {
-        return Err(ExecutorError::new("leaf command is empty"));
+        return Err(ExecutorError::new("leaf command is empty").into());
     }
-    tokio::fs::create_dir_all(&request.scratch)
-        .await
-        .map_err(|error| {
-            ExecutorError::new(format!("cannot create leaf scratch directory: {error}"))
-        })?;
     let mut command = Command::new(&request.command[0]);
     command
         .args(&request.command[1..])
@@ -385,7 +418,17 @@ async fn spawn_process(
     drop(event_write);
     drop(manifest_write);
     drop(spawn_guard);
-    let mut child = spawned.map_err(|error| ExecutorError::new(error.to_string()))?;
+    let mut child = match spawned {
+        Ok(child) => child,
+        Err(error) => {
+            let (streams, storage_failed) = seal_prestart_streams(stdout_writer, stderr_writer);
+            return Err(SpawnFailure {
+                error: ExecutorError::new(error.to_string()),
+                streams,
+                storage_failed,
+            });
+        }
+    };
     let pgid = child
         .id()
         .and_then(|id| i32::try_from(id).ok())
@@ -891,6 +934,21 @@ fn stream_summary(run_id: &str, metadata: StreamMetadata) -> LogStreamSummary {
         last_write_epoch_ms: metadata.last_write_epoch_ms,
         complete: metadata.complete,
     }
+}
+
+fn seal_prestart_streams(
+    stdout: CompleteLogWriter,
+    stderr: CompleteLogWriter,
+) -> (Vec<StreamMetadata>, bool) {
+    let mut streams = Vec::new();
+    let mut storage_failed = false;
+    for writer in [stdout, stderr] {
+        match writer.seal() {
+            Ok(metadata) => streams.push(metadata),
+            Err(_) => storage_failed = true,
+        }
+    }
+    (streams, storage_failed)
 }
 
 #[derive(Default)]

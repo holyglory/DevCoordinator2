@@ -10,7 +10,7 @@ use std::time::Duration;
 use sha2::{Digest, Sha256};
 
 use devcoordinator2_executor_core::{
-    Cancellation, Executor, LocalPermitProvider,
+    Cancellation, Executor, LocalPermitProvider, RunLogMetadata, artifact_receipts,
     protocol::{
         CaseSpec, CheckPlan, CheckRole, CompletionMode, DiagnosticOrigin, DiagnosticReportFormat,
         DiagnosticReportSource, ErrorCategory, ExecutionPlan, FailureIndexEntry, FailureMode,
@@ -168,6 +168,27 @@ async fn execute(plan: ExecutionPlan) -> devcoordinator2_executor_core::protocol
     .expect("run")
 }
 
+async fn execute_error(plan: ExecutionPlan) -> devcoordinator2_executor_core::ExecutorError {
+    Executor::new(
+        plan,
+        Arc::new(LocalPermitProvider::unbounded()),
+        Cancellation::default(),
+    )
+    .expect("executor")
+    .run()
+    .await
+    .expect_err("execution should fail early")
+}
+
+fn run_metadata(repository: &Repository, run_id: &str) -> RunLogMetadata {
+    let metadata: RunLogMetadata = serde_json::from_slice(
+        &fs::read(repository.logs(run_id).join("run.json")).expect("run metadata"),
+    )
+    .expect("run metadata JSON");
+    metadata.validate().expect("valid run metadata");
+    metadata
+}
+
 fn status(
     report: &devcoordinator2_executor_core::protocol::ExecutionReport,
     name: &str,
@@ -190,6 +211,39 @@ fn failure<'a>(
         .iter()
         .find(|entry| entry.check.as_deref() == check && entry.case.as_deref() == case)
         .expect("failure diagnostic")
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn source_mismatch_leaves_terminal_incomplete_run_metadata() {
+    let repository = Repository::new("source-mismatch-metadata");
+    let mut execution_plan = plan(
+        &repository,
+        "run-source-mismatch-metadata",
+        vec![direct("unit", python("raise SystemExit(0)"))],
+    );
+    execution_plan.source_digest = "0".repeat(64);
+    let _ = execute_error(execution_plan).await;
+    let metadata = run_metadata(&repository, "run-source-mismatch-metadata");
+    assert_eq!(metadata.status, RunStatus::Failed);
+    assert!(!metadata.complete);
+    assert!(metadata.finished_at_epoch_ms.is_some());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn missing_current_directory_after_lease_is_catalogue_safe() {
+    let repository = Repository::new("missing-current-metadata");
+    let execution_plan = plan(
+        &repository,
+        "run-missing-current-metadata",
+        vec![direct("unit", python("raise SystemExit(0)"))],
+    );
+    fs::remove_dir_all(repository.current("run-missing-current-metadata"))
+        .expect("remove disposable current directory");
+    let _ = execute_error(execution_plan).await;
+    let metadata = run_metadata(&repository, "run-missing-current-metadata");
+    assert_eq!(metadata.status, RunStatus::Failed);
+    assert!(!metadata.complete);
+    assert!(metadata.finished_at_epoch_ms.is_some());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -217,6 +271,54 @@ async fn failed_preflight_invalidates_only_its_targets_and_siblings_finish() {
     let invalidated = failure(&report, Some("target"), None);
     assert_eq!(invalidated.error_category, ErrorCategory::Dependency);
     assert!(invalidated.log_refs.is_empty());
+    let target_leaf: serde_json::Value = serde_json::from_slice(
+        &fs::read(
+            repository
+                .logs("run-preflight")
+                .join("checks/target/check/leaf.json"),
+        )
+        .expect("invalidated leaf metadata"),
+    )
+    .expect("invalidated leaf JSON");
+    assert_eq!(target_leaf["process_started"], false);
+    assert_eq!(target_leaf["complete"], true);
+    assert!(
+        !repository
+            .logs("run-preflight")
+            .join("checks/target/check/stdout.log")
+            .exists()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn reused_leaf_is_terminal_without_invented_process_streams() {
+    let repository = Repository::new("reused-leaf");
+    fs::write(repository.root.join("artifact.bin"), b"stable").expect("artifact");
+    let mut check = direct("unit", python("raise SystemExit(99)"));
+    check.produces = vec!["artifact.bin".into()];
+    let receipts = artifact_receipts(&repository.root, &check.produces).expect("receipts");
+    let mut execution_plan = plan(&repository, "run-reused-leaf", vec![check]);
+    execution_plan.reused.insert("unit".into(), receipts);
+    let report = execute(execution_plan).await;
+    assert_eq!(report.checks[0].status, LeafStatus::Reused);
+    assert!(report.checks[0].streams.is_empty());
+    let leaf: serde_json::Value = serde_json::from_slice(
+        &fs::read(
+            repository
+                .logs("run-reused-leaf")
+                .join("checks/unit/check/leaf.json"),
+        )
+        .expect("reused leaf metadata"),
+    )
+    .expect("reused leaf JSON");
+    assert_eq!(leaf["process_started"], false);
+    assert_eq!(leaf["complete"], true);
+    assert!(
+        !repository
+            .logs("run-reused-leaf")
+            .join("checks/unit/check/stdout.log")
+            .exists()
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -686,6 +788,41 @@ async fn log_open_failure_is_unsafe_and_prevents_process_start() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn command_spawn_failure_is_internal_with_truthful_empty_streams() {
+    let repository = Repository::new("spawn-failure");
+    let report = execute(plan(
+        &repository,
+        "run-spawn-failure",
+        vec![direct(
+            "unit",
+            vec!["/definitely/missing/devcoordinator-command".into()],
+        )],
+    ))
+    .await;
+    assert_eq!(report.checks[0].status, LeafStatus::Failed);
+    assert_eq!(report.checks[0].streams.len(), 2);
+    assert!(
+        report.checks[0]
+            .streams
+            .iter()
+            .all(|stream| { stream.bytes == 0 && stream.lines == 0 && stream.complete })
+    );
+    let diagnostic = failure(&report, Some("unit"), None);
+    assert_eq!(diagnostic.error_category, ErrorCategory::Internal);
+    let leaf: serde_json::Value = serde_json::from_slice(
+        &fs::read(
+            repository
+                .logs("run-spawn-failure")
+                .join("checks/unit/check/leaf.json"),
+        )
+        .expect("spawn failure leaf metadata"),
+    )
+    .expect("spawn failure leaf JSON");
+    assert_eq!(leaf["process_started"], false);
+    assert_eq!(leaf["complete"], true);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn stream_metadata_write_failure_stops_the_live_process_as_unsafe() {
     let repository = Repository::new("log-write-failure");
     let script = r#"
@@ -880,4 +1017,49 @@ with path.open("wb") as output:
         entry.error_category == ErrorCategory::StructuredEvidenceInvalid
             && entry.check.as_deref() == Some("unit")
     }));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn replaced_symlink_and_fifo_diagnostic_reports_are_rejected_without_blocking() {
+    let cases = [
+        (
+            "symlink",
+            r#"
+import os, pathlib
+path = pathlib.Path(os.environ["DEVCOORDINATOR_DIAGNOSTICS_DIR"]) / "junit.xml"
+path.write_text("<testsuite/>")
+path.unlink()
+path.symlink_to("/etc/passwd")
+"#,
+        ),
+        (
+            "fifo",
+            r#"
+import os, pathlib
+path = pathlib.Path(os.environ["DEVCOORDINATOR_DIAGNOSTICS_DIR"]) / "junit.xml"
+os.mkfifo(path)
+"#,
+        ),
+    ];
+    for (name, script) in cases {
+        let repository = Repository::new(name);
+        let mut check = direct("unit", python(script));
+        check.diagnostic_sources = vec![DiagnosticReportSource {
+            format: DiagnosticReportFormat::Junit,
+            path: "junit.xml".into(),
+        }];
+        let started = std::time::Instant::now();
+        let report = execute(plan(
+            &repository,
+            &format!("run-diagnostic-{name}"),
+            vec![check],
+        ))
+        .await;
+        assert!(started.elapsed() < Duration::from_secs(5), "{name}");
+        assert_eq!(report.checks[0].status, LeafStatus::Unsafe, "{name}");
+        assert!(report.failure_index.iter().any(|entry| {
+            entry.error_category == ErrorCategory::StructuredEvidenceInvalid
+                && entry.check.as_deref() == Some("unit")
+        }));
+    }
 }

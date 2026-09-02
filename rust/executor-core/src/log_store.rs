@@ -8,8 +8,9 @@
 use std::error::Error;
 use std::fmt;
 use std::fs::File;
-use std::io::{self, Write};
-use std::path::Path;
+use std::io::{self, Read, Write};
+use std::os::unix::fs::MetadataExt;
+use std::path::{Component, Path};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -133,14 +134,14 @@ impl RunLogMetadata {
         validate_run_id(&self.run_id)?;
         validate_test(&self.test)?;
         validate_time_order(self.started_at_epoch_ms, self.finished_at_epoch_ms)?;
-        if self.complete != self.finished_at_epoch_ms.is_some() {
+        if self.finished_at_epoch_ms.is_some() != !matches!(self.status, RunStatus::Running) {
             return Err(LogStoreError::InvalidMetadata(
-                "run completion and finish time disagree",
+                "run status and finish time disagree",
             ));
         }
-        if self.complete == matches!(self.status, RunStatus::Running) {
+        if matches!(self.status, RunStatus::Running) && self.complete {
             return Err(LogStoreError::InvalidMetadata(
-                "run status and completion state disagree",
+                "running run evidence cannot be complete",
             ));
         }
         Ok(())
@@ -157,6 +158,7 @@ pub struct LeafLogMetadata {
     pub exit: DiagnosticExit,
     pub started_at_epoch_ms: u64,
     pub finished_at_epoch_ms: Option<u64>,
+    pub process_started: bool,
     pub complete: bool,
     pub structured_evidence_formats: Vec<DiagnosticReportFormat>,
     pub structured_evidence_count: u64,
@@ -184,6 +186,11 @@ impl LeafLogMetadata {
         if !self.status.is_terminal() && self.complete {
             return Err(LogStoreError::InvalidMetadata(
                 "nonterminal leaf evidence cannot be complete",
+            ));
+        }
+        if !self.process_started && (self.exit.code.is_some() || self.exit.signal.is_some()) {
+            return Err(LogStoreError::InvalidMetadata(
+                "a pre-start leaf cannot have a process exit",
             ));
         }
         if self.structured_evidence_formats.len() > MAX_DIAGNOSTIC_SOURCES
@@ -418,6 +425,80 @@ impl RunLogLease {
         };
         let leaf_dir = self.open_leaf(&selector)?;
         publish_typed_metadata(&leaf_dir, "diagnostics.json", &document)
+    }
+
+    /// Read one declared structured report through the held run descriptor.
+    /// Each path component is opened without following symlinks; non-regular
+    /// files and replacements are rejected before evidence is returned.
+    pub fn read_declared_report(
+        &self,
+        selector: &LeafSelector,
+        relative: &str,
+        maximum: u64,
+    ) -> Result<Vec<u8>, LogStoreError> {
+        if maximum == 0 {
+            return Err(LogStoreError::InvalidMetadata(
+                "declared report read bound must be positive",
+            ));
+        }
+        let selector = LeafSelector::new(
+            selector.check.clone(),
+            selector.phase,
+            selector.case_id.clone(),
+        )?;
+        let mut directory = self.open_leaf(&selector)?;
+        let components = validated_relative_components(relative)?;
+        for component in &components[..components.len() - 1] {
+            directory = open_existing_directory(&directory, component)?;
+        }
+        let name = components
+            .last()
+            .expect("validated relative report has a final component");
+        let descriptor = unix_fs::openat(
+            &directory,
+            *name,
+            OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK,
+            Mode::empty(),
+        )
+        .map_err(|error| LogStoreError::Io {
+            operation: "open declared diagnostic report",
+            source: error.into(),
+        })?;
+        let mut file = File::from(descriptor);
+        let before = file.metadata().map_err(|source| LogStoreError::Io {
+            operation: "inspect declared diagnostic report",
+            source,
+        })?;
+        if !before.is_file() || before.len() > maximum {
+            return Err(LogStoreError::InvalidMetadata(
+                "declared diagnostic report is not a bounded regular file",
+            ));
+        }
+        let mut payload = Vec::with_capacity(before.len().try_into().map_err(|_| {
+            LogStoreError::InvalidMetadata("declared diagnostic report size is unsupported")
+        })?);
+        (&mut file)
+            .take(maximum.saturating_add(1))
+            .read_to_end(&mut payload)
+            .map_err(|source| LogStoreError::Io {
+                operation: "read declared diagnostic report",
+                source,
+            })?;
+        if payload.len() as u64 > maximum {
+            return Err(LogStoreError::InvalidMetadata(
+                "declared diagnostic report exceeds its read bound",
+            ));
+        }
+        let after = file.metadata().map_err(|source| LogStoreError::Io {
+            operation: "reinspect declared diagnostic report",
+            source,
+        })?;
+        if metadata_identity(&before) != metadata_identity(&after) {
+            return Err(LogStoreError::InvalidMetadata(
+                "declared diagnostic report changed while being read",
+            ));
+        }
+        Ok(payload)
     }
 
     /// Create a new 0600 stream and its new 0600 sparse index in one leaf.
@@ -697,6 +778,57 @@ fn ensure_directory(parent: &File, component: &str) -> Result<File, LogStoreErro
         operation: "open log directory",
         source: error.into(),
     })
+}
+
+fn open_existing_directory(parent: &File, component: &str) -> Result<File, LogStoreError> {
+    unix_fs::openat(
+        parent,
+        component,
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+        Mode::empty(),
+    )
+    .map(File::from)
+    .map_err(|error| LogStoreError::Io {
+        operation: "open declared diagnostic directory",
+        source: error.into(),
+    })
+}
+
+fn validated_relative_components(value: &str) -> Result<Vec<&str>, LogStoreError> {
+    if value.is_empty()
+        || value.starts_with('/')
+        || value.ends_with('/')
+        || value.contains("//")
+        || value.contains('\\')
+        || value.as_bytes().contains(&0)
+    {
+        return Err(LogStoreError::InvalidComponent("diagnostic report path"));
+    }
+    let mut components = Vec::new();
+    for component in Path::new(value).components() {
+        match component {
+            Component::Normal(component) => components.push(
+                component
+                    .to_str()
+                    .ok_or(LogStoreError::InvalidComponent("diagnostic report path"))?,
+            ),
+            _ => return Err(LogStoreError::InvalidComponent("diagnostic report path")),
+        }
+    }
+    if components.is_empty() {
+        return Err(LogStoreError::InvalidComponent("diagnostic report path"));
+    }
+    Ok(components)
+}
+
+fn metadata_identity(metadata: &std::fs::Metadata) -> (u64, u64, u64, i64, i64) {
+    (
+        metadata.dev(),
+        metadata.ino(),
+        metadata.len(),
+        metadata.mtime(),
+        metadata.mtime_nsec(),
+    )
 }
 
 fn open_relative_file(parent: &File, name: &str, flags: OFlags) -> Result<File, LogStoreError> {
@@ -1216,6 +1348,7 @@ mod tests {
             exit: DiagnosticExit::default(),
             started_at_epoch_ms: 110,
             finished_at_epoch_ms: None,
+            process_started: true,
             complete: false,
             structured_evidence_formats: vec![],
             structured_evidence_count: 0,
@@ -1261,12 +1394,10 @@ mod tests {
             schema: 2,
             selector: LeafSelector::case("unit", "empty").expect("selector"),
             status: LeafStatus::Passed,
-            exit: DiagnosticExit {
-                code: Some(0),
-                signal: None,
-            },
+            exit: DiagnosticExit::default(),
             started_at_epoch_ms: 300,
             finished_at_epoch_ms: Some(301),
+            process_started: false,
             complete: true,
             structured_evidence_formats: vec![],
             structured_evidence_count: 0,
@@ -1297,6 +1428,7 @@ mod tests {
             exit: DiagnosticExit::default(),
             started_at_epoch_ms: 600,
             finished_at_epoch_ms: Some(601),
+            process_started: true,
             complete: false,
             structured_evidence_formats: vec![],
             structured_evidence_count: 0,
@@ -1343,6 +1475,7 @@ mod tests {
             },
             started_at_epoch_ms: 410,
             finished_at_epoch_ms: Some(490),
+            process_started: true,
             complete: true,
             structured_evidence_formats: vec![
                 DiagnosticReportFormat::Junit,

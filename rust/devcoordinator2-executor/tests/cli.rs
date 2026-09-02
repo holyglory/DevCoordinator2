@@ -211,6 +211,7 @@ fn log_query_and_prune_commands_use_real_bounded_json_bridge() {
             },
             started_at_epoch_ms: 1,
             finished_at_epoch_ms: Some(2),
+            process_started: true,
             complete: true,
             structured_evidence_formats: Vec::new(),
             structured_evidence_count: 0,
