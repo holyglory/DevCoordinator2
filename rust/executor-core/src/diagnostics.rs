@@ -674,9 +674,6 @@ struct PlaywrightReport {
 #[derive(Debug, Deserialize)]
 struct PlaywrightSuite {
     title: String,
-    file: String,
-    line: u64,
-    column: u64,
     specs: Vec<PlaywrightSpec>,
     #[serde(default)]
     suites: Vec<PlaywrightSuite>,

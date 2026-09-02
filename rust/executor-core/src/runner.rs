@@ -1,32 +1,38 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use devcoordinator2_executor_protocol::{
     ArtifactReceipt, CapacityReport, CaseManifest, CaseReport, CaseSpec, CheckPlan, CheckReport,
-    CompletionMode, DiagnosticExit, DiagnosticOrigin, ErrorCategory, ExecutionPlan,
-    ExecutionReport, FailureIndexEntry, FailureMode, LeafStatus, LogPhase, LogRef, LogStream,
-    MAX_DIAGNOSTIC_EVENTS, MAX_MANIFEST_BYTES, MAX_REASON_BYTES, OutputStats, RunStatus, Schema2,
-    TerminationReason,
+    CompletionMode, DiagnosticExit, DiagnosticOrigin, DiagnosticReportSource, ErrorCategory,
+    ExecutionPlan, ExecutionReport, FailureIndexEntry, FailureMode, LeafStatus, LogPhase, LogRef,
+    LogStream, LogStreamSummary, MAX_DIAGNOSTIC_EVENTS, MAX_MANIFEST_BYTES, MAX_REASON_BYTES,
+    RunStatus, Schema2, TerminationReason,
 };
 use rustix::process::Signal;
 use tokio::task::JoinSet;
 
 use crate::ExecutorError;
 use crate::capacity::{CapacityObservation, PermitProvider};
-use crate::diagnostics::{diagnostic_fingerprint, normalize_diagnostics};
+use crate::diagnostics::{
+    DiagnosticContext, diagnostic_fingerprint, normalize_diagnostics, parse_declared_report,
+};
 use crate::evidence::{
     artifact_receipts, receipts_match, source_digest, write_bytes_atomic, write_json_atomic,
 };
 use crate::process::{
-    AggregateSink, CHECK_LOG_CAP_BYTES, Cancellation, EventService, ProcessRequest, ProcessResult,
-    ProcessStatus, ServiceExit, run_process, signal_group,
+    Cancellation, EventService, ProcessRequest, ProcessResult, ProcessStatus, ServiceExit,
+    run_process, signal_group,
 };
+use crate::{LeafLogMetadata, LeafSelector, RunLogLease, RunLogMetadata, StreamMetadata};
 
 const SERVICE_TERMINATION_GRACE: Duration = Duration::from_secs(2);
 const MAX_INLINE_CASES: usize = 128;
 const MAX_CASE_EVIDENCE_BYTES: usize = 4 * 1024 * 1024;
+const MAX_DECLARED_DIAGNOSTIC_REPORT_BYTES: u64 = 16 * 1024 * 1024;
 
 pub struct Executor {
     plan: ExecutionPlan,
@@ -68,6 +74,24 @@ impl Executor {
                 "executor current_dir resolves outside the worktree",
             ));
         }
+        let log_requested = PathBuf::from(&plan.log_dir);
+        if !log_requested.starts_with(&root_requested) {
+            return Err(ExecutorError::new(
+                "executor log_dir is outside the requested worktree",
+            ));
+        }
+        let log_dir = log_requested.canonicalize().map_err(|error| {
+            ExecutorError::new(format!("cannot resolve pre-created log directory: {error}"))
+        })?;
+        if !log_dir.starts_with(&root) {
+            return Err(ExecutorError::new(
+                "executor log_dir resolves outside the worktree",
+            ));
+        }
+        let log_lease = Arc::new(
+            RunLogLease::acquire(&log_dir, &plan.run_id)
+                .map_err(|error| ExecutorError::new(error.to_string()))?,
+        );
         for directory in ["checks", "scratch", "artifacts"] {
             tokio::fs::create_dir_all(current.join(directory))
                 .await
@@ -75,11 +99,6 @@ impl Executor {
                     ExecutorError::new(format!("cannot create run artifacts: {error}"))
                 })?;
         }
-        let aggregate_stdout =
-            AggregateSink::create(&current.join("stdout.log"), CHECK_LOG_CAP_BYTES)?;
-        let aggregate_stderr =
-            AggregateSink::create(&current.join("stderr.log"), CHECK_LOG_CAP_BYTES)?;
-
         let digest_root = root.clone();
         let initial_digest = tokio::task::spawn_blocking(move || source_digest(&digest_root))
             .await
@@ -91,9 +110,37 @@ impl Executor {
         }
 
         let started_at = iso_now();
+        let started_epoch_ms = epoch_ms();
         let started = Instant::now();
         let capacity = Arc::new(Mutex::new(CapacityReport::default()));
         let mut checks = initialize_checks(&plan, &root, &started_at)?;
+        if log_lease
+            .publish_run_metadata(&RunLogMetadata {
+                schema: 2,
+                run_id: plan.run_id.clone(),
+                test: plan.test.clone(),
+                started_at_epoch_ms: started_epoch_ms,
+                finished_at_epoch_ms: None,
+                status: RunStatus::Running,
+                complete: false,
+            })
+            .is_err()
+        {
+            mark_run_log_failure(&mut checks, &plan.run_id);
+            return write_report(
+                &current.join("check-report.json"),
+                &plan,
+                &checks,
+                &capacity,
+                &started_at,
+                started,
+                RunStatus::Failed,
+                Some(iso_now()),
+                false,
+                None,
+            );
+        }
+        publish_reused_leaf_metadata(&mut checks, &plan.run_id, &log_lease, started_epoch_ms);
         let report_path = current.join("check-report.json");
         write_report(
             &report_path,
@@ -105,7 +152,6 @@ impl Executor {
             RunStatus::Running,
             None,
             false,
-            None,
             None,
         )?;
 
@@ -122,7 +168,7 @@ impl Executor {
                     ExecutorError::new(format!("event service task failed: {error}"))
                 })?;
                 service_pgids.remove(&name);
-                mark_service_exit(&mut checks, &plan.run_id, &name, exit, false)?;
+                mark_service_exit(&mut checks, &plan, &log_lease, &name, exit, false)?;
                 if abort.is_none() {
                     abort = Some(Abort::Unsafe(format!(
                         "required long-lived check {name} exited"
@@ -130,13 +176,18 @@ impl Executor {
                     self.cancellation.cancel();
                 }
             }
-            mark_blocked(&mut checks, &invalidators, &plan.run_id);
+            mark_blocked(&mut checks, &invalidators, &plan.run_id, &log_lease);
             if self.cancellation.is_cancelled() && abort.is_none() {
                 abort = Some(Abort::Cancelled);
             }
             if abort.is_some() {
                 cancellation_seen = true;
-                mark_pending_cancelled(&mut checks, &plan.run_id, abort_reason(abort.as_ref()));
+                mark_pending_cancelled(
+                    &mut checks,
+                    &plan.run_id,
+                    &log_lease,
+                    abort_reason(abort.as_ref()),
+                );
             }
 
             if abort.is_none() {
@@ -146,6 +197,7 @@ impl Executor {
                     let runtime = &mut checks[index];
                     runtime.report.status = LeafStatus::Running;
                     runtime.report.started_at = Some(iso_now());
+                    runtime.started_epoch_ms = Some(epoch_ms());
                     let check = runtime.plan.clone();
                     let plan = plan.clone();
                     let root = root.clone();
@@ -153,8 +205,7 @@ impl Executor {
                     let permits = self.permits.clone();
                     let cancellation = self.cancellation.clone();
                     let capacity = capacity.clone();
-                    let aggregate_stdout = aggregate_stdout.clone();
-                    let aggregate_stderr = aggregate_stderr.clone();
+                    let log_lease = log_lease.clone();
                     running.spawn(async move {
                         let outcome = execute_check(
                             plan,
@@ -164,8 +215,7 @@ impl Executor {
                             permits,
                             cancellation,
                             capacity,
-                            aggregate_stdout,
-                            aggregate_stderr,
+                            log_lease,
                         )
                         .await;
                         (name, outcome)
@@ -183,7 +233,6 @@ impl Executor {
                 RunStatus::Running,
                 None,
                 false,
-                None,
                 None,
             )?;
 
@@ -221,7 +270,7 @@ impl Executor {
                         ExecutorError::new(format!("event service task failed: {error}"))
                     })?;
                     service_pgids.remove(&name);
-                    mark_service_exit(&mut checks, &plan.run_id, &name, exit, false)?;
+                    mark_service_exit(&mut checks, &plan, &log_lease, &name, exit, false)?;
                     if abort.is_none() {
                         abort = Some(Abort::Unsafe(format!(
                             "required long-lived check {name} exited"
@@ -238,7 +287,14 @@ impl Executor {
             }
         }
 
-        stop_services(&mut services, &mut service_pgids, &mut checks, &plan.run_id).await?;
+        stop_services(
+            &mut services,
+            &mut service_pgids,
+            &mut checks,
+            &plan,
+            &log_lease,
+        )
+        .await?;
         let digest_root = root.clone();
         let final_digest = tokio::task::spawn_blocking(move || source_digest(&digest_root)).await;
         let (source_changed, source_error) = match final_digest {
@@ -257,11 +313,9 @@ impl Executor {
         } else {
             RunStatus::Passed
         };
-        let unsafe_reason = source_error.clone().or_else(|| match &abort {
-            Some(Abort::Stopped(reason) | Abort::Unsafe(reason)) => Some(reason.clone()),
-            Some(Abort::Cancelled) | None => None,
-        });
-        write_report(
+        let finished_at = iso_now();
+        let finished_epoch_ms = epoch_ms();
+        let mut report = write_report(
             &report_path,
             &plan,
             &checks,
@@ -269,11 +323,40 @@ impl Executor {
             &started_at,
             started,
             status,
-            Some(iso_now()),
+            Some(finished_at),
             source_changed,
             source_error,
-            unsafe_reason,
-        )
+        )?;
+        if log_lease
+            .publish_run_metadata(&RunLogMetadata {
+                schema: 2,
+                run_id: plan.run_id.clone(),
+                test: plan.test.clone(),
+                started_at_epoch_ms: started_epoch_ms,
+                finished_at_epoch_ms: Some(finished_epoch_ms),
+                status,
+                complete: true,
+            })
+            .is_err()
+        {
+            report.status = RunStatus::Failed;
+            report.failure_index.push(failure_entry(
+                &plan.run_id,
+                None,
+                None,
+                LeafStatus::Unsafe,
+                None,
+                Some(TerminationReason::UnsafeStop),
+                ErrorCategory::LogStorage,
+                None,
+            ));
+            let normalized = normalize_diagnostics(report.failure_index)
+                .map_err(|_| ExecutorError::new("cannot normalize run log storage failure"))?;
+            report.failure_index = normalized.entries;
+            report.failure_index_truncated |= normalized.truncated;
+            write_json_atomic(&report_path, &report)?;
+        }
+        Ok(report)
     }
 }
 
@@ -281,6 +364,7 @@ struct CheckRuntime {
     plan: CheckPlan,
     report: CheckReport,
     failures: Vec<FailureIndexEntry>,
+    started_epoch_ms: Option<u64>,
 }
 
 struct CheckOutcome {
@@ -288,7 +372,7 @@ struct CheckOutcome {
     exit_code: Option<i32>,
     reason: Option<String>,
     artifacts: Vec<ArtifactReceipt>,
-    output: OutputStats,
+    streams: Vec<LogStreamSummary>,
     case_count: u32,
     cases: Vec<CaseReport>,
     cases_truncated: bool,
@@ -300,8 +384,7 @@ struct CheckOutcome {
 #[derive(Clone)]
 struct CaseOutcome {
     report: CaseReport,
-    reason: Option<String>,
-    output: OutputStats,
+    failures: Vec<FailureIndexEntry>,
 }
 
 enum Abort {
@@ -362,11 +445,19 @@ fn failure_entry(
 
 fn process_failure_semantics(
     process: &ProcessResult,
-    artifact_failure: bool,
     completion: CompletionMode,
 ) -> (Option<TerminationReason>, ErrorCategory) {
-    if artifact_failure {
-        return (None, ErrorCategory::Artifact);
+    if process.log_storage_failed {
+        return (
+            Some(TerminationReason::UnsafeStop),
+            ErrorCategory::LogStorage,
+        );
+    }
+    if process.structured_evidence_invalid {
+        return (
+            Some(TerminationReason::UnsafeStop),
+            ErrorCategory::StructuredEvidenceInvalid,
+        );
     }
     if completion == CompletionMode::Event
         && process.status == ProcessStatus::Failed
@@ -405,6 +496,8 @@ fn leaf_failure_semantics(
                 reason.contains("leaf output")
                     || reason.contains("retain leaf output")
                     || reason.contains("sync leaf output")
+                    || reason.contains("log storage")
+                    || reason.contains("leaf log metadata")
                     || reason.contains("stdout task")
                     || reason.contains("stderr task")
             }) =>
@@ -467,21 +560,15 @@ fn initialize_checks(
                 started_at: reused.map(|_| started_at.to_owned()),
                 finished_at: reused.map(|_| started_at.to_owned()),
                 duration_seconds: reused.map(|_| 0.0),
-                exit_code: None,
-                reason: reused.map(|_| "matching artifact evidence reused".into()),
+                exit: DiagnosticExit::default(),
                 artifacts: reused.cloned().unwrap_or_default(),
-                output_ref: format!("checks/{}", check.name),
-                stdout_bytes_observed: 0,
-                stdout_bytes_retained: 0,
-                stdout_truncated: false,
-                stderr_bytes_observed: 0,
-                stderr_bytes_retained: 0,
-                stderr_truncated: false,
+                streams: Vec::new(),
                 case_count: 0,
                 cases: Vec::new(),
                 cases_truncated: false,
             },
             failures: Vec::new(),
+            started_epoch_ms: reused.map(|_| epoch_ms()),
         });
     }
     Ok(result)
@@ -509,10 +596,69 @@ fn invalidator_map(checks: &[CheckRuntime]) -> BTreeMap<String, Vec<String>> {
     result
 }
 
+fn mark_run_log_failure(checks: &mut [CheckRuntime], run_id: &str) {
+    for check in checks {
+        check.report.status = LeafStatus::Unsafe;
+        check.report.finished_at = Some(iso_now());
+        check.report.duration_seconds = Some(0.0);
+        check.failures.push(failure_entry(
+            run_id,
+            Some(&check.plan.name),
+            None,
+            LeafStatus::Unsafe,
+            None,
+            Some(TerminationReason::UnsafeStop),
+            ErrorCategory::LogStorage,
+            None,
+        ));
+    }
+}
+
+fn publish_reused_leaf_metadata(
+    checks: &mut [CheckRuntime],
+    run_id: &str,
+    log_lease: &RunLogLease,
+    started_epoch_ms: u64,
+) {
+    for check in checks {
+        if check.report.status != LeafStatus::Reused {
+            continue;
+        }
+        let selector = LeafSelector::check(check.plan.name.clone()).expect("validated selector");
+        if log_lease
+            .publish_leaf_metadata(&LeafLogMetadata {
+                schema: 2,
+                selector,
+                status: LeafStatus::Reused,
+                exit: DiagnosticExit::default(),
+                started_at_epoch_ms: started_epoch_ms,
+                finished_at_epoch_ms: Some(started_epoch_ms),
+                complete: true,
+                structured_evidence_formats: Vec::new(),
+                structured_evidence_count: 0,
+            })
+            .is_err()
+        {
+            check.report.status = LeafStatus::Unsafe;
+            check.failures.push(failure_entry(
+                run_id,
+                Some(&check.plan.name),
+                None,
+                LeafStatus::Unsafe,
+                None,
+                Some(TerminationReason::UnsafeStop),
+                ErrorCategory::LogStorage,
+                Some(LogPhase::Check),
+            ));
+        }
+    }
+}
+
 fn mark_blocked(
     checks: &mut [CheckRuntime],
     invalidators: &BTreeMap<String, Vec<String>>,
     run_id: &str,
+    log_lease: &RunLogLease,
 ) {
     let statuses: BTreeMap<String, LeafStatus> = checks
         .iter()
@@ -534,6 +680,7 @@ fn mark_blocked(
                 finish_blocked(
                     check,
                     run_id,
+                    log_lease,
                     LeafStatus::Invalidated,
                     format!(
                         "invalidating preflights did not pass: {}",
@@ -561,6 +708,7 @@ fn mark_blocked(
             finish_blocked(
                 check,
                 run_id,
+                log_lease,
                 LeafStatus::NotMeaningful,
                 format!("required checks did not pass: {}", dependencies.join(", ")),
             );
@@ -568,11 +716,16 @@ fn mark_blocked(
     }
 }
 
-fn finish_blocked(check: &mut CheckRuntime, run_id: &str, status: LeafStatus, reason: String) {
+fn finish_blocked(
+    check: &mut CheckRuntime,
+    run_id: &str,
+    log_lease: &RunLogLease,
+    status: LeafStatus,
+    _reason: String,
+) {
     check.report.status = status;
     check.report.finished_at = Some(iso_now());
     check.report.duration_seconds = Some(0.0);
-    check.report.reason = Some(reason.clone());
     let (termination_reason, error_category) = match status {
         LeafStatus::Invalidated | LeafStatus::NotMeaningful => (None, ErrorCategory::Dependency),
         LeafStatus::Cancelled => (
@@ -586,11 +739,32 @@ fn finish_blocked(check: &mut CheckRuntime, run_id: &str, status: LeafStatus, re
         LeafStatus::Unsafe => (Some(TerminationReason::UnsafeStop), ErrorCategory::Internal),
         _ => (None, ErrorCategory::Internal),
     };
+    let selector = LeafSelector::check(check.plan.name.clone()).expect("validated selector");
+    let mut error_category = error_category;
+    let mut termination_reason = termination_reason;
+    if log_lease
+        .publish_leaf_metadata(&LeafLogMetadata {
+            schema: 2,
+            selector,
+            status,
+            exit: DiagnosticExit::default(),
+            started_at_epoch_ms: check.started_epoch_ms.unwrap_or_else(epoch_ms),
+            finished_at_epoch_ms: Some(epoch_ms()),
+            complete: true,
+            structured_evidence_formats: Vec::new(),
+            structured_evidence_count: 0,
+        })
+        .is_err()
+    {
+        check.report.status = LeafStatus::Unsafe;
+        error_category = ErrorCategory::LogStorage;
+        termination_reason = Some(TerminationReason::UnsafeStop);
+    }
     check.failures.push(failure_entry(
         run_id,
         Some(&check.plan.name),
         None,
-        status,
+        check.report.status,
         None,
         termination_reason,
         error_category,
@@ -644,50 +818,58 @@ async fn execute_check(
     permits: Arc<dyn PermitProvider>,
     cancellation: Cancellation,
     capacity: Arc<Mutex<CapacityReport>>,
-    aggregate_stdout: Arc<AggregateSink>,
-    aggregate_stderr: Arc<AggregateSink>,
+    log_lease: Arc<RunLogLease>,
 ) -> CheckOutcome {
     let started = Instant::now();
+    let started_epoch_ms = epoch_ms();
     if let Some(command) = &check.command {
+        let selector = LeafSelector::check(check.name.clone()).expect("validated check selector");
         let request = process_request(
             &plan,
             &check,
             &root,
             &current,
-            aggregate_stdout.clone(),
-            aggregate_stderr.clone(),
+            log_lease.clone(),
+            selector.clone(),
             &check.name,
             command.clone(),
             check.completion,
             false,
-            CHECK_LOG_CAP_BYTES,
-            "stdout.log",
-            "stderr.log",
         );
         let mut process = run_process(request, permits, cancellation).await;
         observe_capacity(&capacity, process.capacity);
-        let mut artifact_failure = false;
+        finalize_leaf_evidence(
+            &plan,
+            &check,
+            &selector,
+            &log_lease,
+            &mut process,
+            started_epoch_ms,
+        );
         let artifacts = if process.status == ProcessStatus::Passed {
             match artifact_receipts(&root, &check.produces) {
                 Ok(receipts) => receipts,
                 Err(error) => {
-                    artifact_failure = true;
                     process.status = ProcessStatus::Failed;
                     process.reason = Some(error.to_string());
+                    record_leaf_postprocess_failure(
+                        &plan,
+                        &check,
+                        &selector,
+                        &log_lease,
+                        &mut process,
+                        started_epoch_ms,
+                        LeafStatus::Failed,
+                        ErrorCategory::Artifact,
+                        None,
+                    );
                     Vec::new()
                 }
             }
         } else {
             Vec::new()
         };
-        direct_outcome(
-            &plan.run_id,
-            &check,
-            process,
-            artifacts,
-            artifact_failure,
-            started.elapsed(),
-        )
+        direct_outcome(process, artifacts, started.elapsed())
     } else {
         execute_fanout(
             &plan,
@@ -697,44 +879,27 @@ async fn execute_check(
             permits,
             cancellation,
             capacity,
-            aggregate_stdout,
-            aggregate_stderr,
+            log_lease,
             started,
+            started_epoch_ms,
         )
         .await
     }
 }
 
 fn direct_outcome(
-    run_id: &str,
-    check: &CheckPlan,
     mut process: ProcessResult,
     artifacts: Vec<ArtifactReceipt>,
-    artifact_failure: bool,
     duration: Duration,
 ) -> CheckOutcome {
     let status: LeafStatus = process.status.into();
-    let mut failures = Vec::new();
-    if !status.is_success() {
-        let (termination_reason, error_category) =
-            process_failure_semantics(&process, artifact_failure, check.completion);
-        failures.push(failure_entry(
-            run_id,
-            Some(&check.name),
-            None,
-            status,
-            process.exit_code,
-            termination_reason,
-            error_category,
-            Some(LogPhase::Check),
-        ));
-    }
+    let failures = std::mem::take(&mut process.diagnostics);
     CheckOutcome {
         status,
         exit_code: process.exit_code,
         reason: process.reason.take().map(|value| bounded_reason(&value)),
         artifacts,
-        output: process.output,
+        streams: process.streams,
         case_count: 0,
         cases: Vec::new(),
         cases_truncated: false,
@@ -753,81 +918,95 @@ async fn execute_fanout(
     permits: Arc<dyn PermitProvider>,
     cancellation: Cancellation,
     capacity: Arc<Mutex<CapacityReport>>,
-    aggregate_stdout: Arc<AggregateSink>,
-    aggregate_stderr: Arc<AggregateSink>,
+    log_lease: Arc<RunLogLease>,
     started: Instant,
+    _started_epoch_ms: u64,
 ) -> CheckOutcome {
-    let mut aggregate = OutputStats::default();
+    let mut streams = Vec::new();
     let mut cases = if let Some(static_cases) = &check.cases {
         static_cases.clone()
     } else {
+        let discovery_started_epoch_ms = epoch_ms();
+        let selector =
+            LeafSelector::discovery(check.name.clone()).expect("validated discovery selector");
         let request = process_request(
             plan,
             check,
             root,
             current,
-            aggregate_stdout.clone(),
-            aggregate_stderr.clone(),
+            log_lease.clone(),
+            selector.clone(),
             &format!("{}/discovery", check.name),
             check.discover.clone().unwrap_or_default(),
             CompletionMode::Process,
             true,
-            CHECK_LOG_CAP_BYTES,
-            "discovery-stdout.log",
-            "discovery-stderr.log",
         );
         let mut discovery = run_process(request, permits.clone(), cancellation.clone()).await;
         observe_capacity(&capacity, discovery.capacity);
-        add_output(&mut aggregate, &discovery.output);
+        finalize_leaf_evidence(
+            plan,
+            check,
+            &selector,
+            &log_lease,
+            &mut discovery,
+            discovery_started_epoch_ms,
+        );
+        streams.extend(discovery.streams.iter().cloned());
         if discovery.status != ProcessStatus::Passed {
             return fanout_setup_failure(
                 &plan.run_id,
                 check,
                 discovery,
-                aggregate,
+                streams,
                 started.elapsed(),
             );
         }
         let Some(manifest_capture) = discovery.manifest.take() else {
-            return simple_outcome(
-                &plan.run_id,
+            return discovery_postprocess_failure(
+                plan,
                 check,
-                LeafStatus::Failed,
-                "case discovery closed without a descriptor manifest",
-                aggregate,
+                &selector,
+                &log_lease,
+                discovery,
+                discovery_started_epoch_ms,
+                streams,
                 started.elapsed(),
-                None,
-                None,
+                LeafStatus::Failed,
+                "case discovery closed without a descriptor manifest".into(),
                 ErrorCategory::StructuredEvidenceInvalid,
-                Some(LogPhase::Discovery),
+                None,
             );
         };
         if manifest_capture.truncated || manifest_capture.observed > MAX_MANIFEST_BYTES as u64 {
-            return simple_outcome(
-                &plan.run_id,
+            return discovery_postprocess_failure(
+                plan,
                 check,
-                LeafStatus::Failed,
-                "case manifest descriptor exceeds 2 MiB",
-                aggregate,
+                &selector,
+                &log_lease,
+                discovery,
+                discovery_started_epoch_ms,
+                streams,
                 started.elapsed(),
-                None,
-                None,
+                LeafStatus::Failed,
+                "case manifest descriptor exceeds 2 MiB".into(),
                 ErrorCategory::StructuredEvidenceInvalid,
-                Some(LogPhase::Discovery),
+                None,
             );
         }
         if manifest_capture.payload.is_empty() {
-            return simple_outcome(
-                &plan.run_id,
+            return discovery_postprocess_failure(
+                plan,
                 check,
-                LeafStatus::Failed,
-                "case discovery descriptor closed without a manifest",
-                aggregate,
+                &selector,
+                &log_lease,
+                discovery,
+                discovery_started_epoch_ms,
+                streams,
                 started.elapsed(),
-                None,
-                None,
+                LeafStatus::Failed,
+                "case discovery descriptor closed without a manifest".into(),
                 ErrorCategory::StructuredEvidenceInvalid,
-                Some(LogPhase::Discovery),
+                None,
             );
         }
         let path = current
@@ -836,33 +1015,37 @@ async fn execute_fanout(
             .join("manifest.json");
         if let Err(error) = write_bytes_atomic(&path, &manifest_capture.payload, MAX_MANIFEST_BYTES)
         {
-            return simple_outcome(
-                &plan.run_id,
+            return discovery_postprocess_failure(
+                plan,
                 check,
-                LeafStatus::Unsafe,
-                &error.to_string(),
-                aggregate,
+                &selector,
+                &log_lease,
+                discovery,
+                discovery_started_epoch_ms,
+                streams,
                 started.elapsed(),
-                None,
-                Some(TerminationReason::UnsafeStop),
+                LeafStatus::Unsafe,
+                error.to_string(),
                 ErrorCategory::LogStorage,
-                Some(LogPhase::Discovery),
+                Some(TerminationReason::UnsafeStop),
             );
         }
         match CaseManifest::from_json(&manifest_capture.payload) {
             Ok(manifest) => manifest.cases,
             Err(error) => {
-                return simple_outcome(
-                    &plan.run_id,
+                return discovery_postprocess_failure(
+                    plan,
                     check,
-                    LeafStatus::Failed,
-                    &error.to_string(),
-                    aggregate,
+                    &selector,
+                    &log_lease,
+                    discovery,
+                    discovery_started_epoch_ms,
+                    streams,
                     started.elapsed(),
-                    None,
-                    None,
+                    LeafStatus::Failed,
+                    error.to_string(),
                     ErrorCategory::StructuredEvidenceInvalid,
-                    Some(LogPhase::Discovery),
+                    None,
                 );
             }
         }
@@ -879,8 +1062,7 @@ async fn execute_fanout(
         let cancellation = cancellation.clone();
         let capacity = capacity.clone();
         let case_command = case_command.clone();
-        let aggregate_stdout = aggregate_stdout.clone();
-        let aggregate_stderr = aggregate_stderr.clone();
+        let log_lease = log_lease.clone();
         tasks.spawn(async move {
             run_case(
                 &plan,
@@ -892,8 +1074,7 @@ async fn execute_fanout(
                 permits,
                 cancellation,
                 capacity,
-                aggregate_stdout,
-                aggregate_stderr,
+                log_lease,
             )
             .await
         });
@@ -909,24 +1090,7 @@ async fn execute_fanout(
     outcomes.sort_by(|left, right| left.report.id.cmp(&right.report.id));
     let mut failures = Vec::new();
     for outcome in &outcomes {
-        add_output(&mut aggregate, &outcome.output);
-        if !outcome.report.status.is_success() {
-            let (termination_reason, error_category) = leaf_failure_semantics(
-                outcome.report.status,
-                outcome.report.exit_code,
-                outcome.reason.as_deref(),
-            );
-            failures.push(failure_entry(
-                &plan.run_id,
-                Some(&check.name),
-                Some(&outcome.report.id),
-                outcome.report.status,
-                outcome.report.exit_code,
-                termination_reason,
-                error_category,
-                Some(LogPhase::Case),
-            ));
-        }
+        failures.extend(outcome.failures.iter().cloned());
     }
     let case_reports: Vec<CaseReport> = outcomes.into_iter().map(|row| row.report).collect();
     let (status, reason) = if let Some(reason) = join_failure {
@@ -1036,7 +1200,7 @@ async fn execute_fanout(
         exit_code: None,
         reason: final_reason.map(|value| bounded_reason(&value)),
         artifacts,
-        output: aggregate,
+        streams,
         case_count,
         cases: case_reports
             .iter()
@@ -1061,40 +1225,46 @@ async fn run_case(
     permits: Arc<dyn PermitProvider>,
     cancellation: Cancellation,
     capacity: Arc<Mutex<CapacityReport>>,
-    aggregate_stdout: Arc<AggregateSink>,
-    aggregate_stderr: Arc<AggregateSink>,
+    log_lease: Arc<RunLogLease>,
 ) -> CaseOutcome {
     let started = Instant::now();
+    let started_epoch_ms = epoch_ms();
     let mut command = base_command.to_vec();
     command.extend(case.args.clone());
     let leaf = format!("{}/case/{}", check.name, case.id);
+    let selector =
+        LeafSelector::case(check.name.clone(), case.id.clone()).expect("validated case selector");
     let request = process_request(
         plan,
         check,
         root,
         current,
-        aggregate_stdout,
-        aggregate_stderr,
+        log_lease.clone(),
+        selector.clone(),
         &leaf,
         command,
         CompletionMode::Process,
         false,
-        CHECK_LOG_CAP_BYTES,
-        "stdout.log",
-        "stderr.log",
     );
-    let process = run_process(request, permits, cancellation).await;
+    let mut process = run_process(request, permits, cancellation).await;
     observe_capacity(&capacity, process.capacity);
+    finalize_leaf_evidence(
+        plan,
+        check,
+        &selector,
+        &log_lease,
+        &mut process,
+        started_epoch_ms,
+    );
     CaseOutcome {
         report: CaseReport {
             id: case.id.clone(),
             status: process.status.into(),
-            exit_code: process.exit_code,
+            exit: diagnostic_exit(process.exit_code),
             duration_ms: millis(started.elapsed()),
-            output_ref: format!("checks/{}/cases/{}", check.name, case.id),
+            streams: process.streams,
         },
-        reason: process.reason,
-        output: process.output,
+        failures: process.diagnostics,
     }
 }
 
@@ -1104,36 +1274,24 @@ fn process_request(
     check: &CheckPlan,
     root: &Path,
     current: &Path,
-    aggregate_stdout: Arc<AggregateSink>,
-    aggregate_stderr: Arc<AggregateSink>,
+    log_lease: Arc<RunLogLease>,
+    log_selector: LeafSelector,
     leaf: &str,
     command: Vec<String>,
     completion: CompletionMode,
     capture_manifest: bool,
-    stdout_cap: usize,
-    stdout_filename: &str,
-    stderr_filename: &str,
 ) -> ProcessRequest {
-    let (output_dir, scratch) =
-        if let Some(case_id) = leaf.strip_prefix(&format!("{}/case/", check.name)) {
-            (
-                current
-                    .join("checks")
-                    .join(&check.name)
-                    .join("cases")
-                    .join(case_id),
-                current
-                    .join("scratch")
-                    .join(&check.name)
-                    .join("cases")
-                    .join(case_id),
-            )
-        } else {
-            (
-                current.join("checks").join(&check.name),
-                current.join("scratch").join(&check.name),
-            )
-        };
+    let scratch = if let Some(case_id) = leaf.strip_prefix(&format!("{}/case/", check.name)) {
+        current
+            .join("scratch")
+            .join(&check.name)
+            .join("cases")
+            .join(case_id)
+    } else {
+        current.join("scratch").join(&check.name)
+    };
+    let diagnostics_dir =
+        leaf_log_directory(Path::new(&plan.log_dir), &log_selector).join("diagnostics");
     ProcessRequest {
         run_id: plan.run_id.clone(),
         check_name: check.name.clone(),
@@ -1143,78 +1301,405 @@ fn process_request(
         env: check.env.clone(),
         scratch,
         shared_artifacts: current.join("artifacts"),
-        stdout_path: output_dir.join(stdout_filename),
-        stderr_path: output_dir.join(stderr_filename),
-        aggregate_stdout,
-        aggregate_stderr,
-        stdout_cap,
-        stderr_cap: CHECK_LOG_CAP_BYTES,
+        diagnostics_dir,
+        log_lease,
+        log_selector,
         timeout_seconds: check.timeout_seconds,
         completion,
         capture_manifest,
     }
 }
 
-fn fanout_setup_failure(
-    run_id: &str,
+fn finalize_leaf_evidence(
+    plan: &ExecutionPlan,
     check: &CheckPlan,
-    process: ProcessResult,
-    output: OutputStats,
+    selector: &LeafSelector,
+    log_lease: &RunLogLease,
+    process: &mut ProcessResult,
+    started_at_epoch_ms: u64,
+) {
+    if process.service.is_some() {
+        return;
+    }
+    supplement_stream_summaries(plan, selector, &mut process.streams);
+    if process.process_started
+        && (process.streams.len() != 2 || process.streams.iter().any(|stream| !stream.complete))
+    {
+        process.status = ProcessStatus::Unsafe;
+        process.log_storage_failed = true;
+        process.reason = Some("log storage became incomplete".into());
+    }
+    let context = DiagnosticContext {
+        run_id: plan.run_id.clone(),
+        check: check.name.clone(),
+        case: selector.case_id.clone(),
+        phase: selector.phase,
+    };
+    let diagnostics_dir =
+        leaf_log_directory(Path::new(&plan.log_dir), selector).join("diagnostics");
+    let mut formats = Vec::new();
+    let mut invalid = process.structured_evidence_invalid;
+    for source in &check.diagnostic_sources {
+        match read_declared_diagnostics(&diagnostics_dir, source, &context) {
+            Ok(entries) => {
+                formats.push(source.format);
+                process.diagnostics.extend(entries);
+            }
+            Err(()) => invalid = true,
+        }
+    }
+    if !process.diagnostics.is_empty() && process.status == ProcessStatus::Passed {
+        process.status = ProcessStatus::Failed;
+    }
+    if invalid {
+        process.status = ProcessStatus::Unsafe;
+        process.structured_evidence_invalid = true;
+        process.reason = Some("structured diagnostic evidence is invalid".into());
+        process.diagnostics.push(failure_entry(
+            &plan.run_id,
+            Some(&check.name),
+            selector.case_id.as_deref(),
+            LeafStatus::Unsafe,
+            process.exit_code,
+            Some(TerminationReason::UnsafeStop),
+            ErrorCategory::StructuredEvidenceInvalid,
+            Some(selector.phase),
+        ));
+    }
+    let status: LeafStatus = process.status.into();
+    if !status.is_success()
+        && !process
+            .diagnostics
+            .iter()
+            .any(|entry| entry.origin == DiagnosticOrigin::Executor)
+    {
+        let (termination_reason, error_category) =
+            process_failure_semantics(process, check.completion);
+        process.diagnostics.push(failure_entry(
+            &plan.run_id,
+            Some(&check.name),
+            selector.case_id.as_deref(),
+            status,
+            process.exit_code,
+            termination_reason,
+            error_category,
+            Some(selector.phase),
+        ));
+    }
+    match normalize_diagnostics(std::mem::take(&mut process.diagnostics)) {
+        Ok(normalized) => process.diagnostics = normalized.entries,
+        Err(_) => {
+            process.status = ProcessStatus::Unsafe;
+            process.structured_evidence_invalid = true;
+            process.diagnostics = vec![failure_entry(
+                &plan.run_id,
+                Some(&check.name),
+                selector.case_id.as_deref(),
+                LeafStatus::Unsafe,
+                process.exit_code,
+                Some(TerminationReason::UnsafeStop),
+                ErrorCategory::StructuredEvidenceInvalid,
+                Some(selector.phase),
+            )];
+        }
+    }
+    if log_lease
+        .publish_leaf_diagnostics(selector, &process.diagnostics)
+        .is_err()
+    {
+        process.status = ProcessStatus::Unsafe;
+        process.log_storage_failed = true;
+        process.reason = Some("cannot publish structured diagnostic evidence".into());
+        process.diagnostics.push(failure_entry(
+            &plan.run_id,
+            Some(&check.name),
+            selector.case_id.as_deref(),
+            LeafStatus::Unsafe,
+            process.exit_code,
+            Some(TerminationReason::UnsafeStop),
+            ErrorCategory::LogStorage,
+            Some(selector.phase),
+        ));
+    }
+    formats.sort();
+    formats.dedup();
+    let complete = !process.log_storage_failed
+        && (!process.process_started
+            || (process.streams.len() == 2
+                && process.streams.iter().all(|stream| stream.complete)));
+    let metadata = LeafLogMetadata {
+        schema: 2,
+        selector: selector.clone(),
+        status: process.status.into(),
+        exit: diagnostic_exit(process.exit_code),
+        started_at_epoch_ms,
+        finished_at_epoch_ms: Some(epoch_ms()),
+        complete,
+        structured_evidence_formats: formats,
+        structured_evidence_count: process.diagnostics.len() as u64,
+    };
+    if log_lease.publish_leaf_metadata(&metadata).is_err() {
+        process.status = ProcessStatus::Unsafe;
+        process.log_storage_failed = true;
+        process.reason = Some("cannot publish leaf log metadata".into());
+        process.diagnostics.push(failure_entry(
+            &plan.run_id,
+            Some(&check.name),
+            selector.case_id.as_deref(),
+            LeafStatus::Unsafe,
+            process.exit_code,
+            Some(TerminationReason::UnsafeStop),
+            ErrorCategory::LogStorage,
+            Some(selector.phase),
+        ));
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn record_leaf_postprocess_failure(
+    plan: &ExecutionPlan,
+    check: &CheckPlan,
+    selector: &LeafSelector,
+    log_lease: &RunLogLease,
+    process: &mut ProcessResult,
+    started_at_epoch_ms: u64,
+    status: LeafStatus,
+    error_category: ErrorCategory,
+    termination_reason: Option<TerminationReason>,
+) {
+    process.status = if status == LeafStatus::Unsafe {
+        ProcessStatus::Unsafe
+    } else {
+        ProcessStatus::Failed
+    };
+    if error_category == ErrorCategory::LogStorage {
+        process.log_storage_failed = true;
+    }
+    if error_category == ErrorCategory::StructuredEvidenceInvalid {
+        process.structured_evidence_invalid = true;
+    }
+    process.diagnostics.push(failure_entry(
+        &plan.run_id,
+        Some(&check.name),
+        selector.case_id.as_deref(),
+        status,
+        process.exit_code,
+        termination_reason,
+        error_category,
+        Some(selector.phase),
+    ));
+    if let Ok(normalized) = normalize_diagnostics(std::mem::take(&mut process.diagnostics)) {
+        process.diagnostics = normalized.entries;
+    } else {
+        process.structured_evidence_invalid = true;
+    }
+    let mut metadata_failed = log_lease
+        .publish_leaf_diagnostics(selector, &process.diagnostics)
+        .is_err();
+    let mut formats: Vec<_> = check
+        .diagnostic_sources
+        .iter()
+        .map(|source| source.format)
+        .collect();
+    formats.sort();
+    formats.dedup();
+    let complete = !process.log_storage_failed
+        && (!process.process_started
+            || (process.streams.len() == 2
+                && process.streams.iter().all(|stream| stream.complete)));
+    metadata_failed |= log_lease
+        .publish_leaf_metadata(&LeafLogMetadata {
+            schema: 2,
+            selector: selector.clone(),
+            status,
+            exit: diagnostic_exit(process.exit_code),
+            started_at_epoch_ms,
+            finished_at_epoch_ms: Some(epoch_ms()),
+            complete,
+            structured_evidence_formats: formats,
+            structured_evidence_count: process.diagnostics.len() as u64,
+        })
+        .is_err();
+    if metadata_failed {
+        process.status = ProcessStatus::Unsafe;
+        process.log_storage_failed = true;
+        process.reason = Some("cannot publish terminal leaf evidence".into());
+        process.diagnostics.push(failure_entry(
+            &plan.run_id,
+            Some(&check.name),
+            selector.case_id.as_deref(),
+            LeafStatus::Unsafe,
+            process.exit_code,
+            Some(TerminationReason::UnsafeStop),
+            ErrorCategory::LogStorage,
+            Some(selector.phase),
+        ));
+    }
+}
+
+fn supplement_stream_summaries(
+    plan: &ExecutionPlan,
+    selector: &LeafSelector,
+    streams: &mut Vec<LogStreamSummary>,
+) {
+    let leaf_dir = leaf_log_directory(Path::new(&plan.log_dir), selector);
+    for stream in [LogStream::Stdout, LogStream::Stderr] {
+        if streams
+            .iter()
+            .any(|summary| summary.log_ref.stream == stream)
+        {
+            continue;
+        }
+        let name = match stream {
+            LogStream::Stdout => "stdout.meta.json",
+            LogStream::Stderr => "stderr.meta.json",
+        };
+        let Ok(payload) = fs::read(leaf_dir.join(name)) else {
+            continue;
+        };
+        let Ok(metadata) = serde_json::from_slice::<StreamMetadata>(&payload) else {
+            continue;
+        };
+        if metadata.selector != *selector || metadata.stream != stream {
+            continue;
+        }
+        streams.push(LogStreamSummary {
+            log_ref: LogRef {
+                run_id: plan.run_id.clone(),
+                check: selector.check.clone(),
+                phase: selector.phase,
+                case: selector.case_id.clone(),
+                stream,
+            },
+            bytes: metadata.bytes,
+            lines: metadata.lines,
+            sha256: metadata.sha256,
+            first_write_epoch_ms: metadata.first_write_epoch_ms,
+            last_write_epoch_ms: metadata.last_write_epoch_ms,
+            complete: metadata.complete,
+        });
+    }
+    streams.sort_by_key(|summary| summary.log_ref.stream);
+}
+
+fn read_declared_diagnostics(
+    diagnostics_dir: &Path,
+    source: &DiagnosticReportSource,
+    context: &DiagnosticContext,
+) -> Result<Vec<FailureIndexEntry>, ()> {
+    let root = diagnostics_dir.canonicalize().map_err(|_| ())?;
+    let candidate = diagnostics_dir.join(&source.path);
+    let metadata = fs::symlink_metadata(&candidate).map_err(|_| ())?;
+    if !metadata.is_file() || metadata.file_type().is_symlink() {
+        return Err(());
+    }
+    if metadata.len() > MAX_DECLARED_DIAGNOSTIC_REPORT_BYTES {
+        return Err(());
+    }
+    let resolved = candidate.canonicalize().map_err(|_| ())?;
+    if !resolved.starts_with(&root) {
+        return Err(());
+    }
+    let file = fs::File::open(resolved).map_err(|_| ())?;
+    let mut input = Vec::with_capacity(metadata.len().try_into().map_err(|_| ())?);
+    file.take(MAX_DECLARED_DIAGNOSTIC_REPORT_BYTES + 1)
+        .read_to_end(&mut input)
+        .map_err(|_| ())?;
+    if input.len() as u64 > MAX_DECLARED_DIAGNOSTIC_REPORT_BYTES {
+        return Err(());
+    }
+    parse_declared_report(source, &input, context)
+        .map(|parsed| parsed.entries)
+        .map_err(|_| ())
+}
+
+fn leaf_log_directory(run_dir: &Path, selector: &LeafSelector) -> PathBuf {
+    match selector.phase {
+        LogPhase::Executor => run_dir.join("executor"),
+        LogPhase::Check | LogPhase::Discovery => run_dir
+            .join("checks")
+            .join(selector.check.as_deref().expect("validated check selector"))
+            .join(match selector.phase {
+                LogPhase::Check => "check",
+                LogPhase::Discovery => "discovery",
+                _ => unreachable!(),
+            }),
+        LogPhase::Case => run_dir
+            .join("checks")
+            .join(selector.check.as_deref().expect("validated case selector"))
+            .join("cases")
+            .join(
+                selector
+                    .case_id
+                    .as_deref()
+                    .expect("validated case selector"),
+            ),
+    }
+}
+
+fn fanout_setup_failure(
+    _run_id: &str,
+    _check: &CheckPlan,
+    mut process: ProcessResult,
+    streams: Vec<LogStreamSummary>,
     duration: Duration,
 ) -> CheckOutcome {
     let status: LeafStatus = process.status.into();
-    let (termination_reason, error_category) =
-        process_failure_semantics(&process, false, CompletionMode::Process);
     let exit_code = process.exit_code;
     let reason = process
         .reason
         .unwrap_or_else(|| "case discovery failed".into());
-    simple_outcome(
-        run_id,
-        check,
-        status,
-        &reason,
-        output,
-        duration,
-        exit_code,
-        termination_reason,
-        error_category,
-        Some(LogPhase::Discovery),
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
-fn simple_outcome(
-    run_id: &str,
-    check: &CheckPlan,
-    status: LeafStatus,
-    reason: &str,
-    output: OutputStats,
-    duration: Duration,
-    exit_code: Option<i32>,
-    termination_reason: Option<TerminationReason>,
-    error_category: ErrorCategory,
-    phase: Option<LogPhase>,
-) -> CheckOutcome {
     CheckOutcome {
         status,
         exit_code,
-        reason: Some(bounded_reason(reason)),
+        reason: Some(bounded_reason(&reason)),
         artifacts: Vec::new(),
-        output,
+        streams,
         case_count: 0,
         cases: Vec::new(),
         cases_truncated: false,
-        failures: vec![failure_entry(
-            run_id,
-            Some(&check.name),
-            None,
-            status,
-            exit_code,
-            termination_reason,
-            error_category,
-            phase,
-        )],
+        failures: std::mem::take(&mut process.diagnostics),
+        service: None,
+        duration_seconds: seconds(duration),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn discovery_postprocess_failure(
+    plan: &ExecutionPlan,
+    check: &CheckPlan,
+    selector: &LeafSelector,
+    log_lease: &RunLogLease,
+    mut process: ProcessResult,
+    started_at_epoch_ms: u64,
+    streams: Vec<LogStreamSummary>,
+    duration: Duration,
+    status: LeafStatus,
+    reason: String,
+    error_category: ErrorCategory,
+    termination_reason: Option<TerminationReason>,
+) -> CheckOutcome {
+    record_leaf_postprocess_failure(
+        plan,
+        check,
+        selector,
+        log_lease,
+        &mut process,
+        started_at_epoch_ms,
+        status,
+        error_category,
+        termination_reason,
+    );
+    CheckOutcome {
+        status: process.status.into(),
+        exit_code: process.exit_code,
+        reason: Some(bounded_reason(&reason)),
+        artifacts: Vec::new(),
+        streams,
+        case_count: 0,
+        cases: Vec::new(),
+        cases_truncated: false,
+        failures: process.diagnostics,
         service: None,
         duration_seconds: seconds(duration),
     }
@@ -1229,10 +1714,10 @@ fn apply_outcome(
     runtime.report.status = outcome.status;
     runtime.report.finished_at = Some(iso_now());
     runtime.report.duration_seconds = Some(outcome.duration_seconds);
-    runtime.report.exit_code = outcome.exit_code;
-    runtime.report.reason = outcome.reason;
+    runtime.report.exit = diagnostic_exit(outcome.exit_code);
+    let _ = outcome.reason;
     runtime.report.artifacts = outcome.artifacts;
-    apply_output(&mut runtime.report, &outcome.output);
+    runtime.report.streams = outcome.streams;
     runtime.report.case_count = outcome.case_count;
     runtime.report.cases = outcome.cases;
     runtime.report.cases_truncated = outcome.cases_truncated;
@@ -1246,30 +1731,53 @@ fn apply_outcome(
 
 fn mark_service_exit(
     checks: &mut [CheckRuntime],
-    run_id: &str,
+    plan: &ExecutionPlan,
+    log_lease: &RunLogLease,
     name: &str,
     exit: ServiceExit,
     cleanup: bool,
 ) -> Result<(), ExecutorError> {
     let index = check_index(checks, name)?;
     let runtime = &mut checks[index];
-    runtime.report.exit_code = exit.exit_code;
-    if let Ok(output) = exit.output {
-        apply_output(&mut runtime.report, &output);
+    let storage_failed = exit.log_storage_failed;
+    let evidence_invalid = exit.structured_evidence_invalid;
+    let mut process = ProcessResult {
+        status: if !cleanup || storage_failed || evidence_invalid {
+            ProcessStatus::Unsafe
+        } else {
+            ProcessStatus::Passed
+        },
+        exit_code: exit.exit_code,
+        reason: None,
+        streams: exit.streams,
+        diagnostics: exit.diagnostics,
+        log_storage_failed: storage_failed,
+        structured_evidence_invalid: evidence_invalid,
+        process_started: true,
+        service: None,
+        manifest: None,
+        capacity: Default::default(),
+    };
+    let selector = LeafSelector::check(name.to_owned()).expect("validated service selector");
+    finalize_leaf_evidence(
+        plan,
+        &runtime.plan,
+        &selector,
+        log_lease,
+        &mut process,
+        runtime.started_epoch_ms.unwrap_or_else(epoch_ms),
+    );
+    runtime.report.exit = diagnostic_exit(process.exit_code);
+    runtime.report.streams = process.streams;
+    runtime.failures.extend(process.diagnostics);
+    if process.status != ProcessStatus::Passed {
+        runtime.report.status = process.status.into();
     }
     if !cleanup {
         runtime.report.status = LeafStatus::Unsafe;
-        runtime.report.reason = Some("long-lived check exited after its completion event".into());
-        runtime.failures.push(failure_entry(
-            run_id,
-            Some(name),
-            None,
-            LeafStatus::Unsafe,
-            exit.exit_code,
-            Some(TerminationReason::UnsafeStop),
-            ErrorCategory::ProcessExit,
-            Some(LogPhase::Check),
-        ));
+    }
+    if process.log_storage_failed || process.structured_evidence_invalid {
+        runtime.report.status = LeafStatus::Unsafe;
     }
     Ok(())
 }
@@ -1278,7 +1786,8 @@ async fn stop_services(
     services: &mut JoinSet<(String, ServiceExit)>,
     service_pgids: &mut BTreeMap<String, i32>,
     checks: &mut [CheckRuntime],
-    run_id: &str,
+    plan: &ExecutionPlan,
+    log_lease: &RunLogLease,
 ) -> Result<(), ExecutorError> {
     for pgid in service_pgids.values().copied() {
         signal_group(pgid, Signal::TERM)?;
@@ -1291,7 +1800,7 @@ async fn stop_services(
                     ExecutorError::new(format!("event service task failed: {error}"))
                 })?;
                 service_pgids.remove(&name);
-                mark_service_exit(checks, run_id, &name, exit, true)?;
+                mark_service_exit(checks, plan, log_lease, &name, exit, true)?;
             }
             Ok(None) => break,
             Err(_) => {
@@ -1303,7 +1812,7 @@ async fn stop_services(
                         ExecutorError::new(format!("event service task failed: {error}"))
                     })?;
                     service_pgids.remove(&name);
-                    mark_service_exit(checks, run_id, &name, exit, true)?;
+                    mark_service_exit(checks, plan, log_lease, &name, exit, true)?;
                 }
                 break;
             }
@@ -1312,10 +1821,21 @@ async fn stop_services(
     Ok(())
 }
 
-fn mark_pending_cancelled(checks: &mut [CheckRuntime], run_id: &str, reason: &str) {
+fn mark_pending_cancelled(
+    checks: &mut [CheckRuntime],
+    run_id: &str,
+    log_lease: &RunLogLease,
+    reason: &str,
+) {
     for check in checks {
         if check.report.status == LeafStatus::Pending {
-            finish_blocked(check, run_id, LeafStatus::Cancelled, reason.into());
+            finish_blocked(
+                check,
+                run_id,
+                log_lease,
+                LeafStatus::Cancelled,
+                reason.into(),
+            );
         }
     }
 }
@@ -1339,7 +1859,6 @@ fn write_report(
     finished_at: Option<String>,
     source_changed: bool,
     source_error: Option<String>,
-    unsafe_reason: Option<String>,
 ) -> Result<ExecutionReport, ExecutorError> {
     let mut failures = Vec::new();
     for check in checks {
@@ -1403,7 +1922,6 @@ fn write_report(
         source_digest: plan.source_digest.clone(),
         config_digest: plan.config_digest.clone(),
         source_changed,
-        unsafe_reason: unsafe_reason.map(|value| bounded_reason(&value)),
         capacity: capacity
             .lock()
             .map_err(|_| ExecutorError::new("capacity report lock poisoned"))?
@@ -1431,32 +1949,6 @@ fn observe_capacity(capacity: &Mutex<CapacityReport>, observation: CapacityObser
     }
 }
 
-fn apply_output(report: &mut CheckReport, output: &OutputStats) {
-    report.stdout_bytes_observed = output.stdout_bytes_observed;
-    report.stdout_bytes_retained = output.stdout_bytes_retained;
-    report.stdout_truncated = output.stdout_truncated;
-    report.stderr_bytes_observed = output.stderr_bytes_observed;
-    report.stderr_bytes_retained = output.stderr_bytes_retained;
-    report.stderr_truncated = output.stderr_truncated;
-}
-
-fn add_output(total: &mut OutputStats, value: &OutputStats) {
-    total.stdout_bytes_observed = total
-        .stdout_bytes_observed
-        .saturating_add(value.stdout_bytes_observed);
-    total.stdout_bytes_retained = total
-        .stdout_bytes_retained
-        .saturating_add(value.stdout_bytes_retained);
-    total.stdout_truncated |= value.stdout_truncated;
-    total.stderr_bytes_observed = total
-        .stderr_bytes_observed
-        .saturating_add(value.stderr_bytes_observed);
-    total.stderr_bytes_retained = total
-        .stderr_bytes_retained
-        .saturating_add(value.stderr_bytes_retained);
-    total.stderr_truncated |= value.stderr_truncated;
-}
-
 fn check_index(checks: &[CheckRuntime], name: &str) -> Result<usize, ExecutorError> {
     checks
         .iter()
@@ -1473,6 +1965,16 @@ fn bounded_reason(value: &str) -> String {
         result.push(character);
     }
     result
+}
+
+fn diagnostic_exit(exit_code: Option<i32>) -> DiagnosticExit {
+    match exit_code {
+        Some(value) if value < 0 => DiagnosticExit {
+            code: None,
+            signal: u8::try_from(value.unsigned_abs()).ok(),
+        },
+        code => DiagnosticExit { code, signal: None },
+    }
 }
 
 fn status_key(status: LeafStatus) -> &'static str {
@@ -1502,6 +2004,15 @@ fn iso_now() -> String {
     let minute = (day_seconds % 3600) / 60;
     let second = day_seconds % 60;
     format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}Z")
+}
+
+fn epoch_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .try_into()
+        .unwrap_or(u64::MAX)
 }
 
 fn millis(duration: Duration) -> u64 {

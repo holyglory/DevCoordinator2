@@ -18,8 +18,8 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use devcoordinator2_executor_protocol::{
-    DiagnosticExit, DiagnosticReportFormat, LeafStatus, LogPhase, LogStream, MAX_DIAGNOSTIC_EVENTS,
-    MAX_DIAGNOSTIC_SOURCES, RunStatus,
+    DiagnosticExit, DiagnosticReportFormat, FailureIndexEntry, LeafStatus, LogPhase, LogStream,
+    MAX_DIAGNOSTIC_EVENTS, MAX_DIAGNOSTIC_SOURCES, RunStatus,
 };
 
 /// One sparse index entry is retained for every 256th logical line.
@@ -132,11 +132,12 @@ impl RunLogMetadata {
         }
         validate_run_id(&self.run_id)?;
         validate_test(&self.test)?;
-        validate_lifecycle(
-            self.started_at_epoch_ms,
-            self.finished_at_epoch_ms,
-            self.complete,
-        )?;
+        validate_time_order(self.started_at_epoch_ms, self.finished_at_epoch_ms)?;
+        if self.complete != self.finished_at_epoch_ms.is_some() {
+            return Err(LogStoreError::InvalidMetadata(
+                "run completion and finish time disagree",
+            ));
+        }
         if self.complete == matches!(self.status, RunStatus::Running) {
             return Err(LogStoreError::InvalidMetadata(
                 "run status and completion state disagree",
@@ -174,14 +175,15 @@ impl LeafLogMetadata {
         self.exit
             .validate()
             .map_err(|_| LogStoreError::InvalidMetadata("diagnostic exit is invalid"))?;
-        validate_lifecycle(
-            self.started_at_epoch_ms,
-            self.finished_at_epoch_ms,
-            self.complete,
-        )?;
-        if self.complete != self.status.is_terminal() {
+        validate_time_order(self.started_at_epoch_ms, self.finished_at_epoch_ms)?;
+        if self.finished_at_epoch_ms.is_some() != self.status.is_terminal() {
             return Err(LogStoreError::InvalidMetadata(
-                "leaf status and completion state disagree",
+                "leaf status and finish time disagree",
+            ));
+        }
+        if !self.status.is_terminal() && self.complete {
+            return Err(LogStoreError::InvalidMetadata(
+                "nonterminal leaf evidence cannot be complete",
             ));
         }
         if self.structured_evidence_formats.len() > MAX_DIAGNOSTIC_SOURCES
@@ -364,6 +366,58 @@ impl RunLogLease {
         )?;
         let leaf_dir = self.open_leaf(&selector)?;
         publish_typed_metadata(&leaf_dir, "leaf.json", metadata)
+    }
+
+    /// Atomically publish validated structured diagnostics beside one leaf.
+    /// Console text and arbitrary error prose have no type in this interface.
+    pub fn publish_leaf_diagnostics(
+        &self,
+        selector: &LeafSelector,
+        entries: &[FailureIndexEntry],
+    ) -> Result<(), LogStoreError> {
+        if entries.len() > MAX_DIAGNOSTIC_EVENTS {
+            return Err(LogStoreError::InvalidMetadata(
+                "structured diagnostic count exceeds its bound",
+            ));
+        }
+        let selector = LeafSelector::new(
+            selector.check.clone(),
+            selector.phase,
+            selector.case_id.clone(),
+        )?;
+        for entry in entries {
+            entry.validate().map_err(|_| {
+                LogStoreError::InvalidMetadata("structured diagnostic entry is invalid")
+            })?;
+            if entry.check != selector.check
+                || entry.log_refs.iter().any(|reference| {
+                    reference.run_id != self.run_id
+                        || reference.check != selector.check
+                        || reference.phase != selector.phase
+                        || reference.case != selector.case_id
+                })
+            {
+                return Err(LogStoreError::InvalidMetadata(
+                    "structured diagnostic entry belongs to another leaf",
+                ));
+            }
+        }
+        #[derive(Serialize)]
+        struct DiagnosticDocument<'a> {
+            schema: u8,
+            check: Option<&'a str>,
+            #[serde(rename = "case")]
+            case_id: Option<&'a str>,
+            entries: &'a [FailureIndexEntry],
+        }
+        let document = DiagnosticDocument {
+            schema: 2,
+            check: selector.check.as_deref(),
+            case_id: selector.case_id.as_deref(),
+            entries,
+        };
+        let leaf_dir = self.open_leaf(&selector)?;
+        publish_typed_metadata(&leaf_dir, "diagnostics.json", &document)
     }
 
     /// Create a new 0600 stream and its new 0600 sparse index in one leaf.
@@ -707,16 +761,13 @@ fn publish_typed_metadata<T: Serialize>(
 
 fn validate_run_id(value: &str) -> Result<(), LogStoreError> {
     let bytes = value.as_bytes();
-    let valid = bytes.len() == 24
-        && bytes[0] == b't'
-        && bytes[1..9].iter().all(u8::is_ascii_digit)
-        && bytes[9] == b'T'
-        && bytes[10..16].iter().all(u8::is_ascii_digit)
-        && bytes[16] == b'Z'
-        && bytes[17] == b'-'
-        && bytes[18..]
+    let valid = (1..=128).contains(&bytes.len())
+        && bytes[0].is_ascii_alphanumeric()
+        && bytes
             .iter()
-            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase());
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(*byte, b'.' | b'_' | b'-'))
+        && value != "."
+        && value != "..";
     if valid {
         Ok(())
     } else {
@@ -763,16 +814,10 @@ fn validate_test(value: &str) -> Result<(), LogStoreError> {
     Ok(())
 }
 
-fn validate_lifecycle(
+fn validate_time_order(
     started_at_epoch_ms: u64,
     finished_at_epoch_ms: Option<u64>,
-    complete: bool,
 ) -> Result<(), LogStoreError> {
-    if complete != finished_at_epoch_ms.is_some() {
-        return Err(LogStoreError::InvalidMetadata(
-            "completion and finish time disagree",
-        ));
-    }
     if finished_at_epoch_ms.is_some_and(|finished| finished < started_at_epoch_ms) {
         return Err(LogStoreError::InvalidMetadata(
             "finish time precedes start time",
@@ -1028,6 +1073,18 @@ mod tests {
     }
 
     #[test]
+    fn generic_run_local_identity_is_accepted_and_bound_to_its_directory() {
+        let root = temporary("generic-run");
+        let run = "skills-20260902T120000Z-123-abcdef";
+        let run_dir = root.join(run);
+        fs::create_dir(&run_dir).expect("run directory");
+        let lease = RunLogLease::acquire(&run_dir, run).expect("generic lease");
+        drop(lease);
+        assert!(RunLogLease::acquire(&run_dir, "other-run").is_err());
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
     fn sparse_index_records_stable_one_based_lines_and_byte_offsets() {
         let root = temporary("index");
         let run = run_id(7);
@@ -1224,6 +1281,37 @@ mod tests {
         assert!(leaf_dir.join("leaf.json").is_file());
         assert!(!leaf_dir.join("stdout.log").exists());
         assert!(!leaf_dir.join("stderr.log").exists());
+        drop(lease);
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn terminal_unsafe_leaf_can_record_incomplete_evidence() {
+        let root = temporary("unsafe-incomplete");
+        let run = run_id(13);
+        let lease = acquire(&root, &run);
+        let metadata = LeafLogMetadata {
+            schema: 2,
+            selector: LeafSelector::check("unit").expect("selector"),
+            status: LeafStatus::Unsafe,
+            exit: DiagnosticExit::default(),
+            started_at_epoch_ms: 600,
+            finished_at_epoch_ms: Some(601),
+            complete: false,
+            structured_evidence_formats: vec![],
+            structured_evidence_count: 0,
+        };
+        lease
+            .publish_leaf_metadata(&metadata)
+            .expect("incomplete terminal leaf metadata");
+        let encoded = fs::read_to_string(
+            root.join("runs")
+                .join(&run)
+                .join("checks/unit/check/leaf.json"),
+        )
+        .expect("leaf metadata");
+        let decoded: LeafLogMetadata = serde_json::from_str(&encoded).expect("decode");
+        assert_eq!(decoded, metadata);
         drop(lease);
         fs::remove_dir_all(root).expect("cleanup");
     }

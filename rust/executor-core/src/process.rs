@@ -1,18 +1,17 @@
 use std::collections::BTreeMap;
 use std::future::{Future, pending};
 use std::os::fd::{AsRawFd, BorrowedFd, FromRawFd, OwnedFd};
-use std::os::unix::fs::OpenOptionsExt;
+use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::ExitStatusExt;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::pin::Pin;
 use std::process::Stdio;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use devcoordinator2_executor_protocol::{
-    CompletionEvent, CompletionMode, EventStatus, LeafStatus, MAX_EVENT_BYTES, MAX_MANIFEST_BYTES,
-    OutputStats,
+    CompletionEvent, CompletionMode, EventStatus, FailureIndexEntry, LeafStatus, LogRef, LogStream,
+    LogStreamSummary, MAX_DIAGNOSTIC_EVENTS, MAX_EVENT_BYTES, MAX_MANIFEST_BYTES,
 };
 use rustix::fd::AsFd;
 use rustix::io::{FdFlags, fcntl_getfd, fcntl_setfd};
@@ -20,16 +19,20 @@ use rustix::pipe::pipe;
 use rustix::process::test_kill_process_group;
 use rustix::process::{Pid, Signal, kill_process_group};
 use tokio::fs::File;
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::process::{Child, Command};
-use tokio::sync::{Mutex, watch};
+use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 use tokio::time::{Instant, timeout};
 
 use crate::ExecutorError;
 use crate::capacity::{AcquiredPermit, PermitProvider, PermitRequest};
+use crate::diagnostics::{DiagnosticContext, parse_diagnostic_event};
+use crate::log_store::{
+    CompleteLogWriter, LeafSelector, LogStoreError, RunLogLease, StreamMetadata,
+};
 
-pub(crate) const CHECK_LOG_CAP_BYTES: usize = 4 * 1024 * 1024;
+const DIAGNOSTIC_FD: i32 = 197;
 const EVENT_FD: i32 = 198;
 const MANIFEST_FD: i32 = 199;
 const TERMINATION_GRACE: Duration = Duration::from_secs(2);
@@ -79,12 +82,9 @@ pub(crate) struct ProcessRequest {
     pub env: BTreeMap<String, String>,
     pub scratch: PathBuf,
     pub shared_artifacts: PathBuf,
-    pub stdout_path: PathBuf,
-    pub stderr_path: PathBuf,
-    pub aggregate_stdout: Arc<AggregateSink>,
-    pub aggregate_stderr: Arc<AggregateSink>,
-    pub stdout_cap: usize,
-    pub stderr_cap: usize,
+    pub diagnostics_dir: PathBuf,
+    pub log_lease: Arc<RunLogLease>,
+    pub log_selector: LeafSelector,
     pub timeout_seconds: Option<u64>,
     pub completion: CompletionMode,
     pub capture_manifest: bool,
@@ -115,7 +115,11 @@ pub(crate) struct ProcessResult {
     pub status: ProcessStatus,
     pub exit_code: Option<i32>,
     pub reason: Option<String>,
-    pub output: OutputStats,
+    pub streams: Vec<LogStreamSummary>,
+    pub diagnostics: Vec<FailureIndexEntry>,
+    pub log_storage_failed: bool,
+    pub structured_evidence_invalid: bool,
+    pub process_started: bool,
     pub service: Option<EventService>,
     pub manifest: Option<ManifestCapture>,
     pub capacity: crate::capacity::CapacityObservation,
@@ -134,75 +138,35 @@ pub(crate) struct EventService {
 
 pub(crate) struct ServiceExit {
     pub exit_code: Option<i32>,
-    pub output: Result<OutputStats, ExecutorError>,
+    pub streams: Vec<LogStreamSummary>,
+    pub diagnostics: Vec<FailureIndexEntry>,
+    pub log_storage_failed: bool,
+    pub structured_evidence_invalid: bool,
 }
 
 struct SpawnedProcess {
     child: Child,
     pgid: i32,
-    stdout: JoinHandle<Result<StreamStats, ExecutorError>>,
-    stderr: JoinHandle<Result<StreamStats, ExecutorError>>,
+    stdout: JoinHandle<Result<StreamMetadata, PumpError>>,
+    stderr: JoinHandle<Result<StreamMetadata, PumpError>>,
+    diagnostics: JoinHandle<Result<Vec<FailureIndexEntry>, ExecutorError>>,
+    fatal: mpsc::UnboundedReceiver<FatalLeafError>,
+    _fatal_guard: mpsc::UnboundedSender<FatalLeafError>,
+    run_id: String,
     event_reader: Option<File>,
     manifest: Option<JoinHandle<Result<ManifestCapture, ExecutorError>>>,
 }
 
-#[derive(Clone, Copy, Debug, Default)]
-struct StreamStats {
-    observed: u64,
-    retained: u64,
-    truncated: bool,
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum FatalLeafError {
+    LogStorage,
+    StructuredEvidence,
 }
 
-pub(crate) struct AggregateSink {
-    file: Mutex<File>,
-    retained: AtomicU64,
-    cap: u64,
-}
-
-impl AggregateSink {
-    pub(crate) fn create(path: &Path, cap: usize) -> Result<Arc<Self>, ExecutorError> {
-        let file = std::fs::OpenOptions::new()
-            .create(true)
-            .truncate(true)
-            .write(true)
-            .mode(0o600)
-            .open(path)
-            .map_err(|error| ExecutorError::new(format!("cannot open aggregate log: {error}")))?;
-        Ok(Arc::new(Self {
-            file: Mutex::new(File::from_std(file)),
-            retained: AtomicU64::new(0),
-            cap: u64::try_from(cap).unwrap_or(u64::MAX),
-        }))
-    }
-
-    async fn append(&self, block: &[u8]) -> Result<(), ExecutorError> {
-        let reserved = loop {
-            let retained = self.retained.load(Ordering::Acquire);
-            let remaining = self.cap.saturating_sub(retained);
-            if remaining == 0 {
-                return Ok(());
-            }
-            let reserved = remaining.min(u64::try_from(block.len()).unwrap_or(u64::MAX));
-            if self
-                .retained
-                .compare_exchange_weak(
-                    retained,
-                    retained.saturating_add(reserved),
-                    Ordering::AcqRel,
-                    Ordering::Acquire,
-                )
-                .is_ok()
-            {
-                break usize::try_from(reserved).unwrap_or(block.len());
-            }
-        };
-        self.file
-            .lock()
-            .await
-            .write_all(&block[..reserved])
-            .await
-            .map_err(|error| ExecutorError::new(format!("cannot write aggregate log: {error}")))
-    }
+#[derive(Debug)]
+enum PumpError {
+    Storage(LogStoreError),
+    Read(std::io::Error),
 }
 
 pub(crate) async fn run_process(
@@ -224,20 +188,49 @@ pub(crate) async fn run_process(
         }
     };
     let capacity = permit.observation;
-    let spawned = match spawn_process(&request).await {
+    let stdout_writer = match request
+        .log_lease
+        .create_stream(request.log_selector.clone(), LogStream::Stdout)
+    {
+        Ok(writer) => writer,
+        Err(error) => {
+            return ProcessResult {
+                capacity,
+                ..storage_failure(None, error.to_string())
+            };
+        }
+    };
+    let stderr_writer = match request
+        .log_lease
+        .create_stream(request.log_selector.clone(), LogStream::Stderr)
+    {
+        Ok(writer) => writer,
+        Err(error) => {
+            drop(stdout_writer);
+            return ProcessResult {
+                capacity,
+                ..storage_failure(None, error.to_string())
+            };
+        }
+    };
+    if let Err(error) = prepare_diagnostics_directory(&request.diagnostics_dir).await {
+        drop(stdout_writer);
+        drop(stderr_writer);
+        return ProcessResult {
+            capacity,
+            ..storage_failure(None, error.to_string())
+        };
+    }
+    let spawned = match spawn_process(&request, stdout_writer, stderr_writer).await {
         Ok(spawned) => spawned,
         Err(error) => {
             return ProcessResult {
                 capacity,
-                ..failure(
-                    ProcessStatus::Failed,
-                    None,
-                    format!("cannot start leaf: {error}"),
-                )
+                ..storage_failure(None, format!("cannot start leaf: {error}"))
             };
         }
     };
-    match request.completion {
+    let mut result = match request.completion {
         CompletionMode::Process => {
             run_to_exit(
                 spawned,
@@ -260,10 +253,42 @@ pub(crate) async fn run_process(
             )
             .await
         }
-    }
+    };
+    result.process_started = true;
+    result
 }
 
-async fn spawn_process(request: &ProcessRequest) -> Result<SpawnedProcess, ExecutorError> {
+async fn prepare_diagnostics_directory(path: &PathBuf) -> Result<(), ExecutorError> {
+    tokio::fs::create_dir_all(path).await.map_err(|error| {
+        ExecutorError::new(format!(
+            "cannot create diagnostic report directory: {error}"
+        ))
+    })?;
+    let diagnostics_metadata = tokio::fs::symlink_metadata(path).await.map_err(|error| {
+        ExecutorError::new(format!(
+            "cannot inspect diagnostic report directory: {error}"
+        ))
+    })?;
+    if !diagnostics_metadata.is_dir() || diagnostics_metadata.file_type().is_symlink() {
+        return Err(ExecutorError::new(
+            "diagnostic report directory is not a real directory",
+        ));
+    }
+    tokio::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
+        .await
+        .map_err(|error| {
+            ExecutorError::new(format!(
+                "cannot protect diagnostic report directory: {error}"
+            ))
+        })?;
+    Ok(())
+}
+
+async fn spawn_process(
+    request: &ProcessRequest,
+    stdout_writer: CompleteLogWriter,
+    stderr_writer: CompleteLogWriter,
+) -> Result<SpawnedProcess, ExecutorError> {
     if request.command.is_empty() {
         return Err(ExecutorError::new("leaf command is empty"));
     }
@@ -272,11 +297,6 @@ async fn spawn_process(request: &ProcessRequest) -> Result<SpawnedProcess, Execu
         .map_err(|error| {
             ExecutorError::new(format!("cannot create leaf scratch directory: {error}"))
         })?;
-    if let Some(parent) = request.stdout_path.parent() {
-        tokio::fs::create_dir_all(parent).await.map_err(|error| {
-            ExecutorError::new(format!("cannot create leaf log directory: {error}"))
-        })?;
-    }
     let mut command = Command::new(&request.command[0]);
     command
         .args(&request.command[1..])
@@ -286,6 +306,7 @@ async fn spawn_process(request: &ProcessRequest) -> Result<SpawnedProcess, Execu
         .env("DEVCOORDINATOR_CHECK_NAME", &request.check_name)
         .env("DEVCOORDINATOR_CHECK_SCRATCH", &request.scratch)
         .env("DEVCOORDINATOR_SHARED_ARTIFACTS", &request.shared_artifacts)
+        .env("DEVCOORDINATOR_DIAGNOSTICS_DIR", &request.diagnostics_dir)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -295,6 +316,22 @@ async fn spawn_process(request: &ProcessRequest) -> Result<SpawnedProcess, Execu
     let spawn_guard = SPAWN_DESCRIPTOR_LOCK
         .lock()
         .map_err(|_| ExecutorError::new("process descriptor lock is poisoned"))?;
+    let (diagnostic_read, diagnostic_write) = cloexec_pipe("diagnostic")?;
+    let diagnostic_write_raw = diagnostic_write.as_raw_fd();
+    command.env("DEVCOORDINATOR_DIAGNOSTIC_FD", DIAGNOSTIC_FD.to_string());
+    // SAFETY: pre_exec invokes only async-signal-safe descriptor operations.
+    unsafe {
+        command.pre_exec(move || {
+            let source = BorrowedFd::borrow_raw(diagnostic_write_raw);
+            let mut target = OwnedFd::from_raw_fd(DIAGNOSTIC_FD);
+            if diagnostic_write_raw != DIAGNOSTIC_FD {
+                rustix::io::dup2(source, &mut target)?;
+            }
+            fcntl_setfd(target.as_fd(), FdFlags::empty())?;
+            std::mem::forget(target);
+            Ok(())
+        });
+    }
     let mut event_read = None;
     let mut event_write = None;
     if request.completion == CompletionMode::Event {
@@ -344,6 +381,7 @@ async fn spawn_process(request: &ProcessRequest) -> Result<SpawnedProcess, Execu
     }
 
     let spawned = command.spawn();
+    drop(diagnostic_write);
     drop(event_write);
     drop(manifest_write);
     drop(spawn_guard);
@@ -360,16 +398,26 @@ async fn spawn_process(request: &ProcessRequest) -> Result<SpawnedProcess, Execu
         .stderr
         .take()
         .ok_or_else(|| ExecutorError::new("spawned leaf has no stderr pipe"))?;
-    let stdout_path = request.stdout_path.clone();
-    let stderr_path = request.stderr_path.clone();
-    let stdout_cap = request.stdout_cap;
-    let stderr_cap = request.stderr_cap;
-    let aggregate_stdout = request.aggregate_stdout.clone();
-    let aggregate_stderr = request.aggregate_stderr.clone();
-    let stdout =
-        tokio::spawn(async move { pump(stdout, &stdout_path, stdout_cap, aggregate_stdout).await });
-    let stderr =
-        tokio::spawn(async move { pump(stderr, &stderr_path, stderr_cap, aggregate_stderr).await });
+    let (fatal_tx, fatal) = mpsc::unbounded_channel();
+    let stdout_failure = fatal_tx.clone();
+    let stdout = tokio::spawn(async move { pump(stdout, stdout_writer, stdout_failure).await });
+    let stderr_failure = fatal_tx.clone();
+    let stderr = tokio::spawn(async move { pump(stderr, stderr_writer, stderr_failure).await });
+    let context = DiagnosticContext {
+        run_id: request.run_id.clone(),
+        check: request.check_name.clone(),
+        case: request.log_selector.case_id.clone(),
+        phase: request.log_selector.phase,
+    };
+    let diagnostic_failure = fatal_tx.clone();
+    let diagnostics = tokio::spawn(async move {
+        read_diagnostic_events(
+            File::from_std(std::fs::File::from(diagnostic_read)),
+            context,
+            diagnostic_failure,
+        )
+        .await
+    });
     let event_reader = event_read.map(|fd| File::from_std(std::fs::File::from(fd)));
     let manifest = manifest_read.map(|fd| {
         tokio::spawn(async move { capture_manifest(File::from_std(std::fs::File::from(fd))).await })
@@ -379,6 +427,10 @@ async fn spawn_process(request: &ProcessRequest) -> Result<SpawnedProcess, Execu
         pgid,
         stdout,
         stderr,
+        diagnostics,
+        fatal,
+        _fatal_guard: fatal_tx,
+        run_id: request.run_id.clone(),
         event_reader,
         manifest,
     })
@@ -417,48 +469,75 @@ async fn run_to_exit(
             Ok(status) => {
                 let code = exit_code(status);
                 if status.success() {
-                    (ProcessStatus::Passed, code, None)
+                    (ProcessStatus::Passed, code, None, None)
                 } else {
-                    (ProcessStatus::Failed, code, Some(format!("process exited {}", display_exit(status))))
+                    (ProcessStatus::Failed, code, Some(format!("process exited {}", display_exit(status))), None)
                 }
             }
-            Err(error) => (ProcessStatus::Unsafe, None, Some(format!("cannot wait for leaf: {error}"))),
+            Err(error) => (ProcessStatus::Unsafe, None, Some(format!("cannot wait for leaf: {error}")), None),
         },
         () = &mut deadline => {
             let detail = terminate(&mut process.child, process.pgid).await.err().map(|error| error.to_string());
             (ProcessStatus::TimedOut, process.child.try_wait().ok().flatten().and_then(exit_code),
-             Some(detail.unwrap_or_else(|| deadline_reason(timeout_seconds, "leaf"))))
+             Some(detail.unwrap_or_else(|| deadline_reason(timeout_seconds, "leaf"))), None)
         },
         () = cancellation.cancelled() => {
             let detail = terminate(&mut process.child, process.pgid).await.err().map(|error| error.to_string());
             (ProcessStatus::Cancelled, process.child.try_wait().ok().flatten().and_then(exit_code),
-             Some(detail.unwrap_or_else(|| "run cancelled".into())))
+             Some(detail.unwrap_or_else(|| "run cancelled".into())), None)
+        },
+        fatal = process.fatal.recv() => {
+            let fatal = fatal.unwrap_or(FatalLeafError::LogStorage);
+            let detail = terminate(&mut process.child, process.pgid).await.err().map(|error| error.to_string());
+            (ProcessStatus::Unsafe, process.child.try_wait().ok().flatten().and_then(exit_code),
+             Some(detail.unwrap_or_else(|| fatal_reason(fatal).into())), Some(fatal))
         },
     };
     let cleanup_error = cleanup_process_group(process.pgid).await.err();
-    let output = finish_pumps(process.stdout, process.stderr).await;
+    let output = finish_pumps(process.stdout, process.stderr, &process.run_id).await;
+    let diagnostics = finish_diagnostics(process.diagnostics).await;
     let manifest = finish_manifest(process.manifest).await;
-    match (output, manifest, cleanup_error) {
-        (Ok(output), Ok(manifest), None) => ProcessResult {
+    let manifest_invalid = manifest.is_err();
+    let manifest = manifest.ok().flatten();
+    if cleanup_error.is_none()
+        && !output.storage_failed
+        && !diagnostics.invalid
+        && !manifest_invalid
+    {
+        ProcessResult {
             status: outcome.0,
             exit_code: outcome.1,
             reason: outcome.2,
-            output,
+            streams: output.streams,
+            diagnostics: diagnostics.entries,
+            log_storage_failed: outcome.3 == Some(FatalLeafError::LogStorage),
+            structured_evidence_invalid: outcome.3 == Some(FatalLeafError::StructuredEvidence),
+            process_started: true,
             service: None,
             manifest,
             capacity,
-        },
-        (output, manifest, cleanup_error) => {
-            let detail = cleanup_error
-                .map(|error| error.to_string())
-                .or_else(|| output.err().map(|error| error.to_string()))
-                .or_else(|| manifest.err().map(|error| error.to_string()))
-                .unwrap_or_else(|| "leaf cleanup failed".into());
-            ProcessResult {
-                capacity,
-                ..failure(ProcessStatus::Unsafe, outcome.1, detail)
-            }
         }
+    } else {
+        let detail = cleanup_error
+            .map(|error| error.to_string())
+            .unwrap_or_else(|| {
+                if output.storage_failed {
+                    "log storage became incomplete".into()
+                } else {
+                    "structured diagnostic evidence is invalid".into()
+                }
+            });
+        let mut result = failure(ProcessStatus::Unsafe, outcome.1, detail);
+        result.capacity = capacity;
+        result.streams = output.streams;
+        result.diagnostics = diagnostics.entries;
+        result.log_storage_failed =
+            output.storage_failed || outcome.3 == Some(FatalLeafError::LogStorage);
+        result.structured_evidence_invalid = diagnostics.invalid
+            || manifest_invalid
+            || outcome.3 == Some(FatalLeafError::StructuredEvidence);
+        result.manifest = manifest;
+        result
     }
 }
 
@@ -473,14 +552,16 @@ async fn run_to_event(
     capacity: crate::capacity::CapacityObservation,
 ) -> ProcessResult {
     let Some(mut event_reader) = process.event_reader.take() else {
-        return ProcessResult {
+        let _ = terminate(&mut process.child, process.pgid).await;
+        return finalize_process(
+            process,
+            ProcessStatus::Unsafe,
+            None,
+            Some("event leaf has no event descriptor".into()),
             capacity,
-            ..failure(
-                ProcessStatus::Unsafe,
-                None,
-                "event leaf has no event descriptor",
-            )
-        };
+            Some(FatalLeafError::StructuredEvidence),
+        )
+        .await;
     };
     let deadline = leaf_deadline(timeout_seconds);
     tokio::pin!(deadline);
@@ -489,12 +570,14 @@ async fn run_to_event(
         Exit(Result<std::process::ExitStatus, std::io::Error>),
         Timeout,
         Cancel,
+        Fatal(FatalLeafError),
     }
     let first = tokio::select! {
         event = read_event(&mut event_reader) => First::Event(event),
         status = process.child.wait() => First::Exit(status),
         () = &mut deadline => First::Timeout,
         () = cancellation.cancelled() => First::Cancel,
+        fatal = process.fatal.recv() => First::Fatal(fatal.unwrap_or(FatalLeafError::LogStorage)),
     };
     match first {
         First::Exit(status) => {
@@ -508,140 +591,160 @@ async fn run_to_event(
                 ),
                 Err(error) => (None, format!("cannot wait for event leaf: {error}")),
             };
-            let _ = cleanup_process_group(process.pgid).await;
-            let output = finish_pumps(process.stdout, process.stderr)
-                .await
-                .unwrap_or_default();
-            ProcessResult {
-                status: ProcessStatus::Failed,
-                exit_code: code,
-                reason: Some(reason),
-                output,
-                service: None,
-                manifest: None,
+            finalize_process(
+                process,
+                ProcessStatus::Failed,
+                code,
+                Some(reason),
                 capacity,
-            }
+                None,
+            )
+            .await
         }
         First::Timeout => {
             let _ = terminate(&mut process.child, process.pgid).await;
-            let output = finish_pumps(process.stdout, process.stderr)
-                .await
-                .unwrap_or_default();
-            ProcessResult {
-                status: ProcessStatus::TimedOut,
-                exit_code: process.child.try_wait().ok().flatten().and_then(exit_code),
-                reason: Some(deadline_reason(timeout_seconds, "event leaf")),
-                output,
-                service: None,
-                manifest: None,
+            let code = process.child.try_wait().ok().flatten().and_then(exit_code);
+            finalize_process(
+                process,
+                ProcessStatus::TimedOut,
+                code,
+                Some(deadline_reason(timeout_seconds, "event leaf")),
                 capacity,
-            }
+                None,
+            )
+            .await
         }
         First::Cancel => {
             let _ = terminate(&mut process.child, process.pgid).await;
-            let output = finish_pumps(process.stdout, process.stderr)
-                .await
-                .unwrap_or_default();
-            ProcessResult {
-                status: ProcessStatus::Cancelled,
-                exit_code: process.child.try_wait().ok().flatten().and_then(exit_code),
-                reason: Some("run cancelled".into()),
-                output,
-                service: None,
-                manifest: None,
+            let code = process.child.try_wait().ok().flatten().and_then(exit_code);
+            finalize_process(
+                process,
+                ProcessStatus::Cancelled,
+                code,
+                Some("run cancelled".into()),
                 capacity,
-            }
+                None,
+            )
+            .await
+        }
+        First::Fatal(fatal) => {
+            let _ = terminate(&mut process.child, process.pgid).await;
+            let code = process.child.try_wait().ok().flatten().and_then(exit_code);
+            finalize_process(
+                process,
+                ProcessStatus::Unsafe,
+                code,
+                Some(fatal_reason(fatal).into()),
+                capacity,
+                Some(fatal),
+            )
+            .await
         }
         First::Event(Err(error)) => {
             let _ = terminate(&mut process.child, process.pgid).await;
-            let output = finish_pumps(process.stdout, process.stderr)
-                .await
-                .unwrap_or_default();
-            ProcessResult {
-                status: ProcessStatus::Unsafe,
-                exit_code: process.child.try_wait().ok().flatten().and_then(exit_code),
-                reason: Some(error.to_string()),
-                output,
-                service: None,
-                manifest: None,
+            let code = process.child.try_wait().ok().flatten().and_then(exit_code);
+            finalize_process(
+                process,
+                ProcessStatus::Unsafe,
+                code,
+                Some(error.to_string()),
                 capacity,
-            }
+                Some(FatalLeafError::StructuredEvidence),
+            )
+            .await
         }
         First::Event(Ok(event)) => {
             if event.run_id != run_id || event.check != check_name {
                 let _ = terminate(&mut process.child, process.pgid).await;
-                let output = finish_pumps(process.stdout, process.stderr)
-                    .await
-                    .unwrap_or_default();
-                return ProcessResult {
-                    status: ProcessStatus::Unsafe,
-                    exit_code: process.child.try_wait().ok().flatten().and_then(exit_code),
-                    reason: Some("completion event carried the wrong run or check identity".into()),
-                    output,
-                    service: None,
-                    manifest: None,
+                let code = process.child.try_wait().ok().flatten().and_then(exit_code);
+                return finalize_process(
+                    process,
+                    ProcessStatus::Unsafe,
+                    code,
+                    Some("completion event carried the wrong run or check identity".into()),
                     capacity,
-                };
+                    Some(FatalLeafError::StructuredEvidence),
+                )
+                .await;
             }
             if event.status != EventStatus::Passed {
                 let _ = terminate(&mut process.child, process.pgid).await;
-                let output = finish_pumps(process.stdout, process.stderr)
-                    .await
-                    .unwrap_or_default();
-                return ProcessResult {
-                    status: if event.status == EventStatus::Unsafe {
+                let code = process.child.try_wait().ok().flatten().and_then(exit_code);
+                return finalize_process(
+                    process,
+                    if event.status == EventStatus::Unsafe {
                         ProcessStatus::Unsafe
                     } else {
                         ProcessStatus::Failed
                     },
-                    exit_code: process.child.try_wait().ok().flatten().and_then(exit_code),
-                    reason: Some(
+                    code,
+                    Some(
                         event
                             .reason
                             .unwrap_or_else(|| "completion event reported failure".into()),
                     ),
-                    output,
-                    service: None,
-                    manifest: None,
                     capacity,
-                };
+                    None,
+                )
+                .await;
             }
             match process.child.try_wait() {
                 Ok(Some(status)) => {
-                    let _ = cleanup_process_group(process.pgid).await;
-                    let output = finish_pumps(process.stdout, process.stderr)
-                        .await
-                        .unwrap_or_default();
-                    ProcessResult {
-                        status: if status.success() {
+                    finalize_process(
+                        process,
+                        if status.success() {
                             ProcessStatus::Passed
                         } else {
                             ProcessStatus::Failed
                         },
-                        exit_code: exit_code(status),
-                        reason: (!status.success())
+                        exit_code(status),
+                        (!status.success())
                             .then(|| format!("event process exited {}", display_exit(status))),
-                        output,
-                        service: None,
-                        manifest: None,
                         capacity,
-                    }
+                        None,
+                    )
+                    .await
                 }
                 Ok(None) => {
                     let pgid = process.pgid;
                     let future = Box::pin(async move {
                         let _permit = permit;
-                        let status = process.child.wait().await;
+                        let (status, fatal) = tokio::select! {
+                            status = process.child.wait() => (status, None),
+                            fatal = process.fatal.recv() => {
+                                let fatal = fatal.unwrap_or(FatalLeafError::LogStorage);
+                                let _ = terminate(&mut process.child, process.pgid).await;
+                                (process.child.try_wait().map_err(std::io::Error::other)
+                                    .and_then(|status| status.ok_or_else(|| std::io::Error::other("service did not terminate"))), Some(fatal))
+                            }
+                        };
+                        let exit_code = status.ok().and_then(exit_code);
+                        let result = finalize_process(
+                            process,
+                            ProcessStatus::Passed,
+                            exit_code,
+                            None,
+                            Default::default(),
+                            fatal,
+                        )
+                        .await;
                         ServiceExit {
-                            exit_code: status.ok().and_then(exit_code),
-                            output: finish_pumps(process.stdout, process.stderr).await,
+                            exit_code: result.exit_code,
+                            streams: result.streams,
+                            diagnostics: result.diagnostics,
+                            log_storage_failed: result.log_storage_failed,
+                            structured_evidence_invalid: result.structured_evidence_invalid,
                         }
                     });
                     ProcessResult {
                         status: ProcessStatus::Passed,
                         exit_code: None,
                         reason: None,
-                        output: OutputStats::default(),
+                        streams: Vec::new(),
+                        diagnostics: Vec::new(),
+                        log_storage_failed: false,
+                        structured_evidence_invalid: false,
+                        process_started: true,
                         service: Some(EventService { pgid, future }),
                         manifest: None,
                         capacity,
@@ -649,18 +752,15 @@ async fn run_to_event(
                 }
                 Err(error) => {
                     let _ = terminate(&mut process.child, process.pgid).await;
-                    let output = finish_pumps(process.stdout, process.stderr)
-                        .await
-                        .unwrap_or_default();
-                    ProcessResult {
-                        status: ProcessStatus::Unsafe,
-                        exit_code: None,
-                        reason: Some(format!("cannot inspect event process: {error}")),
-                        output,
-                        service: None,
-                        manifest: None,
+                    finalize_process(
+                        process,
+                        ProcessStatus::Unsafe,
+                        None,
+                        Some(format!("cannot inspect event process: {error}")),
                         capacity,
-                    }
+                        None,
+                    )
+                    .await
                 }
             }
         }
@@ -720,65 +820,213 @@ fn process_group_exists(pgid: i32) -> Result<bool, ExecutorError> {
 
 async fn pump<R: AsyncRead + Unpin>(
     mut reader: R,
-    path: &Path,
-    cap: usize,
-    aggregate: Arc<AggregateSink>,
-) -> Result<StreamStats, ExecutorError> {
-    let standard = std::fs::OpenOptions::new()
-        .create(true)
-        .truncate(true)
-        .write(true)
-        .mode(0o600)
-        .open(path)
-        .map_err(|error| ExecutorError::new(format!("cannot open leaf log: {error}")))?;
-    let mut output = File::from_std(standard);
-    let mut stats = StreamStats::default();
+    mut output: CompleteLogWriter,
+    fatal: mpsc::UnboundedSender<FatalLeafError>,
+) -> Result<StreamMetadata, PumpError> {
     let mut block = vec![0_u8; 64 * 1024];
     loop {
-        let read = reader
-            .read(&mut block)
-            .await
-            .map_err(|error| ExecutorError::new(format!("cannot read leaf output: {error}")))?;
+        let read = match reader.read(&mut block).await {
+            Ok(read) => read,
+            Err(error) => {
+                let _ = fatal.send(FatalLeafError::LogStorage);
+                return Err(PumpError::Read(error));
+            }
+        };
         if read == 0 {
             break;
         }
-        stats.observed = stats.observed.saturating_add(read as u64);
-        aggregate.append(&block[..read]).await?;
-        let remaining = cap.saturating_sub(stats.retained as usize);
-        if remaining > 0 {
-            let keep = read.min(remaining);
-            output.write_all(&block[..keep]).await.map_err(|error| {
-                ExecutorError::new(format!("cannot retain leaf output: {error}"))
-            })?;
-            stats.retained = stats.retained.saturating_add(keep as u64);
+        if let Err(error) = output.write_all(&block[..read]) {
+            let _ = fatal.send(FatalLeafError::LogStorage);
+            return Err(PumpError::Storage(error));
         }
     }
-    output
-        .sync_all()
-        .await
-        .map_err(|error| ExecutorError::new(format!("cannot sync leaf output: {error}")))?;
-    stats.truncated = stats.observed > stats.retained;
-    Ok(stats)
+    output.seal().map_err(|error| {
+        let _ = fatal.send(FatalLeafError::LogStorage);
+        PumpError::Storage(error)
+    })
+}
+
+#[derive(Default)]
+struct FinishedPumps {
+    streams: Vec<LogStreamSummary>,
+    storage_failed: bool,
 }
 
 async fn finish_pumps(
-    stdout: JoinHandle<Result<StreamStats, ExecutorError>>,
-    stderr: JoinHandle<Result<StreamStats, ExecutorError>>,
-) -> Result<OutputStats, ExecutorError> {
-    let stdout = stdout
-        .await
-        .map_err(|error| ExecutorError::new(format!("stdout task failed: {error}")))??;
-    let stderr = stderr
-        .await
-        .map_err(|error| ExecutorError::new(format!("stderr task failed: {error}")))??;
-    Ok(OutputStats {
-        stdout_bytes_observed: stdout.observed,
-        stdout_bytes_retained: stdout.retained,
-        stdout_truncated: stdout.truncated,
-        stderr_bytes_observed: stderr.observed,
-        stderr_bytes_retained: stderr.retained,
-        stderr_truncated: stderr.truncated,
-    })
+    stdout: JoinHandle<Result<StreamMetadata, PumpError>>,
+    stderr: JoinHandle<Result<StreamMetadata, PumpError>>,
+    run_id: &str,
+) -> FinishedPumps {
+    let mut result = FinishedPumps::default();
+    for task in [stdout, stderr] {
+        match task.await {
+            Ok(Ok(metadata)) => result.streams.push(stream_summary(run_id, metadata)),
+            Ok(Err(PumpError::Storage(error))) => {
+                let _ = error.code();
+                result.storage_failed = true;
+            }
+            Ok(Err(PumpError::Read(error))) => {
+                let _ = error.kind();
+                result.storage_failed = true;
+            }
+            Err(_) => result.storage_failed = true,
+        }
+    }
+    result
+}
+
+fn stream_summary(run_id: &str, metadata: StreamMetadata) -> LogStreamSummary {
+    LogStreamSummary {
+        log_ref: LogRef {
+            run_id: run_id.to_owned(),
+            check: metadata.selector.check,
+            phase: metadata.selector.phase,
+            case: metadata.selector.case_id,
+            stream: metadata.stream,
+        },
+        bytes: metadata.bytes,
+        lines: metadata.lines,
+        sha256: metadata.sha256,
+        first_write_epoch_ms: metadata.first_write_epoch_ms,
+        last_write_epoch_ms: metadata.last_write_epoch_ms,
+        complete: metadata.complete,
+    }
+}
+
+#[derive(Default)]
+struct FinishedDiagnostics {
+    entries: Vec<FailureIndexEntry>,
+    invalid: bool,
+}
+
+async fn finish_diagnostics(
+    task: JoinHandle<Result<Vec<FailureIndexEntry>, ExecutorError>>,
+) -> FinishedDiagnostics {
+    match task.await {
+        Ok(Ok(entries)) => FinishedDiagnostics {
+            entries,
+            invalid: false,
+        },
+        Ok(Err(_)) | Err(_) => FinishedDiagnostics {
+            entries: Vec::new(),
+            invalid: true,
+        },
+    }
+}
+
+async fn read_diagnostic_events(
+    mut reader: File,
+    context: DiagnosticContext,
+    fatal: mpsc::UnboundedSender<FatalLeafError>,
+) -> Result<Vec<FailureIndexEntry>, ExecutorError> {
+    let mut entries = Vec::new();
+    let mut current = Vec::new();
+    let mut block = [0_u8; 1024];
+    loop {
+        let read = reader.read(&mut block).await.map_err(|_| {
+            let _ = fatal.send(FatalLeafError::StructuredEvidence);
+            ExecutorError::new("cannot read structured diagnostic event channel")
+        })?;
+        if read == 0 {
+            break;
+        }
+        for byte in &block[..read] {
+            if *byte == b'\n' {
+                if current.is_empty() {
+                    continue;
+                }
+                let entry = parse_diagnostic_event(&current, &context).map_err(|_| {
+                    let _ = fatal.send(FatalLeafError::StructuredEvidence);
+                    ExecutorError::new("structured diagnostic event is invalid")
+                })?;
+                entries.push(entry);
+                current.clear();
+                if entries.len() > MAX_DIAGNOSTIC_EVENTS {
+                    let _ = fatal.send(FatalLeafError::StructuredEvidence);
+                    return Err(ExecutorError::new(
+                        "structured diagnostic event count exceeds its bound",
+                    ));
+                }
+            } else {
+                current.push(*byte);
+                if current.len() > MAX_EVENT_BYTES {
+                    let _ = fatal.send(FatalLeafError::StructuredEvidence);
+                    return Err(ExecutorError::new(
+                        "structured diagnostic event exceeds 4096 bytes",
+                    ));
+                }
+            }
+        }
+    }
+    if !current.is_empty() {
+        let entry = parse_diagnostic_event(&current, &context).map_err(|_| {
+            let _ = fatal.send(FatalLeafError::StructuredEvidence);
+            ExecutorError::new("structured diagnostic event is invalid")
+        })?;
+        entries.push(entry);
+    }
+    if entries.len() > MAX_DIAGNOSTIC_EVENTS {
+        let _ = fatal.send(FatalLeafError::StructuredEvidence);
+        return Err(ExecutorError::new(
+            "structured diagnostic event count exceeds its bound",
+        ));
+    }
+    Ok(entries)
+}
+
+async fn finalize_process(
+    process: SpawnedProcess,
+    status: ProcessStatus,
+    exit_code: Option<i32>,
+    reason: Option<String>,
+    capacity: crate::capacity::CapacityObservation,
+    fatal: Option<FatalLeafError>,
+) -> ProcessResult {
+    let cleanup_failed = cleanup_process_group(process.pgid).await.is_err();
+    let output = finish_pumps(process.stdout, process.stderr, &process.run_id).await;
+    let diagnostics = finish_diagnostics(process.diagnostics).await;
+    let manifest = finish_manifest(process.manifest).await;
+    let log_storage_failed = output.storage_failed || fatal == Some(FatalLeafError::LogStorage);
+    let structured_evidence_invalid =
+        diagnostics.invalid || fatal == Some(FatalLeafError::StructuredEvidence);
+    let unsafe_evidence = log_storage_failed || structured_evidence_invalid || cleanup_failed;
+    ProcessResult {
+        status: if unsafe_evidence {
+            ProcessStatus::Unsafe
+        } else {
+            status
+        },
+        exit_code,
+        reason: if unsafe_evidence {
+            Some(
+                if log_storage_failed {
+                    "log storage became incomplete"
+                } else if structured_evidence_invalid {
+                    "structured diagnostic evidence is invalid"
+                } else {
+                    "process group cleanup failed"
+                }
+                .into(),
+            )
+        } else {
+            reason
+        },
+        streams: output.streams,
+        diagnostics: diagnostics.entries,
+        log_storage_failed,
+        structured_evidence_invalid,
+        process_started: true,
+        service: None,
+        manifest: manifest.ok().flatten(),
+        capacity,
+    }
+}
+
+const fn fatal_reason(error: FatalLeafError) -> &'static str {
+    match error {
+        FatalLeafError::LogStorage => "log storage became incomplete",
+        FatalLeafError::StructuredEvidence => "structured diagnostic evidence is invalid",
+    }
 }
 
 async fn capture_manifest(mut reader: File) -> Result<ManifestCapture, ExecutorError> {
@@ -859,11 +1107,21 @@ fn failure(
         status,
         exit_code,
         reason: Some(reason.into()),
-        output: OutputStats::default(),
+        streams: Vec::new(),
+        diagnostics: Vec::new(),
+        log_storage_failed: false,
+        structured_evidence_invalid: false,
+        process_started: false,
         service: None,
         manifest: None,
         capacity: Default::default(),
     }
+}
+
+fn storage_failure(exit_code: Option<i32>, reason: impl Into<String>) -> ProcessResult {
+    let mut result = failure(ProcessStatus::Unsafe, exit_code, reason);
+    result.log_storage_failed = true;
+    result
 }
 
 fn exit_code(status: std::process::ExitStatus) -> Option<i32> {

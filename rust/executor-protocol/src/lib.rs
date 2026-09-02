@@ -945,15 +945,55 @@ pub enum RunStatus {
     Failed,
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct OutputStats {
-    pub stdout_bytes_observed: u64,
-    pub stdout_bytes_retained: u64,
-    pub stdout_truncated: bool,
-    pub stderr_bytes_observed: u64,
-    pub stderr_bytes_retained: u64,
-    pub stderr_truncated: bool,
+pub struct LogStreamSummary {
+    pub log_ref: LogRef,
+    pub bytes: u64,
+    pub lines: u64,
+    pub sha256: String,
+    pub first_write_epoch_ms: Option<u64>,
+    pub last_write_epoch_ms: Option<u64>,
+    pub complete: bool,
+}
+
+impl LogStreamSummary {
+    pub fn validate(&self) -> Result<(), ContractError> {
+        self.log_ref.validate()?;
+        validate_digest("log stream sha256", &self.sha256)?;
+        if self.first_write_epoch_ms.is_some() != self.last_write_epoch_ms.is_some() {
+            return Err(ContractError::new(
+                "log stream first and last write times must appear together",
+            ));
+        }
+        if self.bytes == 0 && self.first_write_epoch_ms.is_some() {
+            return Err(ContractError::new(
+                "empty log streams cannot have write times",
+            ));
+        }
+        if self.bytes > 0 && self.first_write_epoch_ms.is_none() {
+            return Err(ContractError::new(
+                "non-empty log streams require write times",
+            ));
+        }
+        if (self.bytes == 0 && self.lines != 0)
+            || (self.bytes > 0 && (self.lines == 0 || self.lines > self.bytes))
+        {
+            return Err(ContractError::new(
+                "log stream line count is inconsistent with its byte count",
+            ));
+        }
+        if self
+            .first_write_epoch_ms
+            .zip(self.last_write_epoch_ms)
+            .is_some_and(|(first, last)| last < first)
+        {
+            return Err(ContractError::new(
+                "log stream last write precedes its first write",
+            ));
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -961,9 +1001,9 @@ pub struct OutputStats {
 pub struct CaseReport {
     pub id: String,
     pub status: LeafStatus,
-    pub exit_code: Option<i32>,
+    pub exit: DiagnosticExit,
     pub duration_ms: u64,
-    pub output_ref: String,
+    pub streams: Vec<LogStreamSummary>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -976,16 +1016,9 @@ pub struct CheckReport {
     pub started_at: Option<String>,
     pub finished_at: Option<String>,
     pub duration_seconds: Option<f64>,
-    pub exit_code: Option<i32>,
-    pub reason: Option<String>,
+    pub exit: DiagnosticExit,
     pub artifacts: Vec<ArtifactReceipt>,
-    pub output_ref: String,
-    pub stdout_bytes_observed: u64,
-    pub stdout_bytes_retained: u64,
-    pub stdout_truncated: bool,
-    pub stderr_bytes_observed: u64,
-    pub stderr_bytes_retained: u64,
-    pub stderr_truncated: bool,
+    pub streams: Vec<LogStreamSummary>,
     pub case_count: u32,
     pub cases: Vec<CaseReport>,
     pub cases_truncated: bool,
@@ -1085,7 +1118,6 @@ pub struct ExecutionReport {
     pub source_digest: String,
     pub config_digest: String,
     pub source_changed: bool,
-    pub unsafe_reason: Option<String>,
     pub capacity: CapacityReport,
     pub counts: BTreeMap<String, u32>,
     pub checks: Vec<CheckReport>,
@@ -1445,6 +1477,28 @@ mod tests {
             stream: LogStream::Stdout,
         };
         assert!(executor.validate().is_err());
+    }
+
+    #[test]
+    fn stream_summaries_are_exact_and_have_no_legacy_truncation_projection() {
+        let summary = LogStreamSummary {
+            log_ref: log_ref(None),
+            bytes: 0,
+            lines: 0,
+            sha256: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855".into(),
+            first_write_epoch_ms: None,
+            last_write_epoch_ms: None,
+            complete: true,
+        };
+        summary.validate().expect("empty complete stream");
+        let encoded = serde_json::to_string(&summary).expect("stream JSON");
+        assert!(!encoded.contains("retained"));
+        assert!(!encoded.contains("observed"));
+        assert!(!encoded.contains("truncated"));
+
+        let mut invalid = summary;
+        invalid.bytes = 1;
+        assert!(invalid.validate().is_err());
     }
 
     #[test]

@@ -1,18 +1,21 @@
 use std::collections::BTreeMap;
 use std::fs;
-use std::os::unix::fs::symlink;
+use std::os::unix::fs::{PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
+use sha2::{Digest, Sha256};
+
 use devcoordinator2_executor_core::{
     Cancellation, Executor, LocalPermitProvider,
     protocol::{
-        CaseSpec, CheckPlan, CheckRole, CompletionMode, ErrorCategory, ExecutionPlan,
-        FailureIndexEntry, FailureMode, LeafStatus, LogPhase, ProofKind, RunStatus, Schema2,
-        TerminationReason, ValidationTier,
+        CaseSpec, CheckPlan, CheckRole, CompletionMode, DiagnosticOrigin, DiagnosticReportFormat,
+        DiagnosticReportSource, ErrorCategory, ExecutionPlan, FailureIndexEntry, FailureMode,
+        LeafStatus, LogPhase, LogStream, ProofKind, RunStatus, Schema2, TerminationReason,
+        ValidationTier,
     },
     source_digest,
 };
@@ -39,6 +42,12 @@ impl Repository {
 
     fn current(&self, run_id: &str) -> PathBuf {
         self.root.join(".devcoordinator").join(run_id)
+    }
+
+    fn logs(&self, run_id: &str) -> PathBuf {
+        self.root
+            .join(".devcoordinator/test/logs/runs")
+            .join(run_id)
     }
 }
 
@@ -84,6 +93,15 @@ fn python(script: &str) -> Vec<String> {
     vec!["python3".into(), "-c".into(), script.into()]
 }
 
+fn sha256(payload: &[u8]) -> String {
+    use std::fmt::Write as _;
+    let mut result = String::new();
+    for byte in Sha256::digest(payload) {
+        write!(&mut result, "{byte:02x}").expect("hex digest");
+    }
+    result
+}
+
 fn dynamic_fanout(name: &str, discovery_script: &str) -> CheckPlan {
     let mut fanout = direct(name, python("raise SystemExit(0)"));
     fanout.discover = Some(python(discovery_script));
@@ -94,18 +112,14 @@ fn dynamic_fanout(name: &str, discovery_script: &str) -> CheckPlan {
 
 fn plan(repository: &Repository, run_id: &str, checks: Vec<CheckPlan>) -> ExecutionPlan {
     fs::create_dir_all(repository.current(run_id)).expect("create run directory");
+    fs::create_dir_all(repository.logs(run_id)).expect("create log directory");
     ExecutionPlan {
         schema: Schema2,
         run_id: run_id.into(),
         test: "complete".into(),
         worktree_root: repository.root.display().to_string(),
         current_dir: repository.current(run_id).display().to_string(),
-        log_dir: repository
-            .root
-            .join(".devcoordinator/test/logs/runs")
-            .join(run_id)
-            .display()
-            .to_string(),
+        log_dir: repository.logs(run_id).display().to_string(),
         requested_tier: ValidationTier::Development,
         readiness_eligible: false,
         proof: ProofKind::Complete,
@@ -283,13 +297,17 @@ async fn oversized_dynamic_manifest_fails_without_starting_cases() {
             .iter()
             .all(|reference| reference.phase == LogPhase::Discovery)
     );
-    assert!(
-        report.checks[0]
-            .reason
-            .as_deref()
-            .is_some_and(|reason| reason.contains("2 MiB"))
-    );
     assert!(report.checks[0].cases.is_empty());
+    let leaf: serde_json::Value = serde_json::from_slice(
+        &fs::read(
+            repository
+                .logs("run-manifest")
+                .join("checks/cases/discovery/leaf.json"),
+        )
+        .expect("discovery metadata"),
+    )
+    .expect("discovery metadata JSON");
+    assert_eq!(leaf["status"], "failed");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -309,8 +327,8 @@ os.write(int(os.environ["DEVCOORDINATOR_CASE_MANIFEST_FD"]), payload)
     assert_eq!(
         fs::read_to_string(
             repository
-                .current("run-manifest-descriptor")
-                .join("checks/cases/discovery-stdout.log")
+                .logs("run-manifest-descriptor")
+                .join("checks/cases/discovery/stdout.log")
         )
         .expect("discovery stdout"),
         "ordinary discovery noise"
@@ -427,12 +445,6 @@ time.sleep(30)
         diagnostic.error_category,
         ErrorCategory::StructuredEvidenceInvalid
     );
-    assert!(
-        report.checks[0]
-            .reason
-            .as_deref()
-            .is_some_and(|reason| reason.contains("wrong run or check"))
-    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -457,10 +469,21 @@ time.sleep(30)
     assert_eq!(report.status, RunStatus::Passed);
     assert_eq!(status(&report, "service"), LeafStatus::Passed);
     assert_eq!(status(&report, "dependent"), LeafStatus::Passed);
+    assert_eq!(report.checks[0].streams.len(), 2);
+    let leaf: serde_json::Value = serde_json::from_slice(
+        &fs::read(
+            repository
+                .logs("run-event-pass")
+                .join("checks/service/check/leaf.json"),
+        )
+        .expect("service leaf metadata"),
+    )
+    .expect("service leaf JSON");
+    assert_eq!(leaf["complete"], true);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn logs_are_drained_but_retained_to_the_fixed_cap() {
+async fn logs_larger_than_four_mibibytes_are_complete_and_hashed() {
     let repository = Repository::new("logs");
     let noisy = direct(
         "noisy",
@@ -469,29 +492,30 @@ async fn logs_are_drained_but_retained_to_the_fixed_cap() {
     let report = execute(plan(&repository, "run-logs", vec![noisy])).await;
     let check = &report.checks[0];
     assert_eq!(check.status, LeafStatus::Passed);
-    assert_eq!(check.stdout_bytes_observed, 5 * 1024 * 1024);
-    assert_eq!(check.stdout_bytes_retained, 4 * 1024 * 1024);
-    assert!(check.stdout_truncated);
+    let stdout = check
+        .streams
+        .iter()
+        .find(|stream| stream.log_ref.stream == LogStream::Stdout)
+        .expect("stdout summary");
+    assert_eq!(stdout.bytes, 5 * 1024 * 1024);
+    assert_eq!(stdout.lines, 1);
+    assert!(stdout.complete);
+    assert_eq!(stdout.sha256, sha256(&vec![b'x'; 5 * 1024 * 1024]));
     assert_eq!(
         fs::metadata(
             repository
-                .current("run-logs")
-                .join("checks/noisy/stdout.log")
+                .logs("run-logs")
+                .join("checks/noisy/check/stdout.log")
         )
         .expect("stdout log")
         .len(),
-        4 * 1024 * 1024
+        5 * 1024 * 1024
     );
-    assert_eq!(
-        fs::metadata(repository.current("run-logs").join("stdout.log"))
-            .expect("aggregate stdout log")
-            .len(),
-        4 * 1024 * 1024
-    );
+    assert!(!repository.logs("run-logs").join("stdout.log").exists());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn concurrent_leaf_output_is_retained_in_run_aggregate_streams() {
+async fn concurrent_leaf_output_remains_separate_without_aggregate_streams() {
     let repository = Repository::new("aggregate-logs");
     let one = direct(
         "one",
@@ -503,29 +527,37 @@ async fn concurrent_leaf_output_is_retained_in_run_aggregate_streams() {
     );
     let report = execute(plan(&repository, "run-aggregate-logs", vec![one, two])).await;
     assert_eq!(report.status, RunStatus::Passed);
-    let stdout = fs::read_to_string(repository.current("run-aggregate-logs").join("stdout.log"))
-        .expect("aggregate stdout");
-    let stderr = fs::read_to_string(repository.current("run-aggregate-logs").join("stderr.log"))
-        .expect("aggregate stderr");
-    assert!(stdout.contains("one-out") && stdout.contains("two-out"));
-    assert!(stderr.contains("one-err") && stderr.contains("two-err"));
-    assert_eq!(
-        u64::try_from(stdout.len()).expect("stdout length"),
-        report
-            .checks
-            .iter()
-            .map(|check| check.stdout_bytes_observed)
-            .sum::<u64>()
-    );
     assert_eq!(
         fs::read_to_string(
             repository
-                .current("run-aggregate-logs")
-                .join("checks/one/stdout.log")
+                .logs("run-aggregate-logs")
+                .join("checks/one/check/stdout.log")
         )
         .expect("one stdout"),
         "one-out\n"
     );
+    assert_eq!(
+        fs::read_to_string(
+            repository
+                .logs("run-aggregate-logs")
+                .join("checks/two/check/stderr.log")
+        )
+        .expect("two stderr"),
+        "two-err\n"
+    );
+    assert!(
+        !repository
+            .logs("run-aggregate-logs")
+            .join("stdout.log")
+            .exists()
+    );
+    assert!(
+        !repository
+            .logs("run-aggregate-logs")
+            .join("stderr.log")
+            .exists()
+    );
+    assert!(report.checks.iter().all(|check| check.streams.len() == 2));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -578,6 +610,16 @@ async fn missing_artifact_and_source_change_have_distinct_structured_categories(
     let artifact_failure = failure(&artifact_report, Some("artifact"), None);
     assert_eq!(artifact_failure.error_category, ErrorCategory::Artifact);
     assert_eq!(artifact_failure.exit.code, Some(0));
+    let artifact_leaf: serde_json::Value = serde_json::from_slice(
+        &fs::read(
+            artifact_repository
+                .logs("run-artifact-diagnostic")
+                .join("checks/artifact/check/leaf.json"),
+        )
+        .expect("artifact leaf metadata"),
+    )
+    .expect("artifact leaf JSON");
+    assert_eq!(artifact_leaf["status"], "failed");
 
     let source_repository = Repository::new("source-diagnostic");
     let mutate = direct(
@@ -611,4 +653,231 @@ async fn signal_exit_is_structured_without_arbitrary_process_prose() {
     assert_eq!(diagnostic.exit.signal, Some(9));
     let encoded = serde_json::to_string(&report.failure_index).expect("diagnostic JSON");
     assert!(!encoded.contains("process exited"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn log_open_failure_is_unsafe_and_prevents_process_start() {
+    let repository = Repository::new("log-storage-failure");
+    let check = direct(
+        "unit",
+        python(
+            "import os,pathlib; pathlib.Path(os.environ['DEVCOORDINATOR_CHECK_SCRATCH']).joinpath('started').write_text('yes')",
+        ),
+    );
+    let execution_plan = plan(&repository, "run-log-storage-failure", vec![check]);
+    let leaf_dir = repository
+        .logs("run-log-storage-failure")
+        .join("checks/unit/check");
+    fs::create_dir_all(&leaf_dir).expect("leaf directory");
+    fs::write(leaf_dir.join("stdout.log"), b"occupied").expect("occupied stream");
+    let report = execute(execution_plan).await;
+    assert_eq!(report.status, RunStatus::Failed);
+    assert_eq!(report.checks[0].status, LeafStatus::Unsafe);
+    assert_eq!(
+        failure(&report, Some("unit"), None).error_category,
+        ErrorCategory::LogStorage
+    );
+    assert!(
+        !repository
+            .current("run-log-storage-failure")
+            .join("scratch/unit/started")
+            .exists()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stream_metadata_write_failure_stops_the_live_process_as_unsafe() {
+    let repository = Repository::new("log-write-failure");
+    let script = r#"
+import os, pathlib, sys, time
+leaf = pathlib.Path(os.environ["DEVCOORDINATOR_DIAGNOSTICS_DIR"]).parent
+sys.stdout.write("stored-before-failure")
+sys.stdout.flush()
+os.chmod(leaf, 0o500)
+os.close(1)
+os.close(2)
+time.sleep(30)
+"#;
+    let started = std::time::Instant::now();
+    let report = execute(plan(
+        &repository,
+        "run-log-write-failure",
+        vec![direct("unit", python(script))],
+    ))
+    .await;
+    let leaf_dir = repository
+        .logs("run-log-write-failure")
+        .join("checks/unit/check");
+    fs::set_permissions(&leaf_dir, std::fs::Permissions::from_mode(0o700))
+        .expect("restore leaf permissions");
+    assert!(started.elapsed() < Duration::from_secs(5));
+    assert_eq!(report.checks[0].status, LeafStatus::Unsafe);
+    assert!(report.failure_index.iter().any(|entry| {
+        entry.check.as_deref() == Some("unit") && entry.error_category == ErrorCategory::LogStorage
+    }));
+    assert_eq!(
+        fs::read(leaf_dir.join("stdout.log")).expect("partial complete stream bytes"),
+        b"stored-before-failure"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn direct_discovery_and_case_logs_use_distinct_stable_leaves() {
+    let repository = Repository::new("phase-layout");
+    let discovery = r#"
+import os, sys
+sys.stdout.write("discovery")
+os.write(int(os.environ["DEVCOORDINATOR_CASE_MANIFEST_FD"]), b'{"schema":2,"cases":[{"id":"one","args":[]}]}')
+"#;
+    let mut fanout = dynamic_fanout("cases", discovery);
+    fanout.case_command = Some(python("print('case')"));
+    let direct_check = direct("direct", python("print('direct')"));
+    let report = execute(plan(
+        &repository,
+        "run-phase-layout",
+        vec![direct_check, fanout],
+    ))
+    .await;
+    assert_eq!(report.status, RunStatus::Passed);
+    assert_eq!(
+        fs::read_to_string(
+            repository
+                .logs("run-phase-layout")
+                .join("checks/direct/check/stdout.log")
+        )
+        .expect("direct log"),
+        "direct\n"
+    );
+    assert_eq!(
+        fs::read_to_string(
+            repository
+                .logs("run-phase-layout")
+                .join("checks/cases/discovery/stdout.log")
+        )
+        .expect("discovery log"),
+        "discovery"
+    );
+    assert_eq!(
+        fs::read_to_string(
+            repository
+                .logs("run-phase-layout")
+                .join("checks/cases/cases/one/stdout.log")
+        )
+        .expect("case log"),
+        "case\n"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn dedicated_diagnostic_event_is_parsed_without_console_scraping() {
+    let repository = Repository::new("diagnostic-event");
+    let script = r#"
+import json, os
+event = {
+  "schema": 2,
+  "run_id": os.environ["DEVCOORDINATOR_RUN_ID"],
+  "check": os.environ["DEVCOORDINATOR_CHECK_NAME"],
+  "case": None,
+  "status": "failed",
+  "exit": {"code": 7, "signal": None},
+  "termination_reason": None,
+  "source": {"file": "src/parser.rs", "line": 81, "column": 9},
+  "error_category": "assertion",
+  "expected": None,
+  "actual": None,
+  "log_refs": []
+}
+os.write(int(os.environ["DEVCOORDINATOR_DIAGNOSTIC_FD"]), (json.dumps(event) + "\n").encode())
+"#;
+    let report = execute(plan(
+        &repository,
+        "run-diagnostic-event",
+        vec![direct("unit", python(script))],
+    ))
+    .await;
+    assert_eq!(report.checks[0].status, LeafStatus::Failed);
+    let diagnostic = report
+        .failure_index
+        .iter()
+        .find(|entry| entry.origin == DiagnosticOrigin::ExplicitEvent)
+        .expect("explicit diagnostic");
+    assert_eq!(diagnostic.error_category, ErrorCategory::Assertion);
+    assert_eq!(diagnostic.exit.code, Some(7));
+    assert_eq!(
+        diagnostic.source.as_ref().map(|source| source.line),
+        Some(81)
+    );
+    assert!(
+        diagnostic
+            .log_refs
+            .iter()
+            .all(|reference| reference.phase == LogPhase::Check)
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn declared_junit_source_is_confined_to_the_leaf_diagnostics_directory() {
+    let repository = Repository::new("declared-junit");
+    let script = r#"
+import os, pathlib
+root = pathlib.Path(os.environ["DEVCOORDINATOR_DIAGNOSTICS_DIR"])
+root.joinpath("junit.xml").write_text('<testsuite><testcase name="rejects" classname="Parser"><failure file="src/parser.rs" line="17" column="3" expected="ready" actual="pending"/></testcase></testsuite>')
+"#;
+    let mut check = direct("unit", python(script));
+    check.diagnostic_sources = vec![DiagnosticReportSource {
+        format: DiagnosticReportFormat::Junit,
+        path: "junit.xml".into(),
+    }];
+    let report = execute(plan(&repository, "run-declared-junit", vec![check])).await;
+    assert_eq!(report.checks[0].status, LeafStatus::Failed);
+    let diagnostic = report
+        .failure_index
+        .iter()
+        .find(|entry| entry.origin == DiagnosticOrigin::Junit)
+        .expect("JUnit diagnostic");
+    assert_eq!(diagnostic.error_category, ErrorCategory::Assertion);
+    assert_eq!(
+        diagnostic.source.as_ref().map(|source| source.line),
+        Some(17)
+    );
+    assert_eq!(
+        diagnostic
+            .expected
+            .as_ref()
+            .and_then(|value| value.preview.as_deref()),
+        Some("ready")
+    );
+    assert!(
+        repository
+            .logs("run-declared-junit")
+            .join("checks/unit/check/diagnostics.json")
+            .is_file()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn oversized_declared_report_fails_without_unbounded_allocation() {
+    let repository = Repository::new("oversized-diagnostic-report");
+    let script = r#"
+import os, pathlib
+path = pathlib.Path(os.environ["DEVCOORDINATOR_DIAGNOSTICS_DIR"]) / "junit.xml"
+with path.open("wb") as output:
+    output.truncate(16 * 1024 * 1024 + 1)
+"#;
+    let mut check = direct("unit", python(script));
+    check.diagnostic_sources = vec![DiagnosticReportSource {
+        format: DiagnosticReportFormat::Junit,
+        path: "junit.xml".into(),
+    }];
+    let report = execute(plan(
+        &repository,
+        "run-oversized-diagnostic-report",
+        vec![check],
+    ))
+    .await;
+    assert_eq!(report.checks[0].status, LeafStatus::Unsafe);
+    assert!(report.failure_index.iter().any(|entry| {
+        entry.error_category == ErrorCategory::StructuredEvidenceInvalid
+            && entry.check.as_deref() == Some("unit")
+    }));
 }
