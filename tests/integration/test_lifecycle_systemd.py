@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
 import os
@@ -53,7 +54,80 @@ def _unit_config(command: list[str], *, timeout: int | None = None,
     return "\n".join(rows) + "\n"
 
 
-def test_pass_uid_and_bounded_output(world):
+def _log_catalog(world, run_id: str, **selector) -> dict:
+    response = _call(world, "test.log.catalog", {
+        "path": str(world.repo), "run_id": run_id, "limit": 100, **selector,
+    })
+    assert response["ok"], response
+    encoded = json.dumps(response["result"])
+    assert str(world.repo) not in encoded
+    assert not any(key in encoded for key in ('"text"', '"base64"'))
+    return response["result"]
+
+
+def _catalog_ref(catalog: dict, *, check: str | None, phase: str,
+                 stream: str, case: str | None = None) -> dict:
+    matches = []
+    for entry in catalog["entries"]:
+        log_ref = entry["log_ref"]
+        if log_ref.get("check") == check and log_ref["phase"] == phase \
+                and log_ref["stream"] == stream and log_ref.get("case") == case:
+            matches.append(log_ref)
+    assert len(matches) == 1, (matches, catalog)
+    return matches[0]
+
+
+def _log_call(world, operation: str, log_ref: dict, **options) -> dict:
+    response = _call(world, f"test.log.{operation}", {
+        "path": str(world.repo), **log_ref, **options,
+    })
+    assert response["ok"], response
+    assert len(json.dumps(response["result"]).encode("utf-8")) < 65_536
+    return response["result"]
+
+
+def _log_text(result: dict) -> str:
+    for collection in ("segments", "matches", "contexts"):
+        if collection in result:
+            return "\n".join(
+                row.get("text", "") for row in result[collection]
+                if isinstance(row, dict))
+    return ""
+
+
+def _check_output_texts(world, run_id: str, check: str = "main") -> tuple[str, str]:
+    catalog = _log_catalog(world, run_id, check=check, phase="check")
+    output = []
+    for stream in ("stdout", "stderr"):
+        log_ref = _catalog_ref(
+            catalog, check=check, phase="check", stream=stream)
+        output.append(_log_text(_log_call(
+            world, "tail", log_ref, lines=200, max_bytes=32_768)))
+    return output[0], output[1]
+
+
+def _assert_progressive_status(document: dict, repository: Path) -> None:
+    forbidden = {
+        "reason", "unsafe_reason", "summary_path", "check_report_path",
+        "output_ref", "stdout_bytes_retained", "stderr_bytes_retained",
+        "stdout_truncated", "stderr_truncated",
+    }
+
+    def keys(value):
+        if isinstance(value, dict):
+            yield from value
+            for nested in value.values():
+                yield from keys(nested)
+        elif isinstance(value, list):
+            for nested in value:
+                yield from keys(nested)
+
+    assert forbidden.isdisjoint(keys(document))
+    assert str(repository) not in json.dumps(document)
+    assert "failure_index" in document
+
+
+def test_pass_uid_and_catalogued_output(world):
     _write_config(world.repo, world.caller, _unit_config(["id"], timeout=60))
     resp = _call(world, "test.start", {"path": str(world.repo)})
     assert resp["ok"], resp
@@ -62,13 +136,16 @@ def test_pass_uid_and_bounded_output(world):
     assert final["status"] == "passed"
     assert final["exit_code"] == 0
     assert final["caller_uid"] == world.caller.pw_uid
-    # Successful status carries no log text.
-    assert "tail" not in final and "stdout" not in final
-    out = _call(world, "test.output",
-                {"path": str(world.repo), "stream": "stdout"})
-    assert f"uid={world.caller.pw_uid}" in out["result"]["tail"]
+    _assert_progressive_status(final, world.repo)
+    main = next(check for check in final["checks"] if check["name"] == "main")
+    assert len(main["streams"]) == 2
+    catalog = _log_catalog(world, final["run_id"], check="main", phase="check")
+    stdout_ref = _catalog_ref(
+        catalog, check="main", phase="check", stream="stdout")
+    out = _log_call(world, "tail", stdout_ref, lines=50, max_bytes=32_768)
+    assert f"uid={world.caller.pw_uid}" in _log_text(out)
     # Summary file is owned by the caller and valid JSON.
-    sp = Path(final["summary_path"])
+    sp = world.repo / ".devcoordinator" / "test" / "current" / "summary.json"
     assert sp.stat().st_uid == world.caller.pw_uid
     assert json.loads(sp.read_text())["status"] == "passed"
     history = tests_support.read_history(world.repo)
@@ -119,24 +196,41 @@ def test_supersession_latest_start_wins(world):
     _call(world, "test.stop", {"path": str(world.repo)})
 
 
-def test_flooder_capped_but_counted(world):
-    _write_config(world.repo, world.caller,
-                  _unit_config(["dd", "if=/dev/zero", "bs=64k", "count=128",
-                                "status=none"]))
+def test_flooder_is_complete_hash_bound_and_keeps_final_sentinel(world):
+    sentinel = b"DEVCOORDINATOR-END-SENTINEL\n"
+    payload = b"x" * (5 * 1024 * 1024 + 73) + b"\n" + sentinel
+    command = [
+        "/usr/bin/python3", "-c",
+        "import sys; data=b'x'*(5*1024*1024+73)+b'\\n'"
+        "+b'DEVCOORDINATOR-END-SENTINEL\\n';"
+        "sys.stdout.buffer.write(data);sys.stdout.buffer.flush()",
+    ]
+    _write_config(world.repo, world.caller, _unit_config(command))
     resp = _call(world, "test.start", {"path": str(world.repo)})
     assert resp["ok"], resp
     final = _wait_status(world, world.repo, {"passed", "failed"}, timeout=60)
     assert final["status"] == "passed"
-    assert final["stdout_bytes_observed"] == 64 * 1024 * 128
-    assert final["stdout_bytes_retained"] == 4 * 1024 * 1024
-    assert final["stdout_truncated"] is True
+    _assert_progressive_status(final, world.repo)
+    assert final["stdout_bytes_observed"] == len(payload)
+    catalog = _log_catalog(
+        world, final["run_id"], check="main", phase="check", stream="stdout")
+    assert len(catalog["entries"]) == 1
+    entry = catalog["entries"][0]
+    assert entry["bytes"] == len(payload)
+    assert entry["lines"] == 2
+    assert entry["complete"] is True and entry["truncated"] is False
+    assert entry["sha256"] == hashlib.sha256(payload).hexdigest()
+    tail = _log_call(
+        world, "tail", entry["log_ref"], lines=2, max_bytes=32_768)
+    assert "DEVCOORDINATOR-END-SENTINEL" in _log_text(tail)
 
 
 def test_daemon_restart_marks_interrupted(world):
     _write_config(world.repo, world.caller, _unit_config(["sleep", "120"]))
     resp = _call(world, "test.start", {"path": str(world.repo)})
     assert resp["ok"], resp
-    summary_path = Path(resp["result"]["summary_path"])
+    assert "summary_path" not in resp["result"]
+    summary_path = world.repo / ".devcoordinator" / "test" / "current" / "summary.json"
     world.daemon.kill_hard()
     assert json.loads(summary_path.read_text())["status"] == "running"
     world.daemon.start()
@@ -206,10 +300,7 @@ def test_postgres_real_query_labels_secrecy_and_cleanup(world):
     st = env_file.stat()
     assert st.st_mode & 0o777 == 0o600 and st.st_uid == world.caller.pw_uid
     final = _wait_status(world, world.repo, {"passed", "failed"}, timeout=120)
-    out = _call(world, "test.output", {"path": str(world.repo),
-                                       "stream": "stdout"})["result"]["tail"]
-    err = _call(world, "test.output", {"path": str(world.repo),
-                                       "stream": "stderr"})["result"]["tail"]
+    out, err = _check_output_texts(world, run_id)
     assert final["status"] == "passed", (final, out, err)
     assert "42" in out
     # Summary and status carry no credentials; container is gone.
@@ -223,10 +314,7 @@ def test_digest_pinned_postgis_fixture_is_pulled_injected_and_removed(world):
     assert resp["ok"], resp
     run_id = resp["result"]["run_id"]
     final = _wait_status(world, world.repo, {"passed", "failed"}, timeout=180)
-    out = _call(world, "test.output", {"path": str(world.repo),
-                                       "stream": "stdout"})["result"]["tail"]
-    err = _call(world, "test.output", {"path": str(world.repo),
-                                       "stream": "stderr"})["result"]["tail"]
+    out, err = _check_output_texts(world, run_id)
     assert final["status"] == "passed", (final, out, err)
     assert "postgis_version" in out and "USE_GEOS=1" in out
     assert _containers_with_label("run", run_id) == []
@@ -338,11 +426,74 @@ def test_governed_graph_runs_all_ready_checks_and_collects_safe_failures(world):
     }
     assert [row["check"] for row in final["failure_index"]] == ["fails", "needs"]
     assert final["proof"] == "complete"
-    failed_output = _call(world, "test.output", {
-        "path": str(world.repo), "stream": "stderr", "check": "fails"})
-    assert failed_output["ok"], failed_output
-    assert failed_output["result"]["check"] == "fails"
-    assert "exact-check-failure" in failed_output["result"]["tail"]
+    _assert_progressive_status(final, world.repo)
+    failed = final["failure_index"][0]
+    assert failed["error_category"] == "process_exit"
+    assert failed["exit"] == {"code": 7, "signal": None}
+    assert failed["fingerprint"].startswith("sha256:")
+    assert failed["occurrences"] == 1
+    assert final["failure_index"][1]["error_category"] == "dependency"
+
+    catalog = _log_catalog(
+        world, final["run_id"], check="fails", phase="check", stream="stderr")
+    stderr_ref = _catalog_ref(
+        catalog, check="fails", phase="check", stream="stderr")
+    tail = _log_call(world, "tail", stderr_ref, lines=50, max_bytes=32_768)
+    assert "exact-check-failure" in _log_text(tail)
+    search = _log_call(
+        world, "search", stderr_ref, text="exact-check-failure",
+        max_matches=20, context_lines=2, max_bytes=32_768)
+    assert "exact-check-failure" in _log_text(search)
+    match = search["matches"][0]
+    exact = _log_call(
+        world, "range", stderr_ref, line_start=match["line_start"],
+        line_end=match["line_end"], max_bytes=32_768)
+    assert "exact-check-failure" in _log_text(exact)
+    context = _log_call(
+        world, "failure_context", stderr_ref,
+        limit=20, context_lines=2, max_bytes=32_768)
+    assert "exact-check-failure" in _log_text(context)
+
+
+def test_static_cases_have_isolated_catalogued_streams(world):
+    case_code = (
+        "import sys; case=sys.argv[1];"
+        "print('stdout-'+case);print('stderr-'+case,file=sys.stderr)"
+    )
+    config = f'''schema = 2
+[test.complete]
+timeout_seconds = 120
+[[test.complete.check]]
+name = "cases"
+tier = "release"
+cases = [{{id="one",args=["one"]}},{{id="two",args=["two"]}}]
+case_command = {json.dumps(['/usr/bin/python3', '-c', case_code])}
+'''
+    _write_config(world.repo, world.caller, config)
+    started = _call(world, "test.start", {"path": str(world.repo)})
+    assert started["ok"], started
+    final = _wait_status(world, world.repo, {"passed", "failed"}, timeout=120)
+    assert final["status"] == "passed", final
+    _assert_progressive_status(final, world.repo)
+    cases = final["checks"][0]["cases"]
+    assert [case["id"] for case in cases] == ["one", "two"]
+    assert all(len(case["streams"]) == 2 for case in cases)
+
+    catalog = _log_catalog(
+        world, final["run_id"], check="cases", phase="case")
+    assert len(catalog["entries"]) == 4
+    for case in ("one", "two"):
+        stdout_ref = _catalog_ref(
+            catalog, check="cases", phase="case", case=case, stream="stdout")
+        stderr_ref = _catalog_ref(
+            catalog, check="cases", phase="case", case=case, stream="stderr")
+        stdout = _log_text(_log_call(
+            world, "tail", stdout_ref, lines=50, max_bytes=32_768))
+        stderr = _log_text(_log_call(
+            world, "tail", stderr_ref, lines=50, max_bytes=32_768))
+        other = "two" if case == "one" else "one"
+        assert f"stdout-{case}" in stdout and f"stdout-{other}" not in stdout
+        assert f"stderr-{case}" in stderr and f"stderr-{other}" not in stderr
 
 
 def test_event_completed_setup_stays_alive_for_dependent_check(world):
@@ -450,7 +601,9 @@ def test_upgrade_drain_rejects_new_starts_and_stop_reason_is_operational(world):
         end_drain(lease)
     final = _call(world, "test.status", {"path": str(world.repo)})["result"]
     assert final["status"] == "cancelled"
-    assert final["termination_reason"] == "operator cancelled for emergency upgrade"
+    assert final["termination_reason"] == "operator_cancelled"
+    assert "operator cancelled for emergency upgrade" not in json.dumps(final)
+    _assert_progressive_status(final, world.repo)
     assert read_activity(world.base)["active"] == []
     assert _units() == []
 
