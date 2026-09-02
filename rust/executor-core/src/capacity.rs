@@ -269,6 +269,9 @@ async fn read_line_bounded(stream: &mut UnixStream) -> Result<Vec<u8>, ExecutorE
                 ));
             }
             result.extend_from_slice(&block[..newline]);
+            if result.len() > MAX_BROKER_MESSAGE_BYTES {
+                return Err(ExecutorError::new("capacity broker response exceeds 8 KiB"));
+            }
             return Ok(result);
         }
         result.extend_from_slice(&block[..read]);
@@ -362,6 +365,35 @@ mod tests {
         assert_eq!(permit.observation.effective_capacity, Some(48));
         assert!(permit.observation.waited);
         drop(permit);
+        server.await.expect("server");
+        fs::remove_file(socket).expect("remove socket");
+    }
+
+    #[tokio::test]
+    async fn unix_provider_rejects_oversized_response_with_final_newline() {
+        let sequence = SOCKET_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let socket = std::env::temp_dir().join(format!(
+            "dc2-capacity-oversize-{}-{sequence}.sock",
+            std::process::id()
+        ));
+        let listener = UnixListener::bind(&socket).expect("bind");
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("accept");
+            read_line_bounded(&mut stream).await.expect("acquire");
+            let mut oversized = vec![b'x'; MAX_BROKER_MESSAGE_BYTES + 1];
+            oversized.push(b'\n');
+            stream.write_all(&oversized).await.expect("oversized reply");
+        });
+        let provider = UnixPermitProvider::new(&socket).expect("provider");
+        let error = provider
+            .acquire(PermitRequest {
+                run_id: "run".into(),
+                leaf_id: "leaf".into(),
+            })
+            .await
+            .err()
+            .expect("oversized broker response must fail");
+        assert!(error.to_string().contains("exceeds 8 KiB"));
         server.await.expect("server");
         fs::remove_file(socket).expect("remove socket");
     }
