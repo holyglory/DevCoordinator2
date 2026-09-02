@@ -250,6 +250,7 @@ def _plan_check(
         "completion": "process",
         "on_failure": "continue",
         "produces": [],
+        "diagnostic_sources": [],
         "command": command,
     }
 

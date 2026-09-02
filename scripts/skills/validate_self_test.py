@@ -241,6 +241,7 @@ def test_real_rust_invalidation(base: Path) -> None:
             "completion": "process",
             "on_failure": "continue",
             "produces": [],
+            "diagnostic_sources": [],
             "command": [sys.executable, "-c", script],
         }
 
