@@ -15,8 +15,8 @@ use devcoordinator2_executor_protocol::{
     OutputStats,
 };
 use rustix::fd::AsFd;
-use rustix::io::{FdFlags, fcntl_setfd};
-use rustix::pipe::{PipeFlags, pipe_with};
+use rustix::io::{FdFlags, fcntl_getfd, fcntl_setfd};
+use rustix::pipe::pipe;
 use rustix::process::test_kill_process_group;
 use rustix::process::{Pid, Signal, kill_process_group};
 use tokio::fs::File;
@@ -34,6 +34,10 @@ const EVENT_FD: i32 = 198;
 const MANIFEST_FD: i32 = 199;
 const TERMINATION_GRACE: Duration = Duration::from_secs(2);
 const GROUP_OBSERVATION_INTERVAL: Duration = Duration::from_millis(50);
+// `pipe2(O_CLOEXEC)` is unavailable on Apple platforms. Serializing the
+// pipe/fcntl/spawn window keeps another executor leaf from inheriting a pipe
+// before both portable `pipe()` descriptors have been marked close-on-exec.
+static SPAWN_DESCRIPTOR_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[derive(Clone)]
 pub struct Cancellation {
@@ -288,11 +292,13 @@ async fn spawn_process(request: &ProcessRequest) -> Result<SpawnedProcess, Execu
         .process_group(0)
         .kill_on_drop(false);
 
+    let spawn_guard = SPAWN_DESCRIPTOR_LOCK
+        .lock()
+        .map_err(|_| ExecutorError::new("process descriptor lock is poisoned"))?;
     let mut event_read = None;
     let mut event_write = None;
     if request.completion == CompletionMode::Event {
-        let (read, write) = pipe_with(PipeFlags::CLOEXEC)
-            .map_err(|error| ExecutorError::new(format!("cannot create event pipe: {error}")))?;
+        let (read, write) = cloexec_pipe("event")?;
         let write_raw = write.as_raw_fd();
         command.env("DEVCOORDINATOR_EVENT_FD", EVENT_FD.to_string());
         // SAFETY: pre_exec invokes only async-signal-safe descriptor operations.
@@ -316,8 +322,7 @@ async fn spawn_process(request: &ProcessRequest) -> Result<SpawnedProcess, Execu
     let mut manifest_read = None;
     let mut manifest_write = None;
     if request.capture_manifest {
-        let (read, write) = pipe_with(PipeFlags::CLOEXEC)
-            .map_err(|error| ExecutorError::new(format!("cannot create manifest pipe: {error}")))?;
+        let (read, write) = cloexec_pipe("manifest")?;
         let write_raw = write.as_raw_fd();
         command.env("DEVCOORDINATOR_CASE_MANIFEST_FD", MANIFEST_FD.to_string());
         // SAFETY: see the event descriptor setup above. This is a distinct
@@ -338,11 +343,11 @@ async fn spawn_process(request: &ProcessRequest) -> Result<SpawnedProcess, Execu
         manifest_write = Some(write);
     }
 
-    let mut child = command
-        .spawn()
-        .map_err(|error| ExecutorError::new(error.to_string()))?;
+    let spawned = command.spawn();
     drop(event_write);
     drop(manifest_write);
+    drop(spawn_guard);
+    let mut child = spawned.map_err(|error| ExecutorError::new(error.to_string()))?;
     let pgid = child
         .id()
         .and_then(|id| i32::try_from(id).ok())
@@ -377,6 +382,25 @@ async fn spawn_process(request: &ProcessRequest) -> Result<SpawnedProcess, Execu
         event_reader,
         manifest,
     })
+}
+
+fn cloexec_pipe(kind: &str) -> Result<(OwnedFd, OwnedFd), ExecutorError> {
+    let (read, write) = pipe()
+        .map_err(|error| ExecutorError::new(format!("cannot create {kind} pipe: {error}")))?;
+    for (end, descriptor) in [("read", &read), ("write", &write)] {
+        let mut flags = fcntl_getfd(descriptor.as_fd()).map_err(|error| {
+            ExecutorError::new(format!(
+                "cannot inspect {kind} pipe {end} descriptor: {error}"
+            ))
+        })?;
+        flags.insert(FdFlags::CLOEXEC);
+        fcntl_setfd(descriptor.as_fd(), flags).map_err(|error| {
+            ExecutorError::new(format!(
+                "cannot protect {kind} pipe {end} descriptor: {error}"
+            ))
+        })?;
+    }
+    Ok((read, write))
 }
 
 async fn run_to_exit(
@@ -871,5 +895,19 @@ fn deadline_reason(timeout_seconds: Option<u64>, kind: &str) -> String {
     match timeout_seconds {
         Some(seconds) => format!("{kind} exceeded {seconds} second deadline"),
         None => format!("{kind} deadline elapsed"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn portable_pipe_marks_both_ends_close_on_exec() {
+        let (read, write) = cloexec_pipe("test").expect("create protected pipe");
+        for descriptor in [&read, &write] {
+            let flags = fcntl_getfd(descriptor.as_fd()).expect("read descriptor flags");
+            assert!(flags.contains(FdFlags::CLOEXEC));
+        }
     }
 }
