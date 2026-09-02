@@ -244,8 +244,8 @@ const fixtures = (scenario) => {
     'deployment.logs': { component: 'api', tail: 'line 1\nline 2 ' + 'long '.repeat(60) + '\nline 3', truncated_before_tail: true, log_path: '/state/logs/api.log' },
     'health.history': { subject_kind: 'component', subject_id: `${DEP}/api`, metric: 'cpu_percent', minutes: 60, points: scenario.empty ? [] : points, truncated: false },
     'test.list': { runs: scenario.empty ? [] : [
-      { run_id: 't20260101T000000Z-abc123', test: 'unit', requested_tier: 'pre-merge', readiness_eligible: false, status: 'running', started_at: new Date().toISOString(), finished_at: null, duration_seconds: null, exit_code: null, stdout_bytes_observed: 123456789, stderr_bytes_observed: 0, stdout_truncated: true, stderr_truncated: false, display_name: 'repo-one', worktree_path: '/srv/repos/repo-one', repository_id: REPO, worktree_id: 'w1', summary_path: '/srv/repos/repo-one/.devcoordinator/test/current/summary.json' },
-      { run_id: 't20260101T000100Z-def456', test: 'integration-with-a-long-name', requested_tier: 'release', readiness_eligible: true, status: 'failed', started_at: new Date(Date.now() - 3600000).toISOString(), finished_at: new Date().toISOString(), duration_seconds: 3599.123, exit_code: 1, stdout_bytes_observed: 10, stderr_bytes_observed: 4194304, stdout_truncated: false, stderr_truncated: true, display_name: LONG, worktree_path: `/srv/repos/${LONG}`, repository_id: 'r2', worktree_id: 'w2', summary_path: '/x' }] },
+      { run_id: 't20260101T000000Z-abc123', test: 'unit', requested_tier: 'pre-merge', readiness_eligible: false, status: 'running', started_at: new Date().toISOString(), finished_at: null, duration_seconds: null, exit_code: null, stdout_bytes_observed: 123456789, stderr_bytes_observed: 0, display_name: 'repo-one', worktree_path: '/srv/repos/repo-one', repository_id: REPO, worktree_id: 'w1' },
+      { run_id: 't20260101T000100Z-def456', test: 'integration-with-a-long-name', requested_tier: 'release', readiness_eligible: true, status: 'failed', started_at: new Date(Date.now() - 3600000).toISOString(), finished_at: new Date().toISOString(), duration_seconds: 3599.123, exit_code: 1, stdout_bytes_observed: 10, stderr_bytes_observed: 8388608, display_name: LONG, worktree_path: `/srv/repos/${LONG}`, repository_id: 'r2', worktree_id: 'w2' }] },
     'test.capacity.get': {
       learned_capacity: 96, effective_capacity: 80, cap: 80, active: scenario.empty ? 0 : 52,
       waiting: scenario.empty ? 0 : 11, paused: false,
@@ -256,7 +256,12 @@ const fixtures = (scenario) => {
         epoch_seconds: 1840,
       },
     },
-    'test.output': { run_id: 't1', stream: 'stdout', tail: 'ok\n'.repeat(5), tail_bytes: 15, truncated_before_tail: true, log_path: '/srv/repos/repo-one/.devcoordinator/test/current/stdout.log' },
+    'test.log.retention.get': { max_age_seconds: 86400, case_depth: 3, defaults: { max_age_seconds: 86400, case_depth: 3 }, updated_at: new Date().toISOString(), updated_by: 'schema-default', last_cleanup_at: new Date().toISOString(), last_cleanup_error_code: null },
+    'test.log.catalog': { entries: scenario.empty ? [] : [{ log_ref: { run_id: 't20260101T000000Z-abc123', check: 'unit', phase: 'case', case: 'parser-17', stream: 'stderr' }, bytes: 8388608, lines: 42000, first_byte_at: new Date(Date.now() - 300000).toISOString(), last_byte_at: new Date().toISOString(), complete: true, truncated: false, sha256: 'a'.repeat(64), expires_at: new Date(Date.now() + 86400000).toISOString(), depth_rank: 1, structured_evidence: { available: true, formats: ['junit'], count: 2 } }], next_cursor: null },
+    'test.log.tail': { segments: [{ line_start: 41999, line_end: 42000, byte_start: 8388500, byte_end: 8388608, text: 'assertion failed\nexpected ready, actual pending' }], next_cursor: null, response_truncated: false },
+    'test.log.search': { matches: [{ line_start: 41999, line_end: 41999, byte_start: 8388500, byte_end: 8388520, text: 'assertion failed' }], next_cursor: 'next-search', response_truncated: false },
+    'test.log.range': { segments: [{ line_start: 40, line_end: 50, byte_start: 400, byte_end: 510, text: 'exact bounded range' }], next_cursor: null, response_truncated: false },
+    'test.log.failure_context': { contexts: [{ line_start: 41999, line_end: 42000, byte_start: 8388500, byte_end: 8388608, text: 'assertion failed', occurrences: 2, fingerprint: `sha256:${'b'.repeat(64)}` }], next_cursor: null, response_truncated: false },
     'health.summary': { host: { cpu_percent: 93.4, memory_total: 264122252 * 1024, memory_used: 108579328 * 1024, memory_available: 155542924 * 1024, swap_total: 0, swap_used: 0, load_1: 8.32, load_5: 8.39, load_15: 7.69, fs_size: 2113513742336, fs_free: 148698841088, fs_used: 1964814901248, ncpu: 32, reconciliation: { managed_cpu_percent: 40.1, daemon_cpu_percent: 0.3, other_cpu_percent: 53.0, managed_memory: 50e9, daemon_memory: 120e6, other_memory: 60e9 } }, storage: { fs_used: 1964814901248, managed_repositories: 4e11, devcoordinator_state: 5e7, docker_shared: 3e10, docker_images: 2.7e10, docker_build_cache: 2.8e9, docker_shared_volumes: 1e8, other: 1.5e12 }, unhealthy_deployments: scenario.empty ? [] : [{ ...degraded, reasons: [{ component: 'worker', state: 'failed', detail: 'exited 1: boom' }, { component: 'api', state: 'stopped', detail: null }] }, { deployment_id: OBS, name: 'existing-compose-stack', source: 'observed', state: 'running', health: 'unhealthy', repository_name: 'legacy-repo', observed_only: true, reasons: [{ component: 'app', state: 'running', detail: 'container healthcheck failing (Up 3 days (unhealthy))' }] }], active_tests: scenario.empty ? [] : ['unit'], container_counts: { 'managed-test': 1, 'managed-preview': 0, 'managed-permanent': 3, 'orphaned-managed': 1, unmanaged: 43 }, alerts: scenario.empty ? [] : [{ alert_key: 'host/cpu', kind: 'host_cpu', severity: 'warning', message: 'host CPU 93% sustained', opened_at: new Date().toISOString() }, { alert_key: `component/${DEP}/worker/unhealthy`, kind: 'component_unhealthy', severity: 'critical', message: `component ${DEP}/worker is failed`, opened_at: new Date().toISOString() }], sampling: { retention_days: 30 } },
     'health.repositories': { repositories: scenario.empty ? [] : [{ repository_id: 'r9999999999999999', display_name: 'legacy-repo', root_path: '/srv/repos/legacy-repo', cpu_percent: 2.5, memory_bytes: 123456789, storage_bytes: 45678, storage: {}, health: 'healthy', deployments: [observed], trend_cpu: [2, 2, 3, 2, 2, 3, 2, 2, 3, 2, 2, 3], trend_memory: [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1] }, { repository_id: 'r0123456789abcdef', display_name: 'repo-one', root_path: '/srv/repos/repo-one', cpu_percent: 40.1, memory_bytes: 5e10, storage_bytes: 4e11, storage: {}, health: 'unhealthy', deployments: [running, degraded], trend_cpu: [1, 5, 3, 8, 2, 9, 4, 7, 3, 6, 2, 5], trend_memory: [1, 1, 2, 2, 3, 3, 3, 4, 4, 4, 5, 5] }, { repository_id: 'r2', display_name: LONG, root_path: `/srv/repos/${LONG}`, cpu_percent: 0, memory_bytes: 0, storage_bytes: 1234567890123, storage: {}, health: 'none', deployments: [], trend_cpu: [], trend_memory: [] }], devcoordinator: { cpu_percent: 0.3, memory_bytes: 120e6, storage_bytes: 5e7 }, shared_unattributed: { cpu_percent: 53, memory_bytes: 60e9, storage: { docker_shared: 3e10, docker_images: 2.7e10, docker_build_cache: 2.8e9, docker_shared_volumes: 1e8, other: 1.5e12 } }, host: {} },
     'health.containers': { containers: scenario.empty ? [] : [
@@ -282,7 +287,7 @@ const fixtures = (scenario) => {
     'bug.list': { bugs: scenario.empty ? [] : [{ bug_id: 'b0123456789ab', component: 'api', summary: 'Returns 500 on /export when the report is large', expected: '200 with CSV', actual: '500', steps: '1. open /export 2. choose all-time 3. submit', opened_at: '2026-08-20T10:00:00Z', last_seen_at: new Date().toISOString(), occurrences: 42, reporter: 'dev@example.test', correlations: { deployment_id: DEP } }], store: '/bugs' },
     'user.list': { users: [{ user_id: 'u1', email: 'owner@example.test', administrator: true, grants: [], last_seen_at: new Date().toISOString() }, { user_id: 'u2', email: `${'verylongmailboxname'.repeat(3)}@example.test`, administrator: false, grants: [{ deployment_id: DEP, role: 'operator', granted_at: 't' }], last_seen_at: null }], invitations: [{ invitation_id: 'i1', email: 'new@example.test', administrator: false, grants: [{ deployment_id: DEP, role: 'viewer' }], created_at: 't', created_by: 'owner', expires_at: '2026-09-06T00:00:00Z' }], roles: ['access', 'viewer', 'operator', 'administrator'], owners: ['owner@example.test'] },
     'telegram.list': { configured: true, chats: [{ chat_id: 4242, email: 'owner@example.test', label: 'Owner', linked_at: 't', subscriptions: ['server', `deployment:${DEP}`] }], outbox_pending: 0, last_poll_at: new Date().toISOString(), last_error: null },
-    ping: { daemon_version: '0.1.0', schema_version: 13, socket: '/run/x.sock' },
+    ping: { daemon_version: '0.1.0', schema_version: 14, socket: '/run/x.sock' },
     'plan.overview': {
       repository_id: REPO, display_name: 'repo-one',
       releases: scenario.empty ? [] : [
@@ -351,7 +356,7 @@ const destinationHref = (view) => {
   return '#/admin';
 };
 const PROJECT_DETAIL_VIEWS = new Set([`#/plan/${REPO}`, `#/progress/${REPO}`, `#/usage/${REPO}`, `#/decisions/${REPO}`]);
-const ADMIN_ONLY = ['health.summary', 'health.containers', 'health.container_remove', 'user.list', 'user.invite', 'user.remove', 'grant.set', 'grant.remove', 'test.list', 'test.start', 'test.stop', 'test.output', 'test.capacity.get', 'test.capacity.set', 'deployment.apply', 'deployment.rollback', 'deployment.remove', 'deployment.set_domain', 'task.create', 'task.update', 'release.create', 'release.update', 'release.request', 'release.deliver', 'decision.record', 'decision.summarize'];
+const ADMIN_ONLY = ['health.summary', 'health.containers', 'health.container_remove', 'user.list', 'user.invite', 'user.remove', 'grant.set', 'grant.remove', 'test.list', 'test.start', 'test.stop', 'test.log.catalog', 'test.log.tail', 'test.log.search', 'test.log.range', 'test.log.failure_context', 'test.log.retention.get', 'test.log.retention.set', 'test.capacity.get', 'test.capacity.set', 'deployment.apply', 'deployment.rollback', 'deployment.remove', 'deployment.set_domain', 'task.create', 'task.update', 'release.create', 'release.update', 'release.request', 'release.deliver', 'decision.record', 'decision.summarize'];
 const OPERATOR_ONLY = ['usage.repositories', 'usage.repository', 'progress.repositories', 'progress.repository'];
 
 async function startFakeDaemon(dir) {
@@ -362,7 +367,7 @@ async function startFakeDaemon(dir) {
   const settledWaiters = new Set();
   const receivedWaiters = new Set();
   const delayedReplies = new Set();
-  const mutable = { stopped: false, serviceStopped: false, taskUpdates: new Map(), createdTasks: [], previewRequested: false, failNextTaskUpdate: false, usageCollectionReads: 0, capacityCap: 80 };
+  const mutable = { stopped: false, serviceStopped: false, taskUpdates: new Map(), createdTasks: [], previewRequested: false, failNextTaskUpdate: false, usageCollectionReads: 0, capacityCap: 80, logAge: 86400, logDepth: 3 };
   const planOverview = () => {
     const result = fixtures(scenario)['plan.overview'];
     result.tasks = result.tasks
@@ -435,6 +440,11 @@ async function startFakeDaemon(dir) {
           last_adjustment: { event_id: 'e2', at: new Date().toISOString(), actor: 'administrator', reason: 'administrator_cap_changed', previous_capacity: learned, new_capacity: learned, cap: mutable.capacityCap, p95_cpu_percent: null, p95_memory_percent: null, saturation_fraction: null, epoch_seconds: null },
         } });
       }
+      if (cmd === 'test.log.retention.get') return reply({ ok: true, result: { ...fixtures(scenario)['test.log.retention.get'], max_age_seconds: mutable.logAge, case_depth: mutable.logDepth } });
+      if (cmd === 'test.log.retention.set') {
+        mutable.logAge = req.args.max_age_seconds; mutable.logDepth = req.args.case_depth;
+        return reply({ ok: true, result: { ...fixtures(scenario)['test.log.retention.get'], max_age_seconds: mutable.logAge, case_depth: mutable.logDepth, cleanup_requested: true } });
+      }
       if (['deployment.restart', 'deployment.apply', 'deployment.rollback', 'deployment.remove', 'bug.report', 'bug.close', 'user.invite', 'user.remove', 'grant.set', 'grant.remove', 'telegram.link', 'telegram.subscribe', 'telegram.unsubscribe', 'test.stop', 'test.start', 'health.container_remove'].includes(cmd)) return reply({ ok: true, result: { state: 'done', status: 'done' } });
       if (cmd === 'plan.overview' && !req.args.repository_id) return reply({ ok: true, result: fixtures(scenario)['plan.overview-list'] });
       if (cmd === 'plan.overview') return reply({ ok: true, result: planOverview() });
@@ -479,7 +489,7 @@ async function startFakeDaemon(dir) {
   return {
     socketPath,
     calls,
-    setScenario: (s) => { for (const release of delayedReplies) release(); delayedReplies.clear(); scenario = s; mutable.stopped = false; mutable.serviceStopped = false; mutable.taskUpdates.clear(); mutable.createdTasks.length = 0; mutable.previewRequested = false; mutable.failNextTaskUpdate = false; mutable.usageCollectionReads = 0; mutable.capacityCap = 80; calls.length = 0; },
+    setScenario: (s) => { for (const release of delayedReplies) release(); delayedReplies.clear(); scenario = s; mutable.stopped = false; mutable.serviceStopped = false; mutable.taskUpdates.clear(); mutable.createdTasks.length = 0; mutable.previewRequested = false; mutable.failNextTaskUpdate = false; mutable.usageCollectionReads = 0; mutable.capacityCap = 80; mutable.logAge = 86400; mutable.logDepth = 3; calls.length = 0; },
     failNextTaskUpdate: () => { mutable.failNextTaskUpdate = true; },
     releaseDelayed: () => { for (const release of delayedReplies) release(); delayedReplies.clear(); },
     waitForReceivedAfter: (after) => {
@@ -915,16 +925,83 @@ async function main() {
   check('interaction: observed restart calls deployment.restart on the observed id',
     daemon.calls.some((c) => c.command === 'deployment.restart' && c.args.deployment_id === OBS));
   await page.goto(`http://${HOST}:${port}/#/tests`);
-  await page.waitForSelector('button[data-out="stderr"]');
-  await page.click('button[data-out="stderr"]');
-  await page.waitForSelector('pre.log');
-  check('interaction: test output loads on demand with bounded tail', daemon.calls.some((c) => c.command === 'test.output' && c.args.tail_bytes === 16384));
+  await page.waitForSelector('button[data-test-logs]');
+  daemon.calls.length = 0;
+  await page.click('button[data-test-logs]');
+  await page.waitForSelector('dialog#test-logs-dialog[open] #test-log-stream');
+  check('interaction: Logs catalogues before reading any raw content',
+    daemon.calls.some((c) => c.command === 'test.log.catalog')
+    && !daemon.calls.some((c) => ['test.log.tail', 'test.log.search', 'test.log.range', 'test.log.failure_context'].includes(c.command)));
+  const logMetadata = await page.innerText('#test-log-metadata');
+  check('tests: log catalogue exposes counts, completion, hash, expiry, and structured evidence without an absolute path',
+    /8(?:\.0)? MiB/.test(logMetadata) && /42,?000/.test(logMetadata) && /Complete\s+Yes/.test(logMetadata)
+    && /Truncated\s+No/.test(logMetadata) && /junit/.test(logMetadata)
+    && !(await page.innerText('#test-logs-dialog')).includes('/srv/repos/'), logMetadata);
+  await page.click('[data-log-read="tail"]');
+  await page.waitForSelector('#test-log-read-result pre.log');
+  check('interaction: bounded tail uses the exact catalogued check, case, phase, and stream', daemon.calls.some((c) => c.command === 'test.log.tail'
+    && c.args.check === 'unit' && c.args.phase === 'case' && c.args.case === 'parser-17'
+    && c.args.stream === 'stderr' && c.args.lines === 50 && c.args.max_bytes === 32768));
+  check('tests: retrieved output carries stable line coordinates', /Lines 41999–42000/.test(await page.innerText('#test-log-read-result')));
+  await page.fill('#test-log-search [name=text]', '[literal].*');
+  await page.click('#test-log-search button[type=submit]');
+  await page.waitForSelector('#test-log-next');
+  check('interaction: search remains literal and bounded', daemon.calls.some((c) => c.command === 'test.log.search'
+    && c.args.text === '[literal].*' && c.args.max_matches === 20 && c.args.context_lines === 2));
+  await page.click('#test-log-next');
+  await waitForSettledCall(daemon, page, (call) => call.command === 'test.log.search' && call.args.cursor === 'next-search');
+  check('interaction: Next continues from the exact returned cursor', daemon.calls.some((c) => c.command === 'test.log.search' && c.args.cursor === 'next-search'));
+  await page.fill('#test-log-range [name=start]', '40');
+  await page.fill('#test-log-range [name=end]', '50');
+  await page.click('#test-log-range button[type=submit]');
+  await waitForSettledCall(daemon, page, 'test.log.range');
+  check('interaction: exact line range is bounded below the response envelope', daemon.calls.some((c) => c.command === 'test.log.range'
+    && c.args.line_start === 40 && c.args.line_end === 50 && c.args.max_bytes === 49152));
+  await page.click('[data-log-read="failure_context"]');
+  await waitForSettledCall(daemon, page, 'test.log.failure_context');
+  check('interaction: failure context calls the deterministic Coordinator operation', daemon.calls.some((c) => c.command === 'test.log.failure_context'
+    && c.args.limit === 20 && c.args.context_lines === 2));
+  await page.click('#test-logs-dialog .dialog-close');
+  check('interaction: closing Logs returns focus to the invoking run', await page.locator('button[data-test-logs]:focus').count() === 1);
   check('tests: the run collection remains primary and capacity details stay in the action dialog',
     await page.locator('#test-runs-heading').count() === 1
     && await page.locator('.tests-tablewrap').count() === 1
     && await page.locator('#test-capacity-dialog').count() === 0
     && /Diagnostic only/.test(await page.locator('.tests-tablewrap tbody tr').first().innerText())
     && /Readiness proof/.test(await page.locator('.tests-tablewrap tbody tr').nth(1).innerText()));
+  await page.click('#test-log-retention-open');
+  await page.waitForSelector('dialog#test-log-retention-dialog[open]');
+  await page.fill('#test-log-retention-form [name=hours]', '2');
+  await page.fill('#test-log-retention-form [name=depth]', '5');
+  await page.click('#test-log-retention-form button[type=submit]');
+  await waitForSettledCall(daemon, page, 'test.log.retention.set');
+  check('interaction: retention saves both boundaries directly and schedules cleanup', daemon.calls.some((c) => c.command === 'test.log.retention.set'
+    && c.args.max_age_seconds === 7200 && c.args.case_depth === 5));
+  check('interaction: saving retention returns focus to the Log retention action', await page.locator('#test-log-retention-open:focus').count() === 1);
+  await page.click('#test-log-retention-open');
+  await page.waitForSelector('dialog#test-log-retention-dialog[open]');
+  await page.click('[data-retention-cancel]');
+  check('interaction: cancelling retention preserves context and returns focus', await page.locator('#test-log-retention-open:focus').count() === 1);
+  await page.setViewportSize(VIEWPORTS.narrow);
+  await page.click('button[data-test-logs]');
+  await page.waitForSelector('dialog#test-logs-dialog[open] #test-log-stream');
+  const narrowLogs = await page.locator('#test-logs-dialog').boundingBox();
+  check('tests: Logs remains visible and contained at the narrow viewport', narrowLogs
+    && narrowLogs.x >= -1 && narrowLogs.y >= -1
+    && narrowLogs.x + narrowLogs.width <= VIEWPORTS.narrow.width + 1
+    && narrowLogs.y + Math.min(narrowLogs.height, VIEWPORTS.narrow.height) <= VIEWPORTS.narrow.height + 1,
+  JSON.stringify(narrowLogs));
+  await page.click('#test-logs-dialog .dialog-close');
+  await page.click('#test-log-retention-open');
+  await page.waitForSelector('dialog#test-log-retention-dialog[open]');
+  const narrowRetention = await page.locator('#test-log-retention-dialog').boundingBox();
+  check('tests: Log retention remains visible and contained at the narrow viewport', narrowRetention
+    && narrowRetention.x >= -1 && narrowRetention.y >= -1
+    && narrowRetention.x + narrowRetention.width <= VIEWPORTS.narrow.width + 1
+    && narrowRetention.y + narrowRetention.height <= VIEWPORTS.narrow.height + 1,
+  JSON.stringify(narrowRetention));
+  await page.click('[data-retention-cancel]');
+  await page.setViewportSize(VIEWPORTS.wide);
   await page.click('#test-capacity-open');
   await page.waitForSelector('dialog#test-capacity-dialog[open]');
   const capacityText = await page.innerText('#test-capacity-dialog');
@@ -979,7 +1056,7 @@ async function main() {
   check('interaction: invite form calls user.invite', daemon.calls.some((c) => c.command === 'user.invite' && c.args.email === 'new2@example.test'));
   await page.waitForFunction(() => /daemon 0\.1\.0/.test(document.querySelector('#server')?.textContent || ''), null, { timeout: 10000 });
   check('admin: the Server line renders daemon version, schema, and route generation',
-    /daemon 0\.1\.0 · schema 13 · route document generation 1/.test(await page.innerText('#server')),
+    /daemon 0\.1\.0 · schema 14 · route document generation 1/.test(await page.innerText('#server')),
     await page.innerText('#server'));
   await page.goto(`http://${HOST}:${port}/#/health/containers`);
   await page.waitForSelector('button[data-cmd="health.container_remove"]');

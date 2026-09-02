@@ -679,26 +679,172 @@ function openTestCapacityDialog(capacity, opener) {
   requestAnimationFrame(() => $('#test-capacity-form [name=cap]', dlg)?.focus());
 }
 
+function logSelector(entry) {
+  const ref = entry.log_ref || entry;
+  return ['run_id', 'check', 'phase', 'case', 'stream'].reduce((out, key) => {
+    if (ref[key] != null) out[key] = ref[key];
+    return out;
+  }, {});
+}
+function logEntryLabel(entry) {
+  const ref = logSelector(entry);
+  return [ref.check || 'executor', ref.phase, ref.case, ref.stream].filter(Boolean).join(' / ');
+}
+function logResultRows(result) {
+  for (const key of ['segments', 'matches', 'contexts']) {
+    if (Array.isArray(result[key])) return result[key];
+  }
+  return [];
+}
+function renderLogResult(result) {
+  const rows = logResultRows(result);
+  if (!rows.length) return stateBlock('empty', 'No matching log lines.');
+  return `<div class="log-results">${rows.map((row) => {
+    const coordinates = row.line_start != null
+      ? `Lines ${row.line_start}${row.line_end && row.line_end !== row.line_start ? `–${row.line_end}` : ''}`
+      : `Bytes ${row.byte_start ?? 0}–${row.byte_end ?? 0}`;
+    const count = row.occurrences > 1 ? ` · ${row.occurrences} occurrences` : '';
+    const content = row.text != null ? row.text : (row.base64 != null ? `base64:${row.base64}` : '');
+    return `<section class="log-result"><h3>${esc(coordinates)}${esc(count)}</h3><pre class="log">${esc(content)}</pre></section>`;
+  }).join('')}</div>`;
+}
+async function openTestLogsDialog(run, opener) {
+  document.getElementById('test-logs-dialog')?.remove();
+  const dlg = document.createElement('dialog');
+  dlg.id = 'test-logs-dialog';
+  dlg.innerHTML = `<div class="dialog-head"><h2>Test logs</h2><button class="dialog-close" type="button" aria-label="Close test logs">×</button></div>
+    <div id="test-log-catalog">${skeleton()}</div>`;
+  document.body.appendChild(dlg);
+  const close = () => { dlg.close(); dlg.remove(); if (opener?.isConnected) opener.focus(); };
+  $('.dialog-close', dlg).addEventListener('click', close);
+  dlg.addEventListener('cancel', (event) => { event.preventDefault(); close(); });
+  dlg.showModal();
+
+  const catalogRoot = $('#test-log-catalog', dlg);
+  let entries = [];
+  let catalogCursor = null;
+  const catalogArgs = () => ({ path: run.worktree_path, run_id: run.run_id, limit: 100,
+    ...(catalogCursor ? { cursor: catalogCursor } : {}) });
+  const renderCatalogue = () => {
+    if (!entries.length) {
+      catalogRoot.innerHTML = stateBlock('empty', 'No retained logs for this run.'); return;
+    }
+    catalogRoot.innerHTML = `<label class="f">Check, case, and stream<select id="test-log-stream">${entries.map((entry, index) => `<option value="${index}">${esc(logEntryLabel(entry))}</option>`).join('')}</select></label>
+      <div id="test-log-metadata"></div>
+      <div class="log-tools">
+        <button class="btn" type="button" data-log-read="tail">Tail 50 lines</button>
+        <button class="btn" type="button" data-log-read="failure_context">Failure context</button>
+        <form id="test-log-search" class="log-tool-form"><label class="f">Literal search<input name="text" required maxlength="4096"></label><button class="btn" type="submit">Search</button></form>
+        <form id="test-log-range" class="log-tool-form"><label class="f">Range type<select name="kind"><option value="line">Lines</option><option value="byte">Bytes</option></select></label><label class="f">Start<input name="start" type="number" min="1" required value="1"></label><label class="f">End<input name="end" type="number" min="1" required value="50"></label><button class="btn" type="submit">Read range</button></form>
+      </div>
+      ${catalogCursor ? '<button class="btn" type="button" id="test-log-more">Show more streams</button>' : ''}
+      <div id="test-log-read-result" aria-live="polite"></div>`;
+    const metadata = () => {
+      const entry = entries[Number($('#test-log-stream', dlg).value)];
+      $('#test-log-metadata', dlg).innerHTML = `<dl class="test-log-facts">
+        <div><dt>Bytes</dt><dd>${bytes(entry.bytes)}</dd></div><div><dt>Lines</dt><dd>${esc(entry.lines)}</dd></div>
+        <div><dt>Complete</dt><dd>${entry.complete ? 'Yes' : 'In progress'}</dd></div><div><dt>Truncated</dt><dd>${entry.truncated ? 'Yes' : 'No'}</dd></div>
+        <div><dt>First output</dt><dd>${entry.first_byte_at ? esc(ago(entry.first_byte_at)) : '—'}</dd></div><div><dt>Last output</dt><dd>${entry.last_byte_at ? esc(ago(entry.last_byte_at)) : '—'}</dd></div>
+        <div><dt>Hash</dt><dd class="mono">${entry.sha256 ? esc(entry.sha256.slice(0, 16)) : 'Pending'}</dd></div><div><dt>Expires</dt><dd>${entry.expires_at ? esc(ago(entry.expires_at)) : 'Active'}</dd></div>
+        <div><dt>Structured evidence</dt><dd>${entry.structured_evidence?.available ? `${esc(entry.structured_evidence.count)} · ${esc((entry.structured_evidence.formats || []).join(', '))}` : 'None'}</dd></div>
+      </dl>`;
+    };
+    metadata();
+    $('#test-log-stream', dlg).addEventListener('change', metadata);
+    const read = async (operation, options = {}, cursor = null) => {
+      const entry = entries[Number($('#test-log-stream', dlg).value)];
+      const args = { path: run.worktree_path, ...logSelector(entry), ...options,
+        ...(cursor ? { cursor } : {}) };
+      const target = $('#test-log-read-result', dlg);
+      target.innerHTML = skeleton();
+      try {
+        const result = await api(`test.log.${operation}`, args, false);
+        target.innerHTML = `${renderLogResult(result)}${result.next_cursor ? '<button class="btn" type="button" id="test-log-next">Next exact portion</button>' : ''}`;
+        $('#test-log-next', target)?.addEventListener('click', () => read(operation, options, result.next_cursor));
+      } catch (error) { target.innerHTML = stateBlock('error', error.message); }
+    };
+    dlg.querySelectorAll('[data-log-read]').forEach((button) => button.addEventListener('click', () => {
+      const operation = button.dataset.logRead;
+      read(operation, operation === 'tail' ? { lines: 50, max_bytes: 32768 }
+        : { limit: 20, context_lines: 2, max_bytes: 32768 });
+    }));
+    $('#test-log-search', dlg).addEventListener('submit', (event) => {
+      event.preventDefault();
+      const text = new FormData(event.target).get('text');
+      read('search', { text, max_matches: 20, context_lines: 2, max_bytes: 32768 });
+    });
+    $('#test-log-range', dlg).addEventListener('submit', (event) => {
+      event.preventDefault();
+      const data = new FormData(event.target); const start = Number(data.get('start')); const end = Number(data.get('end'));
+      if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < (data.get('kind') === 'line' ? 1 : 0) || end < start) {
+        toast('Enter a valid increasing range.', 'bad'); return;
+      }
+      const options = data.get('kind') === 'line' ? { line_start: start, line_end: end, max_bytes: 49152 }
+        : { byte_start: start, byte_end: end, max_bytes: 49152 };
+      read('range', options);
+    });
+    $('#test-log-more', dlg)?.addEventListener('click', loadCatalogue);
+  };
+  async function loadCatalogue() {
+    try {
+      const result = await api('test.log.catalog', catalogArgs(), false);
+      entries = entries.concat(result.entries || []); catalogCursor = result.next_cursor || null;
+      renderCatalogue();
+    } catch (error) { catalogRoot.innerHTML = stateBlock('error', error.message); }
+  }
+  await loadCatalogue();
+  requestAnimationFrame(() => $('#test-log-stream', dlg)?.focus());
+}
+
+function openTestLogRetentionDialog(retention, opener) {
+  document.getElementById('test-log-retention-dialog')?.remove();
+  const dlg = document.createElement('dialog'); dlg.id = 'test-log-retention-dialog';
+  const hours = retention.max_age_seconds / 3600;
+  dlg.innerHTML = `<div class="dialog-head"><h2>Log retention</h2><button class="dialog-close" type="button" aria-label="Close log retention settings">×</button></div>
+    <form id="test-log-retention-form" class="dialog-form">
+      <label class="f">Maximum age in hours<input name="hours" type="number" min="0.0002777778" step="any" required value="${esc(hours)}"></label>
+      <label class="f">Runs kept per case<input name="depth" type="number" min="1" max="65535" step="1" required value="${esc(retention.case_depth)}"></label>
+      <div class="dialog-actions"><button class="btn" type="button" data-retention-cancel>Cancel</button><button class="btn btn-primary" type="submit">Save and clean eligible logs</button></div>
+    </form>`;
+  document.body.appendChild(dlg);
+  const close = () => { dlg.close(); dlg.remove(); if (opener?.isConnected) opener.focus(); };
+  $('.dialog-close', dlg).addEventListener('click', close);
+  $('[data-retention-cancel]', dlg).addEventListener('click', close);
+  dlg.addEventListener('cancel', (event) => { event.preventDefault(); close(); });
+  $('#test-log-retention-form', dlg).addEventListener('submit', async (event) => {
+    event.preventDefault(); const data = new FormData(event.target);
+    const seconds = Math.round(Number(data.get('hours')) * 3600); const depth = Number(data.get('depth'));
+    if (!Number.isSafeInteger(seconds) || seconds < 1 || seconds > 315360000 || !Number.isSafeInteger(depth) || depth < 1 || depth > 65535) {
+      toast('Enter a positive age and a whole-number case depth.', 'bad'); return;
+    }
+    const button = event.submitter; await act(button, 'test.log.retention.set',
+      { max_age_seconds: seconds, case_depth: depth }, async () => {
+        dlg.close(); dlg.remove(); await render(); $('#test-log-retention-open', main)?.focus();
+      });
+  });
+  dlg.showModal(); requestAnimationFrame(() => $('[name=hours]', dlg)?.focus());
+}
+
 const viewTests = guard(async () => {
   main.innerHTML = `${pageHeading('Tests', '#/tests')}${skeleton()}`;
-  const [{ runs }, capacity] = await Promise.all([api('test.list', {}), api('test.capacity.get', {})]);
-  const heading = `<div class="tests-heading">${pageHeading('Tests', '#/tests')}<button class="btn" type="button" id="test-capacity-open">Capacity · ${esc(capacity.effective_capacity)}</button></div>`;
+  const [{ runs }, capacity, retention] = await Promise.all([api('test.list', {}), api('test.capacity.get', {}), api('test.log.retention.get', {})]);
+  const heading = `<div class="tests-heading">${pageHeading('Tests', '#/tests')}<div class="actions"><button class="btn" type="button" id="test-log-retention-open">Logs · ${esc(Math.round(retention.max_age_seconds / 3600))}h / ${esc(retention.case_depth)}</button><button class="btn" type="button" id="test-capacity-open">Capacity · ${esc(capacity.effective_capacity)}</button></div></div>`;
   const collection = runs.length ? `<div class="tablewrap tests-tablewrap"><table><thead><tr><th>Repository / worktree</th><th>Test</th><th>Tier</th><th>Result</th><th>Duration</th><th>Started</th><th>Exit</th><th>Output</th><th>Actions</th></tr></thead><tbody>${runs.map((r) => `<tr>
     <td class="wrap"><strong>${esc(r.display_name)}</strong><div class="muted mono">${esc(r.worktree_path)}</div></td><td>${esc(r.test)}</td><td>${badge(testTierLabel(r.requested_tier), r.readiness_eligible ? 'ok' : '')}<div class="muted">${r.readiness_eligible ? 'Readiness proof' : 'Diagnostic only'}</div></td><td>${badge(r.status)}</td><td>${r.duration_seconds != null ? `${r.duration_seconds}s` : '—'}</td><td>${ago(r.started_at)}</td><td>${r.exit_code ?? '—'}</td>
-    <td>${bytes(r.stdout_bytes_observed)}${r.stdout_truncated ? ' <span class="badge warn">truncated</span>' : ''} / ${bytes(r.stderr_bytes_observed)}</td>
-    <td class="actions"><button class="btn btn-small" data-out="stdout" data-path="${esc(r.worktree_path)}">stdout</button><button class="btn btn-small" data-out="stderr" data-path="${esc(r.worktree_path)}">stderr</button>
+    <td>${bytes(r.stdout_bytes_observed)} / ${bytes(r.stderr_bytes_observed)}</td>
+    <td class="actions"><button class="btn btn-small" data-test-logs data-run-id="${esc(r.run_id)}">Logs</button>
       ${r.status === 'running' ? `<button class="btn btn-small" data-cmd="test.stop" data-args='${esc(JSON.stringify({ path: r.worktree_path }))}'>stop</button>` : `<label class="test-tier-control"><span>Tier</span><select data-test-tier data-path="${esc(r.worktree_path)}" aria-label="Validation tier for ${esc(r.display_name)}">${TEST_TIERS.map((tier) => `<option value="${tier}"${tier === 'release' ? ' selected' : ''}>${testTierLabel(tier)}</option>`).join('')}</select></label><button class="btn btn-small" type="button" data-test-start data-path="${esc(r.worktree_path)}">start</button>`}</td></tr>`).join('')}</tbody></table></div>` : stateBlock('empty', 'No test runs yet.');
   main.innerHTML = `<section class="tests-page">${heading}<section aria-labelledby="test-runs-heading"><h2 id="test-runs-heading">Current runs</h2>${collection}</section><div id="logs"></div></section>`;
   bind(main);
   $('#test-capacity-open', main).addEventListener('click', (event) => openTestCapacityDialog(capacity, event.currentTarget));
+  $('#test-log-retention-open', main).addEventListener('click', (event) => openTestLogRetentionDialog(retention, event.currentTarget));
   main.querySelectorAll('[data-test-start]').forEach((button) => button.addEventListener('click', () => {
     const tier = main.querySelector(`[data-test-tier][data-path="${CSS.escape(button.dataset.path)}"]`)?.value || 'release';
     act(button, 'test.start', { path: button.dataset.path, tier }, () => render());
   }));
-  main.querySelectorAll('[data-out]').forEach((btn) => btn.addEventListener('click', async () => {
-    btn.disabled = true;
-    try { const r = await api('test.output', { path: btn.dataset.path, stream: btn.dataset.out, tail_bytes: 16384 }, false); $('#logs').innerHTML = `<h2>${esc(btn.dataset.out)} tail ${r.truncated_before_tail ? '(earlier output omitted)' : ''}</h2><pre class="log">${esc(r.tail || '(empty)')}</pre><p class="muted mono">${esc(r.log_path)}</p>`; }
-    catch (e) { toast(e.message, 'bad'); } finally { btn.disabled = false; }
+  main.querySelectorAll('[data-test-logs]').forEach((button) => button.addEventListener('click', () => {
+    const run = runs.find((row) => row.run_id === button.dataset.runId);
+    if (run) openTestLogsDialog(run, button);
   }));
 });
 
