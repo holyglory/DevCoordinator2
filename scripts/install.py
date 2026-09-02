@@ -621,8 +621,10 @@ def validate_live_checkout(root: Path, *, fetch: bool) -> str:
 def build_rust_executor(source_root: Path) -> Path:
     """Build and prove the executor before test admission is closed.
 
-    The canonical checkout owner runs Cargo so ignored build artifacts never
-    become root-owned obstacles to ordinary worktree development.
+    The non-root owner of the tracked Cargo manifest runs Cargo so ignored
+    build artifacts never become root-owned obstacles to the checkout's
+    shared trusted writers. The checkout directory itself may be owned by a
+    non-login coordination identity while access is group-managed.
     """
 
     cargo = Path("/usr/bin/cargo")
@@ -630,11 +632,20 @@ def build_rust_executor(source_root: Path) -> Path:
     for required in (cargo, setpriv):
         if not required.is_file() or required.is_symlink():
             raise RuntimeError(f"required Rust build tool is unavailable: {required}")
-    owner = source_root.stat()
+    manifest = source_root / "Cargo.toml"
+    try:
+        manifest_details = manifest.lstat()
+        build_account = pwd.getpwuid(manifest_details.st_uid)
+    except (FileNotFoundError, KeyError) as exc:
+        raise RuntimeError("Rust Cargo manifest has no valid non-root owner") from exc
+    if manifest.is_symlink() or not stat.S_ISREG(manifest_details.st_mode) \
+            or manifest_details.st_uid == 0 \
+            or not Path(build_account.pw_dir).is_dir():
+        raise RuntimeError("Rust Cargo manifest must be owned by a usable non-root writer")
     command = [
         str(setpriv),
-        f"--reuid={owner.st_uid}",
-        f"--regid={owner.st_gid}",
+        f"--reuid={build_account.pw_uid}",
+        f"--regid={build_account.pw_gid}",
         "--init-groups",
         "--reset-env",
         "--",
@@ -643,7 +654,7 @@ def build_rust_executor(source_root: Path) -> Path:
         "--locked",
         "--release",
         "--manifest-path",
-        str(source_root / "Cargo.toml"),
+        str(manifest),
         "--package",
         "devcoordinator2-executor",
     ]

@@ -79,7 +79,7 @@ def test_live_checkout_requires_clean_current_main(tmp_path):
         install.validate_live_checkout(root, fetch=True)
 
 
-def test_rust_executor_build_runs_as_checkout_owner_and_proves_binary(
+def test_rust_executor_build_runs_as_manifest_owner_and_proves_binary(
         tmp_path, monkeypatch):
     root = tmp_path / "source"
     root.mkdir()
@@ -101,10 +101,12 @@ def test_rust_executor_build_runs_as_checkout_owner_and_proves_binary(
     assert install.build_rust_executor(root) == binary
     command, check = calls[0]
     assert check is False
+    manifest_owner = (root / "Cargo.toml").stat()
+    account = install.pwd.getpwuid(manifest_owner.st_uid)
     assert command[:6] == [
         "/usr/bin/setpriv",
-        f"--reuid={root.stat().st_uid}",
-        f"--regid={root.stat().st_gid}",
+        f"--reuid={account.pw_uid}",
+        f"--regid={account.pw_gid}",
         "--init-groups",
         "--reset-env",
         "--",
@@ -119,6 +121,7 @@ def test_rust_executor_build_failure_happens_before_runtime_mutation(
         tmp_path, monkeypatch):
     root = tmp_path / "source"
     root.mkdir()
+    (root / "Cargo.toml").write_text("[workspace]\n", encoding="utf-8")
     monkeypatch.setattr(install.Path, "is_file", lambda self: True)
     monkeypatch.setattr(install.Path, "is_symlink", lambda self: False)
     monkeypatch.setattr(
