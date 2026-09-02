@@ -44,7 +44,7 @@ not contradict them.
   The root daemon alone pulls and verifies the exact digest; generated
   credentials, loopback publication, disposable storage, attribution, and
   exact cleanup remain identical to the official-image fixture.
-- **REQ-TEST-11** (2026-09-01, in scope; supersedes
+- **REQ-TEST-11** (2026-09-02, done; supersedes
   DC2-2026-09-01-INDEPENDENT-CHECKS-NO-BUDGET): A repository test declaration
   uses schema 2 and a finite acyclic graph. Schema 1, legacy single-command
   declarations, translation, and fallback are rejected. Every dependency-ready
@@ -52,7 +52,7 @@ not contradict them.
   `after` waits for terminal completion and `requires` additionally requires
   success. Repositories do not encode host capacity as fake dependencies or
   run a second worker-budget system.
-- **REQ-TEST-12** (2026-09-01, in scope; supersedes
+- **REQ-TEST-12** (2026-09-02, done; supersedes
   DC2-2026-09-01-DETERMINISTIC-CHECK-COMPLETION): Normal check progression comes only
   from the exact process exit or a dedicated inherited completion event bound
   to the run and check identity. Elapsed time is never success or readiness.
@@ -85,7 +85,7 @@ not contradict them.
   and never reconnects or resurrects work
   (DC2-2026-09-01-UPGRADE-TEST-DRAIN,
   DC2-2026-09-01-TRUSTED-LIVE-CHECKOUT).
-- **REQ-TEST-16** (2026-09-01, in scope): Host-wide Auto capacity begins at
+- **REQ-TEST-16** (2026-09-02, done): Host-wide Auto capacity begins at
   twice the online logical CPU count and remains stable during one workload
   epoch. After an epoch containing a run of at least ten minutes, it increases
   25% when admission was saturated for at least half the samples and CPU and
@@ -97,13 +97,13 @@ not contradict them.
   maximum; lowering it never kills active work. Learned/effective capacity,
   the cap, active/waiting counts, pause state, and append-only adjustment
   evidence are available through CLI, MCP, and Console.
-- **REQ-TEST-17** (2026-09-01, in scope): Every schema-2 check declares its
+- **REQ-TEST-17** (2026-09-02, done): Every schema-2 check declares its
   minimum validation tier: `development`, `pre-merge`, or `release`.
   Development runs development checks; pre-merge adds pre-merge checks; release
   runs all three. `test.start` defaults to release when the caller omits the
   tier. Selected checks and development/pre-merge runs are diagnostic; only a
   fresh complete passing release run is readiness evidence.
-- **REQ-TEST-18** (2026-09-01, in scope): A check may be a preflight whose
+- **REQ-TEST-18** (2026-09-02, done): A check may be a preflight whose
   declared invalidation targets become real success dependencies. All safe
   independent preflights finish; a failed preflight prevents each target from
   launching and reports it as `invalidated`, while unrelated branches continue.
@@ -259,7 +259,7 @@ not contradict them.
   natural height. Repository attribution becomes a labelled stacked layout at
   960 px and below, and every shared-storage category keeps its label and value
   visible without document-level horizontal scrolling.
-- **REQ-CONSOLE-04** (2026-09-01, in scope): Tests keeps the run collection as
+- **REQ-CONSOLE-04** (2026-09-02, done): Tests keeps the run collection as
   its primary content, lets an administrator start development, pre-merge, or
   release validation with release selected by default, and places host-wide
   Capacity in a focused dialog showing learned/effective capacity, cap,
@@ -332,7 +332,7 @@ not contradict them.
   independent of the compact task cap. An agent may clear the mark only in
   the same update that changes the task title or outcome into clearer
   owner-facing language; completion appends its own event.
-- **REQ-PLAN-12** (2026-09-01, in scope): A due rolling decision summary is
+- **REQ-PLAN-12** (2026-09-02, done): A due rolling decision summary is
   append-only administrative maintenance. An authorized working agent stores
   it directly without requesting another user approval; every decision and
   prior summary remains permanent.
@@ -360,7 +360,7 @@ not contradict them.
   readiness aborts promptly when the underlying unit or container becomes
   irrecoverably terminal after its restart policy, while recoverable restarts
   retain the configured readiness window.
-- **REQ-REL-08** (2026-09-01, in scope): The three exhaustive audit skills
+- **REQ-REL-08** (2026-09-02, done): The three exhaustive audit skills
   resolve their installed direct links to the one root `full_repo_harness` in
   the canonical live checkout. No vendored harness tree, synchronization tool,
   standalone skill package, fallback import, or standalone-package validation
