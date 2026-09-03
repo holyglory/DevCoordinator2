@@ -1,0 +1,144 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "operations": [
+    {
+      "description": "Report daemon, schema, protocol, source, and socket identity.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "title": "EmptyParams",
+        "type": "object"
+      },
+      "mcpName": null,
+      "name": "ping",
+      "outputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "daemon_version": {
+            "type": "string"
+          },
+          "executor_schema": {
+            "format": "uint8",
+            "maximum": 255,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "protocol_version": {
+            "format": "uint8",
+            "maximum": 255,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "schema_version": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "socket": {
+            "type": "string"
+          },
+          "source_commit": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "daemon_version",
+          "protocol_version",
+          "schema_version",
+          "executor_schema",
+          "source_commit",
+          "socket"
+        ],
+        "title": "PingData",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "anonymous",
+        "scope": "public"
+      }
+    }
+  ],
+  "product": "devcoordinator2",
+  "protocol": 2,
+  "requestEnvelope": {
+    "$defs": {
+      "ClientContext": {
+        "additionalProperties": false,
+        "properties": {
+          "identity": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "kind": {
+            "$ref": "#/$defs/ClientKind",
+            "default": "other"
+          },
+          "session": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "ClientKind": {
+        "enum": [
+          "codex",
+          "claude",
+          "cursor",
+          "antigravity",
+          "human",
+          "edge",
+          "other"
+        ],
+        "type": "string"
+      }
+    },
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "additionalProperties": false,
+    "properties": {
+      "client": {
+        "$ref": "#/$defs/ClientContext",
+        "default": {
+          "kind": "other"
+        }
+      },
+      "id": {
+        "type": "string"
+      },
+      "operation": {
+        "type": "string"
+      },
+      "params": {
+        "default": {}
+      },
+      "protocol": {
+        "format": "uint8",
+        "maximum": 255,
+        "minimum": 0,
+        "type": "integer"
+      }
+    },
+    "required": [
+      "protocol",
+      "id",
+      "operation"
+    ],
+    "title": "RequestEnvelope",
+    "type": "object"
+  },
+  "transport": {
+    "framing": "one newline-terminated UTF-8 JSON request and response per Unix connection",
+    "maxRequestBytes": 65536,
+    "maxResponseBytes": 262144,
+    "readTimeoutSeconds": 5,
+    "writeTimeoutSeconds": 10
+  },
+  "version": "0.2.0"
+}

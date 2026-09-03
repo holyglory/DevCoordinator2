@@ -1,0 +1,18 @@
+[package]
+name = "devcoordinator2-tooling"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lib]
+name = "devcoordinator2_tooling"
+
+[[bin]]
+name = "devcoordinator2-tooling"
+path = "src/main.rs"
+
+[dependencies]
+clap.workspace = true
+devcoordinator2-api = { path = "../api" }
+serde_json.workspace = true

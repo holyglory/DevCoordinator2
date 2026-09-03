@@ -247,15 +247,14 @@ impl DiagnosticValue {
                 "redacted diagnostic values cannot include a preview",
             ));
         }
-        if let Some(preview) = &self.preview {
-            if preview.len() > MAX_DIAGNOSTIC_PREVIEW_BYTES
+        if let Some(preview) = &self.preview
+            && (preview.len() > MAX_DIAGNOSTIC_PREVIEW_BYTES
                 || preview.chars().any(char::is_control)
-                || u64::try_from(preview.len()).unwrap_or(u64::MAX) > self.byte_count
-            {
-                return Err(ContractError::new(
-                    "diagnostic value preview is not a bounded single-line value",
-                ));
-            }
+                || u64::try_from(preview.len()).unwrap_or(u64::MAX) > self.byte_count)
+        {
+            return Err(ContractError::new(
+                "diagnostic value preview is not a bounded single-line value",
+            ));
         }
         Ok(())
     }
