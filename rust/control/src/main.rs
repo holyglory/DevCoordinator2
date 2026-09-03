@@ -69,7 +69,13 @@ async fn main() -> ExitCode {
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
     let cli = Cli::parse();
-    let config = Config::load();
+    let config = match Config::load() {
+        Ok(config) => config,
+        Err(error) => {
+            eprintln!("configuration failed: {error}");
+            return ExitCode::from(2);
+        }
+    };
     match cli.command {
         Command::Daemon => run_daemon(&config).await,
         Command::Mcp => {

@@ -17,9 +17,16 @@ clap.workspace = true
 devcoordinator2-api = { path = "../api" }
 devcoordinator2-executor-core = { path = "../executor-core" }
 devcoordinator2-executor-protocol = { path = "../executor-protocol" }
+getrandom.workspace = true
+libc.workspace = true
+regex.workspace = true
+rusqlite.workspace = true
+rustix.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 thiserror.workspace = true
+time.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true

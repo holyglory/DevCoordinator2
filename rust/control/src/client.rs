@@ -44,11 +44,15 @@ pub async fn call(
     stream.shutdown().await.map_err(transport_error)?;
 
     let mut response = Vec::new();
-    stream
-        .take((MAX_RESPONSE_BYTES + 1) as u64)
-        .read_to_end(&mut response)
-        .await
-        .map_err(transport_error)?;
+    timeout(
+        Duration::from_secs(10),
+        stream
+            .take((MAX_RESPONSE_BYTES + 1) as u64)
+            .read_to_end(&mut response),
+    )
+    .await
+    .map_err(|_| ProtocolError::new(ErrorCode::DaemonUnavailable, "daemon response timed out"))?
+    .map_err(transport_error)?;
     if response.len() > MAX_RESPONSE_BYTES {
         return Err(ProtocolError::new(
             ErrorCode::ProtocolInvalid,

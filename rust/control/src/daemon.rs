@@ -105,11 +105,7 @@ pub async fn serve(socket_path: &Path, mut shutdown: watch::Receiver<bool>) -> s
 }
 
 async fn serve_connection(mut stream: UnixStream, app: Arc<App>) -> std::io::Result<()> {
-    let mut raw = Vec::new();
-    (&mut stream)
-        .take((MAX_REQUEST_BYTES + 1) as u64)
-        .read_to_end(&mut raw)
-        .await?;
+    let raw = read_frame(&mut stream).await?;
     let id = serde_json::from_slice::<serde_json::Value>(&raw)
         .ok()
         .and_then(|value| {
@@ -125,6 +121,22 @@ async fn serve_connection(mut stream: UnixStream, app: Arc<App>) -> std::io::Res
     };
     stream.write_all(&encode_response(&response)).await?;
     stream.shutdown().await
+}
+
+async fn read_frame(stream: &mut UnixStream) -> std::io::Result<Vec<u8>> {
+    let mut raw = Vec::new();
+    let mut chunk = [0_u8; 8192];
+    while raw.len() <= MAX_REQUEST_BYTES {
+        let read = stream.read(&mut chunk).await?;
+        if read == 0 {
+            break;
+        }
+        raw.extend_from_slice(&chunk[..read]);
+        if raw.ends_with(b"\n") {
+            break;
+        }
+    }
+    Ok(raw)
 }
 
 #[cfg(unix)]
@@ -147,6 +159,10 @@ mod tests {
         let server_socket = socket.clone();
         let server = tokio::spawn(async move { serve(&server_socket, shutdown_rx).await });
         while !socket.exists() {
+            assert!(
+                !server.is_finished(),
+                "server failed before binding its socket"
+            );
             tokio::task::yield_now().await;
         }
         let response = crate::client::call(

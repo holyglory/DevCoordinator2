@@ -7,6 +7,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use thiserror::Error;
 
+pub mod params;
+pub mod results;
+
 pub const PROTOCOL_VERSION: u8 = 2;
 pub const MAX_REQUEST_BYTES: usize = 65_536;
 pub const MAX_RESPONSE_BYTES: usize = 262_144;
@@ -358,7 +361,7 @@ pub struct OperationDefinition {
     pub name: &'static str,
     pub description: &'static str,
     pub policy: OperationPolicy,
-    pub mcp_name: Option<&'static str>,
+    pub mcp_names: &'static [&'static str],
     pub input_schema: fn() -> Value,
     pub output_schema: fn() -> Value,
 }
@@ -369,15 +372,706 @@ fn schema_for<T: JsonSchema>() -> Value {
 
 const READ_PUBLIC: OperationPolicy =
     OperationPolicy::new(Scope::Public, Role::Anonymous, Effect::Read, true);
+const READ_SERVER_ADMIN: OperationPolicy =
+    OperationPolicy::new(Scope::Server, Role::Administrator, Effect::Read, true);
+const APPEND_SERVER_ADMIN: OperationPolicy =
+    OperationPolicy::new(Scope::Server, Role::Administrator, Effect::Append, false);
+const IDEMPOTENT_APPEND_SERVER_ADMIN: OperationPolicy =
+    OperationPolicy::new(Scope::Server, Role::Administrator, Effect::Append, true);
+const REVERSIBLE_SERVER_ADMIN: OperationPolicy =
+    OperationPolicy::new(Scope::Server, Role::Administrator, Effect::Reversible, true);
+const DESTRUCTIVE_SERVER_ADMIN: OperationPolicy = OperationPolicy::new(
+    Scope::Server,
+    Role::Administrator,
+    Effect::Destructive,
+    true,
+);
+const READ_REPOSITORY_ADMIN: OperationPolicy =
+    OperationPolicy::new(Scope::Repository, Role::Administrator, Effect::Read, true);
+const APPEND_REPOSITORY_ADMIN: OperationPolicy = OperationPolicy::new(
+    Scope::Repository,
+    Role::Administrator,
+    Effect::Append,
+    false,
+);
+const REVERSIBLE_REPOSITORY_ADMIN: OperationPolicy = OperationPolicy::new(
+    Scope::Repository,
+    Role::Administrator,
+    Effect::Reversible,
+    false,
+);
+const IDEMPOTENT_REVERSIBLE_REPOSITORY_ADMIN: OperationPolicy = OperationPolicy::new(
+    Scope::Repository,
+    Role::Administrator,
+    Effect::Reversible,
+    true,
+);
+const DESTRUCTIVE_REPOSITORY_ADMIN: OperationPolicy = OperationPolicy::new(
+    Scope::Repository,
+    Role::Administrator,
+    Effect::Destructive,
+    false,
+);
+const IDEMPOTENT_DESTRUCTIVE_REPOSITORY_ADMIN: OperationPolicy = OperationPolicy::new(
+    Scope::Repository,
+    Role::Administrator,
+    Effect::Destructive,
+    true,
+);
+const READ_REPOSITORY_VIEWER: OperationPolicy =
+    OperationPolicy::new(Scope::Repository, Role::Viewer, Effect::Read, true);
+const READ_REPOSITORY_OPERATOR: OperationPolicy =
+    OperationPolicy::new(Scope::Repository, Role::Operator, Effect::Read, true);
+const READ_DEPLOYMENT_VIEWER: OperationPolicy =
+    OperationPolicy::new(Scope::Deployment, Role::Viewer, Effect::Read, true);
+const REVERSIBLE_DEPLOYMENT_ADMIN: OperationPolicy = OperationPolicy::new(
+    Scope::Deployment,
+    Role::Administrator,
+    Effect::Reversible,
+    false,
+);
+const IDEMPOTENT_REVERSIBLE_DEPLOYMENT_ADMIN: OperationPolicy = OperationPolicy::new(
+    Scope::Deployment,
+    Role::Administrator,
+    Effect::Reversible,
+    true,
+);
+const REVERSIBLE_DEPLOYMENT_OPERATOR: OperationPolicy =
+    OperationPolicy::new(Scope::Deployment, Role::Operator, Effect::Reversible, false);
+const IDEMPOTENT_REVERSIBLE_DEPLOYMENT_OPERATOR: OperationPolicy =
+    OperationPolicy::new(Scope::Deployment, Role::Operator, Effect::Reversible, true);
+const DESTRUCTIVE_DEPLOYMENT_ADMIN: OperationPolicy = OperationPolicy::new(
+    Scope::Deployment,
+    Role::Administrator,
+    Effect::Destructive,
+    true,
+);
+const READ_SELF: OperationPolicy =
+    OperationPolicy::new(Scope::Self_, Role::Self_, Effect::Read, true);
+const APPEND_SELF: OperationPolicy =
+    OperationPolicy::new(Scope::Self_, Role::Self_, Effect::Append, false);
+const DESTRUCTIVE_SELF: OperationPolicy =
+    OperationPolicy::new(Scope::Self_, Role::Self_, Effect::Destructive, true);
+const EXTERNAL_SELF: OperationPolicy =
+    OperationPolicy::new(Scope::Self_, Role::Self_, Effect::External, false);
+const IDEMPOTENT_EXTERNAL_SELF: OperationPolicy =
+    OperationPolicy::new(Scope::Self_, Role::Self_, Effect::External, true);
 
-pub static OPERATIONS: &[OperationDefinition] = &[OperationDefinition {
-    name: "ping",
-    description: "Report daemon, schema, protocol, source, and socket identity.",
-    policy: READ_PUBLIC,
-    mcp_name: None,
-    input_schema: schema_for::<EmptyParams>,
-    output_schema: schema_for::<PingData>,
-}];
+macro_rules! operation {
+    ($name:literal, $description:literal, $policy:expr, [$($mcp:literal),* $(,)?], $input:ty, $output:ty) => {
+        OperationDefinition {
+            name: $name,
+            description: $description,
+            policy: $policy,
+            mcp_names: &[$($mcp),*],
+            input_schema: schema_for::<$input>,
+            output_schema: schema_for::<$output>,
+        }
+    };
+}
+
+pub static OPERATIONS: &[OperationDefinition] = &[
+    operation!(
+        "ping",
+        "Report daemon, schema, protocol, source, and socket identity.",
+        READ_PUBLIC,
+        [],
+        EmptyParams,
+        PingData
+    ),
+    operation!(
+        "user.whoami",
+        "Show the current public identity and grants.",
+        READ_PUBLIC,
+        [],
+        params::Empty,
+        results::WhoAmI
+    ),
+    operation!(
+        "user.accept_invitation",
+        "Accept an invitation for the edge-authenticated identity.",
+        APPEND_SELF,
+        [],
+        params::AcceptInvitation,
+        results::AcceptedInvitation
+    ),
+    operation!(
+        "user.list",
+        "List public Console users and invitations.",
+        READ_SERVER_ADMIN,
+        [],
+        params::Empty,
+        results::PendingDomainResult
+    ),
+    operation!(
+        "user.invite",
+        "Invite a public Console user.",
+        APPEND_SERVER_ADMIN,
+        [],
+        params::InviteUser,
+        results::PendingDomainResult
+    ),
+    operation!(
+        "user.remove",
+        "Remove one public Console user.",
+        DESTRUCTIVE_SERVER_ADMIN,
+        [],
+        params::EmailOnly,
+        results::PendingDomainResult
+    ),
+    operation!(
+        "grant.set",
+        "Set one deployment access role.",
+        IDEMPOTENT_REVERSIBLE_DEPLOYMENT_ADMIN,
+        [],
+        params::SetGrant,
+        results::PendingDomainResult
+    ),
+    operation!(
+        "grant.remove",
+        "Remove one deployment access grant.",
+        DESTRUCTIVE_DEPLOYMENT_ADMIN,
+        [],
+        params::RemoveGrant,
+        results::PendingDomainResult
+    ),
+    operation!(
+        "repository.register",
+        "Register the repository containing a path.",
+        IDEMPOTENT_APPEND_SERVER_ADMIN,
+        [],
+        params::PathOnly,
+        results::RegisteredRepository
+    ),
+    operation!(
+        "repository.list",
+        "List registered repositories.",
+        READ_SERVER_ADMIN,
+        ["repository_list"],
+        params::RepositoryList,
+        results::RepositoryList
+    ),
+    operation!(
+        "repository.status",
+        "Show one registered repository.",
+        READ_REPOSITORY_ADMIN,
+        [],
+        params::PathOnly,
+        results::PendingDomainResult
+    ),
+    operation!(
+        "repository.archive",
+        "Archive a repository after its blockers are cleared.",
+        REVERSIBLE_SERVER_ADMIN,
+        ["repository_archive"],
+        params::ArchiveRepository,
+        results::Repository
+    ),
+    operation!(
+        "repository.unarchive",
+        "Restore one archived repository.",
+        REVERSIBLE_SERVER_ADMIN,
+        ["repository_unarchive"],
+        params::UnarchiveRepository,
+        results::Repository
+    ),
+    operation!(
+        "test.start",
+        "Start or supersede one governed validation run.",
+        DESTRUCTIVE_REPOSITORY_ADMIN,
+        ["test_start"],
+        params::StartTest,
+        results::PendingDomainResult
+    ),
+    operation!(
+        "test.retry",
+        "Retry one failed check from a completed run.",
+        DESTRUCTIVE_REPOSITORY_ADMIN,
+        ["test_retry"],
+        params::RetryTest,
+        results::PendingDomainResult
+    ),
+    operation!(
+        "test.status",
+        "Show the current governed validation result.",
+        READ_REPOSITORY_ADMIN,
+        ["test_status"],
+        params::PathOnly,
+        results::PendingDomainResult
+    ),
+    operation!(
+        "test.log.catalog",
+        "List retained log metadata without content.",
+        READ_REPOSITORY_ADMIN,
+        ["test_log_catalog"],
+        params::LogCatalog,
+        results::PendingDomainResult
+    ),
+    operation!(
+        "test.log.tail",
+        "Read a bounded final-line log slice.",
+        READ_REPOSITORY_ADMIN,
+        ["test_log_tail"],
+        params::LogTail,
+        results::PendingDomainResult
+    ),
+    operation!(
+        "test.log.search",
+        "Search one retained stream literally.",
+        READ_REPOSITORY_ADMIN,
+        ["test_log_search"],
+        params::LogSearch,
+        results::PendingDomainResult
+    ),
+    operation!(
+        "test.log.range",
+        "Read one exact bounded log range.",
+        READ_REPOSITORY_ADMIN,
+        ["test_log_range"],
+        params::LogRange,
+        results::PendingDomainResult
+    ),
+    operation!(
+        "test.log.failure_context",
+        "Read deterministic bounded failure context.",
+        READ_REPOSITORY_ADMIN,
+        ["test_log_failure_context"],
+        params::LogFailureContext,
+        results::PendingDomainResult
+    ),
+    operation!(
+        "test.log.retention.get",
+        "Show governed-log retention settings.",
+        READ_SERVER_ADMIN,
+        ["test_log_retention_show"],
+        params::Empty,
+        results::PendingDomainResult
+    ),
+    operation!(
+        "test.log.retention.set",
+        "Change governed-log retention settings.",
+        DESTRUCTIVE_SERVER_ADMIN,
+        ["test_log_retention_set"],
+        params::SetRetention,
+        results::PendingDomainResult
+    ),
+    operation!(
+        "test.evidence.get",
+        "List retained journey evidence.",
+        READ_REPOSITORY_ADMIN,
+        ["test_evidence_get"],
+        params::EvidenceReference,
+        results::PendingDomainResult
+    ),
+    operation!(
+        "test.evidence.image",
+        "Read one verified screenshot chunk.",
+        READ_REPOSITORY_ADMIN,
+        ["test_evidence_image"],
+        params::EvidenceImage,
+        results::PendingDomainResult
+    ),
+    operation!(
+        "test.artifact.catalog",
+        "List retained artifact-tree metadata.",
+        READ_REPOSITORY_ADMIN,
+        ["test_artifact_catalog"],
+        params::ArtifactCatalog,
+        results::PendingDomainResult
+    ),
+    operation!(
+        "test.artifact.file",
+        "Read one verified retained artifact chunk.",
+        READ_REPOSITORY_ADMIN,
+        ["test_artifact_file"],
+        params::ArtifactFile,
+        results::PendingDomainResult
+    ),
+    operation!(
+        "test.evidence.feedback.create",
+        "Create screenshot-anchored project feedback.",
+        APPEND_REPOSITORY_ADMIN,
+        ["test_evidence_feedback_create"],
+        params::CreateFeedback,
+        results::PendingDomainResult
+    ),
+    operation!(
+        "test.evidence.feedback.reply",
+        "Reply to screenshot-anchored feedback.",
+        APPEND_REPOSITORY_ADMIN,
+        ["test_evidence_feedback_reply"],
+        params::FeedbackReply,
+        results::PendingDomainResult
+    ),
+    operation!(
+        "test.evidence.feedback.edit",
+        "Edit the caller's feedback comment.",
+        REVERSIBLE_REPOSITORY_ADMIN,
+        ["test_evidence_feedback_edit"],
+        params::FeedbackEdit,
+        results::PendingDomainResult
+    ),
+    operation!(
+        "test.evidence.feedback.state",
+        "Resolve or reopen screenshot feedback.",
+        IDEMPOTENT_REVERSIBLE_REPOSITORY_ADMIN,
+        ["test_evidence_feedback_state"],
+        params::FeedbackStateChange,
+        results::PendingDomainResult
+    ),
+    operation!(
+        "test.evidence.feedback.delete",
+        "Delete the caller's screenshot annotation.",
+        IDEMPOTENT_DESTRUCTIVE_REPOSITORY_ADMIN,
+        ["test_evidence_feedback_delete"],
+        params::FeedbackDelete,
+        results::PendingDomainResult
+    ),
+    operation!(
+        "test.stop",
+        "Cancel the current governed run.",
+        IDEMPOTENT_DESTRUCTIVE_REPOSITORY_ADMIN,
+        ["test_stop"],
+        params::StopTest,
+        results::PendingDomainResult
+    ),
+    operation!(
+        "test.list",
+        "List current governed runs.",
+        READ_SERVER_ADMIN,
+        ["test_list"],
+        params::Empty,
+        results::PendingDomainResult
+    ),
+    operation!(
+        "test.capacity.get",
+        "Show host-wide validation capacity.",
+        READ_SERVER_ADMIN,
+        ["test_capacity_show"],
+        params::Empty,
+        results::PendingDomainResult
+    ),
+    operation!(
+        "test.capacity.set",
+        "Set or clear the validation capacity cap.",
+        REVERSIBLE_SERVER_ADMIN,
+        ["test_capacity_set", "test_capacity_clear"],
+        params::SetCapacity,
+        results::PendingDomainResult
+    ),
+    operation!(
+        "deployment.list",
+        "List visible deployments.",
+        READ_DEPLOYMENT_VIEWER,
+        ["deployment_list"],
+        params::DeploymentList,
+        results::PendingDomainResult
+    ),
+    operation!(
+        "deployment.status",
+        "Show one deployment.",
+        READ_DEPLOYMENT_VIEWER,
+        ["deployment_status"],
+        params::DeploymentReference,
+        results::PendingDomainResult
+    ),
+    operation!(
+        "deployment.logs",
+        "Read bounded deployment logs.",
+        READ_DEPLOYMENT_VIEWER,
+        ["deployment_logs"],
+        params::DeploymentLogs,
+        results::PendingDomainResult
+    ),
+    operation!(
+        "deployment.apply",
+        "Apply a declared deployment.",
+        REVERSIBLE_DEPLOYMENT_ADMIN,
+        ["deployment_apply"],
+        params::DeploymentReference,
+        results::PendingDomainResult
+    ),
+    operation!(
+        "deployment.rollback",
+        "Roll back to the prior generation.",
+        REVERSIBLE_DEPLOYMENT_ADMIN,
+        ["deployment_rollback"],
+        params::DeploymentReference,
+        results::PendingDomainResult
+    ),
+    operation!(
+        "deployment.start",
+        "Start a deployment or selected service.",
+        IDEMPOTENT_REVERSIBLE_DEPLOYMENT_OPERATOR,
+        ["deployment_start"],
+        params::DeploymentControl,
+        results::PendingDomainResult
+    ),
+    operation!(
+        "deployment.stop",
+        "Stop a deployment or selected service.",
+        IDEMPOTENT_REVERSIBLE_DEPLOYMENT_OPERATOR,
+        ["deployment_stop"],
+        params::DeploymentControl,
+        results::PendingDomainResult
+    ),
+    operation!(
+        "deployment.restart",
+        "Restart a deployment or selected service.",
+        REVERSIBLE_DEPLOYMENT_OPERATOR,
+        ["deployment_restart"],
+        params::DeploymentControl,
+        results::PendingDomainResult
+    ),
+    operation!(
+        "deployment.set_domain",
+        "Set or clear a deployment route.",
+        IDEMPOTENT_REVERSIBLE_DEPLOYMENT_ADMIN,
+        ["deployment_set_domain"],
+        params::SetDomain,
+        results::PendingDomainResult
+    ),
+    operation!(
+        "deployment.remove",
+        "Remove a deployment with an explicit data outcome.",
+        DESTRUCTIVE_DEPLOYMENT_ADMIN,
+        [],
+        params::RemoveDeployment,
+        results::PendingDomainResult
+    ),
+    operation!(
+        "health.summary",
+        "Show host health and active alerts.",
+        READ_SERVER_ADMIN,
+        ["health_summary"],
+        params::Empty,
+        results::PendingDomainResult
+    ),
+    operation!(
+        "health.repositories",
+        "Show visible per-repository resource use.",
+        READ_REPOSITORY_VIEWER,
+        ["health_repositories"],
+        params::Empty,
+        results::PendingDomainResult
+    ),
+    operation!(
+        "health.repository",
+        "Show one repository's resource use.",
+        READ_REPOSITORY_VIEWER,
+        ["health_repository"],
+        params::PathOnly,
+        results::PendingDomainResult
+    ),
+    operation!(
+        "health.history",
+        "Show bounded resource history.",
+        READ_REPOSITORY_VIEWER,
+        [],
+        params::HealthHistory,
+        results::PendingDomainResult
+    ),
+    operation!(
+        "health.containers",
+        "List every container with truthful attribution.",
+        READ_SERVER_ADMIN,
+        ["health_containers"],
+        params::Empty,
+        results::PendingDomainResult
+    ),
+    operation!(
+        "health.container_remove",
+        "Remove one exact unmanaged container.",
+        DESTRUCTIVE_SERVER_ADMIN,
+        [],
+        params::RemoveContainer,
+        results::PendingDomainResult
+    ),
+    operation!(
+        "plan.overview",
+        "Show releases and the active completion plan.",
+        READ_REPOSITORY_VIEWER,
+        ["plan_overview"],
+        params::PlanReference,
+        results::PendingDomainResult
+    ),
+    operation!(
+        "task.history",
+        "Show one task and its permanent history.",
+        READ_REPOSITORY_VIEWER,
+        ["task_history"],
+        params::TaskHistory,
+        results::TaskHistory
+    ),
+    operation!(
+        "task.create",
+        "Create one completion-ledger task.",
+        APPEND_REPOSITORY_ADMIN,
+        ["task_create"],
+        params::TaskCreate,
+        results::PendingDomainResult
+    ),
+    operation!(
+        "task.update",
+        "Append a task state or wording change.",
+        DESTRUCTIVE_REPOSITORY_ADMIN,
+        ["task_update"],
+        params::TaskUpdate,
+        results::TaskMutation
+    ),
+    operation!(
+        "release.create",
+        "Create a planned release.",
+        APPEND_REPOSITORY_ADMIN,
+        ["release_create"],
+        params::ReleaseCreate,
+        results::Release
+    ),
+    operation!(
+        "release.update",
+        "Change a planned release.",
+        DESTRUCTIVE_REPOSITORY_ADMIN,
+        [],
+        params::ReleaseUpdate,
+        results::Release
+    ),
+    operation!(
+        "release.request",
+        "Request a preview deployment.",
+        APPEND_REPOSITORY_ADMIN,
+        [],
+        params::ReleaseRequest,
+        results::Release
+    ),
+    operation!(
+        "release.deliver",
+        "Attach real delivery evidence to a release.",
+        APPEND_REPOSITORY_ADMIN,
+        ["release_deliver"],
+        params::ReleaseDeliver,
+        results::PendingDomainResult
+    ),
+    operation!(
+        "decision.tail",
+        "Read the rolling decision summary and latest decisions.",
+        READ_REPOSITORY_VIEWER,
+        ["decision_tail"],
+        params::DecisionTail,
+        results::PendingDomainResult
+    ),
+    operation!(
+        "decision.search",
+        "Search permanent repository decisions.",
+        READ_REPOSITORY_VIEWER,
+        ["decision_search"],
+        params::DecisionSearch,
+        results::PendingDomainResult
+    ),
+    operation!(
+        "decision.record",
+        "Record a permanent repository decision.",
+        APPEND_REPOSITORY_ADMIN,
+        ["decision_record"],
+        params::DecisionRecord,
+        results::PendingDomainResult
+    ),
+    operation!(
+        "decision.summarize",
+        "Store a new rolling decision summary.",
+        APPEND_REPOSITORY_ADMIN,
+        ["decision_summarize"],
+        params::DecisionSummarize,
+        results::PendingDomainResult
+    ),
+    operation!(
+        "usage.repositories",
+        "Show privacy-preserving usage across visible repositories.",
+        READ_REPOSITORY_OPERATOR,
+        [],
+        params::UsageRepositories,
+        results::PendingDomainResult
+    ),
+    operation!(
+        "usage.repository",
+        "Show privacy-preserving usage for one repository.",
+        READ_REPOSITORY_OPERATOR,
+        [],
+        params::UsageRepository,
+        results::PendingDomainResult
+    ),
+    operation!(
+        "progress.repositories",
+        "Show delivery progress across visible repositories.",
+        READ_REPOSITORY_OPERATOR,
+        [],
+        params::Empty,
+        results::PendingDomainResult
+    ),
+    operation!(
+        "progress.repository",
+        "Show delivery progress for one repository.",
+        READ_REPOSITORY_OPERATOR,
+        [],
+        params::ProgressRepository,
+        results::PendingDomainResult
+    ),
+    operation!(
+        "telegram.link",
+        "Link one Telegram chat to an identity.",
+        EXTERNAL_SELF,
+        [],
+        params::TelegramLink,
+        results::PendingDomainResult
+    ),
+    operation!(
+        "telegram.subscribe",
+        "Subscribe one linked chat to notices.",
+        EXTERNAL_SELF,
+        [],
+        params::TelegramSubscription,
+        results::PendingDomainResult
+    ),
+    operation!(
+        "telegram.unsubscribe",
+        "Remove one notice subscription.",
+        IDEMPOTENT_EXTERNAL_SELF,
+        [],
+        params::TelegramSubscription,
+        results::PendingDomainResult
+    ),
+    operation!(
+        "telegram.list",
+        "List the caller's linked chats and subscriptions.",
+        READ_SELF,
+        [],
+        params::Empty,
+        results::PendingDomainResult
+    ),
+    operation!(
+        "bug.report",
+        "Report or count a Coordinator defect while the daemon may be unavailable.",
+        APPEND_SELF,
+        ["bug_report"],
+        params::BugReport,
+        results::PendingDomainResult
+    ),
+    operation!(
+        "bug.list",
+        "List open Coordinator defects.",
+        READ_SELF,
+        ["bug_list"],
+        params::Empty,
+        results::PendingDomainResult
+    ),
+    operation!(
+        "bug.close",
+        "Close one Coordinator defect.",
+        DESTRUCTIVE_SELF,
+        ["bug_close"],
+        params::BugClose,
+        results::PendingDomainResult
+    ),
+];
 
 pub fn operation(name: &str) -> Option<&'static OperationDefinition> {
     OPERATIONS.iter().find(|definition| definition.name == name)
@@ -482,7 +1176,7 @@ pub fn contract_document() -> Value {
             "name": definition.name,
             "description": definition.description,
             "policy": definition.policy,
-            "mcpName": definition.mcp_name,
+            "mcpNames": definition.mcp_names,
             "inputSchema": (definition.input_schema)(),
             "outputSchema": (definition.output_schema)()
         })).collect::<Vec<_>>()
@@ -522,5 +1216,19 @@ mod tests {
         assert_eq!(document["operations"][0]["name"], "ping");
         assert!(document["operations"][0]["inputSchema"].is_object());
         assert!(document["operations"][0]["outputSchema"].is_object());
+    }
+
+    #[test]
+    fn registry_names_and_mcp_tools_are_unique() {
+        let mut operations = std::collections::BTreeSet::new();
+        let mut tools = std::collections::BTreeSet::new();
+        for definition in OPERATIONS {
+            assert!(operations.insert(definition.name), "duplicate operation");
+            for tool in definition.mcp_names {
+                assert!(tools.insert(tool), "duplicate MCP tool");
+            }
+        }
+        assert_eq!(OPERATIONS.len(), 75);
+        assert_eq!(tools.len(), 53);
     }
 }
