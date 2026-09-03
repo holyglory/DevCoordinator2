@@ -116,8 +116,14 @@ a native select.
    requested development/pre-merge/release tier, readiness eligibility, and
    duration. While any listed run is active, the collection re-reads bounded
    current state without moving focus, closing an open dialog, or continuing
-   after navigation. **Logs** opens a focused catalogue-first dialog; raw content loads
-   only after an explicit bounded case/stream action and is labelled untrusted.
+   after navigation. **Logs** opens a focused catalogue-first dialog and
+   immediately shows the selected stream's newest bounded text. Scrolling to
+   the earlier boundary loads one prior page without moving the line being
+   read; short pages fill only until they become scrollable. Search and likely
+   failure results extend at their lower boundary, while **Jump/Refresh latest**
+   remains explicit. Numbers and common syntax/status tokens are highlighted;
+   valid JSON and JSON-lines are pretty-printed, textually labelled, and still
+   escaped and labelled untrusted.
    **Log retention** edits the host age/depth boundaries and re-reads the stored
    state. Administrators stop a running test or start a prior worktree at a
    selected tier, with release selected by default. The adjacent **Capacity** action opens a
@@ -214,7 +220,7 @@ explicit permission-denied notice instead of partial data.
 | Apply / rollback | `deployment.apply` / `deployment.rollback` | status re-read |
 | Remove deployment — keep data / Remove deployment and delete data | `deployment.remove {delete_data: false|true}` | list re-read |
 | Component logs | `deployment.logs` | tail rendered on demand |
-| Test logs | `test.log.catalog`, then an automatic bounded `tail`; plain Load earlier, Jump/Refresh latest, Search, and Show likely failure controls compose `tail`, `search`, and `failure_context` | newest text is immediately readable; stream switching loads automatically; older pages preserve position; technical details are collapsed; no line/byte coordinate form appears |
+| Test logs | `test.log.catalog`, then automatic bounded `tail`; scroll boundaries, Jump/Refresh latest, Search, and Show likely failure compose `tail`, `search`, and `failure_context` | newest text is immediately readable; earlier/results cursors load through scrolling without a paging button; position survives prepends; JSON/JSONL is formatted and escaped; useful tokens are highlighted; technical details stay collapsed |
 | Test start/stop | `test.start {tier}` / `test.stop` | list re-read; the selected tier is recorded |
 | Test capacity | `test.capacity.get` / `test.capacity.set {cap: integer|null}` | dialog and Tests action re-read learned/effective capacity and the administrator maximum |
 | Test log retention | `test.log.retention.get` / `test.log.retention.set {max_age_seconds, case_depth}` | focused dialog re-reads the stored age/depth boundaries; active logs remain protected |

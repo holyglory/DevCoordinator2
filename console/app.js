@@ -786,6 +786,9 @@ function logResultRows(result) {
 function logRowKey(row) {
   return [row.line_start, row.line_end, row.byte_start, row.byte_end, row.text, row.base64].join('\u0000');
 }
+function logRowAnchor(row) {
+  return [row.line_start ?? 'bytes', row.line_end ?? 'bytes', row.byte_start ?? 0, row.byte_end ?? 0].join('-');
+}
 function mergeLogRows(current, incoming, prepend = false) {
   const ordered = prepend ? [...incoming, ...current] : [...current, ...incoming];
   const seen = new Set();
@@ -795,6 +798,57 @@ function mergeLogRows(current, incoming, prepend = false) {
     seen.add(key); return true;
   });
 }
+function formatStructuredLogText(content) {
+  const text = String(content ?? '');
+  const pretty = (value, trailingNewline = false) => {
+    const formatted = JSON.stringify(value, null, 2);
+    return `${formatted}${trailingNewline ? '\n' : ''}`;
+  };
+  const trimmed = text.trim();
+  if (trimmed && ['{', '['].includes(trimmed[0])) {
+    try {
+      return { text: pretty(JSON.parse(trimmed), text.endsWith('\n')), format: 'Formatted JSON' };
+    } catch { /* try JSON lines below */ }
+  }
+  let jsonLines = 0;
+  let previousJson = false;
+  const lines = [];
+  for (const line of text.split('\n')) {
+    const candidate = line.trim();
+    if (!candidate || !['{', '['].includes(candidate[0])) {
+      lines.push(line); previousJson = false; continue;
+    }
+    try {
+      const indent = line.slice(0, line.length - line.trimStart().length);
+      if (previousJson) lines.push('');
+      jsonLines += 1;
+      lines.push(pretty(JSON.parse(candidate)).split('\n').map((part) => `${indent}${part}`).join('\n'));
+      previousJson = true;
+    } catch { lines.push(line); previousJson = false; }
+  }
+  return { text: lines.join('\n'), format: jsonLines ? 'Formatted JSON lines' : '' };
+}
+function highlightLogText(text) {
+  const pattern = /"(?:\\.|[^"\\])*"|\b[A-Za-z_][A-Za-z0-9_.-]*(?=\s*[:=])|\b\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z\b|\b(?:0x[0-9a-f]+|\d+(?:\.\d+)?(?:e[+-]?\d+)?)\b|\b(?:true|false|null|undefined)\b|\b(?:fatal|error|failed|failure|panic)\b|\b(?:warn|warning|timeout|timed-out|retry)\b|\b(?:ok|pass|passed|success|successful|running|complete|completed)\b/gi;
+  let html = ''; let cursor = 0;
+  for (const match of text.matchAll(pattern)) {
+    const token = match[0]; const index = match.index;
+    html += esc(text.slice(cursor, index));
+    const after = text.slice(index + token.length);
+    let kind = 'string';
+    if (token.startsWith('"')) kind = /^\s*:/.test(after) ? 'key' : 'string';
+    else if (/^[A-Za-z_]/.test(token) && /^\s*[:=]/.test(after)) kind = 'key';
+    else if (/^\d{4}-\d{2}-\d{2}T/i.test(token)) kind = 'time';
+    else if (/^(?:0x|\d)/i.test(token)) kind = 'number';
+    else if (/^(?:true|false|null|undefined)$/i.test(token)) kind = 'keyword';
+    else if (/^(?:fatal|error|failed|failure|panic)$/i.test(token)) kind = 'failure';
+    else if (/^(?:warn|warning|timeout|timed-out|retry)$/i.test(token)) kind = 'warning';
+    else if (/^(?:ok|pass|passed|success|successful|running|complete|completed)$/i.test(token)) kind = 'success';
+    html += `<span class="log-token log-token-${kind}">${esc(token)}</span>`;
+    cursor = index + token.length;
+  }
+  return `${html}${esc(text.slice(cursor))}`;
+}
 function renderLogRows(rows, emptyCopy = 'No log output yet.') {
   if (!rows.length) return stateBlock('empty', emptyCopy);
   return `<div class="log-results">${rows.map((row) => {
@@ -803,7 +857,8 @@ function renderLogRows(rows, emptyCopy = 'No log output yet.') {
       : `Bytes ${row.byte_start ?? 0}–${row.byte_end ?? 0}`;
     const count = row.occurrences > 1 ? ` · ${row.occurrences} occurrences` : '';
     const content = row.text != null ? row.text : (row.base64 != null ? `base64:${row.base64}` : '');
-    return `<section class="log-result"><h3>${esc(coordinates)}${esc(count)}</h3><pre class="log" aria-label="Untrusted log text">${esc(content)}</pre></section>`;
+    const formatted = formatStructuredLogText(content);
+    return `<section class="log-result${formatted.format ? ' structured' : ''}" data-log-row-anchor="${esc(logRowAnchor(row))}"><h3>${esc(coordinates)}${esc(count)}${formatted.format ? `<span class="log-format-badge">${esc(formatted.format)}</span>` : ''}</h3><pre class="log" aria-label="Untrusted log text"><code>${highlightLogText(formatted.text)}</code></pre></section>`;
   }).join('')}</div>`;
 }
 function renderLogError(message) {
@@ -816,7 +871,12 @@ async function openTestLogsDialog(run, retention, opener) {
   dlg.innerHTML = `<div class="dialog-head"><h2>Test logs</h2><button class="dialog-close" type="button" aria-label="Close test logs">×</button></div>
     <div id="test-log-catalog">${skeleton()}</div>`;
   document.body.appendChild(dlg);
-  const close = () => { dlg.close(); dlg.remove(); if (opener?.isConnected) opener.focus(); };
+  const close = () => {
+    dlg.close(); dlg.remove();
+    const returnTarget = opener?.isConnected ? opener
+      : document.querySelector(`[data-test-logs][data-run-id="${CSS.escape(run.run_id)}"]`);
+    returnTarget?.focus();
+  };
   $('.dialog-close', dlg).addEventListener('click', close);
   dlg.addEventListener('cancel', (event) => { event.preventDefault(); close(); });
   dlg.showModal();
@@ -826,6 +886,9 @@ async function openTestLogsDialog(run, retention, opener) {
   let catalogCursor = null;
   let selectedIndex = 0;
   let readVersion = 0;
+  let paging = false;
+  let pagingPaused = false;
+  let adjustingScroll = false;
   let reader = { operation: 'tail', options: {}, rows: [], cursor: null, atLatest: true };
   const catalogArgs = () => ({ path: run.worktree_path, run_id: run.run_id, limit: 100,
     ...(catalogCursor ? { cursor: catalogCursor } : {}) });
@@ -856,45 +919,74 @@ async function openTestLogsDialog(run, retention, opener) {
     latest.hidden = reader.atLatest && entry.complete;
     latest.closest('.test-log-toolbar')?.classList.toggle('show-latest', !latest.hidden);
   };
-  const renderReader = (scroll = 'top', priorHeight = 0, priorTop = 0) => {
+  const renderReader = (scroll = 'top', scrollAnchor = null) => {
     const target = $('#test-log-read-result', dlg);
     if (!target) return;
-    const pageLabel = reader.operation === 'tail' ? 'Load earlier output'
-      : reader.operation === 'search' ? 'Show more matches' : 'Show more failures';
-    const pageButton = reader.cursor ? `<button class="btn log-page-button" type="button" id="test-log-page">${pageLabel}</button>` : '';
+    adjustingScroll = true;
     const emptyCopy = reader.operation === 'search' ? 'No matching log lines.'
       : reader.operation === 'failure_context' ? 'No likely failure was found in this stream.' : 'No log output yet.';
+    const boundary = reader.rows.length && !reader.cursor
+      ? `<div class="log-boundary">${reader.operation === 'tail' ? 'Start of output' : 'All results shown'}</div>` : '';
     target.innerHTML = reader.operation === 'tail'
-      ? `${pageButton}${renderLogRows(reader.rows, emptyCopy)}`
-      : `${renderLogRows(reader.rows, emptyCopy)}${pageButton}`;
+      ? `${boundary}${renderLogRows(reader.rows, emptyCopy)}`
+      : `${renderLogRows(reader.rows, emptyCopy)}${boundary}`;
     target.setAttribute('aria-busy', 'false');
     $('#test-log-view-title', dlg).textContent = readerTitle();
     $('#test-log-view-status', dlg).textContent = readerStatus();
     syncReaderActions();
-    $('#test-log-page', target)?.addEventListener('click', () => read(
-      reader.operation, reader.options, reader.cursor,
-      reader.operation === 'tail' ? 'prepend' : 'append'));
     requestAnimationFrame(() => {
       if (scroll === 'bottom') target.scrollTop = target.scrollHeight;
-      else if (scroll === 'prepend') target.scrollTop = priorTop + Math.max(0, target.scrollHeight - priorHeight);
+      else if (scroll === 'prepend' && scrollAnchor) {
+        const anchor = target.querySelector(`[data-log-row-anchor="${CSS.escape(scrollAnchor.id)}"]`);
+        if (anchor) {
+          const offset = anchor.getBoundingClientRect().top - target.getBoundingClientRect().top;
+          target.scrollTop = Math.max(0, offset - scrollAnchor.offset);
+        }
+      }
       else if (scroll === 'top') target.scrollTop = 0;
+      requestAnimationFrame(() => {
+        adjustingScroll = false;
+        if (reader.cursor && target.scrollHeight <= target.clientHeight + 1) maybeLoadMore();
+      });
     });
+  };
+  const maybeLoadMore = () => {
+    const target = $('#test-log-read-result', dlg);
+    if (!target || paging || pagingPaused || adjustingScroll || !reader.cursor || target.getAttribute('aria-busy') === 'true') return;
+    const nearBoundary = reader.operation === 'tail'
+      ? target.scrollTop <= 56
+      : target.scrollHeight - target.scrollTop - target.clientHeight <= 56;
+    if (!nearBoundary) return;
+    read(reader.operation, reader.options, reader.cursor,
+      reader.operation === 'tail' ? 'prepend' : 'append');
   };
   const read = async (operation, options = {}, cursor = null, direction = 'replace') => {
     const entry = selectedEntry();
     if (!entry) return;
+    if (direction !== 'replace' && paging) return;
+    if (direction === 'replace') { paging = false; pagingPaused = false; }
+    else { paging = true; pagingPaused = false; }
     const version = ++readVersion;
     const target = $('#test-log-read-result', dlg);
     const priorRows = reader.rows;
-    const priorHeight = target?.scrollHeight || 0;
-    const priorTop = target?.scrollTop || 0;
+    const anchorRow = direction === 'prepend' ? priorRows[0] : null;
+    const anchorElement = anchorRow ? target?.querySelector(`[data-log-row-anchor="${CSS.escape(logRowAnchor(anchorRow))}"]`) : null;
+    const scrollAnchor = anchorElement ? {
+      id: logRowAnchor(anchorRow),
+      offset: anchorElement.getBoundingClientRect().top - target.getBoundingClientRect().top,
+    } : null;
     if (direction === 'replace') {
       target.innerHTML = skeleton();
       $('#test-log-view-title', dlg).textContent = operation === 'search' ? 'Searching log'
         : operation === 'failure_context' ? 'Finding likely failure' : 'Loading latest output';
       $('#test-log-view-status', dlg).textContent = '';
     } else {
-      $('#test-log-page', target)?.setAttribute('disabled', '');
+      target.querySelector('.log-page-error')?.remove();
+      const indicator = document.createElement('div');
+      indicator.className = 'log-loading-more'; indicator.id = 'test-log-loading-more';
+      indicator.textContent = operation === 'tail' ? 'Loading earlier output…' : 'Loading more results…';
+      if (operation === 'tail') target.prepend(indicator); else target.append(indicator);
+      $('#test-log-view-status', dlg).textContent = indicator.textContent;
     }
     target.setAttribute('aria-busy', 'true');
     try {
@@ -902,6 +994,7 @@ async function openTestLogsDialog(run, retention, opener) {
         path: run.worktree_path, ...logSelector(entry), ...options, ...(cursor ? { cursor } : {}),
       }, false);
       if (version !== readVersion || !dlg.isConnected) return;
+      paging = false;
       const incoming = logResultRows(result);
       const rows = direction === 'prepend' ? mergeLogRows(priorRows, incoming, true)
         : direction === 'append' ? mergeLogRows(priorRows, incoming) : incoming;
@@ -909,14 +1002,27 @@ async function openTestLogsDialog(run, retention, opener) {
         operation, options, rows, cursor: result.next_cursor || null,
         atLatest: operation === 'tail' && cursor == null,
       };
-      renderReader(direction === 'prepend' ? 'prepend' : operation === 'tail' ? 'bottom' : 'top', priorHeight, priorTop);
+      renderReader(direction === 'prepend' ? 'prepend' : operation === 'tail' ? 'bottom' : 'top', scrollAnchor);
     } catch (error) {
       if (version !== readVersion || !dlg.isConnected) return;
+      paging = false;
       target.setAttribute('aria-busy', 'false');
-      target.innerHTML = `${renderLogError(error.message)}<button class="btn" type="button" id="test-log-retry">Try again</button>`;
-      $('#test-log-view-title', dlg).textContent = 'Log unavailable';
-      $('#test-log-view-status', dlg).textContent = '';
-      $('#test-log-retry', target).addEventListener('click', () => read(operation, options, cursor, direction));
+      if (direction === 'replace') {
+        target.innerHTML = `${renderLogError(error.message)}<button class="btn" type="button" id="test-log-retry">Try again</button>`;
+        $('#test-log-view-title', dlg).textContent = 'Log unavailable';
+        $('#test-log-view-status', dlg).textContent = '';
+        $('#test-log-retry', target).addEventListener('click', () => read(operation, options, cursor, direction));
+      } else {
+        pagingPaused = true;
+        target.querySelector('#test-log-loading-more')?.remove();
+        const errorBox = document.createElement('div'); errorBox.className = 'log-page-error';
+        errorBox.innerHTML = `<span>${esc(error.message)}</span><button class="btn btn-small" type="button">Try again</button>`;
+        if (operation === 'tail') target.prepend(errorBox); else target.append(errorBox);
+        $('#test-log-view-status', dlg).textContent = 'More output could not be loaded';
+        $('button', errorBox).addEventListener('click', () => {
+          pagingPaused = false; read(operation, options, cursor, direction);
+        });
+      }
     }
   };
   const readLatest = () => read('tail', { lines: 200, max_bytes: 49152 });
@@ -935,7 +1041,7 @@ async function openTestLogsDialog(run, retention, opener) {
         <button class="btn" type="button" data-log-read="failure_context">Show likely failure</button>
         <button class="btn" type="button" id="test-log-latest" hidden>Jump to latest</button>
       </div>
-      <section class="test-log-viewer" aria-labelledby="test-log-view-title"><div class="test-log-view-head"><div><strong id="test-log-view-title">Loading latest output</strong><span id="test-log-view-status"></span></div><span class="test-log-trust">Untrusted log output</span></div>
+      <section class="test-log-viewer" aria-labelledby="test-log-view-title"><div class="test-log-view-head"><div><strong id="test-log-view-title" data-ui-continuation-anchor>Loading latest output</strong><span id="test-log-view-status"></span></div><span class="test-log-trust">Untrusted log output</span></div>
         <div id="test-log-read-result" class="test-log-scroll" tabindex="0" aria-live="polite" aria-busy="true">${skeleton()}</div></section>
       </div>`;
     const metadata = () => {
@@ -952,7 +1058,7 @@ async function openTestLogsDialog(run, retention, opener) {
     };
     metadata();
     $('#test-log-stream', dlg).addEventListener('change', (event) => {
-      selectedIndex = Number(event.target.value); readVersion += 1; metadata(); readLatest();
+      selectedIndex = Number(event.target.value); readVersion += 1; paging = false; pagingPaused = false; metadata(); readLatest();
     });
     $('[data-log-read="failure_context"]', dlg).addEventListener('click', () => read(
       'failure_context', { limit: 20, context_lines: 2, max_bytes: 32768 }));
@@ -963,6 +1069,7 @@ async function openTestLogsDialog(run, retention, opener) {
       if (!text) return;
       read('search', { text, max_matches: 20, context_lines: 2, max_bytes: 32768 });
     });
+    $('#test-log-read-result', dlg).addEventListener('scroll', maybeLoadMore, { passive: true });
     $('#test-log-more', dlg)?.addEventListener('click', loadCatalogue);
     readLatest();
   };

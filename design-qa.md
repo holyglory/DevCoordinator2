@@ -1,3 +1,65 @@
+# Infinite scrolling and highlighted test-log viewer design QA
+
+final result: passed
+
+## Comparison target
+
+- Source visual truth: the owner-marked live Tests screenshot supplied with this request, plus the same 1095 × 876 current-source reproduction at `/tmp/dc2-infinite-logs-source-1095.png`.
+- Browser-rendered implementation: highlighted raw output at `/tmp/dc2-infinite-logs-highlighted-1095.png`, formatted JSON-lines at `/tmp/dc2-infinite-logs-structured-1095.png`, and the 390 × 844 structured mobile view at `/tmp/dc2-infinite-logs-structured-390.png`.
+- Source and desktop implementation CSS viewport: 1095 × 876 at device scale factor 1; mobile comparison: 390 × 844 at device scale factor 1. No crop, density conversion, or device frame was used.
+- State: dark Console Tests page, retained long raw output with an earlier cursor, plus valid JSON-lines and whole-JSON streams.
+- Full-view comparison: `/tmp/dc2-infinite-logs-before-after.png` places the same raw-log source and implementation together. The dialog structure and bounded-log trust boundary are preserved while the manual paging control disappears and useful output gains visual hierarchy.
+- Focused comparison: all raw, JSON-lines, and whole-JSON readers were inspected separately at 390, 719, 720, 721, and 1095 px because the toolbar changes composition at 720 px.
+
+## Findings
+
+- No actionable P0, P1, or P2 issue remains.
+- The owner-reported manual-paging defect is removed: reaching the top loads the next bounded earlier page automatically, preserves the exact visible line, and eventually shows **Start of output**. Short pages fill only until scrollable or exhausted.
+- Raw numbers, timestamps, keys, strings, booleans, failures, warnings, and success terms are visually differentiated without altering the source coordinates. Valid JSON and JSON-lines are indented and receive an explicit format badge.
+- Hostile tags and event attributes remain inert literal text. A continuation error leaves already visible output in place and offers one exact retry instead of resetting the reader.
+- Five automated visibility warnings describe raw content above the deliberately bottom-positioned newest-output viewport; three scroll-topology warnings describe the expected page plus inner log reader on narrow screens. All related viewport and full-page captures were inspected and show reachable content without clipping or overlap.
+
+## Required fidelity surfaces
+
+- Fonts and typography: the existing system UI hierarchy is preserved; the reader uses the established monospaced face with increased line height, disabled ligatures, stable whitespace, and distinct but non-decorative syntax colours.
+- Spacing and layout rhythm: the output remains the dominant dialog region. Search and failure actions stack at 720 px and below, return to an inline toolbar at 721 px, and never displace or cover the reader.
+- Colors and visual tokens: syntax accents reuse the Console's blue, green, amber, red, cyan, violet, and muted text tokens on the existing navy surface. Every sampled token class passed contrast measurement; there is no gradient or new decorative language.
+- Image quality and asset fidelity: the log reader contains no raster imagery and introduces no icon asset, handcrafted SVG, CSS drawing, emoji, or placeholder.
+- Copy and content: **Start of output**, **Jump/Refresh latest**, the format badges, stable line ranges, and one retry state describe real reader state. There is no paging instruction or numeric coordinate field in the ordinary journey.
+- States and interactions: top-boundary loading, repeated continuation, short-page fill, anchor preservation, latest return, search/failure continuation, stream switching, active refresh, continuation failure/retry, live-row replacement, close/focus return, structured formatting, hostile markup, and responsive variants are exercised through the rendered UI.
+
+## Browser evidence
+
+- Complete frozen-candidate Console matrix: 1,672 checks, zero failures in `/tmp/dc2-infinite-logs-console-final-merged/report.json`.
+- Focused merged Tests/log interaction inventory: 326 checks, zero failures in `/tmp/dc2-infinite-logs-merged-focused/report.json`.
+- Formal run `formal-web-ui-mtm3f78l-c39ddd7e`: 15/15 exact raw/JSON-lines/whole-JSON cells at 390, 719, 720, 721, and 1095 px; zero critical findings, eight reviewed intentional scroll/initial-position warnings, and passing coverage.
+- All thirty final viewport/full-page images were inspected; fifteen pass decisions and zero gaps were finalized in `/tmp/formal-web-ui-verification-TVedif/manual-review.json`.
+- Browser console and network failures: none in the complete or focused passes.
+
+## Comparison history
+
+1. The source required a visible **Load earlier output** action and rendered every line as flat monochrome text.
+2. The first continuous-reader implementation exposed a real anchor bug: prepending relative to scroll height could shift the exact line being read. The reader now measures the first visible row before the request and restores that same DOM anchor after insertion.
+3. The combined live-refresh pass found focus sampling could race a Tests rerender. Close now resolves the current replacement action by run identity, and verification waits for the observable focus result. A fresh complete Console pass and final formal review found no remaining P0/P1/P2 issue.
+
+## Implementation checklist
+
+- [x] Remove the earlier-output paging control from every reader state.
+- [x] Load bounded earlier and result pages at the appropriate scroll boundary.
+- [x] Preserve the exact reading anchor and avoid duplicate/cascaded requests.
+- [x] Highlight useful raw tokens and format valid JSON/JSON-lines.
+- [x] Escape every source token and preserve stable source-line ranges.
+- [x] Keep latest, search, failure, refresh, retry, and focus recovery working.
+- [x] Verify mobile, desktop, and the exact responsive boundary.
+
+## Follow-up polish
+
+- No follow-up is required for the requested log-reader correction.
+
+---
+
+## Archived prior design QA
+
 # Collapsible deployment dashboard design QA
 
 final result: passed

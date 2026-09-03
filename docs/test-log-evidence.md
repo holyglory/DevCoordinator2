@@ -176,13 +176,23 @@ active file appends. Replacement or expiry produces `cursor_stale` or
 `log_expired`, never an unrelated read.
 
 The Console turns these primitives into a reading surface rather than exposing
-their coordinates as a form. Selecting Logs catalogues the exact streams and
-immediately opens a bounded newest-text page. Load earlier follows the returned
-tail cursor and prepends without moving the text the person was reading;
-Jump to latest starts a fresh tail snapshot. Literal search and deterministic
-failure context replace the viewer temporarily and retain bounded cursor-based
-continuation. Exact line and byte ranges remain CLI/API capabilities for agents
-and automation, not fields people must fill in to read a log.
+their coordinates or paging as controls. Selecting Logs catalogues the exact
+streams and immediately opens a bounded newest-text page. Reaching the top
+follows one returned tail cursor and prepends without moving the text the person
+was reading; a short page fills automatically only until the viewport becomes
+scrollable or no cursor remains. Jump to latest starts a fresh tail snapshot.
+Literal search and deterministic failure context replace the viewer temporarily
+and continue from their lower boundary. A failed continuation leaves the
+visible text in place and offers an exact retry.
+
+Rendering remains client-only and non-authoritative. Valid whole JSON and
+JSON-lines are deterministically indented, then every source token is HTML-
+escaped before spans are added for numbers, timestamps, keys, strings,
+boolean/null values, and textual failure/warning/success terms. A visible
+format label accompanies structured output, and the original source-line
+coordinates remain visible. Arbitrary tags and event attributes stay literal
+text. Exact line and byte ranges remain CLI/API capabilities for agents and
+automation, not fields people must fill in to read a log.
 
 ## Visual journey evidence and feedback
 
