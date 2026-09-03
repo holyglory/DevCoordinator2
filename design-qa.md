@@ -30,8 +30,8 @@ final result: passed
 
 ## Browser evidence
 
-- Complete frozen-candidate Console matrix: 1,670 checks, zero failures in `/tmp/dc2-infinite-logs-console-release/report.json`.
-- Focused Tests/log interaction inventory: 326 checks, zero failures in `/tmp/dc2-infinite-highlighted-logs-combined-focused-3/report.json`.
+- Complete frozen-candidate Console matrix: 1,672 checks, zero failures in `/tmp/dc2-infinite-logs-console-final-merged/report.json`.
+- Focused merged Tests/log interaction inventory: 326 checks, zero failures in `/tmp/dc2-infinite-logs-merged-focused/report.json`.
 - Formal run `formal-web-ui-mtm3f78l-c39ddd7e`: 15/15 exact raw/JSON-lines/whole-JSON cells at 390, 719, 720, 721, and 1095 px; zero critical findings, eight reviewed intentional scroll/initial-position warnings, and passing coverage.
 - All thirty final viewport/full-page images were inspected; fifteen pass decisions and zero gaps were finalized in `/tmp/formal-web-ui-verification-TVedif/manual-review.json`.
 - Browser console and network failures: none in the complete or focused passes.
