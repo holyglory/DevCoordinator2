@@ -42,6 +42,20 @@ pub enum LinkErrorKind {
     Io,
 }
 
+impl LinkErrorKind {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::InvalidInput => "invalid_input",
+            Self::UnsafePath => "unsafe_path",
+            Self::UnsupportedPlatform => "unsupported_platform",
+            Self::Drift => "drift",
+            Self::Conflict => "conflict",
+            Self::InvalidTransaction => "invalid_transaction",
+            Self::Io => "io_error",
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LinkError {
     pub kind: LinkErrorKind,

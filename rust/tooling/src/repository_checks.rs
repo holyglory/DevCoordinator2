@@ -13,6 +13,8 @@ use std::io::{self, Read};
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
+use serde_json::{Value, json};
+
 pub const MAX_REPOSITORY_CHECK_FINDINGS: usize = 256;
 const MAX_GIT_OUTPUT_BYTES: usize = 16 * 1024 * 1024;
 const MAX_TEXT_BYTES: u64 = 16 * 1024 * 1024;
@@ -53,6 +55,22 @@ pub struct CheckReport {
 impl CheckReport {
     pub fn is_clean(&self) -> bool {
         self.status == CheckStatus::Clean
+    }
+
+    pub fn to_json(&self) -> Value {
+        json!({
+            "schema": 1,
+            "check": self.check,
+            "status": self.status.as_str(),
+            "total_findings": self.total_findings,
+            "findings_truncated": self.findings_truncated,
+            "findings": self.findings.iter().map(|finding| json!({
+                "rule": finding.rule,
+                "path": finding.path,
+                "line": finding.line,
+                "detail": finding.detail,
+            })).collect::<Vec<_>>(),
+        })
     }
 }
 
@@ -1122,6 +1140,17 @@ pub struct CiSecurityResult {
     pub pull_request: bool,
 }
 
+impl CiSecurityResult {
+    pub fn to_json(&self) -> Value {
+        let mut report = self.report.to_json();
+        if let Some(object) = report.as_object_mut() {
+            object.insert("self_hosted_jobs".into(), self.self_hosted_jobs.into());
+            object.insert("pull_request".into(), self.pull_request.into());
+        }
+        report
+    }
+}
+
 /// Inspect the repository's intentionally simple workflow shape.
 pub fn find_ci_security_violations(text: &str) -> Result<CiSecurityResult, CheckError> {
     let lines = yaml_without_comments(text);
@@ -1439,6 +1468,30 @@ impl RepositoryFreshness {
 pub struct RepositoryFreshnessResult {
     pub exit_code: i32,
     pub payload: RepositoryFreshness,
+}
+
+impl RepositoryFreshnessResult {
+    pub fn to_json(&self) -> Value {
+        let payload = &self.payload;
+        json!({
+            "schema_version": payload.schema_version,
+            "status": payload.status,
+            "relation": payload.relation,
+            "ok": payload.ok,
+            "repo": payload.repo,
+            "remote": payload.remote,
+            "branch": payload.branch,
+            "remote_ref": payload.remote_ref,
+            "head": payload.head,
+            "remote_head": payload.remote_head,
+            "merge_base": payload.merge_base,
+            "ahead": payload.ahead,
+            "behind": payload.behind,
+            "dirty": payload.dirty,
+            "fetched": payload.fetched,
+            "detail": payload.detail,
+        })
+    }
 }
 
 fn git_optional(repo: &Path, args: &[&str]) -> Result<Output, CheckError> {
@@ -2149,6 +2202,20 @@ fn read_ledger_nofollow(path: &Path, root: &Path) -> Result<String, CheckError> 
 pub struct UserIssueLedgerResult {
     pub report: CheckReport,
     pub ledger_count: usize,
+}
+
+impl UserIssueLedgerResult {
+    pub fn is_clean(&self) -> bool {
+        self.report.is_clean()
+    }
+
+    pub fn to_json(&self) -> Value {
+        let mut report = self.report.to_json();
+        if let Some(object) = report.as_object_mut() {
+            object.insert("ledger_count".into(), self.ledger_count.into());
+        }
+        report
+    }
 }
 
 struct LedgerScanState<'a> {
