@@ -310,7 +310,10 @@ resource URL.
   outcomes, automatic finding kinds, and the two screenshot integrity records.
   It omits selectors and every action value. A governed check stores the bundle
   under its private run leaf so log retention removes the manifest and images
-  together.
+  together. Explicit caller-owned report paths remain unchanged; the verifier
+  also atomically publishes a unique immutable copy below the leaf's
+  `formal-runs/` directory, allowing separate or concurrent batches to remain
+  reviewable without overwriting one another.
 - Screenshot SHA-256 values bind evidence integrity only. Pixel changes never
   enter the manual-review queue.
 

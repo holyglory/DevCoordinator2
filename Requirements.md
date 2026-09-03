@@ -152,9 +152,12 @@ not contradict them.
   context; range reads an exact line or byte interval; failure-context applies
   the deterministic REQ-TEST-21 ranking. No command performs language-model
   summarization or returns an unbounded stream.
-- **REQ-TEST-23** (2026-09-02, done): A formal Web UI check running under the
+- **REQ-TEST-23** (2026-09-03, done): A formal Web UI check running under the
   governed executor receives one private run/leaf evidence directory and
-  publishes `journey-evidence.json` there. The strict manifest orders every
+  publishes `journey-evidence.json` there. A caller that keeps reports at
+  explicit artifact paths retains those outputs and also publishes a unique,
+  atomic, immutable bundle below `formal-runs/`; concurrent formal batches do
+  not replace one another. The strict manifest orders every
   declared route/state/viewport cell, records only action kinds/outcomes and
   finding kinds, and binds its masked viewport/full-page PNGs by actual size,
   dimensions, and SHA-256. It contains no action values, selectors,
@@ -346,12 +349,16 @@ not contradict them.
   natural height. Repository attribution becomes a labelled stacked layout at
   960 px and below, and every shared-storage category keeps its label and value
   visible without document-level horizontal scrolling.
-- **REQ-CONSOLE-04** (2026-09-02, done): Tests keeps the run collection as
+- **REQ-CONSOLE-04** (2026-09-03, done): Tests keeps the run collection as
   its primary content, lets an administrator start development, pre-merge, or
   release validation with release selected by default, and places host-wide
   Capacity in a focused dialog showing learned/effective capacity, cap,
   active/waiting work, pause state, and last-adjustment evidence. Saving or
-  clearing the cap acts immediately. Every authorized administrator action
+  clearing the cap acts immediately. While a run remains active, the collection
+  refreshes without moving focus or closing dialogs; evidence is labelled
+  pending, available with an image count, invalid, unavailable, or not produced
+  from current retained state instead of exposing one unconditional action.
+  Every authorized administrator action
   acts without a second confirmation dialog; destructive controls name their
   target and effect, and deployment removal has separate keep-data and
   delete-data actions.

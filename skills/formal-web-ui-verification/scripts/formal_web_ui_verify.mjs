@@ -2,7 +2,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
@@ -28,6 +28,7 @@ const REPORT_SCHEMA_VERSION = 2;
 const REVIEW_QUEUE_SCHEMA_VERSION = 1;
 const JOURNEY_EVIDENCE_SCHEMA_VERSION = 1;
 const JOURNEY_EVIDENCE_KIND = "formal-web-ui-journey-evidence";
+const GOVERNED_BUNDLE_DIRECTORY = "formal-runs";
 const MANUAL_REVIEW_SCHEMA_VERSION = 1;
 const MANUAL_REVIEW_KIND = "formal-web-ui-manual-review";
 const REVIEW_QUEUE_KIND = "formal-web-ui-review-queue";
@@ -5254,6 +5255,106 @@ function writeJourneyEvidenceArtifact(report, evidenceOut) {
   };
 }
 
+function governedEvidenceRoot() {
+  const candidate = process.env.DEVCOORDINATOR_EVIDENCE_DIR;
+  if (!candidate) return null;
+  if (!path.isAbsolute(candidate)) {
+    throw new Error("DEVCOORDINATOR_EVIDENCE_DIR must be absolute");
+  }
+  if (!process.env.DEVCOORDINATOR_RUN_ID || !process.env.DEVCOORDINATOR_CHECK_NAME) {
+    throw new Error("governed visual evidence requires exact run and check identities");
+  }
+  fs.mkdirSync(candidate, { recursive: true, mode: 0o700 });
+  const root = fs.realpathSync.native(candidate);
+  fs.chmodSync(root, 0o700);
+  return root;
+}
+
+function alreadyPublishedGovernedManifest(root, sourceManifest) {
+  const relative = path.relative(root, sourceManifest).split(path.sep).join("/");
+  if (relative === "journey-evidence.json") return true;
+  return new RegExp(`^${GOVERNED_BUNDLE_DIRECTORY}/[0-9a-f]{64}/journey-evidence\\.json$`, "u")
+    .test(relative);
+}
+
+function publishGovernedJourneyEvidenceArtifact(sourceManifest) {
+  const root = governedEvidenceRoot();
+  if (!root) return null;
+  const source = fs.realpathSync.native(sourceManifest);
+  if (alreadyPublishedGovernedManifest(root, source)) return null;
+  const sourceRoot = fs.realpathSync.native(path.dirname(source));
+  const manifest = JSON.parse(fs.readFileSync(source, "utf8"));
+  if (
+    manifest?.kind !== JOURNEY_EVIDENCE_KIND ||
+    manifest?.governedRunId !== process.env.DEVCOORDINATOR_RUN_ID ||
+    manifest?.governedCheck !== process.env.DEVCOORDINATOR_CHECK_NAME ||
+    !Array.isArray(manifest?.cells)
+  ) {
+    throw new Error("custom-path journey evidence is not bound to this governed check");
+  }
+  const bundleKey = sha256(stableJson({
+    governedRunId: manifest.governedRunId,
+    governedCheck: manifest.governedCheck,
+    formalRunId: manifest.runId,
+  }));
+  const bundles = path.join(root, GOVERNED_BUNDLE_DIRECTORY);
+  fs.mkdirSync(bundles, { recursive: true, mode: 0o700 });
+  const realBundles = fs.realpathSync.native(bundles);
+  if (!pathIsWithin(realBundles, root)) {
+    throw new Error("governed visual-evidence bundle directory escaped its test leaf");
+  }
+  const destination = path.join(realBundles, bundleKey);
+  if (fs.existsSync(destination)) {
+    throw new Error("governed visual-evidence bundle identity already exists");
+  }
+  const temporary = path.join(
+    realBundles,
+    `.tmp-${bundleKey}-${process.pid}-${randomBytes(4).toString("hex")}`,
+  );
+  fs.mkdirSync(path.join(temporary, "screenshots"), { recursive: true, mode: 0o700 });
+  try {
+    for (const cell of manifest.cells) {
+      for (const [kind, descriptor] of Object.entries(cell?.screenshots || {})) {
+        if (!descriptor) continue;
+        if (typeof descriptor.path !== "string" || !descriptor.path) {
+          throw new Error("custom-path journey screenshot path is invalid");
+        }
+        const requested = path.resolve(sourceRoot, descriptor.path);
+        const entry = fs.lstatSync(requested);
+        const screenshot = fs.realpathSync.native(requested);
+        if (
+          !entry.isFile() || entry.isSymbolicLink() ||
+          !pathIsWithin(screenshot, sourceRoot)
+        ) {
+          throw new Error("custom-path journey screenshot escaped its artifact directory");
+        }
+        const bytes = fs.readFileSync(screenshot);
+        if (bytes.length !== descriptor.size || sha256(bytes) !== descriptor.sha256) {
+          throw new Error("custom-path journey screenshot changed before governed publication");
+        }
+        const filename = `${sha256(`${cell.cellId}\0${kind}\0${descriptor.sha256}`)}.png`;
+        const copied = path.join(temporary, "screenshots", filename);
+        fs.writeFileSync(copied, bytes, { mode: 0o600, flag: "wx" });
+        descriptor.path = `screenshots/${filename}`;
+      }
+    }
+    const payload = Buffer.from(`${JSON.stringify(manifest, null, 2)}\n`, "utf8");
+    fs.writeFileSync(path.join(temporary, "journey-evidence.json"), payload, {
+      mode: 0o600,
+      flag: "wx",
+    });
+    fs.renameSync(temporary, destination);
+    return {
+      bundleKey,
+      manifestSha256: sha256(payload),
+      cellCount: manifest.cells.length,
+    };
+  } catch (error) {
+    fs.rmSync(temporary, { recursive: true, force: true });
+    throw error;
+  }
+}
+
 function summarizeCoverage(pages, config, planCells, review, selection = null) {
   const checkedPages = pages.filter((page) => page.outcome === "checked");
   const failures = [];
@@ -6261,7 +6362,7 @@ async function main() {
   const authentication = await prepareAuthentication(browser, config);
   const report = {
     schemaVersion: REPORT_SCHEMA_VERSION,
-    runId: `formal-web-ui-${Date.now().toString(36)}`,
+    runId: `formal-web-ui-${Date.now().toString(36)}-${randomBytes(4).toString("hex")}`,
     generatedAt: null,
     startedAt: runStartedAt,
     endedAt: null,
@@ -6326,6 +6427,7 @@ async function main() {
   report.durationMs = Math.max(0, Date.parse(report.endedAt) - Date.parse(report.startedAt));
   finalizeProgress(config, report);
   report.evidence.journey = writeJourneyEvidenceArtifact(report, config.journeyEvidenceOut);
+  publishGovernedJourneyEvidenceArtifact(config.journeyEvidenceOut);
   const markdown = markdownReport(report);
   writeReportArtifacts(report, markdown, activeArtifacts);
   const failThreshold = SEVERITY_ORDER[config.rules.failOn];

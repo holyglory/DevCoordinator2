@@ -1811,6 +1811,70 @@ if (result.executionCount !== 1 || result.unsafeStop !== 'browser-authority-lost
         ):
             raise AssertionError("Governed run evidence did not use and bind its exact leaf directory")
 
+        custom_bundle_runs: list[str] = []
+        for index in range(2):
+            custom_dir = tmp / f"governed-custom-output-{index}"
+            custom_json = custom_dir / "report.json"
+            custom_markdown = custom_dir / "report.md"
+            custom_screenshots = custom_dir / "screenshots"
+            custom = subprocess.run(
+                verifier_command(
+                    "--config",
+                    str(clean_contract_config),
+                    "--json-out",
+                    str(custom_json),
+                    "--markdown-out",
+                    str(custom_markdown),
+                    "--screenshot-dir",
+                    str(custom_screenshots),
+                ),
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=TIMEOUT_SECONDS,
+                env=governed_env,
+                cwd=audited_worktree,
+            )
+            if custom.returncode != 0 or custom.stderr.strip():
+                raise AssertionError(
+                    f"Governed custom-output run failed: {custom.returncode}; {custom.stderr!r}")
+            custom_receipt = parse_bounded_receipt(custom.stdout, expect=0)
+            receipt_json, receipt_markdown = receipt_artifact_paths(custom_receipt)
+            custom_report = assert_complete_artifacts(
+                receipt_json, receipt_markdown, expect=0)
+            if receipt_json.resolve() != custom_json.resolve():
+                raise AssertionError("Custom report output was replaced by governed publication")
+            custom_bundle_runs.append(custom_report["runId"])
+
+        governed_bundles = sorted(
+            path for path in (governed_dir / "formal-runs").iterdir()
+            if path.is_dir()
+        )
+        if len(governed_bundles) != 2 or len(set(custom_bundle_runs)) != 2:
+            raise AssertionError(
+                "Governed custom-output runs did not publish unique immutable bundles")
+        published_runs: set[str] = set()
+        for bundle in governed_bundles:
+            manifest_path = bundle / "journey-evidence.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            if (
+                len(bundle.name) != 64
+                or any(character not in "0123456789abcdef" for character in bundle.name)
+                or manifest.get("governedRunId") != "t20260902T010203Z-abcdef"
+                or manifest.get("governedCheck") != "formal-ui"
+            ):
+                raise AssertionError("Governed custom bundle identity is invalid")
+            published_runs.add(manifest.get("runId"))
+            for cell in manifest.get("cells", []):
+                for screenshot in cell.get("screenshots", {}).values():
+                    if screenshot is None:
+                        continue
+                    screenshot_path = (bundle / screenshot["path"]).resolve()
+                    if not screenshot_path.is_relative_to(bundle.resolve()) or not screenshot_path.is_file():
+                        raise AssertionError("Governed custom screenshot escaped its immutable bundle")
+        if published_runs != set(custom_bundle_runs):
+            raise AssertionError("Governed custom bundles lost or replaced a formal run")
+
         # Commands published while receipt mode was opt-in remain safe: the
         # old CLI flag is accepted as a no-op, never as an output-mode switch.
         alias_dir = tmp / "deprecated-receipt-alias"

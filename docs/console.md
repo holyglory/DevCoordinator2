@@ -106,7 +106,9 @@ a native select.
    history.
 5. **Tests** — the current/most-recent run collection remains first: result,
    requested development/pre-merge/release tier, readiness eligibility, and
-   duration. **Logs** opens a focused catalogue-first dialog; raw content loads
+   duration. While any listed run is active, the collection re-reads bounded
+   current state without moving focus, closing an open dialog, or continuing
+   after navigation. **Logs** opens a focused catalogue-first dialog; raw content loads
    only after an explicit bounded case/stream action and is labelled untrusted.
    **Log retention** edits the host age/depth boundaries and re-reads the stored
    state. Administrators stop a running test or start a prior worktree at a
@@ -114,7 +116,10 @@ a native select.
    focused dialog showing learned/effective capacity, the optional maximum,
    active/waiting leaves, admission pause state, and the last adjustment's
    measured evidence. Saving or clearing the host-wide maximum acts directly.
-   Every run also offers **Evidence**. A retained formal UI bundle opens as the
+   Visual evidence is labelled **pending** while a run is active and has not
+   published a bundle, **not produced** after a terminal nonvisual run, or with
+   its retained image count when available; only available or invalid evidence
+   is an action. A retained formal UI bundle opens as the
    selected three-zone review board: ordered journey states and viewport
    choices on the left, the immutable screenshot and complete annotation
    toolbar as the dominant centre workspace, and capture facts, automatic
