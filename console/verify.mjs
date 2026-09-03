@@ -47,10 +47,10 @@ const progressFixture = (scenario, period = 'day') => {
   const referenceState = !!scenario.progressReference && period === 'day';
   const evidenceMissing = scenario.empty || referenceState;
   const alignedEnd = referenceState ? Date.UTC(2026, 8, 1) : Date.UTC(2026, 7, 31);
-  const referenceTasks = [0, 0, 6, 3, 4, 6, 13];
-  const referenceTasksAdded = [0, 2, 1, 0, 5, 0, 2];
-  const referenceLines = [0, 0, 1500, 0, 3500, 200, 2200];
-  const referenceLinesAdded = [0, 900, 250, 0, 1600, 0, 400];
+  const referenceTasks = [0, 0, 6, 3, 4, 6, 5];
+  const referenceTasksAdded = [0, 2, 1, 0, 5, 0, 5];
+  const referenceLines = [125, 0, 1500, 0, 3500, 200, 2200];
+  const referenceLinesAdded = [125, 900, 250, 0, 1600, 0, 400];
   const series = Array.from({ length: count }, (_, index) => ({
     bucket_start_ms: alignedEnd - (count - index) * bucketMs,
     bucket_end_ms: alignedEnd - (count - index - 1) * bucketMs,
@@ -1997,6 +1997,15 @@ async function main() {
   daemon.setScenario(SCENARIOS.progressReference);
   await page.reload();
   await page.waitForSelector('.progress-pulse-chart');
+  const equalValueScale = await page.locator('.progress-bar-line-chart').evaluateAll((charts) => charts.every((chart) => {
+    const completed = [...chart.querySelectorAll('.progress-completed-bar')];
+    const incoming = [...chart.querySelectorAll('.progress-incoming-bar')];
+    return completed.some((finished) => incoming.some((added) => (
+      finished.getAttribute('x') === added.getAttribute('x')
+      && Math.abs(Number(finished.getAttribute('height')) - Number(added.getAttribute('height'))) < .1
+    )));
+  }));
+  check('progress: equal completed and incoming values have equal bar lengths', equalValueScale);
   check('progress: entirely missing test and token evidence has no zero-valued chart',
     await page.locator('.progress-evidence-chart').count() === 0
     && await page.locator('.progress-evidence-lane > strong').allTextContents().then((values) => values.every((value) => value.trim() === '—'))
