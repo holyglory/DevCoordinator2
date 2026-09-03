@@ -11,6 +11,7 @@ pub mod config;
 pub mod control_plane;
 pub mod daemon;
 pub mod database;
+pub mod docker;
 pub mod ids;
 pub mod mcp;
 pub mod plan;
