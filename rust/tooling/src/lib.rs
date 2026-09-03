@@ -1,6 +1,8 @@
 use std::path::Path;
 
 pub mod python_guard;
+pub mod repository_checks;
+pub mod skill_links;
 
 pub fn export_contract(path: &Path, check: bool) -> Result<(), String> {
     let document = devcoordinator2_api::contract_document();
