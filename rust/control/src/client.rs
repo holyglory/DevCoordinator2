@@ -40,8 +40,24 @@ pub async fn call(
             .with_detail(error.to_string())
     })?;
     encoded.push(b'\n');
-    stream.write_all(&encoded).await.map_err(transport_error)?;
-    stream.shutdown().await.map_err(transport_error)?;
+    timeout(Duration::from_secs(5), stream.write_all(&encoded))
+        .await
+        .map_err(|_| {
+            ProtocolError::new(
+                ErrorCode::DaemonUnavailable,
+                "daemon request write timed out",
+            )
+        })?
+        .map_err(transport_error)?;
+    timeout(Duration::from_secs(5), stream.shutdown())
+        .await
+        .map_err(|_| {
+            ProtocolError::new(
+                ErrorCode::DaemonUnavailable,
+                "daemon request shutdown timed out",
+            )
+        })?
+        .map_err(transport_error)?;
 
     let mut response = Vec::new();
     timeout(

@@ -2,34 +2,28 @@
 
 use std::fs::File;
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
+use devcoordinator2_api::params::AccessRole;
+use devcoordinator2_api::{ErrorCode, ProtocolError};
 use rustix::fs::{AtFlags, Mode, OFlags, chmod, open, openat, renameat, unlinkat};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
+use time::{format_description::FormatItem, macros::format_description};
 
+use crate::access::RoutePublisher;
+pub use crate::access::{RouteAccessSection as RouteAccess, RouteGrant};
 use crate::database::{Database, DatabaseError};
 use crate::ids;
+use crate::platform::{Clock, HostClock};
 
 pub const ROUTE_SCHEMA: u8 = 1;
+const TIMESTAMP_FORMAT: &[FormatItem<'static>] =
+    format_description!("[year]-[month]-[day]T[hour]:[minute]:[second]Z");
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct RouteAccess {
-    pub owners: Vec<String>,
-    pub grants: Vec<RouteGrant>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct RouteGrant {
-    pub identity: String,
-    pub deployment_id: String,
-    pub role: String,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Route {
     pub deployment_id: String,
@@ -42,7 +36,7 @@ pub struct Route {
     pub generation: Option<u32>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RouteDocument {
     pub schema: u8,
@@ -54,13 +48,72 @@ pub struct RouteDocument {
     pub access: RouteAccess,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 struct RoutePayload<'a> {
     generation: u64,
     published_at: &'a str,
     domain: &'a str,
     routes: &'a [Route],
     access: &'a RouteAccess,
+}
+
+/// Production access/route publication adapter. Access changes commit before
+/// this publishes one complete replacement document; publication failure is
+/// returned while the committed change remains queryable for safe retry.
+#[derive(Clone)]
+pub struct RouteFilePublisher {
+    database: Database,
+    path: Arc<PathBuf>,
+    base_domain: Arc<str>,
+    clock: Arc<dyn Clock>,
+}
+
+impl RouteFilePublisher {
+    pub fn new(database: Database, path: PathBuf, base_domain: String) -> Self {
+        Self::with_clock(database, path, base_domain, Arc::new(HostClock))
+    }
+
+    pub fn with_clock(
+        database: Database,
+        path: PathBuf,
+        base_domain: String,
+        clock: Arc<dyn Clock>,
+    ) -> Self {
+        Self {
+            database,
+            path: Arc::new(path),
+            base_domain: base_domain.into(),
+            clock,
+        }
+    }
+
+    pub fn publish_current(&self) -> Result<RouteDocument, ProtocolError> {
+        self.publish_snapshot(None)
+    }
+
+    fn publish_snapshot(
+        &self,
+        access: Option<RouteAccess>,
+    ) -> Result<RouteDocument, ProtocolError> {
+        let now = self
+            .clock
+            .now_utc()
+            .format(TIMESTAMP_FORMAT)
+            .map_err(|error| {
+                ProtocolError::new(ErrorCode::InternalError, "cannot format route timestamp")
+                    .with_detail(error.to_string())
+            })?;
+        publish(&self.database, &self.path, &self.base_domain, access, &now).map_err(|error| {
+            ProtocolError::new(ErrorCode::InternalError, "route publication failed")
+                .with_detail(error.to_string())
+        })
+    }
+}
+
+impl RoutePublisher for RouteFilePublisher {
+    fn publish_access(&self, access: &RouteAccess) -> Result<(), ProtocolError> {
+        self.publish_snapshot(Some(access.clone())).map(|_| ())
+    }
 }
 
 #[derive(Debug, Error)]
@@ -138,15 +191,24 @@ pub fn publish(
                     let mut statement = connection.prepare(
                         "SELECT u.email,g.deployment_id,g.role FROM grants g JOIN users u ON u.user_id=g.user_id ORDER BY u.email,g.deployment_id",
                     )?;
-                    statement
+                    let rows = statement
                         .query_map([], |row| {
-                            Ok(RouteGrant {
-                                identity: row.get(0)?,
-                                deployment_id: row.get(1)?,
-                                role: row.get(2)?,
-                            })
+                            Ok((
+                                row.get::<_, String>(0)?,
+                                row.get::<_, String>(1)?,
+                                row.get::<_, String>(2)?,
+                            ))
                         })?
-                        .collect::<Result<Vec<_>, _>>()?
+                        .collect::<Result<Vec<_>, _>>()?;
+                    rows.into_iter()
+                        .map(|(identity, deployment_id, role)| {
+                            Ok(RouteGrant {
+                                identity,
+                                deployment_id,
+                                role: route_role(&role)?,
+                            })
+                        })
+                        .collect::<Result<Vec<_>, DatabaseError>>()?
                 };
                 RouteAccess { owners, grants }
             }
@@ -173,6 +235,19 @@ pub fn publish(
     };
     atomic_publish(path, &serde_json::to_vec_pretty(&document)?)?;
     Ok(document)
+}
+
+fn route_role(value: &str) -> Result<AccessRole, DatabaseError> {
+    match value {
+        "access" => Ok(AccessRole::Access),
+        "viewer" => Ok(AccessRole::Viewer),
+        "operator" => Ok(AccessRole::Operator),
+        "administrator" => Ok(AccessRole::Administrator),
+        _ => Err(DatabaseError::Domain(ProtocolError::new(
+            ErrorCode::InternalError,
+            "stored route grant role is invalid",
+        ))),
+    }
 }
 
 fn route_from_row(

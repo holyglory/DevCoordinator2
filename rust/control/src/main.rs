@@ -1,8 +1,11 @@
 use std::process::ExitCode;
+use std::sync::Arc;
 
 use clap::{Parser, Subcommand, ValueEnum};
 use devcoordinator2_api::{ClientContext, ClientKind, ResponseEnvelope};
-use devcoordinator2_control::{client, config::Config, daemon, mcp};
+use devcoordinator2_control::{
+    client, config::Config, control_plane::ControlPlane, daemon, database::Database, mcp,
+};
 use tokio::sync::watch;
 
 #[derive(Debug, Parser)]
@@ -69,7 +72,11 @@ async fn main() -> ExitCode {
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
     let cli = Cli::parse();
-    let config = match Config::load() {
+    let config = match if matches!(&cli.command, Command::Daemon) {
+        Config::load_for_daemon()
+    } else {
+        Config::load()
+    } {
         Ok(config) => config,
         Err(error) => {
             eprintln!("configuration failed: {error}");
@@ -104,12 +111,27 @@ async fn main() -> ExitCode {
 }
 
 async fn run_daemon(config: &Config) -> ExitCode {
-    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    let database = match Database::open(config.database_path()) {
+        Ok(database) => database,
+        Err(error) => {
+            eprintln!("daemon database failed: {error}");
+            return ExitCode::from(1);
+        }
+    };
+    let plane = match ControlPlane::new(config.clone(), database) {
+        Ok(plane) => plane,
+        Err(error) => {
+            eprintln!("daemon initialization failed: {error}");
+            return ExitCode::from(1);
+        }
+    };
+    let app = Arc::new(daemon::App::with_executor(config.edge_uid, Arc::new(plane)));
+    let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
     let signal = tokio::spawn(async move {
         let _ = tokio::signal::ctrl_c().await;
         let _ = shutdown_tx.send(true);
     });
-    let result = daemon::serve(&config.socket_path, shutdown_rx).await;
+    let result = daemon::serve_with_app(&config.socket_path, &mut shutdown_rx, app).await;
     signal.abort();
     match result {
         Ok(()) => ExitCode::SUCCESS,

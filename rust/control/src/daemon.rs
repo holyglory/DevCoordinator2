@@ -1,5 +1,6 @@
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 
 #[cfg(unix)]
 use std::os::unix::fs::FileTypeExt;
@@ -8,58 +9,140 @@ use devcoordinator2_api::{
     EmptyParams, ErrorCode, MAX_REQUEST_BYTES, PingData, ProtocolError, RequestEnvelope,
     ResponseEnvelope, encode_response, parse_request,
 };
+use serde_json::Value;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::watch;
+use tokio::task::JoinSet;
+use tokio::time::timeout;
 use tracing::{error, info};
 
+use crate::access::Caller;
 use crate::{DATABASE_SCHEMA_VERSION, SOURCE_COMMIT};
+
+const READ_DEADLINE: Duration = Duration::from_secs(5);
+const WRITE_DEADLINE: Duration = Duration::from_secs(10);
+
+/// Synchronous domain boundary executed on Tokio's blocking pool. Domain
+/// services own their own serialization and may invoke bounded local process
+/// adapters without blocking the async socket reactor.
+pub trait OperationExecutor: Send + Sync + 'static {
+    fn execute(
+        &self,
+        operation: &str,
+        params: Value,
+        caller: &Caller,
+    ) -> Result<Value, ProtocolError>;
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PeerCredentials {
+    pub pid: u32,
+    pub uid: u32,
+    pub gid: u32,
+}
+
+#[derive(Clone)]
+struct PingExecutor {
+    socket_display: Arc<str>,
+}
+
+impl OperationExecutor for PingExecutor {
+    fn execute(
+        &self,
+        operation: &str,
+        params: Value,
+        _caller: &Caller,
+    ) -> Result<Value, ProtocolError> {
+        if operation != "ping" {
+            return Err(ProtocolError::new(
+                ErrorCode::InternalError,
+                "operation handler is not installed",
+            ));
+        }
+        serde_json::from_value::<EmptyParams>(params).map_err(|error| {
+            ProtocolError::new(ErrorCode::ParamsInvalid, "ping parameters are invalid")
+                .with_detail(error.to_string())
+        })?;
+        serde_json::to_value(PingData {
+            daemon_version: env!("CARGO_PKG_VERSION").to_owned(),
+            protocol_version: devcoordinator2_api::PROTOCOL_VERSION,
+            schema_version: DATABASE_SCHEMA_VERSION,
+            executor_schema: devcoordinator2_executor_protocol::EXECUTOR_SCHEMA,
+            source_commit: SOURCE_COMMIT.to_owned(),
+            socket: self.socket_display.to_string(),
+        })
+        .map_err(|error| {
+            ProtocolError::new(ErrorCode::InternalError, "cannot encode ping result")
+                .with_detail(error.to_string())
+        })
+    }
+}
 
 #[derive(Clone)]
 pub struct App {
-    socket_display: Arc<str>,
+    edge_uid: Option<u32>,
+    executor: Arc<dyn OperationExecutor>,
 }
 
 impl App {
     pub fn new(socket_path: &Path) -> Self {
+        let socket_display: Arc<str> = socket_path.display().to_string().into();
         Self {
-            socket_display: socket_path.display().to_string().into(),
+            edge_uid: None,
+            executor: Arc::new(PingExecutor { socket_display }),
         }
     }
 
-    pub async fn dispatch(&self, request: RequestEnvelope) -> ResponseEnvelope {
+    pub fn with_executor(edge_uid: Option<u32>, executor: Arc<dyn OperationExecutor>) -> Self {
+        Self { edge_uid, executor }
+    }
+
+    pub async fn dispatch(
+        &self,
+        request: RequestEnvelope,
+        peer: PeerCredentials,
+    ) -> ResponseEnvelope {
         let id = request.id.clone();
-        match request.operation.as_str() {
-            "ping" => match serde_json::from_value::<EmptyParams>(request.params) {
-                Ok(_) => match ResponseEnvelope::success(
-                    id.clone(),
-                    PingData {
-                        daemon_version: env!("CARGO_PKG_VERSION").to_owned(),
-                        protocol_version: devcoordinator2_api::PROTOCOL_VERSION,
-                        schema_version: DATABASE_SCHEMA_VERSION,
-                        executor_schema: devcoordinator2_executor_protocol::EXECUTOR_SCHEMA,
-                        source_commit: SOURCE_COMMIT.to_owned(),
-                        socket: self.socket_display.to_string(),
-                    },
-                ) {
-                    Ok(response) => response,
-                    Err(error) => ResponseEnvelope::failure(id, error),
-                },
-                Err(error) => ResponseEnvelope::failure(
-                    id,
-                    ProtocolError::new(ErrorCode::ParamsInvalid, "ping parameters are invalid")
-                        .with_detail(error.to_string()),
-                ),
-            },
-            _ => ResponseEnvelope::failure(
+        let caller = match Caller::from_client(
+            peer.pid,
+            peer.uid,
+            peer.gid,
+            request.client,
+            self.edge_uid,
+        ) {
+            Ok(caller) => caller,
+            Err(error) => return ResponseEnvelope::failure(id, error),
+        };
+        let executor = Arc::clone(&self.executor);
+        let operation = request.operation;
+        let result = tokio::task::spawn_blocking(move || {
+            executor.execute(&operation, request.params, &caller)
+        })
+        .await;
+        match result {
+            Ok(Ok(data)) => ResponseEnvelope::success(id.clone(), data)
+                .unwrap_or_else(|error| ResponseEnvelope::failure(id, error)),
+            Ok(Err(error)) => ResponseEnvelope::failure(id, error),
+            Err(error) => ResponseEnvelope::failure(
                 id,
-                ProtocolError::new(ErrorCode::OperationUnknown, "unknown operation"),
+                ProtocolError::new(ErrorCode::InternalError, "operation task failed")
+                    .with_detail(error.to_string()),
             ),
         }
     }
 }
 
 pub async fn serve(socket_path: &Path, mut shutdown: watch::Receiver<bool>) -> std::io::Result<()> {
+    let app = Arc::new(App::new(socket_path));
+    serve_with_app(socket_path, &mut shutdown, app).await
+}
+
+pub async fn serve_with_app(
+    socket_path: &Path,
+    shutdown: &mut watch::Receiver<bool>,
+    app: Arc<App>,
+) -> std::io::Result<()> {
     if let Some(parent) = socket_path.parent() {
         tokio::fs::create_dir_all(parent).await?;
     }
@@ -78,8 +161,8 @@ pub async fn serve(socket_path: &Path, mut shutdown: watch::Receiver<bool>) -> s
     }
     let listener = UnixListener::bind(socket_path)?;
     set_socket_mode(socket_path)?;
-    let app = Arc::new(App::new(socket_path));
     info!(socket = %socket_path.display(), "serving protocol 2");
+    let mut connections = JoinSet::new();
 
     loop {
         tokio::select! {
@@ -91,21 +174,44 @@ pub async fn serve(socket_path: &Path, mut shutdown: watch::Receiver<bool>) -> s
             accepted = listener.accept() => {
                 let (stream, _) = accepted?;
                 let app = Arc::clone(&app);
-                tokio::spawn(async move {
+                connections.spawn(async move {
                     if let Err(error) = serve_connection(stream, app).await {
                         error!(%error, "connection failed");
                     }
                 });
             }
+            completed = connections.join_next(), if !connections.is_empty() => {
+                if let Some(Err(error)) = completed {
+                    error!(%error, "connection task failed");
+                }
+            }
         }
     }
     drop(listener);
     let _ = tokio::fs::remove_file(socket_path).await;
+    while let Some(completed) = connections.join_next().await {
+        if let Err(error) = completed {
+            error!(%error, "connection task failed during shutdown");
+        }
+    }
     Ok(())
 }
 
 async fn serve_connection(mut stream: UnixStream, app: Arc<App>) -> std::io::Result<()> {
-    let raw = read_frame(&mut stream).await?;
+    let credentials = stream.peer_cred()?;
+    let peer = PeerCredentials {
+        pid: credentials
+            .pid()
+            .and_then(|pid| u32::try_from(pid).ok())
+            .unwrap_or(0),
+        uid: credentials.uid(),
+        gid: credentials.gid(),
+    };
+    let raw = timeout(READ_DEADLINE, read_frame(&mut stream))
+        .await
+        .map_err(|_| {
+            std::io::Error::new(std::io::ErrorKind::TimedOut, "request read timed out")
+        })??;
     let id = serde_json::from_slice::<serde_json::Value>(&raw)
         .ok()
         .and_then(|value| {
@@ -115,12 +221,31 @@ async fn serve_connection(mut stream: UnixStream, app: Arc<App>) -> std::io::Res
                 .map(str::to_owned)
         })
         .unwrap_or_default();
-    let response = match parse_request(&raw) {
-        Ok(request) => app.dispatch(request).await,
-        Err(error) => ResponseEnvelope::failure(id, error),
+    let response = if !raw.ends_with(b"\n") {
+        ResponseEnvelope::failure(
+            id,
+            ProtocolError::new(
+                ErrorCode::ProtocolInvalid,
+                "request must be newline terminated",
+            ),
+        )
+    } else {
+        match parse_request(&raw) {
+            Ok(request) => app.dispatch(request, peer).await,
+            Err(error) => ResponseEnvelope::failure(id, error),
+        }
     };
-    stream.write_all(&encode_response(&response)).await?;
-    stream.shutdown().await
+    timeout(
+        WRITE_DEADLINE,
+        stream.write_all(&encode_response(&response)),
+    )
+    .await
+    .map_err(|_| std::io::Error::new(std::io::ErrorKind::TimedOut, "response write timed out"))??;
+    timeout(WRITE_DEADLINE, stream.shutdown())
+        .await
+        .map_err(|_| {
+            std::io::Error::new(std::io::ErrorKind::TimedOut, "response shutdown timed out")
+        })?
 }
 
 async fn read_frame(stream: &mut UnixStream) -> std::io::Result<Vec<u8>> {
@@ -174,6 +299,22 @@ mod tests {
         .await
         .expect("ping response");
         assert!(matches!(response, ResponseEnvelope::Success { .. }));
+        let spoofed = crate::client::call(
+            &socket,
+            "ping",
+            serde_json::json!({}),
+            ClientContext {
+                identity: Some("spoof@example.test".to_owned()),
+                ..ClientContext::default()
+            },
+        )
+        .await
+        .expect("bounded denial");
+        assert!(matches!(
+            spoofed,
+            ResponseEnvelope::Failure { error, .. }
+                if error.code == ErrorCode::PermissionDenied
+        ));
         shutdown_tx.send(true).expect("shutdown");
         server.await.expect("server task").expect("server result");
     }
