@@ -1362,8 +1362,12 @@ async function main() {
     && /<img src=x onerror=alert\(1\)>/.test(await page.innerText('#test-log-read-result')));
   check('tests: the Console never calls exact numeric range retrieval',
     !daemon.calls.some((c) => c.command === 'test.log.range'));
+  daemon.setScenario({ ...SCENARIOS.populated, testFinished: true, targetedOnly: true });
+  await page.waitForFunction(() => /passed/.test(document.querySelector('[data-test-run-id="t20260101T000000Z-abc123"]')?.textContent || ''));
   await page.click('#test-logs-dialog .dialog-close');
-  check('interaction: closing Logs returns focus to the invoking run', await page.locator('button[data-test-logs]:focus').count() === 1);
+  check('interaction: closing Logs returns focus after live refresh replaced the invoking row',
+    await page.locator('[data-test-run-id="t20260101T000000Z-abc123"] button[data-test-logs]:focus').count() === 1);
+  daemon.setScenario(SCENARIOS.populated);
   check('tests: the run collection remains primary and capacity details stay in the action dialog',
     await page.locator('#test-runs-heading').count() === 1
     && await page.locator('.tests-tablewrap').count() === 1
@@ -1385,6 +1389,7 @@ async function main() {
   check('interaction: retention saves both boundaries directly and schedules cleanup', daemon.calls.some((c) => c.command === 'test.log.retention.set'
     && c.args.max_age_seconds === 7200 && c.args.case_depth === 5),
   JSON.stringify(daemon.calls.filter((c) => c.command === 'test.log.retention.set').map((c) => c.args)));
+  await page.waitForFunction(() => document.activeElement?.id === 'test-log-retention-open');
   check('interaction: saving retention returns focus to the Log retention action', await page.locator('#test-log-retention-open:focus').count() === 1);
   await page.click('#test-log-retention-open');
   await page.waitForSelector('dialog#test-log-retention-dialog[open]');

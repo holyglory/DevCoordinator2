@@ -871,7 +871,12 @@ async function openTestLogsDialog(run, retention, opener) {
   dlg.innerHTML = `<div class="dialog-head"><h2>Test logs</h2><button class="dialog-close" type="button" aria-label="Close test logs">×</button></div>
     <div id="test-log-catalog">${skeleton()}</div>`;
   document.body.appendChild(dlg);
-  const close = () => { dlg.close(); dlg.remove(); if (opener?.isConnected) opener.focus(); };
+  const close = () => {
+    dlg.close(); dlg.remove();
+    const returnTarget = opener?.isConnected ? opener
+      : document.querySelector(`[data-test-logs][data-run-id="${CSS.escape(run.run_id)}"]`);
+    returnTarget?.focus();
+  };
   $('.dialog-close', dlg).addEventListener('click', close);
   dlg.addEventListener('cancel', (event) => { event.preventDefault(); close(); });
   dlg.showModal();
@@ -1036,7 +1041,7 @@ async function openTestLogsDialog(run, retention, opener) {
         <button class="btn" type="button" data-log-read="failure_context">Show likely failure</button>
         <button class="btn" type="button" id="test-log-latest" hidden>Jump to latest</button>
       </div>
-      <section class="test-log-viewer" aria-labelledby="test-log-view-title"><div class="test-log-view-head"><div><strong id="test-log-view-title">Loading latest output</strong><span id="test-log-view-status"></span></div><span class="test-log-trust">Untrusted log output</span></div>
+      <section class="test-log-viewer" aria-labelledby="test-log-view-title"><div class="test-log-view-head"><div><strong id="test-log-view-title" data-ui-continuation-anchor>Loading latest output</strong><span id="test-log-view-status"></span></div><span class="test-log-trust">Untrusted log output</span></div>
         <div id="test-log-read-result" class="test-log-scroll" tabindex="0" aria-live="polite" aria-busy="true">${skeleton()}</div></section>
       </div>`;
     const metadata = () => {

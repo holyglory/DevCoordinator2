@@ -192,16 +192,22 @@ not contradict them.
   file chunk; the CLI can reconstruct selected trees only in a new caller-owned
   destination and revalidates every file and tree hash. No operation exposes a
   private source/storage path or writes a caller-selected server-side export.
-- **REQ-TEST-27** (2026-09-03, done): Opening a retained test stream in the
-  Console immediately renders its newest bounded text. The ordinary reading
-  journey never asks for line or byte coordinates: people can load earlier
-  output, return to the newest output, search literal text, or show likely
-  failure context with plainly labelled controls. Technical stream metadata is
-  available on request without preceding the output. Switching streams loads
-  the selected stream automatically, active streams expose a refresh action,
-  and progressive pages preserve reading position without repeating excerpts.
-  The Console continues to compose the bounded REQ-TEST-22 operations; it does
-  not request or render an unbounded stream.
+- **REQ-TEST-27** (2026-09-03, done; amended 2026-09-03): Opening a retained
+  test stream in the Console immediately renders its newest bounded text. The
+  ordinary reading journey never asks for a paging control or line/byte
+  coordinates: reaching the earlier-output boundary automatically follows one
+  returned tail cursor and preserves the exact reading anchor; short pages
+  auto-fill only until scrollable or exhausted. Search and failure results
+  extend from their lower boundary, while return/refresh latest remains an
+  explicit action. Numbers, timestamps, keys, strings, boolean/null values,
+  and textual failure/warning/success terms receive deterministic highlighting;
+  valid JSON and JSON-lines are pretty-printed with a textual format label.
+  Every source token is escaped and remains untrusted text tied to its original
+  line coordinates. Technical metadata stays available on request, stream
+  switching loads automatically, paging failures preserve visible output with
+  an exact retry, and a refreshed Tests row does not break dialog focus return.
+  The Console continues to compose bounded REQ-TEST-22 operations and never
+  requests or renders an unbounded stream.
 
 ## Deployments (REQ-DEPLOY, P3)
 
