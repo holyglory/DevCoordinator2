@@ -9,7 +9,7 @@
         "title": "EmptyParams",
         "type": "object"
       },
-      "mcpNames": [],
+      "mcpTools": [],
       "name": "ping",
       "outputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -68,7 +68,7 @@
         "title": "Empty",
         "type": "object"
       },
-      "mcpNames": [],
+      "mcpTools": [],
       "name": "user.whoami",
       "outputSchema": {
         "$defs": {
@@ -156,7 +156,7 @@
         "title": "AcceptInvitation",
         "type": "object"
       },
-      "mcpNames": [],
+      "mcpTools": [],
       "name": "user.accept_invitation",
       "outputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -199,7 +199,7 @@
         "title": "Empty",
         "type": "object"
       },
-      "mcpNames": [],
+      "mcpTools": [],
       "name": "user.list",
       "outputSchema": {
         "$defs": {
@@ -441,7 +441,7 @@
         "title": "InviteUser",
         "type": "object"
       },
-      "mcpNames": [],
+      "mcpTools": [],
       "name": "user.invite",
       "outputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -489,7 +489,7 @@
         "title": "EmailOnly",
         "type": "object"
       },
-      "mcpNames": [],
+      "mcpTools": [],
       "name": "user.remove",
       "outputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -557,7 +557,7 @@
         "title": "SetGrant",
         "type": "object"
       },
-      "mcpNames": [],
+      "mcpTools": [],
       "name": "grant.set",
       "outputSchema": {
         "$defs": {
@@ -621,7 +621,7 @@
         "title": "RemoveGrant",
         "type": "object"
       },
-      "mcpNames": [],
+      "mcpTools": [],
       "name": "grant.remove",
       "outputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -669,7 +669,7 @@
         "title": "PathOnly",
         "type": "object"
       },
-      "mcpNames": [],
+      "mcpTools": [],
       "name": "repository.register",
       "outputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -726,8 +726,23 @@
         "title": "RepositoryList",
         "type": "object"
       },
-      "mcpNames": [
-        "repository_list"
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "include_archived": {
+                "default": false,
+                "type": "boolean"
+              }
+            },
+            "title": "RepositoryList",
+            "type": "object"
+          },
+          "name": "repository_list",
+          "transform": "identity"
+        }
       ],
       "name": "repository.list",
       "outputSchema": {
@@ -850,7 +865,7 @@
         "title": "PathOnly",
         "type": "object"
       },
-      "mcpNames": [],
+      "mcpTools": [],
       "name": "repository.status",
       "outputSchema": {
         "$defs": {
@@ -1010,8 +1025,37 @@
         "title": "ArchiveRepository",
         "type": "object"
       },
-      "mcpNames": [
-        "repository_archive"
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "merged_into_repository_id": {
+                "pattern": "^r[0-9a-f]{16}$",
+                "type": "string"
+              },
+              "note": {
+                "maxLength": 500,
+                "minLength": 3,
+                "type": "string"
+              },
+              "repository_id": {
+                "pattern": "^r[0-9a-f]{16}$",
+                "type": "string"
+              }
+            },
+            "required": [
+              "repository_id",
+              "merged_into_repository_id",
+              "note"
+            ],
+            "title": "ArchiveRepository",
+            "type": "object"
+          },
+          "name": "repository_archive",
+          "transform": "identity"
+        }
       ],
       "name": "repository.archive",
       "outputSchema": {
@@ -1106,8 +1150,32 @@
         "title": "UnarchiveRepository",
         "type": "object"
       },
-      "mcpNames": [
-        "repository_unarchive"
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "note": {
+                "maxLength": 500,
+                "minLength": 3,
+                "type": "string"
+              },
+              "repository_id": {
+                "pattern": "^r[0-9a-f]{16}$",
+                "type": "string"
+              }
+            },
+            "required": [
+              "repository_id",
+              "note"
+            ],
+            "title": "UnarchiveRepository",
+            "type": "object"
+          },
+          "name": "repository_unarchive",
+          "transform": "identity"
+        }
       ],
       "name": "repository.unarchive",
       "outputSchema": {
@@ -1224,8 +1292,54 @@
         "title": "StartTest",
         "type": "object"
       },
-      "mcpNames": [
-        "test_start"
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$defs": {
+              "ValidationTier": {
+                "enum": [
+                  "development",
+                  "pre-merge",
+                  "release"
+                ],
+                "type": "string"
+              }
+            },
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "checks": {
+                "default": [],
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "path": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "test": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "tier": {
+                "$ref": "#/$defs/ValidationTier",
+                "default": "release"
+              }
+            },
+            "required": [
+              "path"
+            ],
+            "title": "StartTest",
+            "type": "object"
+          },
+          "name": "test_start",
+          "transform": "identity"
+        }
       ],
       "name": "test.start",
       "outputSchema": {
@@ -1362,8 +1476,43 @@
         "title": "RetryTest",
         "type": "object"
       },
-      "mcpNames": [
-        "test_retry"
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "check": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "path": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "run_id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "test": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "path",
+              "run_id",
+              "check"
+            ],
+            "title": "RetryTest",
+            "type": "object"
+          },
+          "name": "test_retry",
+          "transform": "identity"
+        }
       ],
       "name": "test.retry",
       "outputSchema": {
@@ -1483,8 +1632,26 @@
         "title": "PathOnly",
         "type": "object"
       },
-      "mcpNames": [
-        "test_status"
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "path": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "path"
+            ],
+            "title": "PathOnly",
+            "type": "object"
+          },
+          "name": "test_status",
+          "transform": "identity"
+        }
       ],
       "name": "test.status",
       "outputSchema": {
@@ -2342,8 +2509,103 @@
         "title": "LogCatalog",
         "type": "object"
       },
-      "mcpNames": [
-        "test_log_catalog"
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$defs": {
+              "LogPhase": {
+                "enum": [
+                  "executor",
+                  "check",
+                  "discovery",
+                  "case"
+                ],
+                "type": "string"
+              },
+              "LogStream": {
+                "enum": [
+                  "stdout",
+                  "stderr"
+                ],
+                "type": "string"
+              }
+            },
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "case": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "check": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "cursor": {
+                "default": null,
+                "maxLength": 4096,
+                "minLength": 1,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "limit": {
+                "default": 100,
+                "format": "uint16",
+                "maximum": 100,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "path": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "phase": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/LogPhase"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "run_id": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "stream": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/LogStream"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              }
+            },
+            "required": [
+              "path"
+            ],
+            "title": "LogCatalog",
+            "type": "object"
+          },
+          "name": "test_log_catalog",
+          "transform": "identity"
+        }
       ],
       "name": "test.log.catalog",
       "outputSchema": {
@@ -2606,8 +2868,94 @@
         "title": "LogTail",
         "type": "object"
       },
-      "mcpNames": [
-        "test_log_tail"
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$defs": {
+              "LogPhase": {
+                "enum": [
+                  "executor",
+                  "check",
+                  "discovery",
+                  "case"
+                ],
+                "type": "string"
+              },
+              "LogStream": {
+                "enum": [
+                  "stdout",
+                  "stderr"
+                ],
+                "type": "string"
+              }
+            },
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "case": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "check": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "cursor": {
+                "default": null,
+                "maxLength": 4096,
+                "minLength": 1,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "lines": {
+                "default": 50,
+                "format": "uint16",
+                "maximum": 5000,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "max_bytes": {
+                "default": 32768,
+                "format": "uint32",
+                "maximum": 49152,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "path": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "phase": {
+                "$ref": "#/$defs/LogPhase"
+              },
+              "run_id": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "stream": {
+                "$ref": "#/$defs/LogStream"
+              }
+            },
+            "required": [
+              "path",
+              "phase",
+              "stream"
+            ],
+            "title": "LogTail",
+            "type": "object"
+          },
+          "name": "test_log_tail",
+          "transform": "identity"
+        }
       ],
       "name": "test.log.tail",
       "outputSchema": {
@@ -2822,8 +3170,107 @@
         "title": "LogSearch",
         "type": "object"
       },
-      "mcpNames": [
-        "test_log_search"
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$defs": {
+              "LogPhase": {
+                "enum": [
+                  "executor",
+                  "check",
+                  "discovery",
+                  "case"
+                ],
+                "type": "string"
+              },
+              "LogStream": {
+                "enum": [
+                  "stdout",
+                  "stderr"
+                ],
+                "type": "string"
+              }
+            },
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "case": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "check": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "context_lines": {
+                "default": 2,
+                "format": "uint16",
+                "maximum": 100,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "cursor": {
+                "default": null,
+                "maxLength": 4096,
+                "minLength": 1,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "max_bytes": {
+                "default": 32768,
+                "format": "uint32",
+                "maximum": 49152,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "max_matches": {
+                "default": 20,
+                "format": "uint16",
+                "maximum": 100,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "path": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "phase": {
+                "$ref": "#/$defs/LogPhase"
+              },
+              "run_id": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "stream": {
+                "$ref": "#/$defs/LogStream"
+              },
+              "text": {
+                "maxLength": 4096,
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "path",
+              "phase",
+              "stream",
+              "text"
+            ],
+            "title": "LogSearch",
+            "type": "object"
+          },
+          "name": "test_log_search",
+          "transform": "identity"
+        }
       ],
       "name": "test.log.search",
       "outputSchema": {
@@ -3054,8 +3501,123 @@
         "title": "LogRange",
         "type": "object"
       },
-      "mcpNames": [
-        "test_log_range"
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$defs": {
+              "LogPhase": {
+                "enum": [
+                  "executor",
+                  "check",
+                  "discovery",
+                  "case"
+                ],
+                "type": "string"
+              },
+              "LogStream": {
+                "enum": [
+                  "stdout",
+                  "stderr"
+                ],
+                "type": "string"
+              }
+            },
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "byte_end": {
+                "default": null,
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "byte_start": {
+                "default": null,
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "case": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "check": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "cursor": {
+                "default": null,
+                "maxLength": 4096,
+                "minLength": 1,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "line_end": {
+                "default": null,
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "line_start": {
+                "default": null,
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "max_bytes": {
+                "default": 49152,
+                "format": "uint32",
+                "maximum": 49152,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "path": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "phase": {
+                "$ref": "#/$defs/LogPhase"
+              },
+              "run_id": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "stream": {
+                "$ref": "#/$defs/LogStream"
+              }
+            },
+            "required": [
+              "path",
+              "phase",
+              "stream"
+            ],
+            "title": "LogRange",
+            "type": "object"
+          },
+          "name": "test_log_range",
+          "transform": "identity"
+        }
       ],
       "name": "test.log.range",
       "outputSchema": {
@@ -3264,8 +3826,101 @@
         "title": "LogFailureContext",
         "type": "object"
       },
-      "mcpNames": [
-        "test_log_failure_context"
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$defs": {
+              "LogPhase": {
+                "enum": [
+                  "executor",
+                  "check",
+                  "discovery",
+                  "case"
+                ],
+                "type": "string"
+              },
+              "LogStream": {
+                "enum": [
+                  "stdout",
+                  "stderr"
+                ],
+                "type": "string"
+              }
+            },
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "case": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "check": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "context_lines": {
+                "default": 2,
+                "format": "uint16",
+                "maximum": 100,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "cursor": {
+                "default": null,
+                "maxLength": 4096,
+                "minLength": 1,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "limit": {
+                "default": 20,
+                "format": "uint16",
+                "maximum": 100,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "max_bytes": {
+                "default": 32768,
+                "format": "uint32",
+                "maximum": 49152,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "path": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "phase": {
+                "$ref": "#/$defs/LogPhase"
+              },
+              "run_id": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "stream": {
+                "$ref": "#/$defs/LogStream"
+              }
+            },
+            "required": [
+              "path",
+              "phase",
+              "stream"
+            ],
+            "title": "LogFailureContext",
+            "type": "object"
+          },
+          "name": "test_log_failure_context",
+          "transform": "identity"
+        }
       ],
       "name": "test.log.failure_context",
       "outputSchema": {
@@ -3660,8 +4315,17 @@
         "title": "Empty",
         "type": "object"
       },
-      "mcpNames": [
-        "test_log_retention_show"
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "title": "Empty",
+            "type": "object"
+          },
+          "name": "test_log_retention_show",
+          "transform": "identity"
+        }
       ],
       "name": "test.log.retention.get",
       "outputSchema": {
@@ -3773,8 +4437,35 @@
         "title": "SetRetention",
         "type": "object"
       },
-      "mcpNames": [
-        "test_log_retention_set"
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "case_depth": {
+                "format": "uint16",
+                "maximum": 65535,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "max_age_seconds": {
+                "format": "uint32",
+                "maximum": 315360000,
+                "minimum": 1,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "max_age_seconds",
+              "case_depth"
+            ],
+            "title": "SetRetention",
+            "type": "object"
+          },
+          "name": "test_log_retention_set",
+          "transform": "identity"
+        }
       ],
       "name": "test.log.retention.set",
       "outputSchema": {
@@ -3882,8 +4573,31 @@
         "title": "EvidenceReference",
         "type": "object"
       },
-      "mcpNames": [
-        "test_evidence_get"
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "path": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "run_id": {
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+                "type": "string"
+              }
+            },
+            "required": [
+              "path",
+              "run_id"
+            ],
+            "title": "EvidenceReference",
+            "type": "object"
+          },
+          "name": "test_evidence_get",
+          "transform": "identity"
+        }
       ],
       "name": "test.evidence.get",
       "outputSchema": {
@@ -4772,8 +5486,50 @@
         "title": "EvidenceImage",
         "type": "object"
       },
-      "mcpNames": [
-        "test_evidence_image"
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "image_id": {
+                "pattern": "^[0-9a-f]{64}$",
+                "type": "string"
+              },
+              "max_bytes": {
+                "default": 184320,
+                "format": "uint32",
+                "maximum": 184320,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "offset": {
+                "default": 0,
+                "format": "uint32",
+                "maximum": 16777216,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "path": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "run_id": {
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+                "type": "string"
+              }
+            },
+            "required": [
+              "path",
+              "run_id",
+              "image_id"
+            ],
+            "title": "EvidenceImage",
+            "type": "object"
+          },
+          "name": "test_evidence_image",
+          "transform": "identity"
+        }
       ],
       "name": "test.evidence.image",
       "outputSchema": {
@@ -4887,8 +5643,61 @@
         "title": "ArtifactCatalog",
         "type": "object"
       },
-      "mcpNames": [
-        "test_artifact_catalog"
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "artifact": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "check": {
+                "type": "string"
+              },
+              "limit": {
+                "default": 100,
+                "format": "uint16",
+                "maximum": 100,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "manifest_sha256": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "offset": {
+                "default": 0,
+                "format": "uint32",
+                "maximum": 4096,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "path": {
+                "type": "string"
+              },
+              "run_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "path",
+              "run_id",
+              "check"
+            ],
+            "title": "ArtifactCatalog",
+            "type": "object"
+          },
+          "name": "test_artifact_catalog",
+          "transform": "identity"
+        }
       ],
       "name": "test.artifact.catalog",
       "outputSchema": {
@@ -5125,8 +5934,62 @@
         "title": "ArtifactFile",
         "type": "object"
       },
-      "mcpNames": [
-        "test_artifact_file"
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "artifact": {
+                "type": "string"
+              },
+              "check": {
+                "type": "string"
+              },
+              "file": {
+                "maxLength": 512,
+                "minLength": 1,
+                "type": "string"
+              },
+              "manifest_sha256": {
+                "pattern": "^[0-9a-f]{64}$",
+                "type": "string"
+              },
+              "max_bytes": {
+                "default": 184320,
+                "format": "uint32",
+                "maximum": 184320,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "offset": {
+                "default": 0,
+                "format": "uint64",
+                "maximum": 1073741824,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "path": {
+                "type": "string"
+              },
+              "run_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "path",
+              "run_id",
+              "check",
+              "artifact",
+              "file",
+              "manifest_sha256"
+            ],
+            "title": "ArtifactFile",
+            "type": "object"
+          },
+          "name": "test_artifact_file",
+          "transform": "identity"
+        }
       ],
       "name": "test.artifact.file",
       "outputSchema": {
@@ -5463,8 +6326,276 @@
         "title": "CreateFeedback",
         "type": "object"
       },
-      "mcpNames": [
-        "test_evidence_feedback_create"
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$defs": {
+              "Mark": {
+                "oneOf": [
+                  {
+                    "properties": {
+                      "color": {
+                        "type": "string"
+                      },
+                      "id": {
+                        "type": "string"
+                      },
+                      "type": {
+                        "const": "pin",
+                        "type": "string"
+                      },
+                      "x": {
+                        "format": "double",
+                        "type": "number"
+                      },
+                      "y": {
+                        "format": "double",
+                        "type": "number"
+                      }
+                    },
+                    "required": [
+                      "type",
+                      "id",
+                      "color",
+                      "x",
+                      "y"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "properties": {
+                      "color": {
+                        "type": "string"
+                      },
+                      "id": {
+                        "type": "string"
+                      },
+                      "text": {
+                        "type": "string"
+                      },
+                      "type": {
+                        "const": "text",
+                        "type": "string"
+                      },
+                      "x": {
+                        "format": "double",
+                        "type": "number"
+                      },
+                      "y": {
+                        "format": "double",
+                        "type": "number"
+                      }
+                    },
+                    "required": [
+                      "type",
+                      "id",
+                      "color",
+                      "x",
+                      "y",
+                      "text"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "properties": {
+                      "color": {
+                        "type": "string"
+                      },
+                      "height": {
+                        "format": "double",
+                        "type": "number"
+                      },
+                      "id": {
+                        "type": "string"
+                      },
+                      "type": {
+                        "const": "rectangle",
+                        "type": "string"
+                      },
+                      "width": {
+                        "format": "double",
+                        "type": "number"
+                      },
+                      "x": {
+                        "format": "double",
+                        "type": "number"
+                      },
+                      "y": {
+                        "format": "double",
+                        "type": "number"
+                      }
+                    },
+                    "required": [
+                      "type",
+                      "id",
+                      "color",
+                      "x",
+                      "y",
+                      "width",
+                      "height"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "properties": {
+                      "color": {
+                        "type": "string"
+                      },
+                      "id": {
+                        "type": "string"
+                      },
+                      "type": {
+                        "const": "arrow",
+                        "type": "string"
+                      },
+                      "x1": {
+                        "format": "double",
+                        "type": "number"
+                      },
+                      "x2": {
+                        "format": "double",
+                        "type": "number"
+                      },
+                      "y1": {
+                        "format": "double",
+                        "type": "number"
+                      },
+                      "y2": {
+                        "format": "double",
+                        "type": "number"
+                      }
+                    },
+                    "required": [
+                      "type",
+                      "id",
+                      "color",
+                      "x1",
+                      "y1",
+                      "x2",
+                      "y2"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "properties": {
+                      "color": {
+                        "type": "string"
+                      },
+                      "id": {
+                        "type": "string"
+                      },
+                      "points": {
+                        "items": {
+                          "$ref": "#/$defs/Point"
+                        },
+                        "type": "array"
+                      },
+                      "type": {
+                        "const": "freehand",
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "type",
+                      "id",
+                      "color",
+                      "points"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "properties": {
+                      "color": {
+                        "type": "string"
+                      },
+                      "id": {
+                        "type": "string"
+                      },
+                      "points": {
+                        "items": {
+                          "$ref": "#/$defs/Point"
+                        },
+                        "type": "array"
+                      },
+                      "type": {
+                        "const": "highlight",
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "type",
+                      "id",
+                      "color",
+                      "points"
+                    ],
+                    "type": "object"
+                  }
+                ]
+              },
+              "Point": {
+                "additionalProperties": false,
+                "properties": {
+                  "x": {
+                    "format": "double",
+                    "maximum": 1.0,
+                    "minimum": 0.0,
+                    "type": "number"
+                  },
+                  "y": {
+                    "format": "double",
+                    "maximum": 1.0,
+                    "minimum": 0.0,
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "x",
+                  "y"
+                ],
+                "type": "object"
+              }
+            },
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "body": {
+                "maxLength": 2000,
+                "minLength": 3,
+                "type": "string"
+              },
+              "image_id": {
+                "pattern": "^[0-9a-f]{64}$",
+                "type": "string"
+              },
+              "marks": {
+                "items": {
+                  "$ref": "#/$defs/Mark"
+                },
+                "maxItems": 64,
+                "minItems": 1,
+                "type": "array"
+              },
+              "path": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "run_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "path",
+              "run_id",
+              "image_id",
+              "body",
+              "marks"
+            ],
+            "title": "CreateFeedback",
+            "type": "object"
+          },
+          "name": "test_evidence_feedback_create",
+          "transform": "identity"
+        }
       ],
       "name": "test.evidence.feedback.create",
       "outputSchema": {
@@ -5907,8 +7038,39 @@
         "title": "FeedbackReply",
         "type": "object"
       },
-      "mcpNames": [
-        "test_evidence_feedback_reply"
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "body": {
+                "maxLength": 2000,
+                "minLength": 3,
+                "type": "string"
+              },
+              "feedback_id": {
+                "type": "string"
+              },
+              "path": {
+                "type": "string"
+              },
+              "run_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "path",
+              "run_id",
+              "feedback_id",
+              "body"
+            ],
+            "title": "FeedbackReply",
+            "type": "object"
+          },
+          "name": "test_evidence_feedback_reply",
+          "transform": "identity"
+        }
       ],
       "name": "test.evidence.feedback.reply",
       "outputSchema": {
@@ -6341,8 +7503,43 @@
         "title": "FeedbackEdit",
         "type": "object"
       },
-      "mcpNames": [
-        "test_evidence_feedback_edit"
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "body": {
+                "maxLength": 2000,
+                "minLength": 3,
+                "type": "string"
+              },
+              "comment_id": {
+                "type": "string"
+              },
+              "feedback_id": {
+                "type": "string"
+              },
+              "path": {
+                "type": "string"
+              },
+              "run_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "path",
+              "run_id",
+              "feedback_id",
+              "comment_id",
+              "body"
+            ],
+            "title": "FeedbackEdit",
+            "type": "object"
+          },
+          "name": "test_evidence_feedback_edit",
+          "transform": "identity"
+        }
       ],
       "name": "test.evidence.feedback.edit",
       "outputSchema": {
@@ -6778,8 +7975,46 @@
         "title": "FeedbackStateChange",
         "type": "object"
       },
-      "mcpNames": [
-        "test_evidence_feedback_state"
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$defs": {
+              "FeedbackState": {
+                "enum": [
+                  "open",
+                  "resolved"
+                ],
+                "type": "string"
+              }
+            },
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "feedback_id": {
+                "type": "string"
+              },
+              "path": {
+                "type": "string"
+              },
+              "run_id": {
+                "type": "string"
+              },
+              "state": {
+                "$ref": "#/$defs/FeedbackState"
+              }
+            },
+            "required": [
+              "path",
+              "run_id",
+              "feedback_id",
+              "state"
+            ],
+            "title": "FeedbackStateChange",
+            "type": "object"
+          },
+          "name": "test_evidence_feedback_state",
+          "transform": "identity"
+        }
       ],
       "name": "test.evidence.feedback.state",
       "outputSchema": {
@@ -7202,8 +8437,33 @@
         "title": "FeedbackDelete",
         "type": "object"
       },
-      "mcpNames": [
-        "test_evidence_feedback_delete"
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "feedback_id": {
+                "type": "string"
+              },
+              "path": {
+                "type": "string"
+              },
+              "run_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "path",
+              "run_id",
+              "feedback_id"
+            ],
+            "title": "FeedbackDelete",
+            "type": "object"
+          },
+          "name": "test_evidence_feedback_delete",
+          "transform": "identity"
+        }
       ],
       "name": "test.evidence.feedback.delete",
       "outputSchema": {
@@ -7627,8 +8887,34 @@
         "title": "StopTest",
         "type": "object"
       },
-      "mcpNames": [
-        "test_stop"
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "path": {
+                "type": "string"
+              },
+              "reason": {
+                "default": null,
+                "maxLength": 256,
+                "minLength": 3,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "path"
+            ],
+            "title": "StopTest",
+            "type": "object"
+          },
+          "name": "test_stop",
+          "transform": "identity"
+        }
       ],
       "name": "test.stop",
       "outputSchema": {
@@ -7700,8 +8986,17 @@
         "title": "Empty",
         "type": "object"
       },
-      "mcpNames": [
-        "test_list"
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "title": "Empty",
+            "type": "object"
+          },
+          "name": "test_list",
+          "transform": "identity"
+        }
       ],
       "name": "test.list",
       "outputSchema": {
@@ -8504,8 +9799,17 @@
         "title": "Empty",
         "type": "object"
       },
-      "mcpNames": [
-        "test_capacity_show"
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "title": "Empty",
+            "type": "object"
+          },
+          "name": "test_capacity_show",
+          "transform": "identity"
+        }
       ],
       "name": "test.capacity.get",
       "outputSchema": {
@@ -8678,9 +9982,50 @@
         "title": "SetCapacity",
         "type": "object"
       },
-      "mcpNames": [
-        "test_capacity_set",
-        "test_capacity_clear"
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$defs": {
+              "CapacityCap": {
+                "anyOf": [
+                  {
+                    "format": "uint16",
+                    "maximum": 65535,
+                    "minimum": 1,
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "cap": {
+                "$ref": "#/$defs/CapacityCap"
+              }
+            },
+            "required": [
+              "cap"
+            ],
+            "title": "SetCapacity",
+            "type": "object"
+          },
+          "name": "test_capacity_set",
+          "transform": "identity"
+        },
+        {
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "title": "Empty",
+            "type": "object"
+          },
+          "name": "test_capacity_clear",
+          "transform": "clear_capacity"
+        }
       ],
       "name": "test.capacity.set",
       "outputSchema": {
@@ -8839,8 +10184,26 @@
         "title": "DeploymentList",
         "type": "object"
       },
-      "mcpNames": [
-        "deployment_list"
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "path": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "title": "DeploymentList",
+            "type": "object"
+          },
+          "name": "deployment_list",
+          "transform": "identity"
+        }
       ],
       "name": "deployment.list",
       "outputSchema": {
@@ -9016,8 +10379,40 @@
         "title": "DeploymentReference",
         "type": "object"
       },
-      "mcpNames": [
-        "deployment_status"
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "deployment_id": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "name": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "path": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "title": "DeploymentReference",
+            "type": "object"
+          },
+          "name": "deployment_status",
+          "transform": "identity"
+        }
       ],
       "name": "deployment.status",
       "outputSchema": {
@@ -9420,8 +10815,53 @@
         "title": "DeploymentLogs",
         "type": "object"
       },
-      "mcpNames": [
-        "deployment_logs"
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "component": {
+                "type": "string"
+              },
+              "deployment_id": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "name": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "path": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "tail_lines": {
+                "default": 200,
+                "format": "uint16",
+                "maximum": 5000,
+                "minimum": 1,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "component"
+            ],
+            "title": "DeploymentLogs",
+            "type": "object"
+          },
+          "name": "deployment_logs",
+          "transform": "identity"
+        }
       ],
       "name": "deployment.logs",
       "outputSchema": {
@@ -9510,8 +10950,40 @@
         "title": "DeploymentReference",
         "type": "object"
       },
-      "mcpNames": [
-        "deployment_apply"
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "deployment_id": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "name": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "path": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "title": "DeploymentReference",
+            "type": "object"
+          },
+          "name": "deployment_apply",
+          "transform": "identity"
+        }
       ],
       "name": "deployment.apply",
       "outputSchema": {
@@ -9901,8 +11373,40 @@
         "title": "DeploymentReference",
         "type": "object"
       },
-      "mcpNames": [
-        "deployment_rollback"
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "deployment_id": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "name": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "path": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "title": "DeploymentReference",
+            "type": "object"
+          },
+          "name": "deployment_rollback",
+          "transform": "identity"
+        }
       ],
       "name": "deployment.rollback",
       "outputSchema": {
@@ -10299,8 +11803,47 @@
         "title": "DeploymentControl",
         "type": "object"
       },
-      "mcpNames": [
-        "deployment_start"
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "component": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "deployment_id": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "name": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "path": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "title": "DeploymentControl",
+            "type": "object"
+          },
+          "name": "deployment_start",
+          "transform": "identity"
+        }
       ],
       "name": "deployment.start",
       "outputSchema": {
@@ -10697,8 +12240,47 @@
         "title": "DeploymentControl",
         "type": "object"
       },
-      "mcpNames": [
-        "deployment_stop"
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "component": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "deployment_id": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "name": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "path": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "title": "DeploymentControl",
+            "type": "object"
+          },
+          "name": "deployment_stop",
+          "transform": "identity"
+        }
       ],
       "name": "deployment.stop",
       "outputSchema": {
@@ -11095,8 +12677,47 @@
         "title": "DeploymentControl",
         "type": "object"
       },
-      "mcpNames": [
-        "deployment_restart"
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "component": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "deployment_id": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "name": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "path": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "title": "DeploymentControl",
+            "type": "object"
+          },
+          "name": "deployment_restart",
+          "transform": "identity"
+        }
       ],
       "name": "deployment.restart",
       "outputSchema": {
@@ -11502,8 +13123,56 @@
         "title": "SetDomain",
         "type": "object"
       },
-      "mcpNames": [
-        "deployment_set_domain"
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "component": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "deployment_id": {
+                "type": "string"
+              },
+              "domain": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "port": {
+                "default": null,
+                "format": "uint16",
+                "maximum": 65535,
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "public": {
+                "default": null,
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "deployment_id"
+            ],
+            "title": "SetDomain",
+            "type": "object"
+          },
+          "name": "deployment_set_domain",
+          "transform": "identity"
+        }
       ],
       "name": "deployment.set_domain",
       "outputSchema": {
@@ -11601,7 +13270,7 @@
         "title": "RemoveDeployment",
         "type": "object"
       },
-      "mcpNames": [],
+      "mcpTools": [],
       "name": "deployment.remove",
       "outputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -11647,8 +13316,17 @@
         "title": "Empty",
         "type": "object"
       },
-      "mcpNames": [
-        "health_summary"
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "title": "Empty",
+            "type": "object"
+          },
+          "name": "health_summary",
+          "transform": "identity"
+        }
       ],
       "name": "health.summary",
       "outputSchema": {
@@ -12097,8 +13775,17 @@
         "title": "Empty",
         "type": "object"
       },
-      "mcpNames": [
-        "health_repositories"
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "title": "Empty",
+            "type": "object"
+          },
+          "name": "health_repositories",
+          "transform": "identity"
+        }
       ],
       "name": "health.repositories",
       "outputSchema": {
@@ -12608,8 +14295,26 @@
         "title": "PathOnly",
         "type": "object"
       },
-      "mcpNames": [
-        "health_repository"
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "path": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "path"
+            ],
+            "title": "PathOnly",
+            "type": "object"
+          },
+          "name": "health_repository",
+          "transform": "identity"
+        }
       ],
       "name": "health.repository",
       "outputSchema": {
@@ -12925,7 +14630,7 @@
         "title": "HealthHistory",
         "type": "object"
       },
-      "mcpNames": [],
+      "mcpTools": [],
       "name": "health.history",
       "outputSchema": {
         "$defs": {
@@ -13047,8 +14752,17 @@
         "title": "Empty",
         "type": "object"
       },
-      "mcpNames": [
-        "health_containers"
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "title": "Empty",
+            "type": "object"
+          },
+          "name": "health_containers",
+          "transform": "identity"
+        }
       ],
       "name": "health.containers",
       "outputSchema": {
@@ -13234,7 +14948,7 @@
         "title": "RemoveContainer",
         "type": "object"
       },
-      "mcpNames": [],
+      "mcpTools": [],
       "name": "health.container_remove",
       "outputSchema": {
         "$defs": {
@@ -13302,8 +15016,33 @@
         "title": "PlanReference",
         "type": "object"
       },
-      "mcpNames": [
-        "plan_overview"
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "path": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "repository_id": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "title": "PlanReference",
+            "type": "object"
+          },
+          "name": "plan_overview",
+          "transform": "identity"
+        }
       ],
       "name": "plan.overview",
       "outputSchema": {
@@ -13759,8 +15498,25 @@
         "title": "TaskHistory",
         "type": "object"
       },
-      "mcpNames": [
-        "task_history"
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "task_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "task_id"
+            ],
+            "title": "TaskHistory",
+            "type": "object"
+          },
+          "name": "task_history",
+          "transform": "identity"
+        }
       ],
       "name": "task.history",
       "outputSchema": {
@@ -14114,8 +15870,125 @@
         "title": "TaskCreate",
         "type": "object"
       },
-      "mcpNames": [
-        "task_create"
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$defs": {
+              "TaskKind": {
+                "enum": [
+                  "goal",
+                  "stub",
+                  "improvement",
+                  "user_feedback"
+                ],
+                "type": "string"
+              }
+            },
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "estimated_loc": {
+                "default": null,
+                "format": "uint32",
+                "maximum": 1000000,
+                "minimum": 1,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "impact": {
+                "default": null,
+                "maxLength": 2000,
+                "minLength": 1,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "kind": {
+                "$ref": "#/$defs/TaskKind"
+              },
+              "outcome": {
+                "default": null,
+                "maxLength": 2000,
+                "minLength": 10,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "parent_task_id": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "path": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "release_id": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "repository_id": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "technical_note": {
+                "default": null,
+                "maxLength": 4000,
+                "minLength": 1,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "title": {
+                "maxLength": 120,
+                "minLength": 3,
+                "type": "string"
+              },
+              "unblock_condition": {
+                "default": null,
+                "maxLength": 2000,
+                "minLength": 1,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "verification": {
+                "default": null,
+                "maxLength": 2000,
+                "minLength": 1,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "title",
+              "kind"
+            ],
+            "title": "TaskCreate",
+            "type": "object"
+          },
+          "name": "task_create",
+          "transform": "identity"
+        }
       ],
       "name": "task.create",
       "outputSchema": {
@@ -14366,8 +16239,141 @@
         "title": "TaskUpdate",
         "type": "object"
       },
-      "mcpNames": [
-        "task_update"
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$defs": {
+              "TaskStatus": {
+                "enum": [
+                  "planned",
+                  "in_progress",
+                  "done",
+                  "dropped"
+                ],
+                "type": "string"
+              }
+            },
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "elaboration_needed": {
+                "default": null,
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              },
+              "estimated_loc": {
+                "default": null,
+                "format": "uint32",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "impact": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "note": {
+                "default": null,
+                "maxLength": 500,
+                "minLength": 1,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "outcome": {
+                "default": null,
+                "maxLength": 2000,
+                "minLength": 10,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "parent_task_id": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "position": {
+                "default": null,
+                "format": "uint32",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "release_id": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "status": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/TaskStatus"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "task_id": {
+                "type": "string"
+              },
+              "technical_note": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "title": {
+                "default": null,
+                "maxLength": 120,
+                "minLength": 3,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "unblock_condition": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "verification": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "task_id"
+            ],
+            "title": "TaskUpdate",
+            "type": "object"
+          },
+          "name": "task_update",
+          "transform": "identity"
+        }
       ],
       "name": "task.update",
       "outputSchema": {
@@ -14571,8 +16577,72 @@
         "title": "ReleaseCreate",
         "type": "object"
       },
-      "mcpNames": [
-        "release_create"
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$defs": {
+              "ReleaseKind": {
+                "enum": [
+                  "preview",
+                  "release"
+                ],
+                "type": "string"
+              }
+            },
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "kind": {
+                "$ref": "#/$defs/ReleaseKind"
+              },
+              "name": {
+                "maxLength": 120,
+                "minLength": 3,
+                "type": "string"
+              },
+              "note": {
+                "default": null,
+                "maxLength": 500,
+                "minLength": 1,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "path": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "repository_id": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "seq": {
+                "default": null,
+                "format": "uint32",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "name",
+              "kind"
+            ],
+            "title": "ReleaseCreate",
+            "type": "object"
+          },
+          "name": "release_create",
+          "transform": "identity"
+        }
       ],
       "name": "release.create",
       "outputSchema": {
@@ -14715,7 +16785,7 @@
         "title": "ReleaseUpdate",
         "type": "object"
       },
-      "mcpNames": [],
+      "mcpTools": [],
       "name": "release.update",
       "outputSchema": {
         "$defs": {
@@ -14834,7 +16904,7 @@
         "title": "ReleaseRequest",
         "type": "object"
       },
-      "mcpNames": [],
+      "mcpTools": [],
       "name": "release.request",
       "outputSchema": {
         "$defs": {
@@ -14942,8 +17012,36 @@
         "title": "ReleaseDeliver",
         "type": "object"
       },
-      "mcpNames": [
-        "release_deliver"
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "deployment_id": {
+                "type": "string"
+              },
+              "note": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "release_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "release_id",
+              "deployment_id"
+            ],
+            "title": "ReleaseDeliver",
+            "type": "object"
+          },
+          "name": "release_deliver",
+          "transform": "identity"
+        }
       ],
       "name": "release.deliver",
       "outputSchema": {
@@ -15145,8 +17243,78 @@
         "title": "DecisionTail",
         "type": "object"
       },
-      "mcpNames": [
-        "decision_tail"
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$defs": {
+              "DecisionAspect": {
+                "enum": [
+                  "ui",
+                  "architecture",
+                  "algorithms",
+                  "business_logic",
+                  "data",
+                  "testing",
+                  "deployment",
+                  "security",
+                  "performance",
+                  "process",
+                  "other"
+                ],
+                "type": "string"
+              }
+            },
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "aspect": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/DecisionAspect"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "before_seq": {
+                "default": null,
+                "format": "uint32",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "n": {
+                "default": 10,
+                "format": "uint8",
+                "maximum": 255,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "path": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "repository_id": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "title": "DecisionTail",
+            "type": "object"
+          },
+          "name": "decision_tail",
+          "transform": "identity"
+        }
       ],
       "name": "decision.tail",
       "outputSchema": {
@@ -15428,8 +17596,77 @@
         "title": "DecisionSearch",
         "type": "object"
       },
-      "mcpNames": [
-        "decision_search"
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$defs": {
+              "DecisionAspect": {
+                "enum": [
+                  "ui",
+                  "architecture",
+                  "algorithms",
+                  "business_logic",
+                  "data",
+                  "testing",
+                  "deployment",
+                  "security",
+                  "performance",
+                  "process",
+                  "other"
+                ],
+                "type": "string"
+              }
+            },
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "aspect": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/DecisionAspect"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "n": {
+                "default": 10,
+                "format": "uint8",
+                "maximum": 255,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "path": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "query": {
+                "maxLength": 200,
+                "minLength": 1,
+                "type": "string"
+              },
+              "repository_id": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "query"
+            ],
+            "title": "DecisionSearch",
+            "type": "object"
+          },
+          "name": "decision_search",
+          "transform": "identity"
+        }
       ],
       "name": "decision.search",
       "outputSchema": {
@@ -15682,8 +17919,90 @@
         "title": "DecisionRecord",
         "type": "object"
       },
-      "mcpNames": [
-        "decision_record"
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$defs": {
+              "DecisionAspect": {
+                "enum": [
+                  "ui",
+                  "architecture",
+                  "algorithms",
+                  "business_logic",
+                  "data",
+                  "testing",
+                  "deployment",
+                  "security",
+                  "performance",
+                  "process",
+                  "other"
+                ],
+                "type": "string"
+              }
+            },
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "aspect": {
+                "$ref": "#/$defs/DecisionAspect"
+              },
+              "body": {
+                "maxLength": 4000,
+                "minLength": 10,
+                "type": "string"
+              },
+              "path": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "ref": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "repository_id": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "supersedes": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "technical_note": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "title": {
+                "maxLength": 120,
+                "minLength": 3,
+                "type": "string"
+              }
+            },
+            "required": [
+              "aspect",
+              "title",
+              "body"
+            ],
+            "title": "DecisionRecord",
+            "type": "object"
+          },
+          "name": "decision_record",
+          "transform": "identity"
+        }
       ],
       "name": "decision.record",
       "outputSchema": {
@@ -15828,8 +18147,47 @@
         "title": "DecisionSummarize",
         "type": "object"
       },
-      "mcpNames": [
-        "decision_summarize"
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "body": {
+                "maxLength": 16000,
+                "minLength": 10,
+                "type": "string"
+              },
+              "covers_through_seq": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "path": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "repository_id": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "body",
+              "covers_through_seq"
+            ],
+            "title": "DecisionSummarize",
+            "type": "object"
+          },
+          "name": "decision_summarize",
+          "transform": "identity"
+        }
       ],
       "name": "decision.summarize",
       "outputSchema": {
@@ -15954,7 +18312,7 @@
         "title": "UsageRepositories",
         "type": "object"
       },
-      "mcpNames": [],
+      "mcpTools": [],
       "name": "usage.repositories",
       "outputSchema": {
         "$defs": {
@@ -16176,7 +18534,7 @@
         "title": "UsageRepository",
         "type": "object"
       },
-      "mcpNames": [],
+      "mcpTools": [],
       "name": "usage.repository",
       "outputSchema": {
         "$defs": {
@@ -16659,7 +19017,7 @@
         "title": "Empty",
         "type": "object"
       },
-      "mcpNames": [],
+      "mcpTools": [],
       "name": "progress.repositories",
       "outputSchema": {
         "$defs": {
@@ -16796,7 +19154,7 @@
         "title": "ProgressRepository",
         "type": "object"
       },
-      "mcpNames": [],
+      "mcpTools": [],
       "name": "progress.repository",
       "outputSchema": {
         "$defs": {
@@ -17595,7 +19953,7 @@
         "title": "TelegramLink",
         "type": "object"
       },
-      "mcpNames": [],
+      "mcpTools": [],
       "name": "telegram.link",
       "outputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -17644,7 +20002,7 @@
         "title": "TelegramSubscription",
         "type": "object"
       },
-      "mcpNames": [],
+      "mcpTools": [],
       "name": "telegram.subscribe",
       "outputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -17699,7 +20057,7 @@
         "title": "TelegramSubscription",
         "type": "object"
       },
-      "mcpNames": [],
+      "mcpTools": [],
       "name": "telegram.unsubscribe",
       "outputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -17741,7 +20099,7 @@
         "title": "Empty",
         "type": "object"
       },
-      "mcpNames": [],
+      "mcpTools": [],
       "name": "telegram.list",
       "outputSchema": {
         "$defs": {
@@ -17917,8 +20275,101 @@
         "title": "BugReport",
         "type": "object"
       },
-      "mcpNames": [
-        "bug_report"
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$defs": {
+              "BugCorrelations": {
+                "additionalProperties": false,
+                "properties": {
+                  "call_id": {
+                    "default": null,
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "component": {
+                    "default": null,
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "deployment_id": {
+                    "default": null,
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "repository_id": {
+                    "default": null,
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "run_id": {
+                    "default": null,
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  }
+                },
+                "type": "object"
+              }
+            },
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "actual": {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              "component": {
+                "maxLength": 64,
+                "minLength": 1,
+                "type": "string"
+              },
+              "correlations": {
+                "$ref": "#/$defs/BugCorrelations",
+                "default": {
+                  "call_id": null,
+                  "component": null,
+                  "deployment_id": null,
+                  "repository_id": null,
+                  "run_id": null
+                }
+              },
+              "expected": {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              "steps": {
+                "maxLength": 4000,
+                "type": "string"
+              },
+              "summary": {
+                "maxLength": 200,
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "component",
+              "summary",
+              "expected",
+              "actual",
+              "steps"
+            ],
+            "title": "BugReport",
+            "type": "object"
+          },
+          "name": "bug_report",
+          "transform": "identity"
+        }
       ],
       "name": "bug.report",
       "outputSchema": {
@@ -18040,8 +20491,17 @@
         "title": "Empty",
         "type": "object"
       },
-      "mcpNames": [
-        "bug_list"
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "title": "Empty",
+            "type": "object"
+          },
+          "name": "bug_list",
+          "transform": "identity"
+        }
       ],
       "name": "bug.list",
       "outputSchema": {
@@ -18193,8 +20653,26 @@
         "title": "BugClose",
         "type": "object"
       },
-      "mcpNames": [
-        "bug_close"
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "bug_id": {
+                "pattern": "^b[0-9a-f]{12}$",
+                "type": "string"
+              }
+            },
+            "required": [
+              "bug_id"
+            ],
+            "title": "BugClose",
+            "type": "object"
+          },
+          "name": "bug_close",
+          "transform": "identity"
+        }
       ],
       "name": "bug.close",
       "outputSchema": {

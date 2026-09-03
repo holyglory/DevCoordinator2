@@ -362,9 +362,42 @@ pub struct OperationDefinition {
     pub description: &'static str,
     pub policy: OperationPolicy,
     pub mcp_names: &'static [&'static str],
+    pub mcp_overrides: &'static [McpToolOverride],
     pub input_schema: fn() -> Value,
     pub output_schema: fn() -> Value,
     pub validate_params: fn(&Value) -> Result<(), ProtocolError>,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct McpToolOverride {
+    pub name: &'static str,
+    pub input_schema: fn() -> Value,
+    pub validate_params: fn(&Value) -> Result<(), ProtocolError>,
+    pub transform: McpArgumentTransform,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum McpArgumentTransform {
+    Identity,
+    ClearCapacity,
+}
+
+impl McpArgumentTransform {
+    pub fn apply(self, params: Value) -> Value {
+        match self {
+            Self::Identity => params,
+            Self::ClearCapacity => serde_json::json!({"cap": null}),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct McpToolDefinition {
+    pub name: &'static str,
+    pub operation: &'static OperationDefinition,
+    pub input_schema: fn() -> Value,
+    pub validate_params: fn(&Value) -> Result<(), ProtocolError>,
+    pub transform: McpArgumentTransform,
 }
 
 fn schema_for<T: JsonSchema>() -> Value {
@@ -477,6 +510,7 @@ macro_rules! operation {
             description: $description,
             policy: $policy,
             mcp_names: &[$($mcp),*],
+            mcp_overrides: &[],
             input_schema: schema_for::<$input>,
             output_schema: schema_for::<$output>,
             validate_params: validate_params::<$input>,
@@ -765,14 +799,21 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         params::Empty,
         results::Capacity
     ),
-    operation!(
-        "test.capacity.set",
-        "Set or clear the validation capacity cap.",
-        REVERSIBLE_SERVER_ADMIN,
-        ["test_capacity_set", "test_capacity_clear"],
-        params::SetCapacity,
-        results::Capacity
-    ),
+    OperationDefinition {
+        name: "test.capacity.set",
+        description: "Set or clear the validation capacity cap.",
+        policy: REVERSIBLE_SERVER_ADMIN,
+        mcp_names: &["test_capacity_set"],
+        mcp_overrides: &[McpToolOverride {
+            name: "test_capacity_clear",
+            input_schema: schema_for::<params::Empty>,
+            validate_params: validate_params::<params::Empty>,
+            transform: McpArgumentTransform::ClearCapacity,
+        }],
+        input_schema: schema_for::<params::SetCapacity>,
+        output_schema: schema_for::<results::Capacity>,
+        validate_params: validate_params::<params::SetCapacity>,
+    },
     operation!(
         "deployment.list",
         "List visible deployments.",
@@ -1091,6 +1132,43 @@ pub fn operation(name: &str) -> Option<&'static OperationDefinition> {
     OPERATIONS.iter().find(|definition| definition.name == name)
 }
 
+pub fn mcp_tools() -> Vec<McpToolDefinition> {
+    let mut tools = Vec::new();
+    for operation in OPERATIONS {
+        tools.extend(
+            operation
+                .mcp_names
+                .iter()
+                .copied()
+                .map(|name| McpToolDefinition {
+                    name,
+                    operation,
+                    input_schema: operation.input_schema,
+                    validate_params: operation.validate_params,
+                    transform: McpArgumentTransform::Identity,
+                }),
+        );
+        tools.extend(
+            operation
+                .mcp_overrides
+                .iter()
+                .map(|tool| McpToolDefinition {
+                    name: tool.name,
+                    operation,
+                    input_schema: tool.input_schema,
+                    validate_params: tool.validate_params,
+                    transform: tool.transform,
+                }),
+        );
+    }
+    tools.sort_by_key(|tool| tool.name);
+    tools
+}
+
+pub fn mcp_tool(name: &str) -> Option<McpToolDefinition> {
+    mcp_tools().into_iter().find(|tool| tool.name == name)
+}
+
 pub fn parse_request(raw: &[u8]) -> Result<RequestEnvelope, ProtocolError> {
     if raw.len() > MAX_REQUEST_BYTES {
         return Err(ProtocolError::new(
@@ -1191,7 +1269,18 @@ pub fn contract_document() -> Value {
             "name": definition.name,
             "description": definition.description,
             "policy": definition.policy,
-            "mcpNames": definition.mcp_names,
+            "mcpTools": definition.mcp_names.iter().map(|name| serde_json::json!({
+                "name": name,
+                "transform": "identity",
+                "inputSchema": (definition.input_schema)()
+            })).chain(definition.mcp_overrides.iter().map(|tool| serde_json::json!({
+                "name": tool.name,
+                "transform": match tool.transform {
+                    McpArgumentTransform::Identity => "identity",
+                    McpArgumentTransform::ClearCapacity => "clear_capacity"
+                },
+                "inputSchema": (tool.input_schema)()
+            }))).collect::<Vec<_>>(),
             "inputSchema": (definition.input_schema)(),
             "outputSchema": (definition.output_schema)()
         })).collect::<Vec<_>>()
@@ -1248,12 +1337,23 @@ mod tests {
         let mut tools = std::collections::BTreeSet::new();
         for definition in OPERATIONS {
             assert!(operations.insert(definition.name), "duplicate operation");
-            for tool in definition.mcp_names {
-                assert!(tools.insert(tool), "duplicate MCP tool");
-            }
+        }
+        for tool in mcp_tools() {
+            assert!(tools.insert(tool.name), "duplicate MCP tool");
         }
         assert_eq!(OPERATIONS.len(), 75);
         assert_eq!(tools.len(), 53);
+    }
+
+    #[test]
+    fn clear_capacity_tool_has_empty_input_and_normalizes_to_null() {
+        let clear = mcp_tool("test_capacity_clear").expect("clear tool");
+        (clear.validate_params)(&serde_json::json!({})).expect("empty params");
+        assert_eq!(
+            clear.transform.apply(serde_json::json!({})),
+            serde_json::json!({"cap": null})
+        );
+        assert_eq!(clear.operation.name, "test.capacity.set");
     }
 
     #[test]

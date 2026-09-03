@@ -1,5 +1,6 @@
 //! Permanent planning ledger and release-delivery evidence.
 
+use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
 
 use devcoordinator2_api::params::{
@@ -8,9 +9,10 @@ use devcoordinator2_api::params::{
     ReleaseStatus, ReleaseUpdate, TaskCreate, TaskKind, TaskStatus, TaskUpdate,
 };
 use devcoordinator2_api::results::{
-    Decision, DecisionRecorded, DecisionSearch, DecisionSummarized, DecisionSummary, DecisionTail,
-    ElaborationRequest, PlanEvent, ReleaseDelivered, ReleaseMutation, Task, TaskCreated,
-    TaskHistory, TaskMutation,
+    CurrentReleaseSummary, Decision, DecisionRecorded, DecisionSearch, DecisionState,
+    DecisionSummarized, DecisionSummary, DecisionTail, ElaborationRequest, PlanCollection,
+    PlanDetail, PlanEvent, PlanOverview, PlanRelease, PlanRepositoryRow, PlanTask, PreviewRequest,
+    ReleaseDelivered, ReleaseMutation, Task, TaskCreated, TaskHistory, TaskMutation,
 };
 use devcoordinator2_api::{ErrorCode, ProtocolError};
 use rusqlite::OptionalExtension;
@@ -21,6 +23,7 @@ use crate::ids;
 
 const SUMMARY_DUE_THRESHOLD: u32 = 25;
 const HISTORY_EVENT_CAP: u32 = 200;
+const OVERVIEW_TASK_CAP: usize = 500;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DeliveryEvidence {
@@ -93,6 +96,28 @@ struct ReleaseRow {
     status: String,
     note: Option<String>,
     requested_at: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+struct ReleaseOverviewRow {
+    release_id: String,
+    seq: u32,
+    name: String,
+    kind: String,
+    status: String,
+    note: Option<String>,
+    requested_at: Option<String>,
+    delivered_at: Option<String>,
+    url: Option<String>,
+    port: Option<u16>,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct Aggregate {
+    tasks_total: u32,
+    tasks_done: u32,
+    loc_total: u64,
+    loc_done: u64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -265,6 +290,195 @@ impl PlanService {
             database,
             deployments,
         }
+    }
+
+    pub fn overview(&self, repository_id: Option<&str>) -> Result<PlanOverview, ProtocolError> {
+        match repository_id {
+            Some(repository_id) => self.plan_detail(repository_id).map(PlanOverview::Detail),
+            None => self.plan_collection().map(PlanOverview::Collection),
+        }
+    }
+
+    fn plan_collection(&self) -> Result<PlanCollection, ProtocolError> {
+        let repositories = self
+            .database
+            .call(|connection| {
+                let mut statement = connection.prepare(
+                    "SELECT repository_id,display_name FROM repositories WHERE archived_at IS NULL ORDER BY display_name,repository_id",
+                )?;
+                Ok(statement
+                    .query_map([], |row| {
+                        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                    })?
+                    .collect::<Result<Vec<_>, _>>()?)
+            })
+            .map_err(database_or_domain)?;
+        let mut rows = Vec::with_capacity(repositories.len());
+        for (repository_id, display_name) in repositories {
+            let repository_id_for_query = repository_id.clone();
+            let (aggregate, current_release, elaboration_request_count, preview_requested) = self
+                .database
+                .call(move |connection| {
+                    let tasks = read_tasks(connection, &repository_id_for_query, true)?;
+                    let (aggregates, _) = leaf_aggregates(&tasks);
+                    let aggregate = aggregates.values().fold(Aggregate::default(), |mut total, row| {
+                        total.tasks_total += row.tasks_total;
+                        total.tasks_done += row.tasks_done;
+                        total.loc_total += row.loc_total;
+                        total.loc_done += row.loc_done;
+                        total
+                    });
+                    let releases = read_release_overviews(connection, &repository_id_for_query)?;
+                    let current_release = releases
+                        .iter()
+                        .find(|release| matches!(release.status.as_str(), "planned" | "requested"))
+                        .or_else(|| releases.last())
+                        .map(|release| -> Result<CurrentReleaseSummary, DatabaseError> {
+                            Ok(CurrentReleaseSummary {
+                                name: release.name.clone(),
+                                kind: parse_release_kind(&release.kind)?,
+                                status: parse_release_status(&release.status)?,
+                            })
+                        })
+                        .transpose()?;
+                    let elaboration_request_count = connection.query_row(
+                        "SELECT COUNT(*) FROM tasks WHERE repository_id=?1 AND elaboration_needed=1",
+                        [&repository_id_for_query],
+                        |row| row.get::<_, u32>(0),
+                    )?;
+                    let preview_requested = connection.query_row(
+                        "SELECT EXISTS(SELECT 1 FROM releases WHERE repository_id=?1 AND status='requested')",
+                        [&repository_id_for_query],
+                        |row| row.get::<_, i64>(0),
+                    )? != 0;
+                    Ok((aggregate, current_release, elaboration_request_count, preview_requested))
+                })
+                .map_err(database_or_domain)?;
+            rows.push(PlanRepositoryRow {
+                repository_id,
+                display_name,
+                open_tasks: aggregate.tasks_total.saturating_sub(aggregate.tasks_done),
+                loc_done: aggregate.loc_done,
+                loc_total: aggregate.loc_total,
+                current_release,
+                preview_requested,
+                elaboration_request_count,
+            });
+        }
+        Ok(PlanCollection { repositories: rows })
+    }
+
+    fn plan_detail(&self, repository_id: &str) -> Result<PlanDetail, ProtocolError> {
+        let repository_id_owned = repository_id.to_owned();
+        let (display_name, archived, replacement, releases, mut tasks) = self
+            .database
+            .call(move |connection| {
+                let repository = connection
+                    .query_row(
+                        "SELECT display_name,archived_at IS NOT NULL,merged_into_repository_id FROM repositories WHERE repository_id=?1",
+                        [&repository_id_owned],
+                        |row| {
+                            Ok((
+                                row.get::<_, String>(0)?,
+                                row.get::<_, i64>(1)? != 0,
+                                row.get::<_, Option<String>>(2)?,
+                            ))
+                        },
+                    )
+                    .optional()?;
+                let Some((display_name, archived, replacement)) = repository else {
+                    return Err(domain_error(
+                        ErrorCode::RepositoryNotFound,
+                        "repository is not registered",
+                    ));
+                };
+                Ok((
+                    display_name,
+                    archived,
+                    replacement,
+                    read_release_overviews(connection, &repository_id_owned)?,
+                    read_tasks(connection, &repository_id_owned, false)?,
+                ))
+            })
+            .map_err(database_or_domain)?;
+        let (aggregates, _) = leaf_aggregates(&tasks);
+        let releases = releases
+            .into_iter()
+            .map(|release| {
+                let aggregate = aggregates
+                    .get(&Some(release.release_id.clone()))
+                    .copied()
+                    .unwrap_or_default();
+                Ok(PlanRelease {
+                    release_id: release.release_id,
+                    name: release.name,
+                    kind: parse_release_kind(&release.kind).map_err(database_or_domain)?,
+                    status: parse_release_status(&release.status).map_err(database_or_domain)?,
+                    seq: release.seq,
+                    note: release.note,
+                    requested_at: release.requested_at,
+                    delivered_at: release.delivered_at,
+                    url: release.url,
+                    port: release.port,
+                    tasks_total: aggregate.tasks_total,
+                    tasks_done: aggregate.tasks_done,
+                    loc_total: aggregate.loc_total,
+                    loc_done: aggregate.loc_done,
+                })
+            })
+            .collect::<Result<Vec<_>, ProtocolError>>()?;
+        let tasks_truncated = tasks.len() > OVERVIEW_TASK_CAP;
+        if tasks_truncated {
+            let mut open = tasks
+                .iter()
+                .filter(|task| task.status != "done")
+                .cloned()
+                .collect::<Vec<_>>();
+            let done = tasks
+                .into_iter()
+                .filter(|task| task.status == "done")
+                .collect::<Vec<_>>();
+            let remaining = OVERVIEW_TASK_CAP.saturating_sub(open.len());
+            open.extend(done.into_iter().rev().take(remaining));
+            open.sort_by_key(|task| task.seq);
+            tasks = open;
+        }
+        let tasks = tasks
+            .into_iter()
+            .map(|task| {
+                Ok(PlanTask {
+                    task_id: task.task_id,
+                    parent_task_id: task.parent_task_id,
+                    release_id: task.release_id,
+                    seq: task.seq,
+                    position: task.position,
+                    title: task.title,
+                    impact: task.impact.map(|impact| clip(&impact, 160)),
+                    status: parse_task_status(&task.status).map_err(database_or_domain)?,
+                    kind: parse_task_kind(&task.kind).map_err(database_or_domain)?,
+                    estimated_loc: task.estimated_loc,
+                    elaboration_needed: task.elaboration_needed,
+                })
+            })
+            .collect::<Result<Vec<_>, ProtocolError>>()?;
+        let repository_id = repository_id.to_owned();
+        let preview_requested = self.preview_requests(&repository_id)?;
+        let unsummarized_count = self.unsummarized_count(&repository_id)?;
+        Ok(PlanDetail {
+            repository_id: repository_id.clone(),
+            display_name,
+            archived,
+            merged_into_repository_id: replacement,
+            releases,
+            tasks,
+            tasks_truncated,
+            elaboration_requests: self.elaboration_requests(&repository_id)?,
+            preview_requested,
+            decisions: DecisionState {
+                unsummarized_count,
+                summary_due: unsummarized_count >= SUMMARY_DUE_THRESHOLD,
+            },
+        })
     }
 
     pub fn create_task(
@@ -1460,6 +1674,27 @@ impl PlanService {
             .map_err(database_or_domain)
     }
 
+    fn preview_requests(&self, repository_id: &str) -> Result<Vec<PreviewRequest>, ProtocolError> {
+        let repository_id = repository_id.to_owned();
+        self.database
+            .call(move |connection| {
+                let mut statement = connection.prepare(
+                    "SELECT release_id,name,requested_at,note FROM releases WHERE repository_id=?1 AND status='requested' ORDER BY seq",
+                )?;
+                Ok(statement
+                    .query_map([repository_id], |row| {
+                        Ok(PreviewRequest {
+                            release_id: row.get(0)?,
+                            name: row.get(1)?,
+                            requested_at: row.get(2)?,
+                            note: row.get(3)?,
+                        })
+                    })?
+                    .collect::<Result<Vec<_>, _>>()?)
+            })
+            .map_err(database_or_domain)
+    }
+
     fn repository_identity(&self, repository_id: &str) -> Result<(String, bool), ProtocolError> {
         let repository_id = repository_id.to_owned();
         self.database
@@ -1575,6 +1810,83 @@ fn decision_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Decision> {
         created_at: row.get(8)?,
         created_by: row.get(9)?,
     })
+}
+
+fn read_tasks(
+    connection: &rusqlite::Connection,
+    repository_id: &str,
+    _collection_projection: bool,
+) -> Result<Vec<TaskRow>, DatabaseError> {
+    let mut statement = connection.prepare(
+        "SELECT task_id,repository_id,parent_task_id,release_id,seq,position,title,outcome,impact,unblock_condition,verification,technical_note,kind,status,estimated_loc,elaboration_needed,created_at,created_by,updated_at FROM tasks WHERE repository_id=?1 AND status!='dropped' ORDER BY seq",
+    )?;
+    Ok(statement
+        .query_map([repository_id], task_from_row)?
+        .collect::<Result<Vec<_>, _>>()?)
+}
+
+fn read_release_overviews(
+    connection: &rusqlite::Connection,
+    repository_id: &str,
+) -> Result<Vec<ReleaseOverviewRow>, DatabaseError> {
+    let mut statement = connection.prepare(
+        "SELECT release_id,seq,name,kind,status,note,requested_at,delivered_at,url,port FROM releases WHERE repository_id=?1 AND status!='dropped' ORDER BY seq",
+    )?;
+    Ok(statement
+        .query_map([repository_id], |row| {
+            Ok(ReleaseOverviewRow {
+                release_id: row.get(0)?,
+                seq: row.get(1)?,
+                name: row.get(2)?,
+                kind: row.get(3)?,
+                status: row.get(4)?,
+                note: row.get(5)?,
+                requested_at: row.get(6)?,
+                delivered_at: row.get(7)?,
+                url: row.get(8)?,
+                port: row.get(9)?,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?)
+}
+
+fn leaf_aggregates(tasks: &[TaskRow]) -> (BTreeMap<Option<String>, Aggregate>, HashSet<String>) {
+    let parents = tasks
+        .iter()
+        .filter_map(|task| task.parent_task_id.clone())
+        .collect::<HashSet<_>>();
+    let mut aggregates = BTreeMap::new();
+    for task in tasks {
+        if parents.contains(&task.task_id) {
+            continue;
+        }
+        let aggregate = aggregates
+            .entry(task.release_id.clone())
+            .or_insert_with(Aggregate::default);
+        let lines = u64::from(task.estimated_loc.unwrap_or(0));
+        aggregate.tasks_total += 1;
+        aggregate.loc_total += lines;
+        if task.status == "done" {
+            aggregate.tasks_done += 1;
+            aggregate.loc_done += lines;
+        }
+    }
+    (aggregates, parents)
+}
+
+fn clip(value: &str, limit: usize) -> String {
+    if value.chars().count() <= limit {
+        return value.to_owned();
+    }
+    let mut clipped = value
+        .chars()
+        .take(limit.saturating_sub(1))
+        .collect::<String>();
+    while clipped.chars().last().is_some_and(char::is_whitespace) {
+        clipped.pop();
+    }
+    clipped.push('…');
+    clipped
 }
 
 fn task_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<TaskRow> {
@@ -2208,5 +2520,129 @@ mod tests {
             ]
         );
         assert!(history.elaboration_requests.is_empty());
+    }
+
+    #[test]
+    fn release_lifecycle_and_overview_use_leaf_work() {
+        let (_temporary, database, service) = world();
+        seed_repository(&database);
+        let release = service
+            .create_release(
+                "r1111111111111111",
+                ReleaseCreate {
+                    path: None,
+                    repository_id: Some("r1111111111111111".into()),
+                    name: "First release".into(),
+                    kind: ReleaseKind::Release,
+                    note: None,
+                    seq: None,
+                },
+                "uid:1000",
+                "2026-09-03T13:00:00Z",
+            )
+            .expect("release");
+        let mut parent_params = task_params("Group the export work");
+        parent_params.release_id = Some(release.release_id.clone());
+        parent_params.estimated_loc = Some(500);
+        let parent = service
+            .create_task(
+                "r1111111111111111",
+                parent_params,
+                "uid:1000",
+                "2026-09-03T13:01:00Z",
+            )
+            .expect("parent");
+        let mut leaf_params = task_params("Deliver the export file");
+        leaf_params.parent_task_id = Some(parent.task_id);
+        leaf_params.release_id = Some(release.release_id.clone());
+        leaf_params.estimated_loc = Some(120);
+        let leaf = service
+            .create_task(
+                "r1111111111111111",
+                leaf_params,
+                "uid:1000",
+                "2026-09-03T13:02:00Z",
+            )
+            .expect("leaf");
+        service
+            .update_task(
+                TaskUpdate {
+                    task_id: leaf.task_id,
+                    title: None,
+                    outcome: None,
+                    impact: None,
+                    unblock_condition: None,
+                    verification: None,
+                    technical_note: None,
+                    estimated_loc: None,
+                    status: Some(TaskStatus::Done),
+                    release_id: None,
+                    parent_task_id: None,
+                    position: None,
+                    elaboration_needed: None,
+                    note: None,
+                },
+                "uid:1000",
+                "2026-09-03T13:03:00Z",
+            )
+            .expect("complete leaf");
+        let PlanOverview::Detail(detail) =
+            service.overview(Some("r1111111111111111")).expect("detail")
+        else {
+            panic!("expected plan detail")
+        };
+        assert_eq!(detail.releases[0].loc_total, 120);
+        assert_eq!(detail.releases[0].loc_done, 120);
+        assert_eq!(detail.releases[0].tasks_total, 1);
+
+        let updated = service
+            .update_release(
+                ReleaseUpdate {
+                    release_id: release.release_id.clone(),
+                    name: Some("Renamed release".into()),
+                    seq: Some(2),
+                    note: Some("Owner-visible release note".into()),
+                    status: None,
+                },
+                "uid:1000",
+                "2026-09-03T13:04:00Z",
+            )
+            .expect("update release");
+        assert_eq!((updated.name.as_str(), updated.seq), ("Renamed release", 2));
+        let preview = service
+            .request_release(
+                "r1111111111111111",
+                ReleaseRequest {
+                    path: None,
+                    repository_id: Some("r1111111111111111".into()),
+                    name: None,
+                    note: None,
+                },
+                "uid:1000",
+                "2026-09-03T13:05:00Z",
+            )
+            .expect("preview request");
+        assert_eq!(preview.status, ReleaseStatus::Requested);
+        assert!(
+            service
+                .request_release(
+                    "r1111111111111111",
+                    ReleaseRequest {
+                        path: None,
+                        repository_id: Some("r1111111111111111".into()),
+                        name: None,
+                        note: None,
+                    },
+                    "uid:1000",
+                    "2026-09-03T13:06:00Z",
+                )
+                .is_err()
+        );
+        let PlanOverview::Collection(collection) = service.overview(None).expect("collection")
+        else {
+            panic!("expected collection")
+        };
+        assert_eq!(collection.repositories[0].loc_total, 120);
+        assert!(collection.repositories[0].preview_requested);
     }
 }

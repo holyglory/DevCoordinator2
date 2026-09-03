@@ -1232,6 +1232,13 @@ mod tests {
 
         let non_repository = fixture._temporary.path().join("not-a-repository");
         std::fs::create_dir(&non_repository).expect("non-repository");
+        // Stop Git discovery at the fixture even when the test temporary
+        // directory itself lives beneath a real checkout.
+        std::fs::write(
+            non_repository.join(".git"),
+            "gitdir: /devcoordinator2-test/nonexistent\n",
+        )
+        .expect("invalid git boundary");
         let missing = fixture
             .registry
             .register(&non_repository, uid, gid)

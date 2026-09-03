@@ -1,5 +1,7 @@
 use std::path::Path;
 
+pub mod python_guard;
+
 pub fn export_contract(path: &Path, check: bool) -> Result<(), String> {
     let document = devcoordinator2_api::contract_document();
     let mut rendered =

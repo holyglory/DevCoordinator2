@@ -2,7 +2,7 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand, ValueEnum};
 use devcoordinator2_api::{ClientContext, ClientKind, ResponseEnvelope};
-use devcoordinator2_control::{client, config::Config, daemon};
+use devcoordinator2_control::{client, config::Config, daemon, mcp};
 use tokio::sync::watch;
 
 #[derive(Debug, Parser)]
@@ -78,10 +78,13 @@ async fn main() -> ExitCode {
     };
     match cli.command {
         Command::Daemon => run_daemon(&config).await,
-        Command::Mcp => {
-            eprintln!("MCP protocol-2 adapter is not available in this checkpoint");
-            ExitCode::from(2)
-        }
+        Command::Mcp => match mcp::run_stdio(config.socket_path.clone()).await {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("MCP server failed: {error}");
+                ExitCode::from(2)
+            }
+        },
         Command::Ping => {
             let context = ClientContext {
                 kind: cli.client.into(),
