@@ -2266,31 +2266,46 @@ function progressBucketLabel(ms, period) {
   ];
 }
 
-function progressBarLineLane(data, { key, cumulativeKey, label, detail, cls, format }) {
+function progressBarLineLane(data, {
+  key, incomingKey, cumulativeKey, label, completedLabel, incomingLabel,
+  detail, cls, format,
+}) {
   const series = progressChartValues(data);
   const width = Math.max(760, 235 + series.length * 48);
-  const height = 136; const left = 168; const right = 92;
-  const top = 20; const bottom = 42; const plotHeight = height - top - bottom;
+  const height = 174; const left = 168; const right = 104;
+  const top = 18; const bottom = 40; const baseline = 76;
   const chartWidth = width - left - right; const step = chartWidth / Math.max(1, series.length);
   const center = (index) => left + step * (index + .5);
   const values = series.map((point) => Number(point[key] || 0));
+  const incoming = series.map((point) => Number(point[incomingKey] || 0));
   const cumulative = series.map((point) => Number(point[cumulativeKey] || 0));
-  const dailyMax = Math.max(...values, 1); const cumulativeMax = Math.max(...cumulative, 1);
-  const barY = (value) => top + plotHeight - (value / dailyMax) * (plotHeight - 14);
-  const lineY = (value) => top + plotHeight - (value / cumulativeMax) * (plotHeight - 14);
+  const completedMax = Math.max(...values, 1); const incomingMax = Math.max(...incoming, 1);
+  const cumulativeMax = Math.max(...cumulative, 1);
+  const barY = (value) => baseline - (value / completedMax) * (baseline - top - 14);
+  const incomingHeight = (value) => (value / incomingMax) * (height - bottom - baseline - 14);
+  const lineY = (value) => baseline - (value / cumulativeMax) * (baseline - top - 14);
   const barWidth = Math.max(7, Math.min(28, step * .48));
   const bars = values.map((value, index) => {
     if (!value) return '';
     const y = barY(value);
-    return `<rect x="${(center(index) - barWidth / 2).toFixed(1)}" y="${y.toFixed(1)}" width="${barWidth.toFixed(1)}" height="${(top + plotHeight - y).toFixed(1)}" rx="2" class="progress-bar progress-bar-${cls}"><title>${esc(`${label} that bucket: ${format(value)} · ${utcBucket(series[index].bucket_start_ms, true)} UTC`)}</title></rect>`;
+    return `<rect x="${(center(index) - barWidth / 2).toFixed(1)}" y="${y.toFixed(1)}" width="${barWidth.toFixed(1)}" height="${(baseline - y).toFixed(1)}" rx="2" class="progress-bar progress-completed-bar progress-bar-${cls}"><title>${esc(`${completedLabel} that bucket: ${format(value)} · ${utcBucket(series[index].bucket_start_ms, true)} UTC`)}</title></rect>`;
+  }).join('');
+  const incomingBars = incoming.map((value, index) => {
+    if (!value) return '';
+    return `<rect x="${(center(index) - barWidth / 2).toFixed(1)}" y="${baseline}" width="${barWidth.toFixed(1)}" height="${incomingHeight(value).toFixed(1)}" rx="2" class="progress-bar progress-incoming-bar progress-incoming-${cls}"><title>${esc(`${incomingLabel} that bucket: ${format(value)} · ${utcBucket(series[index].bucket_start_ms, true)} UTC`)}</title></rect>`;
   }).join('');
   const barLabels = values.map((value, index) => {
     if (!value) return '';
     const y = barY(value);
     return `<text x="${center(index).toFixed(1)}" y="${Math.max(top + 9, y - 5).toFixed(1)}" text-anchor="middle" class="progress-bar-value">${esc(format(value))}</text>`;
   }).join('');
+  const incomingLabels = incoming.map((value, index) => {
+    if (!value) return '';
+    const y = Math.min(height - bottom - 2, baseline + incomingHeight(value) + 11);
+    return `<text x="${center(index).toFixed(1)}" y="${y.toFixed(1)}" text-anchor="middle" class="progress-bar-value progress-incoming-value">${esc(format(value))}</text>`;
+  }).join('');
   const linePoints = cumulative.map((value, index) => `${center(index).toFixed(1)},${lineY(value).toFixed(1)}`);
-  const dots = cumulative.map((value, index) => `<circle cx="${center(index).toFixed(1)}" cy="${lineY(value).toFixed(1)}" r="3" class="progress-running-dot progress-running-${cls}"><title>${esc(`${label} running total: ${format(value)} · ${utcBucket(series[index].bucket_start_ms, true)} UTC`)}</title></circle>`).join('');
+  const dots = cumulative.map((value, index) => `<circle cx="${center(index).toFixed(1)}" cy="${lineY(value).toFixed(1)}" r="3" class="progress-running-dot progress-running-${cls}"><title>${esc(`${completedLabel} running total: ${format(value)} · ${utcBucket(series[index].bucket_start_ms, true)} UTC`)}</title></circle>`).join('');
   const every = Math.max(1, Math.ceil(series.length / 8));
   const labels = series.map((point, index) => {
     if (index % every && index !== series.length - 1) return '';
@@ -2299,8 +2314,11 @@ function progressBarLineLane(data, { key, cumulativeKey, label, detail, cls, for
     return `<text x="${centerX}" y="${height - (parts.length > 1 ? 24 : 14)}" text-anchor="middle">${parts.map((part, partIndex) => `<tspan x="${centerX}" dy="${partIndex ? 12 : 0}">${esc(part)}</tspan>`).join('')}</text>`;
   }).join('');
   const total = cumulative.at(-1) || 0;
-  const empty = total ? '' : `<text x="${left + chartWidth / 2}" y="${top + plotHeight / 2}" text-anchor="middle" class="progress-chart-empty">No ${esc(label.toLowerCase())} in this period</text>`;
-  return `<svg class="progress-pulse-chart progress-bar-line-chart" viewBox="0 0 ${width} ${height}" role="img" aria-label="${esc(label)} by ${esc(data.period)} with running total"><title>${esc(label)} by ${esc(data.period)}</title><desc>Bars show finished work in each bucket. The thin line shows the running total. Exact values follow the chart.</desc><line x1="${left}" x2="${width - right}" y1="${top + plotHeight}" y2="${top + plotHeight}" class="progress-grid-h"/><text x="14" y="${top + 16}" class="progress-lane-title">${esc(label)}</text><text x="14" y="${top + 38}" class="progress-lane-detail">${esc(detail)}</text><text x="${width - 10}" y="${top + 28}" text-anchor="end" class="progress-lane-value progress-running-${cls}">${esc(format(total))}</text><text x="${width - 10}" y="${top + 46}" text-anchor="end" class="progress-lane-detail">total</text><polyline points="${linePoints.join(' ')}" class="progress-running-line progress-running-${cls}"/>${dots}${bars}${barLabels}${empty}${labels}</svg>`;
+  const incomingTotal = incoming.reduce((sum, value) => sum + value, 0);
+  const completedVerb = completedLabel.split(' ').at(-1).toLowerCase();
+  const incomingVerb = incomingLabel.split(' ').at(-1).toLowerCase();
+  const empty = total || incomingTotal ? '' : `<text x="${left + chartWidth / 2}" y="${baseline - 8}" text-anchor="middle" class="progress-chart-empty">No recorded movement in this period</text>`;
+  return `<svg class="progress-pulse-chart progress-bar-line-chart" viewBox="0 0 ${width} ${height}" role="img" aria-label="${esc(label)} by ${esc(data.period)}: completed above the baseline, ${esc(incomingLabel.toLowerCase())} below, with completed running total"><title>${esc(label)} by ${esc(data.period)}</title><desc>Solid bars above the baseline show completed work. Outlined bars below show incoming work. The thin line shows the completed running total. Exact values follow the chart.</desc><line x1="${left}" x2="${width - right}" y1="${baseline}" y2="${baseline}" class="progress-grid-h progress-zero-line"/><text x="14" y="${top + 14}" class="progress-lane-title">${esc(label)}</text><text x="14" y="${top + 34}" class="progress-lane-detail">${esc(detail)}</text><text x="${width - 10}" y="${top + 22}" text-anchor="end" class="progress-lane-value progress-running-${cls}">${esc(format(total))}</text><text x="${width - 10}" y="${top + 38}" text-anchor="end" class="progress-lane-detail">${esc(completedVerb)}</text><text x="${width - 10}" y="${baseline + 24}" text-anchor="end" class="progress-lane-value progress-incoming-${cls}">${esc(format(incomingTotal))}</text><text x="${width - 10}" y="${baseline + 40}" text-anchor="end" class="progress-lane-detail">${esc(incomingVerb)}</text><polyline points="${linePoints.join(' ')}" class="progress-running-line progress-running-${cls}"/>${dots}${bars}${incomingBars}${barLabels}${incomingLabels}${empty}${labels}</svg>`;
 }
 
 function progressEvidenceLane(data, { key, label, detail, cls, format, fixedMax = null }) {
@@ -2326,7 +2344,7 @@ function progressEvidenceLane(data, { key, label, detail, cls, format, fixedMax 
 
 function progressPulseChart(data) {
   if (!data.series.length) return stateBlock('empty', 'No progress buckets in this period.');
-  return `<div class="progress-chart-scroll" tabindex="0" aria-label="Scrollable daily progress charts"><div class="progress-chart-canvas"><div class="progress-chart-legend"><span><i class="progress-legend-bar" aria-hidden="true"></i>Green = tasks finished</span><span><i class="progress-legend-bar progress-legend-lines" aria-hidden="true"></i>Blue = planned lines completed</span><span>Bars = finished that ${esc(data.period)}</span><span><i class="progress-legend-line" aria-hidden="true"></i>Line = total during this period</span></div>${progressBarLineLane(data, { key: 'tasks_completed', cumulativeKey: 'tasks_cumulative', label: 'Tasks finished', detail: 'Recorded completed tasks', cls: 'tasks', format: compactNumber })}${progressBarLineLane(data, { key: 'planned_lines_completed', cumulativeKey: 'lines_cumulative', label: 'Planned lines completed', detail: 'Current task estimates', cls: 'lines', format: compactNumber })}${progressEvidenceLane(data, { key: 'test_pass_rate', label: 'Test pass rate', detail: 'Recorded terminal runs', cls: 'tests', format: progressPercent, fixedMax: 1 })}${progressEvidenceLane(data, { key: 'total_tokens', label: 'Token use', detail: 'Provider total tokens', cls: 'tokens', format: compactNumber })}<p class="progress-missing-note">Missing information stays blank and is never counted as zero.</p></div></div>`;
+  return `<div class="progress-chart-scroll" tabindex="0" aria-label="Scrollable daily progress charts"><div class="progress-chart-canvas"><div class="progress-chart-legend"><span><i class="progress-legend-bar" aria-hidden="true"></i>Green = tasks</span><span><i class="progress-legend-bar progress-legend-lines" aria-hidden="true"></i>Blue = planned lines</span><span><i class="progress-legend-bar progress-legend-incoming" aria-hidden="true"></i>Solid above = completed · outlined below = incoming</span><span><i class="progress-legend-line" aria-hidden="true"></i>Line = completed running total</span></div>${progressBarLineLane(data, { key: 'tasks_completed', incomingKey: 'tasks_created', cumulativeKey: 'tasks_cumulative', label: 'Tasks finished and created', completedLabel: 'Tasks finished', incomingLabel: 'Tasks created', detail: 'Finished above · created below', cls: 'tasks', format: compactNumber })}${progressBarLineLane(data, { key: 'planned_lines_completed', incomingKey: 'planned_lines_added', cumulativeKey: 'lines_cumulative', label: 'Planned lines completed and added', completedLabel: 'Planned lines completed', incomingLabel: 'Planned lines added', detail: 'Completed above · added below', cls: 'lines', format: compactNumber })}${progressEvidenceLane(data, { key: 'test_pass_rate', label: 'Test pass rate', detail: 'Recorded terminal runs', cls: 'tests', format: progressPercent, fixedMax: 1 })}${progressEvidenceLane(data, { key: 'total_tokens', label: 'Token use', detail: 'Provider total tokens', cls: 'tokens', format: compactNumber })}<p class="progress-missing-note">Missing information stays blank and is never counted as zero.</p></div></div>`;
 }
 
 function progressReleaseWork(data, repositoryId) {
@@ -2346,14 +2364,16 @@ function progressComparison(data) {
   const current = data.comparison.current; const previous = data.comparison.previous;
   const items = [
     ['Tasks completed', compactNumber(current.tasks_completed), compactNumber(previous.tasks_completed), progressDelta(current.tasks_completed, previous.tasks_completed)],
+    ['Tasks created', compactNumber(current.tasks_created), compactNumber(previous.tasks_created), progressDelta(current.tasks_created, previous.tasks_created, { lowerIsBetter: true })],
     ['Planned lines completed', compactNumber(current.planned_lines_completed), compactNumber(previous.planned_lines_completed), progressDelta(current.planned_lines_completed, previous.planned_lines_completed)],
+    ['Planned lines added', compactNumber(current.planned_lines_added), compactNumber(previous.planned_lines_added), progressDelta(current.planned_lines_added, previous.planned_lines_added, { lowerIsBetter: true })],
   ];
   const previousRange = `${progressDate(data.window.comparison_start_ms)} – ${progressDate(data.window.start_ms - 1, true)}`;
   return `<section class="progress-comparison" aria-labelledby="progress-comparison-title"><h2 id="progress-comparison-title">Compared with the previous matching period (${esc(previousRange)})</h2><div>${items.map(([label, now, before, delta]) => `<article><span>${esc(label)}</span><strong>${esc(now)}</strong><small>Previous ${esc(before)}</small>${delta}</article>`).join('')}</div></section>`;
 }
 
 function progressExactTable(data) {
-  return `<details class="progress-exact"><summary>Exact values and counting method</summary><div class="tablewrap"><table><thead><tr><th>UTC bucket</th><th>Tasks done</th><th>Planned lines done</th><th>Tests</th><th>Pass rate</th><th>Total tokens</th><th>Token data</th></tr></thead><tbody>${data.series.map((point) => `<tr><td>${esc(utcBucket(point.bucket_start_ms, true))}</td><td>${point.tasks_completed}</td><td>${Number(point.planned_lines_completed).toLocaleString('en-US')}</td><td>${point.test_runs}</td><td>${point.test_pass_rate == null ? '—' : progressPercent(point.test_pass_rate)}</td><td>${point.total_tokens == null ? '—' : Number(point.total_tokens).toLocaleString('en-US')}</td><td>${esc(bucketDataStatus(point.token_coverage))}</td></tr>`).join('')}</tbody></table></div><p>${esc(data.semantics.lines)}. ${esc(data.semantics.tests)}. ${esc(data.semantics.tokens)}. ${esc(data.semantics.forecast)}.</p></details>`;
+  return `<details class="progress-exact"><summary>Exact values and counting method</summary><div class="tablewrap"><table><thead><tr><th>UTC bucket</th><th>Tasks done</th><th>Tasks created</th><th>Planned lines done</th><th>Planned lines added</th><th>Tests</th><th>Pass rate</th><th>Total tokens</th><th>Token data</th></tr></thead><tbody>${data.series.map((point) => `<tr><td>${esc(utcBucket(point.bucket_start_ms, true))}</td><td>${point.tasks_completed}</td><td>${point.tasks_created}</td><td>${Number(point.planned_lines_completed).toLocaleString('en-US')}</td><td>${Number(point.planned_lines_added).toLocaleString('en-US')}</td><td>${point.test_runs}</td><td>${point.test_pass_rate == null ? '—' : progressPercent(point.test_pass_rate)}</td><td>${point.total_tokens == null ? '—' : Number(point.total_tokens).toLocaleString('en-US')}</td><td>${esc(bucketDataStatus(point.token_coverage))}</td></tr>`).join('')}</tbody></table></div><p>${esc(data.semantics.lines)}. Planned lines added means ${esc(data.semantics.lines_added)}. ${esc(data.semantics.tests)}. ${esc(data.semantics.tokens)}. ${esc(data.semantics.forecast)}.</p></details>`;
 }
 
 function renderProgressDashboard(data, projects, repositoryId) {

@@ -198,7 +198,7 @@ explicit permission-denied notice instead of partial data.
 | Health container inventory / unhealthy deployment details | — (real hash links) | opens the Containers or exact deployment destination; Back/Health returns to the same Health context |
 | Codex Usage repository selection and range (24h/7d/30d) | `usage.repositories {range}` / `usage.repository {repository_id, range}` | repository heading, totals, phase chart, exact table, and data-completeness explanation re-render from canonical reads |
 | Codex Usage completeness hint | — (client-side) | opens the full environment and excluded-not-zero explanation in a labelled DOM pop-up; Escape, focus departure, outside click, or the toggle closes it |
-| Progress period (Hour/Day/Week) | `progress.repository {repository_id, period}` | daily bars, running totals, test/token evidence, forecast quality, Plan-ordered work, comparison totals, and exact values re-render from one bounded report |
+| Progress period (Hour/Day/Week) | `progress.repository {repository_id, period}` | completed bars above the baseline, newly added work below it, completion running totals, test/token evidence, forecast quality, Plan-ordered work, comparison totals, and exact values re-render from one bounded report |
 | Select release work | — (client-side) | only row selection and the Plan-continuation target change; the workspace node, scroll, focus, task order, and release scope remain unchanged |
 | Open selected in plan | — (real hash navigation with local task continuation) | opens the same repository Plan with the exact selected task highlighted |
 | Progress exact values disclosure | — (client-side) | exposes every visible bucket value, coverage status, and counting method without hover |

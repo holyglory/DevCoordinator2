@@ -405,7 +405,8 @@ Deduplicated while active; one recovery each.
   buckets; each response also compares the immediately preceding matching
   period.
 - The result carries `series` buckets with task completions/arrivals/reopens,
-  current planned lines completed and scope movement, terminal test counts and
+  current planned lines completed, planned lines added, and net scope movement,
+  terminal test counts and
   pass rate, provider `total_tokens`, and per-bucket token coverage. It also
   carries current/previous totals, current scope, source-specific coverage,
   a deterministic release forecast, open release work in depth-first Plan
@@ -415,8 +416,11 @@ Deduplicated while active; one recovery each.
   deliberately renders only title, status, estimate, elaboration, and a simple
   reopened state; full raw planning/event prose remains outside that surface.
 - “Planned lines completed” means the current estimates attached to tasks whose
-  permanent status event reached `done`; it is not measured Git churn. Test
-  history is bounded repository-local terminal metadata. Missing histories,
+  permanent status event reached `done`; it is not measured Git churn.
+  “Planned lines added” means initial task estimates plus later estimate
+  increases; estimate reductions and dropped work remain part of net scope
+  movement but are not presented as incoming work. Test history is bounded
+  repository-local terminal metadata. Missing histories,
   unestimated tasks, no release, zero pace, and missing target dates remain
   explicit. The response does not infer priority, dependency, impact days, or
   an ordering scenario from those facts.
