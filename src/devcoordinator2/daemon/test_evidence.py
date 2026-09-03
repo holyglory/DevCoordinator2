@@ -800,6 +800,10 @@ class TestEvidenceService:
 
     def summary(self, path: Path, run_id: Any, caller) -> dict[str, Any]:
         worktree, _repository_id, _worktree_id = self._resolve(path, caller)
+        return self.summary_registered(worktree, run_id)
+
+    def summary_registered(self, worktree: Path, run_id: Any) -> dict[str, Any]:
+        """Summarize a lifecycle-owned current run without repeating Git discovery."""
         run = _safe_name(run_id, _RUN_RE, "run_id")
         bundles, images, issues = self._load(worktree, run)
         return {

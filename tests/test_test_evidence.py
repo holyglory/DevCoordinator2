@@ -470,6 +470,9 @@ def test_test_list_includes_bounded_visual_evidence_availability(world):
                 }
             ]
 
+    world.service.summary = lambda *_args: pytest.fail(
+        "test.list must not repeat caller worktree discovery"
+    )
     handlers = build_handlers(
         world.config,
         world.registry,

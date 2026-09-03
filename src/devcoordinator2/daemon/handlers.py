@@ -193,8 +193,8 @@ def build_handlers(config: InstanceConfig, registry: Registry,
             if test_evidence is not None:
                 for run in runs:
                     try:
-                        run["visual_evidence"] = test_evidence.summary(
-                            Path(run["worktree_path"]), run["run_id"], caller
+                        run["visual_evidence"] = test_evidence.summary_registered(
+                            Path(run["worktree_path"]), run["run_id"]
                         )
                     except ProtocolError as exc:
                         run["visual_evidence"] = {
