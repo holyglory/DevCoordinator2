@@ -45,6 +45,8 @@ const state = {
   evidenceSelectedFeedbackId: null,
   evidenceImageUrls: new Map(),
   evidenceImagePromises: new Map(),
+  collapsedDeploymentRepositories: new Set(),
+  collapsedDeployments: new Set(),
 };
 const RANGES = {
   '1h': { minutes: 60, points: 60 },
@@ -372,11 +374,12 @@ function dashboardLink(label, href, repositoryName) {
   return `<a class="deployment-summary-link" href="${esc(href)}" aria-label="${esc(`${label} for ${repositoryName}`)}"><span>${esc(label)}</span>${planIcon('arrow-right')}</a>`;
 }
 
-function deploymentSummaryItem({ label, value, note = '', kind = '', href = '', link, repositoryName }) {
+function deploymentSummaryItem({ label, value, note = '', facts = [], kind = '', href = '', link, repositoryName }) {
   return `<div class="deployment-summary-item" data-summary="${esc(label.toLowerCase().replaceAll(' ', '-'))}">
     <span class="deployment-summary-label">${esc(label)}</span>
     <strong class="deployment-summary-value ${esc(kind)}">${esc(value)}</strong>
     ${note ? `<small>${esc(note)}</small>` : ''}
+    ${facts.length ? `<dl class="deployment-summary-facts">${facts.map(([name, fact]) => `<div><dt>${esc(name)}</dt><dd>${esc(fact)}</dd></div>`).join('')}</dl>` : ''}
     ${dashboardLink(link, href, repositoryName)}
   </div>`;
 }
@@ -387,13 +390,16 @@ function deploymentRecord(deployment, admin) {
   const domain = deployment.domain ? esc(deployment.domain) : '<span class="muted">—</span>';
   const stateKind = ['degraded', 'failed'].includes(deployment.state)
     || deployment.health === 'unhealthy' ? 'attention' : deployment.state === 'applying' ? 'applying' : 'normal';
-  return `<article class="deployment-record ${stateKind}" data-deployment-id="${esc(deployment.deployment_id)}">
+  const collapsed = state.collapsedDeployments.has(deployment.deployment_id);
+  const bodyId = `deployment-record-body-${deployment.deployment_id}`;
+  return `<article class="deployment-record ${stateKind}${collapsed ? ' collapsed' : ''}" data-deployment-id="${esc(deployment.deployment_id)}">
     <div class="deployment-record-identity">
-      <a href="#/deployments/${esc(deployment.deployment_id)}"><strong>${esc(deployment.name)}@${esc(deployment.source)}</strong></a>
+      <div class="deployment-record-title"><a href="#/deployments/${esc(deployment.deployment_id)}"><strong>${esc(deployment.name)}@${esc(deployment.source)}</strong></a>
+        <button class="deployment-collapse-toggle deployment-record-toggle" type="button" data-deployment-toggle="${esc(deployment.deployment_id)}" data-ui-continuation-anchor aria-expanded="${!collapsed}" aria-controls="${esc(bodyId)}" aria-label="${collapsed ? 'Expand' : 'Collapse'} ${esc(deployment.name)} deployment">${planIcon(collapsed ? 'chevron-right' : 'chevron-down')}</button></div>
       <span class="muted mono">${esc(deployment.deployment_id)}</span>
     </div>
     <div class="deployment-record-status" aria-label="Deployment status">${badge(deployment.state)} ${health} ${deployment.observed_only ? badge('observed') : ''}</div>
-    <dl class="deployment-record-facts deployment-record-endpoint">
+    <div class="deployment-record-body" id="${esc(bodyId)}"${collapsed ? ' hidden' : ''}><dl class="deployment-record-facts deployment-record-endpoint">
       <div><dt>Domain</dt><dd><span class="deployment-domain">${domain}</span>${admin ? ` <button class="btn btn-small deployment-domain-edit" data-edit-domain="${esc(deployment.deployment_id)}" aria-label="Edit domain for ${esc(deployment.name)}@${esc(deployment.source)}">edit</button>` : ''}</dd></div>
       <div><dt>Port</dt><dd>${deployment.route_port ?? '—'}</dd></div>
     </dl>
@@ -402,8 +408,14 @@ function deploymentRecord(deployment, admin) {
       <div><dt>Updated</dt><dd>${ago(deployment.updated_at)}</dd></div>
     </dl>
     <div class="deployment-record-actions"><span>Actions</span><div class="actions">${lifecycleButtons(deployment.deployment_id, null, 'btn btn-small', deployment.state)}
-      ${!deployment.observed_only && admin ? `<button class="btn btn-small" data-cmd="deployment.apply" data-args='${esc(JSON.stringify({ deployment_id: deployment.deployment_id }))}'${deployment.state === 'applying' ? ' disabled aria-disabled="true" title="Apply already in progress"' : ''}>apply</button>` : ''}</div></div>
+      ${!deployment.observed_only && admin ? `<button class="btn btn-small" data-cmd="deployment.apply" data-args='${esc(JSON.stringify({ deployment_id: deployment.deployment_id }))}'${deployment.state === 'applying' ? ' disabled aria-disabled="true" title="Apply already in progress"' : ''}>apply</button>` : ''}</div></div></div>
   </article>`;
+}
+
+function dashboardTestElapsed(test) {
+  if (test.duration_seconds != null) return durationMs(Number(test.duration_seconds) * 1000);
+  const started = Date.parse(test.started_at || '');
+  return test.status === 'running' && Number.isFinite(started) ? durationMs(Date.now() - started) : '—';
 }
 
 function repositoryDashboardSection(group, sources, decisions, admin, index) {
@@ -439,24 +451,38 @@ function repositoryDashboardSection(group, sources, decisions, admin, index) {
   } else if (usage?.coverage) usageValue = coverageText(usage.coverage, true);
   else if (sources.usage.error) usageValue = 'Usage unavailable';
 
-  let testValue = 'No current run'; let testKind = '';
+  let testValue = 'No current run'; let testNote = ''; let testFacts = []; let testKind = '';
   if (!canReadTests) testValue = 'Administrator access required';
   else if (sources.tests.error) testValue = 'Tests unavailable';
   else if (tests.length) {
     const test = tests.find((run) => run.status === 'running')
       || tests.find((run) => ['failed', 'timed-out', 'interrupted'].includes(run.status)) || tests[0];
     testValue = `${test.test} · ${test.status}`;
+    testNote = `${test.readiness_eligible ? 'Readiness proof' : 'Diagnostic run'} · started ${ago(test.started_at)}`;
+    const outputObserved = test.stdout_bytes_observed == null && test.stderr_bytes_observed == null
+      ? null : Number(test.stdout_bytes_observed || 0) + Number(test.stderr_bytes_observed || 0);
+    testFacts = [
+      ['Tier', testTierLabel(test.requested_tier)],
+      ['Elapsed', dashboardTestElapsed(test)],
+      ['Output', outputObserved == null ? '—' : bytes(outputObserved)],
+    ];
     testKind = test.status === 'running' || test.status === 'passed' ? 'ok'
       : ['failed', 'timed-out'].includes(test.status) ? 'bad' : 'warn';
   }
 
-  let healthValue = 'No health record'; let healthKind = '';
+  let healthValue = 'No health record'; let healthFacts = []; let healthKind = '';
   if (sources.healthResult.error) healthValue = 'Health unavailable';
   else if (health) {
     const healthName = health.health === 'healthy' && deployments.length === 1
       ? 'Deployment healthy'
       : health.health && health.health !== 'none' ? healthLabel(health.health, {}) : 'No incidents recorded';
     healthValue = `${healthName}${health.health === 'healthy' || health.cpu_percent == null ? '' : ` · CPU ${pct(health.cpu_percent)}`}`;
+    healthFacts = [
+      ['CPU', pct(health.cpu_percent)],
+      ['Memory', bytes(health.memory_bytes)],
+      ['Storage', bytes(health.storage_bytes)],
+      ['Deployments', String(health.deployments?.length ?? deployments.length)],
+    ];
     healthKind = health.health === 'unhealthy' ? 'bad' : health.health === 'healthy' ? 'ok' : '';
   }
 
@@ -474,22 +500,52 @@ function repositoryDashboardSection(group, sources, decisions, admin, index) {
     deploymentSummaryItem({ label: 'Plan', value: planValue, href: planHref, link: 'Open Plan', repositoryName }),
     deploymentSummaryItem({ label: 'Progress', value: progressValue, href: progressHref, link: 'Open Progress', repositoryName }),
     deploymentSummaryItem({ label: 'Usage · 24h', value: usageValue, note: usageNote, href: usageHref, link: 'Open Codex Usage', repositoryName }),
-    deploymentSummaryItem({ label: 'Tests', value: testValue, kind: testKind, href: canReadTests ? '#/tests' : '', link: `Open Tests (${repositoryName})`, repositoryName }),
-    deploymentSummaryItem({ label: 'Health', value: healthValue, kind: healthKind, href: '#/health', link: `Open Health (${repositoryName})`, repositoryName }),
+    deploymentSummaryItem({ label: 'Tests', value: testValue, note: testNote, facts: testFacts, kind: testKind, href: canReadTests ? '#/tests' : '', link: `Open Tests (${repositoryName})`, repositoryName }),
+    deploymentSummaryItem({ label: 'Health', value: healthValue, facts: healthFacts, kind: healthKind, href: '#/health', link: `Open Health (${repositoryName})`, repositoryName }),
     deploymentSummaryItem({ label: 'Latest decision', value: decisionValue, note: decisionNote, href: decisionsHref, link: `Open Decisions (${repositoryName})`, repositoryName }),
   ].join('');
   const titleId = `deployment-repository-${index}`;
+  const bodyId = `deployment-repository-body-${index}`;
+  const collapseKey = repositoryId || `unattributed:${deployments[0]?.deployment_id || index}`;
+  const collapsed = state.collapsedDeploymentRepositories.has(collapseKey);
   const count = deployments.length;
-  return `<section class="deployment-repository" data-repository-id="${esc(repositoryId)}" aria-labelledby="${titleId}">
+  return `<section class="deployment-repository${collapsed ? ' collapsed' : ''}" data-repository-id="${esc(repositoryId)}" aria-labelledby="${titleId}">
     <header class="deployment-repository-head">
       <h2 id="${titleId}">${esc(repositoryName)}</h2>
       ${repositoryId ? `<span class="muted mono">${esc(repositoryId)}</span>` : ''}
       <span class="deployment-repository-count">${count} ${count === 1 ? 'deployment' : 'deployments'}</span>
       <strong class="deployment-repository-status ${overall.kind}">${esc(overall.text)}</strong>
+      <button class="deployment-collapse-toggle deployment-repository-toggle" type="button" data-deployment-repository-toggle="${esc(collapseKey)}" data-ui-continuation-anchor aria-expanded="${!collapsed}" aria-controls="${bodyId}" aria-label="${collapsed ? 'Expand' : 'Collapse'} ${esc(repositoryName)} repository">${planIcon(collapsed ? 'chevron-right' : 'chevron-down')}</button>
     </header>
-    <div class="deployment-repository-summary" aria-label="${esc(`${repositoryName} repository summary`)}">${summary}</div>
-    <div class="deployment-records">${deployments.map((deployment) => deploymentRecord(deployment, admin)).join('')}</div>
+    <div class="deployment-repository-body" id="${bodyId}"${collapsed ? ' hidden' : ''}><div class="deployment-repository-summary" aria-label="${esc(`${repositoryName} repository summary`)}">${summary}</div>
+    <div class="deployment-records">${deployments.map((deployment) => deploymentRecord(deployment, admin)).join('')}</div></div>
   </section>`;
+}
+
+function bindDeploymentCollapsibles(root) {
+  root.querySelectorAll('[data-deployment-repository-toggle]').forEach((button) => button.addEventListener('click', () => {
+    const key = button.dataset.deploymentRepositoryToggle;
+    const collapsed = !state.collapsedDeploymentRepositories.has(key);
+    if (collapsed) state.collapsedDeploymentRepositories.add(key); else state.collapsedDeploymentRepositories.delete(key);
+    const section = button.closest('.deployment-repository');
+    const body = document.getElementById(button.getAttribute('aria-controls'));
+    section?.classList.toggle('collapsed', collapsed); if (body) body.hidden = collapsed;
+    button.setAttribute('aria-expanded', String(!collapsed));
+    button.setAttribute('aria-label', `${collapsed ? 'Expand' : 'Collapse'} ${section?.querySelector('h2')?.textContent || 'repository'} repository`);
+    button.innerHTML = planIcon(collapsed ? 'chevron-right' : 'chevron-down');
+  }));
+  root.querySelectorAll('[data-deployment-toggle]').forEach((button) => button.addEventListener('click', () => {
+    const deploymentId = button.dataset.deploymentToggle;
+    const collapsed = !state.collapsedDeployments.has(deploymentId);
+    if (collapsed) state.collapsedDeployments.add(deploymentId); else state.collapsedDeployments.delete(deploymentId);
+    const record = button.closest('.deployment-record');
+    const body = document.getElementById(button.getAttribute('aria-controls'));
+    record?.classList.toggle('collapsed', collapsed); if (body) body.hidden = collapsed;
+    button.setAttribute('aria-expanded', String(!collapsed));
+    const name = record?.querySelector('.deployment-record-identity strong')?.textContent || 'deployment';
+    button.setAttribute('aria-label', `${collapsed ? 'Expand' : 'Collapse'} ${name} deployment`);
+    button.innerHTML = planIcon(collapsed ? 'chevron-right' : 'chevron-down');
+  }));
 }
 
 const viewDeployments = guard(async () => {
@@ -527,6 +583,7 @@ const viewDeployments = guard(async () => {
   const decisions = new Map(decisionEntries);
   main.innerHTML = `<section class="deployments-dashboard">${pageHeading('Deployments', '#/deployments')}<div class="deployment-repositories">${orderedGroups.map((group, index) => repositoryDashboardSection(group, sources, decisions, admin, index)).join('')}</div></section>`;
   bind(main);
+  bindDeploymentCollapsibles(main);
   bindDomainButtons(main, deployments);
 });
 

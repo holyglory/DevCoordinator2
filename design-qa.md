@@ -1,3 +1,65 @@
+# Collapsible deployment dashboard design QA
+
+final result: passed
+
+## Comparison target
+
+- Source visual truth: the four owner-marked live Deployments screenshots supplied with this request, plus the same-state current-source reproduction at `/tmp/dc2-collapse-dashboard-source-1095.png`.
+- Browser-rendered implementation: expanded `/tmp/dc2-collapse-dashboard-focused-2/deployments-1095.png`, repository collapsed `/tmp/dc2-collapse-dashboard-focused-2/deployments-1095-repository-collapsed.png`, deployment collapsed `/tmp/dc2-collapse-dashboard-focused-2/deployments-1095-deployment-collapsed.png`, and mobile equivalents in the same directory.
+- Source and implementation CSS viewport: 1095 × 876 at device scale factor 1; mobile comparison: 390 × 844 at device scale factor 1. Full-page heights differ because the added factual summary rows make the expanded implementation taller and collapsing makes selected sections shorter; width and density were not normalized or cropped.
+- State: dark Console Deployments dashboard with two repository groups, healthy/degraded deployments, expanded Test and Health summaries, plus each requested collapsed state.
+- Full-view comparison: `/tmp/dc2-collapse-dashboard-before-after.png` places the same-state source and expanded implementation together. The existing repository-first structure, status hierarchy, operational color, responsive grid, links, and lifecycle controls are preserved; only the requested density controls and factual Test/Health detail are added.
+- Focused comparison: the repository header, individual deployment header, Tests card, and Health card were inspected in the owner-reported viewport. Separate 390 px and 619/620/621 px captures verify the changed stacked composition and collapse controls where the full-view comparison is too small to judge precisely.
+
+## Findings
+
+- No actionable P0, P1, or P2 issue remains.
+- Repository collapse keeps the repository name, identity, deployment count, overall condition, and restore control visible. It hides only that repository's summaries and deployments; every sibling remains unchanged.
+- Deployment collapse keeps the deployment name, immutable identity, state/health badges, and restore control visible. Routing facts and lifecycle actions return on expansion.
+- Tests now shows the selected run's proof type, start recency, tier, elapsed time, and combined observed output. Health now shows current CPU, memory, storage, and deployment count. Missing and restricted data produce no synthetic details.
+- Ten formal warnings report low initial visibility for the intentionally compact collapsed region. The reviewed screenshots show the selected identity/status row exactly as requested; no content is clipped, obscured, or unreachable.
+
+## Required fidelity surfaces
+
+- Fonts and typography: the existing system font stack, weights, monospaced identities, compact facts, wrapping, and operational hierarchy are preserved. New facts use smaller optical weight than the primary status and remain readable at every sampled width.
+- Spacing and layout rhythm: the 1095 px summary remains a balanced 3-by-2 grid; Test and Health use an aligned two-column fact grid. Collapse toggles align at the right edge of repository headers and beside deployment identity. Mobile uses labelled stacked sections with 38 px controls and no document overflow.
+- Colors and visual tokens: all new controls and facts reuse the Console's navy/slate panels, cool borders, blue focus/link color, green healthy/running, amber attention, and red unhealthy tokens. No decorative palette or new visual language was introduced.
+- Image quality and asset fidelity: this dashboard contains no raster imagery. Collapse controls use the repository's existing official Tabler chevron assets; no handcrafted SVG, CSS drawing, emoji, gradient, or placeholder was introduced.
+- Copy and content: labels state the real concepts—Tier, Elapsed, Output, CPU, Memory, Storage, and Deployments—and every value comes from the existing repository-attributed APIs. Collapse labels include the exact project or deployment for assistive technology.
+- States and interactions: repository and deployment expand/collapse, mouse, Enter, Space, independent sibling state, same-session rerender preservation, lifecycle actions after re-expansion, summary continuations, missing/restricted facts, and responsive variants are exercised through the rendered UI.
+
+## Browser evidence
+
+- Complete frozen-candidate Console matrix: 1,659 checks, zero failures in `/tmp/dc2-collapse-dashboard-console-release/report.json`.
+- Focused interaction inventory: 315 checks, zero failures in `/tmp/dc2-collapse-dashboard-focused-2/report.json`.
+- Formal run `formal-web-ui-mtm0yz1n`: 15/15 exact expanded/repository-collapsed/deployment-collapsed cells at 390, 619, 620, 621, and 1095 px; zero critical findings, ten reviewed intentional compact-region warnings, and passing coverage.
+- All thirty final viewport/full-page screenshots were inspected; fifteen pass decisions and zero gaps were finalized in `/tmp/formal-web-ui-verification-qDKHVa/manual-review.json`.
+- Browser console and network failures: none in the complete or focused passes.
+
+## Comparison history
+
+1. The source and owner comments identified four gaps: repositories could not collapse, individual local deployments could not collapse, and Tests/Health left useful API-backed facts out of large summary cards.
+2. The first implementation added independent controls and factual details. Focused desktop/mobile review found the structure readable and all interactions working.
+3. The first formal run found that icon-only toggles were not explicitly recognizable as continuation anchors. The exact controls received the verifier's semantic anchor marker. A fresh complete run passed; the remaining low-visibility warnings are the deliberate effect of collapsing, confirmed in all thirty screenshots.
+
+## Implementation checklist
+
+- [x] Collapse and expand each repository independently.
+- [x] Collapse and expand each managed or observed deployment independently.
+- [x] Preserve identity and condition while detail/actions are hidden.
+- [x] Keep collapse choices through same-session page rerenders.
+- [x] Add factual Test and Health detail without new backend or cross-repository data.
+- [x] Preserve every continuation and lifecycle control when expanded.
+- [x] Verify wide, mobile, and exact responsive-boundary states.
+
+## Follow-up polish
+
+- No follow-up is required for the four requested dashboard changes.
+
+---
+
+## Archived prior design QA
+
 # Readable test-log viewer design QA
 
 final result: passed

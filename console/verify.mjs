@@ -890,6 +890,11 @@ async function main() {
             && await repo.locator(`a[href="#/decisions/${REPO}"]`).count() === 1
             && await repo.locator('a[href="#/tests"]').count() === 1
             && await repo.locator('a[href="#/health"]').count() === 1);
+          check(`${label}: Tests and Health expose only available repository-attributed detail`,
+            await repo.locator('[data-summary="tests"] .deployment-summary-facts > div').count() === 3
+            && await repo.locator('[data-summary="health"] .deployment-summary-facts > div').count() === 4
+            && await legacy.locator('[data-summary="tests"] .deployment-summary-facts').count() === 0
+            && await legacy.locator('[data-summary="health"] .deployment-summary-facts > div').count() === 4);
           check(`${label}: removed declared-only area stays absent`, !/Declared, not applied|tool@worktree/.test(metrics.text));
         }
         if (scenarioName === 'populated' && ['#/tests', '#/health'].includes(view)) check(`${label}: large numbers humanized`, /MiB|GiB|TiB/.test(metrics.text), metrics.text.slice(0, 80));
@@ -1035,6 +1040,74 @@ async function main() {
   check('deployments list groups rows under repository headers',
     groupHeads.length === 2 && groupHeads.some((t) => /repo-one/.test(t)) && groupHeads.some((t) => /legacy-repo/.test(t)),
     groupHeads.join(' | '));
+  let dashboardRepo = page.locator(`[data-repository-id="${REPO}"]`);
+  let legacyDashboardRepo = page.locator('[data-repository-id="r9999999999999999"]');
+  const repositoryToggle = dashboardRepo.locator('[data-deployment-repository-toggle]');
+  check('deployments: every repository and deployment starts expanded with an accessible collapse control',
+    await page.locator('[data-deployment-repository-toggle][aria-expanded="true"]').count() === 2
+    && await page.locator('[data-deployment-toggle][aria-expanded="true"]').count() === 3
+    && await page.locator('.deployment-repository-body:not([hidden])').count() === 2
+    && await page.locator('.deployment-record-body:not([hidden])').count() === 3);
+  await repositoryToggle.focus();
+  await page.keyboard.press('Enter');
+  check('interaction: Enter collapses only the selected repository while its identity and status remain visible',
+    await repositoryToggle.getAttribute('aria-expanded') === 'false'
+    && await dashboardRepo.locator('.deployment-repository-body[hidden]').count() === 1
+    && await dashboardRepo.locator('.deployment-repository-head:visible').count() === 1
+    && /repo-one/.test(await dashboardRepo.locator('.deployment-repository-head').innerText())
+    && /Attention/.test(await dashboardRepo.locator('.deployment-repository-head').innerText())
+    && await legacyDashboardRepo.locator('.deployment-repository-body:not([hidden])').count() === 1);
+  await page.keyboard.press('Space');
+  check('interaction: Space expands the selected repository and restores every summary and deployment',
+    await repositoryToggle.getAttribute('aria-expanded') === 'true'
+    && await dashboardRepo.locator('.deployment-summary-item:visible').count() === 6
+    && await dashboardRepo.locator('.deployment-record:visible').count() === 2);
+  let firstDashboardRecord = dashboardRepo.locator('.deployment-record').first();
+  let secondDashboardRecord = dashboardRepo.locator('.deployment-record').nth(1);
+  const firstDeploymentToggle = firstDashboardRecord.locator('[data-deployment-toggle]');
+  await firstDeploymentToggle.focus();
+  await page.keyboard.press('Enter');
+  check('interaction: a deployment collapses independently while its identity and state remain visible',
+    await firstDeploymentToggle.getAttribute('aria-expanded') === 'false'
+    && await firstDashboardRecord.locator('.deployment-record-body[hidden]').count() === 1
+    && await firstDashboardRecord.locator('.deployment-record-identity:visible').count() === 1
+    && await firstDashboardRecord.locator('.deployment-record-status:visible').count() === 1
+    && await firstDashboardRecord.locator('[data-cmd]:visible, [data-edit-domain]:visible').count() === 0
+    && await secondDashboardRecord.locator('.deployment-record-body:not([hidden])').count() === 1);
+  await page.evaluate(() => { location.hash = '#/health'; });
+  await page.waitForSelector('.health-summary');
+  await page.evaluate(() => { location.hash = '#/deployments'; });
+  await page.waitForSelector(`[data-repository-id="${REPO}"]`);
+  dashboardRepo = page.locator(`[data-repository-id="${REPO}"]`);
+  firstDashboardRecord = dashboardRepo.locator('.deployment-record').first();
+  check('interaction: the selected deployment stays collapsed through a same-session page rerender',
+    await firstDashboardRecord.locator('[data-deployment-toggle]').getAttribute('aria-expanded') === 'false'
+    && await firstDashboardRecord.locator('.deployment-record-body[hidden]').count() === 1);
+  await firstDashboardRecord.locator('[data-deployment-toggle]').click();
+  await dashboardRepo.locator('[data-deployment-repository-toggle]').click();
+  await page.evaluate(() => { location.hash = '#/tests'; });
+  await page.waitForSelector('.tests-tablewrap');
+  await page.evaluate(() => { location.hash = '#/deployments'; });
+  await page.waitForSelector(`[data-repository-id="${REPO}"]`);
+  dashboardRepo = page.locator(`[data-repository-id="${REPO}"]`);
+  check('interaction: the selected repository stays collapsed through a same-session page rerender',
+    await dashboardRepo.locator('[data-deployment-repository-toggle]').getAttribute('aria-expanded') === 'false'
+    && await dashboardRepo.locator('.deployment-repository-body[hidden]').count() === 1);
+  await dashboardRepo.locator('[data-deployment-repository-toggle]').click();
+  const testSummary = dashboardRepo.locator('[data-summary="tests"]');
+  const healthSummary = dashboardRepo.locator('[data-summary="health"]');
+  check('deployments: Tests shows selected-run tier, elapsed time, output, recency, and proof type',
+    /unit · running/.test(await testSummary.innerText())
+    && /Diagnostic run · started/.test(await testSummary.innerText())
+    && /Tier\s+Pre-merge/.test(await testSummary.innerText())
+    && /Elapsed\s+\d+s/.test(await testSummary.innerText())
+    && /Output\s+118 MiB/.test(await testSummary.innerText()));
+  check('deployments: Health shows current repository CPU, memory, storage, and deployment count',
+    /Unhealthy · CPU 40\.1%/.test(await healthSummary.innerText())
+    && /CPU\s+40\.1%/.test(await healthSummary.innerText())
+    && /Memory\s+46\.6 GiB/.test(await healthSummary.innerText())
+    && /Storage\s+373 GiB/.test(await healthSummary.innerText())
+    && /Deployments\s+2/.test(await healthSummary.innerText()));
   const repositorySummaryJourneys = [
     [`#/plan/${REPO}`, '#/plan'],
     [`#/progress/${REPO}`, '#/progress'],
@@ -2280,6 +2353,7 @@ async function main() {
     { width: 959, height: 960 },
     { width: 960, height: 960 },
     { width: 961, height: 960 },
+    { width: 1095, height: 876 },
     { width: 834, height: 1194 },
     { width: 1179, height: 900 },
     { width: 1180, height: 900 },
@@ -2333,6 +2407,47 @@ async function main() {
     check(`deployments ${viewport.width}px: no clipping, off-canvas controls, or document overflow`,
       layout.overflow <= 0 && layout.controlsContained && layout.clippedText.length === 0,
       JSON.stringify(layout));
+    if ([390, 1095].includes(viewport.width)) {
+      const firstRepository = deploymentPage.locator('.deployment-repository').first();
+      const repositoryToggle = firstRepository.locator('[data-deployment-repository-toggle]');
+      await repositoryToggle.click();
+      await deploymentPage.screenshot({ path: path.join(OUT, `deployments-${viewport.width}-repository-collapsed.png`), fullPage: true });
+      const repositoryCollapsed = await deploymentPage.evaluate(() => {
+        const section = document.querySelector('.deployment-repository');
+        const header = section.querySelector('.deployment-repository-head').getBoundingClientRect();
+        const toggle = section.querySelector('[data-deployment-repository-toggle]').getBoundingClientRect();
+        return { hidden: section.querySelector('.deployment-repository-body').hidden,
+          expanded: section.querySelector('[data-deployment-repository-toggle]').getAttribute('aria-expanded'),
+          headerVisible: header.width > 0 && header.height > 0,
+          toggleContained: toggle.left >= -1 && toggle.right <= innerWidth + 1,
+          overflow: document.documentElement.scrollWidth - innerWidth };
+      });
+      check(`deployments ${viewport.width}px: collapsed repository stays recognizable and contained`,
+        repositoryCollapsed.hidden && repositoryCollapsed.expanded === 'false'
+        && repositoryCollapsed.headerVisible && repositoryCollapsed.toggleContained
+        && repositoryCollapsed.overflow <= 0, JSON.stringify(repositoryCollapsed));
+      await repositoryToggle.click();
+      const firstRecord = firstRepository.locator('.deployment-record').first();
+      await firstRecord.locator('[data-deployment-toggle]').click();
+      await deploymentPage.screenshot({ path: path.join(OUT, `deployments-${viewport.width}-deployment-collapsed.png`), fullPage: true });
+      const deploymentCollapsed = await firstRecord.evaluate((record) => {
+        const identity = record.querySelector('.deployment-record-identity').getBoundingClientRect();
+        const status = record.querySelector('.deployment-record-status').getBoundingClientRect();
+        const toggle = record.querySelector('[data-deployment-toggle]').getBoundingClientRect();
+        return { hidden: record.querySelector('.deployment-record-body').hidden,
+          expanded: record.querySelector('[data-deployment-toggle]').getAttribute('aria-expanded'),
+          identityVisible: identity.width > 0 && identity.height > 0,
+          statusVisible: status.width > 0 && status.height > 0,
+          toggleContained: toggle.left >= -1 && toggle.right <= innerWidth + 1,
+          overflow: document.documentElement.scrollWidth - innerWidth };
+      });
+      check(`deployments ${viewport.width}px: collapsed deployment keeps identity and state without overflow`,
+        deploymentCollapsed.hidden && deploymentCollapsed.expanded === 'false'
+        && deploymentCollapsed.identityVisible && deploymentCollapsed.statusVisible
+        && deploymentCollapsed.toggleContained && deploymentCollapsed.overflow <= 0,
+      JSON.stringify(deploymentCollapsed));
+      await firstRecord.locator('[data-deployment-toggle]').click();
+    }
   }
   await deploymentContext.close();
 
