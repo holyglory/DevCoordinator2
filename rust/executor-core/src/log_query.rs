@@ -332,7 +332,7 @@ pub fn execute_log_query(
         None => current_run_id(worktree)?,
     };
     validate_run_id(&run_id)?;
-    let inventory = scan_store(worktree, None)?;
+    let inventory = scan_store(worktree, None, Some(&run_id))?;
     let run = inventory
         .runs
         .iter()
@@ -369,7 +369,7 @@ pub fn prune_logs(
     request: LogPruneRequest,
 ) -> Result<LogPruneResult, LogQueryError> {
     validate_prune_request(&request)?;
-    let inventory = match scan_store(worktree, request.active_run_id.as_deref()) {
+    let inventory = match scan_store(worktree, request.active_run_id.as_deref(), None) {
         Ok(inventory) => inventory,
         Err(LogQueryError::LogNotFound) => {
             return Ok(LogPruneResult {
@@ -410,7 +410,7 @@ pub fn prune_logs(
             let finished_at_ms = match run.metadata.finished_at_epoch_ms {
                 Some(value) => value,
                 None if run.active => 0,
-                None => return Err(LogQueryError::StoreMalformed),
+                None => run.metadata.started_at_epoch_ms,
             };
             let components = vec![run.metadata.run_id.clone(), "executor".into()];
             let directory = relative_leaf_path(&run.metadata.run_id, &components);
@@ -426,7 +426,7 @@ pub fn prune_logs(
             );
             entries.push(RetentionEntry {
                 run_id: run.metadata.run_id.clone(),
-                test: run.metadata.test.clone(),
+                test: retention_test_key(&run.metadata.test, run.metadata.complete),
                 check: None,
                 phase: LogPhase::Executor,
                 case: None,
@@ -439,7 +439,10 @@ pub fn prune_logs(
             let finished_at_ms = match leaf.metadata.finished_at_epoch_ms {
                 Some(value) => value,
                 None if leaf.active => 0,
-                None => return Err(LogQueryError::StoreMalformed),
+                None => run
+                    .metadata
+                    .finished_at_epoch_ms
+                    .unwrap_or(leaf.metadata.started_at_epoch_ms),
             };
             if finished_at_ms > now_ms {
                 return Err(LogQueryError::StoreMalformed);
@@ -456,7 +459,7 @@ pub fn prune_logs(
             );
             entries.push(RetentionEntry {
                 run_id: leaf.run_id.clone(),
-                test: leaf.test.clone(),
+                test: retention_test_key(&leaf.test, leaf.metadata.complete),
                 check: leaf.selector.check.clone(),
                 phase: leaf.selector.phase,
                 case: leaf.selector.case_id.clone(),
@@ -705,6 +708,7 @@ fn validate_max_bytes(value: u64) -> Result<usize, LogQueryError> {
 fn scan_store(
     worktree: &Path,
     active_run_id: Option<&str>,
+    selected_run_id: Option<&str>,
 ) -> Result<StoreInventory, LogQueryError> {
     let root = open_directory_path(worktree)?;
     let devcoordinator = open_dir(&root, ".devcoordinator")?;
@@ -718,33 +722,55 @@ fn scan_store(
     let runs_dir = required_store_entry(open_dir(&logs_dir, "runs"))?;
     let mut runs = Vec::new();
     for run_id in directory_names(&runs_dir)? {
-        validate_run_id(&run_id).map_err(|_| LogQueryError::StoreMalformed)?;
-        let run_dir = required_store_entry(open_dir(&runs_dir, &run_id))?;
-        let metadata: RunLogMetadata =
-            required_store_entry(read_json(&run_dir, "run.json", MAX_METADATA_BYTES))?;
-        metadata
-            .validate()
-            .map_err(|_| LogQueryError::StoreMalformed)?;
-        if metadata.run_id != run_id {
+        if validate_run_id(&run_id).is_err() {
+            if selected_run_id.is_some() {
+                continue;
+            }
             return Err(LogQueryError::StoreMalformed);
         }
-        let active = active_run_id == Some(run_id.as_str())
-            || required_store_entry(run_is_locked(&run_dir))?;
-        let executor_streams = scan_executor_streams(&run_dir)?;
-        let leaves = scan_run_leaves(&run_dir, &metadata, active)?;
-        runs.push(InventoryRun {
-            metadata,
-            active,
-            leaves,
-            directory: run_dir,
-            executor_streams,
-        });
+        match scan_inventory_run(&runs_dir, &run_id, active_run_id) {
+            Ok(run) => runs.push(run),
+            // An exact query must fail closed for its selected run, but an
+            // unrelated malformed or half-published run cannot deny access to
+            // otherwise valid evidence. Retention passes remain store-strict.
+            Err(_) if selected_run_id.is_some_and(|selected| selected != run_id) => continue,
+            Err(error) => return Err(error),
+        }
     }
     runs.sort_by(|left, right| left.metadata.run_id.cmp(&right.metadata.run_id));
     Ok(StoreInventory {
         logs_dir,
         runs_dir,
         runs,
+    })
+}
+
+fn scan_inventory_run(
+    runs_dir: &File,
+    run_id: &str,
+    active_run_id: Option<&str>,
+) -> Result<InventoryRun, LogQueryError> {
+    let run_dir = required_store_entry(open_dir(runs_dir, run_id))?;
+    let metadata: RunLogMetadata =
+        required_store_entry(read_json(&run_dir, "run.json", MAX_METADATA_BYTES))?;
+    metadata
+        .validate()
+        .map_err(|_| LogQueryError::StoreMalformed)?;
+    if metadata.run_id != run_id {
+        return Err(LogQueryError::StoreMalformed);
+    }
+    let active = active_run_id == Some(run_id) || required_store_entry(run_is_locked(&run_dir))?;
+    let executor_streams = scan_executor_streams(&run_dir)?;
+    // A valid incomplete run can be crash residue after its lease is gone.
+    // Missing unsealed metadata is recoverable from a bounded file snapshot;
+    // present-but-invalid metadata and unsafe filesystem objects still fail.
+    let leaves = scan_run_leaves(&run_dir, &metadata, active, active || !metadata.complete)?;
+    Ok(InventoryRun {
+        metadata,
+        active,
+        leaves,
+        directory: run_dir,
+        executor_streams,
     })
 }
 
@@ -762,6 +788,7 @@ fn scan_run_leaves(
     run_dir: &File,
     run: &RunLogMetadata,
     active: bool,
+    allow_unsealed: bool,
 ) -> Result<Vec<InventoryLeaf>, LogQueryError> {
     let names = directory_names(run_dir)?;
     if names.iter().any(|name| {
@@ -801,6 +828,7 @@ fn scan_run_leaves(
                                 child,
                             ],
                             active,
+                            allow_unsealed,
                             &mut leaves,
                         )?;
                     }
@@ -828,6 +856,7 @@ fn scan_run_leaves(
                                     case_id,
                                 ],
                                 active,
+                                allow_unsealed,
                                 &mut leaves,
                             )?;
                         }
@@ -919,6 +948,7 @@ fn scan_leaf(
     selector: LeafSelector,
     relative_components: Vec<String>,
     active: bool,
+    allow_unsealed: bool,
     leaves: &mut Vec<InventoryLeaf>,
 ) -> Result<(), LogQueryError> {
     let names = directory_names(leaf_dir)?;
@@ -939,7 +969,7 @@ fn scan_leaf(
     }
     let metadata: LeafLogMetadata = match read_json(leaf_dir, "leaf.json", MAX_METADATA_BYTES) {
         Ok(metadata) => metadata,
-        Err(LogQueryError::LogNotFound) if active => LeafLogMetadata {
+        Err(LogQueryError::LogNotFound) if allow_unsealed => LeafLogMetadata {
             schema: 2,
             selector: selector.clone(),
             status: devcoordinator2_executor_protocol::LeafStatus::Running,
@@ -995,10 +1025,10 @@ fn scan_leaf(
         let metadata_name = format!("{stem}.meta.json");
         if !names.iter().any(|name| name == &metadata_name) {
             let log_name = format!("{stem}.log");
-            if active && names.iter().any(|name| name == &log_name) {
+            if allow_unsealed && names.iter().any(|name| name == &log_name) {
                 let file = required_store_entry(open_file(leaf_dir, &log_name))?;
                 let details = file.metadata().map_err(|_| LogQueryError::Unavailable)?;
-                if !details.is_file() {
+                if !details.is_file() || details.mode() & 0o077 != 0 {
                     return Err(LogQueryError::StoreMalformed);
                 }
                 let (lines, sha256) = inspect_complete_file(&file, details.len())?;
@@ -1021,7 +1051,7 @@ fn scan_leaf(
                 );
                 continue;
             }
-            if active {
+            if allow_unsealed {
                 continue;
             }
             return Err(LogQueryError::StoreMalformed);
@@ -1189,8 +1219,13 @@ fn query_catalog(
     let mut entries = Vec::new();
     let executor_selector = LeafSelector::executor();
     if selector_matches(&request.selector, &executor_selector) {
-        let executor_rank =
-            executor_depth_rank(&inventory.runs, &run.metadata.run_id, &run.metadata.test);
+        let executor_rank = executor_depth_rank(
+            &inventory.runs,
+            &run.metadata.run_id,
+            &run.metadata.test,
+            run.metadata.complete,
+        );
+        let retention_at = run_retention_epoch_ms(run);
         for (stream, snapshot) in &run.executor_streams {
             if request
                 .selector
@@ -1208,15 +1243,11 @@ fn query_catalog(
                 complete: run.metadata.complete && !run.active,
                 truncated: false,
                 sha256: (run.metadata.complete && !run.active).then(|| snapshot.sha256.clone()),
-                expires_at: run
-                    .metadata
-                    .finished_at_epoch_ms
-                    .filter(|_| !run.active)
-                    .map(|value| {
-                        iso_from_epoch_ms(
-                            value.saturating_add(policy.max_age_seconds.saturating_mul(1_000)),
-                        )
-                    }),
+                expires_at: retention_at.map(|value| {
+                    iso_from_epoch_ms(
+                        value.saturating_add(policy.max_age_seconds.saturating_mul(1_000)),
+                    )
+                }),
                 depth_rank: executor_rank,
                 structured_evidence: StructuredEvidenceSummary {
                     available: false,
@@ -1238,10 +1269,13 @@ fn query_catalog(
             {
                 continue;
             }
-            let finished = leaf.metadata.finished_at_epoch_ms;
-            let rank = finished.and_then(|_| {
+            let retention_at = leaf_retention_epoch_ms(run, leaf);
+            let rank = retention_at.and_then(|_| {
                 depth_ranks
-                    .get(&(leaf.run_id.clone(), history_key(&leaf.test, &leaf.selector)))
+                    .get(&(
+                        leaf.run_id.clone(),
+                        retention_history_key(&leaf.test, &leaf.selector, leaf.metadata.complete),
+                    ))
                     .copied()
             });
             entries.push(LogCatalogEntry {
@@ -1253,7 +1287,7 @@ fn query_catalog(
                 complete: metadata.complete,
                 truncated: false,
                 sha256: metadata.complete.then(|| metadata.sha256.clone()),
-                expires_at: finished.filter(|_| !leaf.active).map(|value| {
+                expires_at: retention_at.map(|value| {
                     iso_from_epoch_ms(
                         value.saturating_add(policy.max_age_seconds.saturating_mul(1_000)),
                     )
@@ -2686,15 +2720,50 @@ fn history_key(test: &str, selector: &LeafSelector) -> String {
     )
 }
 
+fn retention_test_key(test: &str, complete: bool) -> String {
+    if complete {
+        test.to_owned()
+    } else {
+        // Keep crash-residue depth accounting separate so incomplete attempts
+        // cannot evict sealed evidence for the same declared test identity.
+        format!("{test}\0abandoned-incomplete")
+    }
+}
+
+fn retention_history_key(test: &str, selector: &LeafSelector, complete: bool) -> String {
+    history_key(&retention_test_key(test, complete), selector)
+}
+
+fn run_retention_epoch_ms(run: &InventoryRun) -> Option<u64> {
+    (!run.active).then(|| {
+        run.metadata
+            .finished_at_epoch_ms
+            .unwrap_or(run.metadata.started_at_epoch_ms)
+    })
+}
+
+fn leaf_retention_epoch_ms(run: &InventoryRun, leaf: &InventoryLeaf) -> Option<u64> {
+    (!leaf.active).then(|| {
+        leaf.metadata
+            .finished_at_epoch_ms
+            .or(run.metadata.finished_at_epoch_ms)
+            .unwrap_or(leaf.metadata.started_at_epoch_ms)
+    })
+}
+
 fn depth_ranks(runs: &[InventoryRun]) -> BTreeMap<(String, String), u64> {
-    let mut groups = BTreeMap::<String, Vec<&InventoryLeaf>>::new();
+    let mut groups = BTreeMap::<String, Vec<(&InventoryLeaf, u64)>>::new();
     for run in runs {
         for leaf in &run.leaves {
-            if leaf.metadata.complete && !leaf.active {
+            if let Some(retention_at) = leaf_retention_epoch_ms(run, leaf) {
                 groups
-                    .entry(history_key(&leaf.test, &leaf.selector))
+                    .entry(retention_history_key(
+                        &leaf.test,
+                        &leaf.selector,
+                        leaf.metadata.complete,
+                    ))
                     .or_default()
-                    .push(leaf);
+                    .push((leaf, retention_at));
             }
         }
     }
@@ -2702,12 +2771,11 @@ fn depth_ranks(runs: &[InventoryRun]) -> BTreeMap<(String, String), u64> {
     for (key, leaves) in &mut groups {
         leaves.sort_by(|left, right| {
             right
-                .metadata
-                .finished_at_epoch_ms
-                .cmp(&left.metadata.finished_at_epoch_ms)
-                .then_with(|| right.run_id.cmp(&left.run_id))
+                .1
+                .cmp(&left.1)
+                .then_with(|| right.0.run_id.cmp(&left.0.run_id))
         });
-        for (index, leaf) in leaves.iter().enumerate() {
+        for (index, (leaf, _)) in leaves.iter().enumerate() {
             output.insert(
                 (leaf.run_id.clone(), key.clone()),
                 u64::try_from(index + 1).unwrap_or(u64::MAX),
@@ -2717,26 +2785,31 @@ fn depth_ranks(runs: &[InventoryRun]) -> BTreeMap<(String, String), u64> {
     output
 }
 
-fn executor_depth_rank(runs: &[InventoryRun], target_run: &str, target_test: &str) -> Option<u64> {
-    let mut completed: Vec<&InventoryRun> = runs
+fn executor_depth_rank(
+    runs: &[InventoryRun],
+    target_run: &str,
+    target_test: &str,
+    target_complete: bool,
+) -> Option<u64> {
+    let target_key = retention_test_key(target_test, target_complete);
+    let mut retained: Vec<(&InventoryRun, u64)> = runs
         .iter()
-        .filter(|run| {
-            run.metadata.test == target_test
-                && run.metadata.complete
-                && !run.active
-                && !run.executor_streams.is_empty()
+        .filter_map(|run| {
+            let retention_at = run_retention_epoch_ms(run)?;
+            (retention_test_key(&run.metadata.test, run.metadata.complete) == target_key
+                && !run.executor_streams.is_empty())
+            .then_some((run, retention_at))
         })
         .collect();
-    completed.sort_by(|left, right| {
+    retained.sort_by(|left, right| {
         right
-            .metadata
-            .finished_at_epoch_ms
-            .cmp(&left.metadata.finished_at_epoch_ms)
-            .then_with(|| right.metadata.run_id.cmp(&left.metadata.run_id))
+            .1
+            .cmp(&left.1)
+            .then_with(|| right.0.metadata.run_id.cmp(&left.0.metadata.run_id))
     });
-    completed
+    retained
         .iter()
-        .position(|run| run.metadata.run_id == target_run)
+        .position(|(run, _)| run.metadata.run_id == target_run)
         .map(|index| u64::try_from(index + 1).unwrap_or(u64::MAX))
 }
 
@@ -3459,6 +3532,39 @@ mod tests {
         }
     }
 
+    fn create_abandoned_run(
+        root: &Path,
+        sequence: u64,
+        payload: &[u8],
+        started_at_ms: u64,
+    ) -> String {
+        let run_id = run_id(sequence);
+        let directory = root.join(".devcoordinator/test/logs/runs").join(&run_id);
+        fs::create_dir(&directory).expect("run directory");
+        let lease = RunLogLease::acquire(&directory, &run_id).expect("lease");
+        lease
+            .publish_run_metadata(&RunLogMetadata {
+                schema: 2,
+                run_id: run_id.clone(),
+                test: "complete".into(),
+                started_at_epoch_ms: started_at_ms,
+                finished_at_epoch_ms: None,
+                status: RunStatus::Running,
+                complete: false,
+            })
+            .expect("running metadata");
+        let selector = LeafSelector::case("unit", "case-1").expect("selector");
+        let mut stdout = lease
+            .create_stream(selector, LogStream::Stdout)
+            .expect("stdout");
+        stdout.write_all(payload).expect("partial output");
+        drop(stdout);
+        let leaf = directory.join("checks/unit/cases/case-1");
+        fs::remove_file(leaf.join("stdout.meta.json")).expect("remove unsealed metadata");
+        drop(lease);
+        run_id
+    }
+
     fn request(
         operation: LogQueryOperation,
         run_id: &str,
@@ -3712,6 +3818,210 @@ mod tests {
         drop(stderr);
         drop(stdout);
         drop(lease);
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    // UIL-TESTING-LOGS-001: an abandoned partial neighbor must neither hide
+    // healthy evidence nor prevent bounded access to the bytes it did retain.
+    #[test]
+    fn exact_queries_isolate_unlocked_incomplete_neighbors_and_expose_safe_partial_bytes() {
+        let root = temporary("abandoned-neighbor");
+        let now = epoch_ms();
+        let (terminal, _) = create_run(&root, 43, "case-1", b"terminal\n", now, false);
+        let abandoned = create_abandoned_run(
+            &root,
+            44,
+            b"partial first\npartial second\n",
+            now.saturating_sub(10_000),
+        );
+
+        let LogQueryResult::Catalog(terminal_catalogue) = execute_log_query(
+            &root,
+            request(
+                LogQueryOperation::Catalog,
+                &terminal,
+                LogQueryOptions::default(),
+            ),
+        )
+        .expect("terminal catalogue despite abandoned neighbor") else {
+            panic!("catalogue")
+        };
+        assert_eq!(terminal_catalogue.entries.len(), 1);
+        assert!(
+            terminal_catalogue
+                .entries
+                .iter()
+                .all(|entry| entry.complete)
+        );
+
+        let LogQueryResult::Catalog(partial_catalogue) = execute_log_query(
+            &root,
+            request(
+                LogQueryOperation::Catalog,
+                &abandoned,
+                LogQueryOptions::default(),
+            ),
+        )
+        .expect("abandoned partial catalogue") else {
+            panic!("catalogue")
+        };
+        assert_eq!(partial_catalogue.entries.len(), 1);
+        assert_eq!(partial_catalogue.entries[0].bytes, 29);
+        assert_eq!(partial_catalogue.entries[0].lines, Some(2));
+        assert!(!partial_catalogue.entries[0].complete);
+        assert!(partial_catalogue.entries[0].sha256.is_none());
+        assert!(partial_catalogue.entries[0].expires_at.is_some());
+        assert_eq!(partial_catalogue.entries[0].depth_rank, Some(1));
+
+        let partial_tail = content(
+            execute_log_query(
+                &root,
+                request(
+                    LogQueryOperation::Tail,
+                    &abandoned,
+                    LogQueryOptions {
+                        lines: Some(1),
+                        max_bytes: Some(1024),
+                        ..LogQueryOptions::default()
+                    },
+                ),
+            )
+            .expect("abandoned partial tail"),
+        );
+        assert_eq!(
+            partial_tail.segments[0].text.as_deref(),
+            Some("partial second\n")
+        );
+
+        let partial_metadata = root
+            .join(".devcoordinator/test/logs/runs")
+            .join(&abandoned)
+            .join("checks/unit/cases/case-1/stdout.meta.json");
+        fs::write(&partial_metadata, b"{}\n").expect("malformed partial metadata");
+        assert_eq!(
+            execute_log_query(
+                &root,
+                request(
+                    LogQueryOperation::Catalog,
+                    &abandoned,
+                    LogQueryOptions::default(),
+                ),
+            ),
+            Err(LogQueryError::StoreMalformed)
+        );
+        fs::remove_file(&partial_metadata).expect("restore unsealed partial metadata");
+
+        let terminal_stream = root
+            .join(".devcoordinator/test/logs/runs")
+            .join(&terminal)
+            .join("checks/unit/cases/case-1/stdout.log");
+        fs::write(&terminal_stream, b"tampered\n").expect("tamper selected stream");
+        assert_eq!(
+            execute_log_query(
+                &root,
+                request(
+                    LogQueryOperation::Catalog,
+                    &terminal,
+                    LogQueryOptions::default(),
+                ),
+            ),
+            Err(LogQueryError::StoreMalformed)
+        );
+
+        let (active, active_lease) = create_run(&root, 45, "case-1", b"active\n", now, true);
+        let mut active_request = request(
+            LogQueryOperation::Catalog,
+            &active,
+            LogQueryOptions::default(),
+        );
+        active_request.selector.run_id = None;
+        let LogQueryResult::Catalog(active_catalogue) = execute_log_query(&root, active_request)
+            .expect("active catalogue despite malformed and abandoned neighbors")
+        else {
+            panic!("catalogue")
+        };
+        assert_eq!(active_catalogue.entries.len(), 1);
+        assert_eq!(active_catalogue.entries[0].bytes, 7);
+        drop(active_lease);
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    // UIL-TESTING-LOGS-001: unlocked incomplete data is age/depth managed,
+    // while a genuinely active run remains protected by its lease.
+    #[test]
+    fn retention_reclaims_abandoned_partial_leaves_without_touching_active_data() {
+        let root = temporary("abandoned-retention");
+        let now = epoch_ms();
+        let mut abandoned = Vec::new();
+        for (sequence, age_ms) in [(46, 4_000), (48, 3_000), (49, 2_000), (50, 1_000)] {
+            abandoned.push(create_abandoned_run(
+                &root,
+                sequence,
+                b"abandoned bytes\n",
+                now.saturating_sub(age_ms),
+            ));
+        }
+        let (active, active_lease) = create_run(
+            &root,
+            47,
+            "case-1",
+            b"active bytes\n",
+            now.saturating_sub(10_000),
+            true,
+        );
+        let result = prune_logs(
+            &root,
+            LogPruneRequest {
+                schema: 2,
+                repository_id: "raaaaaaaaaaaaaaaa".into(),
+                max_age_seconds: 100,
+                case_depth: 3,
+                active_run_id: Some(active.clone()),
+            },
+        )
+        .expect("depth-reclaim abandoned evidence");
+        assert_eq!(result.removed_leaf_folders, 1);
+        assert_eq!(result.retained_active, 1);
+        assert!(
+            !root
+                .join(".devcoordinator/test/logs/runs")
+                .join(&abandoned[0])
+                .join("checks/unit/cases/case-1")
+                .exists()
+        );
+        assert!(
+            root.join(".devcoordinator/test/logs/runs")
+                .join(&active)
+                .join("checks/unit/cases/case-1/stdout.log")
+                .is_file()
+        );
+        let age_result = prune_logs(
+            &root,
+            LogPruneRequest {
+                schema: 2,
+                repository_id: "raaaaaaaaaaaaaaaa".into(),
+                max_age_seconds: 1,
+                case_depth: 100,
+                active_run_id: Some(active.clone()),
+            },
+        )
+        .expect("age-reclaim remaining abandoned evidence");
+        assert_eq!(age_result.removed_leaf_folders, 3);
+        assert_eq!(age_result.retained_active, 1);
+        assert!(abandoned.iter().all(|run| {
+            !root
+                .join(".devcoordinator/test/logs/runs")
+                .join(run)
+                .join("checks/unit/cases/case-1")
+                .exists()
+        }));
+        assert!(
+            root.join(".devcoordinator/test/logs/runs")
+                .join(&active)
+                .join("checks/unit/cases/case-1/stdout.log")
+                .is_file()
+        );
+        drop(active_lease);
         fs::remove_dir_all(root).expect("cleanup");
     }
 
@@ -4121,7 +4431,7 @@ mod tests {
             make_content_cursor(
                 &query,
                 &select_stream(
-                    &scan_store(&root, None)
+                    &scan_store(&root, None, Some(&run))
                         .expect("inventory")
                         .runs
                         .into_iter()

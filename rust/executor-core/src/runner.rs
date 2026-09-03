@@ -9,7 +9,7 @@ use devcoordinator2_executor_protocol::{
     CompletionMode, DiagnosticExit, DiagnosticOrigin, DiagnosticReportSource, ErrorCategory,
     ExecutionPlan, ExecutionReport, FailureIndexEntry, FailureMode, LeafStatus, LogPhase, LogRef,
     LogStream, LogStreamSummary, MAX_DIAGNOSTIC_EVENTS, MAX_MANIFEST_BYTES, MAX_REASON_BYTES,
-    RunStatus, Schema2, TerminationReason,
+    RetainedArtifactReceipt, RunStatus, Schema2, TerminationReason,
 };
 use rustix::process::Signal;
 use tokio::task::JoinSet;
@@ -20,7 +20,8 @@ use crate::diagnostics::{
     DiagnosticContext, diagnostic_fingerprint, normalize_diagnostics, parse_declared_report,
 };
 use crate::evidence::{
-    artifact_receipts, receipts_match, source_digest, write_bytes_atomic, write_json_atomic,
+    RetainedArtifactIdentity, artifact_receipts, receipts_match, retain_artifact_trees,
+    source_digest, write_bytes_atomic, write_json_atomic,
 };
 use crate::process::{
     Cancellation, EventService, ProcessRequest, ProcessResult, ProcessStatus, ServiceExit,
@@ -422,6 +423,7 @@ struct CheckOutcome {
     exit_code: Option<i32>,
     reason: Option<String>,
     artifacts: Vec<ArtifactReceipt>,
+    retained_artifacts: Vec<RetainedArtifactReceipt>,
     streams: Vec<LogStreamSummary>,
     case_count: u32,
     cases: Vec<CaseReport>,
@@ -612,6 +614,7 @@ fn initialize_checks(
                 duration_seconds: reused.map(|_| 0.0),
                 exit: DiagnosticExit::default(),
                 artifacts: reused.cloned().unwrap_or_default(),
+                retained_artifacts: Vec::new(),
                 streams: Vec::new(),
                 case_count: 0,
                 cases: Vec::new(),
@@ -883,6 +886,43 @@ async fn execute_check(
             &mut process,
             started_epoch_ms,
         );
+        let retained_artifacts = if process.status == ProcessStatus::Passed {
+            let evidence_dir = leaf_log_directory(&log_dir, &selector).join("evidence");
+            match retain_artifact_trees(
+                &root,
+                &evidence_dir,
+                &RetainedArtifactIdentity {
+                    run_id: &plan.run_id,
+                    test: &plan.test,
+                    check: &check.name,
+                    requested_tier: plan.requested_tier,
+                    readiness_eligible: plan.readiness_eligible,
+                    proof: plan.proof,
+                    source_sha256: &plan.source_digest,
+                    config_sha256: &plan.config_digest,
+                },
+                &check.retained_artifacts,
+            ) {
+                Ok(receipts) => receipts,
+                Err(error) => {
+                    record_leaf_postprocess_failure(
+                        &plan,
+                        &check,
+                        &selector,
+                        &log_lease,
+                        &mut process,
+                        started_epoch_ms,
+                        LeafStatus::Failed,
+                        ErrorCategory::Artifact,
+                        None,
+                    );
+                    let _ = error;
+                    Vec::new()
+                }
+            }
+        } else {
+            Vec::new()
+        };
         let artifacts = if process.status == ProcessStatus::Passed {
             match artifact_receipts(&root, &check.produces) {
                 Ok(receipts) => receipts,
@@ -906,7 +946,7 @@ async fn execute_check(
         } else {
             Vec::new()
         };
-        direct_outcome(process, artifacts, started.elapsed())
+        direct_outcome(process, artifacts, retained_artifacts, started.elapsed())
     } else {
         execute_fanout(
             &plan,
@@ -928,6 +968,7 @@ async fn execute_check(
 fn direct_outcome(
     mut process: ProcessResult,
     artifacts: Vec<ArtifactReceipt>,
+    retained_artifacts: Vec<RetainedArtifactReceipt>,
     duration: Duration,
 ) -> CheckOutcome {
     let status: LeafStatus = process.status.into();
@@ -937,6 +978,7 @@ fn direct_outcome(
         exit_code: process.exit_code,
         reason: process.reason.take().map(|value| bounded_reason(&value)),
         artifacts,
+        retained_artifacts,
         streams: process.streams,
         case_count: 0,
         cases: Vec::new(),
@@ -1243,6 +1285,7 @@ async fn execute_fanout(
         exit_code: None,
         reason: final_reason.map(|value| bounded_reason(&value)),
         artifacts,
+        retained_artifacts: Vec::new(),
         streams,
         case_count,
         cases: case_reports
@@ -1688,6 +1731,7 @@ fn fanout_setup_failure(
         exit_code,
         reason: Some(bounded_reason(&reason)),
         artifacts: Vec::new(),
+        retained_artifacts: Vec::new(),
         streams,
         case_count: 0,
         cases: Vec::new(),
@@ -1729,6 +1773,7 @@ fn discovery_postprocess_failure(
         exit_code: process.exit_code,
         reason: Some(bounded_reason(&reason)),
         artifacts: Vec::new(),
+        retained_artifacts: Vec::new(),
         streams,
         case_count: 0,
         cases: Vec::new(),
@@ -1751,6 +1796,7 @@ fn apply_outcome(
     runtime.report.exit = diagnostic_exit(outcome.exit_code);
     let _ = outcome.reason;
     runtime.report.artifacts = outcome.artifacts;
+    runtime.report.retained_artifacts = outcome.retained_artifacts;
     runtime.report.streams = outcome.streams;
     runtime.report.case_count = outcome.case_count;
     runtime.report.cases = outcome.cases;

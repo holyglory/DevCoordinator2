@@ -214,6 +214,17 @@ def _valid_artifact(value) -> bool:
         and _DIGEST_RE.fullmatch(value["sha256"]) is not None
 
 
+def _valid_retained_artifact(value) -> bool:
+    return isinstance(value, dict) \
+        and set(value) == {"name", "size", "files", "sha256"} \
+        and isinstance(value["name"], str) \
+        and _CHECK_RE.fullmatch(value["name"]) is not None \
+        and _plain_int(value["size"], maximum=1024 * 1024 * 1024) \
+        and _plain_int(value["files"], minimum=1, maximum=4096) \
+        and isinstance(value["sha256"], str) \
+        and _DIGEST_RE.fullmatch(value["sha256"]) is not None
+
+
 def _valid_case_report(value, check_name: str, run_id: str) -> bool:
     if not isinstance(value, dict) or set(value) != {
             "id", "status", "exit", "duration_ms", "streams"}:
@@ -235,8 +246,8 @@ def _valid_case_report(value, check_name: str, run_id: str) -> bool:
 def _valid_check_report(value, run_id: str) -> bool:
     if not isinstance(value, dict) or set(value) != {
             "name", "tier", "role", "status", "started_at", "finished_at",
-            "duration_seconds", "exit", "artifacts", "streams", "case_count",
-            "cases", "cases_truncated"}:
+            "duration_seconds", "exit", "artifacts", "retained_artifacts", "streams",
+            "case_count", "cases", "cases_truncated"}:
         return False
     name, streams, cases = value["name"], value["streams"], value["cases"]
     if not isinstance(name, str) or not _CHECK_RE.fullmatch(name) \
@@ -250,6 +261,10 @@ def _valid_check_report(value, run_id: str) -> bool:
             or not isinstance(value["artifacts"], list) \
             or len(value["artifacts"]) > 16 \
             or not all(_valid_artifact(item) for item in value["artifacts"]) \
+            or not isinstance(value["retained_artifacts"], list) \
+            or len(value["retained_artifacts"]) > 8 \
+            or not all(_valid_retained_artifact(item)
+                       for item in value["retained_artifacts"]) \
             or not isinstance(streams, list) or len(streams) > 2 \
             or not all(_valid_stream(stream) for stream in streams) \
             or not _plain_int(value["case_count"], maximum=4096) \

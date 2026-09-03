@@ -45,7 +45,8 @@ def _optional_str(args: dict[str, Any], key: str) -> str | None:
 
 def build_handlers(config: InstanceConfig, registry: Registry,
                    lifecycle=None, deployments=None, db=None,
-                   capacity=None, test_logs=None, test_evidence=None) -> dict[str, Handler]:
+                   capacity=None, test_logs=None, test_evidence=None,
+                   test_artifacts=None) -> dict[str, Handler]:
     def ping(args: dict[str, Any], caller: Caller) -> dict[str, Any]:
         _no_args(args)
         return {"daemon_version": __version__, "schema_version": SCHEMA_VERSION,
@@ -305,6 +306,30 @@ def build_handlers(config: InstanceConfig, registry: Registry,
             "test.evidence.feedback.edit": feedback_edit,
             "test.evidence.feedback.state": feedback_state,
             "test.evidence.feedback.delete": feedback_delete,
+        })
+
+    if test_artifacts is not None:
+        def artifact_catalog(args: dict[str, Any], caller: Caller) -> dict[str, Any]:
+            path = _require_path(
+                args,
+                {"path", "run_id", "check", "artifact", "manifest_sha256",
+                 "offset", "limit"},
+            )
+            return test_artifacts.catalog(
+                path, {key: value for key, value in args.items() if key != "path"}, caller)
+
+        def artifact_file(args: dict[str, Any], caller: Caller) -> dict[str, Any]:
+            path = _require_path(
+                args,
+                {"path", "run_id", "check", "artifact", "file",
+                 "manifest_sha256", "offset", "max_bytes"},
+            )
+            return test_artifacts.file(
+                path, {key: value for key, value in args.items() if key != "path"}, caller)
+
+        handlers.update({
+            "test.artifact.catalog": artifact_catalog,
+            "test.artifact.file": artifact_file,
         })
 
     if capacity is not None:

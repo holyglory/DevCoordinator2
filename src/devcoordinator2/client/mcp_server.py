@@ -149,6 +149,41 @@ TOOLS = [
         }, "required": ["path"], "additionalProperties": False},
     },
     {
+        "name": "test_artifact_catalog",
+        "description": (
+            "List hash-bound retained artifact trees or a bounded page of files from "
+            "one exact successful governed check. Returns no private storage path."),
+        "inputSchema": {"type": "object", "properties": {
+            "path": _PATH,
+            "run_id": {"type": "string", "minLength": 1, "maxLength": 128},
+            "check": {"type": "string", "minLength": 1, "maxLength": 64},
+            "artifact": {"type": "string", "minLength": 1, "maxLength": 64},
+            "manifest_sha256": {"type": "string", "minLength": 64, "maxLength": 64},
+            "offset": {"type": "integer", "minimum": 0, "maximum": 4096,
+                       "default": 0},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 100,
+                      "default": 100},
+        }, "required": ["path", "run_id", "check"],
+           "additionalProperties": False},
+    },
+    {
+        "name": "test_artifact_file",
+        "description": (
+            "Read one exact verified retained artifact file in a bounded base64 chunk."),
+        "inputSchema": {"type": "object", "properties": {
+            "path": _PATH,
+            "run_id": {"type": "string", "minLength": 1, "maxLength": 128},
+            "check": {"type": "string", "minLength": 1, "maxLength": 64},
+            "artifact": {"type": "string", "minLength": 1, "maxLength": 64},
+            "file": {"type": "string", "minLength": 1, "maxLength": 512},
+            "manifest_sha256": {"type": "string", "minLength": 64, "maxLength": 64},
+            "offset": {"type": "integer", "minimum": 0},
+            "max_bytes": {"type": "integer", "minimum": 1, "maximum": 184320,
+                          "default": 184320},
+        }, "required": ["path", "run_id", "check", "artifact", "file",
+                         "manifest_sha256"], "additionalProperties": False},
+    },
+    {
         "name": "test_log_retention_show",
         "description": "Show host-wide completed-log age and per-case history depth.",
         "inputSchema": {"type": "object", "properties": {},
@@ -551,6 +586,8 @@ _TOOL_TO_COMMAND = {
     "test_evidence_feedback_edit": "test.evidence.feedback.edit",
     "test_evidence_feedback_state": "test.evidence.feedback.state",
     "test_evidence_feedback_delete": "test.evidence.feedback.delete",
+    "test_artifact_catalog": "test.artifact.catalog",
+    "test_artifact_file": "test.artifact.file",
     "test_stop": "test.stop",
     "test_list": "test.list",
     "test_capacity_show": "test.capacity.get",

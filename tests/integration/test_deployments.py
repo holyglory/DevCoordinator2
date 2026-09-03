@@ -4,6 +4,8 @@ PostgreSQL, Docker cache) through real systemd units and containers."""
 from __future__ import annotations
 
 import json
+import socket
+import sqlite3
 import subprocess
 import threading
 import time
@@ -413,6 +415,22 @@ def test_native_compose_finite_service_receipt_and_start_semantics(world):
     assert worker_started["ok"] and worker_started["result"]["state"] == "running"
     assert _compose_counter(cache) == "1"
 
+    worker_stopped_for_full_start = _call(
+        world, "deployment.stop",
+        {"path": str(world.repo), "name": "stack@worktree",
+         "component": "compose/worker"})
+    assert worker_stopped_for_full_start["ok"]
+    full_started = _call(world, "deployment.start",
+                         {"path": str(world.repo), "name": "stack@worktree"})
+    assert full_started["ok"] and full_started["result"]["state"] == "running"
+    full_started_services = {
+        item["name"]: item
+        for item in _comp(full_started["result"], "compose")["services"]
+    }
+    assert all(item["desired_state"] == "running"
+               for item in full_started_services.values())
+    assert _compose_counter(cache) == "1"
+
     stopped = _call(world, "deployment.stop",
                     {"path": str(world.repo), "name": "stack@worktree"})
     assert stopped["ok"] and stopped["result"]["state"] == "stopped"
@@ -421,10 +439,18 @@ def test_native_compose_finite_service_receipt_and_start_semantics(world):
     assert started["ok"] and started["result"]["state"] == "running"
     assert _compose_counter(cache) == "1"  # ordinary start did not rerun bootstrap
 
+    stopped_for_apply = _call(world, "deployment.stop",
+                              {"path": str(world.repo), "name": "stack@worktree"})
+    assert stopped_for_apply["ok"]
+
     (world.repo / "marker.txt").write_text("v2\n")
     changed = _call(world, "deployment.apply",
                     {"path": str(world.repo), "name": "stack@worktree"})
     assert changed["ok"], changed
+    changed_services = {
+        item["name"]: item for item in _comp(changed["result"], "compose")["services"]
+    }
+    assert all(item["desired_state"] == "running" for item in changed_services.values())
     assert _compose_counter(_compose_service_id(project, "cache")) == "2"
     route_port = changed["result"]["route_port"]
     pong = subprocess.run(
@@ -432,8 +458,165 @@ def test_native_compose_finite_service_receipt_and_start_semantics(world):
          "valkey-cli", "PING"], capture_output=True, text=True, check=True)
     assert pong.stdout.strip() == "PONG" and route_port
 
+    with socket.create_connection(("127.0.0.1", route_port), timeout=5):
+        pass
+
+    worker_stopped_again = _call(
+        world, "deployment.stop",
+        {"path": str(world.repo), "name": "stack@worktree",
+         "component": "compose/worker"})
+    assert worker_stopped_again["ok"]
+    failed_yaml = COMPOSE_YAML.replace(
+        'command: ["while :; do sleep 60; done"]', 'command: ["exit 29"]')
+    (world.repo / "compose.yml").write_text(failed_yaml)
+    (world.repo / "marker.txt").write_text("v3\n")
+    failed = _call(world, "deployment.apply",
+                   {"path": str(world.repo), "name": "stack@worktree"})
+    assert failed["ok"] is False
+    assert failed["error"]["code"] == "deployment_apply_failed"
+    after_failed = _call(world, "deployment.status",
+                         {"path": str(world.repo), "name": "stack@worktree"})
+    after_failed_services = {
+        item["name"]: item
+        for item in _comp(after_failed["result"], "compose")["services"]
+    }
+    assert after_failed_services["worker"]["desired_state"] == "stopped"
+    assert after_failed_services["cache"]["desired_state"] == "running"
+    assert after_failed["result"]["route_port"] == route_port
+    with socket.create_connection(("127.0.0.1", route_port), timeout=5):
+        pass
+
     removed = _call(world, "deployment.remove",
                     {"path": str(world.repo), "name": "stack@worktree",
+                     "delete_data": True})
+    assert removed["ok"], removed
+
+
+UNPUBLISHED_COMPOSE_ROUTE_YAML = '''services:
+  cache: {}
+'''
+
+
+def test_routed_compose_without_published_port_fails_and_never_routes(world):
+    _write_config(world.repo, world.caller, COMPOSE_TOML)
+    (world.repo / "compose.yml").write_text(COMPOSE_YAML)
+    (world.repo / "compose.route.yml").write_text(UNPUBLISHED_COMPOSE_ROUTE_YAML)
+    (world.repo / ".gitignore").write_text("compose.env\n")
+    (world.repo / "compose.env").write_text("FIXTURE_LABEL=ready\n")
+    _git(world, "add", ".")
+    _git(world, "commit", "-qm", "unpublished compose fixture")
+
+    failed = _call(world, "deployment.apply",
+                   {"path": str(world.repo), "name": "stack@worktree"})
+    assert failed["ok"] is False
+    assert failed["error"]["code"] == "deployment_apply_failed"
+    assert "not published by the Compose project" in failed["error"]["message"]
+    detail = json.loads(failed["error"]["detail"])
+    component = next(item for item in detail["components"]
+                     if item["name"] == "compose")
+    assert component["state"] == "failed"
+
+    status = _call(world, "deployment.status",
+                   {"path": str(world.repo), "name": "stack@worktree"})
+    assert status["ok"]
+    assert status["result"]["route_port"] is None
+    routes_path = world.base / "state" / "public" / "routes.json"
+    if routes_path.exists():
+        assert _routes(world)["routes"] == []
+
+    removed = _call(world, "deployment.remove",
+                    {"path": str(world.repo), "name": "stack@worktree",
+                     "delete_data": True})
+    assert removed["ok"], removed
+
+
+UPGRADE_COMPOSE_TOML = '''schema = 2
+[deployment.upgrade-stack]
+source = "worktree"
+domain = "upgrade-stack"
+components = ["compose"]
+
+[deployment.upgrade-stack.component.compose]
+type = "compose"
+files = ["upgrade-compose.yml", "upgrade-route.yml"]
+services = ["cache"]
+port = true
+route = true
+timeout_seconds = 60
+'''
+
+UPGRADE_COMPOSE_YAML = '''services:
+  cache:
+    image: valkey/valkey:9.1.0-alpine
+'''
+
+UPGRADE_COMPOSE_ROUTE_YAML = '''services:
+  cache:
+    ports: ["127.0.0.1:${PORT:?Coordinator must lease PORT}:6379"]
+'''
+
+
+def test_unchanged_apply_rechecks_already_bad_published_compose_route(world):
+    _write_config(world.repo, world.caller, UPGRADE_COMPOSE_TOML)
+    (world.repo / "upgrade-compose.yml").write_text(UPGRADE_COMPOSE_YAML)
+    (world.repo / "upgrade-route.yml").write_text(UPGRADE_COMPOSE_ROUTE_YAML)
+    _git(world, "add", ".")
+    _git(world, "commit", "-qm", "reachable compose fixture")
+
+    first = _call(world, "deployment.apply",
+                  {"path": str(world.repo), "name": "upgrade-stack@worktree"})
+    assert first["ok"], first
+    deployment_id = first["result"]["deployment_id"]
+    route_port = first["result"]["route_port"]
+    generation = first["result"]["current_generation"]
+    routes_path = world.base / "state" / "public" / "routes.json"
+    stale_route_document = routes_path.read_bytes()
+
+    (world.repo / "upgrade-route.yml").write_text(UNPUBLISHED_COMPOSE_ROUTE_YAML)
+    _git(world, "add", ".")
+    _git(world, "commit", "-qm", "remove compose port publication")
+    initial_failure = _call(
+        world, "deployment.apply",
+        {"path": str(world.repo), "name": "upgrade-stack@worktree"})
+    assert initial_failure["ok"] is False
+    assert initial_failure["error"]["code"] == "deployment_apply_failed"
+
+    database_path = world.base / "state" / "authority.sqlite3"
+    with sqlite3.connect(database_path) as conn:
+        conn.execute(
+            "UPDATE deployments SET state='running' WHERE deployment_id=?",
+            (deployment_id,))
+        conn.execute(
+            "UPDATE components SET state='running', health='unhealthy',"
+            " last_error='seeded unreachable route'"
+            " WHERE deployment_id=? AND name='compose'",
+            (deployment_id,))
+        conn.execute(
+            "INSERT OR REPLACE INTO domain_routes(domain, deployment_id, component,"
+            " port, generation, published_at) VALUES(?,?,?,?,?,'seeded')",
+            ("upgrade-stack", deployment_id, "compose", route_port, generation))
+    routes_path.write_bytes(stale_route_document)
+
+    before = _call(world, "deployment.status",
+                   {"path": str(world.repo), "name": "upgrade-stack@worktree"})
+    assert before["ok"]
+    assert before["result"]["state"] == "degraded"
+    assert before["result"]["route_port"] == route_port
+    assert _routes(world)["routes"][0]["port"] == route_port
+
+    replay = _call(world, "deployment.apply",
+                   {"path": str(world.repo), "name": "upgrade-stack@worktree"})
+    assert replay["ok"] is False
+    assert replay["error"]["code"] == "deployment_apply_failed"
+    assert "unchanged" not in replay
+    after = _call(world, "deployment.status",
+                  {"path": str(world.repo), "name": "upgrade-stack@worktree"})
+    assert after["ok"]
+    assert after["result"]["route_port"] is None
+    assert _routes(world)["routes"] == []
+
+    removed = _call(world, "deployment.remove",
+                    {"path": str(world.repo), "name": "upgrade-stack@worktree",
                      "delete_data": True})
     assert removed["ok"], removed
 

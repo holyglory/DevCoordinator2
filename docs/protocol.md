@@ -76,6 +76,9 @@ Stable snake_case, terminal (no retry/queue semantics):
 | `test_evidence_expired` | the exact retained visual run is unavailable under current retention |
 | `test_evidence_not_found` | the requested screenshot identity is absent from that run |
 | `test_evidence_tampered` | the screenshot no longer matches its recorded size, dimensions, or SHA-256 |
+| `test_artifact_expired` | the exact retained artifact run is unavailable under current retention |
+| `test_artifact_not_found` | the requested check, tree, or file is absent from that run |
+| `test_artifact_tampered` | the retained manifest or file no longer matches its recorded identity or SHA-256 |
 | `test_start_failed` | terminal launch failure (never `queued`) |
 | `tests_draining` | a normal Coordinator upgrade has closed test admission; never queued |
 | `unit_stop_failed` | prior unit would not stop / cgroup not proven empty |

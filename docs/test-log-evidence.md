@@ -34,6 +34,8 @@ Complete logs are written once, directly to stable caller-owned storage:
     diagnostics.json
     evidence/
       journey-evidence.json
+      retained-artifacts.json
+      retained/<artifact-name>/**
       report.json
       report.md
       review-queue.json
@@ -55,6 +57,13 @@ passes its absolute location only through `DEVCOORDINATOR_EVIDENCE_DIR`; the
 formal Web UI verifier writes the bundle there automatically. Log catalogue
 metadata remains content-free and ignores the evidence payload, while the same
 leaf retention decision removes the logs and visual bundle together.
+
+A direct successful process check may also declare bounded
+`retained_artifacts`. The executor snapshots those repository-relative trees
+into `evidence/retained/`, rejects links and special files, and writes a
+run/source/config/proof-bound manifest with sorted file and tree hashes. The
+administrator-only artifact catalogue/file operations verify and disclose this
+evidence progressively; they never expose its storage path.
 
 Every stream file is created mode 0600 without following symlinks. The writer
 retains every byte, updates SHA-256 and exact LF-defined line counts, records
@@ -191,10 +200,12 @@ author deletion drops it without erasing Plan or feedback event history.
 
 ## Retention
 
-The default policy is 86,400 seconds and three completed leaves per history
-identity `(repository, test, check, phase, case)`. A sealed leaf is eligible
-when its finish time is older than the age boundary **or** its newest-first
-depth rank exceeds the depth boundary. Active or locked runs are never
+The default policy is 86,400 seconds and three leaves per history identity
+`(repository, test, check, phase, case)`. A sealed leaf is eligible when its
+finish time is older than the age boundary **or** its newest-first depth rank
+exceeds the depth boundary. Unlocked incomplete crash residue uses its recorded
+start as the conservative retention time and a separate depth bucket, so it is
+cleaned without evicting sealed evidence. Active or locked runs are never
 eligible. Both positive boundaries are administrator-controlled host settings
 with append-only change history; lowering them acts immediately and does not
 ask for a second confirmation.

@@ -14,8 +14,8 @@ use devcoordinator2_executor_core::{
     protocol::{
         CaseSpec, CheckPlan, CheckRole, CompletionMode, DiagnosticOrigin, DiagnosticReportFormat,
         DiagnosticReportSource, ErrorCategory, ExecutionPlan, FailureIndexEntry, FailureMode,
-        LeafStatus, LogPhase, LogStream, ProofKind, RunStatus, Schema2, TerminationReason,
-        ValidationTier,
+        LeafStatus, LogPhase, LogStream, ProofKind, RetainedArtifactSpec, RunStatus, Schema2,
+        TerminationReason, ValidationTier,
     },
     source_digest,
 };
@@ -81,6 +81,7 @@ fn direct(name: &str, command: Vec<String>) -> CheckPlan {
         completion: CompletionMode::Process,
         on_failure: FailureMode::Continue,
         produces: Vec::new(),
+        retained_artifacts: Vec::new(),
         diagnostic_sources: Vec::new(),
         command: Some(command),
         discover: None,
@@ -880,6 +881,44 @@ root.joinpath("journey-evidence.json").write_text('{"kind":"fixture"}')
     assert_eq!(
         fs::read_to_string(evidence).expect("retained journey evidence"),
         "{\"kind\":\"fixture\"}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn successful_direct_check_snapshots_declared_retained_artifact_tree() {
+    let repository = Repository::new("retained-artifact-tree");
+    fs::write(repository.root.join(".gitignore"), b"browser-evidence/\n")
+        .expect("ignore generated evidence");
+    run_git(&repository.root, &["add", ".gitignore"]);
+    let script = r#"
+from pathlib import Path
+root = Path("browser-evidence")
+(root / "nested").mkdir(parents=True)
+(root / "result.json").write_text('{"ok":true}\n')
+(root / "nested" / "capture.png").write_bytes(b'png')
+"#;
+    let mut check = direct("browser", python(script));
+    check.retained_artifacts = vec![RetainedArtifactSpec {
+        name: "production".into(),
+        path: "browser-evidence".into(),
+        max_bytes: 1024,
+    }];
+    let report = execute(plan(&repository, "run-retained-artifact-tree", vec![check])).await;
+    assert_eq!(report.status, RunStatus::Passed);
+    assert_eq!(report.checks[0].retained_artifacts.len(), 1);
+    let receipt = &report.checks[0].retained_artifacts[0];
+    assert_eq!(receipt.name, "production");
+    assert_eq!(receipt.files, 2);
+    let retained = repository
+        .logs("run-retained-artifact-tree")
+        .join("checks/browser/check/evidence/retained/production");
+    assert_eq!(
+        fs::read_to_string(retained.join("result.json")).expect("result"),
+        "{\"ok\":true}\n"
+    );
+    assert_eq!(
+        fs::read(retained.join("nested/capture.png")).expect("capture"),
+        b"png"
     );
 }
 

@@ -229,12 +229,13 @@ def test_guard_plan_reads_follow_repository_grants(world):
     assert handlers["task.create"]({}, local()) == {"ok": "task.create"}
 
 
-def test_visual_test_evidence_is_administrator_only(world):
+def test_private_test_evidence_is_administrator_only(world):
     names = [
         "test.evidence.get", "test.evidence.image",
         "test.evidence.feedback.create", "test.evidence.feedback.reply",
         "test.evidence.feedback.edit", "test.evidence.feedback.state",
         "test.evidence.feedback.delete",
+        "test.artifact.catalog", "test.artifact.file",
     ]
     handlers = guard(
         {name: (lambda args, caller, command=name: {"ok": command}) for name in names}

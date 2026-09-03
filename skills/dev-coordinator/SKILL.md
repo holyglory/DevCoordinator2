@@ -23,6 +23,9 @@ devcoordinator2 health --help
   progressive test-log discovery, bounded retrieval, and retention settings.
 - Use `test evidence show|image|feedback` for retained formal-UI journey cells,
   integrity-checked screenshot chunks, and screenshot-anchored Plan feedback.
+- Use `test artifact catalog|file|materialize` for declared hash-bound evidence
+  trees. Catalogue first; materialization writes only a new caller-owned local
+  destination and rechecks every file/tree hash.
 - Use `deployment list|apply|status|start|stop|restart|rollback|logs|remove`
   for declared permanent or preview deployments.
 - Use `health summary|repositories|containers` for host and ownership

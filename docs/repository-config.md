@@ -59,6 +59,9 @@ tier = "release"
 command = ["node", "verify.mjs"]
 requires = ["server"]
 timeout_seconds = 900
+retained_artifacts = [
+  { name = "production", path = "artifacts/browser", max_bytes = 536870912 },
+]
 diagnostic_sources = [
   { format = "playwright-json", path = "playwright/report.json" },
 ]
@@ -96,6 +99,17 @@ not elapsed time, binds the event to that check. A passed long-lived process
 stays available to dependents and is terminated during final cleanup. If it
 exits early, downstream evidence is unsafe. `produces` paths are content-hashed
 regular files; symlinks, missing files, path escape, and mutable receipts fail.
+
+`retained_artifacts` is available only to direct process-completed checks and
+declares required repository-relative directories to snapshot after success.
+Each table contains exactly `name`, `path`, and `max_bytes`. The source tree may
+contain only regular files and directories, cannot be empty, aliased,
+overlapping, `.git`, or `.devcoordinator`, and must remain unchanged while it is
+copied. At most eight trees and 4,096 files per tree are retained; one tree is
+limited to 1 GiB and all declared ceilings to 2 GiB. The private copy, per-file
+hashes, and whole-tree digest expire with the governed run. This is release
+evidence, not reusable setup output; `produces` remains the regular-file reuse
+contract.
 
 Every check declares its minimum `tier`: `development`, `pre-merge`, or
 `release`. Tier selection is cumulative; only a fresh complete release run is
@@ -167,6 +181,11 @@ Validation rules:
   has exactly one supported format and one normalized leaf
   diagnostics-relative path; absolute paths, traversal, and backslashes are
   rejected.
+- A direct process check may declare at most eight non-overlapping
+  `retained_artifacts` tables. Names are unique check-style identifiers; paths
+  are normalized repository-relative directories outside `.git` and
+  `.devcoordinator`; `max_bytes` is a positive integer no greater than 1 GiB.
+  Fan-out and event-completed checks cannot retain generic artifact trees.
 - `DEVCOORDINATOR_*` environment names are reserved for exact runner identity,
   scratch, artifact, diagnostic, log, manifest, and event delivery.
 - Unknown keys anywhere are rejected (`repository_config_invalid`), so

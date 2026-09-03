@@ -1,3 +1,5 @@
+import base64
+import hashlib
 import io
 import json
 import os
@@ -163,6 +165,28 @@ def test_governed_check_cli_argument_mapping(tmp_path):
     command, arguments = cli._to_call(feedback)
     assert command == "test.evidence.feedback.create"
     assert arguments["marks"][0]["type"] == "pin"
+    artifact_catalog = cli.build_parser().parse_args([
+        "test", "artifact", "catalog", path,
+        "--run-id", "t20260902T010203Z-abcdef", "--check", "browser",
+        "--artifact", "production", "--manifest-sha256", "a" * 64,
+        "--offset", "20", "--limit", "10",
+    ])
+    assert cli._to_call(artifact_catalog) == ("test.artifact.catalog", {
+        "path": path,
+        "run_id": "t20260902T010203Z-abcdef",
+        "check": "browser",
+        "artifact": "production",
+        "manifest_sha256": "a" * 64,
+        "offset": 20,
+        "limit": 10,
+    })
+    artifact_file = cli.build_parser().parse_args([
+        "test", "artifact", "file", path,
+        "--run-id", "t20260902T010203Z-abcdef", "--check", "browser",
+        "--artifact", "production", "--file", "nested/report.json",
+        "--manifest-sha256", "a" * 64,
+    ])
+    assert cli._to_call(artifact_file)[0] == "test.artifact.file"
     stop = cli.build_parser().parse_args([
         "test", "stop", path, "--reason", "operator cancelled upgrade",
     ])
@@ -194,6 +218,60 @@ def test_capacity_cli_roundtrip(live, capsys):
     assert cli.main(["test", "capacity", "clear"]) == 0
     cleared = json.loads(capsys.readouterr().out)["result"]
     assert cleared["cap"] is None and cleared["effective_capacity"] == 8
+
+
+def test_cli_materializes_and_reverifies_retained_artifact(tmp_path, monkeypatch, capsys):
+    payload = b"verified retained evidence"
+    file_sha = hashlib.sha256(payload).hexdigest()
+    entry = {"path": "nested/report.json", "size": len(payload), "sha256": file_sha}
+    tree_sha = cli._materialized_tree_digest([entry])
+    manifest_sha = "a" * 64
+
+    def fake_call(_socket, command, arguments, **_kwargs):
+        if command == "test.artifact.catalog" and "artifact" not in arguments:
+            result = {
+                "manifest_sha256": manifest_sha,
+                "test": "browser-release",
+                "requested_tier": "release",
+                "readiness_eligible": True,
+                "proof": "complete",
+                "source_sha256": "b" * 64,
+                "config_sha256": "c" * 64,
+                "run_status": "passed",
+                "run_complete": True,
+                "run_finished_at_epoch_ms": 200,
+                "run_metadata_sha256": "d" * 64,
+                "artifacts": [{"name": "production", "size": len(payload),
+                               "files": 1, "sha256": tree_sha}],
+            }
+        elif command == "test.artifact.catalog":
+            assert arguments["manifest_sha256"] == manifest_sha
+            result = {"entries": [entry], "next_offset": None}
+        else:
+            offset = arguments["offset"]
+            block = payload[offset:offset + arguments["max_bytes"]]
+            result = {
+                "offset": offset,
+                "total_bytes": len(payload),
+                "sha256": file_sha,
+                "bytes": len(block),
+                "base64": base64.b64encode(block).decode(),
+                "next_offset": offset + len(block) if offset + len(block) < len(payload)
+                else None,
+            }
+        return {"ok": True, "result": result}
+
+    monkeypatch.setattr(cli, "call", fake_call)
+    destination = tmp_path / "materialized"
+    assert cli.main([
+        "test", "artifact", "materialize", str(tmp_path),
+        "--run-id", "t20260902T010203Z-abcdef",
+        "--check", "browser",
+        "--destination", str(destination),
+    ]) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["ok"] is True
+    assert (destination / "production/nested/report.json").read_bytes() == payload
 
 
 def test_governed_check_event_writes_bound_identity(monkeypatch):
@@ -266,7 +344,8 @@ def test_mcp_full_session(live):
     assert {"test_start", "test_retry", "test_status", "test_log_catalog",
             "test_log_tail", "test_log_search", "test_log_range",
             "test_log_failure_context", "test_log_retention_show",
-            "test_log_retention_set", "test_stop",
+            "test_log_retention_set", "test_artifact_catalog",
+            "test_artifact_file", "test_stop",
             "test_list", "test_capacity_show", "test_capacity_set",
             "test_capacity_clear",
             "repository_list", "repository_archive", "repository_unarchive",
@@ -360,6 +439,7 @@ def test_mcp_plan_tools_present_owner_controls_absent(live):
             "test_evidence_feedback_create", "test_evidence_feedback_reply",
             "test_evidence_feedback_edit", "test_evidence_feedback_state",
             "test_evidence_feedback_delete"} <= tools
+    assert {"test_artifact_catalog", "test_artifact_file"} <= tools
     # The owner's ASAP button and chart reshaping are not agent tools.
     assert "release_request" not in tools and "release_update" not in tools
     assert listed["task_update"]["inputSchema"]["properties"][

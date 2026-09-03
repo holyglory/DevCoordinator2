@@ -175,6 +175,20 @@ not contradict them.
   task. Replies, author edits, resolve/reopen, and explicit author deletion are
   persistent; resolving/reopening/dropping the annotation updates the linked
   Plan task, and the original task/event history is never erased.
+- **REQ-TEST-26** (2026-09-03, in scope): A successful direct process check may
+  declare up to eight required non-secret evidence directories, each with a
+  caller-selected byte ceiling no greater than 1 GiB and no more than 4,096
+  regular files; the combined declared ceiling is at most 2 GiB. The executor
+  copies the trees without following links into that exact check leaf, records
+  sorted per-file size/SHA-256 plus one domain-separated tree digest, and binds
+  the manifest to run, test, check, source, configuration, proof kind, and
+  requested tier. Empty, overlapping, reserved, changed, oversized, aliased,
+  special-file, and fan-out declarations fail the check. Retention removes the
+  copy atomically with its run. Trusted local callers and authenticated
+  administrators can list a bounded manifest page and read one exact verified
+  file chunk; the CLI can reconstruct selected trees only in a new caller-owned
+  destination and revalidates every file and tree hash. No operation exposes a
+  private source/storage path or writes a caller-selected server-side export.
 
 ## Deployments (REQ-DEPLOY, P3)
 

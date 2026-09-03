@@ -163,37 +163,90 @@ def test_broken_command_terminal_failure(world):
 
 def test_timeout_kills_whole_cgroup(world):
     _write_config(world.repo, world.caller,
-                  _unit_config(["sleep", "120"], timeout=2))
+                  _unit_config([
+                      "/usr/bin/python3", "-c",
+                      "import time;print('timeout-log-sentinel',flush=True);time.sleep(120)",
+                  ], timeout=2))
     resp = _call(world, "test.start", {"path": str(world.repo)})
     assert resp["ok"], resp
     final = _wait_status(world, world.repo, {"timed-out"}, timeout=40)
     assert final["exit_code"] is None
     assert _units() == []
+    catalog = _log_catalog(
+        world, resp["result"]["run_id"], check="main", phase="check")
+    stdout = next(entry for entry in catalog["entries"]
+                  if entry["log_ref"]["stream"] == "stdout")
+    assert "timeout-log-sentinel" in _log_text(_log_call(
+        world, "tail", stdout["log_ref"], lines=10, max_bytes=4096))
 
 
 def test_cancel(world):
-    _write_config(world.repo, world.caller, _unit_config(["sleep", "120"]))
-    resp = _call(world, "test.start", {"path": str(world.repo)})
-    assert resp["ok"], resp
-    stop = _call(world, "test.stop", {"path": str(world.repo)})
-    assert stop["ok"], stop
-    assert stop["result"]["status"] == "cancelled"
-    assert _units() == []
+    command = [
+        "/usr/bin/python3", "-c",
+        "from pathlib import Path;import time;"
+        "print('cancel-log-sentinel',flush=True);"
+        "Path('cancel-log-ready').write_text('ready');time.sleep(120)",
+    ]
+    _write_config(world.repo, world.caller, _unit_config(command))
+    with DirectoryEvents(world.repo) as events:
+        resp = _call(world, "test.start", {"path": str(world.repo)})
+        assert resp["ok"], resp
+        ready = world.repo / "cancel-log-ready"
+        while not ready.exists():
+            events.wait(10)
+        stop = _call(world, "test.stop", {"path": str(world.repo)})
+        assert stop["ok"], stop
+        assert stop["result"]["status"] == "cancelled"
+        assert _units() == []
+        catalog = _log_catalog(
+            world, resp["result"]["run_id"], check="main", phase="check")
+        stdout = next(entry for entry in catalog["entries"]
+                      if entry["log_ref"]["stream"] == "stdout")
+        assert "cancel-log-sentinel" in _log_text(_log_call(
+            world, "tail", stdout["log_ref"], lines=10, max_bytes=4096))
 
 
 def test_supersession_latest_start_wins(world):
-    _write_config(world.repo, world.caller, _unit_config(["sleep", "120"]))
-    first = _call(world, "test.start", {"path": str(world.repo)})
-    assert first["ok"], first
-    second = _call(world, "test.start", {"path": str(world.repo)})
-    assert second["ok"], second
-    assert second["result"]["run_id"] != first["result"]["run_id"]
-    active = _units()
-    assert len(active) == 1
-    assert second["result"]["unit"] in active[0]
-    status = _call(world, "test.status", {"path": str(world.repo)})
-    assert status["result"]["run_id"] == second["result"]["run_id"]
-    _call(world, "test.stop", {"path": str(world.repo)})
+    command = [
+        "/usr/bin/python3", "-c",
+        "from pathlib import Path;import time;"
+        "print('active-log-sentinel',flush=True);"
+        "Path('active-log-ready').write_text('ready');time.sleep(120)",
+    ]
+    _write_config(world.repo, world.caller, _unit_config(command))
+    with DirectoryEvents(world.repo) as events:
+        first = _call(world, "test.start", {"path": str(world.repo)})
+        assert first["ok"], first
+        ready = world.repo / "active-log-ready"
+        while not ready.exists():
+            events.wait(10)
+
+        active_catalog = _log_catalog(
+            world, first["result"]["run_id"], check="main", phase="check")
+        active_stdout = next(
+            entry for entry in active_catalog["entries"]
+            if entry["log_ref"]["stream"] == "stdout")
+        assert active_stdout["complete"] is False and active_stdout["sha256"] is None
+        assert "active-log-sentinel" in _log_text(_log_call(
+            world, "tail", active_stdout["log_ref"], lines=10, max_bytes=4096))
+
+        second = _call(world, "test.start", {"path": str(world.repo)})
+        assert second["ok"], second
+        assert second["result"]["run_id"] != first["result"]["run_id"]
+        superseded_catalog = _log_catalog(
+            world, first["result"]["run_id"], check="main", phase="check")
+        superseded_stdout = next(
+            entry for entry in superseded_catalog["entries"]
+            if entry["log_ref"]["stream"] == "stdout")
+        assert superseded_stdout["complete"] is False
+        assert "active-log-sentinel" in _log_text(_log_call(
+            world, "tail", superseded_stdout["log_ref"], lines=10, max_bytes=4096))
+        active = _units()
+        assert len(active) == 1
+        assert second["result"]["unit"] in active[0]
+        status = _call(world, "test.status", {"path": str(world.repo)})
+        assert status["result"]["run_id"] == second["result"]["run_id"]
+        _call(world, "test.stop", {"path": str(world.repo)})
 
 
 def test_flooder_is_complete_hash_bound_and_keeps_final_sentinel(world):
@@ -226,19 +279,37 @@ def test_flooder_is_complete_hash_bound_and_keeps_final_sentinel(world):
 
 
 def test_daemon_restart_marks_interrupted(world):
-    _write_config(world.repo, world.caller, _unit_config(["sleep", "120"]))
-    resp = _call(world, "test.start", {"path": str(world.repo)})
-    assert resp["ok"], resp
-    assert "summary_path" not in resp["result"]
-    summary_path = world.repo / ".devcoordinator" / "test" / "current" / "summary.json"
-    world.daemon.kill_hard()
-    assert json.loads(summary_path.read_text())["status"] == "running"
-    world.daemon.start()
-    doc = _wait_status(world, world.repo, {"interrupted"}, timeout=30)
-    assert doc["status"] == "interrupted"
-    assert _units() == []
-    # No unit remains that could resurrect the interrupted run.
-    assert json.loads(summary_path.read_text())["status"] == "interrupted"
+    command = [
+        "/usr/bin/python3", "-c",
+        "from pathlib import Path;import time;"
+        "print('restart-log-sentinel',flush=True);"
+        "Path('restart-log-ready').write_text('ready');time.sleep(120)",
+    ]
+    _write_config(world.repo, world.caller, _unit_config(command))
+    with DirectoryEvents(world.repo) as events:
+        resp = _call(world, "test.start", {"path": str(world.repo)})
+        assert resp["ok"], resp
+        ready = world.repo / "restart-log-ready"
+        while not ready.exists():
+            events.wait(10)
+        assert "summary_path" not in resp["result"]
+        summary_path = world.repo / ".devcoordinator" / "test" / "current" / "summary.json"
+        world.daemon.kill_hard()
+        assert json.loads(summary_path.read_text())["status"] == "running"
+        world.daemon.start()
+        doc = _wait_status(world, world.repo, {"interrupted"}, timeout=30)
+        assert doc["status"] == "interrupted"
+        assert _units() == []
+        # No unit remains that could resurrect the interrupted run.
+        assert json.loads(summary_path.read_text())["status"] == "interrupted"
+        catalog = _log_catalog(
+            world, resp["result"]["run_id"], check="main", phase="check")
+        stdout = next(
+            entry for entry in catalog["entries"]
+            if entry["log_ref"]["stream"] == "stdout")
+        assert stdout["complete"] is False
+        assert "restart-log-sentinel" in _log_text(_log_call(
+            world, "tail", stdout["log_ref"], lines=10, max_bytes=4096))
 
 
 def test_root_caller_rejected(world):

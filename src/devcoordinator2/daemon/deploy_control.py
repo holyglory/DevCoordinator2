@@ -16,7 +16,7 @@ from devcoordinator2.daemon import deploy_engine as eng
 from devcoordinator2.daemon import deploy_runtime as rt
 from devcoordinator2.daemon import deploy_state as st
 from devcoordinator2.daemon import deploy_status as dstatus
-from devcoordinator2.daemon import events, ports
+from devcoordinator2.daemon import events, health_checks, ports
 from devcoordinator2.daemon.db import Database
 from devcoordinator2.daemon.deploy_config import (
     ComponentSpec,
@@ -126,7 +126,10 @@ class Deployments:
             if row and row["spec_fingerprint"] == spec_fp and row["state"] == "running" \
                     and not dirty:
                 status = self._status(ctx, row)
-                if status["state"] == "running":
+                route_expected = bool(domain and ctx.spec.route_component)
+                route_healthy = self._validate_or_withdraw_route(ctx)
+                if status["state"] == "running" \
+                        and (not route_expected or route_healthy):
                     status["unchanged"] = True
                     return status
             number = (row["current_generation"] if row else 0) or 0
@@ -136,11 +139,18 @@ class Deployments:
                 ttl = (datetime.now(UTC) + timedelta(seconds=ctx.spec.ttl_seconds)
                        ).strftime("%Y-%m-%dT%H:%M:%SZ")
             old_rows = {c["name"]: c for c in st.components(self._db, ctx.dep_id)}
+            prior_desired = self._snapshot_desired_intent(ctx, old_rows)
             st.upsert_deployment(self._db, dep_id=ctx.dep_id, reg=reg, name=ctx.spec.name,
                                  source=ctx.source, domain=domain, spec=ctx.spec,
                                  spec_fp=spec_fp, state="applying", caller_uid=ctx.caller_uid,
                                  client=caller.client_kind, ttl_expires_at=ttl)
-            gen_path = eng.prepare_generation_path(ctx, worktree, number, commit)
+            try:
+                gen_path = eng.prepare_generation_path(ctx, worktree, number, commit)
+            except ProtocolError:
+                st.set_deployment(self._db, ctx.dep_id,
+                                  state=row["state"] if row else "failed")
+                self._restore_desired_intent(ctx, prior_desired)
+                raise
             st.add_generation(self._db, ctx.dep_id, number, commit, dirty, gen_path, spec_fp)
             try:
                 eng.run_build(ctx, gen_path)
@@ -149,8 +159,11 @@ class Deployments:
                 st.set_generation_state(self._db, ctx.dep_id, number, "failed")
                 st.set_deployment(self._db, ctx.dep_id,
                                   state=row["state"] if row else "failed")
+                self._restore_desired_intent(ctx, prior_desired)
                 raise
-            return self._converge(ctx, worktree, row, old_rows, number, gen_path, domain)
+            return self._converge(
+                ctx, worktree, row, old_rows, number, gen_path, domain,
+                prior_desired=prior_desired)
         finally:
             lock.release()
 
@@ -169,19 +182,23 @@ class Deployments:
                 raise ProtocolError("rollback_unavailable", "no previous generation retained")
             number = row["current_generation"] + 1
             old_rows = {c["name"]: c for c in st.components(self._db, ctx.dep_id)}
+            prior_desired = self._snapshot_desired_intent(ctx, old_rows)
             st.set_deployment(self._db, ctx.dep_id, state="applying")
             st.add_generation(self._db, ctx.dep_id, number, gen["commit_hash"],
                               bool(gen["dirty"]), Path(gen["path"]), gen["fingerprint"])
             st.set_deployment(self._db, ctx.dep_id, spec_fingerprint=gen["fingerprint"])
             return self._converge(ctx, worktree, row, old_rows, number, Path(gen["path"]),
                                   st.effective_domain(row, ctx.spec, ctx.source),
-                                  rollback=(row["current_generation"], prev))
+                                  rollback=(row["current_generation"], prev),
+                                  prior_desired=prior_desired)
         finally:
             lock.release()
 
     def _converge(self, ctx: eng.Ctx, worktree: Path, row: dict | None,
                   old_rows: dict[str, dict], number: int, gen_path: Path,
-                  domain: str | None, rollback: tuple[int, int] | None = None) -> dict:
+                  domain: str | None, rollback: tuple[int, int] | None = None,
+                  prior_desired: tuple[dict[str, str],
+                                       dict[str, dict[str, str]]] | None = None) -> dict:
         db, spec = self._db, ctx.spec
         port_map: dict[str, int] = {}
         stable_ports = ports.assigned(db, ctx.dep_id, 0)
@@ -241,7 +258,9 @@ class Deployments:
                     raise ProtocolError("deployment_apply_failed",
                                         f"component {comp.name} unhealthy: {note}")
         except ProtocolError as exc:
-            self._abort_candidate(ctx, worktree, number, gen_path, started, old_rows)
+            self._abort_candidate(
+                ctx, worktree, number, gen_path, started, old_rows, prior_desired)
+            self._validate_or_withdraw_route(ctx)
             detail = json.dumps({"failed": exc.message,
                                  "components": self._component_states(ctx)})
             had_generation = bool(row and row["current_generation"])
@@ -268,6 +287,7 @@ class Deployments:
         st.set_generation_state(db, ctx.dep_id, number, "current")
         if prev and ctx.source == "checkout":
             st.set_generation_state(db, ctx.dep_id, prev, "previous")
+        self._set_running_intent(ctx, spec.components)
         st.set_deployment(db, ctx.dep_id, state="running", current_generation=number,
                           previous_generation=prev if ctx.source == "checkout" else None)
         status = self._status(ctx, st.get_deployment(db, ctx.dep_id))
@@ -300,7 +320,8 @@ class Deployments:
                     pass
         return eng.start_component(ctx, comp, number, gen_path, port_map)
 
-    def _abort_candidate(self, ctx, worktree, number, gen_path, started, old_rows) -> None:
+    def _abort_candidate(self, ctx, worktree, number, gen_path, started, old_rows,
+                         prior_desired=None) -> None:
         for comp, (kind, identity) in reversed(started):
             try:
                 generated = ctx.env_path(comp.name, number)
@@ -341,6 +362,58 @@ class Deployments:
         st.prune_generations(self._db, ctx.dep_id,
                              {n for n in (r["generation"] for r in old_rows.values()) if n}
                              | {0})
+        if prior_desired is not None:
+            self._restore_desired_intent(ctx, prior_desired)
+
+    def _snapshot_desired_intent(
+            self, ctx: eng.Ctx, rows: dict[str, dict]
+    ) -> tuple[dict[str, str], dict[str, dict[str, str]]]:
+        components = {name: row["desired_state"] for name, row in rows.items()}
+        services = {
+            name: st.compose_service_desires(self._db, ctx.dep_id, name)
+            for name, row in rows.items() if row["type"] == "compose"
+        }
+        return components, services
+
+    def _restore_desired_intent(
+            self, ctx: eng.Ctx,
+            desired: tuple[dict[str, str], dict[str, dict[str, str]]]) -> None:
+        components, services = desired
+        declared = {comp.name: comp for comp in ctx.spec.components}
+        for name, state in components.items():
+            if name in declared:
+                st.set_component(self._db, ctx.dep_id, name, desired_state=state)
+        for component, states in services.items():
+            spec = declared.get(component)
+            if spec is None or spec.type != "compose":
+                continue
+            for service, state in states.items():
+                if service in spec.independent_services:
+                    st.set_compose_service_desired(
+                        self._db, ctx.dep_id, component, service, state)
+
+    def _set_running_intent(self, ctx: eng.Ctx,
+                            components: tuple[ComponentSpec, ...]) -> None:
+        for comp in components:
+            st.set_component(
+                self._db, ctx.dep_id, comp.name, desired_state="running")
+            if comp.type == "compose":
+                for service in comp.independent_services:
+                    st.set_compose_service_desired(
+                        self._db, ctx.dep_id, comp.name, service, "running")
+
+    def _validate_or_withdraw_route(self, ctx: eng.Ctx) -> bool:
+        rows = self._db.query(
+            "SELECT port FROM domain_routes WHERE deployment_id=?", (ctx.dep_id,))
+        if not rows or rows[0]["port"] is None:
+            return False
+        port = int(rows[0]["port"])
+        ready, _ = health_checks.tcp_probe("127.0.0.1", port)
+        if ready:
+            return True
+        st.set_route(self._db, None, ctx.dep_id, None, None, None)
+        eng.publish_routes(ctx)
+        return False
 
     def _retire(self, ctx: eng.Ctx, worktree: Path, spec: DeploymentSpec,
                 old_rows: dict[str, dict], prev: int | None, number: int) -> None:
@@ -504,6 +577,7 @@ class Deployments:
             old = rows.get(comp.name)
             if not st.is_owned(comp):
                 continue
+            self._set_running_intent(ctx, (comp,))
             try:
                 if old and old["binding_kind"] == "container" and old["binding_identity"] \
                         and rt.container_state(old["binding_identity"])["state"] != "missing":
@@ -560,7 +634,12 @@ class Deployments:
     # -- status / list / logs (deploy_status.py) -----------------------------
 
     def _status(self, ctx: eng.Ctx, row: dict) -> dict:
-        return dstatus.status(ctx, row)
+        status = dstatus.status(ctx, row)
+        if status["state"] == "running" and any(
+                component["owned"] and component["health"] == "unhealthy"
+                for component in status["components"]):
+            status["state"] = "degraded"
+        return status
 
     def _component_states(self, ctx: eng.Ctx) -> list[dict]:
         return dstatus.component_states(ctx)
@@ -568,7 +647,7 @@ class Deployments:
     def status(self, path: Path, name: str | None, dep_id: str | None,
                caller: Caller) -> dict:
         ctx, _, _ = self._resolve(path, name, dep_id, caller)
-        return dstatus.status(ctx, self._existing(ctx))
+        return self._status(ctx, self._existing(ctx))
 
     def list(self, path: Path | None, caller: Caller) -> dict:
         return dstatus.list_all(self._db, self._registry, path, caller)

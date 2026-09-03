@@ -23,6 +23,11 @@ pub const MAX_DIAGNOSTIC_PREVIEW_BYTES: usize = 256;
 pub const MAX_DIAGNOSTIC_NAME_BYTES: usize = 256;
 pub const MAX_DIAGNOSTIC_PATH_BYTES: usize = 512;
 pub const MAX_DIAGNOSTIC_LOG_REFS: usize = 16;
+pub const MAX_RETAINED_ARTIFACTS: usize = 8;
+pub const MAX_RETAINED_ARTIFACT_FILES: usize = 4096;
+pub const MAX_RETAINED_ARTIFACT_BYTES: u64 = 1024 * 1024 * 1024;
+pub const MAX_RETAINED_ARTIFACT_TOTAL_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+pub const MAX_RETAINED_ARTIFACT_MANIFEST_BYTES: usize = 4 * 1024 * 1024;
 
 /// A schema marker that can only deserialize the current executor contract.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -312,6 +317,23 @@ pub struct ArtifactReceipt {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
+pub struct RetainedArtifactSpec {
+    pub name: String,
+    pub path: String,
+    pub max_bytes: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RetainedArtifactReceipt {
+    pub name: String,
+    pub size: u64,
+    pub files: u32,
+    pub sha256: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct CaseSpec {
     pub id: String,
     pub args: Vec<String>,
@@ -332,6 +354,8 @@ pub struct CheckPlan {
     pub completion: CompletionMode,
     pub on_failure: FailureMode,
     pub produces: Vec<String>,
+    #[serde(default)]
+    pub retained_artifacts: Vec<RetainedArtifactSpec>,
     #[serde(default)]
     pub diagnostic_sources: Vec<DiagnosticReportSource>,
     pub command: Option<Vec<String>>,
@@ -657,6 +681,85 @@ fn validate_check(check: &CheckPlan) -> Result<(), ContractError> {
     }
     for path in &check.produces {
         validate_relative_path("artifact", path)?;
+    }
+    if check.retained_artifacts.len() > MAX_RETAINED_ARTIFACTS {
+        return Err(ContractError::new(format!(
+            "check {:?} declares more than {MAX_RETAINED_ARTIFACTS} retained artifacts",
+            check.name
+        )));
+    }
+    if fanout && !check.retained_artifacts.is_empty() {
+        return Err(ContractError::new(format!(
+            "fan-out check {:?} cannot declare retained artifacts",
+            check.name
+        )));
+    }
+    if check.completion != CompletionMode::Process && !check.retained_artifacts.is_empty() {
+        return Err(ContractError::new(format!(
+            "event-completed check {:?} cannot declare retained artifacts",
+            check.name
+        )));
+    }
+    let mut retained_names = BTreeSet::new();
+    let mut retained_paths = BTreeSet::new();
+    let mut retained_total = 0_u64;
+    for artifact in &check.retained_artifacts {
+        validate_name("retained artifact", &artifact.name, 64)?;
+        validate_relative_path("retained artifact", &artifact.path)?;
+        if artifact.path.len() > 256 || artifact.path.chars().any(char::is_control) {
+            return Err(ContractError::new(format!(
+                "check {:?} retained artifact path exceeds its safe bound",
+                check.name
+            )));
+        }
+        if artifact.path == ".git"
+            || artifact.path.starts_with(".git/")
+            || artifact.path == ".devcoordinator"
+            || artifact.path.starts_with(".devcoordinator/")
+        {
+            return Err(ContractError::new(format!(
+                "check {:?} retained artifact path is reserved",
+                check.name
+            )));
+        }
+        if artifact.max_bytes == 0 || artifact.max_bytes > MAX_RETAINED_ARTIFACT_BYTES {
+            return Err(ContractError::new(format!(
+                "check {:?} retained artifact {:?} max_bytes must be in [1, {MAX_RETAINED_ARTIFACT_BYTES}]",
+                check.name, artifact.name
+            )));
+        }
+        retained_total = retained_total
+            .checked_add(artifact.max_bytes)
+            .ok_or_else(|| ContractError::new("retained artifact byte limit overflow"))?;
+        if !retained_names.insert(artifact.name.as_str()) {
+            return Err(ContractError::new(format!(
+                "check {:?} repeats a retained artifact name",
+                check.name
+            )));
+        }
+        if !retained_paths.insert(artifact.path.as_str()) {
+            return Err(ContractError::new(format!(
+                "check {:?} repeats a retained artifact path",
+                check.name
+            )));
+        }
+    }
+    if retained_total > MAX_RETAINED_ARTIFACT_TOTAL_BYTES {
+        return Err(ContractError::new(format!(
+            "check {:?} retained artifact limits exceed {MAX_RETAINED_ARTIFACT_TOTAL_BYTES} bytes",
+            check.name
+        )));
+    }
+    for left in &check.retained_artifacts {
+        for right in &check.retained_artifacts {
+            if left.name != right.name && Path::new(&right.path).starts_with(Path::new(&left.path))
+            {
+                return Err(ContractError::new(format!(
+                    "check {:?} retained artifact paths overlap",
+                    check.name
+                )));
+            }
+        }
     }
     if check.diagnostic_sources.len() > MAX_DIAGNOSTIC_SOURCES {
         return Err(ContractError::new(format!(
@@ -1019,6 +1122,7 @@ pub struct CheckReport {
     pub duration_seconds: Option<f64>,
     pub exit: DiagnosticExit,
     pub artifacts: Vec<ArtifactReceipt>,
+    pub retained_artifacts: Vec<RetainedArtifactReceipt>,
     pub streams: Vec<LogStreamSummary>,
     pub case_count: u32,
     pub cases: Vec<CaseReport>,
@@ -1301,6 +1405,7 @@ mod tests {
             completion: CompletionMode::Process,
             on_failure: FailureMode::Continue,
             produces: Vec::new(),
+            retained_artifacts: Vec::new(),
             diagnostic_sources: Vec::new(),
             command: Some(vec!["true".into()]),
             discover: None,
@@ -1363,6 +1468,61 @@ mod tests {
             .validate()
             .expect_err("tier inversion rejected");
         assert!(error.to_string().contains("higher-tier"));
+    }
+
+    #[test]
+    fn retained_artifact_contract_is_bounded_direct_and_non_overlapping() {
+        let mut direct = check("browser", ValidationTier::Development);
+        direct.retained_artifacts = vec![
+            RetainedArtifactSpec {
+                name: "production".into(),
+                path: "artifacts/production".into(),
+                max_bytes: 512 * 1024 * 1024,
+            },
+            RetainedArtifactSpec {
+                name: "developer-test".into(),
+                path: "artifacts/developer-test".into(),
+                max_bytes: 128 * 1024 * 1024,
+            },
+        ];
+        plan(vec![direct.clone()])
+            .validate()
+            .expect("valid retained trees");
+
+        let mut overlap = direct.clone();
+        overlap.retained_artifacts[1].path = "artifacts/production/nested".into();
+        assert!(
+            plan(vec![overlap])
+                .validate()
+                .expect_err("overlap rejected")
+                .to_string()
+                .contains("overlap")
+        );
+
+        let mut reserved = direct.clone();
+        reserved.retained_artifacts[0].path = ".devcoordinator/private".into();
+        assert!(
+            plan(vec![reserved])
+                .validate()
+                .expect_err("reserved path rejected")
+                .to_string()
+                .contains("reserved")
+        );
+
+        let mut fanout = direct;
+        fanout.command = None;
+        fanout.case_command = Some(vec!["true".into()]);
+        fanout.cases = Some(vec![CaseSpec {
+            id: "one".into(),
+            args: Vec::new(),
+        }]);
+        assert!(
+            plan(vec![fanout])
+                .validate()
+                .expect_err("fanout retained tree rejected")
+                .to_string()
+                .contains("fan-out")
+        );
     }
 
     #[test]

@@ -148,6 +148,28 @@ untracked `instance/` directory and in the installed instance configuration
   decision (DC2-2026-09-01-IMMEDIATE-ADMIN-ACTIONS,
   DC2-2026-09-02-VISUAL-EVIDENCE-ACCESS).
 
+## Generic retained test evidence
+
+- A successful direct process check may declare a bounded set of required,
+  non-secret repository-relative evidence directories. The non-root executor
+  snapshots only regular files without following links into the same private
+  run leaf as its logs; empty, changed, oversized, special-file, overlapping,
+  `.git`, and `.devcoordinator` sources fail the check. The manifest binds the
+  copy to run, test, check, initial source digest, configuration digest, proof
+  kind, and requested validation tier
+  (DC2-2026-09-03-RETAINED-EVIDENCE-TREES).
+- These trees inherit the governed-log retention and disclosure boundary. A
+  trusted local caller or authenticated Console administrator may list bounded
+  path-free metadata and request one exact verified file chunk. Repository
+  viewers and operators cannot read it. The CLI may materialize selected trees
+  only into a new caller-owned local destination; the root daemon never writes
+  an arbitrary export destination and never returns the private source or
+  storage path.
+- The Coordinator does not claim to detect arbitrary secrets inside declared
+  files. Governed commands remain responsible for keeping credentials and
+  upstream secrets out of retained evidence, as they already are for complete
+  stdout, stderr, and structured reports.
+
 ## Operating mode
 
 - `devcoordinatord` (the DevCoordinator2 daemon) runs as root in a hardened

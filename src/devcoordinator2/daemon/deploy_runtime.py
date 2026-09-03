@@ -350,6 +350,26 @@ def compose_container_ids(project: str) -> list[str]:
     return docker_cli.list_ids_by_labels({"com.docker.compose.project": project})
 
 
+def compose_publishes_host_port(project: str, host_port: int) -> tuple[bool, str]:
+    """Prove that the exact managed Compose project owns a host-port binding."""
+    for container_id in compose_container_ids(project):
+        try:
+            info = docker_cli.inspect(container_id)
+        except docker_cli.DockerError:
+            return False, f"allocated host port {host_port} could not be verified"
+        published = (info.get("NetworkSettings") or {}).get("Ports") or {}
+        for bindings in published.values():
+            for binding in bindings or ():
+                try:
+                    bound_port = int(binding.get("HostPort", ""))
+                except (AttributeError, TypeError, ValueError):
+                    continue
+                if bound_port == host_port:
+                    return True, f"allocated host port {host_port} is published"
+    return (False,
+            f"allocated host port {host_port} is not published by the Compose project")
+
+
 def compose_state(project: str, services: tuple[str, ...] = (),
                   finite_services: tuple[str, ...] = (),
                   completions: dict[str, dict] | None = None,
@@ -398,7 +418,7 @@ def compose_state(project: str, services: tuple[str, ...] = (),
         elif any(item["state"] == "starting" for item in items):
             service_state = "starting"
         elif all(item["state"] == "stopped" for item in items):
-            service_state = "stopped"
+            service_state = "failed"
         else:
             service_state = "failed"
         details.append({"name": name, "role": "finite" if name in finite else "running",

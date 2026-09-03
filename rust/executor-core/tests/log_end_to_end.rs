@@ -92,6 +92,7 @@ fn direct(name: &str, command: Vec<String>) -> CheckPlan {
         completion: CompletionMode::Process,
         on_failure: FailureMode::Continue,
         produces: Vec::new(),
+        retained_artifacts: Vec::new(),
         diagnostic_sources: Vec::new(),
         command: Some(command),
         discover: None,

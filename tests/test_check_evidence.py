@@ -100,6 +100,7 @@ def test_report_reader_accepts_only_strict_executor_schema_two(tmp_path):
             "status": "failed", "started_at": "2026-09-02T12:00:00Z",
             "finished_at": "2026-09-02T12:00:01Z", "duration_seconds": 1.0,
             "exit": {"code": 1, "signal": None}, "artifacts": [],
+            "retained_artifacts": [],
             "streams": [stream], "case_count": 0, "cases": [],
             "cases_truncated": False,
         }]

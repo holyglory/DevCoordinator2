@@ -22,6 +22,9 @@ TIMEOUT_MIN, TIMEOUT_MAX, TIMEOUT_DEFAULT = 1, 21600, 600
 VALIDATION_TIERS = ("development", "pre-merge", "release")
 DIAGNOSTIC_REPORT_FORMATS = ("junit", "playwright-json", "rust-json")
 MAX_DIAGNOSTIC_SOURCES = 8
+MAX_RETAINED_ARTIFACTS = 8
+MAX_RETAINED_ARTIFACT_BYTES = 1024 * 1024 * 1024
+MAX_RETAINED_ARTIFACT_TOTAL_BYTES = 2 * 1024 * 1024 * 1024
 _TIER_RANK = {tier: index for index, tier in enumerate(VALIDATION_TIERS)}
 POSTGRES_IMAGE_RE = re.compile(r"postgres:[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 POSTGRES_DIGEST_IMAGE_RE = re.compile(
@@ -64,6 +67,15 @@ class DiagnosticSourceSpec:
 
 
 @dataclass(frozen=True)
+class RetainedArtifactSpec:
+    """One required directory snapshot retained with a successful check."""
+
+    name: str
+    path: str
+    max_bytes: int
+
+
+@dataclass(frozen=True)
 class CheckSpec:
     """One check in a finite governed dependency graph."""
 
@@ -84,6 +96,7 @@ class CheckSpec:
     diagnostic_sources: tuple[DiagnosticSourceSpec, ...]
     timeout_seconds: int | None
     invalidates: tuple[str, ...]
+    retained_artifacts: tuple[RetainedArtifactSpec, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -320,6 +333,52 @@ def _validate_diagnostic_sources(label: str, value) \
     return tuple(sources)
 
 
+def _validate_retained_artifacts(label: str, value) \
+        -> tuple[RetainedArtifactSpec, ...]:
+    if not isinstance(value, list):
+        raise ConfigError(f"{label} must be an array of retained-artifact tables")
+    if len(value) > MAX_RETAINED_ARTIFACTS:
+        raise ConfigError(f"{label} exceeds {MAX_RETAINED_ARTIFACTS} entries")
+    artifacts: list[RetainedArtifactSpec] = []
+    names: set[str] = set()
+    paths: list[Path] = []
+    total = 0
+    for index, raw in enumerate(value):
+        item_label = f"{label}[{index}]"
+        if not isinstance(raw, dict) or set(raw) != {"name", "path", "max_bytes"}:
+            raise ConfigError(
+                f"{item_label} must contain exactly name, path, and max_bytes")
+        name = raw["name"]
+        if not isinstance(name, str) or not CHECK_NAME_RE.fullmatch(name):
+            raise ConfigError(f"{item_label}.name is invalid")
+        if name in names:
+            raise ConfigError(f"{label} repeats retained artifact name {name!r}")
+        path = _validate_artifact_path(f"{item_label}.path", raw["path"])
+        if any(ord(character) < 32 or ord(character) == 127 for character in path):
+            raise ConfigError(f"{item_label}.path contains a control character")
+        parsed = Path(path)
+        if parsed.parts[0] in (".git", ".devcoordinator"):
+            raise ConfigError(f"{item_label}.path is reserved")
+        for prior in paths:
+            if parsed == prior or parsed.parts[:len(prior.parts)] == prior.parts \
+                    or prior.parts[:len(parsed.parts)] == parsed.parts:
+                raise ConfigError(f"{label} contains overlapping paths")
+        maximum = raw["max_bytes"]
+        if not isinstance(maximum, int) or isinstance(maximum, bool) \
+                or not 1 <= maximum <= MAX_RETAINED_ARTIFACT_BYTES:
+            raise ConfigError(
+                f"{item_label}.max_bytes must be an integer in "
+                f"[1, {MAX_RETAINED_ARTIFACT_BYTES}]")
+        total += maximum
+        if total > MAX_RETAINED_ARTIFACT_TOTAL_BYTES:
+            raise ConfigError(
+                f"{label} declared limits exceed {MAX_RETAINED_ARTIFACT_TOTAL_BYTES} bytes")
+        names.add(name)
+        paths.append(parsed)
+        artifacts.append(RetainedArtifactSpec(name, path, maximum))
+    return tuple(artifacts)
+
+
 def _validate_cases(label: str, value) -> tuple[CaseSpec, ...]:
     if not isinstance(value, list) or not value:
         raise ConfigError(f"{label} must be a non-empty array of case tables")
@@ -361,6 +420,7 @@ def _validate_checks(worktree_root: Path, test_name: str, default_cwd: Path,
         "name", "tier", "role", "command", "discover", "case_command", "cases",
         "cwd", "env", "after", "requires", "completion", "on_failure", "produces",
         "timeout_seconds", "invalidates", "diagnostic_sources",
+        "retained_artifacts",
     }
     for index, item in enumerate(raw):
         label = f"[test.{test_name}.check[{index}]]"
@@ -425,6 +485,14 @@ def _validate_checks(worktree_root: Path, test_name: str, default_cwd: Path,
             raise ConfigError(f"{label}.produces exceeds 16 paths")
         produces = tuple(_validate_artifact_path(
             f"{label}.produces", value) for value in produces_raw)
+        retained_artifacts = _validate_retained_artifacts(
+            f"{label}.retained_artifacts", item.get("retained_artifacts", []))
+        if retained_artifacts and checked_command is None:
+            raise ConfigError(
+                f"{label}.retained_artifacts is available only for direct checks")
+        if retained_artifacts and completion != "process":
+            raise ConfigError(
+                f"{label}.retained_artifacts requires process completion")
         diagnostic_sources = _validate_diagnostic_sources(
             f"{label}.diagnostic_sources", item.get("diagnostic_sources", []))
         timeout = item.get("timeout_seconds")
@@ -458,6 +526,7 @@ def _validate_checks(worktree_root: Path, test_name: str, default_cwd: Path,
             diagnostic_sources=diagnostic_sources,
             timeout_seconds=timeout,
             invalidates=invalidates,
+            retained_artifacts=retained_artifacts,
         ))
 
     names = {check.name for check in checks}

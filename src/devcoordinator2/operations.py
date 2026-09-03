@@ -84,6 +84,10 @@ OPERATIONS: dict[str, OperationPolicy] = {
         "repository", "administrator", "read", idempotent=True),
     "test.evidence.image": _policy(
         "repository", "administrator", "read", idempotent=True),
+    "test.artifact.catalog": _policy(
+        "repository", "administrator", "read", idempotent=True),
+    "test.artifact.file": _policy(
+        "repository", "administrator", "read", idempotent=True),
     "test.evidence.feedback.create": _policy(
         "repository", "administrator", "append"),
     "test.evidence.feedback.reply": _policy(

@@ -46,6 +46,19 @@ def test_compose_state_does_not_hide_stopped_running_service(monkeypatch):
     assert state["state"] == "failed"
 
 
+def test_compose_state_reports_unexpected_full_stop_as_failed(monkeypatch):
+    values = {
+        "api": {"state": "stopped", "status": "exited", "exit_code": 0,
+                "compose_service": "api"},
+        "worker": {"state": "stopped", "status": "exited", "exit_code": 0,
+                   "compose_service": "worker"},
+    }
+    _states(monkeypatch, values)
+    state = runtime.compose_state("project", ("api", "worker"))
+    assert state["state"] == "failed"
+    assert {service["state"] for service in state["services"]} == {"failed"}
+
+
 def test_compose_state_distinguishes_requested_stop_from_crash(monkeypatch):
     values = {
         "api": {"state": "running", "status": "running", "exit_code": 0,
@@ -177,3 +190,20 @@ def test_compose_service_ready_fails_closed_on_terminal_container(monkeypatch):
         lambda _container: {"state": "failed", "status": "exited"})
     assert runtime.compose_service_ready("project", "worker", 10) == (
         False, "worker became terminal: exited")
+
+
+def test_compose_published_host_port_is_bound_to_exact_project_container(monkeypatch):
+    monkeypatch.setattr(runtime, "compose_container_ids", lambda _project: ["api", "worker"])
+    details = {
+        "api": {"NetworkSettings": {"Ports": {
+            "8080/tcp": [{"HostIp": "127.0.0.1", "HostPort": "20006"}]
+        }}},
+        "worker": {"NetworkSettings": {"Ports": {}}},
+    }
+    monkeypatch.setattr(
+        runtime.docker_cli, "inspect", lambda container_id: details[container_id])
+
+    assert runtime.compose_publishes_host_port("project", 20006) == (
+        True, "allocated host port 20006 is published")
+    assert runtime.compose_publishes_host_port("project", 20007) == (
+        False, "allocated host port 20007 is not published by the Compose project")

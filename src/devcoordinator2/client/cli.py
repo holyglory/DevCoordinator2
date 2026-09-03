@@ -9,14 +9,22 @@ STDIO MCP server. Everything else is a thin protocol call.
 from __future__ import annotations
 
 import argparse
+import base64
+import binascii
+import hashlib
 import json
 import os
+import re
+import shutil
 import sys
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from devcoordinator2.client.common import DaemonUnavailable, call
 from devcoordinator2.paths import load_instance_config
 from devcoordinator2.protocol import CLIENT_KINDS
+
+_RETAINED_ARTIFACT_NAME_RE = re.compile(r"[a-z0-9][a-z0-9-]{0,63}$")
+_SHA256_RE = re.compile(r"[0-9a-f]{64}$")
 
 
 def _add_common(parser: argparse.ArgumentParser, with_path: bool = True):
@@ -152,6 +160,36 @@ def build_parser() -> argparse.ArgumentParser:
     _add_common(feedback_delete)
     feedback_delete.add_argument("--run-id", required=True)
     feedback_delete.add_argument("--feedback-id", required=True)
+    artifacts = test_sub.add_parser(
+        "artifact", help="retained hash-bound check artifact directories")
+    artifact_sub = artifacts.add_subparsers(dest="artifact_action", required=True)
+    artifact_catalog = artifact_sub.add_parser(
+        "catalog", help="list retained artifact trees or one tree's files")
+    _add_common(artifact_catalog)
+    artifact_catalog.add_argument("--run-id", required=True)
+    artifact_catalog.add_argument("--check", required=True)
+    artifact_catalog.add_argument("--artifact", default=None)
+    artifact_catalog.add_argument("--manifest-sha256", default=None)
+    artifact_catalog.add_argument("--offset", type=int, default=0)
+    artifact_catalog.add_argument("--limit", type=int, default=100)
+    artifact_file = artifact_sub.add_parser(
+        "file", help="read one verified retained artifact file chunk")
+    _add_common(artifact_file)
+    artifact_file.add_argument("--run-id", required=True)
+    artifact_file.add_argument("--check", required=True)
+    artifact_file.add_argument("--artifact", required=True)
+    artifact_file.add_argument("--file", required=True)
+    artifact_file.add_argument("--manifest-sha256", required=True)
+    artifact_file.add_argument("--offset", type=int, default=0)
+    artifact_file.add_argument("--max-bytes", type=int, default=184320)
+    artifact_materialize = artifact_sub.add_parser(
+        "materialize", help="verify and copy retained artifacts to a new local directory")
+    _add_common(artifact_materialize)
+    artifact_materialize.add_argument("--run-id", required=True)
+    artifact_materialize.add_argument("--check", required=True)
+    artifact_materialize.add_argument(
+        "--artifact", dest="artifacts", action="append", default=[])
+    artifact_materialize.add_argument("--destination", required=True)
     stop = test_sub.add_parser("stop", help="cancel the current run")
     _add_common(stop)
     stop.add_argument("--reason", default=None,
@@ -454,6 +492,25 @@ def _to_call(ns: argparse.Namespace) -> tuple[str, dict]:
             elif action == "state":
                 args["state"] = ns.state
             return f"test.evidence.feedback.{action}", args
+        case ("test", "artifact"):
+            args = {**path_args, "run_id": ns.run_id, "check": ns.check}
+            if ns.artifact_action == "catalog":
+                for key in ("artifact", "manifest_sha256"):
+                    value = getattr(ns, key)
+                    if value is not None:
+                        args[key] = value
+                args.update(offset=ns.offset, limit=ns.limit)
+                return "test.artifact.catalog", args
+            if ns.artifact_action == "file":
+                args.update(
+                    artifact=ns.artifact,
+                    file=ns.file,
+                    manifest_sha256=ns.manifest_sha256,
+                    offset=ns.offset,
+                    max_bytes=ns.max_bytes,
+                )
+                return "test.artifact.file", args
+            raise AssertionError("materialization is handled before one-shot dispatch")
         case ("test", "stop"):
             return "test.stop", ({**path_args, "reason": ns.reason}
                                  if ns.reason else path_args)
@@ -607,6 +664,217 @@ def _to_call(ns: argparse.Namespace) -> tuple[str, dict]:
     raise SystemExit(2)
 
 
+def _materialized_tree_digest(entries: list[dict]) -> str:
+    digest = hashlib.sha256(b"devcoordinator2-retained-artifact-tree-v1\0")
+    for entry in entries:
+        digest.update(entry["path"].encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(str(entry["size"]).encode("ascii"))
+        digest.update(b"\0")
+        digest.update(entry["sha256"].encode("ascii"))
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
+def _safe_materialized_relative(value: object) -> PurePosixPath:
+    if not isinstance(value, str) or not value or "\\" in value or "\0" in value:
+        raise ValueError("retained artifact returned an invalid file path")
+    parsed = PurePosixPath(value)
+    if parsed.is_absolute() or parsed.as_posix() != value \
+            or any(part in ("", ".", "..") for part in parsed.parts):
+        raise ValueError("retained artifact returned an unsafe file path")
+    return parsed
+
+
+def _materialize_artifacts(ns: argparse.Namespace) -> int:
+    config = load_instance_config()
+    source_path = str(Path(ns.path).absolute())
+
+    def invoke(command: str, args: dict) -> dict:
+        response = call(
+            config.socket_path,
+            command,
+            args,
+            client_kind=ns.client,
+            client_session=ns.session,
+        )
+        if not response.get("ok"):
+            raise RuntimeError(json.dumps(response, separators=(",", ":")))
+        result = response.get("result")
+        if not isinstance(result, dict):
+            raise RuntimeError("Coordinator returned an invalid artifact response")
+        return result
+
+    destination_raw = Path(ns.destination)
+    if not destination_raw.is_absolute():
+        print(json.dumps({"ok": False, "error": {
+            "code": "args_invalid", "message": "--destination must be absolute"}}))
+        return 2
+    try:
+        parent = destination_raw.parent.resolve(strict=True)
+    except OSError as exc:
+        print(json.dumps({"ok": False, "error": {
+            "code": "args_invalid", "message": f"destination parent is unavailable: {exc}"}}))
+        return 2
+    destination = parent / destination_raw.name
+    if destination.exists() or destination.is_symlink():
+        print(json.dumps({"ok": False, "error": {
+            "code": "args_invalid", "message": "destination must not already exist"}}))
+        return 2
+
+    created = False
+    try:
+        root = invoke("test.artifact.catalog", {
+            "path": source_path,
+            "run_id": ns.run_id,
+            "check": ns.check,
+            "offset": 0,
+            "limit": 100,
+        })
+        manifest_sha = root.get("manifest_sha256")
+        summaries = root.get("artifacts")
+        if not isinstance(manifest_sha, str) or not _SHA256_RE.fullmatch(manifest_sha) \
+                or not isinstance(summaries, list) \
+                or not isinstance(root.get("source_sha256"), str) \
+                or not _SHA256_RE.fullmatch(root["source_sha256"]) \
+                or not isinstance(root.get("config_sha256"), str) \
+                or not _SHA256_RE.fullmatch(root["config_sha256"]) \
+                or root.get("run_status") not in ("running", "passed", "failed") \
+                or not isinstance(root.get("run_complete"), bool) \
+                or root.get("proof") not in ("complete", "selected", "retry") \
+                or not isinstance(root.get("readiness_eligible"), bool):
+            raise ValueError("Coordinator returned an invalid artifact catalogue")
+        available = {
+            item.get("name"): item for item in summaries
+            if isinstance(item, dict) and isinstance(item.get("name"), str)
+            and _RETAINED_ARTIFACT_NAME_RE.fullmatch(item["name"])
+        }
+        if len(available) != len(summaries):
+            raise ValueError("Coordinator returned an invalid artifact summary")
+        selected = ns.artifacts or list(available)
+        if not selected or len(selected) != len(set(selected)) \
+                or any(name not in available for name in selected):
+            raise ValueError("requested retained artifact name is missing or repeated")
+        destination.mkdir(mode=0o700)
+        created = True
+        materialized = []
+        for name in selected:
+            entries: list[dict] = []
+            offset = 0
+            while True:
+                page = invoke("test.artifact.catalog", {
+                    "path": source_path,
+                    "run_id": ns.run_id,
+                    "check": ns.check,
+                    "artifact": name,
+                    "manifest_sha256": manifest_sha,
+                    "offset": offset,
+                    "limit": 100,
+                })
+                rows = page.get("entries")
+                if not isinstance(rows, list):
+                    raise ValueError("Coordinator returned invalid artifact entries")
+                entries.extend(rows)
+                next_offset = page.get("next_offset")
+                if next_offset is None:
+                    break
+                if not isinstance(next_offset, int) or next_offset <= offset:
+                    raise ValueError("Coordinator returned an invalid artifact cursor")
+                offset = next_offset
+            summary = available[name]
+            if len(entries) != summary.get("files") \
+                    or _materialized_tree_digest(entries) != summary.get("sha256") \
+                    or sum(item.get("size", -1) for item in entries) != summary.get("size"):
+                raise ValueError("retained artifact catalogue does not match its tree receipt")
+            artifact_root = destination / name
+            artifact_root.mkdir(mode=0o700)
+            for entry in entries:
+                relative = _safe_materialized_relative(entry.get("path"))
+                target = artifact_root.joinpath(*relative.parts)
+                target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+                digest = hashlib.sha256()
+                written = 0
+                with target.open("xb") as output:
+                    os.chmod(target, 0o600)
+                    while True:
+                        chunk = invoke("test.artifact.file", {
+                            "path": source_path,
+                            "run_id": ns.run_id,
+                            "check": ns.check,
+                            "artifact": name,
+                            "file": relative.as_posix(),
+                            "manifest_sha256": manifest_sha,
+                            "offset": written,
+                            "max_bytes": 180 * 1024,
+                        })
+                        if chunk.get("offset") != written \
+                                or chunk.get("total_bytes") != entry.get("size") \
+                                or chunk.get("sha256") != entry.get("sha256"):
+                            raise ValueError("retained artifact chunk identity differs")
+                        payload = base64.b64decode(chunk.get("base64", ""), validate=True)
+                        if chunk.get("bytes") != len(payload):
+                            raise ValueError("retained artifact chunk length differs")
+                        output.write(payload)
+                        digest.update(payload)
+                        written += len(payload)
+                        next_offset = chunk.get("next_offset")
+                        if next_offset is None:
+                            break
+                        if next_offset != written or not payload:
+                            raise ValueError("retained artifact chunk cursor differs")
+                    output.flush()
+                    os.fsync(output.fileno())
+                if written != entry["size"] or digest.hexdigest() != entry["sha256"]:
+                    raise ValueError("materialized artifact file hash differs")
+            materialized.append({
+                "name": name,
+                "path": name,
+                "size": summary["size"],
+                "files": summary["files"],
+                "sha256": summary["sha256"],
+            })
+        directory = os.open(destination, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    except DaemonUnavailable as exc:
+        if created:
+            shutil.rmtree(destination)
+        print(json.dumps({"ok": False, "error": {
+            "code": "daemon_unavailable", "message": str(exc)}}))
+        return 2
+    except (OSError, ValueError, RuntimeError, binascii.Error, KeyError, TypeError) as exc:
+        if created:
+            shutil.rmtree(destination)
+        message = str(exc)
+        try:
+            response = json.loads(message)
+        except json.JSONDecodeError:
+            response = {"ok": False, "error": {
+                "code": "test_artifact_tampered", "message": message}}
+        print(json.dumps(response, indent=2))
+        return 1
+    print(json.dumps({"ok": True, "result": {
+        "run_id": ns.run_id,
+        "check": ns.check,
+        "test": root.get("test"),
+        "requested_tier": root.get("requested_tier"),
+        "readiness_eligible": root.get("readiness_eligible"),
+        "proof": root.get("proof"),
+        "source_sha256": root.get("source_sha256"),
+        "config_sha256": root.get("config_sha256"),
+        "run_status": root.get("run_status"),
+        "run_complete": root.get("run_complete"),
+        "run_finished_at_epoch_ms": root.get("run_finished_at_epoch_ms"),
+        "run_metadata_sha256": root.get("run_metadata_sha256"),
+        "manifest_sha256": manifest_sha,
+        "destination": str(destination),
+        "artifacts": materialized,
+    }}, indent=2))
+    return 0
+
+
 def _bug_command(ns: argparse.Namespace) -> int:
     """Bugs are written to the independent store directly, so intake works
     while the daemon, its database, or the edge is down. The daemon is told
@@ -664,6 +932,9 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if ns.group == "bug":
         return _bug_command(ns)
+    if ns.group == "test" and ns.action == "artifact" \
+            and ns.artifact_action == "materialize":
+        return _materialize_artifacts(ns)
     command, args = _to_call(ns)
     config = load_instance_config()
     try:

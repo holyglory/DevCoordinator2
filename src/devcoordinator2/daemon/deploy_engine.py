@@ -353,6 +353,16 @@ def prove_health(ctx: Ctx, comp: ComponentSpec, binding: tuple[str, str],
             creds = st.read_postgres_credentials(ctx.config, ctx.dep_id, comp.name) or {}
         return health_checks.postgres_ready(identity, creds.get("user", "app"),
                                             creds.get("database", "app"), 120)
+    routed_compose_port = None
+    route_component = ctx.spec.route_component
+    if kind == "compose" and route_component is not None \
+            and route_component.name == comp.name:
+        routed_compose_port = port_map.get(comp.name)
+        if routed_compose_port is None:
+            return False, "routed Compose component has no allocated host port"
+        published, note = rt.compose_publishes_host_port(identity, routed_compose_port)
+        if not published:
+            return False, note
     timeout = comp.health.timeout_seconds if comp.health else 30
     terminal = _terminal_binding_check(kind, identity)
     if comp.health and comp.health.kind == "http" and comp.name in port_map:
@@ -374,6 +384,10 @@ def prove_health(ctx: Ctx, comp: ComponentSpec, binding: tuple[str, str],
             comp.compose_timeout_seconds)
         st.record_compose_completions(ctx.db, ctx.dep_id, comp.name, generation,
                                       state.get("completion_candidates", []))
+        if ok and routed_compose_port is not None:
+            return health_checks.tcp_ready(
+                "127.0.0.1", routed_compose_port,
+                comp.compose_timeout_seconds, terminal)
         return ok, note
     return True, "no check"
 

@@ -160,6 +160,30 @@ setting wakes cleanup immediately; active runs are never removed. Both return
 the stored settings and last bounded cleanup state. This requested
 administrator action is immediate and has no second confirmation dialog.
 
+An unlocked incomplete run left by interruption or supersession is retained as
+truthful partial evidence (`complete: false`) and receives its own age/depth
+bucket so it cannot evict sealed history. A malformed unrelated run never
+denies an exact selected-run query; the selected run itself remains strict.
+
+## test.artifact.catalog | test.artifact.file
+
+`catalog` requires `path`, `run_id`, and `check`. Without `artifact` it returns
+the bounded hash-bound tree summaries and run/source/config/proof identity.
+With an exact artifact name it verifies that entire retained tree and returns a
+stable file page using `offset` and `limit` (1..100); callers may bind later
+pages with `manifest_sha256`. Results contain only declared artifact names and
+relative file names, sizes, counts, and SHA-256 values—never a private source or
+storage path.
+
+`file` additionally requires `artifact`, relative `file`, and
+`manifest_sha256`; `offset` and `max_bytes` select at most 180 KiB. The daemon
+reopens every component without following links, verifies the complete file
+against its manifest receipt, and returns
+`{sha256,total_bytes,offset,bytes,base64,next_offset}`. Errors distinguish
+expired, unknown, and changed evidence. CLI `test artifact materialize` pages
+these two read-only operations, writes only a new caller-owned destination, and
+revalidates every file and tree digest locally.
+
 ## test.evidence.get | test.evidence.image
 
 `get` requires `path` and `run_id`. It returns one path-free projection of the

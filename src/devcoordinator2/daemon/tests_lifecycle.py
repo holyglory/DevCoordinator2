@@ -586,6 +586,14 @@ class TestLifecycle:
                 "completion": check.completion,
                 "on_failure": check.on_failure,
                 "produces": list(check.produces),
+                "retained_artifacts": [
+                    {
+                        "name": artifact.name,
+                        "path": artifact.path,
+                        "max_bytes": artifact.max_bytes,
+                    }
+                    for artifact in check.retained_artifacts
+                ],
                 "diagnostic_sources": [
                     {"format": source.format, "path": source.path}
                     for source in check.diagnostic_sources
@@ -639,6 +647,11 @@ class TestLifecycle:
             projected["artifacts"] = artifacts[:8] if isinstance(artifacts, list) else []
             projected["artifacts_truncated"] = isinstance(artifacts, list) \
                 and len(artifacts) > 8
+            retained = row.get("retained_artifacts", [])
+            projected["retained_artifacts"] = (
+                retained[:8] if isinstance(retained, list) else [])
+            projected["retained_artifacts_truncated"] = (
+                isinstance(retained, list) and len(retained) > 8)
             cases = row.get("cases", [])
             projected["cases"] = cases[:32] if isinstance(cases, list) else []
             projected["cases_truncated"] = bool(row.get("cases_truncated")) \

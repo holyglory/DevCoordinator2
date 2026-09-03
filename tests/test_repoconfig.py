@@ -75,6 +75,47 @@ diagnostic_sources = [
     ]
 
 
+def test_retained_artifact_directories_are_typed_bounded_and_direct(tmp_path):
+    root = write(tmp_path, '''
+schema = 2
+[test.browser]
+[[test.browser.check]]
+name = "main"
+tier = "release"
+command = ["true"]
+retained_artifacts = [
+  { name = "production", path = "artifacts/production", max_bytes = 536870912 },
+  { name = "developer-test", path = "artifacts/developer-test", max_bytes = 134217728 },
+]
+''')
+    retained = load_test_spec(root, None).checks[0].retained_artifacts
+    assert [(item.name, item.path, item.max_bytes) for item in retained] == [
+        ("production", "artifacts/production", 536870912),
+        ("developer-test", "artifacts/developer-test", 134217728),
+    ]
+
+
+@pytest.mark.parametrize("declaration,fragment", [
+    ('[{name="same",path="artifacts",max_bytes=1},'
+     '{name="nested",path="artifacts/nested",max_bytes=1}]', "overlapping"),
+    ('[{name="private",path=".devcoordinator/private",max_bytes=1}]', "reserved"),
+    ('[{name="too-big",path="artifacts",max_bytes=1073741825}]', "max_bytes"),
+    ('[{name="missing-limit",path="artifacts"}]', "exactly"),
+])
+def test_retained_artifact_rejections(tmp_path, declaration, fragment):
+    root = write(tmp_path, f'''
+schema = 2
+[test.browser]
+[[test.browser.check]]
+name = "main"
+tier = "release"
+command = ["true"]
+retained_artifacts = {declaration}
+''')
+    with pytest.raises(ConfigError, match=fragment):
+        load_test_spec(root, None)
+
+
 @pytest.mark.parametrize("declaration,fragment", [
     ('[{ format="tap", path="report.tap" }]', "format must be"),
     ('[{ format="junit", path="report.xml", extra=true }]',
