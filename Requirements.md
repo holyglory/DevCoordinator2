@@ -245,6 +245,18 @@ not contradict them.
   receipts, volumes, and routes remain untouched. Live service and aggregate
   state distinguish an intentional stop from failure, and CLI, MCP, and
   Console expose the same reviewed controls.
+- **REQ-DEPLOY-10** (2026-09-03, done): Every repository section and every
+  deployment on the Deployments dashboard starts expanded and can be collapsed
+  independently. A collapsed repository retains its identity, deployment
+  count, and overall condition; a collapsed deployment retains its identity
+  and state while routing facts and lifecycle actions remain hidden until it
+  is expanded. The choice survives same-session Console rerenders, controls are
+  keyboard operable with truthful `aria-expanded`/`aria-controls`, and no API
+  call occurs merely to change density. Repository Tests additionally show the
+  selected real run's tier, elapsed time, output size, recency, and proof type;
+  Health shows current CPU, memory, storage, and deployment count. Missing or
+  restricted facts remain absent or explicitly unavailable and never borrow
+  another repository's data.
 
 ## Accountability and health (REQ-HEALTH, P3/P4)
 
