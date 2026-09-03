@@ -175,7 +175,7 @@ not contradict them.
   task. Replies, author edits, resolve/reopen, and explicit author deletion are
   persistent; resolving/reopening/dropping the annotation updates the linked
   Plan task, and the original task/event history is never erased.
-- **REQ-TEST-26** (2026-09-03, in scope): A successful direct process check may
+- **REQ-TEST-26** (2026-09-03, done): A successful direct process check may
   declare up to eight required non-secret evidence directories, each with a
   caller-selected byte ceiling no greater than 1 GiB and no more than 4,096
   regular files; the combined declared ceiling is at most 2 GiB. The executor
