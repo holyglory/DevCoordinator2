@@ -74,6 +74,10 @@ pub fn comment_id() -> Result<String, IdError> {
     random_id('m')
 }
 
+pub fn bug_id() -> Result<String, IdError> {
+    Ok(format!("b{}", random_hex(6)?))
+}
+
 pub fn unit_name(prefix: &str, worktree_id: &str, suffix: &str) -> String {
     format!("{prefix}-{worktree_id}-{suffix}.service")
 }

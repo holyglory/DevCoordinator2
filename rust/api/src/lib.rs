@@ -364,10 +364,23 @@ pub struct OperationDefinition {
     pub mcp_names: &'static [&'static str],
     pub input_schema: fn() -> Value,
     pub output_schema: fn() -> Value,
+    pub validate_params: fn(&Value) -> Result<(), ProtocolError>,
 }
 
 fn schema_for<T: JsonSchema>() -> Value {
     serde_json::to_value(schemars::schema_for!(T)).expect("schema is serializable")
+}
+
+fn validate_params<T>(value: &Value) -> Result<(), ProtocolError>
+where
+    T: serde::de::DeserializeOwned,
+{
+    serde_json::from_value::<T>(value.clone())
+        .map(|_| ())
+        .map_err(|error| {
+            ProtocolError::new(ErrorCode::ParamsInvalid, "operation parameters are invalid")
+                .with_detail(error.to_string())
+        })
 }
 
 const READ_PUBLIC: OperationPolicy =
@@ -466,6 +479,7 @@ macro_rules! operation {
             mcp_names: &[$($mcp),*],
             input_schema: schema_for::<$input>,
             output_schema: schema_for::<$output>,
+            validate_params: validate_params::<$input>,
         }
     };
 }
@@ -501,7 +515,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         READ_SERVER_ADMIN,
         [],
         params::Empty,
-        results::PendingDomainResult
+        results::UserList
     ),
     operation!(
         "user.invite",
@@ -509,7 +523,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         APPEND_SERVER_ADMIN,
         [],
         params::InviteUser,
-        results::PendingDomainResult
+        results::InvitedUser
     ),
     operation!(
         "user.remove",
@@ -517,7 +531,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         DESTRUCTIVE_SERVER_ADMIN,
         [],
         params::EmailOnly,
-        results::PendingDomainResult
+        results::RemovedUser
     ),
     operation!(
         "grant.set",
@@ -525,7 +539,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         IDEMPOTENT_REVERSIBLE_DEPLOYMENT_ADMIN,
         [],
         params::SetGrant,
-        results::PendingDomainResult
+        results::GrantSet
     ),
     operation!(
         "grant.remove",
@@ -533,7 +547,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         DESTRUCTIVE_DEPLOYMENT_ADMIN,
         [],
         params::RemoveGrant,
-        results::PendingDomainResult
+        results::GrantRemoved
     ),
     operation!(
         "repository.register",
@@ -557,7 +571,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         READ_REPOSITORY_ADMIN,
         [],
         params::PathOnly,
-        results::PendingDomainResult
+        results::RepositoryStatus
     ),
     operation!(
         "repository.archive",
@@ -581,7 +595,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         DESTRUCTIVE_REPOSITORY_ADMIN,
         ["test_start"],
         params::StartTest,
-        results::PendingDomainResult
+        results::TestStarted
     ),
     operation!(
         "test.retry",
@@ -589,7 +603,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         DESTRUCTIVE_REPOSITORY_ADMIN,
         ["test_retry"],
         params::RetryTest,
-        results::PendingDomainResult
+        results::TestStarted
     ),
     operation!(
         "test.status",
@@ -597,7 +611,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         READ_REPOSITORY_ADMIN,
         ["test_status"],
         params::PathOnly,
-        results::PendingDomainResult
+        results::TestSummary
     ),
     operation!(
         "test.log.catalog",
@@ -605,7 +619,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         READ_REPOSITORY_ADMIN,
         ["test_log_catalog"],
         params::LogCatalog,
-        results::PendingDomainResult
+        results::LogCatalog
     ),
     operation!(
         "test.log.tail",
@@ -613,7 +627,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         READ_REPOSITORY_ADMIN,
         ["test_log_tail"],
         params::LogTail,
-        results::PendingDomainResult
+        results::LogContent
     ),
     operation!(
         "test.log.search",
@@ -621,7 +635,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         READ_REPOSITORY_ADMIN,
         ["test_log_search"],
         params::LogSearch,
-        results::PendingDomainResult
+        results::LogSearch
     ),
     operation!(
         "test.log.range",
@@ -629,7 +643,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         READ_REPOSITORY_ADMIN,
         ["test_log_range"],
         params::LogRange,
-        results::PendingDomainResult
+        results::LogContent
     ),
     operation!(
         "test.log.failure_context",
@@ -637,7 +651,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         READ_REPOSITORY_ADMIN,
         ["test_log_failure_context"],
         params::LogFailureContext,
-        results::PendingDomainResult
+        results::LogFailureContext
     ),
     operation!(
         "test.log.retention.get",
@@ -645,7 +659,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         READ_SERVER_ADMIN,
         ["test_log_retention_show"],
         params::Empty,
-        results::PendingDomainResult
+        results::Retention
     ),
     operation!(
         "test.log.retention.set",
@@ -653,7 +667,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         DESTRUCTIVE_SERVER_ADMIN,
         ["test_log_retention_set"],
         params::SetRetention,
-        results::PendingDomainResult
+        results::Retention
     ),
     operation!(
         "test.evidence.get",
@@ -661,7 +675,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         READ_REPOSITORY_ADMIN,
         ["test_evidence_get"],
         params::EvidenceReference,
-        results::PendingDomainResult
+        results::EvidenceGet
     ),
     operation!(
         "test.evidence.image",
@@ -669,7 +683,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         READ_REPOSITORY_ADMIN,
         ["test_evidence_image"],
         params::EvidenceImage,
-        results::PendingDomainResult
+        results::ImageChunk
     ),
     operation!(
         "test.artifact.catalog",
@@ -677,7 +691,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         READ_REPOSITORY_ADMIN,
         ["test_artifact_catalog"],
         params::ArtifactCatalog,
-        results::PendingDomainResult
+        results::ArtifactCatalog
     ),
     operation!(
         "test.artifact.file",
@@ -685,7 +699,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         READ_REPOSITORY_ADMIN,
         ["test_artifact_file"],
         params::ArtifactFile,
-        results::PendingDomainResult
+        results::ArtifactChunk
     ),
     operation!(
         "test.evidence.feedback.create",
@@ -693,7 +707,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         APPEND_REPOSITORY_ADMIN,
         ["test_evidence_feedback_create"],
         params::CreateFeedback,
-        results::PendingDomainResult
+        results::FeedbackCreated
     ),
     operation!(
         "test.evidence.feedback.reply",
@@ -701,7 +715,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         APPEND_REPOSITORY_ADMIN,
         ["test_evidence_feedback_reply"],
         params::FeedbackReply,
-        results::PendingDomainResult
+        results::FeedbackMutation
     ),
     operation!(
         "test.evidence.feedback.edit",
@@ -709,7 +723,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         REVERSIBLE_REPOSITORY_ADMIN,
         ["test_evidence_feedback_edit"],
         params::FeedbackEdit,
-        results::PendingDomainResult
+        results::FeedbackMutation
     ),
     operation!(
         "test.evidence.feedback.state",
@@ -717,7 +731,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         IDEMPOTENT_REVERSIBLE_REPOSITORY_ADMIN,
         ["test_evidence_feedback_state"],
         params::FeedbackStateChange,
-        results::PendingDomainResult
+        results::FeedbackMutation
     ),
     operation!(
         "test.evidence.feedback.delete",
@@ -725,7 +739,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         IDEMPOTENT_DESTRUCTIVE_REPOSITORY_ADMIN,
         ["test_evidence_feedback_delete"],
         params::FeedbackDelete,
-        results::PendingDomainResult
+        results::FeedbackMutation
     ),
     operation!(
         "test.stop",
@@ -733,7 +747,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         IDEMPOTENT_DESTRUCTIVE_REPOSITORY_ADMIN,
         ["test_stop"],
         params::StopTest,
-        results::PendingDomainResult
+        results::StopTest
     ),
     operation!(
         "test.list",
@@ -741,7 +755,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         READ_SERVER_ADMIN,
         ["test_list"],
         params::Empty,
-        results::PendingDomainResult
+        results::TestList
     ),
     operation!(
         "test.capacity.get",
@@ -749,7 +763,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         READ_SERVER_ADMIN,
         ["test_capacity_show"],
         params::Empty,
-        results::PendingDomainResult
+        results::Capacity
     ),
     operation!(
         "test.capacity.set",
@@ -757,7 +771,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         REVERSIBLE_SERVER_ADMIN,
         ["test_capacity_set", "test_capacity_clear"],
         params::SetCapacity,
-        results::PendingDomainResult
+        results::Capacity
     ),
     operation!(
         "deployment.list",
@@ -765,7 +779,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         READ_DEPLOYMENT_VIEWER,
         ["deployment_list"],
         params::DeploymentList,
-        results::PendingDomainResult
+        results::DeploymentList
     ),
     operation!(
         "deployment.status",
@@ -773,7 +787,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         READ_DEPLOYMENT_VIEWER,
         ["deployment_status"],
         params::DeploymentReference,
-        results::PendingDomainResult
+        results::DeploymentStatus
     ),
     operation!(
         "deployment.logs",
@@ -781,7 +795,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         READ_DEPLOYMENT_VIEWER,
         ["deployment_logs"],
         params::DeploymentLogs,
-        results::PendingDomainResult
+        results::DeploymentLog
     ),
     operation!(
         "deployment.apply",
@@ -789,7 +803,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         REVERSIBLE_DEPLOYMENT_ADMIN,
         ["deployment_apply"],
         params::DeploymentReference,
-        results::PendingDomainResult
+        results::DeploymentStatus
     ),
     operation!(
         "deployment.rollback",
@@ -797,7 +811,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         REVERSIBLE_DEPLOYMENT_ADMIN,
         ["deployment_rollback"],
         params::DeploymentReference,
-        results::PendingDomainResult
+        results::DeploymentStatus
     ),
     operation!(
         "deployment.start",
@@ -805,7 +819,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         IDEMPOTENT_REVERSIBLE_DEPLOYMENT_OPERATOR,
         ["deployment_start"],
         params::DeploymentControl,
-        results::PendingDomainResult
+        results::DeploymentStatus
     ),
     operation!(
         "deployment.stop",
@@ -813,7 +827,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         IDEMPOTENT_REVERSIBLE_DEPLOYMENT_OPERATOR,
         ["deployment_stop"],
         params::DeploymentControl,
-        results::PendingDomainResult
+        results::DeploymentStatus
     ),
     operation!(
         "deployment.restart",
@@ -821,7 +835,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         REVERSIBLE_DEPLOYMENT_OPERATOR,
         ["deployment_restart"],
         params::DeploymentControl,
-        results::PendingDomainResult
+        results::DeploymentStatus
     ),
     operation!(
         "deployment.set_domain",
@@ -829,7 +843,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         IDEMPOTENT_REVERSIBLE_DEPLOYMENT_ADMIN,
         ["deployment_set_domain"],
         params::SetDomain,
-        results::PendingDomainResult
+        results::DomainChanged
     ),
     operation!(
         "deployment.remove",
@@ -837,7 +851,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         DESTRUCTIVE_DEPLOYMENT_ADMIN,
         [],
         params::RemoveDeployment,
-        results::PendingDomainResult
+        results::DeploymentRemoved
     ),
     operation!(
         "health.summary",
@@ -845,7 +859,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         READ_SERVER_ADMIN,
         ["health_summary"],
         params::Empty,
-        results::PendingDomainResult
+        results::HealthSummary
     ),
     operation!(
         "health.repositories",
@@ -853,7 +867,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         READ_REPOSITORY_VIEWER,
         ["health_repositories"],
         params::Empty,
-        results::PendingDomainResult
+        results::HealthRepositories
     ),
     operation!(
         "health.repository",
@@ -861,7 +875,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         READ_REPOSITORY_VIEWER,
         ["health_repository"],
         params::PathOnly,
-        results::PendingDomainResult
+        results::HealthRepository
     ),
     operation!(
         "health.history",
@@ -869,7 +883,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         READ_REPOSITORY_VIEWER,
         [],
         params::HealthHistory,
-        results::PendingDomainResult
+        results::HealthHistory
     ),
     operation!(
         "health.containers",
@@ -877,7 +891,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         READ_SERVER_ADMIN,
         ["health_containers"],
         params::Empty,
-        results::PendingDomainResult
+        results::ContainerList
     ),
     operation!(
         "health.container_remove",
@@ -885,7 +899,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         DESTRUCTIVE_SERVER_ADMIN,
         [],
         params::RemoveContainer,
-        results::PendingDomainResult
+        results::RemovedContainer
     ),
     operation!(
         "plan.overview",
@@ -893,7 +907,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         READ_REPOSITORY_VIEWER,
         ["plan_overview"],
         params::PlanReference,
-        results::PendingDomainResult
+        results::PlanOverview
     ),
     operation!(
         "task.history",
@@ -909,7 +923,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         APPEND_REPOSITORY_ADMIN,
         ["task_create"],
         params::TaskCreate,
-        results::PendingDomainResult
+        results::TaskCreated
     ),
     operation!(
         "task.update",
@@ -949,7 +963,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         APPEND_REPOSITORY_ADMIN,
         ["release_deliver"],
         params::ReleaseDeliver,
-        results::PendingDomainResult
+        results::ReleaseDelivered
     ),
     operation!(
         "decision.tail",
@@ -957,7 +971,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         READ_REPOSITORY_VIEWER,
         ["decision_tail"],
         params::DecisionTail,
-        results::PendingDomainResult
+        results::DecisionTail
     ),
     operation!(
         "decision.search",
@@ -965,7 +979,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         READ_REPOSITORY_VIEWER,
         ["decision_search"],
         params::DecisionSearch,
-        results::PendingDomainResult
+        results::DecisionSearch
     ),
     operation!(
         "decision.record",
@@ -973,7 +987,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         APPEND_REPOSITORY_ADMIN,
         ["decision_record"],
         params::DecisionRecord,
-        results::PendingDomainResult
+        results::DecisionRecorded
     ),
     operation!(
         "decision.summarize",
@@ -981,7 +995,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         APPEND_REPOSITORY_ADMIN,
         ["decision_summarize"],
         params::DecisionSummarize,
-        results::PendingDomainResult
+        results::DecisionSummarized
     ),
     operation!(
         "usage.repositories",
@@ -989,7 +1003,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         READ_REPOSITORY_OPERATOR,
         [],
         params::UsageRepositories,
-        results::PendingDomainResult
+        results::UsageRepositories
     ),
     operation!(
         "usage.repository",
@@ -997,7 +1011,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         READ_REPOSITORY_OPERATOR,
         [],
         params::UsageRepository,
-        results::PendingDomainResult
+        results::UsageRepository
     ),
     operation!(
         "progress.repositories",
@@ -1005,7 +1019,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         READ_REPOSITORY_OPERATOR,
         [],
         params::Empty,
-        results::PendingDomainResult
+        results::ProgressRepositories
     ),
     operation!(
         "progress.repository",
@@ -1013,7 +1027,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         READ_REPOSITORY_OPERATOR,
         [],
         params::ProgressRepository,
-        results::PendingDomainResult
+        results::ProgressRepository
     ),
     operation!(
         "telegram.link",
@@ -1021,7 +1035,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         EXTERNAL_SELF,
         [],
         params::TelegramLink,
-        results::PendingDomainResult
+        results::TelegramLinked
     ),
     operation!(
         "telegram.subscribe",
@@ -1029,7 +1043,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         EXTERNAL_SELF,
         [],
         params::TelegramSubscription,
-        results::PendingDomainResult
+        results::TelegramSubscription
     ),
     operation!(
         "telegram.unsubscribe",
@@ -1037,7 +1051,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         IDEMPOTENT_EXTERNAL_SELF,
         [],
         params::TelegramSubscription,
-        results::PendingDomainResult
+        results::TelegramSubscription
     ),
     operation!(
         "telegram.list",
@@ -1045,7 +1059,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         READ_SELF,
         [],
         params::Empty,
-        results::PendingDomainResult
+        results::TelegramList
     ),
     operation!(
         "bug.report",
@@ -1053,7 +1067,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         APPEND_SELF,
         ["bug_report"],
         params::BugReport,
-        results::PendingDomainResult
+        results::BugRecord
     ),
     operation!(
         "bug.list",
@@ -1061,7 +1075,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         READ_SELF,
         ["bug_list"],
         params::Empty,
-        results::PendingDomainResult
+        results::BugList
     ),
     operation!(
         "bug.close",
@@ -1069,7 +1083,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         DESTRUCTIVE_SELF,
         ["bug_close"],
         params::BugClose,
-        results::PendingDomainResult
+        results::BugClosed
     ),
 ];
 
@@ -1120,12 +1134,12 @@ pub fn parse_request(raw: &[u8]) -> Result<RequestEnvelope, ProtocolError> {
             "params must be an object",
         ));
     }
-    if operation(&request.operation).is_none() {
+    let Some(definition) = operation(&request.operation) else {
         return Err(ProtocolError::new(
             ErrorCode::OperationUnknown,
             format!("unknown operation {:?}", request.operation),
         ));
-    }
+    };
     if let Some(identity) = &request.client.identity
         && (identity.len() > 254 || !identity.contains('@'))
     {
@@ -1134,6 +1148,7 @@ pub fn parse_request(raw: &[u8]) -> Result<RequestEnvelope, ProtocolError> {
             "client.identity must be an e-mail",
         ));
     }
+    (definition.validate_params)(&request.params)?;
     Ok(request)
 }
 
@@ -1210,6 +1225,15 @@ mod tests {
     }
 
     #[test]
+    fn operation_parameters_reject_unknown_fields_before_dispatch() {
+        let request = br#"{"protocol":2,"id":"abc","operation":"user.whoami","params":{"extra":true},"client":{}}"#;
+        assert_eq!(
+            parse_request(request).unwrap_err().code,
+            ErrorCode::ParamsInvalid
+        );
+    }
+
+    #[test]
     fn contract_has_one_typed_ping_definition() {
         let document = contract_document();
         assert_eq!(document["protocol"], 2);
@@ -1230,5 +1254,20 @@ mod tests {
         }
         assert_eq!(OPERATIONS.len(), 75);
         assert_eq!(tools.len(), 53);
+    }
+
+    #[test]
+    fn every_operation_has_a_strict_concrete_contract() {
+        let contract = contract_document();
+        for operation in contract["operations"].as_array().expect("operations") {
+            assert_eq!(
+                operation["inputSchema"]["additionalProperties"], false,
+                "{} input is not strict",
+                operation["name"]
+            );
+            let output = operation["outputSchema"].to_string();
+            assert!(!output.contains("ObjectData"));
+            assert!(!output.contains("PendingDomainResult"));
+        }
     }
 }

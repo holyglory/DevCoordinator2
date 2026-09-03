@@ -1,6 +1,6 @@
 # Security Assumptions
 
-Last reviewed: 2026-09-01 (trusted live-checkout execution and unified agent assets)
+Last reviewed: 2026-09-03 (approved Rust control-plane migration and binary provenance)
 
 Installation-specific values (the concrete accounts, groups, domain, and
 owner identity) are deliberately not in this file. They live in the
@@ -199,6 +199,30 @@ untracked `instance/` directory and in the installed instance configuration
   repository decisions. An authorized local caller or Console administrator
   may store a due summary directly without a separate user-approval step; the
   decision records and every prior summary remain permanent.
+
+## Approved Rust control-plane cutover boundary
+
+- The current Python daemon remains the live authority throughout development.
+  The replacement is activated only after the single migration branch is
+  merged into a clean `main`, every executable Python dependency is removed,
+  and the complete frozen-candidate acceptance pass succeeds
+  (DC2-2026-09-03-RUST-CONTROL-PLANE-V2).
+- The installed daemon and local tools will execute locked Rust release
+  binaries built directly from the canonical clean checkout. Each binary
+  embeds the verified source commit. Before systemd or `/usr/local/bin` points
+  to it, the installer compares that commit and the binary hashes with a
+  root-owned installation manifest. A copied release source tree, a build from
+  a dirty or non-main checkout, and an unrecorded replacement binary are
+  refused (DC2-2026-09-03-VERIFIED-LIVE-RUST-BINARIES).
+- Compiled artifacts do not change the existing trust decision: every account
+  permitted to write the canonical checkout is controlled by the same owner
+  and is already trusted to affect code executed as root after a reviewed
+  restart. This does not add a writer, service, credential flow, network
+  listener, or public authority. The edge remains non-root and read-only.
+- The root daemon continues to launch governed repository commands out of
+  process through systemd as the physical non-root caller. Linking the shared
+  Rust protocol and evidence libraries into the daemon does not move a
+  repository-authored command, environment, or parser into the root process.
 
 ## Docker: authoritative mode (since the 2026-08-25 cutover)
 

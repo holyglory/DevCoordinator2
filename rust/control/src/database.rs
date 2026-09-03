@@ -33,6 +33,8 @@ pub enum DatabaseError {
     SchemaTooNew { found: u32, supported: u32 },
     #[error("database returned an unexpected result type")]
     ResultType,
+    #[error(transparent)]
+    Domain(#[from] devcoordinator2_api::ProtocolError),
     #[error("SQLite operation failed: {0}")]
     Sqlite(#[from] rusqlite::Error),
     #[error("database actor failed to start: {0}")]

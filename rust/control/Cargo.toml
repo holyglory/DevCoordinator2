@@ -20,6 +20,8 @@ devcoordinator2-executor-protocol = { path = "../executor-protocol" }
 getrandom.workspace = true
 libc.workspace = true
 regex.workspace = true
+reqwest.workspace = true
+rmcp.workspace = true
 rusqlite.workspace = true
 rustix.workspace = true
 serde.workspace = true
