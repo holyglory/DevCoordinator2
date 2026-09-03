@@ -5,9 +5,11 @@ use clap::Parser;
 use devcoordinator2_api::params::{BugCorrelations, BugReport};
 use devcoordinator2_api::results::BugList;
 use devcoordinator2_api::{ErrorCode, ProtocolError, ResponseEnvelope};
+use devcoordinator2_control::artifact_materialize::{self, MaterializeRequest};
 use devcoordinator2_control::bugs;
 use devcoordinator2_control::check_event;
 use devcoordinator2_control::cli::{Cli, Invocation, OfflineBugAction, OutputFormat};
+use devcoordinator2_control::telegram::TelegramEvent;
 use devcoordinator2_control::{
     client, config::Config, control_plane::ControlPlane, daemon, database::Database, mcp,
 };
@@ -83,13 +85,47 @@ async fn main() -> ExitCode {
                 2,
             ),
         },
-        Invocation::ArtifactMaterialize { .. } => local_error(
-            format,
-            ErrorCode::InternalError,
-            "artifact materialization is not installed in this migration checkpoint",
-            "the Rust materializer remains an active migration item",
-            2,
-        ),
+        Invocation::ArtifactMaterialize {
+            path,
+            run_id,
+            check,
+            artifacts,
+            destination,
+        } => match Config::load() {
+            Ok(config) => {
+                let request = MaterializeRequest {
+                    path: path.into(),
+                    run_id,
+                    check,
+                    artifacts,
+                    destination,
+                };
+                match artifact_materialize::materialize_with_client(
+                    request,
+                    config.socket_path,
+                    context,
+                )
+                .await
+                {
+                    Ok(receipt) => match ResponseEnvelope::success("materialize", receipt) {
+                        Ok(response) => {
+                            render_response(response, format, Some("test.artifact.materialize"))
+                        }
+                        Err(error) => {
+                            local_error(format, error.code, &error.message, &error.detail, 2)
+                        }
+                    },
+                    Err(error) => local_error(
+                        format,
+                        error.code,
+                        &error.message,
+                        &error.detail,
+                        error.exit_code(),
+                    ),
+                }
+            }
+            Err(error) => configuration_error(format, &error.to_string()),
+        },
     }
 }
 
@@ -190,6 +226,9 @@ async fn run_daemon(config: &Config) -> ExitCode {
     ));
     let capacity = plane.capacity().clone();
     let logs = plane.logs().clone();
+    let telegram_service = plane.telegram().clone();
+    let telegram = telegram_service.start();
+    let _ = telegram_service.enqueue_event(&TelegramEvent::new("coordinator.started"));
     let daemon_socket = config.socket_path.clone();
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let signal_shutdown = shutdown_tx.clone();
@@ -227,6 +266,7 @@ async fn run_daemon(config: &Config) -> ExitCode {
     while let Some(result) = services.join_next().await {
         failure = failure.or_else(|| service_failure(Some(result)));
     }
+    telegram.shutdown().await;
     signal.abort();
     match failure {
         None => ExitCode::SUCCESS,

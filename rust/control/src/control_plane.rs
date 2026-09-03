@@ -27,6 +27,7 @@ use crate::plan::{PlanService, SqliteDeploymentEvidence};
 use crate::platform::{Clock, HostClock};
 use crate::repository::Registry;
 use crate::routes::RouteFilePublisher;
+use crate::telegram::{TelegramEvent, TelegramScope, TelegramService, parse_scope};
 use crate::test_artifacts::TestArtifactService;
 use crate::test_logs::TestLogService;
 use crate::{DATABASE_SCHEMA_VERSION, SOURCE_COMMIT};
@@ -62,6 +63,10 @@ pub const FOUNDATION_OPERATIONS: &[&str] = &[
     "test.artifact.file",
     "test.capacity.get",
     "test.capacity.set",
+    "telegram.link",
+    "telegram.subscribe",
+    "telegram.unsubscribe",
+    "telegram.list",
     "plan.overview",
     "task.history",
     "task.create",
@@ -89,6 +94,7 @@ pub struct ControlPlane {
     logs: TestLogService,
     artifacts: TestArtifactService,
     capacity: CapacityBroker,
+    telegram: TelegramService,
     clock: Arc<dyn Clock>,
 }
 
@@ -118,6 +124,7 @@ impl ControlPlane {
         let logs = TestLogService::new(database.clone(), registry.clone());
         let artifacts = TestArtifactService::new(database.clone(), registry.clone());
         let capacity = CapacityBroker::new(database.clone(), config.capacity_socket_path())?;
+        let telegram = TelegramService::from_config(&config, database.clone());
         Ok(Self {
             config: Arc::new(config),
             database,
@@ -127,6 +134,7 @@ impl ControlPlane {
             logs,
             artifacts,
             capacity,
+            telegram,
             clock,
         })
     }
@@ -145,6 +153,10 @@ impl ControlPlane {
 
     pub fn logs(&self) -> &TestLogService {
         &self.logs
+    }
+
+    pub fn telegram(&self) -> &TelegramService {
+        &self.telegram
     }
 
     fn dispatch_authorized(
@@ -176,10 +188,34 @@ impl ControlPlane {
                 let _: params::Empty = decode(params)?;
                 encode(self.access.list_users()?)
             }
-            "user.invite" => encode(self.access.invite(decode(params)?, caller)?),
-            "user.remove" => encode(self.access.remove_user(decode(params)?, caller)?),
-            "grant.set" => encode(self.access.set_grant(decode(params)?, caller)?),
-            "grant.remove" => encode(self.access.remove_grant(decode(params)?, caller)?),
+            "user.invite" => {
+                let result = self.access.invite(decode(params)?, caller)?;
+                self.notify(TelegramEvent::new("user.invited").with("email", result.email.clone()));
+                encode(result)
+            }
+            "user.remove" => {
+                let result = self.access.remove_user(decode(params)?, caller)?;
+                self.notify(TelegramEvent::new("user.removed").with("email", result.email.clone()));
+                encode(result)
+            }
+            "grant.set" => {
+                let result = self.access.set_grant(decode(params)?, caller)?;
+                self.notify(
+                    TelegramEvent::new("grant.set")
+                        .with("email", result.email.clone())
+                        .with("deployment_id", result.deployment_id.clone()),
+                );
+                encode(result)
+            }
+            "grant.remove" => {
+                let result = self.access.remove_grant(decode(params)?, caller)?;
+                self.notify(
+                    TelegramEvent::new("grant.removed")
+                        .with("email", result.email.clone())
+                        .with("deployment_id", result.deployment_id.clone()),
+                );
+                encode(result)
+            }
             "repository.register" => {
                 let params: params::PathOnly = decode(params)?;
                 encode(
@@ -288,6 +324,43 @@ impl ControlPlane {
                 };
                 encode(self.capacity.set_cap(cap, &actor)?)
             }
+            "telegram.link" => {
+                let params: params::TelegramLink = decode(params)?;
+                let principal = self.access.principal(caller)?;
+                let email = params.email.or(principal.identity.clone()).ok_or_else(|| {
+                    ProtocolError::new(ErrorCode::ParamsInvalid, "email is required")
+                })?;
+                let email = email.to_lowercase();
+                if !principal.local
+                    && !principal.administrator
+                    && principal.identity.as_deref() != Some(&email)
+                {
+                    return Err(ProtocolError::new(
+                        ErrorCode::PermissionDenied,
+                        "may only link chats to yourself",
+                    ));
+                }
+                encode(self.telegram.link(&params.code, &email)?)
+            }
+            "telegram.subscribe" => {
+                let params: params::TelegramSubscription = decode(params)?;
+                self.authorize_telegram_chat(caller, params.chat_id)?;
+                self.authorize_telegram_scope(caller, &params.scope)?;
+                encode(self.telegram.subscribe(params)?)
+            }
+            "telegram.unsubscribe" => {
+                let params: params::TelegramSubscription = decode(params)?;
+                self.authorize_telegram_chat(caller, params.chat_id)?;
+                encode(self.telegram.unsubscribe(params)?)
+            }
+            "telegram.list" => {
+                let _: params::Empty = decode(params)?;
+                let principal = self.access.principal(caller)?;
+                let email = (!principal.local && !principal.administrator)
+                    .then_some(principal.identity)
+                    .flatten();
+                encode(self.telegram.list(email.as_deref())?)
+            }
             "plan.overview" => {
                 let params: params::PlanReference = decode(params)?;
                 if params.path.is_none() && params.repository_id.is_none() {
@@ -341,15 +414,31 @@ impl ControlPlane {
                     caller,
                     false,
                 )?;
-                encode(self.plan.request_release(
-                    &repository.repository_id,
-                    params,
-                    &actor,
-                    &now,
-                )?)
+                let result =
+                    self.plan
+                        .request_release(&repository.repository_id, params, &actor, &now)?;
+                self.notify(
+                    TelegramEvent::new("release.requested")
+                        .with("repository_id", result.repository_id.clone())
+                        .with("repository_name", repository.display_name)
+                        .with("name", result.name.clone()),
+                );
+                encode(result)
             }
             "release.deliver" => {
-                encode(self.plan.deliver_release(decode(params)?, &actor, &now)?)
+                let params: params::ReleaseDeliver = decode(params)?;
+                let (repository_id, name) = self.release_event_identity(&params.release_id)?;
+                let result = self.plan.deliver_release(params, &actor, &now)?;
+                let mut event = TelegramEvent::new("release.delivered")
+                    .with("repository_id", repository_id)
+                    .with("name", name)
+                    .with("port", result.port)
+                    .with("dirty", result.dirty);
+                if let Some(url) = &result.url {
+                    event = event.with("url", url.clone());
+                }
+                self.notify(event);
+                encode(result)
             }
             "decision.tail" => {
                 let params: params::DecisionTail = decode(params)?;
@@ -406,7 +495,21 @@ impl ControlPlane {
             }
             "bug.report" => {
                 let params: params::BugReport = decode(params)?;
-                encode(bugs::report(&self.config.bugs_dir, &params, &actor).map_err(bug_error)?)
+                let result =
+                    bugs::report(&self.config.bugs_dir, &params, &actor).map_err(bug_error)?;
+                if !result.duplicate {
+                    let mut event = TelegramEvent::new("bug.opened")
+                        .with("component", result.component.clone())
+                        .with("summary", result.summary.clone());
+                    if let Some(repository_id) = &result.correlations.repository_id {
+                        event = event.with("repository_id", repository_id.clone());
+                    }
+                    if let Some(deployment_id) = &result.correlations.deployment_id {
+                        event = event.with("deployment_id", deployment_id.clone());
+                    }
+                    self.notify(event);
+                }
+                encode(result)
             }
             "bug.list" => {
                 let _: params::Empty = decode(params)?;
@@ -418,7 +521,14 @@ impl ControlPlane {
             }
             "bug.close" => {
                 let params: params::BugClose = decode(params)?;
-                encode(bugs::close(&self.config.bugs_dir, &params.bug_id).map_err(bug_error)?)
+                let result =
+                    bugs::close(&self.config.bugs_dir, &params.bug_id).map_err(bug_error)?;
+                self.notify(
+                    TelegramEvent::new("bug.closed")
+                        .with("component", result.component.clone())
+                        .with("summary", result.summary.clone()),
+                );
+                encode(result)
             }
             _ => Err(ProtocolError::new(
                 ErrorCode::InternalError,
@@ -458,6 +568,7 @@ impl ControlPlane {
                 Ok(status) => {
                     return Ok(RepositoryIdentity {
                         repository_id: status.repository_id,
+                        display_name: status.display_name,
                     });
                 }
                 Err(error) if error.code == ErrorCode::RepositoryNotFound => {}
@@ -467,6 +578,7 @@ impl ControlPlane {
         let registered = self.registry.register(&path, caller.uid, caller.gid)?;
         Ok(RepositoryIdentity {
             repository_id: registered.repository_id,
+            display_name: registered.display_name,
         })
     }
 
@@ -482,12 +594,13 @@ impl ControlPlane {
             .call(move |connection| {
                 connection
                     .query_row(
-                        "SELECT archived_at,merged_into_repository_id FROM repositories WHERE repository_id=?1",
+                        "SELECT archived_at,merged_into_repository_id,display_name FROM repositories WHERE repository_id=?1",
                         [&lookup],
                         |row| {
                             Ok((
                                 row.get::<_, Option<String>>(0)?,
                                 row.get::<_, Option<String>>(1)?,
+                                row.get::<_, String>(2)?,
                             ))
                         },
                     )
@@ -511,7 +624,10 @@ impl ControlPlane {
                 format!("repository {repository_id} is archived{suffix}"),
             ));
         }
-        Ok(RepositoryIdentity { repository_id })
+        Ok(RepositoryIdentity {
+            repository_id,
+            display_name: state.2,
+        })
     }
 
     fn timestamp(&self) -> Result<String, ProtocolError> {
@@ -525,6 +641,95 @@ impl ControlPlane {
                 )
                 .with_detail(error.to_string())
             })
+    }
+
+    fn authorize_telegram_chat(&self, caller: &Caller, chat_id: i64) -> Result<(), ProtocolError> {
+        let principal = self.access.principal(caller)?;
+        if principal.local || principal.administrator {
+            return Ok(());
+        }
+        if self.telegram.chat_email(chat_id)? == principal.identity {
+            Ok(())
+        } else {
+            Err(ProtocolError::new(
+                ErrorCode::PermissionDenied,
+                "chat is linked to another identity",
+            ))
+        }
+    }
+
+    fn release_event_identity(&self, release_id: &str) -> Result<(String, String), ProtocolError> {
+        let release_id = release_id.to_owned();
+        let lookup = release_id.clone();
+        self.database
+            .call(move |connection| {
+                connection
+                    .query_row(
+                        "SELECT repository_id,name FROM releases WHERE release_id=?1",
+                        [&lookup],
+                        |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+                    )
+                    .optional()
+                    .map_err(DatabaseError::from)
+            })
+            .map_err(database_error)?
+            .ok_or_else(|| {
+                ProtocolError::new(
+                    ErrorCode::ReleaseNotFound,
+                    format!("no release {release_id}"),
+                )
+            })
+    }
+
+    fn authorize_telegram_scope(&self, caller: &Caller, scope: &str) -> Result<(), ProtocolError> {
+        let principal = self.access.principal(caller)?;
+        if principal.local || principal.administrator {
+            return Ok(());
+        }
+        match parse_scope(scope)? {
+            TelegramScope::Server => Err(ProtocolError::new(
+                ErrorCode::PermissionDenied,
+                "server scope requires administrator",
+            )),
+            TelegramScope::Deployment(deployment_id) => {
+                if principal.at_least(&deployment_id, &params::AccessRole::Viewer) {
+                    Ok(())
+                } else {
+                    Err(ProtocolError::new(
+                        ErrorCode::PermissionDenied,
+                        "viewer on the deployment required",
+                    ))
+                }
+            }
+            TelegramScope::Repository(repository_id) => {
+                let deployments = principal.grants.keys().cloned().collect::<Vec<_>>();
+                let visible = self.database.call(move |connection| {
+                    for deployment in deployments {
+                        let found = connection.query_row(
+                            "SELECT EXISTS(SELECT 1 FROM deployments WHERE deployment_id=?1 AND repository_id=?2) OR EXISTS(SELECT 1 FROM observed_deployments WHERE observed_deployment_id=?1 AND repository_id=?2)",
+                            rusqlite::params![deployment, repository_id],
+                            |row| row.get::<_, i64>(0),
+                        )? != 0;
+                        if found {
+                            return Ok(true);
+                        }
+                    }
+                    Ok(false)
+                }).map_err(database_error)?;
+                if visible {
+                    Ok(())
+                } else {
+                    Err(ProtocolError::new(
+                        ErrorCode::PermissionDenied,
+                        "no viewable deployment in that repository",
+                    ))
+                }
+            }
+        }
+    }
+
+    fn notify(&self, event: TelegramEvent) {
+        let _ = self.telegram.enqueue_event(&event);
     }
 }
 
@@ -543,6 +748,7 @@ impl OperationExecutor for ControlPlane {
 
 struct RepositoryIdentity {
     repository_id: String,
+    display_name: String,
 }
 
 fn decode<T: DeserializeOwned>(params: Value) -> Result<T, ProtocolError> {
@@ -574,7 +780,9 @@ fn database_error(error: DatabaseError) -> ProtocolError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use devcoordinator2_api::params::{TaskKind, TaskStatus};
+    use devcoordinator2_api::params::{
+        AccessRole, InvitationGrant, InviteUser, TaskKind, TaskStatus,
+    };
     use std::collections::HashSet;
     use tempfile::tempdir;
     use time::macros::datetime;
@@ -608,6 +816,17 @@ mod tests {
             client_kind: devcoordinator2_api::ClientKind::Codex,
             client_session: Some("fixture".into()),
             identity: None,
+        }
+    }
+
+    fn public(identity: &str) -> Caller {
+        Caller {
+            pid: 2,
+            uid: 999,
+            gid: 999,
+            client_kind: devcoordinator2_api::ClientKind::Edge,
+            client_session: None,
+            identity: Some(identity.into()),
         }
     }
 
@@ -671,5 +890,101 @@ mod tests {
                 "{operation} is not registered"
             );
         }
+    }
+
+    #[test]
+    fn composed_telegram_operations_enforce_chat_and_scope_visibility() {
+        let temporary = tempdir().expect("tempdir");
+        let database = Database::open(temporary.path().join("authority.sqlite3")).expect("db");
+        database
+            .transaction(|transaction| {
+                transaction.execute("INSERT INTO repositories(repository_id,root_path,display_name,registered_at,registered_by_uid,last_seen_at) VALUES('r1111111111111111','/repo','repo','t',1000,'t'),('r2222222222222222','/other','other','t',1000,'t')", [])?;
+                transaction.execute("INSERT INTO worktrees VALUES('w1111111111111111','r1111111111111111','/repo','t','t'),('w2222222222222222','r2222222222222222','/other','t','t')", [])?;
+                transaction.execute("INSERT INTO deployments(deployment_id,repository_id,worktree_id,name,source,spec_fingerprint,spec_json,state,created_at,created_by_uid,client,updated_at) VALUES('d1111111111111111','r1111111111111111','w1111111111111111','one','worktree','f','{}','running','t',1,'other','t'),('d2222222222222222','r2222222222222222','w2222222222222222','two','worktree','f','{}','running','t',1,'other','t')", [])?;
+                Ok(())
+            })
+            .expect("fixture");
+        let plane = ControlPlane::with_adapters(
+            config(temporary.path()),
+            database,
+            Arc::new(|_: &crate::access::RouteAccessSection| Ok(())),
+            Arc::new(crate::platform::FixedClock(datetime!(2026-09-03 12:00 UTC))),
+        )
+        .expect("control plane");
+        plane
+            .access
+            .invite(
+                InviteUser {
+                    email: "viewer@example.test".into(),
+                    administrator: false,
+                    grants: vec![InvitationGrant {
+                        deployment_id: "d1111111111111111".into(),
+                        role: AccessRole::Viewer,
+                    }],
+                },
+                &local(),
+            )
+            .expect("invite");
+        plane
+            .access
+            .accept_invitation(params::AcceptInvitation {
+                email: "viewer@example.test".into(),
+                subject: Some("subject".into()),
+                display_name: None,
+            })
+            .expect("accept");
+        let code = plane.telegram.issue_link_code(7, "viewer").expect("code");
+        plane
+            .execute(
+                "telegram.link",
+                serde_json::json!({"code":code}),
+                &public("viewer@example.test"),
+            )
+            .expect("link own chat");
+        plane
+            .execute(
+                "telegram.subscribe",
+                serde_json::json!({"chat_id":7,"scope":"deployment:d1111111111111111"}),
+                &public("viewer@example.test"),
+            )
+            .expect("deployment subscription");
+        plane
+            .execute(
+                "telegram.subscribe",
+                serde_json::json!({"chat_id":7,"scope":"repository:r1111111111111111"}),
+                &public("viewer@example.test"),
+            )
+            .expect("repository subscription");
+        for scope in [
+            "server",
+            "deployment:d2222222222222222",
+            "repository:r2222222222222222",
+        ] {
+            let error = plane
+                .execute(
+                    "telegram.subscribe",
+                    serde_json::json!({"chat_id":7,"scope":scope}),
+                    &public("viewer@example.test"),
+                )
+                .expect_err("scope denied");
+            assert_eq!(error.code, ErrorCode::PermissionDenied);
+        }
+        let listing = plane
+            .execute(
+                "telegram.list",
+                serde_json::json!({}),
+                &public("viewer@example.test"),
+            )
+            .expect("listing");
+        assert_eq!(listing["chats"].as_array().map(Vec::len), Some(1));
+        assert_eq!(listing["chats"][0]["chat_id"], 7);
+        let denied = plane
+            .execute(
+                "telegram.unsubscribe",
+                serde_json::json!({"chat_id":8,"scope":"server"}),
+                &public("viewer@example.test"),
+            )
+            .expect_err("other chat denied");
+        assert_eq!(denied.code, ErrorCode::PermissionDenied);
     }
 }

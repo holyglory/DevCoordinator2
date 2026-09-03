@@ -1,6 +1,7 @@
 //! Rust control plane for DevCoordinator2.
 
 pub mod access;
+pub mod artifact_materialize;
 pub mod bugs;
 pub mod capacity;
 pub mod check_event;
@@ -16,8 +17,10 @@ pub mod plan;
 pub mod platform;
 pub mod ports;
 pub mod repository;
+pub mod repository_config;
 pub mod routes;
 pub mod systemd;
+pub mod telegram;
 pub mod test_admission;
 pub mod test_artifacts;
 pub mod test_logs;
