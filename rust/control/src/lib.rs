@@ -3,6 +3,8 @@
 pub mod access;
 pub mod bugs;
 pub mod capacity;
+pub mod check_event;
+pub mod cli;
 pub mod client;
 pub mod config;
 pub mod control_plane;
@@ -15,6 +17,9 @@ pub mod platform;
 pub mod ports;
 pub mod repository;
 pub mod routes;
+pub mod systemd;
+pub mod test_admission;
+pub mod test_artifacts;
 pub mod test_logs;
 
 pub const DATABASE_SCHEMA_VERSION: u32 = 15;

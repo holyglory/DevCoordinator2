@@ -27,6 +27,7 @@ use crate::plan::{PlanService, SqliteDeploymentEvidence};
 use crate::platform::{Clock, HostClock};
 use crate::repository::Registry;
 use crate::routes::RouteFilePublisher;
+use crate::test_artifacts::TestArtifactService;
 use crate::test_logs::TestLogService;
 use crate::{DATABASE_SCHEMA_VERSION, SOURCE_COMMIT};
 
@@ -57,6 +58,8 @@ pub const FOUNDATION_OPERATIONS: &[&str] = &[
     "test.log.failure_context",
     "test.log.retention.get",
     "test.log.retention.set",
+    "test.artifact.catalog",
+    "test.artifact.file",
     "test.capacity.get",
     "test.capacity.set",
     "plan.overview",
@@ -84,6 +87,7 @@ pub struct ControlPlane {
     registry: Registry,
     plan: PlanService,
     logs: TestLogService,
+    artifacts: TestArtifactService,
     capacity: CapacityBroker,
     clock: Arc<dyn Clock>,
 }
@@ -112,6 +116,7 @@ impl ControlPlane {
         ));
         let plan = PlanService::new(database.clone(), evidence);
         let logs = TestLogService::new(database.clone(), registry.clone());
+        let artifacts = TestArtifactService::new(database.clone(), registry.clone());
         let capacity = CapacityBroker::new(database.clone(), config.capacity_socket_path())?;
         Ok(Self {
             config: Arc::new(config),
@@ -120,6 +125,7 @@ impl ControlPlane {
             registry,
             plan,
             logs,
+            artifacts,
             capacity,
             clock,
         })
@@ -135,6 +141,10 @@ impl ControlPlane {
 
     pub fn capacity(&self) -> &CapacityBroker {
         &self.capacity
+    }
+
+    pub fn logs(&self) -> &TestLogService {
+        &self.logs
     }
 
     fn dispatch_authorized(
@@ -264,6 +274,8 @@ impl ControlPlane {
                     &now,
                 )?)
             }
+            "test.artifact.catalog" => encode(self.artifacts.catalog(decode(params)?, caller)?),
+            "test.artifact.file" => encode(self.artifacts.file(decode(params)?, caller)?),
             "test.capacity.get" => {
                 let _: params::Empty = decode(params)?;
                 encode(self.capacity.snapshot()?)

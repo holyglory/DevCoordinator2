@@ -1,69 +1,21 @@
 use std::process::ExitCode;
 use std::sync::Arc;
 
-use clap::{Parser, Subcommand, ValueEnum};
-use devcoordinator2_api::{ClientContext, ClientKind, ResponseEnvelope};
+use clap::Parser;
+use devcoordinator2_api::params::{BugCorrelations, BugReport};
+use devcoordinator2_api::results::BugList;
+use devcoordinator2_api::{ErrorCode, ProtocolError, ResponseEnvelope};
+use devcoordinator2_control::bugs;
+use devcoordinator2_control::check_event;
+use devcoordinator2_control::cli::{Cli, Invocation, OfflineBugAction, OutputFormat};
 use devcoordinator2_control::{
     client, config::Config, control_plane::ControlPlane, daemon, database::Database, mcp,
 };
 use tokio::sync::watch;
+use tokio::task::JoinSet;
 
-#[derive(Debug, Parser)]
-#[command(
-    name = "devcoordinator2",
-    version,
-    about = "Server-wide development coordinator"
-)]
-struct Cli {
-    #[arg(long, global = true, value_enum, default_value_t = OutputFormat::Json)]
-    format: OutputFormat,
-    #[arg(long, global = true, value_enum, default_value_t = ClientArg::Other)]
-    client: ClientArg,
-    #[arg(long, global = true)]
-    session: Option<String>,
-    #[command(subcommand)]
-    command: Command,
-}
-
-#[derive(Clone, Copy, Debug, Default, ValueEnum)]
-enum OutputFormat {
-    #[default]
-    Json,
-    Human,
-}
-
-#[derive(Clone, Copy, Debug, Default, ValueEnum)]
-enum ClientArg {
-    Codex,
-    Claude,
-    Cursor,
-    Antigravity,
-    Human,
-    Edge,
-    #[default]
-    Other,
-}
-
-impl From<ClientArg> for ClientKind {
-    fn from(value: ClientArg) -> Self {
-        match value {
-            ClientArg::Codex => Self::Codex,
-            ClientArg::Claude => Self::Claude,
-            ClientArg::Cursor => Self::Cursor,
-            ClientArg::Antigravity => Self::Antigravity,
-            ClientArg::Human => Self::Human,
-            ClientArg::Edge => Self::Edge,
-            ClientArg::Other => Self::Other,
-        }
-    }
-}
-
-#[derive(Debug, Subcommand)]
-enum Command {
-    Daemon,
-    Mcp,
-    Ping,
-}
+type ServiceResult = (&'static str, Result<(), String>);
+type JoinedService = Result<ServiceResult, tokio::task::JoinError>;
 
 #[tokio::main]
 async fn main() -> ExitCode {
@@ -72,41 +24,148 @@ async fn main() -> ExitCode {
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
     let cli = Cli::parse();
-    let config = match if matches!(&cli.command, Command::Daemon) {
-        Config::load_for_daemon()
-    } else {
-        Config::load()
-    } {
-        Ok(config) => config,
+    let format = cli.format;
+    let context = cli.client_context();
+    let invocation = match cli.into_invocation() {
+        Ok(invocation) => invocation,
         Err(error) => {
-            eprintln!("configuration failed: {error}");
-            return ExitCode::from(2);
+            return local_error(
+                format,
+                ErrorCode::ParamsInvalid,
+                "command-line arguments are invalid",
+                &error.to_string(),
+                2,
+            );
         }
     };
-    match cli.command {
-        Command::Daemon => run_daemon(&config).await,
-        Command::Mcp => match mcp::run_stdio(config.socket_path.clone()).await {
-            Ok(()) => ExitCode::SUCCESS,
-            Err(error) => {
-                eprintln!("MCP server failed: {error}");
-                ExitCode::from(2)
-            }
+    match invocation {
+        Invocation::Daemon => match Config::load_for_daemon() {
+            Ok(config) => run_daemon(&config).await,
+            Err(error) => configuration_error(format, &error.to_string()),
         },
-        Command::Ping => {
-            let context = ClientContext {
-                kind: cli.client.into(),
-                session: cli.session,
-                identity: None,
-            };
-            match client::call(&config.socket_path, "ping", serde_json::json!({}), context).await {
-                Ok(response) => render_response(response, cli.format),
+        Invocation::Mcp => match Config::load() {
+            Ok(config) => match mcp::run_stdio(config.socket_path).await {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(error) => local_error(
+                    format,
+                    ErrorCode::DaemonUnavailable,
+                    "MCP server failed",
+                    &error.to_string(),
+                    2,
+                ),
+            },
+            Err(error) => configuration_error(format, &error.to_string()),
+        },
+        Invocation::Remote { operation, params } => match Config::load() {
+            Ok(config) => match client::call(&config.socket_path, operation, params, context).await
+            {
+                Ok(response) => render_response(response, format, Some(operation)),
                 Err(error) => {
                     let response = ResponseEnvelope::failure("", error);
-                    let _ = render(&response, cli.format);
+                    let _ = devcoordinator2_control::cli::render_response(
+                        &response,
+                        format,
+                        Some(operation),
+                    );
                     ExitCode::from(2)
                 }
-            }
+            },
+            Err(error) => configuration_error(format, &error.to_string()),
+        },
+        Invocation::OfflineBug { action } => run_offline_bug(action, format),
+        Invocation::TestEvent { status } => match check_event::emit_from_environment(status) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => local_error(
+                format,
+                ErrorCode::ParamsInvalid,
+                "cannot emit governed-check event",
+                &error.to_string(),
+                2,
+            ),
+        },
+        Invocation::ArtifactMaterialize { .. } => local_error(
+            format,
+            ErrorCode::InternalError,
+            "artifact materialization is not installed in this migration checkpoint",
+            "the Rust materializer remains an active migration item",
+            2,
+        ),
+    }
+}
+
+fn configuration_error(format: OutputFormat, detail: &str) -> ExitCode {
+    local_error(
+        format,
+        ErrorCode::ParamsInvalid,
+        "configuration failed",
+        detail,
+        2,
+    )
+}
+
+fn run_offline_bug(action: OfflineBugAction, format: OutputFormat) -> ExitCode {
+    let directory = bugs::bugs_dir();
+    let reporter = format!("uid:{}", rustix::process::getuid().as_raw());
+    let (operation, result) = match action {
+        OfflineBugAction::Report {
+            component,
+            summary,
+            expected,
+            actual,
+            steps,
+            run_id,
+            deployment_id,
+        } => {
+            let request = BugReport {
+                component,
+                summary,
+                expected,
+                actual,
+                steps,
+                correlations: BugCorrelations {
+                    run_id,
+                    deployment_id,
+                    component: None,
+                    repository_id: None,
+                    call_id: None,
+                },
+            };
+            let result = bugs::report(&directory, &request, &reporter).map(|mut record| {
+                record.notified = Some(false);
+                serde_json::to_value(record)
+            });
+            ("bug.report", result)
         }
+        OfflineBugAction::List => (
+            "bug.list",
+            bugs::list_open(&directory).map(|records| {
+                serde_json::to_value(BugList {
+                    bugs: records,
+                    store: None,
+                })
+            }),
+        ),
+        OfflineBugAction::Close { bug_id } => {
+            let result = bugs::close(&directory, &bug_id).map(|mut closed| {
+                closed.notified = Some(false);
+                serde_json::to_value(closed)
+            });
+            ("bug.close", result)
+        }
+    };
+    match result {
+        Ok(Ok(data)) => match ResponseEnvelope::success("offline", data) {
+            Ok(response) => render_response(response, format, Some(operation)),
+            Err(error) => local_error(format, error.code, &error.message, &error.detail, 2),
+        },
+        Ok(Err(error)) => local_error(
+            format,
+            ErrorCode::InternalError,
+            "cannot encode offline bug result",
+            &error.to_string(),
+            2,
+        ),
+        Err(error) => local_error(format, ErrorCode::ParamsInvalid, &error.to_string(), "", 1),
     }
 }
 
@@ -130,6 +189,7 @@ async fn run_daemon(config: &Config) -> ExitCode {
         Arc::new(plane.clone()),
     ));
     let capacity = plane.capacity().clone();
+    let logs = plane.logs().clone();
     let daemon_socket = config.socket_path.clone();
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let signal_shutdown = shutdown_tx.clone();
@@ -137,46 +197,61 @@ async fn run_daemon(config: &Config) -> ExitCode {
         let _ = tokio::signal::ctrl_c().await;
         let _ = signal_shutdown.send(true);
     });
+    let mut services = JoinSet::new();
     let mut daemon_shutdown = shutdown_rx.clone();
-    let mut daemon_task = tokio::spawn(async move {
-        daemon::serve_with_app(&daemon_socket, &mut daemon_shutdown, app).await
+    services.spawn(async move {
+        (
+            "daemon",
+            daemon::serve_with_app(&daemon_socket, &mut daemon_shutdown, app)
+                .await
+                .map_err(|error| error.to_string()),
+        )
     });
-    let mut capacity_task = tokio::spawn(async move { capacity.serve(shutdown_rx).await });
-    let (surface, result) = tokio::select! {
-        result = &mut daemon_task => ("daemon", result),
-        result = &mut capacity_task => ("capacity broker", result),
-    };
+    let capacity_shutdown = shutdown_rx.clone();
+    services.spawn(async move {
+        (
+            "capacity broker",
+            capacity
+                .serve(capacity_shutdown)
+                .await
+                .map_err(|error| error.to_string()),
+        )
+    });
+    services.spawn(async move {
+        logs.serve_maintenance(shutdown_rx).await;
+        ("log maintenance", Ok(()))
+    });
+    let first = services.join_next().await;
     let _ = shutdown_tx.send(true);
-    let sibling = if surface == "daemon" {
-        capacity_task.await
-    } else {
-        daemon_task.await
-    };
+    let mut failure = service_failure(first);
+    while let Some(result) = services.join_next().await {
+        failure = failure.or_else(|| service_failure(Some(result)));
+    }
     signal.abort();
-    match (result, sibling) {
-        (Ok(Ok(())), Ok(Ok(()))) => ExitCode::SUCCESS,
-        (Ok(Err(error)), _) => {
+    match failure {
+        None => ExitCode::SUCCESS,
+        Some((surface, error)) => {
             eprintln!("{surface} failed: {error}");
-            ExitCode::from(1)
-        }
-        (Err(error), _) => {
-            eprintln!("{surface} task failed: {error}");
-            ExitCode::from(1)
-        }
-        (Ok(Ok(())), Ok(Err(error))) => {
-            eprintln!("daemon sibling failed during shutdown: {error}");
-            ExitCode::from(1)
-        }
-        (Ok(Ok(())), Err(error)) => {
-            eprintln!("daemon sibling task failed during shutdown: {error}");
             ExitCode::from(1)
         }
     }
 }
 
-fn render_response(response: ResponseEnvelope, format: OutputFormat) -> ExitCode {
+fn service_failure(result: Option<JoinedService>) -> Option<(&'static str, String)> {
+    match result {
+        Some(Ok((_, Ok(())))) | None => None,
+        Some(Ok((surface, Err(error)))) => Some((surface, error)),
+        Some(Err(error)) => Some(("daemon service task", error.to_string())),
+    }
+}
+
+fn render_response(
+    response: ResponseEnvelope,
+    format: OutputFormat,
+    operation: Option<&str>,
+) -> ExitCode {
     let ok = response.is_ok();
-    if render(&response, format).is_err() {
+    if devcoordinator2_control::cli::render_response(&response, format, operation).is_err() {
         return ExitCode::from(2);
     }
     if ok {
@@ -186,25 +261,17 @@ fn render_response(response: ResponseEnvelope, format: OutputFormat) -> ExitCode
     }
 }
 
-fn render(response: &ResponseEnvelope, format: OutputFormat) -> std::io::Result<()> {
-    use std::io::Write;
-    let stdout = std::io::stdout();
-    let mut output = stdout.lock();
-    match format {
-        OutputFormat::Json => serde_json::to_writer_pretty(&mut output, response)?,
-        OutputFormat::Human => match response {
-            ResponseEnvelope::Success { data, .. } => {
-                if let Some(version) = data.get("daemon_version").and_then(|value| value.as_str()) {
-                    writeln!(output, "DevCoordinator2 {version} is available")?;
-                    return Ok(());
-                }
-                serde_json::to_writer_pretty(&mut output, data)?;
-            }
-            ResponseEnvelope::Failure { error, .. } => {
-                writeln!(output, "{}: {}", error.code, error.message)?;
-                return Ok(());
-            }
-        },
-    }
-    writeln!(output)
+fn local_error(
+    format: OutputFormat,
+    code: ErrorCode,
+    message: &str,
+    detail: &str,
+    exit: u8,
+) -> ExitCode {
+    let response = ResponseEnvelope::failure(
+        "",
+        ProtocolError::new(code, message).with_detail(detail.to_owned()),
+    );
+    let _ = devcoordinator2_control::cli::render_response(&response, format, None);
+    ExitCode::from(exit)
 }
