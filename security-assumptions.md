@@ -131,6 +131,11 @@ untracked `instance/` directory and in the installed instance configuration
   evidence remains a coverage failure.
 - Governed formal-verification bundles live only inside the owning caller's
   private retained run leaf and expire with its test-log age/depth policy.
+  A default-output formal run may use the leaf root; custom-output or concurrent
+  runs publish unique immutable direct children below `formal-runs/`. The
+  daemon enumerates only bounded SHA-256-named children, opens every component
+  without following links, and confines each screenshot to its manifest's
+  bundle directory.
   Public Console access is administrator-only, matching complete test logs;
   deployment viewers and operators cannot list screenshots or comments.
 - The edge receives screenshot bytes only through bounded authenticated JSON

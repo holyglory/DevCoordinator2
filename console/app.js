@@ -1770,28 +1770,100 @@ async function viewTestEvidence(runId) {
   main.innerHTML = evidenceWorkspace(run, data); refreshEvidenceSelection();
 }
 
+const TEST_REFRESH_INTERVAL_MS = 2000;
+
+function testEvidenceAction(run) {
+  const evidence = run.visual_evidence || {};
+  const control = `data-test-row-control="${esc(`${run.run_id}:evidence`)}"`;
+  if (evidence.status === 'available' && Number(evidence.bundle_count) > 0) {
+    const count = Number(evidence.image_count) || 0;
+    const label = count === 1 ? 'Evidence · 1 image' : `Evidence · ${count} images`;
+    return `<a class="btn btn-small" ${control} href="#/tests/${encodeURIComponent(run.run_id)}">${esc(label)}</a>`;
+  }
+  if (Number(evidence.issue_count) > 0) {
+    return `<a class="btn btn-small" ${control} href="#/tests/${encodeURIComponent(run.run_id)}">Evidence invalid</a>`;
+  }
+  if (run.status === 'running') {
+    return '<span class="badge warn" title="No visual journey bundle has been published yet.">Evidence pending</span>';
+  }
+  if (evidence.error_code) {
+    return '<span class="badge" title="The retained evidence could not be read.">Evidence unavailable</span>';
+  }
+  return '<span class="badge" title="This test run did not publish a visual journey bundle.">Evidence not produced</span>';
+}
+
+function testRunRow(run) {
+  return `<tr data-test-run-id="${esc(run.run_id)}">
+    <td class="wrap"><span class="test-cell-label">Repository / worktree</span><strong>${esc(run.display_name)}</strong><div class="muted mono">${esc(run.worktree_path)}</div></td><td><span class="test-cell-label">Test</span>${esc(run.test)}</td><td><span class="test-cell-label">Tier</span>${badge(testTierLabel(run.requested_tier), run.readiness_eligible ? 'ok' : '')}<div class="muted">${run.readiness_eligible ? 'Readiness proof' : 'Diagnostic only'}</div></td><td><span class="test-cell-label">Result</span>${badge(run.status)}</td><td><span class="test-cell-label">Duration</span>${run.duration_seconds != null ? `${run.duration_seconds}s` : '—'}</td><td><span class="test-cell-label">Started</span>${ago(run.started_at)}</td><td><span class="test-cell-label">Exit</span>${run.exit_code ?? '—'}</td>
+    <td><span class="test-cell-label">Output</span>${bytes(run.stdout_bytes_observed)} / ${bytes(run.stderr_bytes_observed)}</td>
+    <td class="actions"><span class="test-cell-label">Actions</span>${testEvidenceAction(run)}<button class="btn btn-small" data-test-logs data-test-row-control="${esc(`${run.run_id}:logs`)}" data-run-id="${esc(run.run_id)}">Logs</button>
+      ${run.status === 'running' ? `<button class="btn btn-small" data-test-row-control="${esc(`${run.run_id}:stop`)}" data-cmd="test.stop" data-args='${esc(JSON.stringify({ path: run.worktree_path }))}'>stop</button>` : `<label class="test-tier-control"><span>Tier</span><select data-test-tier data-test-row-control="${esc(`${run.run_id}:tier`)}" data-path="${esc(run.worktree_path)}" aria-label="Validation tier for ${esc(run.display_name)}">${TEST_TIERS.map((tier) => `<option value="${tier}"${tier === 'release' ? ' selected' : ''}>${testTierLabel(tier)}</option>`).join('')}</select></label><button class="btn btn-small" data-test-row-control="${esc(`${run.run_id}:start`)}" type="button" data-test-start data-path="${esc(run.worktree_path)}">start</button>`}</td></tr>`;
+}
+
+function testRunCollection(runs) {
+  return runs.length ? `<div class="tablewrap tests-tablewrap"><table><thead><tr><th>Repository / worktree</th><th>Test</th><th>Tier</th><th>Result</th><th>Duration</th><th>Started</th><th>Exit</th><th>Output</th><th>Actions</th></tr></thead><tbody>${runs.map(testRunRow).join('')}</tbody></table></div>` : stateBlock('empty', 'No test runs yet.');
+}
+
+function bindTestRunRows(root, runs, retention) {
+  bind(root);
+  root.querySelectorAll('[data-test-start]').forEach((button) => button.addEventListener('click', () => {
+    const tier = root.querySelector(`[data-test-tier][data-path="${CSS.escape(button.dataset.path)}"]`)?.value || 'release';
+    act(button, 'test.start', { path: button.dataset.path, tier }, () => render());
+  }));
+  root.querySelectorAll('[data-test-logs]').forEach((button) => button.addEventListener('click', () => {
+    const run = runs.find((row) => row.run_id === button.dataset.runId);
+    if (run) openTestLogsDialog(run, retention, button);
+  }));
+}
+
+function updateTestRunCollection(root, runs, previousSignature, retention) {
+  const signature = JSON.stringify(runs);
+  if (signature === previousSignature) return signature;
+  const active = root.contains(document.activeElement) ? document.activeElement : null;
+  const focusKey = active?.dataset?.testRowControl || null;
+  const tierValues = new Map(
+    [...root.querySelectorAll('[data-test-tier]')].map((select) => [select.dataset.path, select.value]),
+  );
+  const scrollX = window.scrollX; const scrollY = window.scrollY;
+  root.innerHTML = testRunCollection(runs);
+  for (const select of root.querySelectorAll('[data-test-tier]')) {
+    if (tierValues.has(select.dataset.path)) select.value = tierValues.get(select.dataset.path);
+  }
+  bindTestRunRows(root, runs, retention);
+  if (focusKey) root.querySelector(`[data-test-row-control="${CSS.escape(focusKey)}"]`)?.focus();
+  window.scrollTo(scrollX, scrollY);
+  return signature;
+}
+
 const viewTests = guard(async (runId = null) => {
   if (runId) return viewTestEvidence(runId);
   main.innerHTML = `${pageHeading('Tests', '#/tests')}${skeleton()}`;
   const [{ runs }, capacity, retention] = await Promise.all([api('test.list', {}), api('test.capacity.get', {}), api('test.log.retention.get', {})]);
-  const heading = `<div class="tests-heading">${pageHeading('Tests', '#/tests')}<div class="actions"><button class="btn" type="button" id="test-log-retention-open">Logs · ${esc(Math.round(retention.max_age_seconds / 3600))}h / ${esc(retention.case_depth)}</button><button class="btn" type="button" id="test-capacity-open">Capacity · ${esc(capacity.effective_capacity)}</button></div></div>`;
-  const collection = runs.length ? `<div class="tablewrap tests-tablewrap"><table><thead><tr><th>Repository / worktree</th><th>Test</th><th>Tier</th><th>Result</th><th>Duration</th><th>Started</th><th>Exit</th><th>Output</th><th>Actions</th></tr></thead><tbody>${runs.map((r) => `<tr>
-    <td class="wrap"><strong>${esc(r.display_name)}</strong><div class="muted mono">${esc(r.worktree_path)}</div></td><td>${esc(r.test)}</td><td>${badge(testTierLabel(r.requested_tier), r.readiness_eligible ? 'ok' : '')}<div class="muted">${r.readiness_eligible ? 'Readiness proof' : 'Diagnostic only'}</div></td><td>${badge(r.status)}</td><td>${r.duration_seconds != null ? `${r.duration_seconds}s` : '—'}</td><td>${ago(r.started_at)}</td><td>${r.exit_code ?? '—'}</td>
-    <td>${bytes(r.stdout_bytes_observed)} / ${bytes(r.stderr_bytes_observed)}</td>
-    <td class="actions"><a class="btn btn-small" href="#/tests/${encodeURIComponent(r.run_id)}">Evidence</a><button class="btn btn-small" data-test-logs data-run-id="${esc(r.run_id)}">Logs</button>
-      ${r.status === 'running' ? `<button class="btn btn-small" data-cmd="test.stop" data-args='${esc(JSON.stringify({ path: r.worktree_path }))}'>stop</button>` : `<label class="test-tier-control"><span>Tier</span><select data-test-tier data-path="${esc(r.worktree_path)}" aria-label="Validation tier for ${esc(r.display_name)}">${TEST_TIERS.map((tier) => `<option value="${tier}"${tier === 'release' ? ' selected' : ''}>${testTierLabel(tier)}</option>`).join('')}</select></label><button class="btn btn-small" type="button" data-test-start data-path="${esc(r.worktree_path)}">start</button>`}</td></tr>`).join('')}</tbody></table></div>` : stateBlock('empty', 'No test runs yet.');
-  main.innerHTML = `<section class="tests-page">${heading}<section aria-labelledby="test-runs-heading"><h2 id="test-runs-heading">Current runs</h2>${collection}</section><div id="logs"></div></section>`;
-  bind(main);
+  const refreshing = runs.some((run) => run.status === 'running');
+  const heading = `<div class="tests-heading">${pageHeading('Tests', '#/tests')}<div class="actions"><span id="test-live-status" class="muted" aria-live="polite">${refreshing ? 'Live updates on' : 'Up to date'}</span><button class="btn" type="button" id="test-log-retention-open">Logs · ${esc(Math.round(retention.max_age_seconds / 3600))}h / ${esc(retention.case_depth)}</button><button class="btn" type="button" id="test-capacity-open">Capacity · ${esc(capacity.effective_capacity)}</button></div></div>`;
+  main.innerHTML = `<section class="tests-page">${heading}<section aria-labelledby="test-runs-heading"><h2 id="test-runs-heading">Current runs</h2><div id="test-runs-collection">${testRunCollection(runs)}</div></section><div id="logs"></div></section>`;
+  const collection = $('#test-runs-collection', main);
+  bindTestRunRows(collection, runs, retention);
   $('#test-capacity-open', main).addEventListener('click', (event) => openTestCapacityDialog(capacity, event.currentTarget));
   $('#test-log-retention-open', main).addEventListener('click', (event) => openTestLogRetentionDialog(retention, event.currentTarget));
-  main.querySelectorAll('[data-test-start]').forEach((button) => button.addEventListener('click', () => {
-    const tier = main.querySelector(`[data-test-tier][data-path="${CSS.escape(button.dataset.path)}"]`)?.value || 'release';
-    act(button, 'test.start', { path: button.dataset.path, tier }, () => render());
-  }));
-  main.querySelectorAll('[data-test-logs]').forEach((button) => button.addEventListener('click', () => {
-    const run = runs.find((row) => row.run_id === button.dataset.runId);
-    if (run) openTestLogsDialog(run, retention, button);
-  }));
+  const controller = viewAbort;
+  let signature = JSON.stringify(runs);
+  const refresh = async () => {
+    if (controller !== viewAbort || controller.signal.aborted || location.hash !== '#/tests') return;
+    try {
+      const next = await api('test.list', {});
+      if (controller !== viewAbort || controller.signal.aborted || location.hash !== '#/tests') return;
+      signature = updateTestRunCollection(collection, next.runs || [], signature, retention);
+      const active = (next.runs || []).some((run) => run.status === 'running');
+      $('#test-live-status', main).textContent = active ? 'Live updates on' : 'Up to date';
+      if (active) setTimeout(refresh, TEST_REFRESH_INTERVAL_MS);
+    } catch (error) {
+      if (error.code === 'stale' || controller !== viewAbort || controller.signal.aborted) return;
+      $('#test-live-status', main).textContent = 'Live update paused; retrying';
+      setTimeout(refresh, TEST_REFRESH_INTERVAL_MS);
+    }
+  };
+  if (refreshing) setTimeout(refresh, TEST_REFRESH_INTERVAL_MS);
 });
 
 // --- Health --------------------------------------------------------------
