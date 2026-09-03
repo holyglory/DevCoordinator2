@@ -2,6 +2,7 @@
 
 pub mod access;
 pub mod bugs;
+pub mod capacity;
 pub mod client;
 pub mod config;
 pub mod control_plane;

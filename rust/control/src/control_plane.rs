@@ -19,6 +19,7 @@ use time::{format_description::FormatItem, macros::format_description};
 
 use crate::access::{Access, Caller, RoutePublisher};
 use crate::bugs;
+use crate::capacity::CapacityBroker;
 use crate::config::Config;
 use crate::daemon::OperationExecutor;
 use crate::database::{Database, DatabaseError};
@@ -56,6 +57,8 @@ pub const FOUNDATION_OPERATIONS: &[&str] = &[
     "test.log.failure_context",
     "test.log.retention.get",
     "test.log.retention.set",
+    "test.capacity.get",
+    "test.capacity.set",
     "plan.overview",
     "task.history",
     "task.create",
@@ -81,6 +84,7 @@ pub struct ControlPlane {
     registry: Registry,
     plan: PlanService,
     logs: TestLogService,
+    capacity: CapacityBroker,
     clock: Arc<dyn Clock>,
 }
 
@@ -108,6 +112,7 @@ impl ControlPlane {
         ));
         let plan = PlanService::new(database.clone(), evidence);
         let logs = TestLogService::new(database.clone(), registry.clone());
+        let capacity = CapacityBroker::new(database.clone(), config.capacity_socket_path())?;
         Ok(Self {
             config: Arc::new(config),
             database,
@@ -115,6 +120,7 @@ impl ControlPlane {
             registry,
             plan,
             logs,
+            capacity,
             clock,
         })
     }
@@ -125,6 +131,10 @@ impl ControlPlane {
 
     pub fn registry(&self) -> &Registry {
         &self.registry
+    }
+
+    pub fn capacity(&self) -> &CapacityBroker {
+        &self.capacity
     }
 
     fn dispatch_authorized(
@@ -253,6 +263,18 @@ impl ControlPlane {
                     &actor,
                     &now,
                 )?)
+            }
+            "test.capacity.get" => {
+                let _: params::Empty = decode(params)?;
+                encode(self.capacity.snapshot()?)
+            }
+            "test.capacity.set" => {
+                let params: params::SetCapacity = decode(params)?;
+                let cap = match params.cap {
+                    params::CapacityCap::Value(cap) => Some(u32::from(cap)),
+                    params::CapacityCap::Null => None,
+                };
+                encode(self.capacity.set_cap(cap, &actor)?)
             }
             "plan.overview" => {
                 let params: params::PlanReference = decode(params)?;

@@ -125,18 +125,50 @@ async fn run_daemon(config: &Config) -> ExitCode {
             return ExitCode::from(1);
         }
     };
-    let app = Arc::new(daemon::App::with_executor(config.edge_uid, Arc::new(plane)));
-    let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
+    let app = Arc::new(daemon::App::with_executor(
+        config.edge_uid,
+        Arc::new(plane.clone()),
+    ));
+    let capacity = plane.capacity().clone();
+    let daemon_socket = config.socket_path.clone();
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    let signal_shutdown = shutdown_tx.clone();
     let signal = tokio::spawn(async move {
         let _ = tokio::signal::ctrl_c().await;
-        let _ = shutdown_tx.send(true);
+        let _ = signal_shutdown.send(true);
     });
-    let result = daemon::serve_with_app(&config.socket_path, &mut shutdown_rx, app).await;
+    let mut daemon_shutdown = shutdown_rx.clone();
+    let mut daemon_task = tokio::spawn(async move {
+        daemon::serve_with_app(&daemon_socket, &mut daemon_shutdown, app).await
+    });
+    let mut capacity_task = tokio::spawn(async move { capacity.serve(shutdown_rx).await });
+    let (surface, result) = tokio::select! {
+        result = &mut daemon_task => ("daemon", result),
+        result = &mut capacity_task => ("capacity broker", result),
+    };
+    let _ = shutdown_tx.send(true);
+    let sibling = if surface == "daemon" {
+        capacity_task.await
+    } else {
+        daemon_task.await
+    };
     signal.abort();
-    match result {
-        Ok(()) => ExitCode::SUCCESS,
-        Err(error) => {
-            eprintln!("daemon failed: {error}");
+    match (result, sibling) {
+        (Ok(Ok(())), Ok(Ok(()))) => ExitCode::SUCCESS,
+        (Ok(Err(error)), _) => {
+            eprintln!("{surface} failed: {error}");
+            ExitCode::from(1)
+        }
+        (Err(error), _) => {
+            eprintln!("{surface} task failed: {error}");
+            ExitCode::from(1)
+        }
+        (Ok(Ok(())), Ok(Err(error))) => {
+            eprintln!("daemon sibling failed during shutdown: {error}");
+            ExitCode::from(1)
+        }
+        (Ok(Ok(())), Err(error)) => {
+            eprintln!("daemon sibling task failed during shutdown: {error}");
             ExitCode::from(1)
         }
     }
