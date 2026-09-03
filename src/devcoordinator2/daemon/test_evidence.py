@@ -28,6 +28,7 @@ from devcoordinator2.daemon.registry import Registry
 from devcoordinator2.protocol import ProtocolError
 
 MANIFEST_NAME = "journey-evidence.json"
+MULTI_BUNDLE_DIRECTORY = "formal-runs"
 MANIFEST_KIND = "formal-web-ui-journey-evidence"
 MANIFEST_SCHEMA = 1
 MAX_MANIFEST_BYTES = 2 * 1024 * 1024
@@ -251,6 +252,59 @@ def _open_relative(evidence_fd: int, relative: str) -> int:
         raise
 
 
+def _open_relative_dir(evidence_fd: int, parts: tuple[str, ...]) -> int:
+    fd = os.dup(evidence_fd)
+    try:
+        for part in parts:
+            child = _open_dir(fd, part)
+            os.close(fd)
+            fd = child
+        return fd
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def _has_regular_file(directory_fd: int, name: str) -> bool:
+    try:
+        file_fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=directory_fd)
+    except OSError:
+        return False
+    try:
+        return stat.S_ISREG(os.fstat(file_fd).st_mode)
+    finally:
+        os.close(file_fd)
+
+
+def _manifest_directories(evidence_fd: int, maximum: int) -> list[tuple[str, ...]]:
+    directories: list[tuple[str, ...]] = []
+    if _has_regular_file(evidence_fd, MANIFEST_NAME):
+        directories.append(())
+    if len(directories) >= maximum:
+        return directories
+    try:
+        runs_fd = _open_dir(evidence_fd, MULTI_BUNDLE_DIRECTORY)
+    except FileNotFoundError:
+        return directories
+    try:
+        names = sorted(name for name in os.listdir(runs_fd) if _SHA_RE.fullmatch(name))
+        for name in names:
+            if len(directories) >= maximum:
+                break
+            try:
+                bundle_fd = _open_dir(runs_fd, name)
+            except FileNotFoundError:
+                continue
+            try:
+                if _has_regular_file(bundle_fd, MANIFEST_NAME):
+                    directories.append((MULTI_BUNDLE_DIRECTORY, name))
+            finally:
+                os.close(bundle_fd)
+    finally:
+        os.close(runs_fd)
+    return directories
+
+
 def _manifest_leaves(run_fd: int) -> list[_Leaf]:
     try:
         checks_fd = _open_dir(run_fd, "checks")
@@ -304,6 +358,7 @@ def _manifest_leaves(run_fd: int) -> list[_Leaf]:
 def _screenshot(
     evidence_fd: int,
     leaf: _Leaf,
+    manifest_directory: tuple[str, ...],
     manifest_sha: str,
     run_id: str,
     key: str,
@@ -335,7 +390,7 @@ def _screenshot(
     height = _positive_int(value.get("height"), "screenshot height", 262_144)
     captured_at = _bounded_optional_text(value.get("capturedAt"), 64)
     relative = value.get("path")
-    _relative_parts(relative)
+    relative_parts = _relative_parts(relative)
     try:
         image_fd = _open_relative(evidence_fd, relative)
         details = os.fstat(image_fd)
@@ -349,6 +404,7 @@ def _screenshot(
             raise ValueError("screenshot file does not match its descriptor")
     except (FileNotFoundError, OSError, ValueError):
         return {"status": "unavailable", "kind": expected_kind}, None
+    stored_relative = PurePosixPath(*manifest_directory, *relative_parts).as_posix()
     digest_input = "\0".join(
         (
             run_id,
@@ -356,7 +412,7 @@ def _screenshot(
             leaf.phase,
             leaf.case or "",
             manifest_sha,
-            relative,
+            stored_relative,
             value["sha256"],
         )
     ).encode()
@@ -375,7 +431,7 @@ def _screenshot(
     return public, _Image(
         image_id=image_id,
         leaf=leaf,
-        relative_path=relative,
+        relative_path=stored_relative,
         mime="image/png",
         size=size,
         sha256=value["sha256"],
@@ -392,6 +448,7 @@ def _sanitize_manifest(
     raw: bytes,
     leaf: _Leaf,
     governed_run_id: str,
+    manifest_directory: tuple[str, ...] = (),
 ) -> tuple[dict[str, Any], dict[str, _Image]]:
     if not isinstance(payload, dict) or set(payload) != {
         "schemaVersion",
@@ -455,6 +512,7 @@ def _sanitize_manifest(
             descriptor, image = _screenshot(
                 evidence_fd,
                 leaf,
+                manifest_directory,
                 manifest_sha,
                 governed_run_id,
                 source_key,
@@ -738,6 +796,18 @@ class TestEvidenceService:
             "issues": issues,
             "issues_truncated": len(issues) >= 64,
             "image_count": len(images),
+        }
+
+    def summary(self, path: Path, run_id: Any, caller) -> dict[str, Any]:
+        worktree, _repository_id, _worktree_id = self._resolve(path, caller)
+        run = _safe_name(run_id, _RUN_RE, "run_id")
+        bundles, images, issues = self._load(worktree, run)
+        return {
+            "status": "available" if bundles else "unavailable",
+            "bundle_count": len(bundles),
+            "image_count": len(images),
+            "issue_count": len(issues),
+            "issues_truncated": len(issues) >= 64,
         }
 
     def image(self, path: Path, args: dict[str, Any], caller) -> dict[str, Any]:
@@ -1181,40 +1251,66 @@ class TestEvidenceService:
             for leaf in leaves:
                 try:
                     evidence_fd = _open_evidence_dir(run_fd, leaf)
-                    try:
-                        raw, _details = _read_regular(
-                            evidence_fd, MANIFEST_NAME, MAX_MANIFEST_BYTES
-                        )
-                        payload = json.loads(raw)
-                        bundle, bundle_images = _sanitize_manifest(
-                            evidence_fd, payload, raw, leaf, run_id
-                        )
-                    finally:
-                        os.close(evidence_fd)
-                except (
-                    FileNotFoundError,
-                    OSError,
-                    UnicodeDecodeError,
-                    json.JSONDecodeError,
-                    ValueError,
-                ):
-                    if len(issues) < 64:
-                        issues.append(
-                            {
-                                "check": leaf.check,
-                                "phase": leaf.phase,
-                                "case": leaf.case or "",
-                                "code": "invalid_evidence",
-                            }
-                        )
+                except FileNotFoundError:
                     continue
-                for cell in bundle["cells"]:
-                    cell["formal_run_id"] = bundle["formal_run_id"]
-                bundles.append(bundle)
-                images.update(bundle_images)
+                try:
+                    directories = _manifest_directories(
+                        evidence_fd, MAX_MANIFESTS - len(bundles)
+                    )
+                    for directory in directories:
+                        manifest_fd = None
+                        try:
+                            manifest_fd = _open_relative_dir(evidence_fd, directory)
+                            raw, _details = _read_regular(
+                                manifest_fd, MANIFEST_NAME, MAX_MANIFEST_BYTES
+                            )
+                            payload = json.loads(raw)
+                            bundle, bundle_images = _sanitize_manifest(
+                                manifest_fd,
+                                payload,
+                                raw,
+                                leaf,
+                                run_id,
+                                directory,
+                            )
+                        except (
+                            FileNotFoundError,
+                            OSError,
+                            UnicodeDecodeError,
+                            json.JSONDecodeError,
+                            ValueError,
+                        ):
+                            if len(issues) < 64:
+                                issues.append(
+                                    {
+                                        "check": leaf.check,
+                                        "phase": leaf.phase,
+                                        "case": leaf.case or "",
+                                        "code": "invalid_evidence",
+                                    }
+                                )
+                            continue
+                        finally:
+                            if manifest_fd is not None:
+                                os.close(manifest_fd)
+                        for cell in bundle["cells"]:
+                            cell["formal_run_id"] = bundle["formal_run_id"]
+                        bundles.append(bundle)
+                        images.update(bundle_images)
+                finally:
+                    os.close(evidence_fd)
+                if len(bundles) >= MAX_MANIFESTS:
+                    break
         finally:
             os.close(run_fd)
-        bundles.sort(key=lambda item: (item["check"], item["phase"], item["case"] or ""))
+        bundles.sort(
+            key=lambda item: (
+                item["check"],
+                item["phase"],
+                item["case"] or "",
+                item["formal_run_id"],
+            )
+        )
         return bundles, images, issues
 
 

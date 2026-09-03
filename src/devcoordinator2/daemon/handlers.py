@@ -189,7 +189,23 @@ def build_handlers(config: InstanceConfig, registry: Registry,
 
         def test_list(args: dict[str, Any], caller: Caller) -> dict[str, Any]:
             _no_args(args)
-            return {"runs": lifecycle.list_current()}
+            runs = lifecycle.list_current()
+            if test_evidence is not None:
+                for run in runs:
+                    try:
+                        run["visual_evidence"] = test_evidence.summary(
+                            Path(run["worktree_path"]), run["run_id"], caller
+                        )
+                    except ProtocolError as exc:
+                        run["visual_evidence"] = {
+                            "status": "unavailable",
+                            "bundle_count": 0,
+                            "image_count": 0,
+                            "issue_count": 0,
+                            "issues_truncated": False,
+                            "error_code": exc.code,
+                        }
+            return {"runs": runs}
 
         handlers.update({
             "test.start": test_start,

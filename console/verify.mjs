@@ -249,8 +249,8 @@ const fixtures = (scenario) => {
     'deployment.logs': { component: 'api', tail: 'line 1\nline 2 ' + 'long '.repeat(60) + '\nline 3', truncated_before_tail: true, log_path: '/state/logs/api.log' },
     'health.history': { subject_kind: 'component', subject_id: `${DEP}/api`, metric: 'cpu_percent', minutes: 60, points: scenario.empty ? [] : points, truncated: false },
     'test.list': { runs: scenario.empty ? [] : [
-      { run_id: 't20260101T000000Z-abc123', test: 'unit', requested_tier: 'pre-merge', readiness_eligible: false, status: 'running', started_at: new Date().toISOString(), finished_at: null, duration_seconds: null, exit_code: null, stdout_bytes_observed: 123456789, stderr_bytes_observed: 0, display_name: 'repo-one', worktree_path: '/srv/repos/repo-one', repository_id: REPO, worktree_id: 'w1' },
-      { run_id: TEST_RUN, test: 'ui-release', requested_tier: 'release', readiness_eligible: true, status: 'failed', started_at: new Date(Date.now() - 3600000).toISOString(), finished_at: new Date().toISOString(), duration_seconds: 3599.123, exit_code: 1, stdout_bytes_observed: 10, stderr_bytes_observed: 8388608, display_name: LONG, worktree_path: `/srv/repos/${LONG}`, repository_id: 'r2', worktree_id: 'w2' }] },
+      { run_id: 't20260101T000000Z-abc123', test: 'unit', requested_tier: 'pre-merge', readiness_eligible: false, status: scenario.testFinished ? 'passed' : 'running', started_at: new Date(Date.now() - (scenario.testFinished ? 3600000 : 0)).toISOString(), finished_at: scenario.testFinished ? new Date().toISOString() : null, duration_seconds: scenario.testFinished ? 3600 : null, exit_code: scenario.testFinished ? 0 : null, stdout_bytes_observed: 123456789, stderr_bytes_observed: 0, display_name: 'repo-one', worktree_path: '/srv/repos/repo-one', repository_id: REPO, worktree_id: 'w1', visual_evidence: scenario.evidenceWhileRunning ? { status: 'available', bundle_count: 1, image_count: 2, issue_count: 0, issues_truncated: false } : { status: 'unavailable', bundle_count: 0, image_count: 0, issue_count: 0, issues_truncated: false } },
+      { run_id: TEST_RUN, test: 'ui-release', requested_tier: 'release', readiness_eligible: true, status: 'failed', started_at: new Date(Date.now() - 3600000).toISOString(), finished_at: new Date().toISOString(), duration_seconds: 3599.123, exit_code: 1, stdout_bytes_observed: 10, stderr_bytes_observed: 8388608, display_name: LONG, worktree_path: `/srv/repos/${LONG}`, repository_id: 'r2', worktree_id: 'w2', visual_evidence: { status: 'available', bundle_count: 1, image_count: 8, issue_count: 0, issues_truncated: false } }] },
     'test.capacity.get': {
       learned_capacity: 96, effective_capacity: 80, cap: 80, active: scenario.empty ? 0 : 52,
       waiting: scenario.empty ? 0 : 11, paused: false,
@@ -1176,6 +1176,61 @@ async function main() {
   await waitForSettledCall(daemon, page, 'deployment.restart');
   check('interaction: observed restart calls deployment.restart on the observed id',
     daemon.calls.some((c) => c.command === 'deployment.restart' && c.args.deployment_id === OBS));
+  await page.goto(`http://${HOST}:${port}/#/tests`);
+  await page.waitForSelector('button[data-test-logs]');
+  const runningRow = page.locator('[data-test-run-id="t20260101T000000Z-abc123"]');
+  const visualRow = page.locator(`[data-test-run-id="${TEST_RUN}"]`);
+  check('tests: evidence availability is truthful before opening a run',
+    /Evidence pending/.test(await runningRow.innerText())
+    && /Evidence · 8 images/.test(await visualRow.innerText())
+    && await runningRow.locator('a[href^="#/tests/"]').count() === 0
+    && await visualRow.locator(`a[href="#/tests/${TEST_RUN}"]`).count() === 1);
+  await page.setViewportSize(VIEWPORTS.narrow);
+  const narrowTests = await page.evaluate(() => {
+    const collection = document.querySelector('.tests-tablewrap');
+    const evidence = document.querySelector('[data-test-run-id="t20260101T000000Z-abc123"] td.actions .badge');
+    const rect = evidence?.getBoundingClientRect();
+    return {
+      documentOverflow: document.documentElement.scrollWidth - innerWidth,
+      collectionOverflow: collection ? collection.scrollWidth - collection.clientWidth : null,
+      evidenceRect: rect ? { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom } : null,
+    };
+  });
+  check('tests: narrow rows expose evidence and controls without a horizontal discovery path',
+    narrowTests.documentOverflow <= 0
+    && narrowTests.collectionOverflow <= 0
+    && narrowTests.evidenceRect?.left >= 0
+    && narrowTests.evidenceRect?.right <= VIEWPORTS.narrow.width
+    && narrowTests.evidenceRect?.bottom <= VIEWPORTS.narrow.height,
+  JSON.stringify(narrowTests));
+  await page.setViewportSize(VIEWPORTS.wide);
+  await page.click('#test-capacity-open');
+  await page.waitForSelector('dialog#test-capacity-dialog[open]');
+  await page.locator('#test-capacity-dialog input').focus();
+  daemon.setScenario({ ...SCENARIOS.populated, testFinished: true, targetedOnly: true });
+  await page.waitForFunction(() => {
+    const row = document.querySelector('[data-test-run-id="t20260101T000000Z-abc123"]');
+    return row && /passed/.test(row.textContent) && /Evidence not produced/.test(row.textContent);
+  });
+  check('tests: live refresh replaces stale running state and stop action without closing active work',
+    await page.locator('dialog#test-capacity-dialog[open]').count() === 1
+    && await page.locator('#test-capacity-dialog:focus-within').count() === 1
+    && await runningRow.locator('[data-cmd="test.stop"]').count() === 0
+    && /Up to date/.test(await page.innerText('#test-live-status')));
+  await page.click('#test-capacity-cancel');
+  daemon.setScenario(SCENARIOS.populated);
+  await page.goto(`http://${HOST}:${port}/#/health`);
+  await page.goto(`http://${HOST}:${port}/#/tests`);
+  await page.waitForSelector('#test-live-status');
+  daemon.setScenario(SCENARIOS.error);
+  await page.waitForFunction(() => /retrying/.test(document.querySelector('#test-live-status')?.textContent || ''));
+  daemon.setScenario({ ...SCENARIOS.populated, testFinished: true, targetedOnly: true });
+  await page.waitForFunction(() => /Up to date/.test(document.querySelector('#test-live-status')?.textContent || ''));
+  check('tests: a failed live read preserves the page and recovers on the next bounded refresh',
+    /passed/.test(await page.innerText('[data-test-run-id="t20260101T000000Z-abc123"]'))
+    && await page.locator('.tests-tablewrap').count() === 1);
+  daemon.setScenario(SCENARIOS.populated);
+  await page.goto(`http://${HOST}:${port}/#/health`);
   await page.goto(`http://${HOST}:${port}/#/tests`);
   await page.waitForSelector('button[data-test-logs]');
   daemon.calls.length = 0;
