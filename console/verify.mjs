@@ -262,8 +262,11 @@ const fixtures = (scenario) => {
       },
     },
     'test.log.retention.get': { max_age_seconds: 86400, case_depth: 3, defaults: { max_age_seconds: 86400, case_depth: 3 }, updated_at: new Date().toISOString(), updated_by: 'schema-default', last_cleanup_at: new Date().toISOString(), last_cleanup_error_code: null },
-    'test.log.catalog': { entries: scenario.empty ? [] : [{ log_ref: { run_id: 't20260101T000000Z-abc123', check: 'unit', phase: 'case', case: 'parser-17', stream: 'stderr' }, bytes: 8388608, lines: 42000, first_byte_at: new Date(Date.now() - 300000).toISOString(), last_byte_at: new Date().toISOString(), complete: true, truncated: false, sha256: 'a'.repeat(64), expires_at: new Date(Date.now() + 86400000).toISOString(), depth_rank: 1, structured_evidence: { available: true, formats: ['junit'], count: 2 } }], next_cursor: null },
-    'test.log.tail': { segments: [{ line_start: 41999, line_end: 42000, byte_start: 8388500, byte_end: 8388608, text: 'assertion failed\nexpected ready, actual pending' }], next_cursor: null, response_truncated: false },
+    'test.log.catalog': { entries: scenario.empty || scenario.logEmpty ? [] : [
+      { log_ref: { run_id: 't20260101T000000Z-abc123', check: 'unit', phase: 'case', case: 'parser-17', stream: 'stderr' }, bytes: 8388608, lines: 42000, first_byte_at: new Date(Date.now() - 300000).toISOString(), last_byte_at: new Date().toISOString(), complete: true, truncated: false, sha256: 'a'.repeat(64), expires_at: new Date(Date.now() + 86400000).toISOString(), depth_rank: 1, structured_evidence: { available: true, formats: ['junit'], count: 2 } },
+      { log_ref: { run_id: 't20260101T000000Z-abc123', phase: 'executor', stream: 'stdout' }, bytes: 121, lines: 1, first_byte_at: new Date(Date.now() - 300000).toISOString(), last_byte_at: new Date().toISOString(), complete: false, truncated: false, sha256: null, expires_at: null, depth_rank: null, structured_evidence: { available: false, formats: [], count: 0 } },
+    ], next_cursor: scenario.logCatalogPaged ? 'more-streams' : null },
+    'test.log.tail': { segments: [{ line_start: 41999, line_end: 42000, byte_start: 8388500, byte_end: 8388608, text: 'assertion failed\nexpected ready, actual pending' }], next_cursor: 'older-tail', response_truncated: true },
     'test.log.search': { matches: [{ line_start: 41999, line_end: 41999, byte_start: 8388500, byte_end: 8388520, text: 'assertion failed' }], next_cursor: 'next-search', response_truncated: false },
     'test.log.range': { segments: [{ line_start: 40, line_end: 50, byte_start: 400, byte_end: 510, text: 'exact bounded range' }], next_cursor: null, response_truncated: false },
     'test.log.failure_context': { contexts: [{ line_start: 41999, line_end: 42000, byte_start: 8388500, byte_end: 8388608, text: 'assertion failed', occurrences: 2, fingerprint: `sha256:${'b'.repeat(64)}` }], next_cursor: null, response_truncated: false },
@@ -346,6 +349,10 @@ const SCENARIOS = {
   usageIndexing: { identity: 'owner@example.test', admin: true, usageIndexing: true, targetedOnly: true },
   progressPartial: { identity: 'owner@example.test', admin: true, partial: true, targetedOnly: true },
   progressReference: { identity: 'owner@example.test', admin: true, progressReference: true, targetedOnly: true },
+  logEmpty: { identity: 'owner@example.test', admin: true, logEmpty: true, targetedOnly: true },
+  logCatalogPaged: { identity: 'owner@example.test', admin: true, logCatalogPaged: true, targetedOnly: true },
+  logCatalogError: { identity: 'owner@example.test', admin: true, logCatalogError: true, targetedOnly: true },
+  logReadError: { identity: 'owner@example.test', admin: true, logReadError: true, targetedOnly: true },
 };
 const VIEWS = ['#/deployments', `#/deployments/${DEP}`, '#/plan', `#/plan/${REPO}`, '#/progress', `#/progress/${REPO}`, '#/usage', `#/usage/${REPO}`, '#/decisions', `#/decisions/${REPO}`, '#/tests', `#/tests/${TEST_RUN}`, '#/health', '#/health/containers', '#/bugs', '#/admin'];
 const VIEWPORTS = { wide: { width: 1280, height: 800 }, narrow: { width: 390, height: 844 } };
@@ -373,7 +380,7 @@ async function startFakeDaemon(dir) {
   const settledWaiters = new Set();
   const receivedWaiters = new Set();
   const delayedReplies = new Set();
-  const mutable = { stopped: false, serviceStopped: false, taskUpdates: new Map(), createdTasks: [], previewRequested: false, failNextTaskUpdate: false, usageCollectionReads: 0, capacityCap: 80, logAge: 86400, logDepth: 3, evidenceImage: ONE_PIXEL_PNG, evidenceWidth: 1, evidenceHeight: 1, evidenceFeedback: [], feedbackSequence: 0 };
+  const mutable = { stopped: false, serviceStopped: false, taskUpdates: new Map(), createdTasks: [], previewRequested: false, failNextTaskUpdate: false, failNextLogCatalog: false, failNextLogRead: false, usageCollectionReads: 0, capacityCap: 80, logAge: 86400, logDepth: 3, evidenceImage: ONE_PIXEL_PNG, evidenceWidth: 1, evidenceHeight: 1, evidenceFeedback: [], feedbackSequence: 0 };
   const evidenceImage = (imageId, kind = 'viewport') => ({
     status: 'available', image_id: imageId, kind, mime: 'image/png',
     size: mutable.evidenceImage.length,
@@ -449,6 +456,18 @@ async function startFakeDaemon(dir) {
         mutable.failNextTaskUpdate = false;
       }
       if (scenario.error && cmd !== 'user.whoami') return reply({ ok: false, error: { code: 'internal_error', message: 'simulated daemon fault', detail: '' } });
+      if (cmd === 'test.log.catalog' && mutable.failNextLogCatalog) {
+        mutable.failNextLogCatalog = false;
+        return reply({ ok: false, error: { code: 'log_unavailable', message: 'The log catalogue is temporarily unavailable.', detail: '' } });
+      }
+      if (cmd === 'test.log.catalog' && req.args.cursor === 'more-streams') return reply({ ok: true, result: {
+        entries: [{ log_ref: { run_id: 't20260101T000000Z-abc123', check: 'lint', phase: 'check', stream: 'stdout' }, bytes: 48, lines: 1, first_byte_at: new Date(Date.now() - 300000).toISOString(), last_byte_at: new Date().toISOString(), complete: true, truncated: false, sha256: 'd'.repeat(64), expires_at: new Date(Date.now() + 86400000).toISOString(), depth_rank: 1, structured_evidence: { available: false, formats: [], count: 0 } }],
+        next_cursor: null,
+      } });
+      if (cmd === 'test.log.tail' && mutable.failNextLogRead) {
+        mutable.failNextLogRead = false;
+        return reply({ ok: false, error: { code: 'log_expired', message: 'This retained log expired.', detail: '' } });
+      }
       if (scenario.denied && ADMIN_ONLY.includes(cmd)) return reply({ ok: false, error: { code: 'permission_denied', message: `${cmd} requires administrator`, detail: '' } });
       if (scenario.denied && OPERATOR_ONLY.includes(cmd)) return reply({ ok: false, error: { code: 'permission_denied', message: `${cmd} requires operator`, detail: '' } });
       if (cmd === 'deployment.stop' && req.args.component === 'stack/projection-worker') { mutable.serviceStopped = true; return reply({ ok: true, result: { state: 'degraded' } }); }
@@ -485,6 +504,19 @@ async function startFakeDaemon(dir) {
         mutable.logAge = req.args.max_age_seconds; mutable.logDepth = req.args.case_depth;
         return reply({ ok: true, result: { ...fixtures(scenario)['test.log.retention.get'], max_age_seconds: mutable.logAge, case_depth: mutable.logDepth, cleanup_requested: true } });
       }
+      if (cmd === 'test.log.tail' && req.args.phase === 'executor') return reply({ ok: true, result: {
+        segments: [{ line_start: 1, line_end: 1, byte_start: 0, byte_end: 121, text: 'executor finished successfully' }],
+        next_cursor: null, response_truncated: false,
+      } });
+      if (cmd === 'test.log.tail' && req.args.cursor === 'older-tail') return reply({ ok: true, result: {
+        segments: [{ line_start: 41799, line_end: 41998, byte_start: 8340000, byte_end: 8388500,
+          text: Array.from({ length: 200 }, (_, index) => `earlier setup output ${index + 1}`).join('\n') }],
+        next_cursor: null, response_truncated: false,
+      } });
+      if (cmd === 'test.log.search' && req.args.cursor === 'next-search') return reply({ ok: true, result: {
+        matches: [{ line_start: 41000, line_end: 41000, byte_start: 8200000, byte_end: 8200024, text: 'pending state persisted' }],
+        next_cursor: null, response_truncated: false,
+      } });
       if (cmd === 'test.evidence.get') return reply({ ok: true, result: evidenceResult() });
       if (cmd === 'test.evidence.image') {
         const start = req.args.offset || 0;
@@ -587,7 +619,7 @@ async function startFakeDaemon(dir) {
   return {
     socketPath,
     calls,
-    setScenario: (s) => { for (const release of delayedReplies) release(); delayedReplies.clear(); scenario = s; mutable.stopped = false; mutable.serviceStopped = false; mutable.taskUpdates.clear(); mutable.createdTasks.length = 0; mutable.previewRequested = false; mutable.failNextTaskUpdate = false; mutable.usageCollectionReads = 0; mutable.capacityCap = 80; mutable.logAge = 86400; mutable.logDepth = 3; mutable.evidenceFeedback.length = 0; mutable.feedbackSequence = 0; calls.length = 0; },
+    setScenario: (s) => { for (const release of delayedReplies) release(); delayedReplies.clear(); scenario = s; mutable.stopped = false; mutable.serviceStopped = false; mutable.taskUpdates.clear(); mutable.createdTasks.length = 0; mutable.previewRequested = false; mutable.failNextTaskUpdate = false; mutable.failNextLogCatalog = !!s.logCatalogError; mutable.failNextLogRead = !!s.logReadError; mutable.usageCollectionReads = 0; mutable.capacityCap = 80; mutable.logAge = 86400; mutable.logDepth = 3; mutable.evidenceFeedback.length = 0; mutable.feedbackSequence = 0; calls.length = 0; },
     setEvidenceImage: (bytes, width, height) => { mutable.evidenceImage = Buffer.from(bytes); mutable.evidenceWidth = width; mutable.evidenceHeight = height; },
     failNextTaskUpdate: () => { mutable.failNextTaskUpdate = true; },
     releaseDelayed: () => { for (const release of delayedReplies) release(); delayedReplies.clear(); },
@@ -1050,10 +1082,20 @@ async function main() {
   await page.waitForSelector('button[data-test-logs]');
   daemon.calls.length = 0;
   await page.click('button[data-test-logs]');
-  await page.waitForSelector('dialog#test-logs-dialog[open] #test-log-stream');
-  check('interaction: Logs catalogues before reading any raw content',
-    daemon.calls.some((c) => c.command === 'test.log.catalog')
-    && !daemon.calls.some((c) => ['test.log.tail', 'test.log.search', 'test.log.range', 'test.log.failure_context'].includes(c.command)));
+  await page.waitForSelector('dialog#test-logs-dialog[open] #test-log-read-result pre.log');
+  const catalogIndex = daemon.calls.findIndex((c) => c.command === 'test.log.catalog');
+  const initialTailIndex = daemon.calls.findIndex((c) => c.command === 'test.log.tail');
+  check('interaction: Logs catalogues first and then opens readable output automatically',
+    catalogIndex >= 0 && initialTailIndex > catalogIndex);
+  check('tests: stream names describe human-readable output instead of repeating internal phases',
+    await page.locator('#test-log-stream option').allTextContents().then((options) => options.join(' | ') === 'unit · parser-17 · Error output | Test runner · Standard output'));
+  check('tests: ordinary log reading exposes no line, byte, start, end, or numeric range form',
+    await page.locator('#test-logs-dialog input[type="number"], #test-log-range').count() === 0
+    && !/Range type|Read range/.test(await page.innerText('#test-logs-dialog')));
+  check('tests: concise stream status stays visible while technical metadata is collapsed',
+    /42,?000 lines · 8(?:\.0)? MiB · Complete · Retained in /.test(await page.innerText('#test-log-summary'))
+    && !(await page.locator('.test-log-details').evaluate((element) => element.open)));
+  await page.click('.test-log-details summary');
   const logMetadata = await page.innerText('#test-log-metadata');
   check('tests: log catalogue exposes counts, completion, hash, expiry, and structured evidence without an absolute path',
     /8(?:\.0)? MiB/.test(logMetadata) && /42,?000/.test(logMetadata) && /Complete\s+Yes/.test(logMetadata)
@@ -1061,42 +1103,67 @@ async function main() {
     && new RegExp(`a{64}`).test(logMetadata) && /Expires\s+in /.test(logMetadata)
     && /History depth\s+1 of 3/.test(logMetadata)
     && !(await page.innerText('#test-logs-dialog')).includes('/srv/repos/'), logMetadata);
-  await page.click('[data-log-read="tail"]');
-  await page.waitForSelector('#test-log-read-result pre.log');
-  check('interaction: bounded tail uses the exact catalogued check, case, phase, and stream', daemon.calls.some((c) => c.command === 'test.log.tail'
+  await page.click('.test-log-details summary');
+  check('interaction: automatic output uses the exact catalogued check, case, phase, and stream', daemon.calls.some((c) => c.command === 'test.log.tail'
     && c.args.check === 'unit' && c.args.phase === 'case' && c.args.case === 'parser-17'
-    && c.args.stream === 'stderr' && c.args.lines === 50 && c.args.max_bytes === 32768));
+    && c.args.stream === 'stderr' && c.args.lines === 200 && c.args.max_bytes === 49152));
   check('tests: retrieved output carries stable line coordinates', /Lines 41999–42000/.test(await page.innerText('#test-log-read-result')));
   check('tests: every retrieved stream is explicitly labelled untrusted',
     await page.locator('#test-log-read-result pre[aria-label="Untrusted log text"]').count() === 1
-    && /Untrusted log text/.test(await page.innerText('#test-log-read-result')));
+    && /Untrusted log output/.test(await page.innerText('.test-log-view-head')));
+  await page.locator('#test-log-page').scrollIntoViewIfNeeded();
+  const beforeEarlier = await page.locator('#test-log-read-result').evaluate((element) => ({ top: element.scrollTop, height: element.scrollHeight }));
+  await page.click('#test-log-page');
+  await waitForSettledCall(daemon, page, (call) => call.command === 'test.log.tail' && call.args.cursor === 'older-tail');
+  const afterEarlier = await page.locator('#test-log-read-result').evaluate((element) => ({ top: element.scrollTop, height: element.scrollHeight }));
+  const progressiveText = await page.innerText('#test-log-read-result');
+  check('interaction: Load earlier output follows the exact cursor and prepends without duplicates',
+    progressiveText.indexOf('earlier setup output 1') >= 0
+    && progressiveText.indexOf('earlier setup output 1') < progressiveText.indexOf('assertion failed')
+    && (progressiveText.match(/assertion failed/g) || []).length === 1);
+  check('interaction: prepending older output preserves the prior reading position',
+    afterEarlier.height > beforeEarlier.height && afterEarlier.top > beforeEarlier.top,
+  JSON.stringify({ beforeEarlier, afterEarlier }));
+  check('tests: browsing older output offers a plain return to the newest lines',
+    await page.locator('#test-log-latest:visible').count() === 1
+    && await page.innerText('#test-log-latest') === 'Jump to latest');
+  const beforeLatest = daemon.calls.length;
+  await page.click('#test-log-latest');
+  await waitForSettledCall(daemon, page, (call) => daemon.calls.indexOf(call) >= beforeLatest
+    && call.command === 'test.log.tail' && !call.args.cursor);
+  check('interaction: Jump to latest re-reads the newest bounded output',
+    !/earlier setup output/.test(await page.innerText('#test-log-read-result'))
+    && /assertion failed/.test(await page.innerText('#test-log-read-result')));
   await page.fill('#test-log-search [name=text]', '[literal].*');
   await page.click('#test-log-search button[type=submit]');
-  await page.waitForSelector('#test-log-next');
+  await page.waitForSelector('#test-log-page');
   check('interaction: search remains literal and bounded', daemon.calls.some((c) => c.command === 'test.log.search'
     && c.args.text === '[literal].*' && c.args.max_matches === 20 && c.args.context_lines === 2));
-  await page.click('#test-log-next');
+  check('tests: search changes the reader mode and offers plain pagination',
+    /Search results/.test(await page.innerText('.test-log-view-head'))
+    && await page.innerText('#test-log-page') === 'Show more matches');
+  await page.click('#test-log-page');
   await waitForSettledCall(daemon, page, (call) => call.command === 'test.log.search' && call.args.cursor === 'next-search');
-  check('interaction: Next continues from the exact returned cursor', daemon.calls.some((c) => c.command === 'test.log.search' && c.args.cursor === 'next-search'));
-  await page.fill('#test-log-range [name=start]', '40');
-  await page.fill('#test-log-range [name=end]', '50');
-  await page.click('#test-log-range button[type=submit]');
-  await waitForSettledCall(daemon, page, 'test.log.range');
-  check('interaction: exact line range is bounded below the response envelope', daemon.calls.some((c) => c.command === 'test.log.range'
-    && c.args.line_start === 40 && c.args.line_end === 50 && c.args.max_bytes === 49152));
-  await page.selectOption('#test-log-range [name=kind]', 'byte');
-  check('tests: byte ranges permit the required zero-based start',
-    await page.getAttribute('#test-log-range [name=start]', 'min') === '0');
-  await page.fill('#test-log-range [name=start]', '0');
-  await page.fill('#test-log-range [name=end]', '4');
-  await page.click('#test-log-range button[type=submit]');
-  await waitForSettledCall(daemon, page, (call) => call.command === 'test.log.range' && call.args.byte_start === 0);
-  check('interaction: exact byte range uses zero-based half-open coordinates', daemon.calls.some((c) => c.command === 'test.log.range'
-    && c.args.byte_start === 0 && c.args.byte_end === 4 && c.args.max_bytes === 49152));
+  check('interaction: Show more matches continues from the exact cursor without replacing prior results',
+    /assertion failed/.test(await page.innerText('#test-log-read-result'))
+    && /pending state persisted/.test(await page.innerText('#test-log-read-result')));
   await page.click('[data-log-read="failure_context"]');
   await waitForSettledCall(daemon, page, 'test.log.failure_context');
-  check('interaction: failure context calls the deterministic Coordinator operation', daemon.calls.some((c) => c.command === 'test.log.failure_context'
-    && c.args.limit === 20 && c.args.context_lines === 2));
+  check('interaction: Show likely failure calls the deterministic Coordinator operation and labels the result plainly', daemon.calls.some((c) => c.command === 'test.log.failure_context'
+    && c.args.limit === 20 && c.args.context_lines === 2)
+    && /Likely failure/.test(await page.innerText('.test-log-view-head')));
+  const beforeStreamChange = daemon.calls.length;
+  await page.selectOption('#test-log-stream', '1');
+  await waitForSettledCall(daemon, page, (call) => daemon.calls.indexOf(call) >= beforeStreamChange
+    && call.command === 'test.log.tail' && call.args.phase === 'executor' && call.args.stream === 'stdout');
+  check('interaction: choosing another stream opens its newest text automatically',
+    /executor finished successfully/.test(await page.innerText('#test-log-read-result')));
+  check('tests: an active stream offers an explicit refresh without exposing coordinates',
+    await page.locator('#test-log-latest:visible').count() === 1
+    && await page.innerText('#test-log-latest') === 'Refresh latest'
+    && /In progress · Active/.test(await page.innerText('#test-log-summary')));
+  check('tests: the Console never calls exact numeric range retrieval',
+    !daemon.calls.some((c) => c.command === 'test.log.range'));
   await page.click('#test-logs-dialog .dialog-close');
   check('interaction: closing Logs returns focus to the invoking run', await page.locator('button[data-test-logs]:focus').count() === 1);
   check('tests: the run collection remains primary and capacity details stay in the action dialog',
@@ -1127,14 +1194,75 @@ async function main() {
   check('interaction: cancelling retention preserves context and returns focus', await page.locator('#test-log-retention-open:focus').count() === 1);
   await page.setViewportSize(VIEWPORTS.narrow);
   await page.click('button[data-test-logs]');
-  await page.waitForSelector('dialog#test-logs-dialog[open] #test-log-stream');
+  await page.waitForSelector('dialog#test-logs-dialog[open] #test-log-read-result pre.log');
   const narrowLogs = await page.locator('#test-logs-dialog').boundingBox();
   check('tests: Logs remains visible and contained at the narrow viewport', narrowLogs
     && narrowLogs.x >= -1 && narrowLogs.y >= -1
     && narrowLogs.x + narrowLogs.width <= VIEWPORTS.narrow.width + 1
     && narrowLogs.y + Math.min(narrowLogs.height, VIEWPORTS.narrow.height) <= VIEWPORTS.narrow.height + 1,
   JSON.stringify(narrowLogs));
+  check('tests: narrow Logs still leads with readable output and no numeric range form',
+    /assertion failed/.test(await page.innerText('#test-log-read-result'))
+    && await page.locator('#test-logs-dialog input[type="number"], #test-log-range').count() === 0
+    && (await page.locator('.test-log-viewer').boundingBox())?.height >= 180);
+  const narrowToolbar = await page.locator('.test-log-toolbar').boundingBox();
+  const narrowFailure = await page.locator('[data-log-read="failure_context"]').boundingBox();
+  check('tests: the lone narrow log action uses the full row instead of leaving a dead half-column',
+    narrowToolbar && narrowFailure && narrowFailure.width >= narrowToolbar.width - 1,
+  JSON.stringify({ narrowToolbar, narrowFailure }));
   await page.click('#test-logs-dialog .dialog-close');
+  daemon.setScenario(SCENARIOS.logEmpty);
+  await page.goto(`http://${HOST}:${port}/#/tests`);
+  await page.waitForSelector('button[data-test-logs]');
+  daemon.calls.length = 0;
+  await page.click('button[data-test-logs]');
+  await page.waitForSelector('#test-log-catalog .notice');
+  check('tests: a run with no retained streams shows an honest empty state without attempting a content read',
+    /No retained logs for this run/.test(await page.innerText('#test-log-catalog'))
+    && !daemon.calls.some((call) => call.command === 'test.log.tail'));
+  await page.click('#test-logs-dialog .dialog-close');
+  daemon.setScenario(SCENARIOS.logCatalogError);
+  await page.goto(`http://${HOST}:${port}/#/tests`);
+  await page.waitForSelector('button[data-test-logs]');
+  await page.click('button[data-test-logs]');
+  await page.waitForSelector('#test-log-catalog-retry');
+  check('tests: a failed stream catalogue has one dialog-specific retry',
+    /The log catalogue is temporarily unavailable/.test(await page.innerText('#test-log-catalog'))
+    && await page.locator('#test-log-catalog button').count() === 1);
+  await page.click('#test-log-catalog-retry');
+  await page.waitForSelector('#test-log-read-result pre.log');
+  check('interaction: catalogue retry recovers and then opens newest output',
+    daemon.calls.filter((call) => call.command === 'test.log.catalog').length === 2
+    && daemon.calls.filter((call) => call.command === 'test.log.tail').length === 1);
+  await page.click('#test-logs-dialog .dialog-close');
+  daemon.setScenario(SCENARIOS.logCatalogPaged);
+  await page.goto(`http://${HOST}:${port}/#/tests`);
+  await page.waitForSelector('button[data-test-logs]');
+  await page.click('button[data-test-logs]');
+  await page.waitForSelector('#test-log-more');
+  await page.click('#test-log-more');
+  await page.waitForFunction(() => document.querySelectorAll('#test-log-stream option').length === 3);
+  check('interaction: Show more streams follows the catalogue cursor and preserves the reader',
+    daemon.calls.some((call) => call.command === 'test.log.catalog' && call.args.cursor === 'more-streams')
+    && await page.locator('#test-log-more').count() === 0
+    && /assertion failed/.test(await page.innerText('#test-log-read-result')));
+  await page.click('#test-logs-dialog .dialog-close');
+  daemon.setScenario(SCENARIOS.logReadError);
+  await page.goto(`http://${HOST}:${port}/#/tests`);
+  await page.waitForSelector('button[data-test-logs]');
+  await page.click('button[data-test-logs]');
+  await page.waitForSelector('#test-log-retry');
+  check('tests: an expired first read explains the failure and offers a real retry',
+    /This retained log expired/.test(await page.innerText('#test-log-read-result')));
+  await page.click('#test-log-retry');
+  await page.waitForSelector('#test-log-read-result pre.log');
+  check('interaction: retry recovers through the same bounded automatic read',
+    daemon.calls.filter((call) => call.command === 'test.log.tail').length === 2
+    && /assertion failed/.test(await page.innerText('#test-log-read-result')));
+  await page.click('#test-logs-dialog .dialog-close');
+  daemon.setScenario(SCENARIOS.populated);
+  await page.goto(`http://${HOST}:${port}/#/tests`);
+  await page.waitForSelector('#test-log-retention-open');
   await page.click('#test-log-retention-open');
   await page.waitForSelector('dialog#test-log-retention-dialog[open]');
   const narrowRetention = await page.locator('#test-log-retention-dialog').boundingBox();

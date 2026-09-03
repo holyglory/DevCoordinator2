@@ -1,3 +1,63 @@
+# Readable test-log viewer design QA
+
+final result: passed
+
+## Comparison target
+
+- Source visual truth: `/tmp/dc2-log-reader-before-dialog.png`, a fresh 1095 × 876 reproduction of the owner-marked live dialog. It matches the supplied browser evidence: no output is shown, technical metadata dominates, and reading an exact portion requires numeric inputs.
+- Browser-rendered implementation: `/tmp/dc2-log-reader-final-1095.png`; narrow implementation: `/tmp/dc2-log-reader-final-390.png`.
+- Source and desktop implementation pixels/CSS viewport: 1095 × 876 at device scale factor 1. Narrow pixels/CSS viewport: 390 × 844 at device scale factor 1. No crop, density conversion, or device frame was used.
+- State: dark Console Tests page, first run's retained error-output stream, log dialog open, newest output loaded, technical details collapsed.
+- Full-view comparison: `/tmp/dc2-log-reader-before-final.png` places the same-state source and final implementation together. The final view preserves the Console shell and tokens while replacing the narrow metadata/form card with a large text-first reader.
+- Focused comparison: the full-view pair keeps all log controls and output legible at original resolution. The narrow capture and the exact 719/720/721 formal captures were reviewed separately because the toolbar changes composition at that boundary.
+
+## Findings
+
+- No actionable P0, P1, or P2 issue remains.
+- The source's P1 workflow defect is removed: opening Logs now catalogues the exact stream and immediately loads its newest bounded text. No line, byte, start, end, or numeric range field remains in the ordinary Console.
+- Technical hash, timing, retention-depth, and structured-evidence facts remain available under **Stream details** instead of preceding the output.
+- The first corrected narrow layout left half of the action row unused while **Show likely failure** occupied the other half. That P2 imbalance was fixed: the lone action now fills the row and shares it only when **Jump/Refresh latest** is actually present.
+
+## Required fidelity surfaces
+
+- Fonts and typography: the existing system UI stack, weights, and hierarchy are preserved; stream output uses the established monospaced log style with readable line height. Labels wrap or reflow without truncation at the checked widths.
+- Spacing and layout rhythm: the desktop dialog uses the available viewport for the reader, while mobile keeps compact controls above a large output region. The modal remains contained at 390, 719, 720, 721, and 1095 px with no clipped action or document overflow.
+- Colors and visual tokens: navy/slate surfaces, cool dividers, focus blue, muted metadata, and high-contrast output reuse the existing Console tokens. The final formal pass found no contrast, theme, overlap, clipping, or scroll-topology warning.
+- Image quality and asset fidelity: this surface contains no raster, illustration, logo, or new icon asset. No placeholder, handcrafted SVG, CSS drawing, gradient, emoji, or text-glyph substitute was introduced.
+- Copy and content: stream labels now describe **Error output** and **Standard output** rather than repeating internal phase names. **Load earlier output**, **Jump/Refresh latest**, **Search**, and **Show likely failure** state the user's action directly. Real metadata and log text remain API-backed.
+- States and interactions: automatic newest output, progressive prepend with preserved position, return to latest, literal search pagination, likely-failure context, stream switching, active refresh, empty state, expired-read retry, dialog close/focus return, and narrow reflow were exercised through the rendered interface.
+
+## Browser evidence
+
+- Complete frozen-candidate Console matrix: 1,641 checks, zero failures in `/tmp/dc2-readable-logs-console-final/report.json`.
+- Focused interaction inventory: 299 checks, zero failures in `/tmp/dc2-readable-logs-focused-final/report.json`.
+- Final formal run `formal-web-ui-mtlvv4t9`: 5/5 exact cells at 390, 719, 720, 721, and 1095 px; zero critical findings, zero warnings, and passing coverage.
+- All ten final viewport/full-page images were inspected; five pass decisions and zero gaps were finalized in `/tmp/formal-web-ui-verification-nly2pg/manual-review.json`.
+- Browser console and network failures: none in the complete and focused Console passes.
+
+## Comparison history
+
+1. The source audit found a P1 task-flow failure: the dialog led with a dense ten-fact grid, showed no output, duplicated internal stream labels, and required users to choose retrieval mechanics or type numeric coordinates.
+2. The first implementation made output automatic, widened the reader, collapsed details, humanized stream names, and replaced coordinate entry with bounded plain-language actions. Focused recovery testing then found and removed an unrelated page-level retry inherited from the shared error component.
+3. The first responsive comparison found a P2 half-empty action row at 720 px and below. The lone failure action now spans the row; the final same-state desktop/mobile comparison and fresh formal pass found no remaining P0/P1/P2 issue.
+
+## Implementation checklist
+
+- [x] Show newest readable output immediately on open and stream change.
+- [x] Remove numeric line/byte range entry from the Console reading journey.
+- [x] Keep bounded older-output, latest, literal-search, and likely-failure controls working end to end.
+- [x] Preserve stable coordinates, untrusted-output labelling, access boundaries, and exact API selectors.
+- [x] Cover short, long, active, empty, expired, failed, multi-stream, wide, narrow, and breakpoint states.
+- [x] Pass the complete Console suite, formal geometry/contrast/performance checks, and finalized manual review.
+
+## Follow-up polish
+
+- No follow-up is required for the requested log-reading correction.
+
+---
+
+## Archived prior design QA
+
 # Visual test evidence review design QA
 
 final result: passed

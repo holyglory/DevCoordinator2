@@ -175,6 +175,15 @@ next coordinate, and query digest. Earlier coordinates remain valid while an
 active file appends. Replacement or expiry produces `cursor_stale` or
 `log_expired`, never an unrelated read.
 
+The Console turns these primitives into a reading surface rather than exposing
+their coordinates as a form. Selecting Logs catalogues the exact streams and
+immediately opens a bounded newest-text page. Load earlier follows the returned
+tail cursor and prepends without moving the text the person was reading;
+Jump to latest starts a fresh tail snapshot. Literal search and deterministic
+failure context replace the viewer temporarily and retain bounded cursor-based
+continuation. Exact line and byte ranges remain CLI/API capabilities for agents
+and automation, not fields people must fill in to read a log.
+
 ## Visual journey evidence and feedback
 
 `test.evidence.get` returns a path-free, privacy-safe projection of one exact

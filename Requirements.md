@@ -189,6 +189,16 @@ not contradict them.
   file chunk; the CLI can reconstruct selected trees only in a new caller-owned
   destination and revalidates every file and tree hash. No operation exposes a
   private source/storage path or writes a caller-selected server-side export.
+- **REQ-TEST-27** (2026-09-03, done): Opening a retained test stream in the
+  Console immediately renders its newest bounded text. The ordinary reading
+  journey never asks for line or byte coordinates: people can load earlier
+  output, return to the newest output, search literal text, or show likely
+  failure context with plainly labelled controls. Technical stream metadata is
+  available on request without preceding the output. Switching streams loads
+  the selected stream automatically, active streams expose a refresh action,
+  and progressive pages preserve reading position without repeating excerpts.
+  The Console continues to compose the bounded REQ-TEST-22 operations; it does
+  not request or render an unbounded stream.
 
 ## Deployments (REQ-DEPLOY, P3)
 

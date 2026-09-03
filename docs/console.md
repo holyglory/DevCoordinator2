@@ -200,7 +200,7 @@ explicit permission-denied notice instead of partial data.
 | Apply / rollback | `deployment.apply` / `deployment.rollback` | status re-read |
 | Remove deployment — keep data / Remove deployment and delete data | `deployment.remove {delete_data: false|true}` | list re-read |
 | Component logs | `deployment.logs` | tail rendered on demand |
-| Test logs | `test.log.catalog` followed only by an explicit bounded `tail`, `search`, `range`, or `failure_context` | metadata loads first; selected case/stream content renders with stable line and byte coordinates |
+| Test logs | `test.log.catalog`, then an automatic bounded `tail`; plain Load earlier, Jump/Refresh latest, Search, and Show likely failure controls compose `tail`, `search`, and `failure_context` | newest text is immediately readable; stream switching loads automatically; older pages preserve position; technical details are collapsed; no line/byte coordinate form appears |
 | Test start/stop | `test.start {tier}` / `test.stop` | list re-read; the selected tier is recorded |
 | Test capacity | `test.capacity.get` / `test.capacity.set {cap: integer|null}` | dialog and Tests action re-read learned/effective capacity and the administrator maximum |
 | Test log retention | `test.log.retention.get` / `test.log.retention.set {max_age_seconds, case_depth}` | focused dialog re-reads the stored age/depth boundaries; active logs remain protected |

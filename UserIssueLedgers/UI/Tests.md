@@ -1,0 +1,5 @@
+# User Issue Ledger: UI / tests
+
+| ID | Applies to | Mistake pattern | Required behavior | Prevention and verification |
+| --- | --- | --- | --- | --- |
+| UIL-UI-TESTS-001 | Test-log reading in the Console | The log dialog made people enter line or byte coordinates before showing ordinary test output, exposing storage mechanics as the primary reading workflow. | Opening a selected log immediately shows readable output. Offer plainly labelled controls to search, inspect the likely failure, load older text, and return to the newest output; never require line or byte numbers in the ordinary Console. Keep exact coordinate retrieval available only as a bounded API and automation capability. | Exercise short, long, empty, active, failed, expired, and multi-stream logs through the rendered Console at wide and narrow sizes. Assert output loads on open and stream change, progressive loading preserves reading position and never duplicates lines, search and failure context remain bounded, every visible control works, and no numeric range inputs or line/byte coordinate form appears. |

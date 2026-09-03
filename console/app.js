@@ -714,7 +714,11 @@ function logSelector(entry) {
 }
 function logEntryLabel(entry) {
   const ref = logSelector(entry);
-  return [ref.check || 'executor', ref.phase, ref.case, ref.stream].filter(Boolean).join(' / ');
+  const stream = ref.stream === 'stderr' ? 'Error output' : 'Standard output';
+  if (ref.phase === 'executor') return `Test runner · ${stream}`;
+  if (ref.phase === 'discovery') return `${ref.check} · Discovery · ${stream}`;
+  if (ref.phase === 'case') return `${ref.check} · ${ref.case || 'Cases'} · ${stream}`;
+  return `${ref.check || 'Check'} · ${stream}`;
 }
 function logResultRows(result) {
   for (const key of ['segments', 'matches', 'contexts']) {
@@ -722,17 +726,31 @@ function logResultRows(result) {
   }
   return [];
 }
-function renderLogResult(result) {
-  const rows = logResultRows(result);
-  if (!rows.length) return stateBlock('empty', 'No matching log lines.');
+function logRowKey(row) {
+  return [row.line_start, row.line_end, row.byte_start, row.byte_end, row.text, row.base64].join('\u0000');
+}
+function mergeLogRows(current, incoming, prepend = false) {
+  const ordered = prepend ? [...incoming, ...current] : [...current, ...incoming];
+  const seen = new Set();
+  return ordered.filter((row) => {
+    const key = logRowKey(row);
+    if (seen.has(key)) return false;
+    seen.add(key); return true;
+  });
+}
+function renderLogRows(rows, emptyCopy = 'No log output yet.') {
+  if (!rows.length) return stateBlock('empty', emptyCopy);
   return `<div class="log-results">${rows.map((row) => {
     const coordinates = row.line_start != null
       ? `Lines ${row.line_start}${row.line_end && row.line_end !== row.line_start ? `–${row.line_end}` : ''}`
       : `Bytes ${row.byte_start ?? 0}–${row.byte_end ?? 0}`;
     const count = row.occurrences > 1 ? ` · ${row.occurrences} occurrences` : '';
     const content = row.text != null ? row.text : (row.base64 != null ? `base64:${row.base64}` : '');
-    return `<section class="log-result"><h3>${esc(coordinates)}${esc(count)}</h3><h4>Untrusted log text</h4><pre class="log" aria-label="Untrusted log text">${esc(content)}</pre></section>`;
+    return `<section class="log-result"><h3>${esc(coordinates)}${esc(count)}</h3><pre class="log" aria-label="Untrusted log text">${esc(content)}</pre></section>`;
   }).join('')}</div>`;
+}
+function renderLogError(message) {
+  return `<div class="notice"><strong>Could not load log.</strong> ${esc(message)}</div>`;
 }
 async function openTestLogsDialog(run, retention, opener) {
   document.getElementById('test-logs-dialog')?.remove();
@@ -749,24 +767,123 @@ async function openTestLogsDialog(run, retention, opener) {
   const catalogRoot = $('#test-log-catalog', dlg);
   let entries = [];
   let catalogCursor = null;
+  let selectedIndex = 0;
+  let readVersion = 0;
+  let reader = { operation: 'tail', options: {}, rows: [], cursor: null, atLatest: true };
   const catalogArgs = () => ({ path: run.worktree_path, run_id: run.run_id, limit: 100,
     ...(catalogCursor ? { cursor: catalogCursor } : {}) });
+  const selectedEntry = () => entries[Number($('#test-log-stream', dlg)?.value ?? selectedIndex)];
+  const logSummary = (entry) => {
+    const lines = entry.lines == null ? 'Line count pending' : `${Number(entry.lines).toLocaleString()} lines`;
+    const stateCopy = entry.complete ? 'Complete' : 'In progress';
+    const expiry = entry.expires_at ? `Retained ${until(entry.expires_at)}` : 'Active';
+    return `${lines} · ${bytes(entry.bytes)} · ${stateCopy} · ${expiry}`;
+  };
+  const readerTitle = () => reader.operation === 'search' ? 'Search results'
+    : reader.operation === 'failure_context' ? 'Likely failure' : 'Latest output';
+  const readerStatus = () => {
+    if (!reader.rows.length) return '';
+    const lineRows = reader.rows.filter((row) => row.line_start != null);
+    if (reader.operation === 'tail' && lineRows.length) {
+      const start = Math.min(...lineRows.map((row) => row.line_start));
+      const end = Math.max(...lineRows.map((row) => row.line_end ?? row.line_start));
+      return `Showing lines ${start}–${end}`;
+    }
+    return `${reader.rows.length} ${reader.rows.length === 1 ? 'excerpt' : 'excerpts'}`;
+  };
+  const syncReaderActions = () => {
+    const entry = selectedEntry();
+    const latest = $('#test-log-latest', dlg);
+    if (!entry || !latest) return;
+    latest.textContent = entry.complete ? 'Jump to latest' : 'Refresh latest';
+    latest.hidden = reader.atLatest && entry.complete;
+    latest.closest('.test-log-toolbar')?.classList.toggle('show-latest', !latest.hidden);
+  };
+  const renderReader = (scroll = 'top', priorHeight = 0, priorTop = 0) => {
+    const target = $('#test-log-read-result', dlg);
+    if (!target) return;
+    const pageLabel = reader.operation === 'tail' ? 'Load earlier output'
+      : reader.operation === 'search' ? 'Show more matches' : 'Show more failures';
+    const pageButton = reader.cursor ? `<button class="btn log-page-button" type="button" id="test-log-page">${pageLabel}</button>` : '';
+    const emptyCopy = reader.operation === 'search' ? 'No matching log lines.'
+      : reader.operation === 'failure_context' ? 'No likely failure was found in this stream.' : 'No log output yet.';
+    target.innerHTML = reader.operation === 'tail'
+      ? `${pageButton}${renderLogRows(reader.rows, emptyCopy)}`
+      : `${renderLogRows(reader.rows, emptyCopy)}${pageButton}`;
+    target.setAttribute('aria-busy', 'false');
+    $('#test-log-view-title', dlg).textContent = readerTitle();
+    $('#test-log-view-status', dlg).textContent = readerStatus();
+    syncReaderActions();
+    $('#test-log-page', target)?.addEventListener('click', () => read(
+      reader.operation, reader.options, reader.cursor,
+      reader.operation === 'tail' ? 'prepend' : 'append'));
+    requestAnimationFrame(() => {
+      if (scroll === 'bottom') target.scrollTop = target.scrollHeight;
+      else if (scroll === 'prepend') target.scrollTop = priorTop + Math.max(0, target.scrollHeight - priorHeight);
+      else if (scroll === 'top') target.scrollTop = 0;
+    });
+  };
+  const read = async (operation, options = {}, cursor = null, direction = 'replace') => {
+    const entry = selectedEntry();
+    if (!entry) return;
+    const version = ++readVersion;
+    const target = $('#test-log-read-result', dlg);
+    const priorRows = reader.rows;
+    const priorHeight = target?.scrollHeight || 0;
+    const priorTop = target?.scrollTop || 0;
+    if (direction === 'replace') {
+      target.innerHTML = skeleton();
+      $('#test-log-view-title', dlg).textContent = operation === 'search' ? 'Searching log'
+        : operation === 'failure_context' ? 'Finding likely failure' : 'Loading latest output';
+      $('#test-log-view-status', dlg).textContent = '';
+    } else {
+      $('#test-log-page', target)?.setAttribute('disabled', '');
+    }
+    target.setAttribute('aria-busy', 'true');
+    try {
+      const result = await api(`test.log.${operation}`, {
+        path: run.worktree_path, ...logSelector(entry), ...options, ...(cursor ? { cursor } : {}),
+      }, false);
+      if (version !== readVersion || !dlg.isConnected) return;
+      const incoming = logResultRows(result);
+      const rows = direction === 'prepend' ? mergeLogRows(priorRows, incoming, true)
+        : direction === 'append' ? mergeLogRows(priorRows, incoming) : incoming;
+      reader = {
+        operation, options, rows, cursor: result.next_cursor || null,
+        atLatest: operation === 'tail' && cursor == null,
+      };
+      renderReader(direction === 'prepend' ? 'prepend' : operation === 'tail' ? 'bottom' : 'top', priorHeight, priorTop);
+    } catch (error) {
+      if (version !== readVersion || !dlg.isConnected) return;
+      target.setAttribute('aria-busy', 'false');
+      target.innerHTML = `${renderLogError(error.message)}<button class="btn" type="button" id="test-log-retry">Try again</button>`;
+      $('#test-log-view-title', dlg).textContent = 'Log unavailable';
+      $('#test-log-view-status', dlg).textContent = '';
+      $('#test-log-retry', target).addEventListener('click', () => read(operation, options, cursor, direction));
+    }
+  };
+  const readLatest = () => read('tail', { lines: 200, max_bytes: 49152 });
   const renderCatalogue = () => {
     if (!entries.length) {
       catalogRoot.innerHTML = stateBlock('empty', 'No retained logs for this run.'); return;
     }
-    catalogRoot.innerHTML = `<label class="f">Check, case, and stream<select id="test-log-stream">${entries.map((entry, index) => `<option value="${index}">${esc(logEntryLabel(entry))}</option>`).join('')}</select></label>
-      <div id="test-log-metadata"></div>
-      <div class="log-tools">
-        <button class="btn" type="button" data-log-read="tail">Tail 50 lines</button>
-        <button class="btn" type="button" data-log-read="failure_context">Failure context</button>
-        <form id="test-log-search" class="log-tool-form"><label class="f">Literal search<input name="text" required maxlength="4096"></label><button class="btn" type="submit">Search</button></form>
-        <form id="test-log-range" class="log-tool-form"><label class="f">Range type<select name="kind"><option value="line">Lines</option><option value="byte">Bytes</option></select></label><label class="f">Start<input name="start" type="number" min="1" required value="1"></label><label class="f">End<input name="end" type="number" min="1" required value="50"></label><button class="btn" type="submit">Read range</button></form>
+    selectedIndex = Math.min(selectedIndex, entries.length - 1);
+    catalogRoot.innerHTML = `<div class="test-log-reader">
+      <div class="test-log-stream-row"><label class="f">Output stream<select id="test-log-stream">${entries.map((entry, index) => `<option value="${index}"${index === selectedIndex ? ' selected' : ''}>${esc(logEntryLabel(entry))}</option>`).join('')}</select></label>
+        ${catalogCursor ? '<button class="btn" type="button" id="test-log-more">Show more streams</button>' : ''}</div>
+      <div class="test-log-summary" id="test-log-summary"></div>
+      <details class="test-log-details"><summary>Stream details</summary><div id="test-log-metadata"></div></details>
+      <div class="test-log-toolbar">
+        <form id="test-log-search" class="test-log-search"><label class="sr-only" for="test-log-search-text">Search this log</label><input id="test-log-search-text" name="text" type="search" required maxlength="4096" placeholder="Search this log"><button class="btn" type="submit">Search</button></form>
+        <button class="btn" type="button" data-log-read="failure_context">Show likely failure</button>
+        <button class="btn" type="button" id="test-log-latest" hidden>Jump to latest</button>
       </div>
-      ${catalogCursor ? '<button class="btn" type="button" id="test-log-more">Show more streams</button>' : ''}
-      <div id="test-log-read-result" aria-live="polite"></div>`;
+      <section class="test-log-viewer" aria-labelledby="test-log-view-title"><div class="test-log-view-head"><div><strong id="test-log-view-title">Loading latest output</strong><span id="test-log-view-status"></span></div><span class="test-log-trust">Untrusted log output</span></div>
+        <div id="test-log-read-result" class="test-log-scroll" tabindex="0" aria-live="polite" aria-busy="true">${skeleton()}</div></section>
+      </div>`;
     const metadata = () => {
-      const entry = entries[Number($('#test-log-stream', dlg).value)];
+      const entry = selectedEntry();
+      $('#test-log-summary', dlg).textContent = logSummary(entry);
       $('#test-log-metadata', dlg).innerHTML = `<dl class="test-log-facts">
         <div><dt>Bytes</dt><dd>${bytes(entry.bytes)}</dd></div><div><dt>Lines</dt><dd>${entry.lines == null ? 'Pending' : esc(entry.lines)}</dd></div>
         <div><dt>Complete</dt><dd>${entry.complete ? 'Yes' : 'In progress'}</dd></div><div><dt>Truncated</dt><dd>${entry.truncated ? 'Yes' : 'No'}</dd></div>
@@ -777,56 +894,31 @@ async function openTestLogsDialog(run, retention, opener) {
       </dl>`;
     };
     metadata();
-    $('#test-log-stream', dlg).addEventListener('change', metadata);
-    const read = async (operation, options = {}, cursor = null) => {
-      const entry = entries[Number($('#test-log-stream', dlg).value)];
-      const args = { path: run.worktree_path, ...logSelector(entry), ...options,
-        ...(cursor ? { cursor } : {}) };
-      const target = $('#test-log-read-result', dlg);
-      target.innerHTML = skeleton();
-      try {
-        const result = await api(`test.log.${operation}`, args, false);
-        target.innerHTML = `${renderLogResult(result)}${result.next_cursor ? '<button class="btn" type="button" id="test-log-next">Next exact portion</button>' : ''}`;
-        $('#test-log-next', target)?.addEventListener('click', () => read(operation, options, result.next_cursor));
-      } catch (error) { target.innerHTML = stateBlock('error', error.message); }
-    };
-    dlg.querySelectorAll('[data-log-read]').forEach((button) => button.addEventListener('click', () => {
-      const operation = button.dataset.logRead;
-      read(operation, operation === 'tail' ? { lines: 50, max_bytes: 32768 }
-        : { limit: 20, context_lines: 2, max_bytes: 32768 });
-    }));
+    $('#test-log-stream', dlg).addEventListener('change', (event) => {
+      selectedIndex = Number(event.target.value); readVersion += 1; metadata(); readLatest();
+    });
+    $('[data-log-read="failure_context"]', dlg).addEventListener('click', () => read(
+      'failure_context', { limit: 20, context_lines: 2, max_bytes: 32768 }));
+    $('#test-log-latest', dlg).addEventListener('click', readLatest);
     $('#test-log-search', dlg).addEventListener('submit', (event) => {
       event.preventDefault();
-      const text = new FormData(event.target).get('text');
+      const text = String(new FormData(event.target).get('text') || '').trim();
+      if (!text) return;
       read('search', { text, max_matches: 20, context_lines: 2, max_bytes: 32768 });
     });
-    const rangeKind = $('#test-log-range [name=kind]', dlg);
-    const rangeStart = $('#test-log-range [name=start]', dlg);
-    const updateRangeMinimum = () => {
-      const minimum = rangeKind.value === 'byte' ? '0' : '1';
-      rangeStart.min = minimum;
-      if (Number(rangeStart.value) < Number(minimum)) rangeStart.value = minimum;
-    };
-    rangeKind.addEventListener('change', updateRangeMinimum);
-    updateRangeMinimum();
-    $('#test-log-range', dlg).addEventListener('submit', (event) => {
-      event.preventDefault();
-      const data = new FormData(event.target); const start = Number(data.get('start')); const end = Number(data.get('end'));
-      if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < (data.get('kind') === 'line' ? 1 : 0) || end < start) {
-        toast('Enter a valid increasing range.', 'bad'); return;
-      }
-      const options = data.get('kind') === 'line' ? { line_start: start, line_end: end, max_bytes: 49152 }
-        : { byte_start: start, byte_end: end, max_bytes: 49152 };
-      read('range', options);
-    });
     $('#test-log-more', dlg)?.addEventListener('click', loadCatalogue);
+    readLatest();
   };
   async function loadCatalogue() {
     try {
       const result = await api('test.log.catalog', catalogArgs(), false);
       entries = entries.concat(result.entries || []); catalogCursor = result.next_cursor || null;
       renderCatalogue();
-    } catch (error) { catalogRoot.innerHTML = stateBlock('error', error.message); }
+    } catch (error) {
+      if (entries.length) { toast(error.message, 'bad'); return; }
+      catalogRoot.innerHTML = `${renderLogError(error.message)}<button class="btn" type="button" id="test-log-catalog-retry">Try again</button>`;
+      $('#test-log-catalog-retry', catalogRoot).addEventListener('click', loadCatalogue);
+    }
   }
   await loadCatalogue();
   requestAnimationFrame(() => $('#test-log-stream', dlg)?.focus());
