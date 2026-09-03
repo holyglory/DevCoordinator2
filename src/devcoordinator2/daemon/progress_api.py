@@ -95,6 +95,7 @@ def _empty_buckets(window: dict[str, int]) -> list[dict[str, Any]]:
         "tasks_created": 0,
         "tasks_reopened": 0,
         "planned_lines_completed": 0,
+        "planned_lines_added": 0,
         "scope_lines_changed": 0,
         "test_runs": 0,
         "tests_passed": 0,
@@ -123,6 +124,11 @@ def _plan_series(db: Database, repository_id: str, window: dict[str, int],
         (repository_id, _iso(window["start_ms"]), _iso(window["aligned_end_ms"])))
     estimated_completions = 0
     total_completions = 0
+    initial_estimates: dict[str, int] = {}
+    for event in events:
+        if event["event"] == "estimate" \
+                and event["subject_id"] not in initial_estimates:
+            initial_estimates[event["subject_id"]] = _number(event["from_value"])
     for event in events:
         task = by_id.get(event["subject_id"])
         if task is None or task["task_id"] in parents:
@@ -133,8 +139,10 @@ def _plan_series(db: Database, repository_id: str, window: dict[str, int],
         bucket = buckets[index]
         estimated = task["estimated_loc"] or 0
         if event["event"] == "created":
+            initial_estimate = initial_estimates.get(task["task_id"], estimated)
             bucket["tasks_created"] += 1
-            bucket["scope_lines_changed"] += estimated
+            bucket["planned_lines_added"] += initial_estimate
+            bucket["scope_lines_changed"] += initial_estimate
         elif event["event"] == "status" and event["to_value"] == "done":
             bucket["tasks_completed"] += 1
             bucket["planned_lines_completed"] += estimated
@@ -148,8 +156,9 @@ def _plan_series(db: Database, repository_id: str, window: dict[str, int],
         elif event["event"] == "status" and event["from_value"] == "dropped":
             bucket["scope_lines_changed"] += estimated
         elif event["event"] == "estimate":
-            bucket["scope_lines_changed"] += (
-                _number(event["to_value"]) - _number(event["from_value"]))
+            delta = _number(event["to_value"]) - _number(event["from_value"])
+            bucket["planned_lines_added"] += max(0, delta)
+            bucket["scope_lines_changed"] += delta
     active = [task for task in tasks if task["status"] != "dropped"]
     leaves = [task for task in active if task["task_id"] not in parents]
     return {
@@ -222,6 +231,7 @@ def _totals(buckets: list[dict[str, Any]], duration_days: float) -> dict[str, An
     observed_tokens = [bucket["total_tokens"] for bucket in buckets
                        if bucket["total_tokens"] is not None]
     lines = sum(bucket["planned_lines_completed"] for bucket in buckets)
+    lines_added = sum(bucket["planned_lines_added"] for bucket in buckets)
     completed = sum(bucket["tasks_completed"] for bucket in buckets)
     created = sum(bucket["tasks_created"] for bucket in buckets)
     return {
@@ -229,6 +239,7 @@ def _totals(buckets: list[dict[str, Any]], duration_days: float) -> dict[str, An
         "tasks_created": created,
         "tasks_reopened": sum(bucket["tasks_reopened"] for bucket in buckets),
         "planned_lines_completed": lines,
+        "planned_lines_added": lines_added,
         "scope_lines_changed": sum(bucket["scope_lines_changed"] for bucket in buckets),
         "test_runs": tests,
         "tests_passed": passed,
@@ -496,6 +507,8 @@ def repository_report(db: Database, repository: dict, usage: CodexUsage,
         "semantics": {
             "tasks": "terminal task status events in the permanent plan ledger",
             "lines": "current planned task estimates completed; not measured Git changes",
+            "lines_added": ("initial task estimates and estimate increases; estimate"
+                            " reductions and dropped work are excluded"),
             "tests": "bounded repository-local terminal test summaries",
             "tokens": "provider total_tokens; missing collector coverage stays missing",
             "forecast": ("provisional range from recent completion pace, current"

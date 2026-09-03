@@ -48,14 +48,17 @@ const progressFixture = (scenario, period = 'day') => {
   const evidenceMissing = scenario.empty || referenceState;
   const alignedEnd = referenceState ? Date.UTC(2026, 8, 1) : Date.UTC(2026, 7, 31);
   const referenceTasks = [0, 0, 6, 3, 4, 6, 13];
+  const referenceTasksAdded = [0, 2, 1, 0, 5, 0, 2];
   const referenceLines = [0, 0, 1500, 0, 3500, 200, 2200];
+  const referenceLinesAdded = [0, 900, 250, 0, 1600, 0, 400];
   const series = Array.from({ length: count }, (_, index) => ({
     bucket_start_ms: alignedEnd - (count - index) * bucketMs,
     bucket_end_ms: alignedEnd - (count - index - 1) * bucketMs,
     tasks_completed: scenario.empty ? 0 : referenceState ? referenceTasks[index] : [1, 0, 2, 1, 0, 2, 1, 1][index % 8],
-    tasks_created: scenario.empty ? 0 : [0, 1, 0, 0, 2, 0, 0, 1][index % 8],
+    tasks_created: scenario.empty ? 0 : referenceState ? referenceTasksAdded[index] : [0, 1, 0, 0, 2, 0, 0, 1][index % 8],
     tasks_reopened: scenario.empty ? 0 : (index === count - 2 ? 1 : 0),
     planned_lines_completed: scenario.empty ? 0 : referenceState ? referenceLines[index] : [80, 0, 140, 95, 0, 220, 110, 75][index % 8],
+    planned_lines_added: scenario.empty ? 0 : referenceState ? referenceLinesAdded[index] : [0, 40, 0, 0, 120, 0, 0, 30][index % 8],
     scope_lines_changed: scenario.empty ? 0 : [0, 40, 0, -20, 120, 0, 0, 30][index % 8],
     test_runs: evidenceMissing ? 0 : [3, 2, 4, 3, 5, 2, 4, 3][index % 8],
     tests_passed: evidenceMissing ? 0 : [3, 2, 3, 3, 4, 2, 4, 2][index % 8],
@@ -68,6 +71,7 @@ const progressFixture = (scenario, period = 'day') => {
     tasks_created: series.reduce((sum, point) => sum + point.tasks_created, 0),
     tasks_reopened: series.reduce((sum, point) => sum + point.tasks_reopened, 0),
     planned_lines_completed: series.reduce((sum, point) => sum + point.planned_lines_completed, 0),
+    planned_lines_added: series.reduce((sum, point) => sum + point.planned_lines_added, 0),
     scope_lines_changed: series.reduce((sum, point) => sum + point.scope_lines_changed, 0),
     test_runs: series.reduce((sum, point) => sum + point.test_runs, 0),
     tests_passed: series.reduce((sum, point) => sum + point.tests_passed, 0),
@@ -102,7 +106,7 @@ const progressFixture = (scenario, period = 'day') => {
     series,
     comparison: { current: currentTotals, previous: scenario.empty ? { ...currentTotals } : {
       ...currentTotals, tasks_completed: 6, tasks_created: 7, tasks_reopened: 0,
-      planned_lines_completed: 920, scope_lines_changed: 80, test_runs: 20,
+      planned_lines_completed: 920, planned_lines_added: 1080, scope_lines_changed: 80, test_runs: 20,
       tests_passed: 17, test_pass_rate: .82, total_tokens: 1300000,
       tokens_per_completed_task: 216667, tokens_per_planned_line: 1413,
       tasks_completed_per_day: .86, tasks_created_per_day: 1,
@@ -141,7 +145,7 @@ const progressFixture = (scenario, period = 'day') => {
       plan: { state: 'complete', completed_with_estimate: 7, completed_total: 7 },
       tests: { state: evidenceMissing ? 'unobserved' : scenario.partial ? 'partial' : 'complete', recorded_runs: evidenceMissing ? 0 : 26, history_sources: evidenceMissing ? 0 : 1, unavailable_sources: 0, earliest_at: evidenceMissing ? null : '2026-08-01T00:00:00Z' },
       tokens: { state: scenario.empty ? 'unobserved' : referenceState || scenario.partial ? 'partial' : 'complete', has_gaps: !!(scenario.partial || referenceState), configured_collectors: 2, available_collectors: referenceState ? 1 : 2, contributing_collectors: evidenceMissing ? 0 : 2, freshest_at_ms: evidenceMissing ? null : Date.UTC(2026, 7, 30, 23, 58), unavailable_reasons: {} } },
-    semantics: { tasks: 'terminal task status events in the permanent plan ledger', lines: 'current planned task estimates completed; not measured Git changes', tests: 'bounded repository-local terminal test summaries', tokens: 'provider total_tokens; missing collector coverage stays missing', forecast: 'deterministic range from recent pace, scope, estimates, and test stability' },
+    semantics: { tasks: 'terminal task status events in the permanent plan ledger', lines: 'current planned task estimates completed; not measured Git changes', lines_added: 'initial task estimates and estimate increases; estimate reductions and dropped work are excluded', tests: 'bounded repository-local terminal test summaries', tokens: 'provider total_tokens; missing collector coverage stays missing', forecast: 'deterministic range from recent pace, scope, estimates, and test stability' },
   };
 };
 
@@ -961,10 +965,22 @@ async function main() {
             && /Shown in Plan order/.test(metrics.text)
             && !/Priority queue|Release impact|dependency|ranked by|\d+\.\d+ days|TECHNICAL-(?:UNBLOCK|REOPEN)-MARKER/.test(metrics.text));
           check(`${label}: progress distinguishes daily bars from running-total lines`,
-            await page.locator('.progress-bar').count() > 0
+            await page.locator('.progress-completed-bar').count() > 0
+            && await page.locator('.progress-incoming-bar').count() > 0
             && await page.locator('.progress-running-line').count() === 2
-            && /Bars = finished that/.test(metrics.text)
-            && /Line = total during this period/.test(metrics.text));
+            && /Solid above = completed · outlined below = incoming/.test(metrics.text)
+            && /Line = completed running total/.test(metrics.text));
+          const opposingGeometry = await page.locator('.progress-bar-line-chart').evaluateAll((charts) => charts.every((chart) => {
+            const baseline = Number(chart.querySelector('.progress-zero-line')?.getAttribute('y1'));
+            const completed = [...chart.querySelectorAll('.progress-completed-bar')];
+            const incoming = [...chart.querySelectorAll('.progress-incoming-bar')];
+            return Number.isFinite(baseline) && completed.length > 0 && incoming.length > 0
+              && completed.every((bar) => Number(bar.getAttribute('y')) < baseline
+                && Number(bar.getAttribute('y')) + Number(bar.getAttribute('height')) <= baseline + .1)
+              && incoming.every((bar) => Number(bar.getAttribute('y')) >= baseline
+                && Number(bar.getAttribute('height')) > 0);
+          }));
+          check(`${label}: completed work is above the baseline and added work is below it`, opposingGeometry);
           const labelLayering = await page.locator('.progress-bar-line-chart').evaluateAll((charts) => charts.every((chart) => {
             const line = chart.querySelector('.progress-running-line');
             const labels = [...chart.querySelectorAll('.progress-bar-value')];
@@ -974,8 +990,8 @@ async function main() {
           }));
           check(`${label}: progress value labels paint above the running line with a readability halo`, labelLayering);
           check(`${label}: progress labels estimated lines truthfully`,
-            /Planned lines completed/.test(metrics.text)
-            && /Current task estimates/.test(metrics.text)
+            /Planned lines completed and added/.test(metrics.text)
+            && /Completed above · added below/.test(metrics.text)
             && !/Git lines completed/.test(metrics.text));
         }
         if (scenario.delayMs) {
@@ -2044,7 +2060,9 @@ async function main() {
   check('interaction: hourly progress reads hourly repository buckets',
     daemon.calls.some((call) => call.command === 'progress.repository'
       && call.args.repository_id === REPO && call.args.period === 'hour')
-    && await page.locator('[data-progress-period="hour"]:focus').count() === 1);
+    && await page.locator('[data-progress-period="hour"]:focus').count() === 1
+    && await page.locator('.progress-completed-bar').count() > 0
+    && await page.locator('.progress-incoming-bar').count() > 0);
   daemon.calls.length = 0;
   await page.click('[data-progress-period="day"]');
   await waitForSettledCall(daemon, page,
@@ -2052,7 +2070,9 @@ async function main() {
   check('interaction: daily progress reads daily repository buckets',
     daemon.calls.some((call) => call.command === 'progress.repository'
       && call.args.repository_id === REPO && call.args.period === 'day')
-    && await page.locator('[data-progress-period="day"]:focus').count() === 1);
+    && await page.locator('[data-progress-period="day"]:focus').count() === 1
+    && await page.locator('.progress-completed-bar').count() > 0
+    && await page.locator('.progress-incoming-bar').count() > 0);
   daemon.calls.length = 0;
   await page.click('[data-progress-period="week"]');
   await page.waitForSelector('.progress-pulse-chart');
@@ -2061,10 +2081,14 @@ async function main() {
   check('interaction: weekly progress re-reads aligned repository buckets and restores focus',
     daemon.calls.some((call) => call.command === 'progress.repository'
       && call.args.repository_id === REPO && call.args.period === 'week')
-    && await page.locator('[data-progress-period="week"]:focus').count() === 1);
+    && await page.locator('[data-progress-period="week"]:focus').count() === 1
+    && await page.locator('.progress-completed-bar').count() > 0
+    && await page.locator('.progress-incoming-bar').count() > 0);
   await page.click('.progress-exact summary');
   check('interaction: exact progress values and counting rules expand in place',
     await page.locator('.progress-exact[open] tbody tr').count() === 8
+    && /Planned lines added/.test(await page.innerText('.progress-exact'))
+    && /estimate reductions and dropped work are excluded/.test(await page.innerText('.progress-exact'))
     && /not measured Git changes/.test(await page.innerText('.progress-exact')));
   await page.click(`.progress-actions a[href="#/plan/${REPO}"]`);
   await page.waitForURL(new RegExp(`#\\/plan\\/${REPO}$`));
