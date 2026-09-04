@@ -1,13 +1,12 @@
 # Command Contract
 
 Envelope and error model: `protocol.md`. Full schemas below exist for the
-commands implemented in this delivery (`test.*`, `repository.*`, `ping`).
-Later command families are sketched to reserve names and result shapes; they
-have no implementation and must not be exposed before their end-to-end
-behavior exists.
+operations in the exhaustive Rust registry. Every listed operation has a
+typed implementation; the generated contract bundle is authoritative for
+input/output schemas, policies, CLI routes, and MCP exposure.
 
-The CLI maps `devcoordinator2 test start …` to command `test.start`; the MCP
-server exposes the same commands as tools `test_start`, `test_retry`,
+The CLI maps `devcoordinator2 test start …` to operation `test.start`; the MCP
+server exposes applicable operations as tools such as `test_start`, `test_retry`,
 `test_status`, `test_log_catalog`, `test_log_tail`, `test_log_search`,
 `test_log_range`, `test_log_failure_context`, `test_log_retention_get`,
 `test_log_retention_set`, `test_stop`, `test_capacity_get`,

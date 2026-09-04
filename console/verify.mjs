@@ -446,7 +446,16 @@ async function startFakeDaemon(dir) {
     let buf = '';
     socket.on('data', async (c) => {
       buf += c; if (!buf.endsWith('\n')) return;
-      const req = JSON.parse(buf); calls.push(req);
+      const req = JSON.parse(buf);
+      const requestKeys = Object.keys(req).sort().join(',');
+      if (req.protocol !== 2 || requestKeys !== 'client,id,operation,params,protocol'
+        || typeof req.operation !== 'string' || !req.params || Array.isArray(req.params)
+        || typeof req.params !== 'object') {
+        socket.end(`${JSON.stringify({ protocol: 2, id: req.id || '', ok: false,
+          error: { code: 'protocol_invalid', message: 'fixture requires protocol v2', detail: '' } })}\n`);
+        return;
+      }
+      calls.push(req);
       for (const waiter of [...receivedWaiters]) {
         if (calls.length <= waiter.after) continue;
         receivedWaiters.delete(waiter);
@@ -460,9 +469,9 @@ async function startFakeDaemon(dir) {
           waiter.resolve(req);
         }
       };
-      const reply = (payload) => socket.end(`${JSON.stringify({ protocol: 1, id: req.id, ...payload })}\n`, markSettled);
+      const reply = (payload) => socket.end(`${JSON.stringify({ protocol: 2, id: req.id, ...payload })}\n`, markSettled);
       if (scenario.delayMs) await new Promise((resolve) => delayedReplies.add(resolve));
-      const cmd = req.command;
+      const cmd = req.operation;
       if (cmd === 'user.whoami' && process.env.CONSOLE_VERIFY_RESET_PLAN_ON_SESSION === '1') {
         mutable.taskUpdates.clear();
         mutable.createdTasks.length = 0;
@@ -474,7 +483,7 @@ async function startFakeDaemon(dir) {
         mutable.failNextLogCatalog = false;
         return reply({ ok: false, error: { code: 'log_unavailable', message: 'The log catalogue is temporarily unavailable.', detail: '' } });
       }
-      if (cmd === 'test.log.catalog' && req.args.cursor === 'more-streams') return reply({ ok: true, result: {
+      if (cmd === 'test.log.catalog' && req.params.cursor === 'more-streams') return reply({ ok: true, data: {
         entries: [{ log_ref: { run_id: 't20260101T000000Z-abc123', check: 'lint', phase: 'check', stream: 'stdout' }, bytes: 48, lines: 1, first_byte_at: new Date(Date.now() - 300000).toISOString(), last_byte_at: new Date().toISOString(), complete: true, truncated: false, sha256: 'd'.repeat(64), expires_at: new Date(Date.now() + 86400000).toISOString(), depth_rank: 1, structured_evidence: { available: false, formats: [], count: 0 } }],
         next_cursor: null,
       } });
@@ -482,76 +491,76 @@ async function startFakeDaemon(dir) {
         mutable.failNextLogRead = false;
         return reply({ ok: false, error: { code: 'log_expired', message: 'This retained log expired.', detail: '' } });
       }
-      if (cmd === 'test.log.tail' && req.args.cursor && mutable.failNextLogPage) {
+      if (cmd === 'test.log.tail' && req.params.cursor && mutable.failNextLogPage) {
         mutable.failNextLogPage = false;
         return reply({ ok: false, error: { code: 'log_unavailable', message: 'Earlier output is temporarily unavailable.', detail: '' } });
       }
       if (scenario.denied && ADMIN_ONLY.includes(cmd)) return reply({ ok: false, error: { code: 'permission_denied', message: `${cmd} requires administrator`, detail: '' } });
       if (scenario.denied && OPERATOR_ONLY.includes(cmd)) return reply({ ok: false, error: { code: 'permission_denied', message: `${cmd} requires operator`, detail: '' } });
-      if (cmd === 'deployment.stop' && req.args.component === 'stack/projection-worker') { mutable.serviceStopped = true; return reply({ ok: true, result: { state: 'degraded' } }); }
-      if (cmd === 'deployment.start' && req.args.component === 'stack/projection-worker') { mutable.serviceStopped = false; return reply({ ok: true, result: { state: 'running' } }); }
-      if (cmd === 'deployment.stop') { mutable.stopped = true; return reply({ ok: true, result: { state: 'stopped' } }); }
-      if (cmd === 'deployment.start') { mutable.stopped = false; return reply({ ok: true, result: { state: 'running' } }); }
-      if (cmd === 'deployment.status' && req.args.deployment_id === OBS) return reply({ ok: true, result: fixtures({ ...scenario, stopped: mutable.stopped, serviceStopped: mutable.serviceStopped })['deployment.observed-status'] });
-      if (cmd === 'deployment.set_domain') return reply({ ok: true, result: { deployment_id: req.args.deployment_id, domain: req.args.domain, public: !!req.args.public } });
+      if (cmd === 'deployment.stop' && req.params.component === 'stack/projection-worker') { mutable.serviceStopped = true; return reply({ ok: true, data: { state: 'degraded' } }); }
+      if (cmd === 'deployment.start' && req.params.component === 'stack/projection-worker') { mutable.serviceStopped = false; return reply({ ok: true, data: { state: 'running' } }); }
+      if (cmd === 'deployment.stop') { mutable.stopped = true; return reply({ ok: true, data: { state: 'stopped' } }); }
+      if (cmd === 'deployment.start') { mutable.stopped = false; return reply({ ok: true, data: { state: 'running' } }); }
+      if (cmd === 'deployment.status' && req.params.deployment_id === OBS) return reply({ ok: true, data: fixtures({ ...scenario, stopped: mutable.stopped, serviceStopped: mutable.serviceStopped })['deployment.observed-status'] });
+      if (cmd === 'deployment.set_domain') return reply({ ok: true, data: { deployment_id: req.params.deployment_id, domain: req.params.domain, public: !!req.params.public } });
       if (cmd === 'task.update') {
         if (mutable.failNextTaskUpdate) { mutable.failNextTaskUpdate = false; return reply({ ok: false, error: { code: 'simulated_failure', message: 'simulated task update failure', detail: '' } }); }
-        const previous = mutable.taskUpdates.get(req.args.task_id) || {};
+        const previous = mutable.taskUpdates.get(req.params.task_id) || {};
         const update = { ...previous };
-        for (const key of ['estimated_loc', 'status', 'release_id', 'parent_task_id', 'position', 'title', 'outcome', 'elaboration_needed']) if (key in req.args) update[key] = req.args[key];
-        mutable.taskUpdates.set(req.args.task_id, update);
-        return reply({ ok: true, result: { task_id: req.args.task_id, ...update, state: 'done', status: update.status || 'planned' } });
+        for (const key of ['estimated_loc', 'status', 'release_id', 'parent_task_id', 'position', 'title', 'outcome', 'elaboration_needed']) if (key in req.params) update[key] = req.params[key];
+        mutable.taskUpdates.set(req.params.task_id, update);
+        return reply({ ok: true, data: { task_id: req.params.task_id, ...update, state: 'done', status: update.status || 'planned' } });
       }
       if (cmd === 'task.create') {
-        const task = { task_id: `pnew${String(mutable.createdTasks.length + 1).padStart(13, '0')}`, parent_task_id: null, release_id: null, seq: 100 + mutable.createdTasks.length, position: 100 + mutable.createdTasks.length, title: req.args.title, impact: req.args.impact || null, status: 'planned', kind: req.args.kind, estimated_loc: null, elaboration_needed: false };
+        const task = { task_id: `pnew${String(mutable.createdTasks.length + 1).padStart(13, '0')}`, parent_task_id: null, release_id: null, seq: 100 + mutable.createdTasks.length, position: 100 + mutable.createdTasks.length, title: req.params.title, impact: req.params.impact || null, status: 'planned', kind: req.params.kind, estimated_loc: null, elaboration_needed: false };
         mutable.createdTasks.push(task);
-        return reply({ ok: true, result: { task_id: task.task_id, status: task.status } });
+        return reply({ ok: true, data: { task_id: task.task_id, status: task.status } });
       }
-      if (cmd === 'release.request') { mutable.previewRequested = true; return reply({ ok: true, result: { status: 'requested' } }); }
+      if (cmd === 'release.request') { mutable.previewRequested = true; return reply({ ok: true, data: { status: 'requested' } }); }
       if (cmd === 'test.capacity.set') {
-        mutable.capacityCap = req.args.cap;
+        mutable.capacityCap = req.params.cap;
         const learned = 96;
-        return reply({ ok: true, result: {
+        return reply({ ok: true, data: {
           ...fixtures(scenario)['test.capacity.get'], cap: mutable.capacityCap,
           effective_capacity: mutable.capacityCap == null ? learned : Math.min(learned, mutable.capacityCap),
           last_adjustment: { event_id: 'e2', at: new Date().toISOString(), actor: 'administrator', reason: 'administrator_cap_changed', previous_capacity: learned, new_capacity: learned, cap: mutable.capacityCap, p95_cpu_percent: null, p95_memory_percent: null, saturation_fraction: null, epoch_seconds: null },
         } });
       }
-      if (cmd === 'test.log.retention.get') return reply({ ok: true, result: { ...fixtures(scenario)['test.log.retention.get'], max_age_seconds: mutable.logAge, case_depth: mutable.logDepth } });
+      if (cmd === 'test.log.retention.get') return reply({ ok: true, data: { ...fixtures(scenario)['test.log.retention.get'], max_age_seconds: mutable.logAge, case_depth: mutable.logDepth } });
       if (cmd === 'test.log.retention.set') {
-        mutable.logAge = req.args.max_age_seconds; mutable.logDepth = req.args.case_depth;
-        return reply({ ok: true, result: { ...fixtures(scenario)['test.log.retention.get'], max_age_seconds: mutable.logAge, case_depth: mutable.logDepth, cleanup_requested: true } });
+        mutable.logAge = req.params.max_age_seconds; mutable.logDepth = req.params.case_depth;
+        return reply({ ok: true, data: { ...fixtures(scenario)['test.log.retention.get'], max_age_seconds: mutable.logAge, case_depth: mutable.logDepth, cleanup_requested: true } });
       }
-      if (cmd === 'test.log.tail' && req.args.check === 'structured') return reply({ ok: true, result: {
+      if (cmd === 'test.log.tail' && req.params.check === 'structured') return reply({ ok: true, data: {
         segments: [{ line_start: 1, line_end: 1, byte_start: 0, byte_end: 180,
           text: '{"summary":{"passed":12,"failed":0},"duration_ms":83.5,"message":"<img src=x onerror=alert(1)>","complete":true}' }],
         next_cursor: null, response_truncated: false,
       } });
-      if (cmd === 'test.log.tail' && req.args.phase === 'executor') return reply({ ok: true, result: {
+      if (cmd === 'test.log.tail' && req.params.phase === 'executor') return reply({ ok: true, data: {
         segments: [{ line_start: 1, line_end: 2, byte_start: 0, byte_end: 220,
           text: '{"event":"executor finished successfully","count":42,"ok":true,"duration_ms":153.25,"at":"2026-09-03T21:00:00Z"}\n{"event":"artifact","bytes":2048,"cached":false,"status":"passed"}' }],
         next_cursor: null, response_truncated: false,
       } });
-      if (cmd === 'test.log.tail' && req.args.cursor === 'older-tail') return reply({ ok: true, result: {
+      if (cmd === 'test.log.tail' && req.params.cursor === 'older-tail') return reply({ ok: true, data: {
         segments: [{ line_start: 41601, line_end: 41800, byte_start: 8290000, byte_end: 8340000,
           text: Array.from({ length: 200 }, (_, index) => `earlier setup output ${index + 1}`).join('\n') }],
         next_cursor: 'oldest-tail', response_truncated: true,
       } });
-      if (cmd === 'test.log.tail' && req.args.cursor === 'oldest-tail') return reply({ ok: true, result: {
+      if (cmd === 'test.log.tail' && req.params.cursor === 'oldest-tail') return reply({ ok: true, data: {
         segments: [{ line_start: 41401, line_end: 41600, byte_start: 8240000, byte_end: 8290000,
           text: Array.from({ length: 200 }, (_, index) => `oldest retained output ${index + 1}`).join('\n') }],
         next_cursor: null, response_truncated: false,
       } });
-      if (cmd === 'test.log.search' && req.args.cursor === 'next-search') return reply({ ok: true, result: {
+      if (cmd === 'test.log.search' && req.params.cursor === 'next-search') return reply({ ok: true, data: {
         matches: [{ line_start: 41000, line_end: 41000, byte_start: 8200000, byte_end: 8200024, text: 'pending state persisted' }],
         next_cursor: null, response_truncated: false,
       } });
-      if (cmd === 'test.evidence.get') return reply({ ok: true, result: evidenceResult() });
+      if (cmd === 'test.evidence.get') return reply({ ok: true, data: evidenceResult() });
       if (cmd === 'test.evidence.image') {
-        const start = req.args.offset || 0;
-        const end = Math.min(mutable.evidenceImage.length, start + (req.args.max_bytes || 184320));
-        return reply({ ok: true, result: {
-          image_id: req.args.image_id, mime: 'image/png',
+        const start = req.params.offset || 0;
+        const end = Math.min(mutable.evidenceImage.length, start + (req.params.max_bytes || 184320));
+        return reply({ ok: true, data: {
+          image_id: req.params.image_id, mime: 'image/png',
           sha256: crypto.createHash('sha256').update(mutable.evidenceImage).digest('hex'),
           total_bytes: mutable.evidenceImage.length, offset: start, bytes: end - start,
           base64: mutable.evidenceImage.subarray(start, end).toString('base64'),
@@ -568,51 +577,51 @@ async function startFakeDaemon(dir) {
           feedback_id: feedbackId, task_id: taskId, task_status: 'planned', state: 'open',
           run_id: TEST_RUN, check: 'formal-ui', phase: 'check', case: null,
           formal_run_id: 'formal-web-ui-fixture', cell_id: 'cell-1-desktop',
-          review_cell_key: '1'.repeat(64), image_id: req.args.image_id,
+          review_cell_key: '1'.repeat(64), image_id: req.params.image_id,
           screenshot_kind: 'viewport', screenshot_sha256: crypto.createHash('sha256').update(mutable.evidenceImage).digest('hex'),
-          marks: structuredClone(req.args.marks), author: scenario.identity,
+          marks: structuredClone(req.params.marks), author: scenario.identity,
           created_at: now, updated_at: now, can_delete: true,
-          comments: [{ comment_id: commentId, body: req.args.body, author: scenario.identity,
+          comments: [{ comment_id: commentId, body: req.params.body, author: scenario.identity,
             created_at: now, updated_at: now, deleted: false, can_edit: true }],
           comments_truncated: false,
         };
         mutable.evidenceFeedback.push(feedback);
         mutable.createdTasks.push({ task_id: taskId, parent_task_id: null, release_id: null,
           seq: 200 + mutable.feedbackSequence, position: 200 + mutable.feedbackSequence,
-          title: `Review: ${req.args.body}`, impact: 'The tested page needs visual attention.',
+          title: `Review: ${req.params.body}`, impact: 'The tested page needs visual attention.',
           status: 'planned', kind: 'user_feedback', estimated_loc: null,
           elaboration_needed: false });
-        return reply({ ok: true, result: { task_id: taskId, feedback_id: feedbackId,
+        return reply({ ok: true, data: { task_id: taskId, feedback_id: feedbackId,
           position: 200 + mutable.feedbackSequence, feedback: structuredClone(feedback) } });
       }
       if (cmd.startsWith('test.evidence.feedback.')) {
-        const feedback = mutable.evidenceFeedback.find((item) => item.feedback_id === req.args.feedback_id);
+        const feedback = mutable.evidenceFeedback.find((item) => item.feedback_id === req.params.feedback_id);
         if (!feedback) return reply({ ok: false, error: { code: 'args_invalid', message: 'feedback missing', detail: '' } });
         const now = new Date().toISOString();
         if (cmd.endsWith('.reply')) {
           feedback.comments.push({ comment_id: `mreply${String(feedback.comments.length).padStart(10, '0')}`,
-            body: req.args.body, author: scenario.identity, created_at: now,
+            body: req.params.body, author: scenario.identity, created_at: now,
             updated_at: now, deleted: false, can_edit: true });
         } else if (cmd.endsWith('.edit')) {
-          const comment = feedback.comments.find((item) => item.comment_id === req.args.comment_id);
-          if (comment) { comment.body = req.args.body; comment.updated_at = now; }
+          const comment = feedback.comments.find((item) => item.comment_id === req.params.comment_id);
+          if (comment) { comment.body = req.params.body; comment.updated_at = now; }
         } else if (cmd.endsWith('.state')) {
-          feedback.state = req.args.state; feedback.task_status = req.args.state === 'resolved' ? 'done' : 'planned';
+          feedback.state = req.params.state; feedback.task_status = req.params.state === 'resolved' ? 'done' : 'planned';
         } else if (cmd.endsWith('.delete')) {
           feedback.state = 'deleted'; feedback.task_status = 'dropped'; feedback.can_delete = false;
         }
         feedback.updated_at = now;
-        return reply({ ok: true, result: { feedback: structuredClone(feedback) } });
+        return reply({ ok: true, data: { feedback: structuredClone(feedback) } });
       }
-      if (['deployment.restart', 'deployment.apply', 'deployment.rollback', 'deployment.remove', 'bug.report', 'bug.close', 'user.invite', 'user.remove', 'grant.set', 'grant.remove', 'telegram.link', 'telegram.subscribe', 'telegram.unsubscribe', 'test.stop', 'test.start', 'health.container_remove'].includes(cmd)) return reply({ ok: true, result: { state: 'done', status: 'done' } });
-      if (cmd === 'plan.overview' && !req.args.repository_id) return reply({ ok: true, result: fixtures(scenario)['plan.overview-list'] });
-      if (cmd === 'plan.overview') return reply({ ok: true, result: planOverview() });
-      if (cmd === 'progress.repository') return reply({ ok: true, result: progressFixture(scenario, req.args.period || 'day') });
-      if (cmd === 'progress.repositories') return reply({ ok: true, result: fixtures(scenario)['progress.repositories'] });
+      if (['deployment.restart', 'deployment.apply', 'deployment.rollback', 'deployment.remove', 'bug.report', 'bug.close', 'user.invite', 'user.remove', 'grant.set', 'grant.remove', 'telegram.link', 'telegram.subscribe', 'telegram.unsubscribe', 'test.stop', 'test.start', 'health.container_remove'].includes(cmd)) return reply({ ok: true, data: { state: 'done', status: 'done' } });
+      if (cmd === 'plan.overview' && !req.params.repository_id) return reply({ ok: true, data: fixtures(scenario)['plan.overview-list'] });
+      if (cmd === 'plan.overview') return reply({ ok: true, data: planOverview() });
+      if (cmd === 'progress.repository') return reply({ ok: true, data: progressFixture(scenario, req.params.period || 'day') });
+      if (cmd === 'progress.repositories') return reply({ ok: true, data: fixtures(scenario)['progress.repositories'] });
       if (cmd === 'usage.repository') {
         const result = structuredClone(fixtures({ ...scenario, stopped: mutable.stopped,
           serviceStopped: mutable.serviceStopped })['usage.repository']);
-        result.range = req.args.range || '24h';
+        result.range = req.params.range || '24h';
         const count = result.range === '30d' ? 30 : result.range === '7d' ? 28 : 24;
         const step = result.range === '30d' ? 86400000 : result.range === '7d' ? 21600000 : 3600000;
         if (result.series.length) result.series = Array.from({ length: count }, (_, index) => {
@@ -620,28 +629,28 @@ async function startFakeDaemon(dir) {
           const start = Date.UTC(2026, 7, 29) - (count - index) * step;
           return { ...source, bucket_start_ms: start, bucket_end_ms: start + step };
         });
-        return reply({ ok: true, result });
+        return reply({ ok: true, data: result });
       }
       if (cmd === 'usage.repositories') {
         const fixtureScenario = scenario.usageIndexing && mutable.usageCollectionReads > 0
           ? { ...scenario, usageIndexing: false } : scenario;
         mutable.usageCollectionReads += 1;
         const result = structuredClone(fixtures(fixtureScenario)['usage.repositories']);
-        result.range = req.args.range || '24h';
-        return reply({ ok: true, result });
+        result.range = req.params.range || '24h';
+        return reply({ ok: true, data: result });
       }
       if (cmd === 'test.capacity.get') {
         const result = structuredClone(fixtures(scenario)['test.capacity.get']);
         result.cap = mutable.capacityCap;
         result.effective_capacity = mutable.capacityCap == null ? result.learned_capacity : Math.min(result.learned_capacity, mutable.capacityCap);
-        return reply({ ok: true, result });
+        return reply({ ok: true, data: result });
       }
-      if (cmd === 'decision.tail' && req.args.repository_id === 'r9999999999999999') {
-        return reply({ ok: true, result: { repository_id: req.args.repository_id, display_name: 'legacy-repo', summary: null, decisions: [], has_more: false, unsummarized_count: 0, summary_due: false } });
+      if (cmd === 'decision.tail' && req.params.repository_id === 'r9999999999999999') {
+        return reply({ ok: true, data: { repository_id: req.params.repository_id, display_name: 'legacy-repo', summary: null, decisions: [], has_more: false, unsummarized_count: 0, summary_due: false } });
       }
       const data = fixtures({ ...scenario, stopped: mutable.stopped, serviceStopped: mutable.serviceStopped })[cmd];
-      if (data === undefined) return reply({ ok: false, error: { code: 'command_unknown', message: cmd, detail: '' } });
-      return reply({ ok: true, result: data });
+      if (data === undefined) return reply({ ok: false, error: { code: 'operation_unknown', message: cmd, detail: '' } });
+      return reply({ ok: true, data: data });
     });
   });
   await new Promise((r) => server.listen(socketPath, r));
@@ -658,7 +667,7 @@ async function startFakeDaemon(dir) {
     },
     waitForCall: (predicateOrCommand) => {
       const predicate = typeof predicateOrCommand === 'string'
-        ? (call) => call.command === predicateOrCommand : predicateOrCommand;
+        ? (call) => call.operation === predicateOrCommand : predicateOrCommand;
       const existing = calls.find((call) => settled.has(call) && predicate(call));
       if (existing) return Promise.resolve(existing);
       return new Promise((resolve) => settledWaiters.add({ predicate, resolve }));
@@ -774,7 +783,7 @@ async function main() {
         await page.goto(`http://${HOST}:${port}/${view}`);
         if (scenario.delayMs) {
           const firstPending = await daemon.waitForReceivedAfter(callsBeforeNavigation);
-          if (firstPending.command === 'user.whoami') {
+          if (firstPending.operation === 'user.whoami') {
             daemon.releaseDelayed();
             await daemon.waitForReceivedAfter(callsBeforeNavigation + 1);
           }
@@ -786,7 +795,7 @@ async function main() {
             html: document.querySelector('main')?.innerHTML.slice(0, 500),
           }));
           if (!loading.visible) {
-            loading.calls = daemon.calls.slice(callsBeforeNavigation).map((call) => call.command);
+            loading.calls = daemon.calls.slice(callsBeforeNavigation).map((call) => call.operation);
             throw new Error(`${label}: loading surface did not render: ${JSON.stringify(loading)}`);
           }
         }
@@ -1031,7 +1040,7 @@ async function main() {
   await page.waitForSelector('button[data-cmd="deployment.stop"]');
   await page.click('h1 ~ .actions button[data-cmd="deployment.stop"]');
   await page.waitForFunction(() => [...document.querySelectorAll('h1 .badge')].some((b) => b.textContent === 'stopped'), null, { timeout: 10000 });
-  check('interaction: stop calls deployment.stop and the header shows stopped', daemon.calls.some((c) => c.command === 'deployment.stop' && c.args.deployment_id === DEP && c.client.identity === 'owner@example.test'));
+  check('interaction: stop calls deployment.stop and the header shows stopped', daemon.calls.some((c) => c.operation === 'deployment.stop' && c.params.deployment_id === DEP && c.client.identity === 'owner@example.test'));
   await page.click('h1 ~ .actions button[data-cmd="deployment.start"]');
   await page.waitForFunction(() => [...document.querySelectorAll('h1 .badge')].some((b) => b.textContent === 'running'), null, { timeout: 10000 });
   check('interaction: start restores running', true);
@@ -1040,30 +1049,30 @@ async function main() {
   await projectionRow.locator('[data-cmd="deployment.stop"]').click();
   await page.waitForFunction(() => [...document.querySelectorAll('h1 .badge')].some((b) => b.textContent === 'degraded'), null, { timeout: 10000 });
   check('interaction: independent Compose stop targets only the reviewed service',
-    daemon.calls.some((c) => c.command === 'deployment.stop' && c.args.component === 'stack/projection-worker'));
+    daemon.calls.some((c) => c.operation === 'deployment.stop' && c.params.component === 'stack/projection-worker'));
   check('interaction: stopped Compose service remains visible and the route stays published',
     /stopped/.test(await projectionRow.innerText()) && /20002/.test(await page.innerText('main')));
   await projectionRow.locator('[data-cmd="deployment.start"]').click();
   await page.waitForFunction(() => [...document.querySelectorAll('h1 .badge')].some((b) => b.textContent === 'running'), null, { timeout: 10000 });
   check('interaction: independent Compose start restores running without a stack apply',
-    daemon.calls.some((c) => c.command === 'deployment.start' && c.args.component === 'stack/projection-worker')
-    && !daemon.calls.some((c) => c.command === 'deployment.apply'));
+    daemon.calls.some((c) => c.operation === 'deployment.start' && c.params.component === 'stack/projection-worker')
+    && !daemon.calls.some((c) => c.operation === 'deployment.apply'));
   await page.click('button[data-logs="api"]');
   await page.waitForSelector('pre.log');
-  check('interaction: logs load on demand', daemon.calls.some((c) => c.command === 'deployment.logs' && c.args.component === 'api'));
+  check('interaction: logs load on demand', daemon.calls.some((c) => c.operation === 'deployment.logs' && c.params.component === 'api'));
   await page.getByRole('button', { name: 'Remove deployment — keep data' }).click();
   await waitForSettledCall(daemon, page, 'deployment.remove');
-  const keepDataCall = daemon.calls.find((c) => c.command === 'deployment.remove');
+  const keepDataCall = daemon.calls.find((c) => c.operation === 'deployment.remove');
   check('interaction: keep-data removal is an explicit immediate action',
-    keepDataCall && keepDataCall.args.deployment_id === DEP && keepDataCall.args.delete_data === false);
+    keepDataCall && keepDataCall.params.deployment_id === DEP && keepDataCall.params.delete_data === false);
   await page.goto(`http://${HOST}:${port}/#/deployments/${DEP}`);
   await page.waitForSelector('button[data-cmd="deployment.remove"]');
   daemon.calls.length = 0;
   await page.getByRole('button', { name: 'Remove deployment and delete data' }).click();
   await waitForSettledCall(daemon, page, 'deployment.remove');
-  const deleteDataCall = daemon.calls.find((c) => c.command === 'deployment.remove');
+  const deleteDataCall = daemon.calls.find((c) => c.operation === 'deployment.remove');
   check('interaction: delete-data removal is a separate explicit immediate action',
-    deleteDataCall && deleteDataCall.args.deployment_id === DEP && deleteDataCall.args.delete_data === true);
+    deleteDataCall && deleteDataCall.params.deployment_id === DEP && deleteDataCall.params.delete_data === true);
   // Domain editing (DC2-2026-08-24: administrators edit the routed domain in place).
   await page.goto(`http://${HOST}:${port}/#/deployments/${DEP}`);
   await page.waitForSelector('#edit-domain');
@@ -1072,9 +1081,9 @@ async function main() {
   await page.fill('#domain-form [name=domain]', 'renamed-app');
   await page.click('#domain-form button[type=submit]');
   await waitForSettledCall(daemon, page, 'deployment.set_domain');
-  const domainCall = daemon.calls.find((c) => c.command === 'deployment.set_domain');
+  const domainCall = daemon.calls.find((c) => c.operation === 'deployment.set_domain');
   check('interaction: domain pop-up calls deployment.set_domain with the new label',
-    domainCall && domainCall.args.deployment_id === DEP && domainCall.args.domain === 'renamed-app');
+    domainCall && domainCall.params.deployment_id === DEP && domainCall.params.domain === 'renamed-app');
   await page.goto(`http://${HOST}:${port}/#/deployments`);
   await page.waitForSelector('.deployment-repository-head');
   const groupHeads = await page.locator('.deployment-repository-head').allInnerTexts();
@@ -1171,9 +1180,9 @@ async function main() {
   await page.fill('#domain-form [name=domain]', 'from-list');
   await page.click('#domain-form button[type=submit]');
   await waitForSettledCall(daemon, page, 'deployment.set_domain');
-  const listDomainCall = daemon.calls.find((c) => c.command === 'deployment.set_domain');
+  const listDomainCall = daemon.calls.find((c) => c.operation === 'deployment.set_domain');
   check('interaction: list-row domain edit opens the pop-up and edits that deployment',
-    listDomainCall && listDomainCall.args.deployment_id === OBS && listDomainCall.args.domain === 'from-list');
+    listDomainCall && listDomainCall.params.deployment_id === OBS && listDomainCall.params.domain === 'from-list');
   await page.goto(`http://${HOST}:${port}/#/deployments`);
   const observedRow = page.locator(`a[href="#/deployments/${OBS}"]`).locator('xpath=ancestor::article[contains(@class,"deployment-record")]');
   await observedRow.waitFor();
@@ -1191,7 +1200,7 @@ async function main() {
   await page.click('h1 ~ .actions button[data-cmd="deployment.restart"]');
   await waitForSettledCall(daemon, page, 'deployment.restart');
   check('interaction: observed restart calls deployment.restart on the observed id',
-    daemon.calls.some((c) => c.command === 'deployment.restart' && c.args.deployment_id === OBS));
+    daemon.calls.some((c) => c.operation === 'deployment.restart' && c.params.deployment_id === OBS));
   await page.goto(`http://${HOST}:${port}/#/tests`);
   await page.waitForSelector('button[data-test-logs]');
   const runningRow = page.locator('[data-test-run-id="t20260101T000000Z-abc123"]');
@@ -1252,8 +1261,8 @@ async function main() {
   daemon.calls.length = 0;
   await page.click('button[data-test-logs]');
   await page.waitForSelector('dialog#test-logs-dialog[open] #test-log-read-result pre.log');
-  const catalogIndex = daemon.calls.findIndex((c) => c.command === 'test.log.catalog');
-  const initialTailIndex = daemon.calls.findIndex((c) => c.command === 'test.log.tail');
+  const catalogIndex = daemon.calls.findIndex((c) => c.operation === 'test.log.catalog');
+  const initialTailIndex = daemon.calls.findIndex((c) => c.operation === 'test.log.tail');
   check('interaction: Logs catalogues first and then opens readable output automatically',
     catalogIndex >= 0 && initialTailIndex > catalogIndex);
   check('tests: stream names describe human-readable output instead of repeating internal phases',
@@ -1273,9 +1282,9 @@ async function main() {
     && /History depth\s+1 of 3/.test(logMetadata)
     && !(await page.innerText('#test-logs-dialog')).includes('/srv/repos/'), logMetadata);
   await page.click('.test-log-details summary');
-  check('interaction: automatic output uses the exact catalogued check, case, phase, and stream', daemon.calls.some((c) => c.command === 'test.log.tail'
-    && c.args.check === 'unit' && c.args.phase === 'case' && c.args.case === 'parser-17'
-    && c.args.stream === 'stderr' && c.args.lines === 200 && c.args.max_bytes === 49152));
+  check('interaction: automatic output uses the exact catalogued check, case, phase, and stream', daemon.calls.some((c) => c.operation === 'test.log.tail'
+    && c.params.check === 'unit' && c.params.phase === 'case' && c.params.case === 'parser-17'
+    && c.params.stream === 'stderr' && c.params.lines === 200 && c.params.max_bytes === 49152));
   check('tests: retrieved output carries stable source-line coordinates', /Lines 41801–42000/.test(await page.innerText('#test-log-read-result')));
   check('tests: every retrieved stream is explicitly labelled untrusted',
     await page.locator('#test-log-read-result pre[aria-label="Untrusted log text"]').count() === 1
@@ -1298,7 +1307,7 @@ async function main() {
       anchorTop: anchor?.getBoundingClientRect().top - element.getBoundingClientRect().top };
   });
   await page.locator('#test-log-read-result').evaluate((element) => element.dispatchEvent(new Event('scroll')));
-  await waitForSettledCall(daemon, page, (call) => call.command === 'test.log.tail' && call.args.cursor === 'older-tail');
+  await waitForSettledCall(daemon, page, (call) => call.operation === 'test.log.tail' && call.params.cursor === 'older-tail');
   await page.waitForFunction(() => document.querySelector('#test-log-read-result')?.textContent.includes('earlier setup output 1'));
   const afterEarlier = await page.locator('#test-log-read-result').evaluate((element) => {
     const anchor = [...element.querySelectorAll('.log-result')].find((entry) => entry.textContent.includes('build step 41801'));
@@ -1317,7 +1326,7 @@ async function main() {
   await page.locator('#test-log-read-result').evaluate((element) => {
     element.scrollTop = 0; element.dispatchEvent(new Event('scroll'));
   });
-  await waitForSettledCall(daemon, page, (call) => call.command === 'test.log.tail' && call.args.cursor === 'oldest-tail');
+  await waitForSettledCall(daemon, page, (call) => call.operation === 'test.log.tail' && call.params.cursor === 'oldest-tail');
   await page.waitForFunction(() => document.querySelector('#test-log-read-result')?.textContent.includes('oldest retained output 1'));
   check('interaction: repeated upward scrolling continues until the retained beginning',
     /Start of output/.test(await page.innerText('#test-log-read-result'))
@@ -1329,16 +1338,16 @@ async function main() {
   const beforeLatest = daemon.calls.length;
   await page.click('#test-log-latest');
   await waitForSettledCall(daemon, page, (call) => daemon.calls.indexOf(call) >= beforeLatest
-    && call.command === 'test.log.tail' && !call.args.cursor);
+    && call.operation === 'test.log.tail' && !call.params.cursor);
   check('interaction: Jump to latest re-reads the newest bounded output',
     !/earlier setup output/.test(await page.innerText('#test-log-read-result'))
     && /assertion failed/.test(await page.innerText('#test-log-read-result')));
   await page.fill('#test-log-search [name=text]', '[literal].*');
   await page.click('#test-log-search button[type=submit]');
-  await waitForSettledCall(daemon, page, (call) => call.command === 'test.log.search' && call.args.cursor === 'next-search');
+  await waitForSettledCall(daemon, page, (call) => call.operation === 'test.log.search' && call.params.cursor === 'next-search');
   await page.waitForFunction(() => document.querySelector('#test-log-read-result')?.textContent.includes('pending state persisted'));
-  check('interaction: search remains literal and bounded', daemon.calls.some((c) => c.command === 'test.log.search'
-    && c.args.text === '[literal].*' && c.args.max_matches === 20 && c.args.context_lines === 2));
+  check('interaction: search remains literal and bounded', daemon.calls.some((c) => c.operation === 'test.log.search'
+    && c.params.text === '[literal].*' && c.params.max_matches === 20 && c.params.context_lines === 2));
   check('tests: search changes the reader mode and extends automatically without a paging control',
     /Search results/.test(await page.innerText('.test-log-view-head'))
     && await page.locator('#test-log-page, .log-page-button').count() === 0
@@ -1348,13 +1357,13 @@ async function main() {
     && /pending state persisted/.test(await page.innerText('#test-log-read-result')));
   await page.click('[data-log-read="failure_context"]');
   await waitForSettledCall(daemon, page, 'test.log.failure_context');
-  check('interaction: Show likely failure calls the deterministic Coordinator operation and labels the result plainly', daemon.calls.some((c) => c.command === 'test.log.failure_context'
-    && c.args.limit === 20 && c.args.context_lines === 2)
+  check('interaction: Show likely failure calls the deterministic Coordinator operation and labels the result plainly', daemon.calls.some((c) => c.operation === 'test.log.failure_context'
+    && c.params.limit === 20 && c.params.context_lines === 2)
     && /Likely failure/.test(await page.innerText('.test-log-view-head')));
   const beforeStreamChange = daemon.calls.length;
   await page.selectOption('#test-log-stream', '1');
   await waitForSettledCall(daemon, page, (call) => daemon.calls.indexOf(call) >= beforeStreamChange
-    && call.command === 'test.log.tail' && call.args.phase === 'executor' && call.args.stream === 'stdout');
+    && call.operation === 'test.log.tail' && call.params.phase === 'executor' && call.params.stream === 'stdout');
   check('interaction: choosing another stream opens and pretty-prints its newest structured text automatically',
     /executor finished successfully/.test(await page.innerText('#test-log-read-result'))
     && /Formatted JSON lines/.test(await page.innerText('#test-log-read-result'))
@@ -1377,7 +1386,7 @@ async function main() {
     && await page.locator('#test-log-read-result img, #test-log-read-result [onerror]').count() === 0
     && /<img src=x onerror=alert\(1\)>/.test(await page.innerText('#test-log-read-result')));
   check('tests: the Console never calls exact numeric range retrieval',
-    !daemon.calls.some((c) => c.command === 'test.log.range'));
+    !daemon.calls.some((c) => c.operation === 'test.log.range'));
   daemon.setScenario({ ...SCENARIOS.populated, testFinished: true, targetedOnly: true });
   await page.waitForFunction(() => /passed/.test(document.querySelector('[data-test-run-id="t20260101T000000Z-abc123"]')?.textContent || ''));
   await page.click('#test-logs-dialog .dialog-close');
@@ -1402,9 +1411,9 @@ async function main() {
   `${await page.inputValue('#test-log-retention-form [name=max_age_hours]')} / ${await page.inputValue('#test-log-retention-form [name=case_depth]')}`);
   await page.click('#test-log-retention-form button[type=submit]');
   await waitForSettledCall(daemon, page, 'test.log.retention.set');
-  check('interaction: retention saves both boundaries directly and schedules cleanup', daemon.calls.some((c) => c.command === 'test.log.retention.set'
-    && c.args.max_age_seconds === 7200 && c.args.case_depth === 5),
-  JSON.stringify(daemon.calls.filter((c) => c.command === 'test.log.retention.set').map((c) => c.args)));
+  check('interaction: retention saves both boundaries directly and schedules cleanup', daemon.calls.some((c) => c.operation === 'test.log.retention.set'
+    && c.params.max_age_seconds === 7200 && c.params.case_depth === 5),
+  JSON.stringify(daemon.calls.filter((c) => c.operation === 'test.log.retention.set').map((c) => c.params)));
   await page.waitForFunction(() => document.activeElement?.id === 'test-log-retention-open');
   check('interaction: saving retention returns focus to the Log retention action', await page.locator('#test-log-retention-open:focus').count() === 1);
   await page.click('#test-log-retention-open');
@@ -1438,7 +1447,7 @@ async function main() {
   await page.waitForSelector('#test-log-catalog .notice');
   check('tests: a run with no retained streams shows an honest empty state without attempting a content read',
     /No retained logs for this run/.test(await page.innerText('#test-log-catalog'))
-    && !daemon.calls.some((call) => call.command === 'test.log.tail'));
+    && !daemon.calls.some((call) => call.operation === 'test.log.tail'));
   await page.click('#test-logs-dialog .dialog-close');
   daemon.setScenario(SCENARIOS.logCatalogError);
   await page.goto(`http://${HOST}:${port}/#/tests`);
@@ -1451,8 +1460,8 @@ async function main() {
   await page.click('#test-log-catalog-retry');
   await page.waitForSelector('#test-log-read-result pre.log');
   check('interaction: catalogue retry recovers and then opens newest output',
-    daemon.calls.filter((call) => call.command === 'test.log.catalog').length === 2
-    && daemon.calls.filter((call) => call.command === 'test.log.tail').length === 1);
+    daemon.calls.filter((call) => call.operation === 'test.log.catalog').length === 2
+    && daemon.calls.filter((call) => call.operation === 'test.log.tail').length === 1);
   await page.click('#test-logs-dialog .dialog-close');
   daemon.setScenario(SCENARIOS.logCatalogPaged);
   await page.goto(`http://${HOST}:${port}/#/tests`);
@@ -1462,7 +1471,7 @@ async function main() {
   await page.click('#test-log-more');
   await page.waitForFunction(() => document.querySelectorAll('#test-log-stream option').length === 4);
   check('interaction: Show more streams follows the catalogue cursor and preserves the reader',
-    daemon.calls.some((call) => call.command === 'test.log.catalog' && call.args.cursor === 'more-streams')
+    daemon.calls.some((call) => call.operation === 'test.log.catalog' && call.params.cursor === 'more-streams')
     && await page.locator('#test-log-more').count() === 0
     && /assertion failed/.test(await page.innerText('#test-log-read-result')));
   await page.click('#test-logs-dialog .dialog-close');
@@ -1471,10 +1480,10 @@ async function main() {
   await page.waitForSelector('button[data-test-logs]');
   daemon.calls.length = 0;
   await page.click('button[data-test-logs]');
-  await waitForSettledCall(daemon, page, (call) => call.command === 'test.log.tail' && call.args.cursor === 'older-tail');
+  await waitForSettledCall(daemon, page, (call) => call.operation === 'test.log.tail' && call.params.cursor === 'older-tail');
   await page.waitForFunction(() => document.querySelector('#test-log-read-result')?.textContent.includes('earlier setup output 1'));
   check('interaction: a short newest page auto-fills from one bounded earlier cursor without a paging control',
-    daemon.calls.filter((call) => call.command === 'test.log.tail').length === 2
+    daemon.calls.filter((call) => call.operation === 'test.log.tail').length === 2
     && await page.locator('#test-log-page, .log-page-button').count() === 0
     && /recent output 41999/.test(await page.innerText('#test-log-read-result')));
   await page.click('#test-logs-dialog .dialog-close');
@@ -1495,10 +1504,10 @@ async function main() {
   const beforePageRetry = daemon.calls.length;
   await page.click('.log-page-error button');
   await waitForSettledCall(daemon, page, (call) => daemon.calls.indexOf(call) >= beforePageRetry
-    && call.command === 'test.log.tail' && call.args.cursor === 'older-tail');
+    && call.operation === 'test.log.tail' && call.params.cursor === 'older-tail');
   await page.waitForFunction(() => document.querySelector('#test-log-read-result')?.textContent.includes('earlier setup output 1'));
   check('interaction: retry resumes the same cursor-driven infinite-scroll page',
-    daemon.calls.filter((call) => call.command === 'test.log.tail' && call.args.cursor === 'older-tail').length === 2);
+    daemon.calls.filter((call) => call.operation === 'test.log.tail' && call.params.cursor === 'older-tail').length === 2);
   await page.click('#test-logs-dialog .dialog-close');
   daemon.setScenario(SCENARIOS.logReadError);
   await page.goto(`http://${HOST}:${port}/#/tests`);
@@ -1510,7 +1519,7 @@ async function main() {
   await page.click('#test-log-retry');
   await page.waitForSelector('#test-log-read-result pre.log');
   check('interaction: retry recovers through the same bounded automatic read',
-    daemon.calls.filter((call) => call.command === 'test.log.tail').length === 2
+    daemon.calls.filter((call) => call.operation === 'test.log.tail').length === 2
     && /assertion failed/.test(await page.innerText('#test-log-read-result')));
   await page.click('#test-logs-dialog .dialog-close');
   daemon.setScenario(SCENARIOS.populated);
@@ -1542,7 +1551,7 @@ async function main() {
   await page.click('#test-capacity-form button[type=submit]');
   await waitForSettledCall(daemon, page, 'test.capacity.set');
   check('interaction: saving the administrator maximum calls test.capacity.set directly',
-    daemon.calls.some((call) => call.command === 'test.capacity.set' && call.args.cap === 72));
+    daemon.calls.some((call) => call.operation === 'test.capacity.set' && call.params.cap === 72));
   await page.waitForSelector('#test-capacity-open');
   check('interaction: saving capacity returns focus to the Capacity action',
     await page.locator('#test-capacity-open:focus').count() === 1);
@@ -1552,7 +1561,7 @@ async function main() {
   await page.click('#test-capacity-clear');
   await waitForSettledCall(daemon, page, 'test.capacity.set');
   check('interaction: clearing the administrator maximum sends an explicit null cap',
-    daemon.calls.some((call) => call.command === 'test.capacity.set' && call.args.cap === null));
+    daemon.calls.some((call) => call.operation === 'test.capacity.set' && call.params.cap === null));
   await page.waitForSelector('[data-test-start]');
   check('interaction: clearing capacity returns focus to the Capacity action',
     await page.locator('#test-capacity-open:focus').count() === 1);
@@ -1565,7 +1574,7 @@ async function main() {
   await page.click('[data-test-start]');
   await waitForSettledCall(daemon, page, 'test.start');
   check('interaction: starting a test sends the selected validation tier',
-    daemon.calls.some((call) => call.command === 'test.start' && call.args.tier === 'pre-merge'));
+    daemon.calls.some((call) => call.operation === 'test.start' && call.params.tier === 'pre-merge'));
 
   // The visual evidence workspace uses a real capture as its fake-daemon image
   // so geometry, drawing, zoom, responsive layout, and image chunk assembly are
@@ -1579,9 +1588,9 @@ async function main() {
   await page.waitForSelector('#evidence-image:not([hidden])');
   await page.waitForFunction(() => document.querySelector('#evidence-canvas')?.dataset.draftCount === '0');
   check('visual evidence: metadata loads before bounded image chunks',
-    daemon.calls.findIndex((call) => call.command === 'test.evidence.get') >= 0
-    && daemon.calls.findIndex((call) => call.command === 'test.evidence.image')
-      > daemon.calls.findIndex((call) => call.command === 'test.evidence.get'));
+    daemon.calls.findIndex((call) => call.operation === 'test.evidence.get') >= 0
+    && daemon.calls.findIndex((call) => call.operation === 'test.evidence.image')
+      > daemon.calls.findIndex((call) => call.operation === 'test.evidence.get'));
   check('visual evidence: the real screenshot is primary with journey and capture context',
     await page.locator('.evidence-step').count() === 2
     && await page.locator('#evidence-image').count() === 1
@@ -1592,14 +1601,14 @@ async function main() {
   await page.click('[data-evidence-step="step-2"]');
   await page.waitForFunction(() => /Step 2 of 2/.test(document.querySelector('#evidence-current')?.textContent || ''));
   check('interaction: selecting a journey step updates locally without another metadata read',
-    daemon.calls.filter((call) => call.command === 'test.evidence.get').length === 1
+    daemon.calls.filter((call) => call.operation === 'test.evidence.get').length === 1
     && /Invalid password/.test(await page.innerText('#evidence-current')));
   await page.click('[data-evidence-prev]');
   await page.waitForFunction(() => /Step 1 of 2/.test(document.querySelector('#evidence-current')?.textContent || ''));
   await page.click('[data-evidence-next]');
   await page.waitForFunction(() => /Step 2 of 2/.test(document.querySelector('#evidence-current')?.textContent || ''));
   check('interaction: previous and next controls traverse the same ordered journey locally',
-    daemon.calls.filter((call) => call.command === 'test.evidence.get').length === 1);
+    daemon.calls.filter((call) => call.operation === 'test.evidence.get').length === 1);
   await page.click('[data-evidence-viewport="mobile"]');
   await page.waitForFunction(() => /390 × 844/.test(document.querySelector('#evidence-inspector')?.textContent || ''));
   check('interaction: viewport comparison keeps the same journey moment',
@@ -1610,7 +1619,7 @@ async function main() {
   await page.click('[data-evidence-kind="full_page"]');
   await page.waitForSelector('#evidence-image:not([hidden])');
   check('interaction: full-page evidence switches without re-reading the journey manifest',
-    daemon.calls.filter((call) => call.command === 'test.evidence.get').length === 1);
+    daemon.calls.filter((call) => call.operation === 'test.evidence.get').length === 1);
   await page.click('[data-evidence-kind="viewport"]');
   await page.waitForSelector('#evidence-image:not([hidden])');
   await page.click('[data-evidence-finding="insufficient-text-contrast"]');
@@ -1693,12 +1702,12 @@ async function main() {
   await page.fill('#evidence-feedback-create [name=body]', 'The primary action needs stronger contrast.');
   await page.click('#evidence-feedback-create button[type=submit]');
   await waitForSettledCall(daemon, page, 'test.evidence.feedback.create');
-  const createdFeedback = daemon.calls.find((call) => call.command === 'test.evidence.feedback.create');
+  const createdFeedback = daemon.calls.find((call) => call.operation === 'test.evidence.feedback.create');
   check('interaction: a marked suggestion creates screenshot feedback with normalized geometry',
-    createdFeedback && createdFeedback.args.marks.length === 3
-    && new Set(createdFeedback.args.marks.map((mark) => mark.type)).size === 3
-    && createdFeedback.args.marks.some((mark) => mark.type === 'pin' && mark.color === '#ef4444')
-    && createdFeedback.args.marks[0].x >= 0 && createdFeedback.args.marks[0].x <= 1);
+    createdFeedback && createdFeedback.params.marks.length === 3
+    && new Set(createdFeedback.params.marks.map((mark) => mark.type)).size === 3
+    && createdFeedback.params.marks.some((mark) => mark.type === 'pin' && mark.color === '#ef4444')
+    && createdFeedback.params.marks[0].x >= 0 && createdFeedback.params.marks[0].x <= 1);
   check('visual evidence: saved feedback exposes its real Plan continuation',
     await page.locator('[data-evidence-open-task]').count() === 1
     && /Discussion/.test(await page.innerText('#evidence-inspector')));
@@ -1722,11 +1731,11 @@ async function main() {
   check('interaction: the author can edit their saved wording',
     /normal contrast/.test(await page.innerText('.evidence-comment')));
   await page.click('[data-evidence-state="resolved"]');
-  await waitForSettledCall(daemon, page, (call) => call.command === 'test.evidence.feedback.state' && call.args.state === 'resolved');
+  await waitForSettledCall(daemon, page, (call) => call.operation === 'test.evidence.feedback.state' && call.params.state === 'resolved');
   check('interaction: resolving feedback resolves its linked Plan work',
     /resolved/.test(await page.innerText('.evidence-thread-state')));
   await page.click('[data-evidence-state="open"]');
-  await waitForSettledCall(daemon, page, (call) => call.command === 'test.evidence.feedback.state' && call.args.state === 'open');
+  await waitForSettledCall(daemon, page, (call) => call.operation === 'test.evidence.feedback.state' && call.params.state === 'open');
   check('interaction: resolved feedback can be reopened',
     /open/.test(await page.innerText('.evidence-thread-state')));
   await page.setViewportSize(VIEWPORTS.narrow);
@@ -1746,20 +1755,20 @@ async function main() {
   await waitForSettledCall(daemon, page, 'test.evidence.feedback.delete');
   check('interaction: the explicit delete action removes the annotation and drops its Plan task',
     await page.locator('.evidence-thread').count() === 0
-    && daemon.calls.some((call) => call.command === 'test.evidence.feedback.delete'));
+    && daemon.calls.some((call) => call.operation === 'test.evidence.feedback.delete'));
 
   await page.goto(`http://${HOST}:${port}/#/bugs`);
   await page.waitForSelector('#bug-form');
   for (const [f, v] of [['component', 'api'], ['summary', 'verify'], ['expected', 'a'], ['actual', 'b'], ['steps', 'c']]) await page.fill(`#bug-form [name=${f}]`, v);
   await page.click('#bug-form button[type=submit]');
   await waitForSettledCall(daemon, page, 'bug.report');
-  check('interaction: bug report form calls bug.report', daemon.calls.some((c) => c.command === 'bug.report' && c.args.summary === 'verify'));
+  check('interaction: bug report form calls bug.report', daemon.calls.some((c) => c.operation === 'bug.report' && c.params.summary === 'verify'));
   await page.goto(`http://${HOST}:${port}/#/admin`);
   await page.waitForSelector('#invite-form');
   await page.fill('#invite-form [name=email]', 'new2@example.test');
   await page.click('#invite-form button[type=submit]');
   await waitForSettledCall(daemon, page, 'user.invite');
-  check('interaction: invite form calls user.invite', daemon.calls.some((c) => c.command === 'user.invite' && c.args.email === 'new2@example.test'));
+  check('interaction: invite form calls user.invite', daemon.calls.some((c) => c.operation === 'user.invite' && c.params.email === 'new2@example.test'));
   await page.waitForFunction(() => /daemon 0\.1\.0/.test(document.querySelector('#server')?.textContent || ''), null, { timeout: 10000 });
   check('admin: the Server line renders daemon version, schema, and route generation',
     /daemon 0\.1\.0 · schema 15 · route document generation 1/.test(await page.innerText('#server')),
@@ -1774,7 +1783,7 @@ async function main() {
     await observedContainer.locator('button[data-cmd="health.container_remove"]').count() === 0);
   await removable[0].click();
   await waitForSettledCall(daemon, page, 'health.container_remove');
-  check('interaction: container removal calls health.container_remove with the exact id', daemon.calls.some((c) => c.command === 'health.container_remove' && c.args.container_id === 'c'.repeat(64)));
+  check('interaction: container removal calls health.container_remove with the exact id', daemon.calls.some((c) => c.operation === 'health.container_remove' && c.params.container_id === 'c'.repeat(64)));
   await page.goto(`http://${HOST}:${port}/#/health`);
   await page.waitForSelector('.card.bad-edge');
   const healthText = await page.innerText('body');
@@ -1792,23 +1801,23 @@ async function main() {
   await page.click('[data-health-range="7d"]');
   await page.waitForSelector('.chartbox svg.chart');
   await waitForSettledCall(daemon, page,
-    (call) => call.command === 'health.history' && call.args.minutes === 10080);
+    (call) => call.operation === 'health.history' && call.params.minutes === 10080);
   check('interaction: the 7d range requests a downsampled week of host history',
-    daemon.calls.some((c) => c.command === 'health.history' && c.args.minutes === 10080 && c.args.points > 0));
+    daemon.calls.some((c) => c.operation === 'health.history' && c.params.minutes === 10080 && c.params.points > 0));
   daemon.calls.length = 0;
   await page.click('[data-health-range="30d"]');
   await page.waitForSelector('.chartbox svg.chart');
   await waitForSettledCall(daemon, page,
-    (call) => call.command === 'health.history' && call.args.minutes === 43200);
+    (call) => call.operation === 'health.history' && call.params.minutes === 43200);
   check('interaction: the 30d range requests a downsampled month of host history',
-    daemon.calls.some((c) => c.command === 'health.history' && c.args.minutes === 43200 && c.args.points > 0));
+    daemon.calls.some((c) => c.operation === 'health.history' && c.params.minutes === 43200 && c.params.points > 0));
   for (const action of ['start', 'stop', 'restart']) {
     daemon.calls.length = 0;
     await page.click(`.health-incident-card [data-cmd="deployment.${action}"]`);
     await page.waitForSelector('.health-incident-card');
     await waitForSettledCall(daemon, page, `deployment.${action}`);
     check(`interaction: Health ${action} acts on the selected unhealthy deployment`,
-      daemon.calls.some((call) => call.command === `deployment.${action}` && call.args.deployment_id === 'd1111111111111111'));
+      daemon.calls.some((call) => call.operation === `deployment.${action}` && call.params.deployment_id === 'd1111111111111111'));
   }
   await page.click('.health-page-heading a[href="#/health/containers"]');
   await page.waitForURL(/#\/health\/containers$/);
@@ -1941,9 +1950,9 @@ async function main() {
   await page.click('[data-codex-range="7d"]');
   await page.waitForSelector('.usage-phase-chart');
   await waitForSettledCall(daemon, page,
-    (call) => call.command === 'usage.repository' && call.args.range === '7d');
+    (call) => call.operation === 'usage.repository' && call.params.range === '7d');
   check('interaction: the 7d range re-reads the selected repository and restores focus',
-    daemon.calls.some((c) => c.command === 'usage.repository' && c.args.repository_id === REPO && c.args.range === '7d')
+    daemon.calls.some((c) => c.operation === 'usage.repository' && c.params.repository_id === REPO && c.params.range === '7d')
     && await page.locator('[data-codex-range="7d"]:focus').count() === 1);
   await page.click('.usage-provenance summary');
   check('interaction: coverage and provenance expands in place',
@@ -2003,7 +2012,7 @@ async function main() {
       && document.activeElement?.matches('[data-codex-range="24h"]');
   }, null, { timeout: 3000 });
   const usageIndexingCalls = daemon.calls.filter(
-    (call) => call.command === 'usage.repositories').length;
+    (call) => call.operation === 'usage.repositories').length;
   const usageIndexingFinalRow = await page.innerText('.usage-collection-table tbody tr');
   const usageIndexingFocus = await page.locator('[data-codex-range="24h"]:focus').count();
   check('interaction: indexing collection refreshes in place and preserves range focus',
@@ -2050,26 +2059,26 @@ async function main() {
   check('interaction: selecting release work is local and keeps the page stable',
     await page.locator(`[data-progress-task="${P_G1}"].selected`).count() === 1
     && await page.evaluate(() => document.querySelector('[data-ui-region="progress-primary"]') === window.__progressWorkspace)
-    && !daemon.calls.some((call) => call.command === 'progress.repository')
-    && !daemon.calls.some((call) => call.command === 'task.update')
+    && !daemon.calls.some((call) => call.operation === 'progress.repository')
+    && !daemon.calls.some((call) => call.operation === 'task.update')
     && !/Priority queue|Release impact|dependency/.test(await page.innerText('main')));
   daemon.calls.length = 0;
   await page.click('[data-progress-period="hour"]');
   await waitForSettledCall(daemon, page,
-    (call) => call.command === 'progress.repository' && call.args.period === 'hour');
+    (call) => call.operation === 'progress.repository' && call.params.period === 'hour');
   check('interaction: hourly progress reads hourly repository buckets',
-    daemon.calls.some((call) => call.command === 'progress.repository'
-      && call.args.repository_id === REPO && call.args.period === 'hour')
+    daemon.calls.some((call) => call.operation === 'progress.repository'
+      && call.params.repository_id === REPO && call.params.period === 'hour')
     && await page.locator('[data-progress-period="hour"]:focus').count() === 1
     && await page.locator('.progress-completed-bar').count() > 0
     && await page.locator('.progress-incoming-bar').count() > 0);
   daemon.calls.length = 0;
   await page.click('[data-progress-period="day"]');
   await waitForSettledCall(daemon, page,
-    (call) => call.command === 'progress.repository' && call.args.period === 'day');
+    (call) => call.operation === 'progress.repository' && call.params.period === 'day');
   check('interaction: daily progress reads daily repository buckets',
-    daemon.calls.some((call) => call.command === 'progress.repository'
-      && call.args.repository_id === REPO && call.args.period === 'day')
+    daemon.calls.some((call) => call.operation === 'progress.repository'
+      && call.params.repository_id === REPO && call.params.period === 'day')
     && await page.locator('[data-progress-period="day"]:focus').count() === 1
     && await page.locator('.progress-completed-bar').count() > 0
     && await page.locator('.progress-incoming-bar').count() > 0);
@@ -2077,10 +2086,10 @@ async function main() {
   await page.click('[data-progress-period="week"]');
   await page.waitForSelector('.progress-pulse-chart');
   await waitForSettledCall(daemon, page,
-    (call) => call.command === 'progress.repository' && call.args.period === 'week');
+    (call) => call.operation === 'progress.repository' && call.params.period === 'week');
   check('interaction: weekly progress re-reads aligned repository buckets and restores focus',
-    daemon.calls.some((call) => call.command === 'progress.repository'
-      && call.args.repository_id === REPO && call.args.period === 'week')
+    daemon.calls.some((call) => call.operation === 'progress.repository'
+      && call.params.repository_id === REPO && call.params.period === 'week')
     && await page.locator('[data-progress-period="week"]:focus').count() === 1
     && await page.locator('.progress-completed-bar').count() > 0
     && await page.locator('.progress-incoming-bar').count() > 0);
@@ -2170,8 +2179,8 @@ async function main() {
     `[data-task-row="${taskId}"] [data-elaborate-task]`)?.getAttribute(
     'aria-disabled') === 'true', P_C2);
   check('interaction: requesting elaboration persists the flag and updates the existing Plan in place',
-    daemon.calls.some((call) => call.command === 'task.update' && call.args.task_id === P_C2 && call.args.elaboration_needed === true)
-    && !daemon.calls.some((call) => call.command === 'plan.overview')
+    daemon.calls.some((call) => call.operation === 'task.update' && call.params.task_id === P_C2 && call.params.elaboration_needed === true)
+    && !daemon.calls.some((call) => call.operation === 'plan.overview')
     && await page.locator('.plan-workspace[data-identity-proof="same-workspace"]').count() === 1
     && /Requested/.test(await page.innerText(`[data-task-row="${P_C2}"]`))
     && /2 tasks need a clearer explanation/.test(await page.innerText('[data-plan-elaboration-notice]')),
@@ -2190,7 +2199,7 @@ async function main() {
   await page.waitForSelector(`[data-task-row="${P_UNSIZED}"].selected`);
   const selectionScrollAfter = await page.locator('[data-plan-viewport]').evaluate((element) => ({ left: element.scrollLeft, top: element.scrollTop }));
   check('interaction: selecting a task updates in place without re-reading or replacing the Plan',
-    !daemon.calls.some((call) => call.command === 'plan.overview')
+    !daemon.calls.some((call) => call.operation === 'plan.overview')
     && await page.locator('.plan-workspace[data-identity-proof="same-workspace"]').count() === 1
     && selectionScrollAfter.left === selectionScrollBefore.left
     && await page.locator('.plan-loading,.skeleton').count() === 0,
@@ -2204,7 +2213,7 @@ async function main() {
   await page.click('[data-plan-selection-toggle]');
   await page.waitForSelector('.plan-selection:not(.collapsed)');
   check('interaction: collapsing selected details is local and keeps the same workspace',
-    !daemon.calls.some((call) => call.command === 'plan.overview')
+    !daemon.calls.some((call) => call.operation === 'plan.overview')
     && await page.locator('.plan-workspace[data-identity-proof="same-workspace"]').count() === 1);
 
   await page.hover(`[data-hover-task="${P_G1}"]`);
@@ -2271,7 +2280,7 @@ async function main() {
     (await page.locator('.gtask:not(.ghidden)').count()) === rowsBefore - 1);
   await page.click(`[data-collapse="${P_C1}"]`);
   check('interaction: expanding and collapsing a task is local and keeps the same workspace',
-    !daemon.calls.some((call) => call.command === 'plan.overview')
+    !daemon.calls.some((call) => call.operation === 'plan.overview')
     && await page.locator('.plan-workspace[data-identity-proof="same-workspace"]').count() === 1);
 
   daemon.calls.length = 0;
@@ -2282,7 +2291,7 @@ async function main() {
   await page.click('#estimate-form button[type=submit]');
   await waitForSettledCall(daemon, page, 'task.update');
   check('interaction: adding an estimate persists it and moves the task onto the measured scale',
-    daemon.calls.some((call) => call.command === 'task.update' && call.args.task_id === P_UNSIZED && call.args.estimated_loc === 240)
+    daemon.calls.some((call) => call.operation === 'task.update' && call.params.task_id === P_UNSIZED && call.params.estimated_loc === 240)
     && /~240 lines/.test(await page.innerText(`[data-task-row="${P_UNSIZED}"]`))
     && await page.locator(`.gbar.unsized[data-select-task="${P_UNSIZED}"]`).count() === 0);
 
@@ -2296,9 +2305,9 @@ async function main() {
   await page.mouse.move(resizeBox.x + resizeBox.width / 2 + 70, resizeBox.y + resizeBox.height / 2, { steps: 5 });
   await page.mouse.up();
   await waitForSettledCall(daemon, page, 'task.update');
-  const pointerResizeCall = daemon.calls.find((c) => c.command === 'task.update' && c.args.task_id === P_C2 && c.args.estimated_loc > 200);
-  check('interaction: dragging the selected bar handle updates its real estimate', !!pointerResizeCall, JSON.stringify(pointerResizeCall?.args));
-  const persistedEstimate = pointerResizeCall?.args.estimated_loc;
+  const pointerResizeCall = daemon.calls.find((c) => c.operation === 'task.update' && c.params.task_id === P_C2 && c.params.estimated_loc > 200);
+  check('interaction: dragging the selected bar handle updates its real estimate', !!pointerResizeCall, JSON.stringify(pointerResizeCall?.params));
+  const persistedEstimate = pointerResizeCall?.params.estimated_loc;
   await page.reload();
   await page.waitForSelector(`[data-task-row="${P_C2}"]`);
   check('interaction: resized task estimate survives reload', persistedEstimate && (await page.innerText(`[data-task-row="${P_C2}"]`)).includes(persistedEstimate.toLocaleString('en-US')));
@@ -2314,7 +2323,7 @@ async function main() {
   await page.keyboard.press('Escape');
   await page.mouse.up();
   await waitForRenderFrame(page);
-  check('interaction: Escape cancels a pointer resize without changing the task', !daemon.calls.some((c) => c.command === 'task.update'));
+  check('interaction: Escape cancels a pointer resize without changing the task', !daemon.calls.some((c) => c.operation === 'task.update'));
 
   // Failed resize keeps the persisted value and reports the error.
   await page.click(`[data-task-row="${P_C2}"] .plan-task-select`);
@@ -2338,7 +2347,7 @@ async function main() {
   await page.fill('#estimate-form [name=estimated_loc]', '275');
   await page.click('#estimate-form button[type=submit]');
   await waitForSettledCall(daemon, page, 'task.update');
-  check('interaction: the resize dialog saves an exact estimate', daemon.calls.some((c) => c.command === 'task.update' && c.args.task_id === P_C2 && c.args.estimated_loc === 275));
+  check('interaction: the resize dialog saves an exact estimate', daemon.calls.some((c) => c.operation === 'task.update' && c.params.task_id === P_C2 && c.params.estimated_loc === 275));
 
   if (await page.locator('.plan-selection:not(.collapsed) [data-plan-selection-toggle]').count()) {
     await page.click('[data-plan-selection-toggle]');
@@ -2362,16 +2371,16 @@ async function main() {
   });
   await pointerDrag(`[data-drag-task="${P_C2}"]`, `[data-task-row="${P_C1}"]`, { x: 100, y: 28 });
   await waitForSettledCall(daemon, page, 'task.update');
-  const reorderCall = daemon.calls.find((c) => c.command === 'task.update');
+  const reorderCall = daemon.calls.find((c) => c.operation === 'task.update');
   const dragEvents = await page.evaluate(() => window.__planDragEvents);
   const reorderedInView = reorderCall ? await page.waitForFunction(({ movedId, targetId }) => {
     const rows = [...document.querySelectorAll('[data-task-row]')].map((row) => row.dataset.taskRow);
     return rows.indexOf(movedId) >= 0 && rows.indexOf(movedId) < rows.indexOf(targetId);
   }, { movedId: P_C2, targetId: P_C1 }, { timeout: 2500 }).then(() => true).catch(() => false) : false;
   check('interaction: dragging a task above a sibling reorders it in place',
-    reorderCall && reorderCall.args.task_id === P_C2 && reorderCall.args.position === 0
-    && !('release_id' in reorderCall.args) && reorderedInView,
-    JSON.stringify({ args: reorderCall?.args, reorderedInView, dragSourceHit, dragEvents }));
+    reorderCall && reorderCall.params.task_id === P_C2 && reorderCall.params.position === 0
+    && !('release_id' in reorderCall.params) && reorderedInView,
+    JSON.stringify({ args: reorderCall?.params, reorderedInView, dragSourceHit, dragEvents }));
   daemon.calls.length = 0;
   await page.evaluate(({ sourceId, releaseId }) => {
     const viewport = document.querySelector('[data-plan-viewport]');
@@ -2382,10 +2391,10 @@ async function main() {
   }, { sourceId: P_C2, releaseId: V_R2 });
   await pointerDrag(`[data-drag-task="${P_C2}"]`, `[data-drop-release="${V_R2}"]`);
   await waitForSettledCall(daemon, page, 'task.update');
-  const dragMoveCall = daemon.calls.find((c) => c.command === 'task.update' && c.args.task_id === P_C2);
+  const dragMoveCall = daemon.calls.find((c) => c.operation === 'task.update' && c.params.task_id === P_C2);
   check('interaction: dropping a task on a release header moves it into that release',
-    dragMoveCall && dragMoveCall.args.task_id === P_C2 && dragMoveCall.args.release_id === V_R2,
-    JSON.stringify(daemon.calls.filter((call) => call.command === 'task.update').map((call) => call.args)));
+    dragMoveCall && dragMoveCall.params.task_id === P_C2 && dragMoveCall.params.release_id === V_R2,
+    JSON.stringify(daemon.calls.filter((call) => call.operation === 'task.update').map((call) => call.params)));
 
   // Cancel is truthful before exercising the successful move path.
   daemon.calls.length = 0;
@@ -2393,22 +2402,22 @@ async function main() {
   await page.click(`[data-move-task="${P_G1}"]`);
   await page.waitForSelector('dialog#move-dialog[open]');
   await page.click('#move-cancel');
-  check('interaction: cancelling the move dialog makes no API call', !daemon.calls.some((c) => c.command === 'task.update'));
+  check('interaction: cancelling the move dialog makes no API call', !daemon.calls.some((c) => c.operation === 'task.update'));
   daemon.calls.length = 0;
   await page.click(`[data-move-task="${P_G1}"]`);
   await page.waitForSelector('dialog#move-dialog[open]');
   await page.selectOption('#move-form [name=release_id]', V_R2);
   await page.click('#move-form button[type=submit]');
   await waitForSettledCall(daemon, page, 'task.update');
-  const dialogMoveCall = daemon.calls.find((c) => c.command === 'task.update');
+  const dialogMoveCall = daemon.calls.find((c) => c.operation === 'task.update');
   check('interaction: the move pop-up posts the chosen release',
-    dialogMoveCall && dialogMoveCall.args.task_id === P_G1 && dialogMoveCall.args.release_id === V_R2,
-    JSON.stringify(dialogMoveCall?.args));
+    dialogMoveCall && dialogMoveCall.params.task_id === P_G1 && dialogMoveCall.params.release_id === V_R2,
+    JSON.stringify(dialogMoveCall?.params));
   daemon.calls.length = 0;
   await page.click('button[data-cmd="release.request"]');
   await waitForSettledCall(daemon, page, 'release.request');
   check('interaction: Request preview now calls release.request for the repository',
-    daemon.calls.some((c) => c.command === 'release.request' && c.args.repository_id === REPO));
+    daemon.calls.some((c) => c.operation === 'release.request' && c.params.repository_id === REPO));
   check('interaction: preview request re-renders as a pending notice', /Preview requested/.test(await page.innerText('main')));
   daemon.calls.length = 0;
   await page.click('[data-plan-feedback]');
@@ -2416,20 +2425,20 @@ async function main() {
   await page.fill('#comment-form [name=title]', 'The export button fails for me');
   await page.click('#comment-form button[type=submit]');
   await waitForSettledCall(daemon, page, 'task.create');
-  const feedbackCall = daemon.calls.find((c) => c.command === 'task.create');
+  const feedbackCall = daemon.calls.find((c) => c.operation === 'task.create');
   check('interaction: the ask-for-a-change form creates a user_feedback task',
-    feedbackCall && feedbackCall.args.title === 'The export button fails for me'
-    && feedbackCall.args.kind === 'user_feedback' && feedbackCall.args.repository_id === REPO,
-    JSON.stringify(feedbackCall?.args));
+    feedbackCall && feedbackCall.params.title === 'The export button fails for me'
+    && feedbackCall.params.kind === 'user_feedback' && feedbackCall.params.repository_id === REPO,
+    JSON.stringify(feedbackCall?.params));
   check('interaction: submitted owner feedback appears in the plan', /The export button fails for me/.test(await page.innerText('main')));
   daemon.calls.length = 0;
   await page.click(`[data-task-row="${P_G1}"] .plan-task-select`);
   await page.click(`.plan-selection [data-cmd="task.update"]`);
   await waitForSettledCall(daemon, page, 'task.update');
-  const dropCall = daemon.calls.find((c) => c.command === 'task.update');
+  const dropCall = daemon.calls.find((c) => c.operation === 'task.update');
   check('interaction: the explicitly labelled drop action marks the task dropped immediately',
-    dropCall && dropCall.args.task_id === P_G1 && dropCall.args.status === 'dropped',
-    JSON.stringify(dropCall?.args));
+    dropCall && dropCall.params.task_id === P_G1 && dropCall.params.status === 'dropped',
+    JSON.stringify(dropCall?.params));
   check('interaction: dropped task leaves the current plan after the state re-read', await page.locator(`[data-task-row="${P_G1}"]`).count() === 0);
 
   daemon.setScenario({ ...SCENARIOS.populated, densePlan: true });
@@ -2462,18 +2471,18 @@ async function main() {
   await page.click('#decisions-older');
   await waitForSettledCall(daemon, page, 'decision.tail');
   check('interaction: Show older pages the tail with before_seq of the oldest shown decision',
-    daemon.calls.some((c) => c.command === 'decision.tail' && c.args.before_seq === 41));
+    daemon.calls.some((c) => c.operation === 'decision.tail' && c.params.before_seq === 41));
   daemon.calls.length = 0;
   await page.click('[data-decision-aspect="ui"]');
   await waitForSettledCall(daemon, page, 'decision.tail');
   check('interaction: the aspect filter is applied server-side',
-    daemon.calls.some((c) => c.command === 'decision.tail' && c.args.aspect === 'ui' && !('before_seq' in c.args)));
+    daemon.calls.some((c) => c.operation === 'decision.tail' && c.params.aspect === 'ui' && !('before_seq' in c.params)));
   daemon.calls.length = 0;
   await page.fill('#decision-search [name=q]', 'export');
   await page.click('#decision-search button[type=submit]');
   await page.waitForSelector('text=REPO-EXPORT-FILES');
   check('interaction: search calls decision.search with the typed query',
-    daemon.calls.some((c) => c.command === 'decision.search' && c.args.query === 'export' && c.args.aspect === 'ui'));
+    daemon.calls.some((c) => c.operation === 'decision.search' && c.params.query === 'export' && c.params.aspect === 'ui'));
   check('administrator actions never open a native confirmation dialog', nativeDialogCount === 0, `${nativeDialogCount} native dialogs`);
   await context.close();
 
