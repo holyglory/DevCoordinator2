@@ -33,7 +33,7 @@ use crate::database::{Database, DatabaseError};
 use crate::platform::{Clock, HostClock};
 use crate::repository::Registry;
 
-const SUPPORTED_DATABASE_SCHEMA: u32 = 4;
+const SUPPORTED_DATABASE_SCHEMAS: &[u32] = &[4, 5];
 const SUPPORTED_TAXONOMY: u32 = 1;
 const SOURCE_OUTPUT_BYTES: usize = 256 * 1024;
 const QUERY_TIMEOUT: Duration = Duration::from_secs(2);
@@ -536,7 +536,7 @@ impl CodexUsage {
         let connection = open_source(source)?;
         let schema = maximum_version(&connection, "_sqlx_migrations")?;
         let taxonomy = maximum_version(&connection, "taxonomy_versions")?;
-        if schema != SUPPORTED_DATABASE_SCHEMA || taxonomy != SUPPORTED_TAXONOMY {
+        if !SUPPORTED_DATABASE_SCHEMAS.contains(&schema) || taxonomy != SUPPORTED_TAXONOMY {
             return Err("schema_unsupported".into());
         }
         let canonical = canonical_repository(&connection, repository_key)?;
@@ -1996,6 +1996,23 @@ mod tests {
                 [start + 3_000],
             )
             .unwrap();
+        if schema == 5 {
+            connection.execute_batch(
+                "CREATE TABLE model_request_context_sources (
+                    model_request_id TEXT PRIMARY KEY NOT NULL REFERENCES model_requests(id),
+                    policy_estimated_tokens INTEGER NOT NULL CHECK (policy_estimated_tokens >= 0),
+                    conversation_estimated_tokens INTEGER NOT NULL CHECK (conversation_estimated_tokens >= 0),
+                    tool_output_estimated_tokens INTEGER NOT NULL CHECK (tool_output_estimated_tokens >= 0),
+                    estimator TEXT NOT NULL CHECK (estimator = 'approx_model_visible_v1'),
+                    observed_at_ms INTEGER NOT NULL
+                 ) STRICT;
+                 ALTER TABLE tool_invocations ADD COLUMN execution_group_id TEXT;
+                 ALTER TABLE tool_invocations ADD COLUMN execution_role TEXT NOT NULL DEFAULT 'standalone'
+                    CHECK (execution_role IN ('standalone', 'wrapper', 'nested'));
+                 INSERT INTO model_request_context_sources VALUES
+                    ('request-private',9000,8000,7000,'approx_model_visible_v1',0);",
+            ).unwrap();
+        }
         drop(connection);
         (canonical, now_ms)
     }
@@ -2027,9 +2044,18 @@ mod tests {
 
     #[test]
     fn repository_usage_is_additive_complete_and_excludes_private_source_identity() {
+        assert_repository_usage(4);
+    }
+
+    #[test]
+    fn schema_five_usage_preserves_provider_measurements_and_privacy() {
+        assert_repository_usage(5);
+    }
+
+    fn assert_repository_usage(schema: i64) {
         let temporary = tempdir().unwrap();
         let codex_home = temporary.path().join("codex-home");
-        let (canonical, now_ms) = source_database(&codex_home, 4);
+        let (canonical, now_ms) = source_database(&codex_home, schema);
         let config = config(temporary.path(), codex_home.clone());
         std::fs::create_dir_all(&config.state_dir).unwrap();
         let authority = Database::open(config.database_path()).unwrap();
@@ -2217,7 +2243,7 @@ mod tests {
     fn unsupported_and_unconfigured_collectors_are_unavailable_not_zero() {
         let temporary = tempdir().unwrap();
         let codex_home = temporary.path().join("codex-home");
-        let (canonical, now_ms) = source_database(&codex_home, 5);
+        let (canonical, now_ms) = source_database(&codex_home, 6);
         let mut config = config(temporary.path(), codex_home);
         std::fs::create_dir_all(&config.state_dir).unwrap();
         let authority = Database::open(config.database_path()).unwrap();
@@ -2231,7 +2257,7 @@ mod tests {
         let uid = rustix::process::getuid().as_raw();
         authority.transaction(move |transaction| {
             transaction.execute("INSERT INTO repositories(repository_id,root_path,display_name,registered_at,registered_by_uid,last_seen_at) VALUES(?1,'/repo','Example','t',1,'t')",[&repository_id])?;
-            transaction.execute("INSERT INTO codex_usage_repository_links VALUES(?1,?2,?3,5,1,'t')",rusqlite::params![uid,repository_id,canonical])?;
+            transaction.execute("INSERT INTO codex_usage_repository_links VALUES(?1,?2,?3,6,1,'t')",rusqlite::params![uid,repository_id,canonical])?;
             Ok(())
         }).unwrap();
         let usage = CodexUsage::with_probe(
