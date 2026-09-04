@@ -1170,7 +1170,7 @@ fn validate_sparse_index(
         }
         for byte in &buffer[..read] {
             if at_line_start {
-                if (line - 1).is_multiple_of(crate::log_store::LINE_INDEX_STRIDE) {
+                if (line - 1) % crate::log_store::LINE_INDEX_STRIDE == 0 {
                     let mut record = [0_u8; 16];
                     index
                         .read_exact(&mut record)

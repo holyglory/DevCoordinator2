@@ -112,6 +112,6 @@ atomically, and preserves previously configured sources.
 
 ## Enforcement
 
-`devcoordinator2-tooling check no-instance-data` scans committed content against the
+`scripts/check_no_instance_data.py` scans committed content against the
 untracked pattern list `instance/forbidden-strings.txt` and fails on any
 match. Run it before every commit and in the acceptance checklist.

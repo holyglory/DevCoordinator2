@@ -74,24 +74,19 @@ index—not the full report.
 Run harness self-tests:
 
 ```bash
-devcoordinator2-tooling skills self-test audit-tooling \
-  --source-root /path/to/DevCoordinator2
+python3 skills/full-repo-test-coverage-audit/scripts/self_test.py
 ```
 
 Generate an audit queue:
 
 ```bash
-devcoordinator2-tooling audit test-coverage build \
-  --repo /path/to/repo \
-  --out /tmp/full-repo-test-coverage-audit-run
+python3 skills/full-repo-test-coverage-audit/scripts/build_test_coverage_audit_batches.py --repo /path/to/repo --out /tmp/full-repo-test-coverage-audit-run
 ```
 
 Verify saved reports:
 
 ```bash
-devcoordinator2-tooling audit test-coverage verify \
-  --manifest /tmp/full-repo-test-coverage-audit-run/manifest.json \
-  --reports /tmp/full-repo-test-coverage-audit-run/reports
+python3 skills/full-repo-test-coverage-audit/scripts/verify_test_coverage_audit_results.py --manifest /tmp/full-repo-test-coverage-audit-run/manifest.json --reports /tmp/full-repo-test-coverage-audit-run/reports
 ```
 
 Useful builder options match the full repo audit harness: `--out`,
@@ -107,7 +102,7 @@ A run is complete only after:
 1. Every generated batch prompt has a saved report in `reports/batch_###.md`.
 2. UI and visual/e2e reports exist when interface-relevant files are queued.
 3. `effort_ledger.json` records completed lead, worker, and fallback status.
-4. `devcoordinator2-tooling audit test-coverage verify` returns `ok: true`.
+4. `verify_test_coverage_audit_results.py` returns `ok: true`.
 
 The verifier checks structure, hashes, report coverage, current source drift,
 scope warnings, and ledger completion. It does not prove the semantic truth of

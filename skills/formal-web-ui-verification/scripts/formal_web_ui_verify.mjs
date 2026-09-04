@@ -2491,11 +2491,11 @@ function coordinatorTargets(config) {
     throw new Error(`Coordinator deployment discovery failed:\n${result.stderr || result.stdout}`);
   }
   const response = JSON.parse(result.stdout);
-  if (!response || response.protocol !== 2 || response.ok !== true || !response.data) {
+  if (!response || response.ok !== true || !response.result) {
     throw new Error("Coordinator deployment discovery returned an invalid response");
   }
-  const deployments = Array.isArray(response.data.deployments)
-    ? response.data.deployments
+  const deployments = Array.isArray(response.result.deployments)
+    ? response.result.deployments
     : [];
   const targets = [];
   for (const item of deployments) {

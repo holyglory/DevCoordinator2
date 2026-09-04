@@ -20,7 +20,7 @@ env = { CI = "1" }          # optional default, string→string; additive only
 [[test.unit.check]]
 name = "unit"
 tier = "development"
-command = ["cargo", "test", "--locked", "--workspace"]
+command = ["python3", "-m", "pytest", "-q"]
 
 [test.unit.postgres]        # optional: test-scoped ephemeral PostgreSQL
 image = "postgres:16-alpine"   # official postgres:<tag> (default), or a compatible

@@ -49,7 +49,7 @@ selectors and repository-relative input paths.
 ## Helper Command
 
 ```bash
-devcoordinator2-tooling audit journey-docs inventory --repo <repo>
+python3 skills/user-journey-docs-audit/scripts/build_journey_docs_inventory.py --repo <repo>
 ```
 
 Use `--json` when another script or agent needs machine-readable inventory output.
@@ -57,7 +57,7 @@ Use `--json` when another script or agent needs machine-readable inventory outpu
 Validate a completed audit report with:
 
 ```bash
-devcoordinator2-tooling audit journey-docs verify report.md
+python3 skills/user-journey-docs-audit/scripts/verify_journey_docs_audit_results.py report.md
 ```
 
 ## References
