@@ -175,6 +175,28 @@ untracked `instance/` directory and in the installed instance configuration
   upstream secrets out of retained evidence, as they already are for complete
   stdout, stderr, and structured reports.
 
+## Owned event notification boundary
+
+- The event journal follows the confirmed same-owner local and untrusted public
+  edge boundary above. Trusted local callers may observe all typed events;
+  public identities are reauthorized on every scheduler wake and receive only
+  events for repositories or deployments visible through their current grants.
+  Feedback and server-only events remain administrator-only.
+- Event payloads are purpose-built typed projections, not copies of database
+  rows or notification fields. They are capped at 8 KiB and omit credentials,
+  e-mail addresses, raw logs, private paths, arbitrary subprocess text, and
+  source content. The newest 1,024 entries are retained in schema 16; stale or
+  future cursors fail explicitly instead of widening disclosure.
+- A wait is passive observation. DevCoordinator returns matching events or
+  elapsed heartbeat deadlines and never models agents, task execution,
+  conversations, turns, wake-ups, or a server-initiated client action. Socket,
+  HTTP, and MCP cancellation close the corresponding subscription.
+- Schema-changing activation retains the pre-activation mode-0600 database
+  backup. If activation fails after a schema change, rollback restores that
+  backup before starting the prior binary; same-schema failures preserve the
+  intact current database. This follows the confirmed valuable persistent-data
+  and reviewed-restart assumptions (DC2-2026-09-03-VERIFIED-LIVE-RUST-BINARIES).
+
 ## Operating mode
 
 - `devcoordinatord` (the DevCoordinator2 daemon) runs as root in a hardened

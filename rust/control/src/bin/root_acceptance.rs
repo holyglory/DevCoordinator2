@@ -558,9 +558,11 @@ fn request_over_socket(socket: &Path, request: &Value) -> Result<Value, String> 
     stream
         .write_all(&payload)
         .map_err(|error| error.to_string())?;
-    stream
-        .shutdown(std::net::Shutdown::Write)
-        .map_err(|error| error.to_string())?;
+    if request.get("operation").and_then(Value::as_str) != Some("event.wait") {
+        stream
+            .shutdown(std::net::Shutdown::Write)
+            .map_err(|error| error.to_string())?;
+    }
     let mut response = Vec::new();
     stream
         .take(256 * 1024 + 1)
@@ -3694,6 +3696,104 @@ health = {{ path = "/", timeout_seconds = 30 }}
     Ok(())
 }
 
+fn case_event_wait_replays_planning_and_groups_heartbeats(world: &mut World) -> Result<(), String> {
+    world.write_config(&unit_config(&fixture_command(world, &["exit", "0"]), None)?)?;
+    let started = world.call("test.start", json!({"path":world.repo}))?;
+    let repository_id = data(&started)?["repository_id"]
+        .as_str()
+        .ok_or_else(|| "test start omitted repository_id".to_owned())?
+        .to_owned();
+    world.wait_status(&["passed"], Duration::from_secs(30))?;
+    world.wait_units_empty(Duration::from_secs(10))?;
+    let test_events = world.call(
+        "event.wait",
+        json!({
+            "cursor":0,
+            "filters":[{
+                "filter_id":"tests",
+                "categories":["test"],
+                "repository_ids":[repository_id]
+            }]
+        }),
+    )?;
+    let test_events = data(&test_events)?;
+    ensure!(
+        test_events["events"].as_array().is_some_and(|events| {
+            events.len() == 2
+                && events[0].pointer("/event/event/data/kind") == Some(&json!("test.started"))
+                && events[1].pointer("/event/event/data/kind") == Some(&json!("test.finished"))
+        }),
+        "native test lifecycle events were not delivered in cursor order"
+    );
+    ensure!(
+        !test_events.to_string().contains("caller_uid")
+            && !test_events.to_string().contains("client"),
+        "test event disclosed caller attribution"
+    );
+    let created = world.call(
+        "task.create",
+        json!({
+            "path":world.repo,
+            "title":"Private root acceptance title",
+            "kind":"improvement",
+            "estimated_loc":10
+        }),
+    )?;
+    let created = data(&created)?;
+    let repository_id = created["repository_id"]
+        .as_str()
+        .ok_or_else(|| "task create omitted repository_id".to_owned())?;
+    let task_id = created["task_id"]
+        .as_str()
+        .ok_or_else(|| "task create omitted task_id".to_owned())?;
+    let event = world.call(
+        "event.wait",
+        json!({
+            "cursor":0,
+            "filters":[{
+                "filter_id":"planning",
+                "categories":["planning"],
+                "kinds":["task.created"],
+                "repository_ids":[repository_id]
+            }]
+        }),
+    )?;
+    let event = data(&event)?;
+    ensure!(
+        event["events"].as_array().is_some_and(|events| {
+            events.len() == 1
+                && events[0]["filter_ids"] == json!(["planning"])
+                && events[0].pointer("/event/event/category") == Some(&json!("planning"))
+                && events[0].pointer("/event/event/data/subject_id") == Some(&json!(task_id))
+        }),
+        "planning event was not replayed through event.wait"
+    );
+    ensure!(
+        !event.to_string().contains("Private root acceptance title"),
+        "planning event disclosed task text"
+    );
+    let heartbeat = world.call(
+        "event.wait",
+        json!({
+            "cursor":event["cursor"],
+            "filters":[
+                {"filter_id":"health","categories":["health"],"deadline_at":"2000-01-01T00:00:00Z"},
+                {"filter_id":"deployment","categories":["deployment"],"deadline_at":"2000-01-01T00:00:00Z"}
+            ]
+        }),
+    )?;
+    let heartbeat = data(&heartbeat)?;
+    ensure!(
+        heartbeat["heartbeat_due"].as_array().is_some_and(|due| due
+            .iter()
+            .filter_map(|row| row["filter_id"].as_str())
+            .collect::<Vec<_>>()
+            == ["health", "deployment"]),
+        "due event filters were not returned together"
+    );
+    Ok(())
+}
+
 fn cases() -> Vec<Case> {
     vec![
         (
@@ -3799,6 +3899,10 @@ fn cases() -> Vec<Case> {
             case_health_views_measure_real_workloads,
         ),
         ("plan_ledger_preview_flow", case_plan_ledger_preview_flow),
+        (
+            "event_wait_replays_planning_and_groups_heartbeats",
+            case_event_wait_replays_planning_and_groups_heartbeats,
+        ),
     ]
 }
 

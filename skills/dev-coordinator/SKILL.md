@@ -31,6 +31,13 @@ devcoordinator2 health --help
 - Use `health summary|repositories|containers` for host and ownership
   observation. Treat `unmanaged` as unknown; never infer ownership from a
   name, image, port, or path.
+- Use `event wait` (or MCP `event_wait`) when a client must block for several
+  owned state changes or heartbeat deadlines in one request. Keep and advance
+  the returned monotonic cursor, treat `cursor_stale` as a required state
+  refresh, and let disconnect/cancellation remove the subscription. Returned
+  events and `heartbeat_due` entries are observations only; the client decides
+  what they mean. Never infer agents, tasks, conversations, turns, or wake-up
+  behavior from this interface.
 - Use `plan overview`, `task create|update|history`,
   `release create|deliver`, and `decision record|tail|search|summarize` for
   the authoritative planning ledger and decision history (below).

@@ -66,7 +66,9 @@ accounts, legacy unit names, paths) are instance data kept in the untracked
    snapshot, switches the units and direct binary links, and verifies the v2
    daemon and Node edge. If interrupted, run
    `devcoordinator2-tooling install recover --yes`; it restores the captured
-   installation and restores the database only when integrity fails.
+   installation and restores the database when integrity fails or the failed
+   candidate changed its schema beyond the captured prior installation.
+   Same-schema startup failures preserve intact current data.
    Subsequent source updates are developed and validated in worktrees, merged
    to `origin/main`, then fetched and fast-forwarded into the clean
    `/home/DevCoordinator2` checkout. A later `install build`, `verify`, and

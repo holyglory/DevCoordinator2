@@ -199,11 +199,18 @@ export async function createEdge(config, { log = console } = {}) {
       if (!/^([a-z]+(?:\.[a-z_]+)+|ping)$/.test(operation)) return writeJson(res, 400, { ok: false, error: { code: 'args_invalid' } });
       let params;
       try { params = await readJsonBody(req); } catch { return writeJson(res, 400, { ok: false, error: { code: 'args_invalid', message: 'invalid JSON body' } }); }
+      const cancellation = new AbortController();
+      const cancelDisconnectedWait = () => {
+        if (!res.writableEnded) cancellation.abort();
+      };
+      if (operation === 'event.wait') res.once('close', cancelDisconnectedWait);
       try {
-        const response = await daemon.call(operation, params, identity.email);
+        const response = await daemon.call(operation, params, identity.email, { signal: cancellation.signal });
         return writeJson(res, response.ok ? 200 : (response.error?.code === 'permission_denied' ? 403 : 400), response);
       } catch (error) {
         return writeJson(res, 503, { ok: false, error: { code: 'daemon_unavailable', message: error.message } });
+      } finally {
+        res.removeListener('close', cancelDisconnectedWait);
       }
     }
     if (url.pathname.startsWith('/api/')) {

@@ -5,6 +5,11 @@ deployments, health, planning work, and agent-facing operational coordination.
 This repository is also the canonical source for six reusable agent skills and
 one universal agent policy.
 
+Clients can block on several typed owned-state filters with one `event wait`
+request. A shared scheduler returns bounded authorized events, grouped elapsed
+heartbeat deadlines, and a durable monotonic cursor; it does not prescribe any
+client action or model agent/conversation wake-up behavior.
+
 ## Canonical agent assets
 
 - `skills/dev-coordinator`: Coordinator CLI, MCP, planning, and runtime usage.
@@ -113,7 +118,7 @@ sudo -n env DEVCOORDINATOR2_ROOT_ACCEPTANCE=1 \
 ```
 
 The harness owns a unique socket, database, port range, systemd unit prefix,
-Docker label namespace, and marker-bound filesystem root. It runs all 28
+Docker label namespace, and marker-bound filesystem root. It runs all 29
 preserved real-system scenarios with all-settled behavior and never targets the
 live service, socket, containers, or data.
 

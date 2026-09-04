@@ -21354,6 +21354,655 @@
         "excludedReason": null,
         "routes": [
           {
+            "dispatch": "protocol",
+            "route": "event wait"
+          }
+        ]
+      },
+      "description": "Wait for authorized owned-state events or per-filter heartbeat deadlines.",
+      "inputSchema": {
+        "$defs": {
+          "EventCategory": {
+            "enum": [
+              "test",
+              "deployment",
+              "planning",
+              "health",
+              "feedback",
+              "other"
+            ],
+            "type": "string"
+          },
+          "EventFilter": {
+            "additionalProperties": false,
+            "properties": {
+              "categories": {
+                "default": [],
+                "items": {
+                  "$ref": "#/$defs/EventCategory"
+                },
+                "maxItems": 6,
+                "type": "array"
+              },
+              "deadline_at": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "deployment_ids": {
+                "default": [],
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 32,
+                "type": "array"
+              },
+              "filter_id": {
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$",
+                "type": "string"
+              },
+              "kinds": {
+                "default": [],
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 32,
+                "type": "array"
+              },
+              "repository_ids": {
+                "default": [],
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 32,
+                "type": "array"
+              }
+            },
+            "required": [
+              "filter_id"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "cursor": {
+            "default": null,
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "filters": {
+            "items": {
+              "$ref": "#/$defs/EventFilter"
+            },
+            "maxItems": 32,
+            "minItems": 1,
+            "type": "array"
+          },
+          "limit": {
+            "default": 100,
+            "format": "uint16",
+            "maximum": 100,
+            "minimum": 1,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "filters"
+        ],
+        "title": "EventWait",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$defs": {
+              "EventCategory": {
+                "enum": [
+                  "test",
+                  "deployment",
+                  "planning",
+                  "health",
+                  "feedback",
+                  "other"
+                ],
+                "type": "string"
+              },
+              "EventFilter": {
+                "additionalProperties": false,
+                "properties": {
+                  "categories": {
+                    "default": [],
+                    "items": {
+                      "$ref": "#/$defs/EventCategory"
+                    },
+                    "maxItems": 6,
+                    "type": "array"
+                  },
+                  "deadline_at": {
+                    "default": null,
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "deployment_ids": {
+                    "default": [],
+                    "items": {
+                      "type": "string"
+                    },
+                    "maxItems": 32,
+                    "type": "array"
+                  },
+                  "filter_id": {
+                    "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$",
+                    "type": "string"
+                  },
+                  "kinds": {
+                    "default": [],
+                    "items": {
+                      "type": "string"
+                    },
+                    "maxItems": 32,
+                    "type": "array"
+                  },
+                  "repository_ids": {
+                    "default": [],
+                    "items": {
+                      "type": "string"
+                    },
+                    "maxItems": 32,
+                    "type": "array"
+                  }
+                },
+                "required": [
+                  "filter_id"
+                ],
+                "type": "object"
+              }
+            },
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "cursor": {
+                "default": null,
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "filters": {
+                "items": {
+                  "$ref": "#/$defs/EventFilter"
+                },
+                "maxItems": 32,
+                "minItems": 1,
+                "type": "array"
+              },
+              "limit": {
+                "default": 100,
+                "format": "uint16",
+                "maximum": 100,
+                "minimum": 1,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "filters"
+            ],
+            "title": "EventWait",
+            "type": "object"
+          },
+          "name": "event_wait",
+          "transform": "identity"
+        }
+      ],
+      "name": "event.wait",
+      "outputSchema": {
+        "$defs": {
+          "DeploymentOwnedEvent": {
+            "additionalProperties": false,
+            "properties": {
+              "component": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "deployment_id": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string"
+              },
+              "repository_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "state": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "kind",
+              "deployment_id"
+            ],
+            "type": "object"
+          },
+          "EventDelivery": {
+            "additionalProperties": false,
+            "properties": {
+              "event": {
+                "$ref": "#/$defs/OwnedEventRecord"
+              },
+              "filter_ids": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "filter_ids",
+              "event"
+            ],
+            "type": "object"
+          },
+          "FeedbackOwnedEvent": {
+            "additionalProperties": false,
+            "properties": {
+              "comment_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "feedback_id": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string"
+              },
+              "repository_id": {
+                "type": "string"
+              },
+              "state": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "task_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "repository_id",
+              "feedback_id",
+              "task_id"
+            ],
+            "type": "object"
+          },
+          "HealthOwnedEvent": {
+            "additionalProperties": false,
+            "properties": {
+              "deployment_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "kind": {
+                "type": "string"
+              },
+              "repository_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "severity": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "subject_id": {
+                "type": "string"
+              },
+              "subject_kind": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "subject_kind",
+              "subject_id"
+            ],
+            "type": "object"
+          },
+          "HeartbeatDue": {
+            "additionalProperties": false,
+            "properties": {
+              "deadline_at": {
+                "type": "string"
+              },
+              "filter_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "filter_id",
+              "deadline_at"
+            ],
+            "type": "object"
+          },
+          "OtherOwnedEvent": {
+            "additionalProperties": false,
+            "properties": {
+              "deployment_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "kind": {
+                "type": "string"
+              },
+              "repository_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "subject_id": {
+                "type": "string"
+              },
+              "subject_kind": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "subject_kind",
+              "subject_id"
+            ],
+            "type": "object"
+          },
+          "OwnedEvent": {
+            "oneOf": [
+              {
+                "properties": {
+                  "category": {
+                    "const": "test",
+                    "type": "string"
+                  },
+                  "data": {
+                    "$ref": "#/$defs/TestOwnedEvent"
+                  }
+                },
+                "required": [
+                  "category",
+                  "data"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "category": {
+                    "const": "deployment",
+                    "type": "string"
+                  },
+                  "data": {
+                    "$ref": "#/$defs/DeploymentOwnedEvent"
+                  }
+                },
+                "required": [
+                  "category",
+                  "data"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "category": {
+                    "const": "planning",
+                    "type": "string"
+                  },
+                  "data": {
+                    "$ref": "#/$defs/PlanningOwnedEvent"
+                  }
+                },
+                "required": [
+                  "category",
+                  "data"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "category": {
+                    "const": "health",
+                    "type": "string"
+                  },
+                  "data": {
+                    "$ref": "#/$defs/HealthOwnedEvent"
+                  }
+                },
+                "required": [
+                  "category",
+                  "data"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "category": {
+                    "const": "feedback",
+                    "type": "string"
+                  },
+                  "data": {
+                    "$ref": "#/$defs/FeedbackOwnedEvent"
+                  }
+                },
+                "required": [
+                  "category",
+                  "data"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "category": {
+                    "const": "other",
+                    "type": "string"
+                  },
+                  "data": {
+                    "$ref": "#/$defs/OtherOwnedEvent"
+                  }
+                },
+                "required": [
+                  "category",
+                  "data"
+                ],
+                "type": "object"
+              }
+            ]
+          },
+          "OwnedEventRecord": {
+            "additionalProperties": false,
+            "properties": {
+              "cursor": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "event": {
+                "$ref": "#/$defs/OwnedEvent"
+              },
+              "occurred_at": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "cursor",
+              "occurred_at",
+              "event"
+            ],
+            "type": "object"
+          },
+          "PlanningOwnedEvent": {
+            "additionalProperties": false,
+            "properties": {
+              "kind": {
+                "type": "string"
+              },
+              "repository_id": {
+                "type": "string"
+              },
+              "status": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "subject_id": {
+                "type": "string"
+              },
+              "subject_kind": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "repository_id",
+              "subject_kind",
+              "subject_id"
+            ],
+            "type": "object"
+          },
+          "TestOwnedEvent": {
+            "additionalProperties": false,
+            "properties": {
+              "duration_seconds": {
+                "format": "double",
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "exit_code": {
+                "format": "int32",
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "kind": {
+                "type": "string"
+              },
+              "repository_id": {
+                "type": "string"
+              },
+              "run_id": {
+                "type": "string"
+              },
+              "status": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/TestStatus"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "test": {
+                "type": "string"
+              },
+              "worktree_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "repository_id",
+              "worktree_id",
+              "run_id",
+              "test"
+            ],
+            "type": "object"
+          },
+          "TestStatus": {
+            "enum": [
+              "running",
+              "passed",
+              "failed",
+              "timed-out",
+              "cancelled",
+              "interrupted",
+              "superseded"
+            ],
+            "type": "string"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "cursor": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "events": {
+            "items": {
+              "$ref": "#/$defs/EventDelivery"
+            },
+            "type": "array"
+          },
+          "heartbeat_due": {
+            "items": {
+              "$ref": "#/$defs/HeartbeatDue"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "cursor",
+          "events",
+          "heartbeat_due"
+        ],
+        "title": "EventWaitResult",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "self",
+        "scope": "self"
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
             "dispatch": "local",
             "route": "bug report"
           }

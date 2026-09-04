@@ -1,4 +1,4 @@
-//! Sustained health alerts backed by schema-15 current alert rows.
+//! Sustained health alerts backed by current alert rows.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};

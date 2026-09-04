@@ -1,9 +1,10 @@
 //! Fail-closed activation state machine for the one live Rust cutover.
 //!
 //! Concrete host access is an adapter so the sequence can be exhaustively
-//! rehearsed. The database backup is restored only when integrity fails; an
-//! ordinary Rust startup or acceptance failure keeps the unchanged schema-15
-//! database and restores only units, links, socket, and the Python service.
+//! rehearsed. The database backup is restored when integrity fails or a failed
+//! candidate changed the schema beyond the captured prior installation. A
+//! same-schema startup or acceptance failure keeps intact data and restores
+//! only units, links, and the socket.
 
 use std::ffi::{CString, OsString};
 use std::fs::File;
@@ -30,6 +31,7 @@ const ACTIVITY_FILE: &str = "test-activity.json";
 const LOCK_FILE: &str = "test-admission.lock";
 const MAX_STATE_BYTES: u64 = 2 * 1024 * 1024;
 const MAX_SNAPSHOT_BYTES: u64 = 1024 * 1024;
+const SUPPORTED_DATABASE_SCHEMAS: &[&str] = &["15", "16"];
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -58,7 +60,7 @@ pub trait CutoverAdapter {
     fn stop_rust(&mut self) -> Result<(), String>;
     fn restore_installation(&mut self, snapshot: &Self::InstallationSnapshot)
     -> Result<(), String>;
-    fn database_integrity_ok(&mut self) -> Result<bool, String>;
+    fn database_matches_backup(&mut self, backup: &str) -> Result<bool, String>;
     fn restore_database(&mut self, backup: &str) -> Result<(), String>;
     fn restore_legacy_socket(&mut self) -> Result<(), String>;
     fn start_legacy(&mut self) -> Result<(), String>;
@@ -174,19 +176,19 @@ fn rollback<A: CutoverAdapter>(
         failures.push(format!("restore installation: {error}"));
     }
     let mut database_restored = false;
-    match adapter.database_integrity_ok() {
+    match adapter.database_matches_backup(backup) {
         Ok(true) => {}
         Ok(false) => match adapter.restore_database(backup) {
             Ok(()) => database_restored = true,
             Err(error) => failures.push(format!("restore database: {error}")),
         },
-        Err(error) => failures.push(format!("check database integrity: {error}")),
+        Err(error) => failures.push(format!("check database rollback compatibility: {error}")),
     }
     if let Err(error) = adapter.restore_legacy_socket() {
         failures.push(format!("restore legacy socket: {error}"));
     }
     if let Err(error) = adapter.start_legacy() {
-        failures.push(format!("restart Python: {error}"));
+        failures.push(format!("restart prior service: {error}"));
     }
     let suffix = if failures.is_empty() {
         format!(
@@ -456,7 +458,7 @@ impl CutoverAdapter for HostCutover {
         let connection = open_database_read_only(&self.config.database_path)?;
         connection
             .backup(rusqlite::MAIN_DB, &backup, None)
-            .map_err(|error| format!("cannot back up schema-15 database: {error}"))?;
+            .map_err(|error| format!("cannot back up Coordinator database: {error}"))?;
         std::fs::set_permissions(&backup, std::fs::Permissions::from_mode(0o600))
             .map_err(|error| format!("cannot protect database backup: {error}"))?;
         path_text(&backup)
@@ -611,8 +613,14 @@ impl CutoverAdapter for HostCutover {
         write_snapshot(snapshot, "rolled_back", self.expected_owner)
     }
 
-    fn database_integrity_ok(&mut self) -> Result<bool, String> {
-        database_integrity(&self.config.database_path)
+    fn database_matches_backup(&mut self, backup: &str) -> Result<bool, String> {
+        if !database_integrity(&self.config.database_path)? {
+            return Ok(false);
+        }
+        if !database_integrity(Path::new(backup))? {
+            return Err("cutover database backup failed integrity verification".to_owned());
+        }
+        Ok(database_schema(&self.config.database_path)? == database_schema(Path::new(backup))?)
     }
 
     fn restore_database(&mut self, backup: &str) -> Result<(), String> {
@@ -687,13 +695,15 @@ pub fn recover_host(
         restore_entry(entry)?;
     }
     run_systemctl(runner, &config.systemctl, &["daemon-reload"])?;
-    let database_restored = match database_integrity(&config.database_path)? {
-        true => false,
-        false => {
-            let backup = config.transaction_dir.join("authority-before.sqlite3");
-            if !database_integrity(&backup)? {
-                return Err("cutover database backup failed integrity verification".to_owned());
-            }
+    let backup = config.transaction_dir.join("authority-before.sqlite3");
+    let database_restored = match (
+        database_integrity(&config.database_path)?,
+        database_integrity(&backup)?,
+    ) {
+        (true, true) if database_schema(&config.database_path)? == database_schema(&backup)? => {
+            false
+        }
+        (_, true) => {
             for suffix in ["-wal", "-shm"] {
                 remove_file_if_present(Path::new(&format!(
                     "{}{suffix}",
@@ -702,6 +712,9 @@ pub fn recover_host(
             }
             atomic_copy(&backup, &config.database_path, expected_owner)?;
             true
+        }
+        (_, false) => {
+            return Err("cutover database backup failed integrity verification".to_owned());
         }
     };
     restore_socket(&config.runtime_dir, &config.socket_path)?;
@@ -1152,23 +1165,41 @@ fn open_database_read_only(path: &Path) -> Result<Connection, String> {
             | OpenFlags::SQLITE_OPEN_NOFOLLOW
             | OpenFlags::SQLITE_OPEN_PRIVATE_CACHE,
     )
-    .map_err(|error| format!("cannot open schema-15 database read-only: {error}"))?;
+    .map_err(|error| format!("cannot open Coordinator database read-only: {error}"))?;
     connection
         .pragma_update(None, "query_only", true)
-        .map_err(|error| format!("cannot protect schema-15 database read: {error}"))?;
-    let schema = connection
+        .map_err(|error| format!("cannot protect Coordinator database read: {error}"))?;
+    let schema = database_schema_from(&connection)?;
+    if !SUPPORTED_DATABASE_SCHEMAS.contains(&schema.as_str()) {
+        return Err(format!(
+            "cutover requires database schema 15 or 16, found {schema}"
+        ));
+    }
+    Ok(connection)
+}
+
+fn database_schema(path: &Path) -> Result<String, String> {
+    let connection = Connection::open_with_flags(
+        path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY
+            | OpenFlags::SQLITE_OPEN_NOFOLLOW
+            | OpenFlags::SQLITE_OPEN_PRIVATE_CACHE,
+    )
+    .map_err(|error| format!("cannot open database schema source: {error}"))?;
+    connection
+        .pragma_update(None, "query_only", true)
+        .map_err(|error| format!("cannot protect database schema read: {error}"))?;
+    database_schema_from(&connection)
+}
+
+fn database_schema_from(connection: &Connection) -> Result<String, String> {
+    connection
         .query_row(
             "SELECT value FROM meta WHERE key='schema_version'",
             [],
             |row| row.get::<_, String>(0),
         )
-        .map_err(|error| format!("cannot read database schema: {error}"))?;
-    if schema != "15" {
-        return Err(format!(
-            "cutover requires database schema 15, found {schema}"
-        ));
-    }
-    Ok(connection)
+        .map_err(|error| format!("cannot read database schema: {error}"))
 }
 
 fn database_integrity(path: &Path) -> Result<bool, String> {
@@ -1418,8 +1449,8 @@ mod tests {
         fn restore_installation(&mut self, _: &Self::InstallationSnapshot) -> Result<(), String> {
             self.called("restore_installation")
         }
-        fn database_integrity_ok(&mut self) -> Result<bool, String> {
-            self.called("database_integrity_ok")?;
+        fn database_matches_backup(&mut self, _: &str) -> Result<bool, String> {
+            self.called("database_matches_backup")?;
             self.integrity.clone()
         }
         fn restore_database(&mut self, _: &str) -> Result<(), String> {
@@ -1484,14 +1515,14 @@ mod tests {
     }
 
     #[test]
-    fn ordinary_activation_failure_preserves_intact_schema_fifteen_data() {
+    fn ordinary_activation_failure_preserves_intact_same_schema_data() {
         let mut fake = Fake::success();
         fake.activation = Err("acceptance failed".to_owned());
         let error = activate(&mut fake).unwrap_err();
         assert!(error.contains("without replacing the intact database"));
         assert!(!fake.calls.contains(&"restore_database"));
         assert!(fake.calls.ends_with(&[
-            "database_integrity_ok",
+            "database_matches_backup",
             "restore_legacy_socket",
             "start_legacy",
             "reopen_admission"
@@ -1499,7 +1530,7 @@ mod tests {
     }
 
     #[test]
-    fn failed_integrity_restores_the_private_backup_before_python() {
+    fn failed_integrity_or_changed_schema_restores_the_private_backup() {
         let mut fake = Fake::success();
         fake.activation = Err("daemon failed".to_owned());
         fake.integrity = Ok(false);
@@ -1819,6 +1850,34 @@ mod tests {
                 .filter(|request| request.args == [OsString::from("ping")])
                 .count(),
             2
+        );
+    }
+
+    #[test]
+    fn concrete_host_adapter_requires_backup_restore_after_schema_upgrade() {
+        let world = host_world();
+        let runner = Arc::new(HostFake {
+            commit: world.commit.clone(),
+            ..HostFake::default()
+        });
+        let mut host =
+            HostCutover::new_owned(world.config.clone(), runner, world.expected_owner).unwrap();
+        std::fs::create_dir_all(&world.config.transaction_dir).unwrap();
+        let backup = world
+            .config
+            .transaction_dir
+            .join("authority-before.sqlite3");
+        std::fs::copy(&world.config.database_path, &backup).unwrap();
+        let connection = Connection::open(&world.config.database_path).unwrap();
+        connection
+            .execute("UPDATE meta SET value='16' WHERE key='schema_version'", [])
+            .unwrap();
+        drop(connection);
+
+        assert!(
+            !host
+                .database_matches_backup(backup.to_str().unwrap())
+                .unwrap()
         );
     }
 

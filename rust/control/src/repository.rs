@@ -75,7 +75,7 @@ where
     }
 }
 
-/// Repository and worktree authority backed by the schema-15 database.
+/// Repository and worktree authority backed by the Coordinator database.
 #[derive(Clone)]
 pub struct Registry {
     database: Database,

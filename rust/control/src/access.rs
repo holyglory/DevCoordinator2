@@ -27,6 +27,7 @@ use time::{Duration, OffsetDateTime, format_description::FormatItem, macros::for
 
 use crate::config::Config;
 use crate::database::{Database, DatabaseError};
+use crate::events::EventVisibility;
 
 const INVITATION_DAYS: i64 = 14;
 const TIMESTAMP_FORMAT: &[FormatItem<'static>] =
@@ -829,6 +830,24 @@ impl Access {
         self.publisher.publish_access(&self.access_section()?)
     }
 
+    pub fn event_visibility(&self, caller: &Caller) -> Result<EventVisibility, ProtocolError> {
+        let principal = self.principal(caller)?;
+        if principal.local || principal.administrator {
+            return Ok(EventVisibility::unrestricted());
+        }
+        if principal.user_id.is_none() {
+            return Err(ProtocolError::new(
+                ErrorCode::PermissionDenied,
+                "identity is not an admitted user",
+            ));
+        }
+        Ok(EventVisibility {
+            unrestricted: false,
+            repository_ids: self.repositories_at_least(&principal, &AccessRole::Viewer)?,
+            deployment_ids: deployment_ids_at_least(&principal, &AccessRole::Viewer),
+        })
+    }
+
     /// Resolve one operation's public authority from its registry policy and
     /// return any mandatory collection filter. Called for every request; it
     /// intentionally has no authorization cache.
@@ -1584,6 +1603,42 @@ mod tests {
                 display_name: None,
             })
             .expect("accept");
+    }
+
+    #[test]
+    fn event_visibility_is_recomputed_from_current_public_grants() {
+        let world = world();
+        invite_and_accept(
+            &world.access,
+            "viewer@example.test",
+            AccessRole::Viewer,
+            "d1",
+        );
+        let caller = public("viewer@example.test");
+        let first = world.access.event_visibility(&caller).unwrap();
+        assert!(!first.unrestricted);
+        assert_eq!(first.repository_ids, BTreeSet::from(["r1".to_owned()]));
+        assert_eq!(first.deployment_ids, BTreeSet::from(["d1".to_owned()]));
+        world
+            .access
+            .remove_grant(
+                RemoveGrant {
+                    email: "viewer@example.test".into(),
+                    deployment_id: "d1".into(),
+                },
+                &local(),
+            )
+            .unwrap();
+        let revoked = world.access.event_visibility(&caller).unwrap();
+        assert!(revoked.repository_ids.is_empty());
+        assert!(revoked.deployment_ids.is_empty());
+        assert!(
+            world
+                .access
+                .event_visibility(&local())
+                .unwrap()
+                .unrestricted
+        );
     }
 
     fn assert_permission_denied(result: Result<Authorization, ProtocolError>) {

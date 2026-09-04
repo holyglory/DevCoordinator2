@@ -314,7 +314,7 @@ const fixtures = (scenario) => {
     'bug.list': { bugs: scenario.empty ? [] : [{ bug_id: 'b0123456789ab', component: 'api', summary: 'Returns 500 on /export when the report is large', expected: '200 with CSV', actual: '500', steps: '1. open /export 2. choose all-time 3. submit', opened_at: '2026-08-20T10:00:00Z', last_seen_at: new Date().toISOString(), occurrences: 42, reporter: 'dev@example.test', correlations: { deployment_id: DEP } }], store: '/bugs' },
     'user.list': { users: [{ user_id: 'u1', email: 'owner@example.test', administrator: true, grants: [], last_seen_at: new Date().toISOString() }, { user_id: 'u2', email: `${'verylongmailboxname'.repeat(3)}@example.test`, administrator: false, grants: [{ deployment_id: DEP, role: 'operator', granted_at: 't' }], last_seen_at: null }], invitations: [{ invitation_id: 'i1', email: 'new@example.test', administrator: false, grants: [{ deployment_id: DEP, role: 'viewer' }], created_at: 't', created_by: 'owner', expires_at: '2026-09-06T00:00:00Z' }], roles: ['access', 'viewer', 'operator', 'administrator'], owners: ['owner@example.test'] },
     'telegram.list': { configured: true, chats: [{ chat_id: 4242, email: 'owner@example.test', label: 'Owner', linked_at: 't', subscriptions: ['server', `deployment:${DEP}`] }], outbox_pending: 0, last_poll_at: new Date().toISOString(), last_error: null },
-    ping: { daemon_version: '0.1.0', schema_version: 15, socket: '/run/x.sock' },
+    ping: { daemon_version: '0.2.0', schema_version: 16, socket: '/run/x.sock' },
     'plan.overview': {
       repository_id: REPO, display_name: 'repo-one',
       releases: scenario.empty ? [] : [
@@ -1852,7 +1852,7 @@ async function main() {
   check('interaction: invite form calls user.invite', daemon.calls.some((c) => c.operation === 'user.invite' && c.params.email === 'new2@example.test'));
   await page.waitForFunction(() => /daemon 0\.1\.0/.test(document.querySelector('#server')?.textContent || ''), null, { timeout: 10000 });
   check('admin: the Server line renders daemon version, schema, and route generation',
-    /daemon 0\.1\.0 · schema 15 · route document generation 1/.test(await page.innerText('#server')),
+    /daemon 0\.2\.0 · schema 16 · route document generation 1/.test(await page.innerText('#server')),
     await page.innerText('#server'));
   await page.goto(`http://${HOST}:${port}/#/health/containers`);
   await page.waitForSelector('button[data-cmd="health.container_remove"]');

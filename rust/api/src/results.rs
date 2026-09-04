@@ -1953,6 +1953,112 @@ pub struct BugClosed {
 
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct TestOwnedEvent {
+    pub kind: String,
+    pub repository_id: String,
+    pub worktree_id: String,
+    pub run_id: String,
+    pub test: String,
+    pub status: Option<TestStatus>,
+    pub exit_code: Option<i32>,
+    pub duration_seconds: Option<f64>,
+}
+
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DeploymentOwnedEvent {
+    pub kind: String,
+    pub repository_id: Option<String>,
+    pub deployment_id: String,
+    pub component: Option<String>,
+    pub state: Option<String>,
+}
+
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PlanningOwnedEvent {
+    pub kind: String,
+    pub repository_id: String,
+    pub subject_kind: String,
+    pub subject_id: String,
+    pub status: Option<String>,
+}
+
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HealthOwnedEvent {
+    pub kind: String,
+    pub repository_id: Option<String>,
+    pub deployment_id: Option<String>,
+    pub subject_kind: String,
+    pub subject_id: String,
+    pub severity: Option<String>,
+}
+
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FeedbackOwnedEvent {
+    pub kind: String,
+    pub repository_id: String,
+    pub feedback_id: String,
+    pub task_id: String,
+    pub comment_id: Option<String>,
+    pub state: Option<String>,
+}
+
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OtherOwnedEvent {
+    pub kind: String,
+    pub repository_id: Option<String>,
+    pub deployment_id: Option<String>,
+    pub subject_kind: String,
+    pub subject_id: String,
+}
+
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "category", content = "data", rename_all = "snake_case")]
+pub enum OwnedEvent {
+    Test(TestOwnedEvent),
+    Deployment(DeploymentOwnedEvent),
+    Planning(PlanningOwnedEvent),
+    Health(HealthOwnedEvent),
+    Feedback(FeedbackOwnedEvent),
+    Other(OtherOwnedEvent),
+}
+
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OwnedEventRecord {
+    pub cursor: u64,
+    pub occurred_at: String,
+    pub event: OwnedEvent,
+}
+
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EventDelivery {
+    pub filter_ids: Vec<String>,
+    pub event: OwnedEventRecord,
+}
+
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HeartbeatDue {
+    pub filter_id: String,
+    pub deadline_at: String,
+}
+
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EventWaitResult {
+    pub cursor: u64,
+    pub events: Vec<EventDelivery>,
+    pub heartbeat_due: Vec<HeartbeatDue>,
+}
+
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ElaborationRequest {
     pub task_id: String,
     pub title: String,

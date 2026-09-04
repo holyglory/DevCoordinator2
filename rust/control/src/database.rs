@@ -279,7 +279,7 @@ mod tests {
     use tempfile::tempdir;
 
     #[test]
-    fn creates_schema_fifteen_and_serializes_calls() {
+    fn creates_schema_sixteen_with_owned_events_and_serializes_calls() {
         let temporary = tempdir().expect("tempdir");
         let database = Database::open(temporary.path().join("authority.sqlite3")).expect("open");
         let version: String = database
@@ -291,7 +291,7 @@ mod tests {
                 )?)
             })
             .expect("version");
-        assert_eq!(version, "15");
+        assert_eq!(version, "16");
         let tables: Vec<String> = database
             .call(|connection| {
                 let mut statement = connection.prepare(
@@ -310,6 +310,7 @@ mod tests {
             "visual_feedback",
             "visual_feedback_comments",
             "visual_feedback_events",
+            "owned_events",
         ] {
             assert!(
                 tables.iter().any(|table| table == required),
@@ -327,17 +328,51 @@ mod tests {
         connection
             .execute_batch(
                 "CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);\n\
-                 INSERT INTO meta VALUES('schema_version','16');",
+                 INSERT INTO meta VALUES('schema_version','17');",
             )
             .expect("fixture schema");
         drop(connection);
         assert!(matches!(
             Database::open(path),
             Err(DatabaseError::SchemaTooNew {
-                found: 16,
-                supported: 15
+                found: 17,
+                supported: 16
             })
         ));
+    }
+
+    #[test]
+    fn upgrades_schema_fifteen_by_adding_the_owned_event_journal() {
+        let temporary = tempdir().expect("tempdir");
+        let path = temporary.path().join("authority.sqlite3");
+        let connection = Connection::open(&path).expect("fixture");
+        connection
+            .execute_batch(
+                "CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);\n\
+                 INSERT INTO meta VALUES('schema_version','15');",
+            )
+            .expect("fixture schema");
+        drop(connection);
+
+        let database = Database::open(path).expect("upgrade");
+        let (version, owned_events): (String, i64) = database
+            .call(|connection| {
+                Ok((
+                    connection.query_row(
+                        "SELECT value FROM meta WHERE key='schema_version'",
+                        [],
+                        |row| row.get(0),
+                    )?,
+                    connection.query_row(
+                        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='owned_events'",
+                        [],
+                        |row| row.get(0),
+                    )?,
+                ))
+            })
+            .expect("schema projection");
+        assert_eq!(version, "16");
+        assert_eq!(owned_events, 1);
     }
 
     #[test]
