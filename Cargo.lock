@@ -383,6 +383,7 @@ dependencies = [
 name = "devcoordinator2-control"
 version = "0.2.0"
 dependencies = [
+ "base64",
  "clap",
  "devcoordinator2-api",
  "devcoordinator2-executor-core",

@@ -468,8 +468,21 @@ pub struct TestListRow {
     pub worktree_path: String,
     pub repository_id: String,
     pub display_name: String,
+    pub visual_evidence: VisualEvidenceSummary,
     #[serde(flatten)]
     pub summary: TestSummary,
+}
+
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct VisualEvidenceSummary {
+    pub status: String,
+    pub bundle_count: u32,
+    pub image_count: u32,
+    pub issue_count: u32,
+    pub issues_truncated: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error_code: Option<String>,
 }
 
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
@@ -604,17 +617,31 @@ pub struct Capacity {
 }
 
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum Screenshot {
+    Available(AvailableScreenshot),
+    Unavailable(UnavailableScreenshot),
+}
+
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct Screenshot {
+pub struct AvailableScreenshot {
+    pub status: String,
+    pub image_id: String,
+    pub kind: String,
+    pub mime: String,
+    pub size: u64,
+    pub sha256: String,
+    pub width: u32,
+    pub height: u32,
+    pub captured_at: Option<String>,
+}
+
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UnavailableScreenshot {
     pub status: String,
     pub kind: String,
-    pub image_id: Option<String>,
-    pub mime: Option<String>,
-    pub size: Option<u64>,
-    pub sha256: Option<String>,
-    pub width: Option<u32>,
-    pub height: Option<u32>,
-    pub captured_at: Option<String>,
 }
 
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
@@ -623,6 +650,7 @@ pub struct EvidenceViewport {
     pub name: String,
     pub width: u32,
     pub height: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub device: Option<String>,
 }
 
@@ -726,7 +754,7 @@ pub struct Feedback {
     pub check: String,
     pub phase: String,
     pub case: Option<String>,
-    pub formal_run_id: Option<String>,
+    pub formal_run_id: String,
     pub cell_id: String,
     pub review_cell_key: Option<String>,
     pub image_id: String,
@@ -746,7 +774,7 @@ pub struct Feedback {
 pub struct EvidenceIssue {
     pub check: String,
     pub phase: String,
-    pub case: Option<String>,
+    pub case: String,
     pub code: String,
 }
 

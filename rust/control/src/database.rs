@@ -308,6 +308,8 @@ mod tests {
             "tasks",
             "decisions",
             "visual_feedback",
+            "visual_feedback_comments",
+            "visual_feedback_events",
         ] {
             assert!(
                 tables.iter().any(|table| table == required),

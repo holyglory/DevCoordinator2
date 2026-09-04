@@ -1320,6 +1320,17 @@ mod tests {
             parse_request(request).unwrap_err().code,
             ErrorCode::ParamsInvalid
         );
+
+        let evidence = br#"{"protocol":2,"id":"abc","operation":"test.evidence.get","params":{"path":"/repo","run_id":"run","extra":true},"client":{}}"#;
+        assert_eq!(
+            parse_request(evidence).unwrap_err().code,
+            ErrorCode::ParamsInvalid
+        );
+        let mark = br##"{"protocol":2,"id":"abc","operation":"test.evidence.feedback.create","params":{"path":"/repo","run_id":"run","image_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","body":"change this","marks":[{"type":"pin","id":"mark-1","color":"#ef4444","x":0.5,"y":0.5,"extra":true}]},"client":{}}"##;
+        assert_eq!(
+            parse_request(mark).unwrap_err().code,
+            ErrorCode::ParamsInvalid
+        );
     }
 
     #[test]

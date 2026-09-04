@@ -4740,6 +4740,58 @@
       "name": "test.evidence.get",
       "outputSchema": {
         "$defs": {
+          "AvailableScreenshot": {
+            "additionalProperties": false,
+            "properties": {
+              "captured_at": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "height": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "image_id": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string"
+              },
+              "mime": {
+                "type": "string"
+              },
+              "sha256": {
+                "type": "string"
+              },
+              "size": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "status": {
+                "type": "string"
+              },
+              "width": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "status",
+              "image_id",
+              "kind",
+              "mime",
+              "size",
+              "sha256",
+              "width",
+              "height"
+            ],
+            "type": "object"
+          },
           "EvidenceAction": {
             "additionalProperties": false,
             "properties": {
@@ -4986,10 +5038,7 @@
             "additionalProperties": false,
             "properties": {
               "case": {
-                "type": [
-                  "string",
-                  "null"
-                ]
+                "type": "string"
               },
               "check": {
                 "type": "string"
@@ -5004,6 +5053,7 @@
             "required": [
               "check",
               "phase",
+              "case",
               "code"
             ],
             "type": "object"
@@ -5119,10 +5169,7 @@
                 "type": "string"
               },
               "formal_run_id": {
-                "type": [
-                  "string",
-                  "null"
-                ]
+                "type": "string"
               },
               "image_id": {
                 "type": "string"
@@ -5172,6 +5219,7 @@
               "run_id",
               "check",
               "phase",
+              "formal_run_id",
               "cell_id",
               "image_id",
               "screenshot_kind",
@@ -5225,6 +5273,7 @@
           "Mark": {
             "oneOf": [
               {
+                "additionalProperties": false,
                 "properties": {
                   "color": {
                     "type": "string"
@@ -5255,6 +5304,7 @@
                 "type": "object"
               },
               {
+                "additionalProperties": false,
                 "properties": {
                   "color": {
                     "type": "string"
@@ -5289,6 +5339,7 @@
                 "type": "object"
               },
               {
+                "additionalProperties": false,
                 "properties": {
                   "color": {
                     "type": "string"
@@ -5329,6 +5380,7 @@
                 "type": "object"
               },
               {
+                "additionalProperties": false,
                 "properties": {
                   "color": {
                     "type": "string"
@@ -5369,6 +5421,7 @@
                 "type": "object"
               },
               {
+                "additionalProperties": false,
                 "properties": {
                   "color": {
                     "type": "string"
@@ -5396,6 +5449,7 @@
                 "type": "object"
               },
               {
+                "additionalProperties": false,
                 "properties": {
                   "color": {
                     "type": "string"
@@ -5447,68 +5501,14 @@
             "type": "object"
           },
           "Screenshot": {
-            "additionalProperties": false,
-            "properties": {
-              "captured_at": {
-                "type": [
-                  "string",
-                  "null"
-                ]
+            "anyOf": [
+              {
+                "$ref": "#/$defs/AvailableScreenshot"
               },
-              "height": {
-                "format": "uint32",
-                "minimum": 0,
-                "type": [
-                  "integer",
-                  "null"
-                ]
-              },
-              "image_id": {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              },
-              "kind": {
-                "type": "string"
-              },
-              "mime": {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              },
-              "sha256": {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              },
-              "size": {
-                "format": "uint64",
-                "minimum": 0,
-                "type": [
-                  "integer",
-                  "null"
-                ]
-              },
-              "status": {
-                "type": "string"
-              },
-              "width": {
-                "format": "uint32",
-                "minimum": 0,
-                "type": [
-                  "integer",
-                  "null"
-                ]
+              {
+                "$ref": "#/$defs/UnavailableScreenshot"
               }
-            },
-            "required": [
-              "status",
-              "kind"
-            ],
-            "type": "object"
+            ]
           },
           "TaskStatus": {
             "enum": [
@@ -5518,6 +5518,22 @@
               "dropped"
             ],
             "type": "string"
+          },
+          "UnavailableScreenshot": {
+            "additionalProperties": false,
+            "properties": {
+              "kind": {
+                "type": "string"
+              },
+              "status": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "status",
+              "kind"
+            ],
+            "type": "object"
           }
         },
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -6204,6 +6220,7 @@
           "Mark": {
             "oneOf": [
               {
+                "additionalProperties": false,
                 "properties": {
                   "color": {
                     "type": "string"
@@ -6234,6 +6251,7 @@
                 "type": "object"
               },
               {
+                "additionalProperties": false,
                 "properties": {
                   "color": {
                     "type": "string"
@@ -6268,6 +6286,7 @@
                 "type": "object"
               },
               {
+                "additionalProperties": false,
                 "properties": {
                   "color": {
                     "type": "string"
@@ -6308,6 +6327,7 @@
                 "type": "object"
               },
               {
+                "additionalProperties": false,
                 "properties": {
                   "color": {
                     "type": "string"
@@ -6348,6 +6368,7 @@
                 "type": "object"
               },
               {
+                "additionalProperties": false,
                 "properties": {
                   "color": {
                     "type": "string"
@@ -6375,6 +6396,7 @@
                 "type": "object"
               },
               {
+                "additionalProperties": false,
                 "properties": {
                   "color": {
                     "type": "string"
@@ -6471,6 +6493,7 @@
               "Mark": {
                 "oneOf": [
                   {
+                    "additionalProperties": false,
                     "properties": {
                       "color": {
                         "type": "string"
@@ -6501,6 +6524,7 @@
                     "type": "object"
                   },
                   {
+                    "additionalProperties": false,
                     "properties": {
                       "color": {
                         "type": "string"
@@ -6535,6 +6559,7 @@
                     "type": "object"
                   },
                   {
+                    "additionalProperties": false,
                     "properties": {
                       "color": {
                         "type": "string"
@@ -6575,6 +6600,7 @@
                     "type": "object"
                   },
                   {
+                    "additionalProperties": false,
                     "properties": {
                       "color": {
                         "type": "string"
@@ -6615,6 +6641,7 @@
                     "type": "object"
                   },
                   {
+                    "additionalProperties": false,
                     "properties": {
                       "color": {
                         "type": "string"
@@ -6642,6 +6669,7 @@
                     "type": "object"
                   },
                   {
+                    "additionalProperties": false,
                     "properties": {
                       "color": {
                         "type": "string"
@@ -6775,10 +6803,7 @@
                 "type": "string"
               },
               "formal_run_id": {
-                "type": [
-                  "string",
-                  "null"
-                ]
+                "type": "string"
               },
               "image_id": {
                 "type": "string"
@@ -6828,6 +6853,7 @@
               "run_id",
               "check",
               "phase",
+              "formal_run_id",
               "cell_id",
               "image_id",
               "screenshot_kind",
@@ -6881,6 +6907,7 @@
           "Mark": {
             "oneOf": [
               {
+                "additionalProperties": false,
                 "properties": {
                   "color": {
                     "type": "string"
@@ -6911,6 +6938,7 @@
                 "type": "object"
               },
               {
+                "additionalProperties": false,
                 "properties": {
                   "color": {
                     "type": "string"
@@ -6945,6 +6973,7 @@
                 "type": "object"
               },
               {
+                "additionalProperties": false,
                 "properties": {
                   "color": {
                     "type": "string"
@@ -6985,6 +7014,7 @@
                 "type": "object"
               },
               {
+                "additionalProperties": false,
                 "properties": {
                   "color": {
                     "type": "string"
@@ -7025,6 +7055,7 @@
                 "type": "object"
               },
               {
+                "additionalProperties": false,
                 "properties": {
                   "color": {
                     "type": "string"
@@ -7052,6 +7083,7 @@
                 "type": "object"
               },
               {
+                "additionalProperties": false,
                 "properties": {
                   "color": {
                     "type": "string"
@@ -7250,10 +7282,7 @@
                 "type": "string"
               },
               "formal_run_id": {
-                "type": [
-                  "string",
-                  "null"
-                ]
+                "type": "string"
               },
               "image_id": {
                 "type": "string"
@@ -7303,6 +7332,7 @@
               "run_id",
               "check",
               "phase",
+              "formal_run_id",
               "cell_id",
               "image_id",
               "screenshot_kind",
@@ -7356,6 +7386,7 @@
           "Mark": {
             "oneOf": [
               {
+                "additionalProperties": false,
                 "properties": {
                   "color": {
                     "type": "string"
@@ -7386,6 +7417,7 @@
                 "type": "object"
               },
               {
+                "additionalProperties": false,
                 "properties": {
                   "color": {
                     "type": "string"
@@ -7420,6 +7452,7 @@
                 "type": "object"
               },
               {
+                "additionalProperties": false,
                 "properties": {
                   "color": {
                     "type": "string"
@@ -7460,6 +7493,7 @@
                 "type": "object"
               },
               {
+                "additionalProperties": false,
                 "properties": {
                   "color": {
                     "type": "string"
@@ -7500,6 +7534,7 @@
                 "type": "object"
               },
               {
+                "additionalProperties": false,
                 "properties": {
                   "color": {
                     "type": "string"
@@ -7527,6 +7562,7 @@
                 "type": "object"
               },
               {
+                "additionalProperties": false,
                 "properties": {
                   "color": {
                     "type": "string"
@@ -7719,10 +7755,7 @@
                 "type": "string"
               },
               "formal_run_id": {
-                "type": [
-                  "string",
-                  "null"
-                ]
+                "type": "string"
               },
               "image_id": {
                 "type": "string"
@@ -7772,6 +7805,7 @@
               "run_id",
               "check",
               "phase",
+              "formal_run_id",
               "cell_id",
               "image_id",
               "screenshot_kind",
@@ -7825,6 +7859,7 @@
           "Mark": {
             "oneOf": [
               {
+                "additionalProperties": false,
                 "properties": {
                   "color": {
                     "type": "string"
@@ -7855,6 +7890,7 @@
                 "type": "object"
               },
               {
+                "additionalProperties": false,
                 "properties": {
                   "color": {
                     "type": "string"
@@ -7889,6 +7925,7 @@
                 "type": "object"
               },
               {
+                "additionalProperties": false,
                 "properties": {
                   "color": {
                     "type": "string"
@@ -7929,6 +7966,7 @@
                 "type": "object"
               },
               {
+                "additionalProperties": false,
                 "properties": {
                   "color": {
                     "type": "string"
@@ -7969,6 +8007,7 @@
                 "type": "object"
               },
               {
+                "additionalProperties": false,
                 "properties": {
                   "color": {
                     "type": "string"
@@ -7996,6 +8035,7 @@
                 "type": "object"
               },
               {
+                "additionalProperties": false,
                 "properties": {
                   "color": {
                     "type": "string"
@@ -8194,10 +8234,7 @@
                 "type": "string"
               },
               "formal_run_id": {
-                "type": [
-                  "string",
-                  "null"
-                ]
+                "type": "string"
               },
               "image_id": {
                 "type": "string"
@@ -8247,6 +8284,7 @@
               "run_id",
               "check",
               "phase",
+              "formal_run_id",
               "cell_id",
               "image_id",
               "screenshot_kind",
@@ -8300,6 +8338,7 @@
           "Mark": {
             "oneOf": [
               {
+                "additionalProperties": false,
                 "properties": {
                   "color": {
                     "type": "string"
@@ -8330,6 +8369,7 @@
                 "type": "object"
               },
               {
+                "additionalProperties": false,
                 "properties": {
                   "color": {
                     "type": "string"
@@ -8364,6 +8404,7 @@
                 "type": "object"
               },
               {
+                "additionalProperties": false,
                 "properties": {
                   "color": {
                     "type": "string"
@@ -8404,6 +8445,7 @@
                 "type": "object"
               },
               {
+                "additionalProperties": false,
                 "properties": {
                   "color": {
                     "type": "string"
@@ -8444,6 +8486,7 @@
                 "type": "object"
               },
               {
+                "additionalProperties": false,
                 "properties": {
                   "color": {
                     "type": "string"
@@ -8471,6 +8514,7 @@
                 "type": "object"
               },
               {
+                "additionalProperties": false,
                 "properties": {
                   "color": {
                     "type": "string"
@@ -8643,10 +8687,7 @@
                 "type": "string"
               },
               "formal_run_id": {
-                "type": [
-                  "string",
-                  "null"
-                ]
+                "type": "string"
               },
               "image_id": {
                 "type": "string"
@@ -8696,6 +8737,7 @@
               "run_id",
               "check",
               "phase",
+              "formal_run_id",
               "cell_id",
               "image_id",
               "screenshot_kind",
@@ -8749,6 +8791,7 @@
           "Mark": {
             "oneOf": [
               {
+                "additionalProperties": false,
                 "properties": {
                   "color": {
                     "type": "string"
@@ -8779,6 +8822,7 @@
                 "type": "object"
               },
               {
+                "additionalProperties": false,
                 "properties": {
                   "color": {
                     "type": "string"
@@ -8813,6 +8857,7 @@
                 "type": "object"
               },
               {
+                "additionalProperties": false,
                 "properties": {
                   "color": {
                     "type": "string"
@@ -8853,6 +8898,7 @@
                 "type": "object"
               },
               {
+                "additionalProperties": false,
                 "properties": {
                   "color": {
                     "type": "string"
@@ -8893,6 +8939,7 @@
                 "type": "object"
               },
               {
+                "additionalProperties": false,
                 "properties": {
                   "color": {
                     "type": "string"
@@ -8920,6 +8967,7 @@
                 "type": "object"
               },
               {
+                "additionalProperties": false,
                 "properties": {
                   "color": {
                     "type": "string"
@@ -9993,6 +10041,9 @@
               "test": {
                 "type": "string"
               },
+              "visual_evidence": {
+                "$ref": "#/$defs/VisualEvidenceSummary"
+              },
               "worktree_id": {
                 "type": "string"
               },
@@ -10005,6 +10056,7 @@
               "worktree_path",
               "repository_id",
               "display_name",
+              "visual_evidence",
               "schema_version",
               "run_id",
               "test",
@@ -10042,6 +10094,46 @@
               "release"
             ],
             "type": "string"
+          },
+          "VisualEvidenceSummary": {
+            "additionalProperties": false,
+            "properties": {
+              "bundle_count": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "error_code": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "image_count": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "issue_count": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "issues_truncated": {
+                "type": "boolean"
+              },
+              "status": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "status",
+              "bundle_count",
+              "image_count",
+              "issue_count",
+              "issues_truncated"
+            ],
+            "type": "object"
           }
         },
         "$schema": "https://json-schema.org/draft/2020-12/schema",

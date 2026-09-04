@@ -37,6 +37,7 @@ pub mod telegram;
 pub mod test_admission;
 pub mod test_artifacts;
 pub mod test_command;
+pub mod test_evidence;
 pub mod test_lifecycle;
 pub mod test_logs;
 pub mod test_state;

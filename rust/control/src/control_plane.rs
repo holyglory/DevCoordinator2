@@ -33,6 +33,7 @@ use crate::repository::Registry;
 use crate::routes::RouteFilePublisher;
 use crate::telegram::{TelegramEvent, TelegramScope, TelegramService, parse_scope};
 use crate::test_artifacts::TestArtifactService;
+use crate::test_evidence::TestEvidenceService;
 use crate::test_lifecycle::{TestLifecycle, TestLifecycleEvent};
 use crate::test_logs::TestLogService;
 use crate::test_state::ActiveTestArchiveBlocker;
@@ -74,6 +75,13 @@ pub const FOUNDATION_OPERATIONS: &[&str] = &[
     "test.status",
     "test.stop",
     "test.list",
+    "test.evidence.get",
+    "test.evidence.image",
+    "test.evidence.feedback.create",
+    "test.evidence.feedback.reply",
+    "test.evidence.feedback.edit",
+    "test.evidence.feedback.state",
+    "test.evidence.feedback.delete",
     "test.log.catalog",
     "test.log.tail",
     "test.log.search",
@@ -126,6 +134,7 @@ pub struct ControlPlane {
     logs: TestLogService,
     tests: TestLifecycle,
     artifacts: TestArtifactService,
+    test_evidence: TestEvidenceService,
     deployments: Deployments,
     capacity: CapacityBroker,
     health: HealthService,
@@ -166,6 +175,8 @@ impl ControlPlane {
         let plan = PlanService::new(database.clone(), evidence);
         let logs = TestLogService::new(database.clone(), registry.clone());
         let artifacts = TestArtifactService::new(database.clone(), registry.clone());
+        let test_evidence =
+            TestEvidenceService::with_clock(database.clone(), registry.clone(), Arc::clone(&clock));
         let capacity = CapacityBroker::new(database.clone(), config.capacity_socket_path())?;
         let health = HealthService::with_clock(
             config.clone(),
@@ -234,6 +245,7 @@ impl ControlPlane {
             logs,
             tests,
             artifacts,
+            test_evidence,
             deployments,
             capacity,
             health,
@@ -274,6 +286,10 @@ impl ControlPlane {
 
     pub fn tests(&self) -> &TestLifecycle {
         &self.tests
+    }
+
+    pub fn test_evidence(&self) -> &TestEvidenceService {
+        &self.test_evidence
     }
 
     pub fn recover_tests(&self) -> Result<(), ProtocolError> {
@@ -490,7 +506,27 @@ impl ControlPlane {
             }
             "test.list" => {
                 let _: params::Empty = decode(params)?;
-                encode(self.tests.list_current()?)
+                let mut result = self.tests.list_current()?;
+                self.test_evidence.enrich_list(&mut result);
+                encode(result)
+            }
+            "test.evidence.get" => encode(self.test_evidence.get(decode(params)?, caller)?),
+            "test.evidence.image" => encode(self.test_evidence.image(decode(params)?, caller)?),
+            "test.evidence.feedback.create" => encode(
+                self.test_evidence
+                    .create_feedback(decode(params)?, caller)?,
+            ),
+            "test.evidence.feedback.reply" => {
+                encode(self.test_evidence.reply(decode(params)?, caller)?)
+            }
+            "test.evidence.feedback.edit" => {
+                encode(self.test_evidence.edit(decode(params)?, caller)?)
+            }
+            "test.evidence.feedback.state" => {
+                encode(self.test_evidence.set_state(decode(params)?, caller)?)
+            }
+            "test.evidence.feedback.delete" => {
+                encode(self.test_evidence.delete(decode(params)?, caller)?)
             }
             "test.log.catalog" => {
                 let params: params::LogCatalog = decode(params)?;
@@ -1173,12 +1209,15 @@ mod tests {
 
     #[test]
     fn every_foundation_operation_exists_in_the_exhaustive_registry() {
-        for operation in FOUNDATION_OPERATIONS {
-            assert!(
-                devcoordinator2_api::operation(operation).is_some(),
-                "{operation} is not registered"
-            );
-        }
+        let implemented = FOUNDATION_OPERATIONS
+            .iter()
+            .copied()
+            .collect::<HashSet<_>>();
+        let registered = devcoordinator2_api::OPERATIONS
+            .iter()
+            .map(|operation| operation.name)
+            .collect::<HashSet<_>>();
+        assert_eq!(implemented, registered);
     }
 
     #[test]
