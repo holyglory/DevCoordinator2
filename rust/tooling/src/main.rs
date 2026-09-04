@@ -24,6 +24,77 @@ enum Command {
         #[command(subcommand)]
         command: SkillsCommand,
     },
+    Legacy {
+        #[command(subcommand)]
+        command: LegacyCommand,
+    },
+    Decision {
+        #[command(subcommand)]
+        command: DecisionCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum LegacyCommand {
+    Export(LegacyExportArgs),
+    Import(LegacyImportArgs),
+}
+
+#[derive(Debug, Args)]
+struct LegacyExportArgs {
+    #[arg(long)]
+    authority_db: PathBuf,
+    #[arg(long)]
+    routes_publication: Option<PathBuf>,
+    #[arg(long)]
+    access_control: Option<PathBuf>,
+    #[arg(long)]
+    telegram_state: Option<PathBuf>,
+    #[arg(long)]
+    bugs_dir: Option<PathBuf>,
+    #[arg(long = "out")]
+    output: PathBuf,
+}
+
+#[derive(Debug, Args)]
+struct LegacyImportArgs {
+    #[arg(long = "export")]
+    export_file: PathBuf,
+    #[arg(long)]
+    state_dir: PathBuf,
+    #[arg(long)]
+    bugs_dir: PathBuf,
+    #[arg(long)]
+    live_containers: Option<PathBuf>,
+    #[arg(long)]
+    current_route_map: Option<PathBuf>,
+    #[arg(long)]
+    routes_path: Option<PathBuf>,
+    #[arg(long)]
+    base_domain: Option<String>,
+    #[arg(long)]
+    prune_missing_install_fixtures: bool,
+    #[arg(long)]
+    dry_run: bool,
+}
+
+#[derive(Debug, Subcommand)]
+enum DecisionCommand {
+    Import(DecisionImportArgs),
+}
+
+#[derive(Debug, Args)]
+struct DecisionImportArgs {
+    #[arg(long)]
+    path: PathBuf,
+    #[arg(long)]
+    file: Option<PathBuf>,
+    #[arg(long)]
+    socket: Option<PathBuf>,
+    #[arg(long)]
+    dry_run: bool,
+    #[arg(long = "aspect")]
+    aspect_overrides: Vec<String>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -288,7 +359,115 @@ fn main() -> ExitCode {
         Command::Skills {
             command: SkillsCommand::Policy { command },
         } => run_policy(command),
+        Command::Legacy { command } => run_legacy(command),
+        Command::Decision { command } => run_decision(command),
     }
+}
+
+fn run_legacy(command: LegacyCommand) -> ExitCode {
+    let now = match timestamp() {
+        Ok(now) => now,
+        Err(error) => return tooling_error(&error, 2),
+    };
+    let result = match command {
+        LegacyCommand::Export(args) => {
+            let options = devcoordinator2_tooling::legacy_export::ExportOptions {
+                authority_db: args.authority_db,
+                routes_publication: args.routes_publication,
+                access_control: args.access_control,
+                telegram_state: args.telegram_state,
+                bugs_dir: args.bugs_dir,
+                output: args.output,
+            };
+            devcoordinator2_tooling::legacy_export::write_export(&options, &now)
+        }
+        LegacyCommand::Import(args) => {
+            let options = devcoordinator2_tooling::legacy_import::ImportOptions {
+                export: args.export_file,
+                state_dir: args.state_dir,
+                bugs_dir: args.bugs_dir,
+                live_containers: args.live_containers,
+                current_route_map: args.current_route_map,
+                routes_path: args.routes_path,
+                base_domain: args.base_domain,
+                prune_missing_install_fixtures: args.prune_missing_install_fixtures,
+                dry_run: args.dry_run,
+            };
+            devcoordinator2_tooling::legacy_import::run(&options, &now)
+        }
+    };
+    match result {
+        Ok(value) => emit_report(value, true, 1),
+        Err(error) => tooling_error(&error, 2),
+    }
+}
+
+fn run_decision(command: DecisionCommand) -> ExitCode {
+    let DecisionCommand::Import(args) = command;
+    let source = args
+        .file
+        .unwrap_or_else(|| args.path.join("DecisionHistory.md"));
+    let options = devcoordinator2_tooling::decision_import::ImportOptions {
+        repository: args.path,
+        source,
+        socket: args
+            .socket
+            .unwrap_or_else(devcoordinator2_tooling::instance::socket_path),
+        dry_run: args.dry_run,
+        aspect_overrides: args.aspect_overrides,
+    };
+    let entries = match devcoordinator2_tooling::decision_import::load(&options) {
+        Ok(entries) if !entries.is_empty() => entries,
+        Ok(_) => return tooling_error("no `## REF — title` decision sections were found", 1),
+        Err(error) => return tooling_error(&error, 2),
+    };
+    if options.dry_run {
+        return emit_report(
+            serde_json::json!({
+                "dry_run": true,
+                "entries": entries,
+                "recorded": 0,
+            }),
+            true,
+            1,
+        );
+    }
+    match devcoordinator2_tooling::decision_import::import_with(
+        &entries,
+        &options.repository,
+        |params| devcoordinator2_tooling::decision_import::call(&options.socket, params),
+    ) {
+        Ok(counts) => emit_report(
+            serde_json::json!({
+                "imported": counts.imported,
+                "already_present": counts.skipped,
+                "failed": counts.failed,
+            }),
+            counts.failed == 0,
+            1,
+        ),
+        Err(error) => tooling_error(&error, 2),
+    }
+}
+
+fn timestamp() -> Result<String, String> {
+    use time::{OffsetDateTime, macros::format_description};
+    OffsetDateTime::now_utc()
+        .format(format_description!(
+            "[year]-[month]-[day]T[hour]:[minute]:[second]Z"
+        ))
+        .map_err(|error| format!("cannot format current time: {error}"))
+}
+
+fn tooling_error(message: &str, code: u8) -> ExitCode {
+    eprintln!(
+        "{}",
+        serde_json::json!({
+            "ok": false,
+            "error": {"code": "tooling_failed", "message": message}
+        })
+    );
+    ExitCode::from(code)
 }
 
 fn selected_skills(values: Vec<String>) -> Option<Vec<String>> {
@@ -471,7 +650,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn check_and_skill_command_families_parse_without_legacy_wrappers() {
+    fn every_ported_command_family_parses_without_python_wrappers() {
         let check = Cli::try_parse_from([
             "devcoordinator2-tooling",
             "check",
@@ -532,6 +711,39 @@ mod tests {
                 command: SkillsCommand::Policy {
                     command: PolicyCommand::Plan { .. }
                 }
+            }
+        ));
+
+        let legacy = Cli::try_parse_from([
+            "devcoordinator2-tooling",
+            "legacy",
+            "export",
+            "--authority-db",
+            "/legacy/authority.sqlite3",
+            "--out",
+            "/tmp/export.json",
+        ])
+        .expect("legacy export command");
+        assert!(matches!(
+            legacy.command,
+            Command::Legacy {
+                command: LegacyCommand::Export(_)
+            }
+        ));
+
+        let decision = Cli::try_parse_from([
+            "devcoordinator2-tooling",
+            "decision",
+            "import",
+            "--path",
+            "/repo",
+            "--dry-run",
+        ])
+        .expect("decision import command");
+        assert!(matches!(
+            decision.command,
+            Command::Decision {
+                command: DecisionCommand::Import(_)
             }
         ));
     }

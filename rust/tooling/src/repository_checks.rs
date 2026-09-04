@@ -565,8 +565,10 @@ fn duration_millis(expression: &str) -> Option<f64> {
     for (constructor, multiplier) in [
         ("Duration::from_millis(", 1.0),
         ("std::time::Duration::from_millis(", 1.0),
+        ("StdDuration::from_millis(", 1.0),
         ("Duration::from_secs_f64(", 1_000.0),
         ("std::time::Duration::from_secs_f64(", 1_000.0),
+        ("StdDuration::from_secs_f64(", 1_000.0),
     ] {
         if let Some(value) = compact
             .strip_prefix(constructor)
@@ -577,6 +579,26 @@ fn duration_millis(expression: &str) -> Option<f64> {
         }
     }
     None
+}
+
+fn declared_duration_millis(text: &str, name: &str) -> Option<f64> {
+    if name.is_empty()
+        || !name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+    {
+        return None;
+    }
+    let declaration = format!("const {name}:");
+    text.lines().find_map(|line| {
+        if line.trim_start().starts_with(&declaration) {
+            line.split_once('=')
+                .and_then(|(_, value)| value.trim().strip_suffix(';'))
+                .and_then(duration_millis)
+        } else {
+            None
+        }
+    })
 }
 
 fn rust_wait_is_bounded(text: &str, call_end: usize) -> bool {
@@ -590,25 +612,10 @@ fn rust_wait_is_bounded(text: &str, call_end: usize) -> bool {
         .chars()
         .filter(|character| !character.is_whitespace())
         .collect::<String>();
-    let Some((name, _)) = compact.split_once(".min(") else {
-        return false;
-    };
-    if name.is_empty()
-        || !name
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
-    {
-        return false;
-    }
-    let declaration = format!("const {name}:");
-    text.lines().any(|line| {
-        line.trim_start().starts_with(&declaration)
-            && line
-                .split_once('=')
-                .and_then(|(_, value)| value.trim().strip_suffix(';'))
-                .and_then(duration_millis)
-                .is_some_and(|millis| millis <= 100.0)
-    })
+    let name = compact
+        .split_once(".min(")
+        .map_or(compact.as_str(), |(name, _)| name);
+    declared_duration_millis(text, name).is_some_and(|millis| millis <= 100.0)
 }
 
 /// Inspect one governed source without returning matched source text.
@@ -4101,10 +4108,10 @@ mod tests {
         assert_eq!(findings.len(), 2);
         assert_eq!(findings[0].line, Some(1));
         assert_eq!(findings[1].line, Some(2));
-        let rust = "std::thread::sleep(Duration::from_millis(100));\ntokio::time::sleep(deadline).await;\n";
+        let rust = "const WAKE: StdDuration = StdDuration::from_millis(100);\nstd::thread::sleep(Duration::from_millis(100));\nthread::sleep(WAKE);\ntokio::time::sleep(WAKE.min(deadline)).await;\ntokio::time::sleep(deadline).await;\n";
         let findings = scan_timer_waits_in_text(rust, "test.rs", SourceLanguage::Rust);
         assert_eq!(findings.len(), 1);
-        assert_eq!(findings[0].line, Some(2));
+        assert_eq!(findings[0].line, Some(5));
     }
 
     fn neutrality_fixture(root: &Path) {

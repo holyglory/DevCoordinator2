@@ -14,9 +14,9 @@ accounts, legacy unit names, paths) are instance data kept in the untracked
   CLI shim `/usr/local/bin/devcoordinator2`, client group and edge system
   user created, instance configuration templates in `/etc/devcoordinator2/`.
   The legacy edge keeps 80/443. Nothing legacy was modified.
-- `scripts/legacy_export.py` produced a reviewable read-only export of the
+- `devcoordinator2-tooling legacy export` produced a reviewable read-only export of the
   legacy stores (no secrets) at `instance/legacy-export.json`.
-- `scripts/legacy_import.py --dry-run` prints what would be imported and a
+- `devcoordinator2-tooling legacy import --dry-run` prints what would be imported and a
   deployment declaration plan; without `--dry-run` it imports
   administrators, Telegram chat links/subscriptions, and open bugs.
 
@@ -47,7 +47,7 @@ accounts, legacy unit names, paths) are instance data kept in the untracked
    Telegram state) to a dated directory outside both repositories.
 7. **Fence legacy mutations**: stop the legacy API/broker/test units
    (names in `instance/legacy-notes.md`) but leave its edge running.
-8. **Import reviewed state**: `scripts/legacy_import.py --export
+8. **Import reviewed state**: `devcoordinator2-tooling legacy import --export
    instance/legacy-export.json --state-dir /var/lib/devcoordinator2
    --bugs-dir /var/lib/devcoordinator2-bugs`; apply the reviewed deployment
    declarations so every public route of step 2 exists with its domain;

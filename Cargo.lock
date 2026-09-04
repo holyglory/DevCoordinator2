@@ -445,9 +445,16 @@ version = "0.2.0"
 dependencies = [
  "clap",
  "devcoordinator2-api",
+ "getrandom 0.3.4",
  "ignore",
+ "regex",
+ "rusqlite",
  "rustix",
+ "serde",
  "serde_json",
+ "sha2",
+ "tempfile",
+ "time",
  "tree-sitter",
  "tree-sitter-python",
 ]

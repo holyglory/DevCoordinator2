@@ -1,5 +1,9 @@
 use std::path::Path;
 
+pub mod decision_import;
+pub mod instance;
+pub mod legacy_export;
+pub mod legacy_import;
 pub mod python_guard;
 pub mod repository_checks;
 pub mod skill_links;
