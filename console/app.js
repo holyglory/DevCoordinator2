@@ -2467,7 +2467,7 @@ const viewCodexUsage = guard(async (repositoryId, waitForRefresh = false) => {
   bindCoverageHint(main);
   if (data.coverage.snapshot && (!data.coverage.snapshot.updated_at_ms || !data.coverage.available_collectors)) {
     main.querySelectorAll('.usage-metrics, .usage-primary, .usage-lower, .usage-provenance').forEach((element) => element.remove());
-    main.querySelector('.usage-context').insertAdjacentHTML('afterend', stateBlock('empty', usageSnapshotText(data.coverage)));
+    main.querySelector('.usage-coverage > .muted')?.remove();
   }
   restore();
   continueUsageRefresh([data.coverage], () => viewCodexUsage(repositoryId, true));

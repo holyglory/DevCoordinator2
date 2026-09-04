@@ -679,7 +679,7 @@ fn source_report(
     values.push(SqlValue::Integer(i64_value(end_ms)?));
     values.push(SqlValue::Integer(i64_value(start_ms)?));
     let sql = format!(
-        "SELECT operation.id,operation.operation_kind,operation.agent_id,operation.started_at_ms,operation.phase,operation.activity,operation.activity_state,operation.attribution_provenance,terminal.occurred_at_ms,terminal.event_kind,tool.operation_family,tool.id,request.id FROM operations operation LEFT JOIN operation_events terminal ON terminal.operation_id=operation.id AND terminal.terminal=1 LEFT JOIN tool_invocations tool ON tool.operation_id=operation.id LEFT JOIN model_requests request ON request.operation_id=operation.id WHERE EXISTS(SELECT 1 FROM repository_attributions attribution WHERE attribution.operation_id=operation.id AND attribution.repository_id IN ({})) AND operation.started_at_ms<? AND (terminal.occurred_at_ms IS NULL OR terminal.occurred_at_ms>?)",
+        "SELECT operation.id,operation.operation_kind,operation.agent_id,operation.started_at_ms,operation.phase,operation.activity,operation.activity_state,operation.attribution_provenance,terminal.occurred_at_ms,terminal.event_kind,tool.operation_family,tool.id,request.id FROM operations operation LEFT JOIN operation_events terminal ON terminal.operation_id=operation.id AND terminal.terminal=1 LEFT JOIN tool_invocations tool ON tool.operation_id=operation.id LEFT JOIN model_requests request ON request.operation_id=operation.id WHERE operation.id IN (SELECT attribution.operation_id FROM repository_attributions attribution WHERE attribution.repository_id IN ({})) AND operation.started_at_ms<? AND (terminal.occurred_at_ms IS NULL OR terminal.occurred_at_ms>?)",
         placeholders(family.len())
     );
     let mut statement = connection
@@ -1414,6 +1414,23 @@ impl RepositoryProbe for HostRepositoryProbe {
         repository: &Path,
         now_ms: u64,
     ) -> Result<(String, u32, u32), String> {
+        match self.probe_format(source, repository, now_ms, true) {
+            Err(reason) if reason == "identity_unsupported" => {
+                self.probe_format(source, repository, now_ms, false)
+            }
+            result => result,
+        }
+    }
+}
+
+impl HostRepositoryProbe {
+    fn probe_format(
+        &self,
+        source: &CodexUsageSource,
+        repository: &Path,
+        now_ms: u64,
+        identity_only: bool,
+    ) -> Result<(String, u32, u32), String> {
         if !source.executable.is_absolute()
             || !source.executable.is_file()
             || !source.codex_home.is_absolute()
@@ -1445,15 +1462,19 @@ impl RepositoryProbe for HostRepositoryProbe {
         } else {
             Command::new(&source.executable)
         };
-        command
-            .args([
+        if identity_only {
+            command.args(["usage", "--json", "repo", "current", "--identity-only"]);
+        } else {
+            command.args([
                 "usage",
                 "--json",
                 "--since",
                 &now_ms.to_string(),
                 "repo",
                 "current",
-            ])
+            ]);
+        }
+        command
             .current_dir(repository)
             .env_clear()
             .env("PATH", "/usr/bin:/bin")
@@ -1467,6 +1488,26 @@ impl RepositoryProbe for HostRepositoryProbe {
             .stderr(Stdio::piped());
         let output = run_probe(command)?;
         if !output.status.success() || output.stdout_truncated {
+            if !output.stderr_truncated {
+                if serde_json::from_slice::<serde_json::Value>(&output.stderr)
+                    .ok()
+                    .and_then(|document| {
+                        document
+                            .get("error")?
+                            .get("code")?
+                            .as_str()
+                            .map(str::to_owned)
+                    })
+                    .as_deref()
+                    == Some("not_found")
+                {
+                    return Err("mapping_unavailable".into());
+                }
+                let message = String::from_utf8_lossy(&output.stderr);
+                if identity_only && message.contains("unexpected argument '--identity-only'") {
+                    return Err("identity_unsupported".into());
+                }
+            }
             return Err("source_unavailable".into());
         }
         let document: serde_json::Value =
@@ -1495,7 +1536,12 @@ impl RepositoryProbe for HostRepositoryProbe {
             .get("schemaVersion")
             .and_then(serde_json::Value::as_u64)
             != Some(1)
-            || document.get("kind").and_then(serde_json::Value::as_str) != Some("usageSummary")
+            || document.get("kind").and_then(serde_json::Value::as_str)
+                != Some(if identity_only {
+                    "usageRepositoryIdentity"
+                } else {
+                    "usageSummary"
+                })
             || scope != Some("repository")
         {
             return Err("source_unavailable".into());
@@ -1551,6 +1597,8 @@ struct ProbeOutput {
     status: std::process::ExitStatus,
     stdout: Vec<u8>,
     stdout_truncated: bool,
+    stderr: Vec<u8>,
+    stderr_truncated: bool,
 }
 
 fn run_probe(mut command: Command) -> Result<ProbeOutput, String> {
@@ -1578,7 +1626,7 @@ fn run_probe(mut command: Command) -> Result<ProbeOutput, String> {
         .join()
         .map_err(|_| "source_unavailable")?
         .map_err(|_| "source_unavailable")?;
-    let _ = stderr
+    let (stderr, stderr_truncated) = stderr
         .join()
         .map_err(|_| "source_unavailable")?
         .map_err(|_| "source_unavailable")?;
@@ -1586,6 +1634,8 @@ fn run_probe(mut command: Command) -> Result<ProbeOutput, String> {
         status,
         stdout,
         stdout_truncated,
+        stderr,
+        stderr_truncated,
     })
 }
 
@@ -2287,7 +2337,7 @@ mod tests {
         std::fs::write(
             &executable,
             format!(
-                "#!/bin/sh\n[ \"$1\" = usage ] || exit 9\n[ \"$2\" = --json ] || exit 9\n[ \"$3\" = --since ] || exit 9\n[ \"$5\" = repo ] || exit 9\n[ \"$6\" = current ] || exit 9\n[ \"$CODEX_HOME\" = \"{}\" ] || exit 9\nprintf '%s\\n' '{{\"schemaVersion\":1,\"kind\":\"usageSummary\",\"databaseSchemaVersion\":4,\"taxonomyVersion\":1,\"scope\":{{\"type\":\"repository\",\"id\":\"{}\"}}}}'\n",
+                "#!/bin/sh\n[ \"$1\" = usage ] || exit 9\n[ \"$2\" = --json ] || exit 9\n[ \"$3\" = repo ] || exit 9\n[ \"$4\" = current ] || exit 9\n[ \"$5\" = --identity-only ] || exit 9\n[ \"$CODEX_HOME\" = \"{}\" ] || exit 9\nprintf '%s\\n' '{{\"schemaVersion\":1,\"kind\":\"usageRepositoryIdentity\",\"databaseSchemaVersion\":4,\"taxonomyVersion\":1,\"scope\":{{\"type\":\"repository\",\"id\":\"{}\"}}}}'\n",
                 codex_home.display(),
                 "c".repeat(64),
             ),
@@ -2319,6 +2369,34 @@ mod tests {
             executable: temporary.path().join("codex"),
         };
         assert!(matches!(open_source(&source), Err(reason) if reason == "source_unavailable"));
+    }
+
+    #[test]
+    fn legacy_repository_probe_distinguishes_missing_history_from_failure() {
+        let temporary = tempdir().unwrap();
+        let executable = temporary.path().join("probe");
+        let source = CodexUsageSource {
+            uid: rustix::process::getuid().as_raw(),
+            codex_home: temporary.path().to_path_buf(),
+            executable: executable.clone(),
+        };
+        for (message, expected) in [
+            (
+                r#"{"schemaVersion":1,"error":{"code":"not_found"}}"#,
+                "mapping_unavailable",
+            ),
+            (
+                r#"{"schemaVersion":1,"error":{"code":"database_unavailable"}}"#,
+                "source_unavailable",
+            ),
+        ] {
+            std::fs::write(&executable, format!("#!/bin/sh\nif [ \"$5\" = --identity-only ]; then printf \"unexpected argument '--identity-only'\\n\" >&2; exit 2; fi\n[ \"$3\" = --since ] || exit 9\nprintf '%s\\n' '{message}' >&2\nexit 3\n")).unwrap();
+            std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
+            assert_eq!(
+                HostRepositoryProbe.probe(&source, temporary.path(), 1234),
+                Err(expected.into())
+            );
+        }
     }
 
     #[test]

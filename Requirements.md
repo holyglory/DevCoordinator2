@@ -366,6 +366,15 @@ not contradict them.
   and operator/admin access remain unchanged. Collector indexing is a separate
   dependency; cache delivery does not prove an unreadable source is fixed.
 
+- **REQ-HEALTH-10** (2026-09-04): Resolve repository identity without computing
+  a usage summary when the configured collector supports identity-only lookup.
+  Preserve a bounded legacy fallback and distinguish missing repository history
+  from failed reads. Select repository-attributed operation IDs before loading
+  detail records; use the collector-owned repository/operation lookup index
+  without writing to its database. Verify real provider totals on both the
+  reported repository Usage page and Progress, across supported time ranges;
+  a responsive loading or error state alone does not satisfy this requirement.
+
 ## Repository progress and forecasting (REQ-PROGRESS)
 
 - **REQ-PROGRESS-01** (2026-08-30, done): An operator or administrator can

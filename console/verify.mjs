@@ -484,9 +484,10 @@ async function startFakeDaemon(dir) {
         if (scenario.cacheState && payload.ok && ['usage.repository', 'usage.repositories', 'progress.repository'].includes(req.operation)) {
           payload = structuredClone(payload);
           const ready = !!req.params.wait_for_refresh;
-          const cold = scenario.cacheState === 'loading' && !ready;
+          const failed = ['failed', 'unavailable'].includes(scenario.cacheState);
+          const cold = scenario.cacheState === 'unavailable' || scenario.cacheState === 'loading' && !ready;
           const snapshot = { updated_at_ms: cold ? null : Date.UTC(2026, 8, 4, 12),
-            refreshing: !ready && scenario.cacheState !== 'failed', refresh_failed: scenario.cacheState === 'failed' };
+            refreshing: !ready && !failed, refresh_failed: failed };
           const items = req.operation === 'usage.repositories' ? payload.data.repositories : [payload.data];
           for (const item of items) {
             const coverage = req.operation === 'progress.repository' ? item.coverage.tokens : item.coverage;
@@ -811,15 +812,17 @@ async function main() {
         await context.addCookies([{ name: 'dc2_session', value: cookie.split(';')[0].split('=')[1], domain: '.' + BASE, path: '/' }]);
         const page = await context.newPage();
         for (const route of ['usage', 'usage/' + REPO, 'progress/' + REPO, 'deployments'].filter(route => !process.env.CONSOLE_VERIFY_CACHE_ROUTE || route.startsWith(process.env.CONSOLE_VERIFY_CACHE_ROUTE))) {
-          for (const cacheState of ['loading', 'stale', 'failed']) {
+          for (const cacheState of ['loading', 'stale', 'failed', 'unavailable']) {
             try {
             daemon.setScenario({ ...SCENARIOS.populated, cacheState });
             const operation = route === 'usage' ? 'usage.repositories' : route.startsWith('progress') ? 'progress.repository' : 'usage.repository';
-            const waitRequest = cacheState === 'failed' ? null : page.waitForRequest(request => request.url().endsWith('/api/v2/' + operation) && request.postDataJSON()?.wait_for_refresh === true).catch(error => ({ error }));
+            const failed = ['failed', 'unavailable'].includes(cacheState);
+            const waitRequest = failed ? null : page.waitForRequest(request => request.url().endsWith('/api/v2/' + operation) && request.postDataJSON()?.wait_for_refresh === true).catch(error => ({ error }));
             await page.goto('http://' + HOST + ':' + port + '/?cache=' + cacheState + '#/' + route);
             await page.waitForFunction(() => /Loading usage|Saved usage|Refresh failed|refresh failed/i.test(document.querySelector('main').innerText));
             const before = await page.locator('main').innerText();
-            check('cache ' + viewport.width + ' ' + route + ' ' + cacheState + ': truthful snapshot label', cacheState === 'loading' ? /Loading usage/.test(before) : cacheState === 'failed' ? /refresh failed/i.test(before) : /saved usage/i.test(before));
+            check('cache ' + viewport.width + ' ' + route + ' ' + cacheState + ': truthful snapshot label', cacheState === 'loading' ? /Loading usage/.test(before) : failed ? /refresh failed/i.test(before) : /saved usage/i.test(before));
+            if (cacheState === 'unavailable' && route === 'usage/' + REPO) check('empty usage failure is shown once', (before.match(/refresh failed/gi) || []).length === 1 && await page.locator('.usage-metrics').count() === 0);
             if (cacheState === 'loading' && route === 'usage/' + REPO) check('cache cold detail hides unmeasured metrics', await page.locator('.usage-metrics').count() === 0);
             if (cacheState === 'loading' && route === 'progress/' + REPO) check('cache cold Progress leaves token evidence blank', await page.locator('[data-progress-evidence="tokens"] > strong').textContent() === '—');
             const details = route === 'progress/' + REPO ? '.progress-exact' : route === 'usage/' + REPO ? '.usage-provenance' : null;
