@@ -76,6 +76,10 @@ enum FormalUiCommand {
 
 #[derive(Debug, Subcommand)]
 enum AuditCommand {
+    TestCoverage {
+        #[command(subcommand)]
+        command: TestCoverageCommand,
+    },
     JourneyDocs {
         #[command(subcommand)]
         command: JourneyDocsCommand,
@@ -140,6 +144,52 @@ enum AuditCommand {
         verification_receipt: Option<PathBuf>,
         #[arg(long)]
         ledger_projection_out: Option<PathBuf>,
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum TestCoverageCommand {
+    Build {
+        #[arg(long, default_value = ".")]
+        repo: PathBuf,
+        #[arg(long)]
+        out: Option<PathBuf>,
+        #[arg(long, default_value_t = 8)]
+        batch_size: usize,
+        #[arg(long, default_value_t = 60_000)]
+        max_batch_bytes: usize,
+        #[arg(long, overrides_with = "no_include_config")]
+        include_config: bool,
+        #[arg(long, overrides_with = "include_config")]
+        no_include_config: bool,
+        #[arg(long)]
+        include_env: bool,
+        #[arg(long)]
+        include_generated: bool,
+        #[arg(long)]
+        include_vendor: bool,
+        #[arg(long)]
+        include_assets: bool,
+        #[arg(long)]
+        run_id: Option<String>,
+        #[arg(long = "exclude-glob")]
+        exclude_globs: Vec<String>,
+        #[arg(long = "include-file")]
+        include_files: Vec<String>,
+        #[arg(long = "include-glob")]
+        include_globs: Vec<String>,
+        #[arg(long = "coverage-report")]
+        coverage_reports: Vec<PathBuf>,
+    },
+    Verify {
+        #[arg(long)]
+        manifest: PathBuf,
+        #[arg(long, required = true, num_args = 1..)]
+        reports: Vec<PathBuf>,
+        #[arg(long)]
+        skip_current_hash_check: bool,
         #[arg(long)]
         json: bool,
     },
@@ -653,6 +703,7 @@ fn formal_ui_error(error: &str) -> ExitCode {
 
 fn run_audit(command: AuditCommand) -> ExitCode {
     match command {
+        AuditCommand::TestCoverage { command } => run_test_coverage(command),
         AuditCommand::JourneyDocs { command } => run_journey_docs(command),
         AuditCommand::BuildFullRepo {
             repo,
@@ -743,6 +794,155 @@ fn run_audit(command: AuditCommand) -> ExitCode {
                 Err(error) => tooling_error(&format!("could not merge audit reports: {error}"), 2),
             }
         }
+    }
+}
+
+fn run_test_coverage(command: TestCoverageCommand) -> ExitCode {
+    match command {
+        TestCoverageCommand::Build {
+            repo,
+            out,
+            batch_size,
+            max_batch_bytes,
+            include_config: _,
+            no_include_config,
+            include_env,
+            include_generated,
+            include_vendor,
+            include_assets,
+            run_id,
+            exclude_globs,
+            include_files,
+            include_globs,
+            coverage_reports,
+        } => {
+            let result = (|| {
+                let repo = repo
+                    .canonicalize()
+                    .map_err(|error| format!("Repo path is not a directory: {error}"))?;
+                let run_id = match run_id {
+                    Some(run_id) => devcoordinator2_tooling::audit_queue::run_id_token(&run_id)?,
+                    None => random_audit_run_id()?,
+                };
+                let stamp = audit_archive_stamp()?;
+                let out = match out {
+                    Some(path) if path.is_absolute() => path,
+                    Some(path) => std::env::current_dir()
+                        .map_err(|error| error.to_string())?
+                        .join(path),
+                    None => std::env::temp_dir()
+                        .join("full-repo-test-coverage-audit")
+                        .join(repo.file_name().unwrap_or_default())
+                        .join(format!("{stamp}-{}", &run_id[..8])),
+                };
+                let mut output_rel_dirs =
+                    devcoordinator2_tooling::audit_queue::relative_dir_if_child(&repo, &out)
+                        .into_iter()
+                        .collect::<Vec<_>>();
+                if output_rel_dirs == [String::new()] {
+                    return Err("--out cannot be the repository root".to_owned());
+                }
+                let owner = devcoordinator2_tooling::audit_queue::ArtifactOwnership {
+                    owner: devcoordinator2_tooling::test_coverage_audit::ARTIFACT_OWNER.to_owned(),
+                    marker_name: devcoordinator2_tooling::test_coverage_audit::ARTIFACT_MARKER
+                        .to_owned(),
+                    ..devcoordinator2_tooling::audit_queue::ArtifactOwnership::default()
+                };
+                for owned in devcoordinator2_tooling::audit_queue::discover_owned_output_dirs(
+                    &repo,
+                    include_generated,
+                    include_vendor,
+                    &owner,
+                ) {
+                    if !output_rel_dirs.contains(&owned) {
+                        output_rel_dirs.push(owned);
+                    }
+                }
+                let include_files = include_files
+                    .iter()
+                    .map(|path| {
+                        devcoordinator2_tooling::audit_queue::validate_repo_relative_include(
+                            &repo, path,
+                        )
+                    })
+                    .collect::<Result<std::collections::BTreeSet<_>, _>>()?;
+                let verifier = std::env::current_exe().map_err(|error| error.to_string())?;
+                let manifest = devcoordinator2_tooling::test_coverage_audit::build(
+                    &devcoordinator2_tooling::test_coverage_audit::BuildOptions {
+                        repo,
+                        out: out.clone(),
+                        run_id,
+                        generated_at: timestamp()?,
+                        archive_stamp: stamp,
+                        verifier_program: verifier,
+                        batch_size,
+                        max_batch_bytes,
+                        collection: devcoordinator2_tooling::audit_queue::CollectOptions {
+                            include_config: !no_include_config,
+                            include_env,
+                            include_generated,
+                            include_vendor,
+                            include_assets,
+                            exclude_globs,
+                            include_files,
+                            include_globs,
+                            output_rel_dirs,
+                        },
+                        coverage_reports,
+                    },
+                )?;
+                Ok((manifest, out))
+            })();
+            match result {
+                Ok((manifest, out)) => {
+                    println!(
+                        "Wrote {} test coverage batches covering {} source files to {}",
+                        manifest["batch_count"],
+                        manifest["source_file_count"],
+                        out.display()
+                    );
+                    ExitCode::SUCCESS
+                }
+                Err(error) => tooling_error(&error, 2),
+            }
+        }
+        TestCoverageCommand::Verify {
+            manifest,
+            reports,
+            skip_current_hash_check,
+            json,
+        } => match devcoordinator2_tooling::test_coverage_audit::verify(
+            &manifest,
+            &reports,
+            skip_current_hash_check,
+        ) {
+            Ok(result) if json => {
+                println!("{}", serde_json::to_string_pretty(&result).unwrap());
+                if result["ok"] == true {
+                    ExitCode::SUCCESS
+                } else {
+                    ExitCode::from(1)
+                }
+            }
+            Ok(result) => {
+                println!("ok: {}", result["ok"]);
+                println!("run_id: {}", result["run_id"]);
+                if let Some(issues) = result["issues"].as_object() {
+                    for (name, values) in issues {
+                        if let Some(values) = values.as_array().filter(|values| !values.is_empty())
+                        {
+                            println!("{name}: {}", values.len());
+                        }
+                    }
+                }
+                if result["ok"] == true {
+                    ExitCode::SUCCESS
+                } else {
+                    ExitCode::from(1)
+                }
+            }
+            Err(error) => tooling_error(&error, 2),
+        },
     }
 }
 
@@ -1635,6 +1835,27 @@ mod tests {
             Command::Audit {
                 command: AuditCommand::JourneyDocs {
                     command: JourneyDocsCommand::Inventory { json: true, .. }
+                }
+            }
+        ));
+        let coverage_build = Cli::try_parse_from([
+            "devcoordinator2-tooling",
+            "audit",
+            "test-coverage",
+            "build",
+            "--repo",
+            "/repo",
+            "--out",
+            "/tmp/coverage",
+            "--coverage-report",
+            "/tmp/lcov.info",
+        ])
+        .expect("test coverage build command");
+        assert!(matches!(
+            coverage_build.command,
+            Command::Audit {
+                command: AuditCommand::TestCoverage {
+                    command: TestCoverageCommand::Build { .. }
                 }
             }
         ));
