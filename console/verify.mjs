@@ -151,8 +151,9 @@ const progressFixture = (scenario, period = 'day') => {
 
 const fixtures = (scenario) => {
   const runningState = scenario.applying ? 'applying' : (scenario.stopped ? 'stopped' : (scenario.serviceStopped ? 'degraded' : 'running'));
-  const running = { deployment_id: DEP, repository_id: 'r0123456789abcdef', repository_name: 'repo-one', name: 'web', source: 'worktree', state: runningState, domain: `app-dev.${BASE}`, public: false, current_generation: 17, updated_at: new Date(Date.now() - 90000).toISOString(), ttl_expires_at: null };
-  const degraded = { deployment_id: 'd1111111111111111', repository_id: 'r0123456789abcdef', repository_name: 'repo-one', name: LONG, source: 'checkout', state: 'degraded', domain: `${LONG}.${BASE}`, public: false, current_generation: 2147483647, updated_at: new Date().toISOString(), ttl_expires_at: '2026-12-31T00:00:00Z' };
+  const primaryRepositoryName = scenario.dashboardUsagePending ? 'active-project' : 'repo-one';
+  const running = { deployment_id: DEP, repository_id: 'r0123456789abcdef', repository_name: primaryRepositoryName, name: 'web', source: 'worktree', state: runningState, domain: `app-dev.${BASE}`, public: false, current_generation: 17, updated_at: new Date(Date.now() - 90000).toISOString(), ttl_expires_at: null };
+  const degraded = { deployment_id: 'd1111111111111111', repository_id: 'r0123456789abcdef', repository_name: primaryRepositoryName, name: LONG, source: 'checkout', state: 'degraded', domain: `${LONG}.${BASE}`, public: false, current_generation: 2147483647, updated_at: new Date().toISOString(), ttl_expires_at: '2026-12-31T00:00:00Z' };
   const observed = { deployment_id: OBS, repository_id: 'r9999999999999999', repository_name: 'legacy-repo', name: 'existing-compose-stack', source: 'observed', state: 'running', health: 'healthy', domain: `observed.${BASE}`, public: true, route_port: 5001, current_generation: null, updated_at: new Date().toISOString(), ttl_expires_at: null, observed_only: true };
   const observedComponents = [{ name: 'app', display_name: 'existing-compose-stack-app-1', type: 'container', state: 'running', health: 'healthy', generation: null, binding: { kind: 'observed-container', identity: 'd'.repeat(64) }, port: 5001, restarts: null, owned: false, independent_control: false, last_error: null }];
   const components = [
@@ -290,7 +291,7 @@ const fixtures = (scenario) => {
       { id: 'c'.repeat(64), name: 'devcoordinator2-test-old-postgres', image: 'postgres:16-alpine', state: 'exited', status: 'Exited (0)', created: '2026-08-22', repository_id: 'r1', deployment_id: null, component: null, run_id: 't-old', caller_uid: 1001, client: 'codex', ttl_seconds: 3600, data: 'disposable', classification: 'orphaned-managed', cpu_percent: null, memory_bytes: null, pids: null, container_layer_bytes: 12345 },
       { id: 'd'.repeat(64), name: 'existing-compose-stack-app-1', image: 'app:1', state: 'running', status: 'Up 3 days (healthy)', created: '2026-08-20', repository_id: 'r0123456789abcdef', deployment_id: OBS, component: 'app', run_id: null, caller_uid: null, client: 'legacy-current-import', ttl_seconds: null, data: 'observed-only', classification: 'observed-current', cpu_percent: 2.5, memory_bytes: 123456789, pids: 4, container_layer_bytes: 45678 }], counts: { 'managed-test': 0, 'managed-preview': 0, 'managed-permanent': 1, 'observed-current': 1, 'orphaned-managed': 1, unmanaged: 1 } },
     'usage.repositories': { range: '24h', generated_at_ms: Date.now(), repositories: scenario.empty ? [] : [
-      { repository_id: REPO, display_name: 'repo-one', range: '24h', coverage: scenario.usageIndexing ? usageIndexingCoverage : usageCoverage, total_tokens: scenario.usageIndexing ? null : 6405721, model_requests: scenario.usageIndexing ? 0 : 104, tool_calls: scenario.usageIndexing ? 0 : 236, execution_wall_ms: scenario.usageIndexing ? 0 : 147000 },
+      { repository_id: REPO, display_name: 'repo-one', range: '24h', coverage: scenario.usageIndexing ? usageIndexingCoverage : scenario.dashboardUsagePending ? usageMappingPendingCoverage : scenario.dashboardUsageUnobserved ? usageUnobservedCoverage : usageCoverage, total_tokens: scenario.usageIndexing || scenario.dashboardUsagePending || scenario.dashboardUsageUnobserved ? null : 6405721, model_requests: scenario.usageIndexing || scenario.dashboardUsagePending || scenario.dashboardUsageUnobserved ? 0 : 104, tool_calls: scenario.usageIndexing || scenario.dashboardUsagePending || scenario.dashboardUsageUnobserved ? 0 : 236, execution_wall_ms: scenario.usageIndexing || scenario.dashboardUsagePending || scenario.dashboardUsageUnobserved ? 0 : 147000 },
       { repository_id: 'r2', display_name: LONG, range: '24h', coverage: usageCompleteCoverage, total_tokens: 2100000, model_requests: 38, tool_calls: 74, execution_wall_ms: 72000 },
       { repository_id: 'r3', display_name: 'no-measurements', range: '24h', coverage: usageUnobservedCoverage, total_tokens: null, model_requests: 0, tool_calls: 0, execution_wall_ms: 0 },
       { repository_id: 'r4', display_name: 'not-connected', range: '24h', coverage: usageMappingPendingCoverage, total_tokens: null, model_requests: 0, tool_calls: 0, execution_wall_ms: 0 },
@@ -359,6 +360,8 @@ const SCENARIOS = {
   usageComplete: { identity: 'owner@example.test', admin: true, usageComplete: true, targetedOnly: true },
   usageUnavailable: { identity: 'owner@example.test', admin: true, usageUnavailable: true, targetedOnly: true },
   usageIndexing: { identity: 'owner@example.test', admin: true, usageIndexing: true, targetedOnly: true },
+  dashboardUsagePending: { identity: 'owner@example.test', admin: true, dashboardUsagePending: true, targetedOnly: true },
+  dashboardUsageUnobserved: { identity: 'owner@example.test', admin: true, dashboardUsageUnobserved: true, targetedOnly: true },
   progressPartial: { identity: 'owner@example.test', admin: true, partial: true, targetedOnly: true },
   progressReference: { identity: 'owner@example.test', admin: true, progressReference: true, targetedOnly: true },
   logEmpty: { identity: 'owner@example.test', admin: true, logEmpty: true, targetedOnly: true },
@@ -610,6 +613,7 @@ async function startFakeDaemon(dir) {
       if (cmd === 'progress.repository') return reply({ ok: true, result: progressFixture(scenario, req.args.period || 'day') });
       if (cmd === 'progress.repositories') return reply({ ok: true, result: fixtures(scenario)['progress.repositories'] });
       if (cmd === 'usage.repository') {
+        if (scenario.dashboardUsagePending) await new Promise((resolve) => setTimeout(resolve, 100));
         const result = structuredClone(fixtures({ ...scenario, stopped: mutable.stopped,
           serviceStopped: mutable.serviceStopped })['usage.repository']);
         result.range = req.args.range || '24h';
@@ -1084,11 +1088,13 @@ async function main() {
   let dashboardRepo = page.locator(`[data-repository-id="${REPO}"]`);
   let legacyDashboardRepo = page.locator('[data-repository-id="r9999999999999999"]');
   const repositoryToggle = dashboardRepo.locator('[data-deployment-repository-toggle]');
-  check('deployments: every repository and deployment starts expanded with an accessible collapse control',
+  check('deployments: every repository and Workers collection starts expanded with no per-worker expander',
     await page.locator('[data-deployment-repository-toggle][aria-expanded="true"]').count() === 2
-    && await page.locator('[data-deployment-toggle][aria-expanded="true"]').count() === 3
+    && await page.locator('[data-deployment-workers-toggle][aria-expanded="true"]').count() === 2
+    && await page.locator('[data-deployment-toggle], .deployment-record-toggle').count() === 0
     && await page.locator('.deployment-repository-body:not([hidden])').count() === 2
-    && await page.locator('.deployment-record-body:not([hidden])').count() === 3);
+    && await page.locator('.deployment-records:not([hidden])').count() === 2
+    && await page.locator('.deployment-record').count() === 3);
   await repositoryToggle.focus();
   await page.keyboard.press('Enter');
   check('interaction: Enter collapses only the selected repository while its identity and status remain visible',
@@ -1103,28 +1109,34 @@ async function main() {
     await repositoryToggle.getAttribute('aria-expanded') === 'true'
     && await dashboardRepo.locator('.deployment-summary-item:visible').count() === 6
     && await dashboardRepo.locator('.deployment-record:visible').count() === 2);
-  let firstDashboardRecord = dashboardRepo.locator('.deployment-record').first();
-  let secondDashboardRecord = dashboardRepo.locator('.deployment-record').nth(1);
-  const firstDeploymentToggle = firstDashboardRecord.locator('[data-deployment-toggle]');
-  await firstDeploymentToggle.focus();
+  let workersToggle = dashboardRepo.locator('[data-deployment-workers-toggle]');
+  await workersToggle.focus();
   await page.keyboard.press('Enter');
-  check('interaction: a deployment collapses independently while its identity and state remain visible',
-    await firstDeploymentToggle.getAttribute('aria-expanded') === 'false'
-    && await firstDashboardRecord.locator('.deployment-record-body[hidden]').count() === 1
-    && await firstDashboardRecord.locator('.deployment-record-identity:visible').count() === 1
-    && await firstDashboardRecord.locator('.deployment-record-status:visible').count() === 1
-    && await firstDashboardRecord.locator('[data-cmd]:visible, [data-edit-domain]:visible').count() === 0
-    && await secondDashboardRecord.locator('.deployment-record-body:not([hidden])').count() === 1);
+  check('interaction: Enter collapses every worker in only the selected repository',
+    await workersToggle.getAttribute('aria-expanded') === 'false'
+    && await dashboardRepo.locator('.deployment-records[hidden]').count() === 1
+    && await dashboardRepo.locator('.deployment-workers-head:visible').count() === 1
+    && await dashboardRepo.locator('.deployment-record:visible').count() === 0
+    && await legacyDashboardRepo.locator('.deployment-records:not([hidden])').count() === 1
+    && await legacyDashboardRepo.locator('.deployment-record:visible').count() === 1);
+  await page.keyboard.press('Space');
+  check('interaction: Space restores every worker and its real lifecycle controls together',
+    await workersToggle.getAttribute('aria-expanded') === 'true'
+    && await dashboardRepo.locator('.deployment-records:not([hidden])').count() === 1
+    && await dashboardRepo.locator('.deployment-record:visible').count() === 2
+    && await dashboardRepo.locator('.deployment-record [data-cmd]:visible').count() > 0);
+  await workersToggle.click();
   await page.evaluate(() => { location.hash = '#/health'; });
   await page.waitForSelector('.health-summary');
   await page.evaluate(() => { location.hash = '#/deployments'; });
   await page.waitForSelector(`[data-repository-id="${REPO}"]`);
   dashboardRepo = page.locator(`[data-repository-id="${REPO}"]`);
-  firstDashboardRecord = dashboardRepo.locator('.deployment-record').first();
-  check('interaction: the selected deployment stays collapsed through a same-session page rerender',
-    await firstDashboardRecord.locator('[data-deployment-toggle]').getAttribute('aria-expanded') === 'false'
-    && await firstDashboardRecord.locator('.deployment-record-body[hidden]').count() === 1);
-  await firstDashboardRecord.locator('[data-deployment-toggle]').click();
+  workersToggle = dashboardRepo.locator('[data-deployment-workers-toggle]');
+  check('interaction: the selected Workers collection stays collapsed through a same-session page rerender',
+    await workersToggle.getAttribute('aria-expanded') === 'false'
+    && await dashboardRepo.locator('.deployment-records[hidden]').count() === 1
+    && await dashboardRepo.locator('.deployment-record:visible').count() === 0);
+  await workersToggle.click();
   await dashboardRepo.locator('[data-deployment-repository-toggle]').click();
   await page.evaluate(() => { location.hash = '#/tests'; });
   await page.waitForSelector('.tests-tablewrap');
@@ -1149,6 +1161,62 @@ async function main() {
     && /Memory\s+46\.6 GiB/.test(await healthSummary.innerText())
     && /Storage\s+373 GiB/.test(await healthSummary.innerText())
     && /Deployments\s+2/.test(await healthSummary.innerText()));
+  daemon.setScenario(SCENARIOS.dashboardUsagePending);
+  await page.reload();
+  const resolvingUsage = page.locator(`[data-repository-id="${REPO}"] [data-summary="usage"]`);
+  await resolvingUsage.waitFor();
+  await resolvingUsage.locator('.deployment-summary-link').focus();
+  const resolvingInitialText = await resolvingUsage.innerText();
+  const resolvingInitialBusy = await resolvingUsage.getAttribute('aria-busy');
+  check('deployments: a pending usage mapping starts as a truthful non-blocking loading state',
+    /Loading usage/.test(resolvingInitialText)
+    && resolvingInitialBusy === 'true'
+    && await page.locator('.deployment-summary-item').count() === 12,
+  JSON.stringify({ resolvingInitialText, resolvingInitialBusy,
+    summaryCount: await page.locator('.deployment-summary-item').count() }));
+  await page.waitForFunction((repositoryId) => {
+    const card = document.querySelector(`[data-repository-id="${repositoryId}"] [data-summary="usage"]`);
+    return /6\.4M tokens · 104 requests/.test(card?.textContent || '')
+      && !card?.hasAttribute('aria-busy');
+  }, REPO);
+  const usageResolutionCalls = daemon.calls.filter((call) => call.command === 'usage.repository');
+  const resolvingFinalText = await resolvingUsage.innerText();
+  const resolvingFinalFocus = await resolvingUsage.locator('.deployment-summary-link:focus').count();
+  check('interaction: available project usage resolves once in place without losing link focus',
+    usageResolutionCalls.length === 1
+    && usageResolutionCalls[0].args.repository_id === REPO
+    && usageResolutionCalls[0].args.range === '24h'
+    && resolvingFinalFocus === 1
+    && /3 of 4 environments included/.test(resolvingFinalText),
+  JSON.stringify({ usageResolutionCalls, resolvingFinalText, resolvingFinalFocus }));
+  daemon.setScenario(SCENARIOS.dashboardUsageUnobserved);
+  await page.reload();
+  await page.waitForSelector(`[data-repository-id="${REPO}"] [data-summary="usage"]`);
+  const unobservedText = await page.innerText(`[data-repository-id="${REPO}"] [data-summary="usage"]`);
+  const unobservedCalls = daemon.calls.filter((call) => call.command === 'usage.repository');
+  check('deployments: genuinely unobserved usage stays truthful and triggers no detail read',
+    /No usage measured/.test(unobservedText) && unobservedCalls.length === 0,
+  JSON.stringify({ unobservedText, unobservedCalls }));
+  daemon.setScenario(SCENARIOS.usageUnavailable);
+  await page.reload();
+  await page.waitForSelector(`[data-repository-id="${REPO}"] [data-summary="usage"]`);
+  const unavailableText = await page.innerText(`[data-repository-id="${REPO}"] [data-summary="usage"]`);
+  const unavailableCalls = daemon.calls.filter((call) => call.command === 'usage.repository');
+  check('deployments: a real usage source failure stays unavailable and triggers no mapping read',
+    /Usage data unavailable/.test(unavailableText) && unavailableCalls.length === 0,
+  JSON.stringify({ unavailableText, unavailableCalls }));
+  daemon.setScenario(SCENARIOS.denied);
+  await page.reload();
+  await page.waitForSelector(`[data-repository-id="${REPO}"] [data-summary="usage"]`);
+  const deniedUsageText = await page.innerText(`[data-repository-id="${REPO}"] [data-summary="usage"]`);
+  const deniedUsageCalls = daemon.calls.filter((call) => call.command === 'usage.repository');
+  check('deployments: insufficient access stays explicit and never starts a usage detail read',
+    /Operator access required/.test(deniedUsageText) && deniedUsageCalls.length === 0,
+  JSON.stringify({ deniedUsageText, deniedUsageCalls }));
+  daemon.setScenario(SCENARIOS.populated);
+  await page.reload();
+  await page.waitForSelector(`[data-repository-id="${REPO}"]`);
+  dashboardRepo = page.locator(`[data-repository-id="${REPO}"]`);
   const repositorySummaryJourneys = [
     [`#/plan/${REPO}`, '#/plan'],
     [`#/progress/${REPO}`, '#/progress'],
@@ -2560,26 +2628,26 @@ async function main() {
         && repositoryCollapsed.headerVisible && repositoryCollapsed.toggleContained
         && repositoryCollapsed.overflow <= 0, JSON.stringify(repositoryCollapsed));
       await repositoryToggle.click();
-      const firstRecord = firstRepository.locator('.deployment-record').first();
-      await firstRecord.locator('[data-deployment-toggle]').click();
-      await deploymentPage.screenshot({ path: path.join(OUT, `deployments-${viewport.width}-deployment-collapsed.png`), fullPage: true });
-      const deploymentCollapsed = await firstRecord.evaluate((record) => {
-        const identity = record.querySelector('.deployment-record-identity').getBoundingClientRect();
-        const status = record.querySelector('.deployment-record-status').getBoundingClientRect();
-        const toggle = record.querySelector('[data-deployment-toggle]').getBoundingClientRect();
-        return { hidden: record.querySelector('.deployment-record-body').hidden,
-          expanded: record.querySelector('[data-deployment-toggle]').getAttribute('aria-expanded'),
-          identityVisible: identity.width > 0 && identity.height > 0,
-          statusVisible: status.width > 0 && status.height > 0,
+      const workersToggle = firstRepository.locator('[data-deployment-workers-toggle]');
+      await workersToggle.click();
+      await deploymentPage.screenshot({ path: path.join(OUT, `deployments-${viewport.width}-workers-collapsed.png`), fullPage: true });
+      const workersCollapsed = await firstRepository.evaluate((repository) => {
+        const header = repository.querySelector('.deployment-workers-head').getBoundingClientRect();
+        const toggle = repository.querySelector('[data-deployment-workers-toggle]').getBoundingClientRect();
+        return { hidden: repository.querySelector('.deployment-records').hidden,
+          expanded: repository.querySelector('[data-deployment-workers-toggle]').getAttribute('aria-expanded'),
+          workerCount: repository.querySelectorAll('.deployment-record').length,
+          visibleWorkers: [...repository.querySelectorAll('.deployment-record')].filter((record) => record.getClientRects().length).length,
+          headerVisible: header.width > 0 && header.height > 0,
           toggleContained: toggle.left >= -1 && toggle.right <= innerWidth + 1,
           overflow: document.documentElement.scrollWidth - innerWidth };
       });
-      check(`deployments ${viewport.width}px: collapsed deployment keeps identity and state without overflow`,
-        deploymentCollapsed.hidden && deploymentCollapsed.expanded === 'false'
-        && deploymentCollapsed.identityVisible && deploymentCollapsed.statusVisible
-        && deploymentCollapsed.toggleContained && deploymentCollapsed.overflow <= 0,
-      JSON.stringify(deploymentCollapsed));
-      await firstRecord.locator('[data-deployment-toggle]').click();
+      check(`deployments ${viewport.width}px: collapsed Workers group hides every row and stays recognizable without overflow`,
+        workersCollapsed.hidden && workersCollapsed.expanded === 'false'
+        && workersCollapsed.workerCount === 1 && workersCollapsed.visibleWorkers === 0
+        && workersCollapsed.headerVisible && workersCollapsed.toggleContained
+        && workersCollapsed.overflow <= 0, JSON.stringify(workersCollapsed));
+      await workersToggle.click();
     }
   }
   await deploymentContext.close();
