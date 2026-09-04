@@ -1,3 +1,4 @@
+use std::ffi::OsString;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -53,6 +54,11 @@ enum Command {
 
 #[derive(Debug, Subcommand)]
 enum FormalUiCommand {
+    /// Run the retained Node browser verifier through the Rust tooling surface.
+    Verify {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        arguments: Vec<OsString>,
+    },
     /// Finalize agent decisions or validate an existing manual-review manifest.
     Review {
         #[arg(long)]
@@ -546,6 +552,36 @@ fn main() -> ExitCode {
 
 fn run_formal_ui(command: FormalUiCommand) -> ExitCode {
     match command {
+        FormalUiCommand::Verify { arguments } => {
+            let source_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .parent()
+                .and_then(std::path::Path::parent)
+                .map(std::path::Path::to_owned);
+            let Some(source_root) = source_root else {
+                return formal_ui_error("cannot resolve the canonical tooling source root");
+            };
+            let verifier = source_root
+                .join("skills/formal-web-ui-verification/scripts/formal_web_ui_verify.mjs");
+            if !verifier.is_file() || verifier.is_symlink() {
+                return formal_ui_error(&format!(
+                    "retained Node verifier is unavailable: {}",
+                    verifier.display()
+                ));
+            }
+            match std::process::Command::new("node")
+                .arg(verifier)
+                .args(arguments)
+                .status()
+            {
+                Ok(status) => ExitCode::from(
+                    status
+                        .code()
+                        .and_then(|code| u8::try_from(code).ok())
+                        .unwrap_or(2),
+                ),
+                Err(error) => formal_ui_error(&format!("cannot launch Node verifier: {error}")),
+            }
+        }
         FormalUiCommand::Review {
             report,
             queue,
@@ -1486,6 +1522,22 @@ mod tests {
                     ..
                 }
             }
+        ));
+        let formal_verify = Cli::try_parse_from([
+            "devcoordinator2-tooling",
+            "formal-ui",
+            "verify",
+            "--config",
+            "/tmp/formal.json",
+            "--json-out",
+            "/tmp/report.json",
+        ])
+        .expect("formal UI verifier wrapper");
+        assert!(matches!(
+            formal_verify.command,
+            Command::FormalUi {
+                command: FormalUiCommand::Verify { arguments }
+            } if arguments.len() == 4
         ));
 
         let audit = Cli::try_parse_from([
