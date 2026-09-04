@@ -17,6 +17,7 @@ base64.workspace = true
 clap.workspace = true
 devcoordinator2-api = { path = "../api" }
 getrandom.workspace = true
+globset.workspace = true
 ignore.workspace = true
 libc.workspace = true
 quick-xml.workspace = true
