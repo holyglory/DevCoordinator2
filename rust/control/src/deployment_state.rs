@@ -83,6 +83,7 @@ pub struct RegisteredDeploymentTarget {
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ComponentRuntimePatch {
+    pub spec_fingerprint: Option<String>,
     pub desired_state: Option<String>,
     pub state: Option<String>,
     pub health: Option<String>,
@@ -91,6 +92,14 @@ pub struct ComponentRuntimePatch {
     pub binding_identity: Option<Option<String>>,
     pub restarts: Option<u32>,
     pub last_error: Option<Option<String>>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct DeploymentRuntimePatch {
+    pub state: Option<String>,
+    pub current_generation: Option<Option<u32>>,
+    pub previous_generation: Option<Option<u32>>,
+    pub spec_fingerprint: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -292,6 +301,35 @@ impl DeploymentStore {
         client: &str,
         ttl_expires_at: Option<&str>,
     ) -> Result<(), ProtocolError> {
+        let fingerprint = specification.fingerprint(source);
+        self.upsert_with_fingerprint(
+            deployment_id,
+            target,
+            specification,
+            source,
+            &fingerprint,
+            domain,
+            state,
+            caller_uid,
+            client,
+            ttl_expires_at,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn upsert_with_fingerprint(
+        &self,
+        deployment_id: &str,
+        target: &RegisteredDeploymentTarget,
+        specification: &DeploymentSpec,
+        source: &str,
+        spec_fingerprint: &str,
+        domain: Option<&str>,
+        state: &str,
+        caller_uid: u32,
+        client: &str,
+        ttl_expires_at: Option<&str>,
+    ) -> Result<(), ProtocolError> {
         let now = self.timestamp()?;
         let deployment_id = deployment_id.to_owned();
         let target = target.clone();
@@ -306,7 +344,7 @@ impl DeploymentStore {
                 )
                 .with_detail(error.to_string())
             })?;
-        let spec_fingerprint = specification.fingerprint(&source);
+        let spec_fingerprint = spec_fingerprint.to_owned();
         let state = state.to_owned();
         let client = client.to_owned();
         let ttl_expires_at = ttl_expires_at.map(str::to_owned);
@@ -413,6 +451,120 @@ impl DeploymentStore {
             .map_err(database_error)
     }
 
+    pub fn patch_deployment_runtime(
+        &self,
+        deployment_id: &str,
+        patch: DeploymentRuntimePatch,
+    ) -> Result<(), ProtocolError> {
+        let now = self.timestamp()?;
+        let deployment_id = deployment_id.to_owned();
+        self.database
+            .transaction(move |transaction| {
+                let changed = transaction.execute(
+                    "UPDATE deployments SET state=COALESCE(?1,state),current_generation=CASE WHEN ?2 THEN ?3 ELSE current_generation END,previous_generation=CASE WHEN ?4 THEN ?5 ELSE previous_generation END,spec_fingerprint=COALESCE(?6,spec_fingerprint),updated_at=?7 WHERE deployment_id=?8",
+                    rusqlite::params![
+                        patch.state,
+                        patch.current_generation.is_some(),
+                        patch.current_generation.flatten(),
+                        patch.previous_generation.is_some(),
+                        patch.previous_generation.flatten(),
+                        patch.spec_fingerprint,
+                        now,
+                        deployment_id,
+                    ],
+                )?;
+                if changed == 0 {
+                    return Err(domain_error(
+                        ErrorCode::DeploymentNotFound,
+                        "deployment does not exist",
+                    ));
+                }
+                Ok(())
+            })
+            .map_err(database_error)
+    }
+
+    pub fn restore_apply_snapshot(
+        &self,
+        deployment: &DeploymentRow,
+        components: &[ComponentRow],
+        compose_desires: &BTreeMap<String, BTreeMap<String, String>>,
+    ) -> Result<(), ProtocolError> {
+        let deployment = deployment.clone();
+        let components = components.to_vec();
+        let compose_desires = compose_desires.clone();
+        self.database
+            .transaction(move |transaction| {
+                let changed = transaction.execute(
+                    "UPDATE deployments SET domain=?1,spec_fingerprint=?2,spec_json=?3,state=?4,current_generation=?5,previous_generation=?6,updated_at=?7,ttl_expires_at=?8,public=?9,domain_override=?10 WHERE deployment_id=?11",
+                    rusqlite::params![
+                        deployment.domain,
+                        deployment.spec_fingerprint,
+                        deployment.spec_json,
+                        deployment.state,
+                        deployment.current_generation,
+                        deployment.previous_generation,
+                        deployment.updated_at,
+                        deployment.ttl_expires_at,
+                        i64::from(deployment.public),
+                        deployment.domain_override,
+                        deployment.deployment_id,
+                    ],
+                )?;
+                if changed == 0 {
+                    return Err(domain_error(
+                        ErrorCode::DeploymentNotFound,
+                        "deployment does not exist",
+                    ));
+                }
+                transaction.execute(
+                    "DELETE FROM compose_service_desires WHERE deployment_id=?1",
+                    [&deployment.deployment_id],
+                )?;
+                transaction.execute(
+                    "DELETE FROM components WHERE deployment_id=?1",
+                    [&deployment.deployment_id],
+                )?;
+                for component in components {
+                    transaction.execute(
+                        "INSERT INTO components(deployment_id,name,type,order_index,spec_fingerprint,desired_state,state,health,generation,binding_kind,binding_identity,restarts,last_error,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",
+                        rusqlite::params![
+                            component.deployment_id,
+                            component.name,
+                            component.kind,
+                            component.order_index,
+                            component.spec_fingerprint,
+                            component.desired_state,
+                            component.state,
+                            component.health,
+                            component.generation,
+                            component.binding_kind,
+                            component.binding_identity,
+                            component.restarts,
+                            component.last_error,
+                            component.updated_at,
+                        ],
+                    )?;
+                }
+                for (component, desires) in compose_desires {
+                    for (service, state) in desires {
+                        transaction.execute(
+                            "INSERT INTO compose_service_desires(deployment_id,component,service,desired_state,updated_at) VALUES(?1,?2,?3,?4,?5)",
+                            rusqlite::params![
+                                deployment.deployment_id,
+                                component,
+                                service,
+                                state,
+                                deployment.updated_at,
+                            ],
+                        )?;
+                    }
+                }
+                Ok(())
+            })
+            .map_err(database_error)
+    }
+
     pub fn set_public(&self, deployment_id: &str, public: bool) -> Result<(), ProtocolError> {
         let now = self.timestamp()?;
         let deployment_id = deployment_id.to_owned();
@@ -445,8 +597,9 @@ impl DeploymentStore {
         self.database
             .transaction(move |transaction| {
                 let changed = transaction.execute(
-                    "UPDATE components SET desired_state=COALESCE(?1,desired_state),state=COALESCE(?2,state),health=COALESCE(?3,health),generation=CASE WHEN ?4 THEN ?5 ELSE generation END,binding_kind=CASE WHEN ?6 THEN ?7 ELSE binding_kind END,binding_identity=CASE WHEN ?8 THEN ?9 ELSE binding_identity END,restarts=COALESCE(?10,restarts),last_error=CASE WHEN ?11 THEN ?12 ELSE last_error END,updated_at=?13 WHERE deployment_id=?14 AND name=?15",
+                    "UPDATE components SET spec_fingerprint=COALESCE(?1,spec_fingerprint),desired_state=COALESCE(?2,desired_state),state=COALESCE(?3,state),health=COALESCE(?4,health),generation=CASE WHEN ?5 THEN ?6 ELSE generation END,binding_kind=CASE WHEN ?7 THEN ?8 ELSE binding_kind END,binding_identity=CASE WHEN ?9 THEN ?10 ELSE binding_identity END,restarts=COALESCE(?11,restarts),last_error=CASE WHEN ?12 THEN ?13 ELSE last_error END,updated_at=?14 WHERE deployment_id=?15 AND name=?16",
                     rusqlite::params![
+                        patch.spec_fingerprint,
                         patch.desired_state,
                         patch.state,
                         patch.health,
@@ -516,6 +669,20 @@ impl DeploymentStore {
                     )
                     .optional()
                     .map_err(DatabaseError::from)
+            })
+            .map_err(database_error)
+    }
+
+    pub fn generations(&self, deployment_id: &str) -> Result<Vec<GenerationRow>, ProtocolError> {
+        let deployment_id = deployment_id.to_owned();
+        self.database
+            .call(move |connection| {
+                let mut statement = connection.prepare(
+                    "SELECT deployment_id,number,commit_hash,dirty,path,fingerprint,created_at,state FROM generations WHERE deployment_id=?1 ORDER BY number",
+                )?;
+                Ok(statement
+                    .query_map([deployment_id], generation_row)?
+                    .collect::<Result<Vec<_>, _>>()?)
             })
             .map_err(database_error)
     }

@@ -55,6 +55,13 @@ pub const FOUNDATION_OPERATIONS: &[&str] = &[
     "repository.unarchive",
     "deployment.list",
     "deployment.status",
+    "deployment.apply",
+    "deployment.rollback",
+    "deployment.start",
+    "deployment.stop",
+    "deployment.restart",
+    "deployment.logs",
+    "deployment.remove",
     "deployment.set_domain",
     "test.log.catalog",
     "test.log.tail",
@@ -121,7 +128,12 @@ impl ControlPlane {
     ) -> Result<Self, ProtocolError> {
         let access = Access::new(&config, database.clone(), publisher)?;
         let registry = Registry::new(database.clone());
-        let deployments = Deployments::new(config.clone(), database.clone(), registry.clone());
+        let deployments = Deployments::with_clock(
+            config.clone(),
+            database.clone(),
+            registry.clone(),
+            Arc::clone(&clock),
+        );
         let evidence = Arc::new(SqliteDeploymentEvidence::new(
             database.clone(),
             config.base_domain.clone(),
@@ -164,6 +176,14 @@ impl ControlPlane {
 
     pub fn telegram(&self) -> &TelegramService {
         &self.telegram
+    }
+
+    pub fn expire_previews(&self) -> Result<Vec<results::DeploymentStatus>, ProtocolError> {
+        let expired = self.deployments.expire_previews()?;
+        for deployment in &expired {
+            self.notify(deployment_event("preview.expired", deployment, None));
+        }
+        Ok(expired)
     }
 
     fn dispatch_authorized(
@@ -269,54 +289,66 @@ impl ControlPlane {
                     caller,
                 )?)
             }
+            "deployment.apply" => {
+                let params: params::DeploymentReference = decode(params)?;
+                let result = self.deployments.apply(
+                    params.path.as_deref(),
+                    params.name.as_deref(),
+                    params.deployment_id.as_deref(),
+                    caller,
+                )?;
+                self.notify(deployment_event("deployment.applied", &result, None));
+                encode(result)
+            }
+            "deployment.rollback" => {
+                let params: params::DeploymentReference = decode(params)?;
+                let result = self.deployments.rollback(
+                    params.path.as_deref(),
+                    params.name.as_deref(),
+                    params.deployment_id.as_deref(),
+                    caller,
+                )?;
+                self.notify(deployment_event("deployment.rolled_back", &result, None));
+                encode(result)
+            }
             "deployment.logs" => {
                 let params: params::DeploymentLogs = decode(params)?;
-                let deployment_id = params.deployment_id.as_deref().ok_or_else(|| {
-                    ProtocolError::new(
-                        ErrorCode::InternalError,
-                        "managed deployment logs are not installed in this migration checkpoint",
-                    )
-                })?;
-                if !self.deployments.store().observed_exists(deployment_id)? {
-                    return Err(ProtocolError::new(
-                        ErrorCode::InternalError,
-                        "managed deployment logs are not installed in this migration checkpoint",
-                    ));
-                }
-                encode(self.deployments.observed_logs(
-                    deployment_id,
+                encode(self.deployments.logs(
+                    params.path.as_deref(),
+                    params.name.as_deref(),
+                    params.deployment_id.as_deref(),
                     &params.component,
                     params.tail_lines,
+                    caller,
                 )?)
             }
             "deployment.start" | "deployment.stop" | "deployment.restart" => {
                 let action = operation.split('.').nth(1).unwrap_or_default();
                 let params: params::DeploymentControl = decode(params)?;
-                let deployment_id = params.deployment_id.as_deref().ok_or_else(|| {
-                    ProtocolError::new(
-                        ErrorCode::InternalError,
-                        "managed deployment control is not installed in this migration checkpoint",
-                    )
-                })?;
-                if !self.deployments.store().observed_exists(deployment_id)? {
-                    return Err(ProtocolError::new(
-                        ErrorCode::InternalError,
-                        "managed deployment control is not installed in this migration checkpoint",
-                    ));
-                }
-                let result = self.deployments.control_observed(
+                let result = self.deployments.control(
                     action,
-                    deployment_id,
+                    params.path.as_deref(),
+                    params.name.as_deref(),
+                    params.deployment_id.as_deref(),
                     params.component.as_deref(),
+                    caller,
+                )?;
+                self.notify(deployment_event(operation, &result, params.component));
+                encode(result)
+            }
+            "deployment.remove" => {
+                let params: params::RemoveDeployment = decode(params)?;
+                let result = self.deployments.remove(
+                    params.path.as_deref(),
+                    params.name.as_deref(),
+                    params.deployment_id.as_deref(),
+                    params.delete_data,
+                    caller,
                 )?;
                 self.notify(
-                    TelegramEvent::new(operation)
-                        .with("deployment_id", deployment_id)
-                        .with("name", result.name.clone())
-                        .with("source", "observed")
-                        .with("component", params.component)
-                        .with("repository_id", result.repository_id.clone())
-                        .with("state", result.state.clone()),
+                    TelegramEvent::new("deployment.removed")
+                        .with("deployment_id", result.deployment_id.clone())
+                        .with("data_deleted", result.data_deleted),
                 );
                 encode(result)
             }
@@ -842,6 +874,27 @@ fn encode<T: Serialize>(result: T) -> Result<Value, ProtocolError> {
         ProtocolError::new(ErrorCode::InternalError, "cannot encode operation result")
             .with_detail(error.to_string())
     })
+}
+
+fn deployment_event(
+    operation: &str,
+    result: &results::DeploymentStatus,
+    component: Option<String>,
+) -> TelegramEvent {
+    let source = match result.source {
+        results::DeploymentSource::Worktree => "worktree",
+        results::DeploymentSource::Checkout => "checkout",
+        results::DeploymentSource::Observed => "observed",
+    };
+    TelegramEvent::new(operation)
+        .with("deployment_id", result.deployment_id.clone())
+        .with("name", result.name.clone())
+        .with("source", source)
+        .with("component", component)
+        .with("repository_id", result.repository_id.clone())
+        .with("state", result.state.clone())
+        .with("generation", result.current_generation)
+        .with("domain", result.domain.clone())
 }
 
 fn bug_error(error: bugs::BugError) -> ProtocolError {

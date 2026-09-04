@@ -186,7 +186,7 @@ impl DeploymentSpec {
                             )
                     })
                     .collect::<Vec<_>>();
-                (candidates.len() == 1).then_some(candidates[0])
+                (candidates.len() == 1).then(|| candidates[0])
             })
     }
 

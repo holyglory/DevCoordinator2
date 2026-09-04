@@ -1,5 +1,6 @@
 use std::process::ExitCode;
 use std::sync::Arc;
+use std::time::Duration;
 
 use clap::Parser;
 use devcoordinator2_api::params::{BugCorrelations, BugReport};
@@ -226,6 +227,7 @@ async fn run_daemon(config: &Config) -> ExitCode {
     ));
     let capacity = plane.capacity().clone();
     let logs = plane.logs().clone();
+    let expiry_plane = plane.clone();
     let telegram_service = plane.telegram().clone();
     let telegram = telegram_service.start();
     let _ = telegram_service.enqueue_event(&TelegramEvent::new("coordinator.started"));
@@ -256,9 +258,34 @@ async fn run_daemon(config: &Config) -> ExitCode {
                 .map_err(|error| error.to_string()),
         )
     });
+    let mut expiry_shutdown = shutdown_rx.clone();
     services.spawn(async move {
         logs.serve_maintenance(shutdown_rx).await;
         ("log maintenance", Ok(()))
+    });
+    services.spawn(async move {
+        let mut next_expiry = tokio::time::Instant::now() + Duration::from_secs(60);
+        loop {
+            tokio::select! {
+                changed = expiry_shutdown.changed() => {
+                    if changed.is_err() || *expiry_shutdown.borrow() {
+                        break;
+                    }
+                }
+                () = tokio::time::sleep(Duration::from_millis(100)) => {
+                    if tokio::time::Instant::now() >= next_expiry {
+                        let plane = expiry_plane.clone();
+                        match tokio::task::spawn_blocking(move || plane.expire_previews()).await {
+                            Ok(Ok(_)) => {}
+                            Ok(Err(error)) => tracing::error!(%error, "preview expiry failed"),
+                            Err(error) => tracing::error!(%error, "preview expiry worker failed"),
+                        }
+                        next_expiry = tokio::time::Instant::now() + Duration::from_secs(60);
+                    }
+                }
+            }
+        }
+        ("preview expiry", Ok(()))
     });
     let first = services.join_next().await;
     let _ = shutdown_tx.send(true);

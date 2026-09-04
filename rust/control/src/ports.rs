@@ -7,6 +7,19 @@ use thiserror::Error;
 
 use crate::database::{Database, DatabaseError};
 
+pub trait PortAvailability: Send + Sync + 'static {
+    fn bindable(&self, port: u16) -> bool;
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct HostPortAvailability;
+
+impl PortAvailability for HostPortAvailability {
+    fn bindable(&self, port: u16) -> bool {
+        host_bindable(port)
+    }
+}
+
 #[derive(Debug, Error)]
 pub enum PortError {
     #[error("no free port in {0}-{1}")]
@@ -23,6 +36,30 @@ pub fn lease(
     generation: u32,
     now: &str,
 ) -> Result<u16, PortError> {
+    lease_with_availability(
+        database,
+        port_range,
+        deployment_id,
+        component,
+        generation,
+        now,
+        &HostPortAvailability,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn lease_with_availability(
+    database: &Database,
+    port_range: (u16, u16),
+    deployment_id: &str,
+    component: &str,
+    generation: u32,
+    now: &str,
+    availability: &dyn PortAvailability,
+) -> Result<u16, PortError> {
+    let available = (port_range.0..=port_range.1)
+        .filter(|port| availability.bindable(*port))
+        .collect::<HashSet<_>>();
     let deployment_id = deployment_id.to_owned();
     let component = component.to_owned();
     let now = now.to_owned();
@@ -33,7 +70,7 @@ pub fn lease(
                 .query_map([], |row| row.get::<_, u16>(0))?
                 .collect::<Result<HashSet<_>, _>>()?;
             for port in port_range.0..=port_range.1 {
-                if taken.contains(&port) || !bindable(port) {
+                if taken.contains(&port) || !available.contains(&port) {
                     continue;
                 }
                 transaction.execute(
@@ -114,7 +151,7 @@ pub fn assigned(
         .map_err(PortError::from)
 }
 
-fn bindable(port: u16) -> bool {
+fn host_bindable(port: u16) -> bool {
     [Ipv4Addr::LOCALHOST, Ipv4Addr::UNSPECIFIED]
         .into_iter()
         .all(|address| TcpListener::bind(SocketAddrV4::new(address, port)).is_ok())
@@ -142,11 +179,33 @@ mod tests {
     #[test]
     fn skips_bound_ports_and_releases_exact_scope() {
         let (_temporary, database) = database();
-        let held = TcpListener::bind((Ipv4Addr::LOCALHOST, 40_000)).unwrap();
-        let first = lease(&database, (40_000, 40_010), "d1", "api", 1, "t").unwrap();
-        let second = lease(&database, (40_000, 40_010), "d1", "worker", 1, "t").unwrap();
+        struct FixtureAvailability;
+        impl PortAvailability for FixtureAvailability {
+            fn bindable(&self, port: u16) -> bool {
+                port != 40_000
+            }
+        }
+        let first = lease_with_availability(
+            &database,
+            (40_000, 40_010),
+            "d1",
+            "api",
+            1,
+            "t",
+            &FixtureAvailability,
+        )
+        .unwrap();
+        let second = lease_with_availability(
+            &database,
+            (40_000, 40_010),
+            "d1",
+            "worker",
+            1,
+            "t",
+            &FixtureAvailability,
+        )
+        .unwrap();
         assert_eq!((first, second), (40_001, 40_002));
-        drop(held);
         assert_eq!(assigned(&database, "d1", 1).unwrap().len(), 2);
         release(&database, "d1", Some(1), Some("api")).unwrap();
         assert_eq!(
