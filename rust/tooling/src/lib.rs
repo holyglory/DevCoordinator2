@@ -9,6 +9,7 @@ pub mod audit_targets;
 pub mod audit_verify;
 pub mod cutover;
 pub mod decision_import;
+pub mod formal_review;
 pub mod install;
 pub mod instance;
 pub mod legacy_export;

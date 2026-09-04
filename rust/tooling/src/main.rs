@@ -21,6 +21,10 @@ enum Command {
         #[command(subcommand)]
         command: AuditCommand,
     },
+    FormalUi {
+        #[command(subcommand)]
+        command: FormalUiCommand,
+    },
     Contract {
         #[command(subcommand)]
         command: ContractCommand,
@@ -44,6 +48,23 @@ enum Command {
     Install {
         #[command(subcommand)]
         command: InstallCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum FormalUiCommand {
+    /// Finalize agent decisions or validate an existing manual-review manifest.
+    Review {
+        #[arg(long)]
+        report: PathBuf,
+        #[arg(long)]
+        queue: PathBuf,
+        #[arg(long, conflicts_with = "review")]
+        decisions: Option<PathBuf>,
+        #[arg(long, conflicts_with = "decisions")]
+        review: Option<PathBuf>,
+        #[arg(long)]
+        out: Option<PathBuf>,
     },
 }
 
@@ -397,6 +418,7 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
     match cli.command {
         Command::Audit { command } => run_audit(command),
+        Command::FormalUi { command } => run_formal_ui(command),
         Command::Contract {
             command: ContractCommand::Export { output, check },
         } => match devcoordinator2_tooling::export_contract(&output, check) {
@@ -520,6 +542,60 @@ fn main() -> ExitCode {
         Command::Decision { command } => run_decision(command),
         Command::Install { command } => run_install(command),
     }
+}
+
+fn run_formal_ui(command: FormalUiCommand) -> ExitCode {
+    match command {
+        FormalUiCommand::Review {
+            report,
+            queue,
+            decisions,
+            review,
+            out,
+        } => {
+            let result = (|| {
+                if let Some(review) = review {
+                    if out.is_some() {
+                        return Err("--out is only valid with --decisions".to_owned());
+                    }
+                    return devcoordinator2_tooling::formal_review::validate(
+                        &review, &report, &queue,
+                    );
+                }
+                let decisions = decisions.ok_or_else(|| {
+                    "exactly one of --decisions or --review is required".to_owned()
+                })?;
+                let out = out.ok_or_else(|| "--out is required with --decisions".to_owned())?;
+                let review = devcoordinator2_tooling::formal_review::finalize(
+                    &report,
+                    &queue,
+                    Some(&decisions),
+                    &timestamp()?,
+                )?;
+                devcoordinator2_tooling::formal_review::write_new_review(&out, &review)?;
+                Ok(review)
+            })();
+            match result {
+                Ok(review) => match devcoordinator2_tooling::formal_review::summary(&review) {
+                    Ok(summary) => {
+                        println!("{summary}");
+                        if summary.get("ok") == Some(&serde_json::json!(true)) {
+                            ExitCode::SUCCESS
+                        } else {
+                            ExitCode::from(1)
+                        }
+                    }
+                    Err(error) => formal_ui_error(&error),
+                },
+                Err(error) => formal_ui_error(&error),
+            }
+        }
+    }
+}
+
+fn formal_ui_error(error: &str) -> ExitCode {
+    println!("{}", serde_json::json!({"ok":false,"error":error}));
+    ExitCode::from(2)
 }
 
 fn run_audit(command: AuditCommand) -> ExitCode {
@@ -1388,6 +1464,30 @@ mod tests {
 
     #[test]
     fn every_ported_command_family_parses_without_python_wrappers() {
+        let formal = Cli::try_parse_from([
+            "devcoordinator2-tooling",
+            "formal-ui",
+            "review",
+            "--report",
+            "/tmp/report.json",
+            "--queue",
+            "/tmp/review-queue.json",
+            "--decisions",
+            "/tmp/decisions.json",
+            "--out",
+            "/tmp/manual-review.json",
+        ])
+        .expect("formal UI review command");
+        assert!(matches!(
+            formal.command,
+            Command::FormalUi {
+                command: FormalUiCommand::Review {
+                    decisions: Some(_),
+                    ..
+                }
+            }
+        ));
+
         let audit = Cli::try_parse_from([
             "devcoordinator2-tooling",
             "audit",

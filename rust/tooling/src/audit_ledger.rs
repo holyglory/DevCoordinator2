@@ -590,6 +590,48 @@ pub fn write_bytes_nofollow(path: &Path, bytes: &[u8], mode: u32) -> Result<(), 
     Ok(())
 }
 
+pub fn write_new_bytes_nofollow(path: &Path, bytes: &[u8], mode: u32) -> Result<(), LedgerError> {
+    let (_, components) = absolute_components(path)?;
+    if components.is_empty() {
+        return Err(LedgerError(format!(
+            "output path is not a regular file: {}",
+            path.display()
+        )));
+    }
+    let (parent_components, name) = components.split_at(components.len() - 1);
+    let parent = open_directory_path(parent_components, false)?
+        .ok_or_else(|| LedgerError(format!("output parent does not exist: {}", path.display())))?;
+    let descriptor = unix_fs::openat(
+        &parent,
+        &name[0],
+        OFlags::WRONLY
+            | OFlags::CREATE
+            | OFlags::EXCL
+            | OFlags::CLOEXEC
+            | OFlags::NOFOLLOW
+            | OFlags::NONBLOCK,
+        Mode::from_raw_mode(mode),
+    )
+    .map_err(|error| {
+        LedgerError(format!(
+            "output must be a new non-symlink file: {}: {error}",
+            path.display()
+        ))
+    })?;
+    let mut file = File::from(descriptor);
+    let metadata = unix_fs::fstat(&file)
+        .map_err(|error| LedgerError(format!("cannot inspect new output: {error}")))?;
+    if FileType::from_raw_mode(metadata.st_mode) != FileType::RegularFile {
+        return Err(LedgerError(format!(
+            "new output is not a regular file: {}",
+            path.display()
+        )));
+    }
+    file.write_all(bytes)
+        .and_then(|()| file.sync_all())
+        .map_err(|error| LedgerError(format!("cannot publish {}: {error}", path.display())))
+}
+
 /// Read a regular file without following any supplied path symlink.
 ///
 /// `Ok(None)` means the path does not exist. Any other unsafe object or
@@ -845,5 +887,14 @@ mod tests {
         assert!(
             create_directory_all_nofollow(&directory.path().join("linked/child"), 0o700).is_err()
         );
+    }
+
+    #[test]
+    fn exclusive_nofollow_writer_never_replaces_existing_content() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("review.json");
+        write_new_bytes_nofollow(&path, b"first", 0o600).unwrap();
+        assert!(write_new_bytes_nofollow(&path, b"second", 0o600).is_err());
+        assert_eq!(std::fs::read(path).unwrap(), b"first");
     }
 }
