@@ -362,7 +362,7 @@ not contradict them.
   values with explicit saved-time/failure status, while an empty cache shows
   loading or unavailable rather than zero. Bounded completion waits update
   active pages without polling or overwriting a different route/range.
-  Restart discards snapshots. Collector authority, existing query deadlines,
+  Restart discards snapshots. Collector authority, bounded query deadlines,
   and operator/admin access remain unchanged. Collector indexing is a separate
   dependency; cache delivery does not prove an unreadable source is fixed.
 
@@ -374,6 +374,9 @@ not contradict them.
   without writing to its database. Verify real provider totals on both the
   reported repository Usage page and Progress, across supported time ranges;
   a responsive loading or error state alone does not satisfy this requirement.
+  Background source reads have a 15-second ceiling, independent of the immediate
+  cached response and five-second completion wait. The former two-second
+  foreground budget must not discard valid large-repository snapshots.
 
 ## Repository progress and forecasting (REQ-PROGRESS)
 
