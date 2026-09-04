@@ -1,3 +1,64 @@
+# Grouped workers and available deployment usage design QA
+
+final result: passed
+
+## Comparison target
+
+- Source visual truth: the two owner-marked live Deployments screenshots supplied with this request at 1526 × 876, showing one expander on every worker and a false **Not connected in all environments** Usage value for a project with available measurements.
+- Browser-rendered implementation: expanded desktop `/var/tmp/dc2-workers-usage.gpYU0z/formal-web-ui-verification-uiZPGJ/screenshots/cell-0002-grouped-workers-and-available-usage-owner-desktop-viewport.png`, collapsed desktop `cell-0007-grouped-workers-and-available-usage_workers-collapsed-owner-desktop-viewport.png`, and the mobile/breakpoint pairs in the same screenshot directory.
+- Desktop CSS viewport: 1526 × 876 at device scale factor 1; mobile: 390 × 844; exact responsive boundary: 619/620/621 × 900. No crop, frame, or density conversion was used.
+- State: dark Deployments dashboard with the marked project first, two workers, mapping-pending 24-hour usage that resolves to real measured totals, and an independently expanded sibling repository.
+- Full-view comparison: the implementation preserves the repository-level collapse control and complete worker facts, removes every row-level expander, adds one labelled Workers disclosure with a factual count, and replaces the false setup result with the project’s measured usage.
+- Focused comparison: expanded and Workers-collapsed states were inspected at all five widths so the collection-level control, summary grid transition, complete worker rows, and sibling isolation remain legible.
+
+## Findings
+
+- No actionable P0, P1, or P2 issue remains.
+- Individual worker expanders are gone. One **Workers** disclosure per repository hides or restores every row together and keeps the exact count visible.
+- A mapping-pending Usage card begins with **Loading usage…**, resolves the exact authorized project once, and updates only its card to measured totals without repainting the page or moving focus.
+- Genuine no-measurement, source-failure, and access-required states remain unchanged and do not trigger a repository detail read.
+- Five automated low-initial-visibility warnings reflect complete worker rows continuing below a finite first viewport. Every reviewed screenshot keeps the selected project, measured Usage, Workers heading/count, and disclosure immediately recognizable; no content is clipped, overlapped, or unreachable.
+
+## Required fidelity surfaces
+
+- Fonts and typography: the existing system stack, weights, repository headings, facts, badges, and action labels are preserved. **Workers** and its count use the same compact operational hierarchy as the surrounding section.
+- Spacing and layout rhythm: the Workers header creates one calm boundary between the six summaries and the row collection. Desktop stays in the established six-column/worker grid; 620 px and below uses the existing labelled summary and worker layouts.
+- Colors and visual tokens: all surfaces, borders, status colours, links, focus treatment, and disclosure controls reuse the Console tokens. No new decorative palette, gradient, or effect was introduced.
+- Image quality and asset fidelity: this surface contains no raster imagery. Both disclosure levels use the repository's existing official Tabler chevron assets; there is no handcrafted SVG, CSS icon, emoji, or placeholder.
+- Copy and content: **Workers**, the factual count, **Collapse workers**, **Expand workers**, **Loading usage…**, measured tokens/requests, and environment coverage all describe real state. No source identity or private environment detail appears.
+- States and interactions: repository and Workers collapse remain independent; pointer, Enter, Space, sibling isolation, same-session rerender preservation, lifecycle controls after restore, pending-to-measured Usage, focus retention, unobserved, source-failed, denied, wide, narrow, and breakpoint variants are exercised through the rendered UI.
+
+## Browser evidence
+
+- Complete merged-source Console matrix: 1,679 checks, zero failures in `/var/tmp/dc2-workers-usage.gpYU0z/merged-console-final/report.json`.
+- Focused merged interaction inventory: 333 checks, zero failures in `/var/tmp/dc2-workers-usage.gpYU0z/merged-focused/report.json`.
+- Formal run `formal-web-ui-mtmq0rvy-d2740e86`: 10/10 expanded/Workers-collapsed cells at 390, 619, 620, 621, and 1526 px; zero critical findings, five reviewed low-initial-visibility warnings, and passing coverage.
+- All twenty final viewport/full-page images were inspected; ten pass decisions and zero gaps were finalized in `/var/tmp/dc2-workers-usage.gpYU0z/formal-web-ui-verification-uiZPGJ/manual-review.json`.
+- Browser console and network failures: none in the complete or focused passes.
+
+## Comparison history
+
+1. The owner identified that collapsing one worker had no meaningful dashboard use and that the project’s Usage card contradicted the available Usage destination.
+2. The first product pass removed row controls, introduced one Workers disclosure, and hydrated only mapping-pending usage. Its focused test initially read stale populated DOM because identical-hash navigation did not reload; the harness now performs real state reloads, and the merged 333-check interaction pass is green.
+3. The first formal run used a stale fixture process whose repository order displaced the target project and forced the action to scroll. A current-source fixture and fresh complete formal run passed; one preceding cold-start TTFB outlier did not repeat.
+
+## Implementation checklist
+
+- [x] Remove every individual worker expander.
+- [x] Add one labelled, counted Workers disclosure per repository.
+- [x] Preserve independent repository and Workers state through rerenders.
+- [x] Resolve available mapping-pending Usage in place without routine per-project scans.
+- [x] Preserve genuine missing, failure, permission, privacy, and lifecycle behavior.
+- [x] Verify the owner viewport, mobile, and exact responsive boundary.
+
+## Follow-up polish
+
+- No follow-up is required for the two requested dashboard corrections.
+
+---
+
+## Archived prior design QA
+
 # Infinite scrolling and highlighted test-log viewer design QA
 
 final result: passed

@@ -31,16 +31,19 @@ a native select.
    and Health links retain the repository name while continuing to their
    existing destinations. Tests also names the selected run's tier, elapsed
    time, output size, recency, and proof type; Health adds current repository
-   CPU, memory, storage, and deployment count. Each repository starts expanded
-   and has an independent keyboard-operable collapse control that keeps its
-   identity, count, and overall condition visible. The repository's
-   deployments and lifecycle controls follow immediately below its summary,
-   with complete identity, state,
+   CPU, memory, storage, and deployment count. A Usage card whose fast
+   collection read has only an uninitialized mapping resolves that exact
+   repository through the authorized detail read and updates in place; genuine
+   no-measurement, source-failure, and access states remain unchanged. Each
+   repository starts expanded and has an independent keyboard-operable collapse
+   control that keeps its identity, count, and overall condition visible. One
+   **Workers** disclosure follows the summaries and hides or restores every
+   worker row together. Individual worker rows have no expanders and show their
+   complete identity, state,
    domain, port, generation, and recency. At tablet widths the summaries become
    a 3-by-2 grid and deployment facts use two rows; on mobile both become
-   labelled stacked layouts without document-level horizontal scrolling. Each
-   deployment also starts expanded and may collapse independently to its
-   identity and state; the current session preserves these choices while the
+   labelled stacked layouts without document-level horizontal scrolling. The
+   current session preserves both repository and Workers choices while the
    Console rerenders. An
    **edit** button beside every administrator-visible domain opens the pop-up
    domain editor in place; start/stop/restart remain available to operators —
@@ -200,8 +203,8 @@ explicit permission-denied notice instead of partial data.
 
 | Control | API call | Proof of state change |
 |---|---|---|
-| Repository dashboard continuations | `plan.overview`, `progress.repositories`, `usage.repositories`, `test.list`, `health.repositories`, and repository-scoped `decision.tail` reads; then real hash links | Every value remains inside the matching repository section. Plan, Progress, Codex Usage, and Decisions open that repository; Tests and Health open their existing destinations with the repository named in the originating link. Restricted reads show an honest access state without an enabled dead link. |
-| Collapse/expand repository or deployment | — (client-side) | Only the selected section's details are hidden or restored; identity and condition stay visible, sibling sections do not change, keyboard focus stays on the toggle, and the choice survives same-session rerenders. |
+| Repository dashboard continuations | `plan.overview`, `progress.repositories`, `usage.repositories`, `test.list`, `health.repositories`, and repository-scoped `decision.tail` reads; pending Usage mappings resolve once through `usage.repository`; then real hash links | Every value remains inside the matching repository section. An available pending Usage card updates in place without a page repaint; genuine missing/error/access states do not trigger detail reads. Plan, Progress, Codex Usage, and Decisions open that repository; Tests and Health open their existing destinations with the repository named in the originating link. |
+| Collapse/expand repository or Workers | — (client-side) | Repository collapse hides the complete project dashboard; the independent Workers control hides or restores every worker row together. Sibling repositories do not change, keyboard focus stays on the toggle, and both choices survive same-session rerenders. |
 | Deployment start/stop/restart (list, detail, component; managed and observed) | `deployment.start/stop/restart` | view re-fetches `deployment.status`; header/component badges change |
 | Independent Compose-service start/stop/restart (detail only; explicitly declared services) | `deployment.start/stop/restart {component: "stack/service"}` | service badge and aggregate header change; unrelated service and route remain |
 | Domain edit / clear (pop-up from list rows and the detail page, administrators) | `deployment.set_domain {deployment_id, domain|null, port?, public?}` | status re-read; route document republished |

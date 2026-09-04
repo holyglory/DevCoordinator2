@@ -254,18 +254,21 @@ not contradict them.
   receipts, volumes, and routes remain untouched. Live service and aggregate
   state distinguish an intentional stop from failure, and CLI, MCP, and
   Console expose the same reviewed controls.
-- **REQ-DEPLOY-10** (2026-09-03, done): Every repository section and every
-  deployment on the Deployments dashboard starts expanded and can be collapsed
-  independently. A collapsed repository retains its identity, deployment
-  count, and overall condition; a collapsed deployment retains its identity
-  and state while routing facts and lifecycle actions remain hidden until it
-  is expanded. The choice survives same-session Console rerenders, controls are
-  keyboard operable with truthful `aria-expanded`/`aria-controls`, and no API
-  call occurs merely to change density. Repository Tests additionally show the
-  selected real run's tier, elapsed time, output size, recency, and proof type;
-  Health shows current CPU, memory, storage, and deployment count. Missing or
-  restricted facts remain absent or explicitly unavailable and never borrow
-  another repository's data.
+- **REQ-DEPLOY-10** (2026-09-03, done; amended 2026-09-04): Every repository
+  section on the Deployments dashboard starts expanded and can hide its entire
+  dashboard independently. Inside an expanded repository, one **Workers**
+  disclosure shows the factual worker count and hides or restores every worker
+  row together; individual workers have no expanders and always show their
+  complete facts and lifecycle actions when the group is open. Repository and
+  Workers choices survive same-session Console rerenders, remain independent,
+  use keyboard-operable controls with truthful `aria-expanded`/`aria-controls`,
+  and make no API call merely to change density. Repository Tests additionally
+  show the selected real run's tier, elapsed time, output size, recency, and
+  proof type; Health shows current CPU, memory, storage, and deployment count.
+  If the fast Usage collection reports only an uninitialized mapping, that
+  repository's card resolves through the existing authorized detail read and
+  updates in place; real missing, failed, or restricted states remain explicit,
+  and no fact borrows another repository's data.
 
 ## Accountability and health (REQ-HEALTH, P3/P4)
 
