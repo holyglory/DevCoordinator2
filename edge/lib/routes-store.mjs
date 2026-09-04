@@ -35,7 +35,7 @@ export function validateDocument(text) {
 }
 
 // Python json.dumps(sort_keys=True, separators=(",", ":")) equivalence for the
-// payload produced by the Rust route publisher (strings, ints, floats, bools, null, arrays, objects).
+// payload produced by routes.py (strings, ints, floats, bools, null, arrays, objects).
 export function canonicalJson(value) {
   if (value === null || typeof value !== 'object') return JSON.stringify(value);
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;

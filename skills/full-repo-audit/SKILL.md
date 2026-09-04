@@ -68,7 +68,7 @@ unrecognized UI toolkit.
 - If manual fallback is required, disclose the exact limitation, run each
   generated batch sequentially in the current agent, save one report per batch
   under `<audit-output>/reports/batch_###.md`, verify coverage with
-  `devcoordinator2-tooling audit verify-full-repo`, and label final coverage as `manual fallback
+  `verify_audit_results.py`, and label final coverage as `manual fallback
   coverage` rather than subagent coverage.
 - Keep complete worker reports, lead reconciliation, verifier output, command
   stdout/stderr, and final synthesis in `<audit-output>/reports/`,
@@ -101,11 +101,11 @@ unrecognized UI toolkit.
 
 2. **Generate the audit queue**
    - Resolve the audited repo to an absolute path before generation and echo it in your working notes.
-   - Resolve `FULL_REPO_AUDIT_SKILL_DIR` to the directory containing this `SKILL.md` from the loaded skill path, then resolve `CANONICAL_SKILL_ROOT` as its repository root. Preflight the Rust harness before starting with `devcoordinator2-tooling skills self-test audit-tooling --source-root "$CANONICAL_SKILL_ROOT"` unless the user forbids validation commands. Cargo reuses only exact source, dependency, toolchain, and platform artifacts; drift recompiles the affected tests. If the self-test fails, stop instead of treating it as an audited-repo finding.
+   - Resolve `FULL_REPO_AUDIT_SKILL_DIR` to the directory containing this `SKILL.md` from the loaded skill path. Preflight the skill harness before starting: verify `scripts/build_audit_batches.py`, `scripts/verify_audit_results.py`, and `scripts/self_test.py` exist and are readable, then run `python3 "$FULL_REPO_AUDIT_SKILL_DIR/scripts/self_test.py" --cached` unless the user forbids validation commands. Reuse is valid only for the exact skill-tree digest, Python executable/version, and platform; drift runs the complete suite. If the self-test fails, stop instead of treating it as an audited-repo finding.
    - Run:
      ```bash
      REPO_ROOT="${REPO_ROOT:-$PWD}"
-     devcoordinator2-tooling audit build-full-repo --repo "$REPO_ROOT"
+     python3 "$FULL_REPO_AUDIT_SKILL_DIR/scripts/build_audit_batches.py" --repo "$REPO_ROOT"
      ```
    - If the user names a repo path, set `REPO_ROOT` to that path instead of `$PWD`.
    - By default, output goes under a unique system temp directory, not inside the audited repo.
@@ -158,7 +158,7 @@ unrecognized UI toolkit.
    - Tell subagents not to edit files and to report coverage for every listed unit. Use the generated repository-wide `test_evidence_index.json` before searching for verification. Inspect only named candidate tests or make one targeted manifest search when the index cannot resolve a behavior; never repeat an unbounded whole-repository test search in every batch. Adjacent callers/callees may be inspected for context, but findings remain bound to assigned files. Fixture browser tests can substantiate client UI behavior but not worker/database persistence. A partial TAP stream is not a test outcome: retain a final plan/summary and exit status, rerun within a bounded command when necessary, and distinguish a concrete failed assertion from unavailable completion evidence. Package-manager installs and reification commands, including `npm ci`, are workspace mutations even when invoked for verification: run them only in an isolated copy or serially, never alongside tests or linters that resolve from the same dependency tree. Apply language-, database-, and browser-specific fallback guidance only when the assigned batch uses that runtime or boundary. An execution-environment failure is not a product gap: make one bounded, non-destructive isolated-output/cache attempt first. If it still cannot run and no concrete product failure exists, record one atomic audit-execution `BLOCKED` finding with the exact command and unblock condition.
    - Before declaring database verification unavailable, inspect the declared coordinator/runtime configuration, `GNT_TEST_DATABASE_URL`, `DATABASE_URL`, and `PG*` environment inputs, plus retained manifest-owned canonical test commands or audit evidence. A missing default socket or localhost probe is not proof that the declared database is unavailable. When an explicitly disposable database is available, make one bounded connection/test attempt against that exact target and retain the command and completed result; never probe, mutate, or treat a shared database as a disposable fixture.
    - A browser-test `PASS` is valid only when the current batch executes that browser command or cites a prior completed manifest-owned report with its exact command and final successful TAP/test summary. The verification cell must record the bounded command, a nonzero passing count, and zero failures. Source inspection, a fixture-harness definition, or a browser test that stopped at navigation is never a browser behavior PASS; record the affected contract as an atomic audit-execution `BLOCKED` result instead.
-   - Before accepting a returned batch, require the worker to run a per-report verifier check: `devcoordinator2-tooling audit verify-full-repo --batch-id <batch_###> --manifest <manifest> --reports <exact-report> --json`. This scoped mode validates only that batch's source hashes, schema, anchors, findings, and inventory; it deliberately skips incomplete global reports and the pending effort ledger. Requeue malformed reports before marking their effort-ledger row complete.
+   - Before accepting a returned batch, require the worker to run a per-report verifier check: `verify_audit_results.py --batch-id <batch_###> --manifest <manifest> --reports <exact-report> --json`. This scoped mode validates only that batch's source hashes, schema, anchors, findings, and inventory; it deliberately skips incomplete global reports and the pending effort ledger. Requeue malformed reports before marking their effort-ledger row complete.
    - Before every wave, inspect `effort_ledger.json` and the exact report path for every candidate. Dispatch only `pending` batches; a `completed` row with its report present is not eligible for redispatch unless the verifier requeues it. Record the worker agent ID, actual effort, in-progress status, provenance, and claim fields in one ledger mutation at dispatch, then reopen that exact row and assert the spawned ID/status before proceeding. Mark it complete only after the per-report gate passes.
    - Run in waves if the repo is large; keep a ledger of batch id, agent id, status, and returned checked files.
    - If subagents are unavailable, use manual fallback mode: process each `batch_###.md` and generated journey prompt yourself, save the required reports under `<audit-output>/reports/`, and keep the reduced coverage label through the final report.
@@ -174,10 +174,10 @@ unrecognized UI toolkit.
    - Reconcile every responsibility-level row by `Contract ID`. Reopen and recheck all cross-file contracts, high-risk paths, gaps, blocked or ambiguous evidence, and stateful/external PASS claims. For clean file-local contracts, preserve the verifier-bound worker anchors and result without duplicating the same source inspection. Do not infer end-to-end completeness by merely concatenating file-local rows.
    - Complete generated `<audit-output>/lead_reconciliation.md` and save the result as required `<audit-output>/reports/lead_reconciliation.md`. It contains `Run ID`, `Worker` with exact value `lead_reconciliation`, `Cross-File Contract Trace`, atomic `Findings`, and `Open Questions`. In `Cross-File Contract Trace`, assign every file-local, cross-file, public, or operational contract a unique sequential `lead:C###` ID; map every batch `Contract ID` to exactly one lead row; cite every mapped source and concrete evidence; and give evidence-backed `pass`, `gap`, `blocked`, or `not applicable` statuses for all nine implementation trace labels. The lead verification cell records its independent recheck with exactly one evidence type and counterfactual or invariance; source-only evidence cannot close a stateful or external PASS. Derive the overall `Result` from those statuses and never hide a mapped batch `GAP` or `BLOCKED`. Use the exact `No findings.` sentinel when clean. The verifier must validate this manifest-declared artifact; a final response or private lead notes cannot substitute for it.
    - When visual checks are applicable, populate `<audit-output>/visual_evidence.json`. Reports must cite stable `evidence:<id>` values. Each screenshot/native snapshot must be a real confined file with verified SHA-256, MIME, dimensions, route, state, viewport, and capture tool. Web audits bind the actual journey-aware formal-verifier JSON, initial/full-page screenshot pairs, changed-review queue, and finalized manual-review manifest, including checked-page coverage, visible scrollbars, palette risks, pending cells, and carried gaps. Filenames or words such as “screenshot” are not evidence.
-   - Finish the formal verifier and every other automatic test before visual judgment. Open only cells in `review-queue.json`, never carried unchanged screenshots; finalize pass/gap/blocked decisions with `devcoordinator2-tooling formal-ui review`. Screenshot pixel/hash drift proves integrity only and never selects manual work.
+   - Finish the formal verifier and every other automatic test before visual judgment. Open only cells in `review-queue.json`, never carried unchanged screenshots; finalize pass/gap/blocked decisions with `formal_web_ui_review.py`. Screenshot pixel/hash drift proves integrity only and never selects manual work.
    - Run the verifier only after all required batch, journey, visual, and lead-reconciliation reports are saved:
      ```bash
-     devcoordinator2-tooling audit verify-full-repo \
+     python3 "$FULL_REPO_AUDIT_SKILL_DIR/scripts/verify_audit_results.py" \
        --manifest <audit-output>/manifest.json \
        --reports <audit-output>/reports \
        --receipt-out <audit-output>/verification_receipt.json
@@ -191,7 +191,7 @@ unrecognized UI toolkit.
      hundreds of reports by hand:
      ```bash
      CANONICAL_SKILL_ROOT="$(dirname "$(dirname "$(realpath "$FULL_REPO_AUDIT_SKILL_DIR")")")"
-     devcoordinator2-tooling audit merge-findings \
+     python3 "$CANONICAL_SKILL_ROOT/full_repo_harness/merge_findings.py" \
        --reports <audit-output>/reports \
        --manifest <audit-output>/manifest.json \
        --markdown-out <audit-output>/consolidated-findings.md \
@@ -208,10 +208,10 @@ unrecognized UI toolkit.
    - Produce an implementation plan with concrete verification steps that reproduce or demonstrate each gap across the intended product contract.
 
 7. **Import confirmed findings into the database completion ledger**
-   - After `devcoordinator2-tooling audit verify-full-repo` passes, create the consolidated findings and a lead-review projection outside the audited repo:
+   - After `verify_audit_results.py` passes, create the consolidated findings and a lead-review projection outside the audited repo:
      ```bash
      CANONICAL_SKILL_ROOT="$(dirname "$(dirname "$(realpath "$FULL_REPO_AUDIT_SKILL_DIR")")")"
-     devcoordinator2-tooling audit merge-findings \
+     python3 "$CANONICAL_SKILL_ROOT/full_repo_harness/merge_findings.py" \
        --reports <audit-output>/reports \
        --manifest <audit-output>/manifest.json \
        --markdown-out <audit-output>/consolidated-findings.md \
@@ -368,7 +368,7 @@ During the visual journey pass, use available visual tooling such as Playwright,
 
 ## Harness
 
-`devcoordinator2-tooling audit build-full-repo` creates audit-run artifacts:
+`scripts/build_audit_batches.py` creates audit-run artifacts:
 
 - `manifest.json`: source-file inventory, coverage-unit inventory, batch membership, and coverage invariants.
 - `audit_index.md`: lead-agent instructions and a batch table.
@@ -387,10 +387,10 @@ During the visual journey pass, use available visual tooling such as Playwright,
 - `completion_ledger_projection.json`: lead-reviewed disposition and exact active-row projection for every consolidated candidate; created after report verification, not during queue generation.
 - `completion-ledger-database-import.json`: digest-bound transactional issue import produced only after audit/projection validation.
 
-Companion Rust commands included with this skill:
+Companion scripts included with this skill:
 
-- `devcoordinator2-tooling audit verify-full-repo`: result verifier for returned subagent `Run ID`, exact report section shape, `File Coverage` SHA-256 tables, per-unit and responsibility-level source-backed `Implementation Inventory` coverage with unique `Contract ID` and atomic result/finding linkage, required manifest-declared `lead_reconciliation.md` cross-file trace and atomic findings, `Interface Inventory` coverage and concrete visible-text checks, source-backed UI asset evidence, generic trace rejection, obvious placeholder/stub/dead-control source omission checks, finding severity/field shape/content and batch-file binding, current file fingerprints, queue marker consistency, effort and journey-worker ledger completion/provenance fields, `excluded_files.json` count/digest consistency, policy-blocking unresolved scope warnings, and a pass-only stable-input verification receipt.
-- `devcoordinator2-tooling skills self-test audit-tooling`: deterministic Rust fixture tests for classification, interface detection, env/generated/vendor exclusion and opt-in behavior, batch invariants, evidence-contract enforcement, and result verification. These tests prove verifier behavior, not manual-agent semantic recall.
+- `scripts/verify_audit_results.py`: result verifier for returned subagent `Run ID`, exact report section shape, `File Coverage` SHA-256 tables, per-unit and responsibility-level source-backed `Implementation Inventory` coverage with unique `Contract ID` and atomic result/finding linkage, required manifest-declared `lead_reconciliation.md` cross-file trace and atomic findings, `Interface Inventory` coverage and concrete visible-text checks, source-backed UI asset evidence, generic trace rejection, obvious placeholder/stub/dead-control source omission checks, finding severity/field shape/content and batch-file binding, current file fingerprints, queue marker consistency, effort and journey-worker ledger completion/provenance fields, `excluded_files.json` count/digest consistency, policy-blocking unresolved scope warnings, and a pass-only stable-input verification receipt.
+- `scripts/self_test.py`: deterministic fixture tests for classification, interface detection, env/generated/vendor exclusion and opt-in behavior, batch invariants, evidence-contract enforcement, and result verification. These tests prove verifier behavior, not manual-agent semantic recall.
 - `evals/marker-free/`: six isolated manual-agent evaluations for ignored input/config, partial plumbing, false persistence/success, missing registration/lifecycle, production fixture data, and shallow outcome tests. When supplied with responses from fresh agent runs, its deterministic scorer can measure finding recall and intentional-lookalike precision. Its self-test uses synthesized oracle-derived responses and proves only the schemas and scorer, so it is not empirical evidence of agent performance; keep actual run results separate from verifier self-tests and do not generalize one run into a mechanical guarantee.
 
 The harness is the source of truth for batch coverage; the lead agent is responsible for validating that every manifest source file has a file-coverage row, every distinct responsibility has a unique `Contract ID` inventory row, and `reports/lead_reconciliation.md` proves cross-file semantic reconciliation before final synthesis. The verifier can enforce evidence shape and source binding; it cannot replace the lead's judgment about whether arbitrary domain behavior is correct.

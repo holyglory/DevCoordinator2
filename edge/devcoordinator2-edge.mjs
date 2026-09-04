@@ -188,29 +188,23 @@ export async function createEdge(config, { log = console } = {}) {
     if (url.pathname === '/healthz') {
       return writeJson(res, 200, { ok: true, route_generation: store.current().generation, source: store.source() });
     }
-    if (url.pathname.startsWith('/api/v2/')) {
+    if (url.pathname.startsWith('/api/')) {
       const identity = identityOf(req);
       if (!identity) return writeJson(res, 401, { ok: false, error: { code: 'unauthenticated', message: 'sign in first' } });
       if (req.method !== 'POST') return writeJson(res, 405, { ok: false, error: { code: 'method_not_allowed' } });
-      const operation = url.pathname.slice('/api/v2/'.length);
+      const command = url.pathname.slice('/api/'.length);
       // One or more dot-separated operation segments, plus the daemon's
-      // single dotless operation; anything else is grammar garbage and never
+      // single dotless command; anything else is grammar garbage and never
       // reaches the daemon.
-      if (!/^([a-z]+(?:\.[a-z_]+)+|ping)$/.test(operation)) return writeJson(res, 400, { ok: false, error: { code: 'args_invalid' } });
-      let params;
-      try { params = await readJsonBody(req); } catch { return writeJson(res, 400, { ok: false, error: { code: 'args_invalid', message: 'invalid JSON body' } }); }
+      if (!/^([a-z]+(?:\.[a-z_]+)+|ping)$/.test(command)) return writeJson(res, 400, { ok: false, error: { code: 'args_invalid' } });
+      let args;
+      try { args = await readJsonBody(req); } catch { return writeJson(res, 400, { ok: false, error: { code: 'args_invalid', message: 'invalid JSON body' } }); }
       try {
-        const response = await daemon.call(operation, params, identity.email);
+        const response = await daemon.call(command, args, identity.email);
         return writeJson(res, response.ok ? 200 : (response.error?.code === 'permission_denied' ? 403 : 400), response);
       } catch (error) {
         return writeJson(res, 503, { ok: false, error: { code: 'daemon_unavailable', message: error.message } });
       }
-    }
-    if (url.pathname.startsWith('/api/')) {
-      return writeJson(res, 400, {
-        protocol: 2, id: '', ok: false,
-        error: { code: 'protocol_unsupported', message: 'use /api/v2/<operation>', detail: '' },
-      });
     }
     const identity = identityOf(req);
     if (!identity) return redirect(res, `/auth/login?rt=${encodeURIComponent(url.pathname)}`);
