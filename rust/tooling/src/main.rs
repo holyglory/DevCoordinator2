@@ -49,6 +49,37 @@ enum Command {
 
 #[derive(Debug, Subcommand)]
 enum AuditCommand {
+    /// Build a deterministic full-repository audit queue and manifest.
+    BuildFullRepo {
+        #[arg(long, default_value = ".")]
+        repo: PathBuf,
+        #[arg(long)]
+        out: Option<PathBuf>,
+        #[arg(long, default_value_t = 8)]
+        batch_size: usize,
+        #[arg(long, default_value_t = 60_000)]
+        max_batch_bytes: usize,
+        #[arg(long, overrides_with = "no_include_config")]
+        include_config: bool,
+        #[arg(long, overrides_with = "include_config")]
+        no_include_config: bool,
+        #[arg(long)]
+        include_env: bool,
+        #[arg(long)]
+        include_generated: bool,
+        #[arg(long)]
+        include_vendor: bool,
+        #[arg(long)]
+        include_assets: bool,
+        #[arg(long)]
+        run_id: Option<String>,
+        #[arg(long = "exclude-glob")]
+        exclude_globs: Vec<String>,
+        #[arg(long = "include-file")]
+        include_files: Vec<String>,
+        #[arg(long = "include-glob")]
+        include_globs: Vec<String>,
+    },
     /// Merge, rank, hash-bind, and optionally project verified audit findings.
     MergeFindings {
         #[arg(long)]
@@ -478,6 +509,36 @@ fn main() -> ExitCode {
 
 fn run_audit(command: AuditCommand) -> ExitCode {
     match command {
+        AuditCommand::BuildFullRepo {
+            repo,
+            out,
+            batch_size,
+            max_batch_bytes,
+            include_config: _,
+            no_include_config,
+            include_env,
+            include_generated,
+            include_vendor,
+            include_assets,
+            run_id,
+            exclude_globs,
+            include_files,
+            include_globs,
+        } => run_full_repo_build(
+            repo,
+            out,
+            batch_size,
+            max_batch_bytes,
+            !no_include_config,
+            include_env,
+            include_generated,
+            include_vendor,
+            include_assets,
+            run_id,
+            exclude_globs,
+            include_files,
+            include_globs,
+        ),
         AuditCommand::MergeFindings {
             reports,
             json_out,
@@ -523,6 +584,140 @@ fn run_audit(command: AuditCommand) -> ExitCode {
             }
         }
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_full_repo_build(
+    repo: PathBuf,
+    out: Option<PathBuf>,
+    batch_size: usize,
+    max_batch_bytes: usize,
+    include_config: bool,
+    include_env: bool,
+    include_generated: bool,
+    include_vendor: bool,
+    include_assets: bool,
+    run_id: Option<String>,
+    exclude_globs: Vec<String>,
+    include_files: Vec<String>,
+    include_globs: Vec<String>,
+) -> ExitCode {
+    use devcoordinator2_tooling::audit_queue as queue;
+    let result = (|| {
+        if batch_size < 1 || max_batch_bytes < 1 {
+            return Err("batch size and maximum batch bytes must be at least 1".to_owned());
+        }
+        let repo = repo
+            .canonicalize()
+            .map_err(|error| format!("Repo path is not a directory: {error}"))?;
+        let run_id = match run_id {
+            Some(run_id) => queue::run_id_token(&run_id)?,
+            None => random_audit_run_id()?,
+        };
+        let generated_at = timestamp()?;
+        let archive_stamp = audit_archive_stamp()?;
+        let out = match out {
+            Some(out) if out.is_absolute() => out,
+            Some(out) => std::env::current_dir()
+                .map_err(|error| format!("cannot resolve output directory: {error}"))?
+                .join(out),
+            None => std::env::temp_dir()
+                .join("full-repo-audit")
+                .join(repo.file_name().unwrap_or_default())
+                .join(format!("{archive_stamp}-{}", &run_id[..8])),
+        };
+        let output_rel = queue::relative_dir_if_child(&repo, &out);
+        if output_rel.as_deref() == Some("") {
+            return Err(
+                "--out cannot be the repository root; choose a dedicated audit output directory."
+                    .to_owned(),
+            );
+        }
+        let ownership = queue::ArtifactOwnership::default();
+        let mut output_rel_dirs = output_rel.into_iter().collect::<Vec<_>>();
+        for owned in
+            queue::discover_owned_output_dirs(&repo, include_generated, include_vendor, &ownership)
+        {
+            if !output_rel_dirs.contains(&owned) {
+                output_rel_dirs.push(owned);
+            }
+        }
+        let include_files = include_files
+            .iter()
+            .map(|path| queue::validate_repo_relative_include(&repo, path))
+            .collect::<Result<std::collections::BTreeSet<_>, _>>()?;
+        let collection = queue::collect_files(
+            &repo,
+            &queue::CollectOptions {
+                include_config,
+                include_env,
+                include_generated,
+                include_vendor,
+                include_assets,
+                exclude_globs,
+                include_files,
+                include_globs,
+                output_rel_dirs,
+            },
+        );
+        let units = queue::audit_units_for(&repo, &collection.entries, max_batch_bytes);
+        let batches = queue::batch_files(&units, batch_size, max_batch_bytes)?;
+        let verifier_program = std::env::current_exe()
+            .map_err(|error| format!("cannot resolve tooling executable: {error}"))?;
+        let manifest = queue::write_full_repo_outputs(
+            &repo,
+            &out,
+            &collection,
+            &units,
+            &batches,
+            &run_id,
+            &queue::FullRepoOutputOptions {
+                generated_at,
+                archive_stamp,
+                verifier_program,
+                ownership,
+            },
+        )?;
+        Ok((manifest, out))
+    })();
+    match result {
+        Ok((manifest, out)) => {
+            println!(
+                "Wrote {} batches covering {} source files to {}",
+                manifest["batch_count"],
+                manifest["source_file_count"],
+                out.display()
+            );
+            println!(
+                "Excluded {} entries; see {}",
+                manifest["excluded_file_count"],
+                out.join("excluded_files.json").display()
+            );
+            ExitCode::SUCCESS
+        }
+        Err(error) => tooling_error(&error, 2),
+    }
+}
+
+fn random_audit_run_id() -> Result<String, String> {
+    use std::fmt::Write as _;
+    let mut random = [0u8; 16];
+    getrandom::fill(&mut random).map_err(|error| format!("cannot generate run id: {error}"))?;
+    Ok(random
+        .iter()
+        .fold(String::with_capacity(32), |mut output, byte| {
+            write!(output, "{byte:02x}").expect("writing to String cannot fail");
+            output
+        }))
+}
+
+fn audit_archive_stamp() -> Result<String, String> {
+    use time::{OffsetDateTime, macros::format_description};
+    OffsetDateTime::now_utc()
+        .format(format_description!(
+            "[year][month][day]T[hour][minute][second]Z"
+        ))
+        .map_err(|error| format!("cannot format audit timestamp: {error}"))
 }
 
 fn run_install(command: InstallCommand) -> ExitCode {
@@ -1119,6 +1314,30 @@ mod tests {
             audit.command,
             Command::Audit {
                 command: AuditCommand::MergeFindings { json: true, .. }
+            }
+        ));
+        let build = Cli::try_parse_from([
+            "devcoordinator2-tooling",
+            "audit",
+            "build-full-repo",
+            "--repo",
+            "/repo",
+            "--out",
+            "/tmp/audit",
+            "--no-include-config",
+            "--include-assets",
+            "--run-id",
+            "run-1234",
+        ])
+        .expect("audit queue command");
+        assert!(matches!(
+            build.command,
+            Command::Audit {
+                command: AuditCommand::BuildFullRepo {
+                    no_include_config: true,
+                    include_assets: true,
+                    ..
+                }
             }
         ));
 

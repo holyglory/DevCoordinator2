@@ -479,6 +479,57 @@ pub fn validate_directory_nofollow(path: &Path) -> Result<PathBuf, LedgerError> 
     Ok(absolute)
 }
 
+pub fn create_directory_all_nofollow(path: &Path, mode: u32) -> Result<PathBuf, LedgerError> {
+    let (absolute, components) = absolute_components(path)?;
+    let mut directory = unix_fs::open(
+        "/",
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+        Mode::empty(),
+    )
+    .map(File::from)
+    .map_err(|error| LedgerError(format!("directory root is unsafe: {error}")))?;
+    for component in components {
+        let next = match unix_fs::openat(
+            &directory,
+            &component,
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+            Mode::empty(),
+        ) {
+            Ok(next) => next,
+            Err(rustix::io::Errno::NOENT) => {
+                unix_fs::mkdirat(&directory, &component, Mode::from_raw_mode(mode)).map_err(
+                    |error| {
+                        LedgerError(format!(
+                            "cannot create non-symlinked directory {}: {error}",
+                            path.display()
+                        ))
+                    },
+                )?;
+                unix_fs::openat(
+                    &directory,
+                    &component,
+                    OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+                    Mode::empty(),
+                )
+                .map_err(|error| {
+                    LedgerError(format!(
+                        "cannot open created directory {}: {error}",
+                        path.display()
+                    ))
+                })?
+            }
+            Err(error) => {
+                return Err(LedgerError(format!(
+                    "directory path contains a symlink or unsafe component: {}: {error}",
+                    path.display()
+                )));
+            }
+        };
+        directory = File::from(next);
+    }
+    Ok(absolute)
+}
+
 pub fn write_bytes_nofollow(path: &Path, bytes: &[u8], mode: u32) -> Result<(), LedgerError> {
     let (_, components) = absolute_components(path)?;
     if components.is_empty() {
@@ -779,5 +830,20 @@ mod tests {
         )
         .unwrap();
         assert!(write_bytes_nofollow(&fifo, b"bad", 0o600).is_err());
+    }
+
+    #[test]
+    fn nofollow_directory_creation_refuses_parent_symlinks() {
+        let directory = tempfile::tempdir().unwrap();
+        let created = directory.path().join("a/b/c");
+        assert_eq!(
+            create_directory_all_nofollow(&created, 0o700).unwrap(),
+            created
+        );
+        let outside = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink(outside.path(), directory.path().join("linked")).unwrap();
+        assert!(
+            create_directory_all_nofollow(&directory.path().join("linked/child"), 0o700).is_err()
+        );
     }
 }

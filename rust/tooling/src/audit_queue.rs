@@ -16,7 +16,9 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 use crate::audit_ledger::read_bytes_nofollow;
-use crate::audit_ledger::{validate_directory_nofollow, write_bytes_nofollow};
+use crate::audit_ledger::{
+    create_directory_all_nofollow, validate_directory_nofollow, write_bytes_nofollow,
+};
 
 pub const DEFAULT_MAX_BATCH_BYTES: usize = 60_000;
 pub const DIR_EXCLUSION_SAMPLE_LIMIT: usize = 20;
@@ -585,13 +587,9 @@ pub struct AuditUnit {
     pub kind: String,
     pub interface_relevant: bool,
     pub sha256: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub start_line: Option<usize>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub end_line: Option<usize>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub start_byte: Option<usize>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub end_byte: Option<usize>,
 }
 
@@ -2683,6 +2681,1010 @@ pub fn high_risk_file_inventory(repo: &Path, entries: &[FileEntry]) -> Vec<Value
     result
 }
 
+fn render_interface_focus(entries: &[AuditUnit]) -> String {
+    let files = entries
+        .iter()
+        .filter(|entry| entry.interface_relevant)
+        .map(|entry| entry.rel_path.clone())
+        .collect::<BTreeSet<_>>();
+    if files.is_empty() {
+        return String::new();
+    }
+    format!(
+        "\n## Interface Audit Focus\n\nThese files are likely to define UI, visible copy, navigation, forms, or interface behavior:\n\n{}\n\nFor these files, inventory visible product promises and trace them to implementation:\n- Buttons, icon buttons, menu items, command items, tabs, links, and shortcuts.\n- Text fields, selectors, filters, uploads, toggles, settings, and forms.\n- Toasts, banners, empty states, tooltips, helper text, validation text, success messages, and error messages.\n- Loading, empty, error, permission denied, background job, undo/redo, and destructive confirmation states.\n\nFlag interface elements that are unimplemented, handler-only placeholders, console-only behavior, disabled dead ends, not persisted, not validated, not reflected in API/state, misleadingly labeled, inaccessible, or wired to the wrong route/action. Include the exact visible label or message text whenever possible.\nRecord the result in the required `Interface Inventory` section even when no gap is found.\n",
+        files
+            .into_iter()
+            .map(|path| format!("- `{path}`"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    )
+}
+
+fn render_journey_file_list(entries: &[FileEntry]) -> String {
+    if entries.is_empty() {
+        return "- No interface-relevant files were detected.".to_owned();
+    }
+    entries
+        .iter()
+        .map(|entry| {
+            format!(
+                "- `{}` ({}, {} bytes, sha256=`{}`)",
+                entry.rel_path, entry.kind, entry.size_bytes, entry.sha256
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn replace_tokens(template: &str, values: &[(&str, String)]) -> String {
+    values
+        .iter()
+        .fold(template.to_owned(), |text, (token, value)| {
+            text.replace(token, value)
+        })
+}
+
+const JOURNEY_SOURCE_TEMPLATE: &str = r#"# Full Repo Audit User Journey Source Worker
+
+Repo root: `@@REPO@@`
+Run ID: `@@RUN_ID@@`
+
+@@DELIVERY@@
+@@DISPATCH@@
+
+You are a separate low-effort worker focused on user journeys through the UI. Do not edit the audited repository; write only the exact audit artifacts authorized above. Use the interface-relevant source files below, plus repo docs/routes/config when needed, to determine whether the app describes complete user journeys, required feature/UI elements, and test expectations, and whether the UI source supports them.
+
+## Interface-Relevant Files
+
+@@FILES@@
+
+## Tasks
+
+1. Find explicit journeys, feature/UI inventories, onboarding, workflows, routes, product flows, support/common-task docs, test expectations, and source-backed route flows.
+2. Draft reasonable frequent journeys from app intent, routes, visible copy, and code when documentation is incomplete. Mark every such journey `draft-needs-user-confirmation`; never treat it as confirmed product truth.
+3. Walk every confirmed or drafted journey. Classify mentioned UI relevance as `critical-always`, `primary-frequent`, `secondary-occasional`, or `rare-under-5-percent`; mark assumptions `confirmed`, `source-inferred`, or `missing`.
+4. Check the primary decision, required facts, warnings, frequent actions, reachable rare detail, desktop/native/mobile availability, responsive fit, and loading/empty/error/permission states.
+5. For badges, flags, rows, disclosures, scrolling details, messages, tool/results, copy and icon controls, mark every checklist label `pass`, `gap`, `blocked`, or `not applicable`: `badge-detail`, `row-hit-target`, `navigation-cursor`, `transient-disclosure`, `disclosure-scrollbar`, `icon-meaning`, `stable-expansion-width`, `hover-copy`, `status-summary`, `message-metadata`.
+6. Identify a safe test/fixture path for visually exercising the journey. Treat unconfirmed journeys as questions or assumption-based coverage, never clean UI proof.
+
+## Required Report File
+
+Write Markdown with exactly these sections to the report path above:
+
+## Run ID
+@@RUN_ID@@
+
+## Worker
+journey_source
+
+## Journey Sources
+List source files/docs/routes that define or imply the journeys.
+
+## Proposed Journeys
+List every confirmed journey and every `draft-needs-user-confirmation` journey with target user, goal, entry, route/screen sequence, decisions, required and rare UI, assumption status, tests, and success/failure end states.
+
+## UI Source Journey Checks
+| Journey | Step | Files | Primary navigation/decision elements | Relevance estimate | Required information | Interaction and metadata checklist | Mobile/Desktop availability | Test mode evidence |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+
+Every checklist cell must contain all ten exact labels and statuses.
+
+## Findings
+Use atomic P0/P1/P2/P3 blocks with `Files`, `Evidence`, `Interface evidence`, `Expected behavior/standard`, `Gap`, and `Suggested direction`, or exactly `No findings.`.
+
+## Open Questions
+Ask the lead to clarify frequent use cases when journey information is missing or ambiguous.
+"#;
+
+fn render_journey_source_prompt(
+    repo: &Path,
+    run_id: &str,
+    entries: &[FileEntry],
+    report_path: &Path,
+) -> Result<String, String> {
+    Ok(replace_tokens(
+        JOURNEY_SOURCE_TEMPLATE,
+        &[
+            ("@@REPO@@", repo.to_string_lossy().into_owned()),
+            ("@@RUN_ID@@", run_id.to_owned()),
+            ("@@DELIVERY@@", artifact_delivery_contract(report_path)?),
+            ("@@DISPATCH@@", isolated_light_worker_contract().to_owned()),
+            ("@@FILES@@", render_journey_file_list(entries)),
+        ],
+    ))
+}
+
+const VISUAL_JOURNEY_TEMPLATE: &str = r#"# Full Repo Audit Visual Journey Worker
+
+Repo root: `@@REPO@@`
+Run ID: `@@RUN_ID@@`
+
+@@DELIVERY@@
+@@DISPATCH@@
+
+Authorized visual evidence manifest: `@@EVIDENCE_MANIFEST@@`.
+Screenshot, formal-verifier, journey-evidence, changed-review queue, decision, and manual-review artifacts may be written only beneath the same audit-output directory and must be registered in that manifest.
+
+You are a separate low-effort worker focused on visual journey verification. Do not edit the audited repository. Prefer fixture/test mode and avoid production or heavy side effects. For CLI/library/plugin packages with no repo-owned rendered UI, mark visual checks `not applicable` with evidence; do not mistake host-owned rendering for a repo defect.
+
+## Interface-Relevant Files
+
+@@FILES@@
+
+## Tasks
+
+1. Identify Playwright/Cypress/Storybook/browser or native preview tooling and the safe test mode.
+2. Walk confirmed or drafted high-frequency journeys at desktop and narrow-mobile viewports, checking navigation, primary decisions, required facts, reachable rare details, warnings, loading/empty/error states, hierarchy, clipping, overflow, typography, contrast, theme consistency, scrollability, compactness, and accessibility.
+3. Mark all interaction checklist labels: `badge-detail`, `row-hit-target`, `navigation-cursor`, `transient-disclosure`, `disclosure-scrollbar`, `icon-meaning`, `stable-expansion-width`, `hover-copy`, `status-summary`, `message-metadata`.
+4. For safe web render paths run `formal-web-ui-verification` with complete journey/theme/region/continuation/UI-input declarations. Preserve visible-scrollbar and palette-risk inventories.
+5. Finish automation before manual review. Read `review-queue.json`, open only queued initial/full-page screenshots, record `pass`, `gap`, or `blocked`, finalize with the Rust `formal-ui review` tool, and carry unchanged prior gaps without reopening images. Hash drift is integrity evidence only.
+6. Populate `visual_evidence.json` with confined paths, SHA-256, detected MIME, dimensions, route/state/viewport metadata, capture tool, formal report, `journey-evidence`, review queue, and `manual-review`; cite real artifacts as `evidence:<id>`.
+
+## Required Report File
+
+## Run ID
+@@RUN_ID@@
+
+## Worker
+visual_journey
+
+## Visual Tooling
+List modes, commands, formal verifier status, scrollbars, palette risks, and blockers.
+
+## Visual Journey Checks
+| Journey | Viewport | Route/screen | Evidence | Navigation visibility | Decision information | Interaction and metadata checklist | Visual quality | Result |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+
+## Changed Visual Review
+| Review cell | Trigger/status | Initial viewport evidence | Full-page evidence | Decision | Note |
+| --- | --- | --- | --- | --- | --- |
+
+Cite both screenshot ids for queued cells and the formal report, journey evidence, review queue, and manual-review ids. Carried unchanged cells say `not reopened — carried unchanged`; every gap/blocked or carried-gap/carried-blocked row requires a finding.
+
+## Findings
+Use atomic P0/P1/P2/P3 blocks with `Files`, `Evidence`, `Interface evidence`, `Expected behavior/standard`, `Gap`, and `Suggested direction`, or exactly `No findings.`.
+
+## Open Questions
+List missing test-mode or journey clarifications for the lead.
+"#;
+
+fn render_visual_journey_prompt(
+    repo: &Path,
+    run_id: &str,
+    entries: &[FileEntry],
+    report_path: &Path,
+) -> Result<String, String> {
+    let evidence_manifest = report_path
+        .parent()
+        .and_then(Path::parent)
+        .unwrap_or_else(|| Path::new("."))
+        .join("visual_evidence.json");
+    Ok(replace_tokens(
+        VISUAL_JOURNEY_TEMPLATE,
+        &[
+            ("@@REPO@@", repo.to_string_lossy().into_owned()),
+            ("@@RUN_ID@@", run_id.to_owned()),
+            ("@@DELIVERY@@", artifact_delivery_contract(report_path)?),
+            ("@@DISPATCH@@", isolated_light_worker_contract().to_owned()),
+            ("@@FILES@@", render_journey_file_list(entries)),
+            (
+                "@@EVIDENCE_MANIFEST@@",
+                absolute_display(&evidence_manifest)?,
+            ),
+        ],
+    ))
+}
+
+const LEAD_TEMPLATE: &str = r#"# Full Repo Audit Lead Reconciliation
+
+Repo root: `@@REPO@@`
+Run ID: `@@RUN_ID@@`
+
+@@DELIVERY@@
+
+This required lead-owned artifact is completed only after every batch and applicable journey report. Independently reopen assigned source and recheck every batch PASS responsibility anchor; sampling is insufficient. Do not edit the audited repository.
+
+Trace every real feature, API, command, route, job, event, configuration, schema/migration, build/deploy, and operational contract across file boundaries. Challenge hard-coded substitutes, ignored inputs, fake success, incomplete registration, memory-only state presented as durable, missing effects, partial read/write paths, production mocks, missing lifecycle behavior, and shape-only tests. Findings are one independently closable outcome each.
+
+## Required Report File
+
+## Run ID
+@@RUN_ID@@
+
+## Worker
+lead_reconciliation
+
+## Cross-File Contract Trace
+For a non-empty repository map every batch Contract ID exactly once into sequential `lead:C<3+ digits>` rows. For an empty manifest write exactly `No source-backed implementation contracts were queued.`
+
+| Contract ID | Batch Contract IDs | Contract/source anchors | entry-registration | core-logic | data-lifecycle | integration-boundary | authorization-trust | failure-recovery | observable-outcome | operational-lifecycle | verification | Result |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+
+Each trace cell begins `pass —`, `gap —`, `blocked —`, or justified `not applicable —`. Every source anchor from every mapped batch row recurs in contract anchors, observable outcome, and verification. Verification declares exactly one `evidence-type: test|runtime|source-only`, one `counterfactual:` or `invariance:`, and for test/runtime one `evidence-ref:`. PASS test/runtime rows also name an observed `outcome:` or `result:`. Persistence, integration, external-effect, and success PASS claims require test/runtime evidence. GAP/BLOCKED mappings cannot become PASS; every GAP/BLOCKED row has an atomic finding citing its lead Contract ID.
+
+## Findings
+Use atomic P0/P1/P2/P3 blocks with `Files`, `Evidence`, `Interface evidence`, `Expected behavior/standard`, `Gap`, and `Suggested direction`, or exactly `No findings.`.
+
+## Open Questions
+List unresolved ambiguities or exactly `None.`. Questions and hypotheses are not findings.
+"#;
+
+fn render_lead_reconciliation_prompt(
+    repo: &Path,
+    run_id: &str,
+    report_path: &Path,
+) -> Result<String, String> {
+    Ok(replace_tokens(
+        LEAD_TEMPLATE,
+        &[
+            ("@@REPO@@", repo.to_string_lossy().into_owned()),
+            ("@@RUN_ID@@", run_id.to_owned()),
+            (
+                "@@DELIVERY@@",
+                lead_artifact_delivery_contract(report_path)?,
+            ),
+        ],
+    ))
+}
+
+const BATCH_TEMPLATE: &str = r#"# Full Repo Audit Batch @@BATCH@@/@@TOTAL@@
+
+Repo root: `@@REPO@@`
+Batch purpose: @@PURPOSE@@
+
+@@DELIVERY@@
+@@DISPATCH@@
+
+You are a low-effort worker auditing only this batch. Do not edit the repository. Inspect every assigned unit and report only evidence tied to it.
+
+## Cross-Batch Verification Guardrail
+
+Consult `@@TEST_INDEX@@` before calling a responsibility untested. Inspect named candidate tests, then make at most one behavior-specific manifest search. Tests in another batch are evidence but remain owned there. Browser fixtures do not prove persistence or external effects. Run only relevant bounded tests, preserve completed outcomes and exits, and after one non-destructive environment workaround record one BLOCKED contract with its unblock condition rather than repeated product findings.
+
+## Pre-return Report Gate
+
+Use one row per contract responsibility and exactly one atomic finding per GAP/BLOCKED. Copy parser-recognized `name@L...:C...` or `name@B...` anchors exactly; never invent coordinates. Declarative/manual rows cite an exact raw backticked token. Save the report, then validate this batch with the Rust verifier before returning:
+
+`devcoordinator2-tooling audit verify-full-repo --manifest <audit-output>/manifest.json --batch-id batch_@@BATCH@@ --reports <exact-report-path> --json`
+
+## Files You Own
+
+@@FILES@@
+@@RANGE@@
+@@INTERFACE@@
+
+## Audit Questions
+
+Trace each responsibility from registration/entry through validation and domain logic into dependencies, persistence/effects, observable output, failure/recovery, authorization/trust, and verification. Find explicit stubs and marker-free gaps: constants substituted for calculations, ignored configuration, unregistered routes/jobs/exports, memory-only durability, swallowed errors, presentation-only authorization, production fixtures, missing migration/rollback/retry/cancel/cleanup, or tests that prove shape rather than changed outcome. Check reliability, security, accessibility, performance, maintainability, state/error/permission handling, and every visible product promise.
+
+## Required Report File
+
+## Run ID
+@@RUN_ID@@
+
+## Batch ID
+batch_@@BATCH@@
+
+## Batch Summary
+Briefly describe this batch.
+
+## File Coverage
+| File | Status | SHA-256 | Purpose |
+| --- | --- | --- | --- |
+
+One CHECKED/UNCHECKED row per exact file or range unit.
+
+## Implementation Inventory
+| File/unit | Contract ID | Contract/responsibility | Entrypoints/source anchors | Implementation/data/side-effect trace | Failure/edge/permission/recovery trace | Verification evidence | Result |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+
+Every unit appears at least once; independent responsibilities use sequential `batch_@@BATCH@@:C<3+ digits>` IDs. Every responsibility has exactly one `Basis: <kind> — <backticked reference>` and one `Discovery: parsed|manual — <backticked anchor/token>`. Allowed basis kinds are `user-requirement`, `acceptance-criterion`, `recorded-decision`, `public-contract`, `interface-promise`, `caller-contract`, `schema-invariant`, `operational-contract`, and honest `source-inferred`. Trace cells begin `pass —`, `gap —`, `blocked —`, or justified `not applicable —`. Verification declares exactly one `evidence-type: test`, `evidence-type: runtime`, or `evidence-type: source-only` plus one counterfactual/invariance; test/runtime adds one `evidence-ref:` and PASS adds observed `outcome:` or `result:`. Persistence/integration/external-effect/success PASS requires test/runtime evidence. Result is GAP if any gap, else BLOCKED if any blocked, else PASS.
+
+## Interface Inventory
+For interface units, inventory each visible surface/text/control/message, expected handler/state/API/persistence/verification path, and actual evidence. Otherwise write exactly `No interface-relevant files in this batch.`
+
+## Findings
+One atomic P0/P1/P2/P3 subsection per GAP/BLOCKED Contract ID with `Files`, `Evidence`, `Interface evidence`, `Expected behavior/standard`, `Gap`, and `Suggested direction`.
+
+## No Finding Notes
+List checked units with no notable issue.
+
+## Open Questions
+List ambiguities for the lead.
+"#;
+
+fn absolute_display(path: &Path) -> Result<String, String> {
+    if path.is_absolute() {
+        return Ok(path.to_string_lossy().into_owned());
+    }
+    std::env::current_dir()
+        .map(|directory| directory.join(path).to_string_lossy().into_owned())
+        .map_err(|error| format!("cannot resolve artifact path: {error}"))
+}
+
+fn render_batch_prompt(
+    repo: &Path,
+    run_id: &str,
+    batch_id: usize,
+    total_batches: usize,
+    entries: &[AuditUnit],
+    report_path: &Path,
+) -> Result<String, String> {
+    let files = entries
+        .iter()
+        .map(|entry| {
+            if let (Some(start), Some(end)) = (entry.start_line, entry.end_line) {
+                format!(
+                    "- Unit `{}`: `{}` lines {start}-{end} ({}, approx {} bytes in this range, interface={}, full-file sha256=`{}`)",
+                    entry.unit_id, entry.rel_path, entry.kind, entry.size_bytes,
+                    entry.interface_relevant, entry.sha256
+                )
+            } else if let (Some(start), Some(end)) = (entry.start_byte, entry.end_byte) {
+                format!(
+                    "- Unit `{}`: `{}` bytes {start}-{end} ({}, {} bytes in this range, interface={}, full-file sha256=`{}`)",
+                    entry.unit_id, entry.rel_path, entry.kind, entry.size_bytes,
+                    entry.interface_relevant, entry.sha256
+                )
+            } else {
+                format!(
+                    "- Unit `{}`: `{}` ({}, {} bytes, interface={}, sha256=`{}`)",
+                    entry.unit_id, entry.rel_path, entry.kind, entry.size_bytes,
+                    entry.interface_relevant, entry.sha256
+                )
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let range = if entries
+        .iter()
+        .any(|entry| entry.start_line.is_some() || entry.start_byte.is_some())
+    {
+        "\n## Range Review Scope\n\nInspect each assigned line/byte range manually and only nearby context needed to understand it. Use the exact ranged unit id in File Coverage and Findings/No Finding Notes; cite the real repo path plus range in evidence.\n".to_owned()
+    } else {
+        String::new()
+    };
+    let batch = format!("{batch_id:03}");
+    Ok(replace_tokens(
+        BATCH_TEMPLATE,
+        &[
+            ("@@REPO@@", repo.to_string_lossy().into_owned()),
+            ("@@RUN_ID@@", run_id.to_owned()),
+            ("@@BATCH@@", batch),
+            ("@@TOTAL@@", format!("{total_batches:03}")),
+            ("@@PURPOSE@@", purpose_for(entries)),
+            ("@@DELIVERY@@", artifact_delivery_contract(report_path)?),
+            ("@@DISPATCH@@", isolated_light_worker_contract().to_owned()),
+            ("@@FILES@@", files),
+            ("@@RANGE@@", range),
+            ("@@INTERFACE@@", render_interface_focus(entries)),
+            (
+                "@@TEST_INDEX@@",
+                absolute_display(
+                    &report_path
+                        .parent()
+                        .and_then(Path::parent)
+                        .unwrap_or_else(|| Path::new("."))
+                        .join("test_evidence_index.json"),
+                )?,
+            ),
+        ],
+    ))
+}
+
+fn write_text(path: &Path, text: &str) -> Result<(), String> {
+    write_bytes_nofollow(path, text.as_bytes(), 0o600).map_err(|error| error.to_string())
+}
+
+fn shell_quote(value: &str) -> String {
+    if !value.is_empty()
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"_@%+=:,./-".contains(&byte))
+    {
+        value.to_owned()
+    } else {
+        format!("'{}'", value.replace('\'', "'\"'\"'"))
+    }
+}
+
+fn write_completion_marker(
+    out_dir: &Path,
+    manifest: &Value,
+    completed_at: &str,
+    ownership: &ArtifactOwnership,
+) -> Result<(), String> {
+    let marker = json!({
+        "run_id":manifest["run_id"],
+        "completed_at":completed_at,
+        "phase":"queue_generated",
+        "audit_verified":false,
+        "marker_semantics":"Queue artifacts were generated; subagent reports and effort ledger still require verifier completion.",
+        "manifest":"manifest.json",
+        "audit_index":"audit_index.md",
+        "effort_ledger":"effort_ledger.json",
+        "excluded_files":"excluded_files.json",
+        "reports_dir":"reports",
+        "logs_dir":"logs",
+        "final_report":"final-report.md",
+        "ownership_marker":ownership.marker_name,
+        "batch_count":manifest["batch_count"],
+        "source_file_count":manifest["source_file_count"],
+    });
+    let temporary = out_dir.join("queue_complete.json.tmp");
+    let destination = out_dir.join("queue_complete.json");
+    write_json(&temporary, &marker)?;
+    if destination.symlink_metadata().is_ok() {
+        return Err(format!(
+            "queue completion destination unexpectedly exists: {}",
+            destination.display()
+        ));
+    }
+    std::fs::rename(&temporary, &destination)
+        .map_err(|error| format!("cannot publish queue completion marker: {error}"))
+}
+
+fn write_effort_ledger(out_dir: &Path, manifest: &Value) -> Result<(), String> {
+    let journey = manifest
+        .get("journey_audit")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    let lead = manifest
+        .get("lead_reconciliation")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    let journey_required = journey.get("required") == Some(&json!(true));
+    let pruned_hints = manifest
+        .get("pruned_directory_review_hints")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let tracked_deletions = manifest
+        .get("tracked_deletions")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let pruned_count = manifest
+        .get("pruned_directory_review_hint_count")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let deletion_count = manifest
+        .get("tracked_deletion_count")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let high_risk_count = manifest
+        .get("high_risk_file_count")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let pruned_decisions = pruned_hints
+        .iter()
+        .filter_map(Value::as_object)
+        .map(|hint| {
+            json!({
+                "path":hint.get("path").cloned().unwrap_or(Value::Null),
+                "source_like_sample_paths":hint.get("source_like_sample_paths").cloned().unwrap_or_else(|| json!([])),
+                "decision":Value::Null,"rationale":Value::Null,
+            })
+        })
+        .collect::<Vec<_>>();
+    let deletion_decisions = tracked_deletions
+        .iter()
+        .filter_map(Value::as_object)
+        .map(|removal| {
+            json!({
+                "path":removal.get("path").cloned().unwrap_or(Value::Null),
+                "baseline_sha256":removal.get("baseline_sha256").cloned().unwrap_or(Value::Null),
+                "decision":Value::Null,"rationale":Value::Null,"evidence":Value::Null,
+            })
+        })
+        .collect::<Vec<_>>();
+    let high_risk_files = manifest
+        .get("high_risk_files")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_object)
+        .map(|item| {
+            let mut item = item.clone();
+            item.extend([
+                ("status".to_owned(), json!("pending")),
+                ("evidence".to_owned(), Value::Null),
+                ("notes".to_owned(), Value::Null),
+            ]);
+            Value::Object(item)
+        })
+        .collect::<Vec<_>>();
+    let batches = manifest
+        .get("batches")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_object)
+        .map(|batch| {
+            let id = batch.get("id").and_then(Value::as_str).unwrap_or("");
+            json!({
+                "batch_id":id,
+                "prompt":batch.get("prompt").cloned().unwrap_or(Value::Null),
+                "required_reasoning_effort":"low",
+                "agent_id":Value::Null,"actual_reasoning_effort":Value::Null,
+                "status":"pending","report":format!("reports/{id}.md"),
+                "runtime_provenance":Value::Null,"effort_claim_basis":Value::Null,
+                "effort_claim_label":Value::Null,"notes":Value::Null,
+            })
+        })
+        .collect::<Vec<_>>();
+    let ledger = json!({
+        "run_id":manifest["run_id"],"repo_root":manifest["repo_root"],
+        "provenance_scope":"Lead-recorded runtime ledger. The verifier checks recorded agent ids, effort values, reports, journey-worker assignments, and fallback consistency; it cannot independently prove platform scheduler settings.",
+        "effort_verification_scope":"ledger-recorded",
+        "subagent_capability_check":{
+            "status":"pending","spawn_tool":Value::Null,"can_set_reasoning_effort":Value::Null,
+            "claim_basis":Value::Null,"claim_label":Value::Null,"evidence":Value::Null,
+            "notes":"Lead agent must record whether subagent spawning and reasoning_effort settings are available before dispatch.",
+        },
+        "lead":{
+            "status":"pending","required_reasoning_effort":"xhigh",
+            "actual_reasoning_effort":Value::Null,"agent_id":Value::Null,
+            "effort_claim_basis":Value::Null,"effort_claim_label":Value::Null,
+            "runtime_provenance":Value::Null,"notes":Value::Null,
+        },
+        "fallback_mode":{"active":false,"reason":Value::Null},
+        "pruned_directory_review":{
+            "status":if pruned_count > 0 {"pending"} else {"not-applicable"},
+            "hint_count":pruned_count,"decisions":pruned_decisions,
+            "notes":if pruned_count > 0 {
+                "Lead must review pruned_directory_review_hints before claiming full coverage."
+            } else {"No pruned directories contained source-like samples."},
+        },
+        "tracked_deletion_review":{
+            "status":if deletion_count > 0 {"pending"} else {"not-applicable"},
+            "removal_count":deletion_count,"decisions":deletion_decisions,
+            "notes":if deletion_count > 0 {
+                "Lead must review every tracked removal against its baseline and current references before claiming full coverage."
+            } else {"No tracked files are deleted from the current worktree."},
+        },
+        "lead_high_risk_review":{
+            "status":if high_risk_count > 0 {"pending"} else {"not-applicable"},
+            "files":high_risk_files,
+        },
+        "lead_reconciliation":{
+            "status":"pending","prompt":lead.get("prompt").cloned().unwrap_or(Value::Null),
+            "report":lead.get("report").cloned().unwrap_or(Value::Null),
+            "notes":"Required lead-owned cross-file semantic implementation reconciliation.",
+        },
+        "journey_source_worker":{
+            "status":if journey_required {"pending"} else {"not-applicable"},
+            "prompt":journey.get("source_prompt").cloned().unwrap_or(Value::Null),
+            "required_reasoning_effort":if journey_required {json!("low")} else {Value::Null},
+            "agent_id":Value::Null,"actual_reasoning_effort":Value::Null,
+            "report":journey.get("source_report").cloned().unwrap_or(Value::Null),
+            "runtime_provenance":Value::Null,"effort_claim_basis":Value::Null,
+            "effort_claim_label":Value::Null,
+            "notes":if journey_required {
+                "Required when interface-relevant files are queued; inspect source-level user journeys, relevance, decision information, and test-mode support."
+            } else {"No interface-relevant files were queued."},
+        },
+        "visual_journey_worker":{
+            "status":if journey_required {"pending"} else {"not-applicable"},
+            "prompt":journey.get("visual_prompt").cloned().unwrap_or(Value::Null),
+            "required_reasoning_effort":if journey_required {json!("low")} else {Value::Null},
+            "agent_id":Value::Null,"actual_reasoning_effort":Value::Null,
+            "report":journey.get("visual_report").cloned().unwrap_or(Value::Null),
+            "runtime_provenance":Value::Null,"effort_claim_basis":Value::Null,
+            "effort_claim_label":Value::Null,
+            "notes":if journey_required {
+                "Required when interface-relevant files are queued; use available visual tooling in test mode or report the blocker."
+            } else {"No interface-relevant files were queued."},
+        },
+        "batches":batches,
+    });
+    write_json(&out_dir.join("effort_ledger.json"), &ledger)
+}
+
+fn table_cell(value: &Value) -> String {
+    let text = match value {
+        Value::String(value) => value.clone(),
+        other => other.to_string(),
+    };
+    text.replace(['\n', '\r'], " ")
+        .replace('\\', "\\\\")
+        .replace('|', "\\|")
+}
+
+fn render_index(repo: &Path, out_dir: &Path, manifest: &Value) -> String {
+    let batches = manifest
+        .get("batches")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let rows = if batches.is_empty() {
+        "| none | none | 0 | 0 | 0 | 0 | No source-like files were queued. |".to_owned()
+    } else {
+        batches
+            .iter()
+            .map(|batch| {
+                format!(
+                    "| {} | `{}` | {} | {} | {} | {} | {} |",
+                    table_cell(&batch["id"]),
+                    table_cell(&batch["prompt"]),
+                    batch["file_count"],
+                    batch
+                        .get("coverage_unit_count")
+                        .unwrap_or(&batch["file_count"]),
+                    batch["interface_file_count"],
+                    batch["byte_count"],
+                    table_cell(&batch["purpose"]),
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let journey = &manifest["journey_audit"];
+    let (journey_instruction, journey_prompts) = if journey["required"] == true {
+        (
+            "3. Dispatch the two generated journey workers and save their exact reports.",
+            format!(
+                "- Source journey worker prompt: `{}` -> `{}`\n- Visual journey worker prompt: `{}` -> `{}`",
+                journey["source_prompt"].as_str().unwrap_or(""),
+                journey["source_report"].as_str().unwrap_or(""),
+                journey["visual_prompt"].as_str().unwrap_or(""),
+                journey["visual_report"].as_str().unwrap_or("")
+            ),
+        )
+    } else {
+        (
+            "3. No journey workers are required because no interface-relevant files were queued.",
+            "- No journey worker prompts were generated because no interface-relevant files were queued."
+                .to_owned(),
+        )
+    };
+    format!(
+        "# Full Repo Audit Queue\n\nRepo root: `{}`\nOutput directory: `{}`\nGenerated: `{}`\nRun ID: `{}`\nQueue completion marker: `queue_complete.json`\n\nSource files queued: **{}**\nInterface-relevant files queued: **{}**\nExcluded high-signal files needing lead review: **{}**\nPruned directories with source-like samples needing lead review: **{}**\nTracked worktree removals needing lead review: **{}**\nBatches: **{}**\nAll source files queued exactly once: **{}**\n\n## Lead Agent Instructions\n\n1. Run the lead architectural audit with extra-high effort.\n2. Spawn one fresh isolated worker per batch prompt with the runtime/user-selected effort and the entire prompt plus applicable project-ledger requirements.\n{journey_instruction}\n4. Workers write complete reports to exact paths and return only bounded `REPORT_SAVED` receipts.\n5. Confirm `queue_complete.json` and run IDs before dispatch.\n6. Fill `effort_ledger.json`, including capability, lead, batch, journey, pruned-directory, deletion, and high-risk review status.\n7. Resolve every `scope_warning`, pruned review hint, and tracked deletion.\n8. Verify exact reports with `{}`.\n9. Requeue missing or unchecked units and reconcile every feature/entry point across batches.\n10. Complete `lead_reconciliation.md`, validate candidates, keep verbose output in `logs/`, and write complete synthesis to `final-report.md`.\n\n## Batches\n\n| Batch | Prompt | Files | Units | UI Files | Bytes | Purpose |\n| --- | --- | ---: | ---: | ---: | ---: | --- |\n{rows}\n\n## Journey Worker Prompts\n\n{journey_prompts}\n\n## Coverage Files\n\n- `manifest.json`: source inventory and coverage invariants.\n- `{}`: ownership marker for safe reruns.\n- `queue_complete.json`: queue-generation marker, not audit completion.\n- `{VERIFICATION_RECEIPT_NAME}`: stable verifier receipt required for consolidation.\n- `effort_ledger.json`, `excluded_files.json`, `test_evidence_index.json`, `reports/`, `logs/`, and `final-report.md`: authoritative audit artifacts.\n- `lead_reconciliation.md` and conditional journey prompts: required reconciliation surfaces.\n- `batch_###.md`: exact isolated worker prompts.\n",
+        repo.display(),
+        out_dir.display(),
+        manifest["generated_at"].as_str().unwrap_or(""),
+        manifest["run_id"].as_str().unwrap_or(""),
+        manifest["source_file_count"],
+        manifest["interface_file_count"],
+        manifest["scope_warning_count"],
+        manifest["pruned_directory_review_hint_count"],
+        manifest["tracked_deletion_count"],
+        manifest["batch_count"],
+        manifest["coverage_invariants"]["all_source_files_queued_exactly_once"],
+        manifest["verifier_command"].as_str().unwrap_or(""),
+        manifest["artifact_marker"].as_str().unwrap_or(""),
+    )
+}
+
+#[derive(Clone, Debug)]
+pub struct FullRepoOutputOptions {
+    pub generated_at: String,
+    pub archive_stamp: String,
+    pub verifier_program: PathBuf,
+    pub ownership: ArtifactOwnership,
+}
+
+pub fn write_full_repo_outputs(
+    repo: &Path,
+    out_dir: &Path,
+    collection: &FileCollection,
+    units: &[AuditUnit],
+    batches: &[Vec<AuditUnit>],
+    run_id: &str,
+    options: &FullRepoOutputOptions,
+) -> Result<Value, String> {
+    validate_generated_artifact_tokens(&collection.entries, units)?;
+    let existing = ensure_output_dir_safe(out_dir, repo, &options.ownership)?;
+    create_directory_all_nofollow(out_dir, 0o700).map_err(|error| error.to_string())?;
+    let marker = if existing.is_none() {
+        write_ownership_marker(
+            out_dir,
+            repo,
+            &[],
+            &options.generated_at,
+            &options.ownership,
+        )?;
+        read_ownership_marker(out_dir, &options.ownership)
+    } else {
+        existing
+    };
+    clean_generated_artifacts(out_dir, marker.as_ref(), &options.ownership)?;
+
+    let reports_dir = out_dir.join("reports");
+    let mut archived_reports_dir = None;
+    let mut archived_reports_name = None;
+    if let Ok(metadata) = reports_dir.symlink_metadata() {
+        if metadata.file_type().is_symlink() || !metadata.is_dir() {
+            return Err(format!(
+                "Audit reports path must be a non-symlinked directory: {}",
+                reports_dir.display()
+            ));
+        }
+        validate_directory_nofollow(&reports_dir).map_err(|error| error.to_string())?;
+        if !directory_entries(&reports_dir).is_empty() {
+            let mut suffix = 1usize;
+            let mut archive = out_dir.join(format!("reports.stale.{}", options.archive_stamp));
+            while archive.exists() {
+                suffix += 1;
+                archive = out_dir.join(format!(
+                    "reports.stale.{}.{}",
+                    options.archive_stamp, suffix
+                ));
+            }
+            std::fs::rename(&reports_dir, &archive)
+                .map_err(|error| format!("cannot archive stale reports: {error}"))?;
+            archived_reports_name = archive
+                .file_name()
+                .and_then(|value| value.to_str())
+                .map(str::to_owned);
+            archived_reports_dir = Some(archive.to_string_lossy().into_owned());
+        }
+    }
+    create_directory_all_nofollow(&reports_dir, 0o700).map_err(|error| error.to_string())?;
+    let logs_dir = create_directory_all_nofollow(&out_dir.join("logs"), 0o700)
+        .map_err(|error| error.to_string())?;
+    let test_index = build_test_evidence_index(repo, &collection.entries, run_id);
+    write_json(&out_dir.join("test_evidence_index.json"), &test_index)?;
+
+    let mut batch_records = Vec::new();
+    let mut all_batched_paths = Vec::new();
+    let mut all_batched_units = Vec::new();
+    for (offset, batch) in batches.iter().enumerate() {
+        let index = offset + 1;
+        let prompt_name = format!("batch_{index:03}.md");
+        let report_path = reports_dir.join(&prompt_name);
+        write_text(
+            &out_dir.join(&prompt_name),
+            &render_batch_prompt(repo, run_id, index, batches.len(), batch, &report_path)?,
+        )?;
+        let paths = batch
+            .iter()
+            .map(|item| item.rel_path.clone())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        let unit_ids = batch
+            .iter()
+            .map(|item| item.unit_id.clone())
+            .collect::<Vec<_>>();
+        all_batched_paths.extend(paths.iter().cloned());
+        all_batched_units.extend(unit_ids.iter().cloned());
+        batch_records.push(json!({
+            "id":format!("batch_{index:03}"),"prompt":prompt_name,
+            "report":format!("reports/batch_{index:03}.md"),
+            "file_count":paths.len(),"coverage_unit_count":batch.len(),
+            "interface_file_count":batch.iter().filter(|item| item.interface_relevant).count(),
+            "byte_count":batch.iter().map(|item| item.size_bytes).sum::<usize>(),
+            "files":paths,"coverage_units":unit_ids,"purpose":purpose_for(batch),
+        }));
+    }
+    let source_paths = collection
+        .entries
+        .iter()
+        .map(|entry| entry.rel_path.clone())
+        .collect::<BTreeSet<_>>();
+    let coverage_units = units
+        .iter()
+        .map(|unit| unit.unit_id.clone())
+        .collect::<BTreeSet<_>>();
+    let batched_paths = all_batched_paths.iter().cloned().collect::<BTreeSet<_>>();
+    let batched_units = all_batched_units.iter().cloned().collect::<BTreeSet<_>>();
+    let duplicate_units = duplicate_strings(&all_batched_units);
+    let missing_units = coverage_units
+        .difference(&batched_units)
+        .cloned()
+        .collect::<Vec<_>>();
+    let extra_units = batched_units
+        .difference(&coverage_units)
+        .cloned()
+        .collect::<Vec<_>>();
+    let missing = source_paths
+        .difference(&batched_paths)
+        .cloned()
+        .collect::<Vec<_>>();
+    let extra = batched_paths
+        .difference(&source_paths)
+        .cloned()
+        .collect::<Vec<_>>();
+    let duplicate_paths = duplicate_whole_file_paths_for_batches(batches);
+    let scope_warnings = collection
+        .excluded
+        .iter()
+        .filter(|item| item.get("scope_warning") == Some(&json!(true)))
+        .cloned()
+        .collect::<Vec<_>>();
+    let pruned_hints = collection
+        .excluded
+        .iter()
+        .filter(|item| {
+            item.get("entry_type") == Some(&json!("directory"))
+                && item.get("contains_source_like_samples") == Some(&json!(true))
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    let interface_entries = collection
+        .entries
+        .iter()
+        .filter(|entry| entry.interface_relevant)
+        .cloned()
+        .collect::<Vec<_>>();
+    let high_risk_files = high_risk_file_inventory(repo, &collection.entries);
+    let journey_required = !interface_entries.is_empty();
+    let journey = json!({
+        "required":journey_required,
+        "interface_files":interface_entries.iter().map(|entry| entry.rel_path.clone()).collect::<Vec<_>>(),
+        "source_prompt":if journey_required {json!("journey_audit.md")} else {Value::Null},
+        "source_report":if journey_required {json!("reports/journey_audit.md")} else {Value::Null},
+        "visual_prompt":if journey_required {json!("visual_journey_audit.md")} else {Value::Null},
+        "visual_report":if journey_required {json!("reports/visual_journey_audit.md")} else {Value::Null},
+    });
+    let lead = json!({
+        "required":true,"worker":"lead_reconciliation","prompt":"lead_reconciliation.md",
+        "report":"reports/lead_reconciliation.md",
+    });
+    write_text(
+        &out_dir.join("lead_reconciliation.md"),
+        &render_lead_reconciliation_prompt(
+            repo,
+            run_id,
+            &reports_dir.join("lead_reconciliation.md"),
+        )?,
+    )?;
+    if journey_required {
+        write_text(
+            &out_dir.join("journey_audit.md"),
+            &render_journey_source_prompt(
+                repo,
+                run_id,
+                &interface_entries,
+                &reports_dir.join("journey_audit.md"),
+            )?,
+        )?;
+        write_text(
+            &out_dir.join("visual_journey_audit.md"),
+            &render_visual_journey_prompt(
+                repo,
+                run_id,
+                &interface_entries,
+                &reports_dir.join("visual_journey_audit.md"),
+            )?,
+        )?;
+        write_json(
+            &out_dir.join("visual_evidence.json"),
+            &json!({"schema_version":1,"run_id":run_id,"artifacts":[]}),
+        )?;
+    }
+    let verifier_args = vec![
+        options.verifier_program.to_string_lossy().into_owned(),
+        "audit".to_owned(),
+        "verify-full-repo".to_owned(),
+        "--manifest".to_owned(),
+        out_dir.join("manifest.json").to_string_lossy().into_owned(),
+        "--reports".to_owned(),
+        reports_dir.to_string_lossy().into_owned(),
+        "--receipt-out".to_owned(),
+        out_dir
+            .join(VERIFICATION_RECEIPT_NAME)
+            .to_string_lossy()
+            .into_owned(),
+    ];
+    let verifier_command = verifier_args
+        .iter()
+        .map(|argument| shell_quote(argument))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let mut generated_artifacts = vec![
+        "audit_index.md".to_owned(),
+        "effort_ledger.json".to_owned(),
+        "excluded_files.json".to_owned(),
+        "manifest.json".to_owned(),
+        "queue_complete.json".to_owned(),
+        "test_evidence_index.json".to_owned(),
+        "lead_reconciliation.md".to_owned(),
+        "final-report.md".to_owned(),
+        "logs".to_owned(),
+        VERIFICATION_RECEIPT_NAME.to_owned(),
+    ];
+    if journey_required {
+        generated_artifacts.extend([
+            "journey_audit.md".to_owned(),
+            "visual_journey_audit.md".to_owned(),
+            "visual_evidence.json".to_owned(),
+        ]);
+    }
+    generated_artifacts.extend(archived_reports_name);
+    generated_artifacts.extend(batch_records.iter().filter_map(|batch| {
+        batch
+            .get("prompt")
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+    }));
+    let all_units_once =
+        missing_units.is_empty() && duplicate_units.is_empty() && extra_units.is_empty();
+    let all_sources_once = missing.is_empty() && extra.is_empty() && all_units_once;
+    let manifest = json!({
+        "repo_root":repo.to_string_lossy(),"run_id":run_id,
+        "generated_at":options.generated_at,
+        "reports_dir":reports_dir.to_string_lossy(),"logs_dir":logs_dir.to_string_lossy(),
+        "final_report":out_dir.join("final-report.md").to_string_lossy(),
+        "archived_reports_dir":archived_reports_dir,
+        "artifact_marker":out_dir.join(&options.ownership.marker_name).to_string_lossy(),
+        "effort_ledger":out_dir.join("effort_ledger.json").to_string_lossy(),
+        "test_evidence_index":out_dir.join("test_evidence_index.json").to_string_lossy(),
+        "test_evidence_file_count":test_index["test_file_count"],
+        "generated_artifacts":generated_artifacts,
+        "verifier_command":verifier_command,"verifier_args":verifier_args,
+        "source_file_count":collection.entries.len(),
+        "interface_file_count":interface_entries.len(),
+        "scope_warning_count":scope_warnings.len(),
+        "pruned_directory_review_hint_count":pruned_hints.len(),
+        "tracked_deletion_count":collection.tracked_deletions.len(),
+        "high_risk_file_count":high_risk_files.len(),
+        "excluded_file_count":collection.excluded.len(),
+        "excluded_files_sha256":canonical_json_sha256(&Value::Array(collection.excluded.clone()))?,
+        "batch_count":batches.len(),
+        "source_files":serde_json::to_value(&collection.entries).map_err(|error| error.to_string())?,
+        "coverage_unit_count":units.len(),
+        "coverage_units":serde_json::to_value(units).map_err(|error| error.to_string())?,
+        "batches":batch_records,
+        "journey_audit":journey,"lead_reconciliation":lead,
+        "coverage_invariants":{
+            "unique_batched_file_count":batched_paths.len(),
+            "unique_batched_unit_count":batched_units.len(),
+            "missing_from_batches":missing,"duplicates_in_batches":duplicate_paths,
+            "extra_in_batches":extra,"missing_units_from_batches":missing_units,
+            "duplicate_units_in_batches":duplicate_units,"extra_units_in_batches":extra_units,
+            "all_coverage_units_queued_exactly_once":all_units_once,
+            "all_source_files_queued_exactly_once":all_sources_once,
+        },
+        "scope_warnings":scope_warnings,"pruned_directory_review_hints":pruned_hints,
+        "tracked_deletions":collection.tracked_deletions,"high_risk_files":high_risk_files,
+    });
+    write_json(&out_dir.join("manifest.json"), &manifest)?;
+    write_json(
+        &out_dir.join("excluded_files.json"),
+        &Value::Array(collection.excluded.clone()),
+    )?;
+    write_text(
+        &out_dir.join("audit_index.md"),
+        &render_index(repo, out_dir, &manifest),
+    )?;
+    write_effort_ledger(out_dir, &manifest)?;
+    let generated_artifacts = manifest["generated_artifacts"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    write_ownership_marker(
+        out_dir,
+        repo,
+        &generated_artifacts,
+        &options.generated_at,
+        &options.ownership,
+    )?;
+    write_completion_marker(
+        out_dir,
+        &manifest,
+        &options.generated_at,
+        &options.ownership,
+    )?;
+    Ok(manifest)
+}
+
+fn duplicate_strings(values: &[String]) -> Vec<String> {
+    let mut seen = BTreeSet::new();
+    let mut duplicates = BTreeSet::new();
+    for value in values {
+        if !seen.insert(value) {
+            duplicates.insert(value.clone());
+        }
+    }
+    duplicates.into_iter().collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3011,6 +4013,145 @@ mod tests {
         assert_eq!(
             discover_owned_output_dirs(repo, false, false, &ownership),
             ["audit/one", "audit/two"]
+        );
+    }
+
+    #[test]
+    fn full_repo_publication_writes_exact_invariants_prompts_and_archives_reports() {
+        let directory = tempfile::tempdir().unwrap();
+        let repo = directory.path().join("repo");
+        std::fs::create_dir(&repo).unwrap();
+        git(&repo, &["init", "-q"]);
+        write(
+            &repo,
+            "src/App.tsx",
+            b"export function App() { return <button>Save</button>; }\n",
+        );
+        write(
+            &repo,
+            "tests/app.test.ts",
+            b"test('saves changes', () => {});\n",
+        );
+        git(&repo, &["add", "src/App.tsx", "tests/app.test.ts"]);
+        let collection = collect_files(
+            &repo,
+            &CollectOptions {
+                include_config: true,
+                ..Default::default()
+            },
+        );
+        let units = audit_units_for(&repo, &collection.entries, DEFAULT_MAX_BATCH_BYTES);
+        let batches = batch_files(&units, 8, DEFAULT_MAX_BATCH_BYTES).unwrap();
+        let output = directory.path().join("audit-output");
+        let mut options = FullRepoOutputOptions {
+            generated_at: "2026-09-04T00:00:00Z".to_owned(),
+            archive_stamp: "20260904T000000Z".to_owned(),
+            verifier_program: PathBuf::from("/usr/local/bin/devcoordinator2-tooling"),
+            ownership: ArtifactOwnership::default(),
+        };
+        let manifest = write_full_repo_outputs(
+            &repo,
+            &output,
+            &collection,
+            &units,
+            &batches,
+            "run-1234",
+            &options,
+        )
+        .unwrap();
+        assert_eq!(manifest["source_file_count"], 2, "{collection:#?}");
+        assert_eq!(manifest["interface_file_count"], 1);
+        assert_eq!(
+            manifest["coverage_invariants"]["all_source_files_queued_exactly_once"],
+            true
+        );
+        assert_eq!(manifest["coverage_units"][0]["start_line"], Value::Null);
+        assert!(
+            manifest["verifier_args"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|value| !value.as_str().unwrap_or("").contains("python"))
+        );
+        for name in [
+            "manifest.json",
+            "excluded_files.json",
+            "test_evidence_index.json",
+            "effort_ledger.json",
+            "queue_complete.json",
+            "audit_index.md",
+            "lead_reconciliation.md",
+            "journey_audit.md",
+            "visual_journey_audit.md",
+            "visual_evidence.json",
+            "batch_001.md",
+        ] {
+            assert!(output.join(name).is_file(), "missing {name}");
+        }
+        let batch = std::fs::read_to_string(output.join("batch_001.md")).unwrap();
+        for token in [
+            "fresh isolated context",
+            "runtime/user-selected effort",
+            "REPORT_SAVED",
+            "Implementation Inventory",
+            "evidence-type: test",
+            "evidence-type: runtime",
+            "evidence-type: source-only",
+            "No interface-relevant files in this batch.",
+        ] {
+            assert!(batch.contains(token), "batch prompt omitted {token}");
+        }
+        let visual = std::fs::read_to_string(output.join("visual_journey_audit.md")).unwrap();
+        for token in [
+            "review-queue.json",
+            "journey-evidence",
+            "manual-review",
+            "visible-scrollbar",
+            "evidence:<id>",
+        ] {
+            assert!(visual.contains(token), "visual prompt omitted {token}");
+        }
+        let completion: Value =
+            serde_json::from_slice(&std::fs::read(output.join("queue_complete.json")).unwrap())
+                .unwrap();
+        assert_eq!(completion["phase"], "queue_generated");
+        assert_eq!(completion["audit_verified"], false);
+        let effort: Value =
+            serde_json::from_slice(&std::fs::read(output.join("effort_ledger.json")).unwrap())
+                .unwrap();
+        assert_eq!(effort["lead"]["required_reasoning_effort"], "xhigh");
+        assert_eq!(effort["journey_source_worker"]["status"], "pending");
+
+        write(&output, "reports/batch_001.md", b"old report");
+        write(&output, "unrelated.txt", b"keep");
+        options.generated_at = "2026-09-04T00:01:00Z".to_owned();
+        options.archive_stamp = "20260904T000100Z".to_owned();
+        let rerun = write_full_repo_outputs(
+            &repo,
+            &output,
+            &collection,
+            &units,
+            &batches,
+            "run-5678",
+            &options,
+        )
+        .unwrap();
+        assert!(
+            output
+                .join("reports.stale.20260904T000100Z/batch_001.md")
+                .is_file()
+        );
+        assert_eq!(
+            rerun["archived_reports_dir"],
+            json!(
+                output
+                    .join("reports.stale.20260904T000100Z")
+                    .to_string_lossy()
+            )
+        );
+        assert_eq!(
+            std::fs::read(output.join("unrelated.txt")).unwrap(),
+            b"keep"
         );
     }
 }
