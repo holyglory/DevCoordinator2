@@ -14963,6 +14963,14 @@
                 "minimum": 0,
                 "type": "integer"
               },
+              "container_layer": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
               "container_layers": {
                 "format": "uint64",
                 "minimum": 0,
@@ -14972,6 +14980,38 @@
                 "format": "uint64",
                 "minimum": 0,
                 "type": "integer"
+              },
+              "pg_connections": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "pg_database_bytes": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "pg_temp_bytes": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "pg_wal_bytes": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
               },
               "postgres_data": {
                 "format": "uint64",
@@ -15206,6 +15246,24 @@
           "RepositoryComponentMetric": {
             "additionalProperties": false,
             "properties": {
+              "binding": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "component": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "component_type": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
               "cpu_percent": {
                 "format": "double",
                 "type": "number"
@@ -15215,8 +15273,20 @@
                 "minimum": 0,
                 "type": "integer"
               },
+              "deployment_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
               "id": {
                 "type": "string"
+              },
+              "image": {
+                "type": [
+                  "string",
+                  "null"
+                ]
               },
               "io_read": {
                 "format": "uint64",
@@ -15251,10 +15321,22 @@
                 "minimum": 0,
                 "type": "integer"
               },
+              "name": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
               "pids": {
                 "format": "uint64",
                 "minimum": 0,
                 "type": "integer"
+              },
+              "state": {
+                "type": [
+                  "string",
+                  "null"
+                ]
               },
               "storage": {
                 "$ref": "#/$defs/RepositoryStorage"
@@ -15284,6 +15366,14 @@
                 "minimum": 0,
                 "type": "integer"
               },
+              "container_layer": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
               "container_layers": {
                 "format": "uint64",
                 "minimum": 0,
@@ -15293,6 +15383,38 @@
                 "format": "uint64",
                 "minimum": 0,
                 "type": "integer"
+              },
+              "pg_connections": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "pg_database_bytes": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "pg_temp_bytes": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "pg_wal_bytes": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
               },
               "postgres_data": {
                 "format": "uint64",

@@ -73,6 +73,11 @@ The universal cross-repository policy is `reference/universal/AGENTS.md`.
 - Keep complete verbose output in cold logs and report bounded failure indexes.
 - Finish finite diagnostic passes after ordinary failures, batch fixes, then
   rerun the complete relevant pass.
+- Run the feature-gated `devcoordinator2-root-acceptance` binary only on Linux
+  with explicit candidate daemon/executor paths and a new empty external work
+  root. It owns one unique `devcoordinator2-rustint-*` systemd/Docker namespace,
+  finishes all safe scenarios, and removes only marker-bound fixtures. Never
+  aim it at the installed daemon or live state.
 
 ## Security boundary
 

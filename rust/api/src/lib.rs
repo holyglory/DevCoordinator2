@@ -1495,6 +1495,31 @@ mod tests {
     }
 
     #[test]
+    fn repository_health_schema_preserves_component_attribution() {
+        let operation = operation("health.repository").expect("health repository operation");
+        let schema = serde_json::to_string(&(operation.output_schema)()).unwrap();
+        for field in [
+            "deployment_id",
+            "component",
+            "component_type",
+            "name",
+            "image",
+            "state",
+            "binding",
+            "container_layer",
+            "pg_connections",
+            "pg_wal_bytes",
+            "pg_temp_bytes",
+            "pg_database_bytes",
+        ] {
+            assert!(
+                schema.contains(&format!("\"{field}\"")),
+                "health repository output omitted {field}"
+            );
+        }
+    }
+
+    #[test]
     fn registry_names_and_mcp_tools_are_unique() {
         let mut operations = std::collections::BTreeSet::new();
         let mut tools = std::collections::BTreeSet::new();

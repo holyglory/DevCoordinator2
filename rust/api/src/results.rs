@@ -1197,6 +1197,16 @@ pub struct RepositoryStorage {
     pub volumes: u64,
     pub postgres_data: u64,
     pub total: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub container_layer: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pg_connections: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pg_wal_bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pg_temp_bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pg_database_bytes: Option<u64>,
 }
 
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
@@ -1260,6 +1270,20 @@ pub struct MetricSample {
 pub struct RepositoryComponentMetric {
     pub kind: String,
     pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deployment_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub component: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub component_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub binding: Option<String>,
     #[serde(flatten)]
     pub metric: MetricSample,
     pub storage: RepositoryStorage,

@@ -264,6 +264,13 @@ impl HealthService {
             components.push(RepositoryComponentMetric {
                 kind: key.kind.clone(),
                 id: key.id.clone(),
+                deployment_id: meta.deployment_id.clone(),
+                component: meta.component.clone(),
+                component_type: meta.component_type.clone(),
+                name: meta.name.clone(),
+                image: meta.image.clone(),
+                state: meta.state.clone(),
+                binding: meta.binding.clone(),
                 metric: sample.clone(),
                 storage: repository_storage(snapshot.storage.get(key)),
             });
@@ -427,6 +434,21 @@ fn repository_storage(values: Option<&BTreeMap<String, u64>>) -> RepositoryStora
         volumes: get("volumes"),
         postgres_data: get("postgres_data"),
         total: get("total"),
+        container_layer: values
+            .and_then(|values| values.get("container_layer"))
+            .copied(),
+        pg_connections: values
+            .and_then(|values| values.get("pg_connections"))
+            .copied(),
+        pg_wal_bytes: values
+            .and_then(|values| values.get("pg_wal_bytes"))
+            .copied(),
+        pg_temp_bytes: values
+            .and_then(|values| values.get("pg_temp_bytes"))
+            .copied(),
+        pg_database_bytes: values
+            .and_then(|values| values.get("pg_database_bytes"))
+            .copied(),
     }
 }
 
@@ -580,6 +602,22 @@ mod tests {
         ])));
         assert_eq!(storage.checkout, 10);
         assert_eq!(storage.container_layers, 5);
+        assert_eq!(storage.container_layer, Some(5));
+        let postgres = repository_storage(Some(&BTreeMap::from([
+            ("pg_connections".into(), 3),
+            ("pg_wal_bytes".into(), 7),
+            ("pg_temp_bytes".into(), 11),
+            ("pg_database_bytes".into(), 13),
+        ])));
+        assert_eq!(
+            (
+                postgres.pg_connections,
+                postgres.pg_wal_bytes,
+                postgres.pg_temp_bytes,
+                postgres.pg_database_bytes,
+            ),
+            (Some(3), Some(7), Some(11), Some(13))
+        );
         assert_eq!(subject_name(&MetricSubjectKind::Deployment), "deployment");
         assert_eq!(metric_name(&MetricName::PgWalBytes), "pg_wal_bytes");
     }

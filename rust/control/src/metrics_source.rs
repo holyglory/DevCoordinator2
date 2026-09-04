@@ -10,8 +10,6 @@ use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use serde_json::Value;
-
 use crate::docker::{DockerControl, DockerInvocation};
 
 const READ_LIMIT: u64 = 1024 * 1024;
@@ -290,7 +288,7 @@ impl MetricSource for HostMetricSource {
                 "df".into(),
                 "-v".into(),
                 "--format".into(),
-                "{{json .}}".into(),
+                "{{range .Images}}image={{.UniqueSize}}{{println}}{{end}}{{range .BuildCache}}build_cache={{.Size}}{{println}}{{end}}{{range .Volumes}}volume={{.Name}}={{.Size}}{{println}}{{end}}".into(),
             ],
             Duration::from_secs(120),
         )
@@ -301,31 +299,7 @@ impl MetricSource for HostMetricSource {
         if !output.success() || output.stdout_truncated {
             return DockerStorage::default();
         }
-        let Ok(document) = serde_json::from_str::<Value>(&output.stdout) else {
-            return DockerStorage::default();
-        };
-        let mut result = DockerStorage {
-            images: sum_sizes(document.get("Images"), "UniqueSize"),
-            build_cache: sum_sizes(document.get("BuildCache"), "Size"),
-            ..DockerStorage::default()
-        };
-        for volume in document
-            .get("Volumes")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-        {
-            if let Some(name) = volume.get("Name").and_then(Value::as_str) {
-                result.volumes.insert(
-                    name.into(),
-                    volume
-                        .get("Size")
-                        .map(|value| parse_size(&value_text(value)))
-                        .unwrap_or(0),
-                );
-            }
-        }
-        result
+        parse_projected_docker_storage(&output.stdout)
     }
 
     fn logical_cpus(&self) -> u32 {
@@ -429,25 +403,21 @@ fn parse_size(value: &str) -> u64 {
     (number * multiplier).max(0.0).round() as u64
 }
 
-fn value_text(value: &Value) -> String {
-    value
-        .as_str()
-        .map(str::to_owned)
-        .unwrap_or_else(|| value.to_string())
-}
-
-fn sum_sizes(value: Option<&Value>, field: &str) -> u64 {
-    value
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .map(|entry| {
-            entry
-                .get(field)
-                .map(|value| parse_size(&value_text(value)))
-                .unwrap_or(0)
-        })
-        .fold(0_u64, u64::saturating_add)
+fn parse_projected_docker_storage(output: &str) -> DockerStorage {
+    let mut result = DockerStorage::default();
+    for line in output.lines() {
+        if let Some(value) = line.strip_prefix("image=") {
+            result.images = result.images.saturating_add(parse_size(value));
+        } else if let Some(value) = line.strip_prefix("build_cache=") {
+            result.build_cache = result.build_cache.saturating_add(parse_size(value));
+        } else if let Some(value) = line.strip_prefix("volume=")
+            && let Some((name, size)) = value.split_once('=')
+            && !name.is_empty()
+        {
+            result.volumes.insert(name.to_owned(), parse_size(size));
+        }
+    }
+    result
 }
 
 #[cfg(test)]
@@ -508,5 +478,11 @@ mod tests {
         );
         assert_eq!(parse_size("1.5MiB"), 1_572_864);
         assert_eq!(parse_size("2GB"), 2_000_000_000);
+        let storage = parse_projected_docker_storage(
+            "image=1.5MiB\nimage=500B\nbuild_cache=2GB\nvolume=managed-data=47.74MB\ninvalid\n",
+        );
+        assert_eq!(storage.images, 1_573_364);
+        assert_eq!(storage.build_cache, 2_000_000_000);
+        assert_eq!(storage.volumes["managed-data"], 47_740_000);
     }
 }

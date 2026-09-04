@@ -93,6 +93,30 @@ ownership, link-manager rollback, public artifacts, real browser fixtures, and
 all six skill packages. It rejects executable Python and permits only the seven
 explicit inert cross-language audit fixtures.
 
+Linux root acceptance is a separate, feature-gated test binary and never uses
+the installed daemon:
+
+```bash
+cargo build --locked --release \
+  --package devcoordinator2-control \
+  --features root-acceptance \
+  --bin devcoordinator2-root-acceptance \
+  --package devcoordinator2-executor-core \
+  --bin devcoordinator2-executor-test-fixture
+
+sudo -n env DEVCOORDINATOR2_ROOT_ACCEPTANCE=1 \
+  target/release/devcoordinator2-root-acceptance run \
+  --daemon target/release/devcoordinator2 \
+  --fixture target/release/devcoordinator2-executor-test-fixture \
+  --work-root /absolute/private/empty-root-acceptance-directory \
+  --report /absolute/private/root-acceptance-report.json
+```
+
+The harness owns a unique socket, database, port range, systemd unit prefix,
+Docker label namespace, and marker-bound filesystem root. It runs all 28
+preserved real-system scenarios with all-settled behavior and never targets the
+live service, socket, containers, or data.
+
 ## Imported source provenance
 
 The reusable agent assets were imported as a current-tree snapshot from the

@@ -12,6 +12,16 @@ name = "devcoordinator2_control"
 name = "devcoordinator2"
 path = "src/main.rs"
 
+[[bin]]
+name = "devcoordinator2-root-acceptance"
+path = "src/bin/root_acceptance.rs"
+required-features = ["root-acceptance"]
+test = false
+bench = false
+
+[features]
+root-acceptance = []
+
 [dependencies]
 base64.workspace = true
 clap.workspace = true

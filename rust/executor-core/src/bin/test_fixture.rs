@@ -2,7 +2,8 @@
 
 use std::env;
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
+use std::net::TcpListener;
 use std::os::fd::FromRawFd;
 use std::os::unix::fs::{PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
@@ -51,6 +52,34 @@ fn write_valid_junit(path: &Path) -> Result<(), String> {
         "<testsuite><testcase name=\"rejects\" classname=\"Parser\"><failure file=\"src/parser.rs\" line=\"17\" column=\"3\" expected=\"ready\" actual=\"pending\"/></testcase></testsuite>",
     )
     .map_err(|error| error.to_string())
+}
+
+fn serve_http(version: &str) -> Result<i32, String> {
+    let port = environment("PORT")?
+        .parse::<u16>()
+        .map_err(|_| "invalid PORT".to_owned())?;
+    let listener = TcpListener::bind(("127.0.0.1", port)).map_err(|error| error.to_string())?;
+    for connection in listener.incoming() {
+        let mut stream = connection.map_err(|error| error.to_string())?;
+        let mut request = [0u8; 4096];
+        let _ = stream.read(&mut request);
+        let body = serde_json::to_vec(&json!({
+            "version": version,
+            "generation": env::var("DC2_GENERATION").ok(),
+            "has_db": env::var_os("DATABASE_URL").is_some(),
+            "cache_port": env::var("DC2_PORT_CACHE").ok(),
+            "port": env::var("PORT").ok(),
+        }))
+        .map_err(|error| error.to_string())?;
+        write!(
+            stream,
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
+        )
+        .and_then(|()| stream.write_all(&body))
+        .map_err(|error| error.to_string())?;
+    }
+    Ok(0)
 }
 
 fn run() -> Result<i32, String> {
@@ -174,6 +203,100 @@ fn run() -> Result<i32, String> {
                 .and_then(|()| output.write_all(b"\nFINAL-SENTINEL\n"))
                 .map_err(|error| error.to_string())?;
             Ok(0)
+        }
+        "repeat-stdout-sentinel" => {
+            let count = argument(2, "byte count")?
+                .parse::<usize>()
+                .map_err(|_| "invalid byte count".to_owned())?;
+            let sentinel = argument(3, "sentinel")?;
+            let mut output = io::stdout().lock();
+            output
+                .write_all(&vec![b'x'; count])
+                .and_then(|()| output.write_all(b"\n"))
+                .and_then(|()| output.write_all(sentinel.as_bytes()))
+                .and_then(|()| output.write_all(b"\n"))
+                .map_err(|error| error.to_string())?;
+            Ok(0)
+        }
+        "print-write-sleep" => {
+            println!("{}", argument(2, "stdout text")?);
+            io::stdout().flush().map_err(|error| error.to_string())?;
+            fs::write(argument(3, "relative path")?, argument(4, "content")?)
+                .map_err(|error| error.to_string())?;
+            sleep_seconds(
+                argument(5, "sleep seconds")?
+                    .parse::<u64>()
+                    .map_err(|_| "invalid sleep seconds".to_owned())?,
+            );
+            Ok(0)
+        }
+        "fifo-signal-wait" => {
+            let mut started = OpenOptions::new()
+                .write(true)
+                .open(argument(2, "started FIFO")?)
+                .map_err(|error| error.to_string())?;
+            started.write_all(b"1").map_err(|error| error.to_string())?;
+            drop(started);
+            let mut release = OpenOptions::new()
+                .read(true)
+                .open(argument(3, "release FIFO")?)
+                .map_err(|error| error.to_string())?;
+            let mut byte = [0u8; 1];
+            release
+                .read_exact(&mut byte)
+                .map_err(|error| error.to_string())?;
+            if byte != *b"1" {
+                return Err("release FIFO contained the wrong byte".to_owned());
+            }
+            Ok(0)
+        }
+        "wait-fifo" => {
+            let mut input = OpenOptions::new()
+                .read(true)
+                .open(argument(2, "FIFO")?)
+                .map_err(|error| error.to_string())?;
+            let mut byte = [0u8; 1];
+            input
+                .read_exact(&mut byte)
+                .map_err(|error| error.to_string())?;
+            Ok(i32::from(byte != *b"1"))
+        }
+        "case-streams" => {
+            let case = argument(2, "case value")?;
+            println!("stdout-{case}");
+            eprintln!("stderr-{case}");
+            Ok(0)
+        }
+        "exists-exit" => {
+            let path = argument(2, "path")?;
+            let missing_code = argument(3, "missing exit code")?
+                .parse::<i32>()
+                .map_err(|_| "invalid missing exit code".to_owned())?;
+            Ok(if Path::new(&path).exists() {
+                0
+            } else {
+                missing_code
+            })
+        }
+        "http-server" => serve_http(&argument(2, "version")?),
+        "http-server-file" => {
+            let version = fs::read_to_string(argument(2, "version file")?)
+                .map_err(|error| error.to_string())?;
+            serve_http(version.trim())
+        }
+        "http-server-restart" => {
+            let counter = PathBuf::from(argument(2, "counter path")?);
+            let attempt = fs::read_to_string(&counter)
+                .ok()
+                .and_then(|value| value.parse::<u32>().ok())
+                .unwrap_or(0)
+                + 1;
+            fs::write(&counter, attempt.to_string()).map_err(|error| error.to_string())?;
+            if attempt < 3 {
+                Ok(1)
+            } else {
+                serve_http(&argument(3, "version")?)
+            }
         }
         "write-relative" => {
             fs::write(argument(2, "relative path")?, argument(3, "content")?)
