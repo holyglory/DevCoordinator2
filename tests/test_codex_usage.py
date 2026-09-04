@@ -3,6 +3,7 @@ import os
 import sqlite3
 import threading
 import time
+from collections import Counter
 from pathlib import Path
 
 import devcoordinator2.daemon.codex_usage as codex_usage_module
@@ -174,7 +175,10 @@ def test_repository_report_supports_an_explicit_aligned_bucket_window(tmp_path):
     assert report["range"] == "progress-day"
     assert len(report["series"]) == 14
     assert report["series"][0]["bucket_start_ms"] == aligned_end - 14 * bucket_ms
-    assert sum(point["total_tokens"] for point in report["series"]) == 100
+    observed = [point["total_tokens"] for point in report["series"]
+                if point["total_tokens"] is not None]
+    assert observed == [100]
+    assert sum(point["total_tokens"] is None for point in report["series"]) == 13
     db.close()
 
 
@@ -357,6 +361,82 @@ def test_collection_uses_indexed_token_and_coverage_lookups_at_scale(
                and "MODEL_REQUEST_ID IN" in statement for statement in normalized)
     assert any("FROM COVERAGE_EVENTS" in statement
                and "OPERATION_ID IN" in statement for statement in normalized)
+    db.close()
+
+
+def test_repository_detail_uses_indexed_token_and_coverage_lookups_at_scale(
+        tmp_path, monkeypatch):
+    codex_home = tmp_path / "codex-home"
+    _, canonical, now_ms = _source_database(codex_home)
+    source = CodexUsageSource(os.getuid(), codex_home, tmp_path / "codex")
+    usage, db, repository = _world(tmp_path, source)
+    with db.transaction() as authority:
+        authority.execute(
+            "INSERT INTO codex_usage_repository_links VALUES(?,?,?,?,?,?)",
+            (os.getuid(), repository["repository_id"], canonical, 4, 1, "t"))
+    source_path = codex_home / "usage" / "usage.sqlite3"
+    conn = sqlite3.connect(source_path)
+    unrelated_at = now_ms - 30_000
+    conn.executemany(
+        "INSERT INTO token_observations VALUES(?,?,?,?,?,?,?,?)",
+        (("total_tokens", 1, "complete", unrelated_at, "unrelated", None,
+          "unrelated", "provider_reported") for _ in range(100_000)),
+    )
+    conn.executemany(
+        "INSERT INTO coverage_events VALUES(?,?,?)",
+        (("unrelated", "complete", unrelated_at) for _ in range(100_000)),
+    )
+    conn.commit()
+    conn.close()
+    statements = []
+    original_open = usage._open_database
+
+    def traced_open(source, *, deadline=None):
+        opened = original_open(source, deadline=deadline)
+        opened.set_trace_callback(statements.append)
+        return opened
+
+    monkeypatch.setattr(usage, "_open_database", traced_open)
+    started = time.perf_counter()
+
+    detail = usage.repository_buckets(
+        repository, "progress-hour", 60_000, 2, now_ms,
+        aligned_end_ms=now_ms)
+
+    elapsed = time.perf_counter() - started
+    normalized = [statement.upper() for statement in statements]
+    assert elapsed < 1.0
+    assert detail["totals"]["total_tokens"] == 100
+    assert [point["total_tokens"] for point in detail["series"]] == [None, 100]
+    assert any("FROM TOKEN_OBSERVATIONS" in statement
+               and "MODEL_REQUEST_ID IN" in statement for statement in normalized)
+    assert any("FROM COVERAGE_EVENTS" in statement
+               and "OPERATION_ID IN" in statement for statement in normalized)
+    db.close()
+
+
+def test_partial_source_failure_keeps_missing_bucket_blank_and_real_zero_measured(
+        tmp_path):
+    source = CodexUsageSource(
+        os.getuid(), tmp_path / "missing-home", tmp_path / "missing-codex")
+    usage, db, repository = _world(tmp_path, source)
+    report = SourceReport(
+        4, 1, evidence=True, tokens={"total_tokens": 0},
+        token_observations=Counter({"complete": 1}),
+        phase_series=[Counter(), Counter({"implementation": 0})],
+        token_buckets_observed=[False, True],
+        bucket_coverage=["unobserved", "complete"],
+    )
+
+    combined = usage._combine(
+        repository, "progress-hour", 120_000, 0, 60_000, 2,
+        [(os.getuid(), report)], Counter({"source_unavailable": 1}))
+
+    assert combined["coverage"]["state"] == "partial"
+    assert [point["coverage"] for point in combined["series"]] == [
+        "partial", "partial"]
+    assert [point["total_tokens"] for point in combined["series"]] == [None, 0]
+    assert combined["totals"]["total_tokens"] == 0
     db.close()
 
 

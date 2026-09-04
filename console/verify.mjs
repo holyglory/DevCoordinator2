@@ -51,6 +51,7 @@ const progressFixture = (scenario, period = 'day') => {
   const referenceTasksAdded = [0, 2, 1, 0, 5, 0, 5];
   const referenceLines = [125, 0, 1500, 0, 3500, 200, 2200];
   const referenceLinesAdded = [125, 900, 250, 0, 1600, 0, 400];
+  const partialTokens = [null, 120000, null, 0, 210000, 170000, 0];
   const series = Array.from({ length: count }, (_, index) => ({
     bucket_start_ms: alignedEnd - (count - index) * bucketMs,
     bucket_end_ms: alignedEnd - (count - index - 1) * bucketMs,
@@ -63,8 +64,13 @@ const progressFixture = (scenario, period = 'day') => {
     test_runs: evidenceMissing ? 0 : [3, 2, 4, 3, 5, 2, 4, 3][index % 8],
     tests_passed: evidenceMissing ? 0 : [3, 2, 3, 3, 4, 2, 4, 2][index % 8],
     test_pass_rate: evidenceMissing ? null : [1, 1, .75, 1, .8, 1, 1, .667][index % 8],
-    total_tokens: evidenceMissing ? null : [120000, 90000, 180000, 150000, 210000, 110000, 170000, 130000][index % 8],
-    token_coverage: evidenceMissing ? 'unobserved' : (scenario.partial && index === 2 ? 'partial' : 'complete'),
+    total_tokens: evidenceMissing ? null : scenario.progressTokenPartial
+      ? partialTokens[index % partialTokens.length]
+      : [120000, 90000, 180000, 150000, 210000, 110000, 170000, 130000][index % 8],
+    token_coverage: evidenceMissing || (scenario.progressTokenPartial
+      && partialTokens[index % partialTokens.length] == null)
+      ? 'unobserved' : ((scenario.partial && index === 2)
+        || scenario.progressTokenPartial ? 'partial' : 'complete'),
   }));
   const currentTotals = {
     tasks_completed: series.reduce((sum, point) => sum + point.tasks_completed, 0),
@@ -141,10 +147,10 @@ const progressFixture = (scenario, period = 'day') => {
       assumptions: ['Current task estimates are used as planned size.'],
     },
     release_work: releaseWork,
-    coverage: { state: scenario.empty ? 'unavailable' : (scenario.partial || referenceState) ? 'partial' : 'complete',
+    coverage: { state: scenario.empty ? 'unavailable' : (scenario.partial || referenceState || scenario.progressTokenPartial) ? 'partial' : 'complete',
       plan: { state: 'complete', completed_with_estimate: 7, completed_total: 7 },
       tests: { state: evidenceMissing ? 'unobserved' : scenario.partial ? 'partial' : 'complete', recorded_runs: evidenceMissing ? 0 : 26, history_sources: evidenceMissing ? 0 : 1, unavailable_sources: 0, earliest_at: evidenceMissing ? null : '2026-08-01T00:00:00Z' },
-      tokens: { state: scenario.empty ? 'unobserved' : referenceState || scenario.partial ? 'partial' : 'complete', has_gaps: !!(scenario.partial || referenceState), configured_collectors: 2, available_collectors: referenceState ? 1 : 2, contributing_collectors: evidenceMissing ? 0 : 2, freshest_at_ms: evidenceMissing ? null : Date.UTC(2026, 7, 30, 23, 58), unavailable_reasons: {} } },
+      tokens: { state: scenario.empty ? 'unobserved' : referenceState || scenario.partial || scenario.progressTokenPartial ? 'partial' : 'complete', has_gaps: !!(scenario.partial || referenceState || scenario.progressTokenPartial), configured_collectors: 2, available_collectors: referenceState || scenario.progressTokenPartial ? 1 : 2, contributing_collectors: evidenceMissing ? 0 : scenario.progressTokenPartial ? 1 : 2, freshest_at_ms: evidenceMissing ? null : Date.UTC(2026, 7, 30, 23, 58), unavailable_reasons: scenario.progressTokenPartial ? { source_unavailable: 1 } : {} } },
     semantics: { tasks: 'terminal task status events in the permanent plan ledger', lines: 'current planned task estimates completed; not measured Git changes', lines_added: 'initial task estimates and estimate increases; estimate reductions and dropped work are excluded', tests: 'bounded repository-local terminal test summaries', tokens: 'provider total_tokens; missing collector coverage stays missing', forecast: 'deterministic range from recent pace, scope, estimates, and test stability' },
   };
 };
@@ -363,6 +369,7 @@ const SCENARIOS = {
   dashboardUsagePending: { identity: 'owner@example.test', admin: true, dashboardUsagePending: true, targetedOnly: true },
   dashboardUsageUnobserved: { identity: 'owner@example.test', admin: true, dashboardUsageUnobserved: true, targetedOnly: true },
   progressPartial: { identity: 'owner@example.test', admin: true, partial: true, targetedOnly: true },
+  progressTokenPartial: { identity: 'owner@example.test', admin: true, progressTokenPartial: true, targetedOnly: true },
   progressReference: { identity: 'owner@example.test', admin: true, progressReference: true, targetedOnly: true },
   logEmpty: { identity: 'owner@example.test', admin: true, logEmpty: true, targetedOnly: true },
   logCatalogPaged: { identity: 'owner@example.test', admin: true, logCatalogPaged: true, targetedOnly: true },
@@ -2171,6 +2178,23 @@ async function main() {
   check('progress: partial evidence is visible and never described as zero',
     /gaps stay blank/i.test(await page.innerText('.progress-pulse'))
     && /never counted as zero/.test(await page.innerText('.progress-missing-note')));
+  daemon.setScenario(SCENARIOS.progressTokenPartial);
+  await page.reload();
+  await page.waitForSelector('[data-progress-evidence="tokens"] .progress-evidence-chart');
+  const tokenLane = page.locator('[data-progress-evidence="tokens"]');
+  const tokenCells = await page.locator('.progress-exact tbody tr td:nth-child(8)').allTextContents();
+  check('progress: Token use shows the measured period total rather than the final bucket',
+    /500K/.test(await tokenLane.innerText())
+    && /Measured total; missing buckets stay blank/.test(await tokenLane.innerText())
+    && await tokenLane.locator(':scope > strong[aria-label="Token use measured in this period: 500K"]').count() === 1,
+  await tokenLane.innerText());
+  check('progress: token gaps stay blank while a real observed zero remains measurable',
+    JSON.stringify(tokenCells.map((value) => value.trim())) === JSON.stringify([
+      '—', '120,000', '—', '0', '210,000', '170,000', '0'])
+    && await tokenLane.locator('.progress-evidence-dot').count() === 5
+    && await tokenLane.locator('.progress-evidence-line').count() === 2,
+  JSON.stringify({ tokenCells, dots: await tokenLane.locator('.progress-evidence-dot').count(),
+    segments: await tokenLane.locator('.progress-evidence-line').count() }));
   daemon.setScenario(SCENARIOS.progressReference);
   await page.reload();
   await page.waitForSelector('.progress-pulse-chart');

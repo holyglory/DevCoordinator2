@@ -66,6 +66,7 @@ class SourceReport:
     tokens: dict[str, int] = field(default_factory=dict)
     token_observations: Counter = field(default_factory=Counter)
     phase_series: list[Counter] = field(default_factory=list)
+    token_buckets_observed: list[bool] = field(default_factory=list)
     bucket_coverage: list[str] = field(default_factory=list)
     activities: Counter = field(default_factory=Counter)
     activity_operations: Counter = field(default_factory=Counter)
@@ -707,36 +708,52 @@ class CodexUsage:
                        bucket_count: int) -> SourceReport:
         report = SourceReport(schema, taxonomy,
                               phase_series=[Counter() for _ in range(bucket_count)],
+                              token_buckets_observed=[False] * bucket_count,
                               bucket_coverage=["unobserved"] * bucket_count)
         placeholders = ",".join("?" for _ in family)
         params = [*family, end_ms, start_ms]
-        effective = {row[0]: tuple(row[1:]) for row in conn.execute(
-            "SELECT operation_id,phase,activity,activity_state,provenance"
-            " FROM effective_classification_events")}
         sql = (
             "SELECT operation.id,operation.operation_kind,operation.agent_id,"
             " operation.started_at_ms,operation.phase,operation.activity,"
             " operation.activity_state,operation.attribution_provenance,"
-            " terminal.occurred_at_ms,terminal.event_kind,tool.operation_family"
+            " terminal.occurred_at_ms,terminal.event_kind,tool.operation_family,"
+            " tool.id tool_id,request.id request_id"
             " FROM operations operation LEFT JOIN operation_events terminal"
             " ON terminal.operation_id=operation.id AND terminal.terminal=1"
             " LEFT JOIN tool_invocations tool ON tool.operation_id=operation.id"
+            " LEFT JOIN model_requests request ON request.operation_id=operation.id"
             f" WHERE EXISTS(SELECT 1 FROM repository_attributions attribution"
             f" WHERE attribution.operation_id=operation.id AND attribution.repository_id IN"
             f" ({placeholders})) AND operation.started_at_ms<?"
             " AND (terminal.occurred_at_ms IS NULL OR terminal.occurred_at_ms>?)"
         )
+        raw_by_id = {}
+        request_operations = {}
+        tool_operations = {}
+        for row in conn.execute(sql, params):
+            raw_by_id.setdefault(row["id"], dict(row))
+            if row["request_id"]:
+                request_operations[row["request_id"]] = row["id"]
+            if row["tool_id"]:
+                tool_operations[row["tool_id"]] = row["id"]
+        effective = {}
+        for identifiers in _chunks(set(raw_by_id)):
+            operation_placeholders = ",".join("?" for _ in identifiers)
+            for row in conn.execute(
+                    "SELECT operation_id,phase,activity,activity_state,provenance"
+                    " FROM effective_classification_events WHERE operation_id IN"
+                    f" ({operation_placeholders})", identifiers):
+                effective[row["operation_id"]] = tuple(row)[1:]
         operations = []
         by_id = {}
-        for row in conn.execute(sql, params):
-            phase, activity, state, provenance = effective.get(row["id"], (
-                row["phase"], row["activity"], row["activity_state"],
-                row["attribution_provenance"]))
-            operation = dict(row)
-            operation.update(phase=phase, activity=activity, activity_state=state,
-                             provenance=provenance)
+        for operation_id, raw in raw_by_id.items():
+            phase, activity, state, provenance = effective.get(operation_id, (
+                raw["phase"], raw["activity"], raw["activity_state"],
+                raw["attribution_provenance"]))
+            operation = {**raw, "phase": phase, "activity": activity,
+                         "activity_state": state, "provenance": provenance}
             operations.append(operation)
-            by_id[row["id"]] = operation
+            by_id[operation_id] = operation
             report.activity_operations[(phase, activity)] += 1
             report.activity_provenance[(phase, activity, provenance)] += 1
         report.operation_count = len(operations)
@@ -754,8 +771,9 @@ class CodexUsage:
             if kind in ("local_tool", "hosted_tool", "activity_control"):
                 report.tool_outcomes[_tool_outcome(operation["event_kind"])] += 1
                 report.tool_families[operation["operation_family"] or "unknown"] += 1
-        self._add_tokens(conn, report, by_id, family, start_ms, end_ms,
-                         bucket_ms, bucket_count)
+        self._add_tokens(
+            conn, report, by_id, request_operations, tool_operations, family,
+            start_ms, end_ms, bucket_ms, bucket_count)
         self._add_coverage(conn, report, operation_ids, start_ms, end_ms,
                            bucket_ms, bucket_count)
         self._add_intervals(conn, report, operations, operation_ids,
@@ -764,61 +782,77 @@ class CodexUsage:
 
     @staticmethod
     def _add_tokens(conn: sqlite3.Connection, report: SourceReport,
-                    by_id: dict[str, dict], family: set[str], start_ms: int,
-                    end_ms: int, bucket_ms: int, bucket_count: int) -> None:
-        placeholders = ",".join("?" for _ in family)
-        categories = ",".join("?" for _ in TOKEN_CATEGORIES)
-        rows = conn.execute(
-            "SELECT token.category_path,token.token_count,token.coverage_state,"
-            " token.observed_at_ms,COALESCE(request.operation_id,tool.operation_id) op"
-            " FROM token_observations token LEFT JOIN model_requests request"
-            " ON request.id=token.model_request_id LEFT JOIN tool_invocations tool"
-            " ON tool.id=token.tool_invocation_id"
-            f" WHERE token.repository_bucket IN ({placeholders})"
-            f" AND token.category_path IN ({categories})"
-            " AND token.measurement_provenance='provider_reported'"
-            " AND token.observed_at_ms>=? AND token.observed_at_ms<?",
-            (*family, *TOKEN_CATEGORIES, start_ms, end_ms),
-        )
-        for row in rows:
-            operation = by_id.get(row["op"])
-            if operation is None:
-                continue
-            report.evidence = True
-            report.token_observations[row["coverage_state"]] += 1
-            report.freshest_at_ms = max(report.freshest_at_ms or row["observed_at_ms"],
-                                        row["observed_at_ms"])
-            if row["token_count"] is None:
-                continue
-            report.tokens[row["category_path"]] = (
-                report.tokens.get(row["category_path"], 0) + row["token_count"])
-            if row["category_path"] != "total_tokens":
-                continue
-            index = _bucket_index(row["observed_at_ms"], start_ms, bucket_ms,
-                                  bucket_count)
-            if index is not None:
-                report.phase_series[index][operation["phase"]] += row["token_count"]
-                report.bucket_coverage[index] = (
-                    "complete" if row["coverage_state"] == "complete"
-                    and report.bucket_coverage[index] != "partial" else "partial")
-            report.activities[(operation["phase"], operation["activity"])] += \
-                row["token_count"]
+                    by_id: dict[str, dict], request_operations: dict[str, str],
+                    tool_operations: dict[str, str], family: set[str],
+                    start_ms: int, end_ms: int, bucket_ms: int,
+                    bucket_count: int) -> None:
+        family_placeholders = ",".join("?" for _ in family)
+        category_placeholders = ",".join("?" for _ in TOKEN_CATEGORIES)
+        for column, operation_map in (
+                ("model_request_id", request_operations),
+                ("tool_invocation_id", tool_operations)):
+            for identifiers in _chunks(list(operation_map)):
+                if not identifiers:
+                    continue
+                identifier_placeholders = ",".join("?" for _ in identifiers)
+                rows = conn.execute(
+                    "SELECT category_path,token_count,coverage_state,observed_at_ms,"
+                    f" {column} operation_source FROM token_observations"
+                    f" WHERE {column} IN ({identifier_placeholders})"
+                    f" AND repository_bucket IN ({family_placeholders})"
+                    f" AND category_path IN ({category_placeholders})"
+                    " AND measurement_provenance='provider_reported'"
+                    " AND observed_at_ms>=? AND observed_at_ms<?",
+                    (*identifiers, *family, *TOKEN_CATEGORIES, start_ms, end_ms),
+                )
+                for row in rows:
+                    operation = by_id.get(operation_map.get(row["operation_source"]))
+                    if operation is None:
+                        continue
+                    report.evidence = True
+                    report.token_observations[row["coverage_state"]] += 1
+                    report.freshest_at_ms = max(
+                        report.freshest_at_ms or row["observed_at_ms"],
+                        row["observed_at_ms"])
+                    if row["token_count"] is None:
+                        continue
+                    report.tokens[row["category_path"]] = (
+                        report.tokens.get(row["category_path"], 0)
+                        + row["token_count"])
+                    if row["category_path"] != "total_tokens":
+                        continue
+                    index = _bucket_index(
+                        row["observed_at_ms"], start_ms, bucket_ms, bucket_count)
+                    if index is not None:
+                        report.token_buckets_observed[index] = True
+                        report.phase_series[index][operation["phase"]] += \
+                            row["token_count"]
+                        report.bucket_coverage[index] = (
+                            "complete" if row["coverage_state"] == "complete"
+                            and report.bucket_coverage[index] != "partial"
+                            else "partial")
+                    report.activities[(operation["phase"],
+                                       operation["activity"])] += row["token_count"]
 
     @staticmethod
     def _add_coverage(conn: sqlite3.Connection, report: SourceReport,
                       operation_ids: set[str], start_ms: int, end_ms: int,
                       bucket_ms: int, bucket_count: int) -> None:
-        for row in conn.execute(
-                "SELECT operation_id,coverage_state,occurred_at_ms FROM coverage_events"
-                " WHERE occurred_at_ms>=? AND occurred_at_ms<?", (start_ms, end_ms)):
-            if row["operation_id"] not in operation_ids:
+        for identifiers in _chunks(operation_ids):
+            if not identifiers:
                 continue
-            report.coverage_events[row["coverage_state"]] += 1
-            report.evidence = True
-            index = _bucket_index(row["occurred_at_ms"], start_ms, bucket_ms,
-                                  bucket_count)
-            if index is not None and row["coverage_state"] != "complete":
-                report.bucket_coverage[index] = "partial"
+            placeholders = ",".join("?" for _ in identifiers)
+            for row in conn.execute(
+                    "SELECT operation_id,coverage_state,occurred_at_ms"
+                    " FROM coverage_events WHERE operation_id IN"
+                    f" ({placeholders}) AND occurred_at_ms>=? AND occurred_at_ms<?",
+                    (*identifiers, start_ms, end_ms)):
+                report.coverage_events[row["coverage_state"]] += 1
+                report.evidence = True
+                index = _bucket_index(row["occurred_at_ms"], start_ms, bucket_ms,
+                                      bucket_count)
+                if index is not None and row["coverage_state"] != "complete":
+                    report.bucket_coverage[index] = "partial"
 
     @staticmethod
     def _add_intervals(conn: sqlite3.Connection, report: SourceReport,
@@ -826,18 +860,21 @@ class CodexUsage:
                        start_ms: int, end_ms: int) -> None:
         waits: dict[str, list[tuple[int, int]]] = defaultdict(list)
         unknown_waits = set()
-        for row in conn.execute(
-                "SELECT span.operation_id,span.started_at_ms,ended.occurred_at_ms"
-                " FROM activity_spans span LEFT JOIN activity_span_events ended"
-                " ON ended.activity_span_id=span.id AND ended.event_kind='ended'"):
-            if row["operation_id"] not in operation_ids:
+        for identifiers in _chunks(operation_ids):
+            if not identifiers:
                 continue
-            interval = _clip_interval(row["started_at_ms"], row["occurred_at_ms"],
-                                      start_ms, end_ms)
-            if interval is None:
-                unknown_waits.add(row["operation_id"])
-            else:
-                waits[row["operation_id"]].append(interval)
+            placeholders = ",".join("?" for _ in identifiers)
+            for row in conn.execute(
+                    "SELECT span.operation_id,span.started_at_ms,ended.occurred_at_ms"
+                    " FROM activity_spans span LEFT JOIN activity_span_events ended"
+                    " ON ended.activity_span_id=span.id AND ended.event_kind='ended'"
+                    f" WHERE span.operation_id IN ({placeholders})", identifiers):
+                interval = _clip_interval(
+                    row["started_at_ms"], row["occurred_at_ms"], start_ms, end_ms)
+                if interval is None:
+                    unknown_waits.add(row["operation_id"])
+                else:
+                    waits[row["operation_id"]].append(interval)
         for operation in operations:
             interval = _clip_interval(operation["started_at_ms"],
                                       operation["occurred_at_ms"], start_ms, end_ms)
@@ -870,6 +907,7 @@ class CodexUsage:
         token_coverage = Counter()
         coverage_events = Counter()
         series = [Counter() for _ in range(bucket_count)]
+        token_buckets_observed = [False] * bucket_count
         bucket_coverage = ["unobserved"] * bucket_count
         activities = Counter()
         activity_operations = Counter()
@@ -891,6 +929,11 @@ class CodexUsage:
             coverage_events.update(report.coverage_events)
             for index, values in enumerate(report.phase_series):
                 series[index].update(values)
+                observed = (report.token_buckets_observed[index]
+                            if index < len(report.token_buckets_observed)
+                            else bool(values))
+                if observed:
+                    token_buckets_observed[index] = True
                 if report.bucket_coverage[index] == "partial":
                     bucket_coverage[index] = "partial"
                 elif report.bucket_coverage[index] == "complete" \
@@ -970,7 +1013,9 @@ class CodexUsage:
                      "bucket_end_ms": start_ms + (index + 1) * bucket_ms,
                      "coverage": bucket_coverage[index],
                      "phases": {phase: values.get(phase, 0) for phase in PHASES}}
-            point["total_tokens"] = sum(point["phases"].values())
+            point["total_tokens"] = (
+                sum(point["phases"].values())
+                if token_buckets_observed[index] else None)
             points.append(point)
         return {
             "repository_id": repository["repository_id"],
