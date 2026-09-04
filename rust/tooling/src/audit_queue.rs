@@ -3774,8 +3774,8 @@ mod tests {
             b"export function SaveButton() { return <button>Save</button>; }\n",
         );
         write(repo, "docs/README.md", b"# Product\n");
-        write(repo, ".env.example", b"TOKEN=example\n");
-        write(repo, ".env", b"TOKEN=private\n");
+        write(repo, ".env.example", b"TOKEN=example\n"); // public-artifact-guard: allow text-secret
+        write(repo, ".env", b"TOKEN=private\n"); // public-artifact-guard: allow text-secret
         write(repo, "public/logo.png", b"\x89PNG\r\n\x1a\nfixture");
         write(repo, "src/ignored.ts", b"export function ignored() {}\n");
         write(

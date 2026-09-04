@@ -4281,7 +4281,7 @@ mod tests {
         let active = tree.path.join("scripts/install.rs");
         write(
             &active,
-            "const SOURCE: &str = \"/home/holyskills/skills\";\n",
+            "const SOURCE: &str = \"/home/holyskills/skills\";\n", // public-artifact-guard: allow text-private-home
         );
         assert!(
             rules(&audit_repository_boundaries(&tree.path).unwrap()).contains("retired-checkout")

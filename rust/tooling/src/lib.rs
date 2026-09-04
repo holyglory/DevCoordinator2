@@ -22,6 +22,7 @@ pub mod python_guard;
 pub mod repository_checks;
 pub mod skill_links;
 pub mod skill_selftest;
+pub mod skill_validation;
 pub mod test_coverage_audit;
 pub mod ui_audit;
 pub mod ui_audit_verify;

@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::{Args, Parser, Subcommand};
+use serde_json::json;
 
 const SOURCE_COMMIT: &str = match option_env!("DEVCOORDINATOR2_SOURCE_COMMIT") {
     Some(value) => value,
@@ -476,6 +477,63 @@ enum SkillsCommand {
         #[command(subcommand)]
         command: SkillSelfTestCommand,
     },
+    Validate {
+        #[command(subcommand)]
+        command: SkillValidationCommand,
+    },
+}
+
+#[derive(Debug, Args)]
+struct SkillValidationArgs {
+    #[arg(long, default_value = ".")]
+    root: PathBuf,
+    #[arg(long)]
+    executor: Option<PathBuf>,
+    #[arg(long)]
+    tooling: Option<PathBuf>,
+    #[arg(long)]
+    control: Option<PathBuf>,
+    #[arg(long)]
+    coordinator_fixture: Option<PathBuf>,
+    #[arg(long, default_value = "cargo")]
+    cargo: String,
+    #[arg(long)]
+    cargo_target_dir: Option<PathBuf>,
+    #[arg(long)]
+    run_root: Option<PathBuf>,
+    #[arg(long)]
+    temp_root: Option<PathBuf>,
+    #[arg(long)]
+    allow_python_oracle: bool,
+}
+
+#[derive(Debug, Subcommand)]
+enum SkillValidationCommand {
+    Run {
+        #[command(flatten)]
+        options: SkillValidationArgs,
+    },
+    Plan {
+        #[command(flatten)]
+        options: SkillValidationArgs,
+        #[arg(long)]
+        output: Option<PathBuf>,
+        #[arg(long)]
+        run_id: Option<String>,
+    },
+    InternalCheck {
+        name: String,
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+        #[arg(long)]
+        allow_python_oracle: bool,
+    },
+    SelfTest {
+        #[arg(long)]
+        executor: Option<PathBuf>,
+        #[arg(long)]
+        leaf_fixture: Option<PathBuf>,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -794,6 +852,9 @@ fn main() -> ExitCode {
         Command::Skills {
             command: SkillsCommand::SelfTest { command },
         } => run_skill_self_test(command),
+        Command::Skills {
+            command: SkillsCommand::Validate { command },
+        } => run_skill_validation(command),
         Command::Legacy { command } => run_legacy(command),
         Command::Decision { command } => run_decision(command),
         Command::Install { command } => run_install(command),
@@ -806,7 +867,7 @@ fn run_skill_self_test(command: SkillSelfTestCommand) -> ExitCode {
             source_root,
             control_binary,
         } => {
-            let result = (|| {
+            let result: Result<serde_json::Value, String> = (|| {
                 let source_root = source_root
                     .canonicalize()
                     .map_err(|error| format!("cannot resolve source root: {error}"))?;
@@ -825,6 +886,143 @@ fn run_skill_self_test(command: SkillSelfTestCommand) -> ExitCode {
                     ExitCode::SUCCESS
                 }
                 Err(error) => tooling_error(&error, 1),
+            }
+        }
+    }
+}
+
+fn validation_options(
+    options: SkillValidationArgs,
+    run_id: &str,
+) -> Result<devcoordinator2_tooling::skill_validation::ValidationOptions, String> {
+    let root = options
+        .root
+        .canonicalize()
+        .map_err(|error| format!("cannot resolve validation root: {error}"))?;
+    let executable = std::env::current_exe().map_err(|error| error.to_string())?;
+    let binary_dir = executable
+        .parent()
+        .ok_or_else(|| "tooling executable has no parent directory".to_owned())?;
+    let binary_dir = binary_dir.to_owned();
+    let resolve_under_root = |value: Option<PathBuf>, default: PathBuf| {
+        let path = value.unwrap_or(default);
+        if path.is_absolute() {
+            path
+        } else {
+            root.join(path)
+        }
+    };
+    let run_root = resolve_under_root(
+        options.run_root,
+        root.join(".devcoordinator/agent-validation"),
+    );
+    let cargo_target_dir = resolve_under_root(
+        options.cargo_target_dir,
+        root.join("target/agent-validation-cargo"),
+    );
+    let temp_root = options
+        .temp_root
+        .unwrap_or_else(|| std::env::temp_dir().join("devcoordinator2-agent-validation"));
+    Ok(
+        devcoordinator2_tooling::skill_validation::ValidationOptions {
+            root,
+            current_dir: run_root.join(run_id),
+            tooling_binary: options.tooling.unwrap_or(executable),
+            control_binary: options
+                .control
+                .unwrap_or_else(|| binary_dir.join("devcoordinator2")),
+            executor_binary: options
+                .executor
+                .unwrap_or_else(|| binary_dir.join("devcoordinator2-executor")),
+            coordinator_fixture: options
+                .coordinator_fixture
+                .unwrap_or_else(|| binary_dir.join("devcoordinator2-selftest-coordinator")),
+            cargo_program: options.cargo,
+            cargo_target_dir,
+            temp_root,
+            allow_python_oracle: options.allow_python_oracle,
+        },
+    )
+}
+
+fn run_skill_validation(command: SkillValidationCommand) -> ExitCode {
+    use devcoordinator2_tooling::skill_validation;
+    match command {
+        SkillValidationCommand::InternalCheck {
+            name,
+            root,
+            allow_python_oracle,
+        } => {
+            let root = root.canonicalize().map_err(|error| error.to_string());
+            match root.and_then(|root| {
+                skill_validation::run_internal_check(&root, &name, allow_python_oracle)
+            }) {
+                Ok(result) => {
+                    println!("{}", result);
+                    ExitCode::SUCCESS
+                }
+                Err(error) => tooling_error(&error, 1),
+            }
+        }
+        SkillValidationCommand::SelfTest {
+            executor,
+            leaf_fixture,
+        } => {
+            let result = (|| {
+                let executable = std::env::current_exe().map_err(|error| error.to_string())?;
+                let directory = executable
+                    .parent()
+                    .ok_or_else(|| "tooling executable has no parent directory".to_owned())?;
+                skill_validation::self_test(
+                    &executor.unwrap_or_else(|| directory.join("devcoordinator2-executor")),
+                    &leaf_fixture
+                        .unwrap_or_else(|| directory.join("devcoordinator2-selftest-leaf")),
+                )
+            })();
+            match result {
+                Ok(result) => {
+                    println!("{}", serde_json::to_string_pretty(&result).unwrap());
+                    ExitCode::SUCCESS
+                }
+                Err(error) => tooling_error(&error, 1),
+            }
+        }
+        SkillValidationCommand::Plan {
+            options,
+            output,
+            run_id,
+        } => {
+            let result: Result<serde_json::Value, String> = (|| {
+                let run_id = run_id.unwrap_or(skill_validation::generate_run_id()?);
+                let options = validation_options(options, &run_id)?;
+                let digest =
+                    skill_validation::source_digest(&options.executor_binary, &options.root)?;
+                let plan = skill_validation::build_validation_plan(&options, &run_id, &digest)?;
+                let path =
+                    output.unwrap_or_else(|| options.current_dir.join("validation-plan.json"));
+                skill_validation::write_plan(&plan, &path)?;
+                Ok(json!({"schema":2,"run_id":run_id,"checks":plan.checks.len(),"plan":path}))
+            })();
+            match result {
+                Ok(result) => {
+                    println!("{}", result);
+                    ExitCode::SUCCESS
+                }
+                Err(error) => tooling_error(&error, 2),
+            }
+        }
+        SkillValidationCommand::Run { options } => {
+            let result = (|| {
+                let run_id = skill_validation::generate_run_id()?;
+                let options = validation_options(options, &run_id)?;
+                skill_validation::run_complete(&options, &run_id)
+            })();
+            match result {
+                Ok(run) => {
+                    println!("{}", run.receipt);
+                    ExitCode::from(run.exit_code)
+                }
+                Err(error) => tooling_error(&error, 2),
             }
         }
     }
@@ -2627,6 +2825,26 @@ mod tests {
             Command::Skills {
                 command: SkillsCommand::SelfTest {
                     command: SkillSelfTestCommand::DevCoordinator { .. }
+                }
+            }
+        ));
+        let skill_validation = Cli::try_parse_from([
+            "devcoordinator2-tooling",
+            "skills",
+            "validate",
+            "plan",
+            "--root",
+            "/repo",
+            "--allow-python-oracle",
+            "--run-id",
+            "shape-only",
+        ])
+        .expect("Rust six-skill validation plan command");
+        assert!(matches!(
+            skill_validation.command,
+            Command::Skills {
+                command: SkillsCommand::Validate {
+                    command: SkillValidationCommand::Plan { .. }
                 }
             }
         ));

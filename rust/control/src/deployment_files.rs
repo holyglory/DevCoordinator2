@@ -331,7 +331,7 @@ impl DeploymentFiles {
         let credentials = PostgresCredentials {
             user: user.into(),
             database: database.into(),
-            password: base64_url_no_pad(&random),
+            password: base64_url_no_pad(&random), // public-artifact-guard: allow text-secret
         };
         let payload = serde_json::to_vec(&credentials)
             .map_err(|error| DeploymentFileError::Invalid(error.to_string()))?;
