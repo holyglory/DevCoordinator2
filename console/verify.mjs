@@ -48,14 +48,17 @@ const progressFixture = (scenario, period = 'day') => {
   const evidenceMissing = scenario.empty || referenceState;
   const alignedEnd = referenceState ? Date.UTC(2026, 8, 1) : Date.UTC(2026, 7, 31);
   const referenceTasks = [0, 0, 6, 3, 4, 6, 13];
+  const referenceTasksAdded = [0, 2, 1, 0, 5, 0, 2];
   const referenceLines = [0, 0, 1500, 0, 3500, 200, 2200];
+  const referenceLinesAdded = [0, 900, 250, 0, 1600, 0, 400];
   const series = Array.from({ length: count }, (_, index) => ({
     bucket_start_ms: alignedEnd - (count - index) * bucketMs,
     bucket_end_ms: alignedEnd - (count - index - 1) * bucketMs,
     tasks_completed: scenario.empty ? 0 : referenceState ? referenceTasks[index] : [1, 0, 2, 1, 0, 2, 1, 1][index % 8],
-    tasks_created: scenario.empty ? 0 : [0, 1, 0, 0, 2, 0, 0, 1][index % 8],
+    tasks_created: scenario.empty ? 0 : referenceState ? referenceTasksAdded[index] : [0, 1, 0, 0, 2, 0, 0, 1][index % 8],
     tasks_reopened: scenario.empty ? 0 : (index === count - 2 ? 1 : 0),
     planned_lines_completed: scenario.empty ? 0 : referenceState ? referenceLines[index] : [80, 0, 140, 95, 0, 220, 110, 75][index % 8],
+    planned_lines_added: scenario.empty ? 0 : referenceState ? referenceLinesAdded[index] : [0, 40, 0, 0, 120, 0, 0, 30][index % 8],
     scope_lines_changed: scenario.empty ? 0 : [0, 40, 0, -20, 120, 0, 0, 30][index % 8],
     test_runs: evidenceMissing ? 0 : [3, 2, 4, 3, 5, 2, 4, 3][index % 8],
     tests_passed: evidenceMissing ? 0 : [3, 2, 3, 3, 4, 2, 4, 2][index % 8],
@@ -68,6 +71,7 @@ const progressFixture = (scenario, period = 'day') => {
     tasks_created: series.reduce((sum, point) => sum + point.tasks_created, 0),
     tasks_reopened: series.reduce((sum, point) => sum + point.tasks_reopened, 0),
     planned_lines_completed: series.reduce((sum, point) => sum + point.planned_lines_completed, 0),
+    planned_lines_added: series.reduce((sum, point) => sum + point.planned_lines_added, 0),
     scope_lines_changed: series.reduce((sum, point) => sum + point.scope_lines_changed, 0),
     test_runs: series.reduce((sum, point) => sum + point.test_runs, 0),
     tests_passed: series.reduce((sum, point) => sum + point.tests_passed, 0),
@@ -102,7 +106,7 @@ const progressFixture = (scenario, period = 'day') => {
     series,
     comparison: { current: currentTotals, previous: scenario.empty ? { ...currentTotals } : {
       ...currentTotals, tasks_completed: 6, tasks_created: 7, tasks_reopened: 0,
-      planned_lines_completed: 920, scope_lines_changed: 80, test_runs: 20,
+      planned_lines_completed: 920, planned_lines_added: 1080, scope_lines_changed: 80, test_runs: 20,
       tests_passed: 17, test_pass_rate: .82, total_tokens: 1300000,
       tokens_per_completed_task: 216667, tokens_per_planned_line: 1413,
       tasks_completed_per_day: .86, tasks_created_per_day: 1,
@@ -141,7 +145,7 @@ const progressFixture = (scenario, period = 'day') => {
       plan: { state: 'complete', completed_with_estimate: 7, completed_total: 7 },
       tests: { state: evidenceMissing ? 'unobserved' : scenario.partial ? 'partial' : 'complete', recorded_runs: evidenceMissing ? 0 : 26, history_sources: evidenceMissing ? 0 : 1, unavailable_sources: 0, earliest_at: evidenceMissing ? null : '2026-08-01T00:00:00Z' },
       tokens: { state: scenario.empty ? 'unobserved' : referenceState || scenario.partial ? 'partial' : 'complete', has_gaps: !!(scenario.partial || referenceState), configured_collectors: 2, available_collectors: referenceState ? 1 : 2, contributing_collectors: evidenceMissing ? 0 : 2, freshest_at_ms: evidenceMissing ? null : Date.UTC(2026, 7, 30, 23, 58), unavailable_reasons: {} } },
-    semantics: { tasks: 'terminal task status events in the permanent plan ledger', lines: 'current planned task estimates completed; not measured Git changes', tests: 'bounded repository-local terminal test summaries', tokens: 'provider total_tokens; missing collector coverage stays missing', forecast: 'deterministic range from recent pace, scope, estimates, and test stability' },
+    semantics: { tasks: 'terminal task status events in the permanent plan ledger', lines: 'current planned task estimates completed; not measured Git changes', lines_added: 'initial task estimates and estimate increases; estimate reductions and dropped work are excluded', tests: 'bounded repository-local terminal test summaries', tokens: 'provider total_tokens; missing collector coverage stays missing', forecast: 'deterministic range from recent pace, scope, estimates, and test stability' },
   };
 };
 
@@ -249,8 +253,8 @@ const fixtures = (scenario) => {
     'deployment.logs': { component: 'api', tail: 'line 1\nline 2 ' + 'long '.repeat(60) + '\nline 3', truncated_before_tail: true, log_path: '/state/logs/api.log' },
     'health.history': { subject_kind: 'component', subject_id: `${DEP}/api`, metric: 'cpu_percent', minutes: 60, points: scenario.empty ? [] : points, truncated: false },
     'test.list': { runs: scenario.empty ? [] : [
-      { run_id: 't20260101T000000Z-abc123', test: 'unit', requested_tier: 'pre-merge', readiness_eligible: false, status: 'running', started_at: new Date().toISOString(), finished_at: null, duration_seconds: null, exit_code: null, stdout_bytes_observed: 123456789, stderr_bytes_observed: 0, display_name: 'repo-one', worktree_path: '/srv/repos/repo-one', repository_id: REPO, worktree_id: 'w1' },
-      { run_id: TEST_RUN, test: 'ui-release', requested_tier: 'release', readiness_eligible: true, status: 'failed', started_at: new Date(Date.now() - 3600000).toISOString(), finished_at: new Date().toISOString(), duration_seconds: 3599.123, exit_code: 1, stdout_bytes_observed: 10, stderr_bytes_observed: 8388608, display_name: LONG, worktree_path: `/srv/repos/${LONG}`, repository_id: 'r2', worktree_id: 'w2' }] },
+      { run_id: 't20260101T000000Z-abc123', test: 'unit', requested_tier: 'pre-merge', readiness_eligible: false, status: scenario.testFinished ? 'passed' : 'running', started_at: new Date(Date.now() - (scenario.testFinished ? 3600000 : 0)).toISOString(), finished_at: scenario.testFinished ? new Date().toISOString() : null, duration_seconds: scenario.testFinished ? 3600 : null, exit_code: scenario.testFinished ? 0 : null, stdout_bytes_observed: 123456789, stderr_bytes_observed: 0, display_name: 'repo-one', worktree_path: '/srv/repos/repo-one', repository_id: REPO, worktree_id: 'w1', visual_evidence: scenario.evidenceWhileRunning ? { status: 'available', bundle_count: 1, image_count: 2, issue_count: 0, issues_truncated: false } : { status: 'unavailable', bundle_count: 0, image_count: 0, issue_count: 0, issues_truncated: false } },
+      { run_id: TEST_RUN, test: 'ui-release', requested_tier: 'release', readiness_eligible: true, status: 'failed', started_at: new Date(Date.now() - 3600000).toISOString(), finished_at: new Date().toISOString(), duration_seconds: 3599.123, exit_code: 1, stdout_bytes_observed: 10, stderr_bytes_observed: 8388608, display_name: LONG, worktree_path: `/srv/repos/${LONG}`, repository_id: 'r2', worktree_id: 'w2', visual_evidence: { status: 'available', bundle_count: 1, image_count: 8, issue_count: 0, issues_truncated: false } }] },
     'test.capacity.get': {
       learned_capacity: 96, effective_capacity: 80, cap: 80, active: scenario.empty ? 0 : 52,
       waiting: scenario.empty ? 0 : 11, paused: false,
@@ -264,9 +268,17 @@ const fixtures = (scenario) => {
     'test.log.retention.get': { max_age_seconds: 86400, case_depth: 3, defaults: { max_age_seconds: 86400, case_depth: 3 }, updated_at: new Date().toISOString(), updated_by: 'schema-default', last_cleanup_at: new Date().toISOString(), last_cleanup_error_code: null },
     'test.log.catalog': { entries: scenario.empty || scenario.logEmpty ? [] : [
       { log_ref: { run_id: 't20260101T000000Z-abc123', check: 'unit', phase: 'case', case: 'parser-17', stream: 'stderr' }, bytes: 8388608, lines: 42000, first_byte_at: new Date(Date.now() - 300000).toISOString(), last_byte_at: new Date().toISOString(), complete: true, truncated: false, sha256: 'a'.repeat(64), expires_at: new Date(Date.now() + 86400000).toISOString(), depth_rank: 1, structured_evidence: { available: true, formats: ['junit'], count: 2 } },
-      { log_ref: { run_id: 't20260101T000000Z-abc123', phase: 'executor', stream: 'stdout' }, bytes: 121, lines: 1, first_byte_at: new Date(Date.now() - 300000).toISOString(), last_byte_at: new Date().toISOString(), complete: false, truncated: false, sha256: null, expires_at: null, depth_rank: null, structured_evidence: { available: false, formats: [], count: 0 } },
+      { log_ref: { run_id: 't20260101T000000Z-abc123', phase: 'executor', stream: 'stdout' }, bytes: 220, lines: 2, first_byte_at: new Date(Date.now() - 300000).toISOString(), last_byte_at: new Date().toISOString(), complete: false, truncated: false, sha256: null, expires_at: null, depth_rank: null, structured_evidence: { available: false, formats: [], count: 0 } },
+      { log_ref: { run_id: 't20260101T000000Z-abc123', check: 'structured', phase: 'check', stream: 'stdout' }, bytes: 180, lines: 1, first_byte_at: new Date(Date.now() - 300000).toISOString(), last_byte_at: new Date().toISOString(), complete: true, truncated: false, sha256: 'e'.repeat(64), expires_at: new Date(Date.now() + 86400000).toISOString(), depth_rank: 1, structured_evidence: { available: false, formats: [], count: 0 } },
     ], next_cursor: scenario.logCatalogPaged ? 'more-streams' : null },
-    'test.log.tail': { segments: [{ line_start: 41999, line_end: 42000, byte_start: 8388500, byte_end: 8388608, text: 'assertion failed\nexpected ready, actual pending' }], next_cursor: 'older-tail', response_truncated: true },
+    'test.log.tail': { segments: [{ line_start: scenario.logShortPaged ? 41999 : 41801, line_end: 42000, byte_start: 8340000, byte_end: 8388608,
+      text: scenario.logShortPaged ? 'recent output 41999\nassertion failed at item_count=42000' : Array.from({ length: 200 }, (_, index) => {
+        if (index === 196) return '2026-09-03T21:00:00Z warning retry=2 duration_ms=153.25';
+        if (index === 197) return '<script>alert(1)</script> item_count=152';
+        if (index === 198) return 'assertion failed';
+        if (index === 199) return 'expected ready, actual pending';
+        return `build step ${41801 + index} completed`;
+      }).join('\n') }], next_cursor: 'older-tail', response_truncated: true },
     'test.log.search': { matches: [{ line_start: 41999, line_end: 41999, byte_start: 8388500, byte_end: 8388520, text: 'assertion failed' }], next_cursor: 'next-search', response_truncated: false },
     'test.log.range': { segments: [{ line_start: 40, line_end: 50, byte_start: 400, byte_end: 510, text: 'exact bounded range' }], next_cursor: null, response_truncated: false },
     'test.log.failure_context': { contexts: [{ line_start: 41999, line_end: 42000, byte_start: 8388500, byte_end: 8388608, text: 'assertion failed', occurrences: 2, fingerprint: `sha256:${'b'.repeat(64)}` }], next_cursor: null, response_truncated: false },
@@ -353,6 +365,8 @@ const SCENARIOS = {
   logCatalogPaged: { identity: 'owner@example.test', admin: true, logCatalogPaged: true, targetedOnly: true },
   logCatalogError: { identity: 'owner@example.test', admin: true, logCatalogError: true, targetedOnly: true },
   logReadError: { identity: 'owner@example.test', admin: true, logReadError: true, targetedOnly: true },
+  logPageError: { identity: 'owner@example.test', admin: true, logPageError: true, targetedOnly: true },
+  logShortPaged: { identity: 'owner@example.test', admin: true, logShortPaged: true, targetedOnly: true },
 };
 const VIEWS = ['#/deployments', `#/deployments/${DEP}`, '#/plan', `#/plan/${REPO}`, '#/progress', `#/progress/${REPO}`, '#/usage', `#/usage/${REPO}`, '#/decisions', `#/decisions/${REPO}`, '#/tests', `#/tests/${TEST_RUN}`, '#/health', '#/health/containers', '#/bugs', '#/admin'];
 const VIEWPORTS = { wide: { width: 1280, height: 800 }, narrow: { width: 390, height: 844 } };
@@ -380,7 +394,7 @@ async function startFakeDaemon(dir) {
   const settledWaiters = new Set();
   const receivedWaiters = new Set();
   const delayedReplies = new Set();
-  const mutable = { stopped: false, serviceStopped: false, taskUpdates: new Map(), createdTasks: [], previewRequested: false, failNextTaskUpdate: false, failNextLogCatalog: false, failNextLogRead: false, usageCollectionReads: 0, capacityCap: 80, logAge: 86400, logDepth: 3, evidenceImage: ONE_PIXEL_PNG, evidenceWidth: 1, evidenceHeight: 1, evidenceFeedback: [], feedbackSequence: 0 };
+  const mutable = { stopped: false, serviceStopped: false, taskUpdates: new Map(), createdTasks: [], previewRequested: false, failNextTaskUpdate: false, failNextLogCatalog: false, failNextLogRead: false, failNextLogPage: false, usageCollectionReads: 0, capacityCap: 80, logAge: 86400, logDepth: 3, evidenceImage: ONE_PIXEL_PNG, evidenceWidth: 1, evidenceHeight: 1, evidenceFeedback: [], feedbackSequence: 0 };
   const evidenceImage = (imageId, kind = 'viewport') => ({
     status: 'available', image_id: imageId, kind, mime: 'image/png',
     size: mutable.evidenceImage.length,
@@ -468,6 +482,10 @@ async function startFakeDaemon(dir) {
         mutable.failNextLogRead = false;
         return reply({ ok: false, error: { code: 'log_expired', message: 'This retained log expired.', detail: '' } });
       }
+      if (cmd === 'test.log.tail' && req.args.cursor && mutable.failNextLogPage) {
+        mutable.failNextLogPage = false;
+        return reply({ ok: false, error: { code: 'log_unavailable', message: 'Earlier output is temporarily unavailable.', detail: '' } });
+      }
       if (scenario.denied && ADMIN_ONLY.includes(cmd)) return reply({ ok: false, error: { code: 'permission_denied', message: `${cmd} requires administrator`, detail: '' } });
       if (scenario.denied && OPERATOR_ONLY.includes(cmd)) return reply({ ok: false, error: { code: 'permission_denied', message: `${cmd} requires operator`, detail: '' } });
       if (cmd === 'deployment.stop' && req.args.component === 'stack/projection-worker') { mutable.serviceStopped = true; return reply({ ok: true, result: { state: 'degraded' } }); }
@@ -504,13 +522,24 @@ async function startFakeDaemon(dir) {
         mutable.logAge = req.args.max_age_seconds; mutable.logDepth = req.args.case_depth;
         return reply({ ok: true, result: { ...fixtures(scenario)['test.log.retention.get'], max_age_seconds: mutable.logAge, case_depth: mutable.logDepth, cleanup_requested: true } });
       }
+      if (cmd === 'test.log.tail' && req.args.check === 'structured') return reply({ ok: true, result: {
+        segments: [{ line_start: 1, line_end: 1, byte_start: 0, byte_end: 180,
+          text: '{"summary":{"passed":12,"failed":0},"duration_ms":83.5,"message":"<img src=x onerror=alert(1)>","complete":true}' }],
+        next_cursor: null, response_truncated: false,
+      } });
       if (cmd === 'test.log.tail' && req.args.phase === 'executor') return reply({ ok: true, result: {
-        segments: [{ line_start: 1, line_end: 1, byte_start: 0, byte_end: 121, text: 'executor finished successfully' }],
+        segments: [{ line_start: 1, line_end: 2, byte_start: 0, byte_end: 220,
+          text: '{"event":"executor finished successfully","count":42,"ok":true,"duration_ms":153.25,"at":"2026-09-03T21:00:00Z"}\n{"event":"artifact","bytes":2048,"cached":false,"status":"passed"}' }],
         next_cursor: null, response_truncated: false,
       } });
       if (cmd === 'test.log.tail' && req.args.cursor === 'older-tail') return reply({ ok: true, result: {
-        segments: [{ line_start: 41799, line_end: 41998, byte_start: 8340000, byte_end: 8388500,
+        segments: [{ line_start: 41601, line_end: 41800, byte_start: 8290000, byte_end: 8340000,
           text: Array.from({ length: 200 }, (_, index) => `earlier setup output ${index + 1}`).join('\n') }],
+        next_cursor: 'oldest-tail', response_truncated: true,
+      } });
+      if (cmd === 'test.log.tail' && req.args.cursor === 'oldest-tail') return reply({ ok: true, result: {
+        segments: [{ line_start: 41401, line_end: 41600, byte_start: 8240000, byte_end: 8290000,
+          text: Array.from({ length: 200 }, (_, index) => `oldest retained output ${index + 1}`).join('\n') }],
         next_cursor: null, response_truncated: false,
       } });
       if (cmd === 'test.log.search' && req.args.cursor === 'next-search') return reply({ ok: true, result: {
@@ -619,7 +648,7 @@ async function startFakeDaemon(dir) {
   return {
     socketPath,
     calls,
-    setScenario: (s) => { for (const release of delayedReplies) release(); delayedReplies.clear(); scenario = s; mutable.stopped = false; mutable.serviceStopped = false; mutable.taskUpdates.clear(); mutable.createdTasks.length = 0; mutable.previewRequested = false; mutable.failNextTaskUpdate = false; mutable.failNextLogCatalog = !!s.logCatalogError; mutable.failNextLogRead = !!s.logReadError; mutable.usageCollectionReads = 0; mutable.capacityCap = 80; mutable.logAge = 86400; mutable.logDepth = 3; mutable.evidenceFeedback.length = 0; mutable.feedbackSequence = 0; calls.length = 0; },
+    setScenario: (s) => { for (const release of delayedReplies) release(); delayedReplies.clear(); scenario = s; mutable.stopped = false; mutable.serviceStopped = false; mutable.taskUpdates.clear(); mutable.createdTasks.length = 0; mutable.previewRequested = false; mutable.failNextTaskUpdate = false; mutable.failNextLogCatalog = !!s.logCatalogError; mutable.failNextLogRead = !!s.logReadError; mutable.failNextLogPage = !!s.logPageError; mutable.usageCollectionReads = 0; mutable.capacityCap = 80; mutable.logAge = 86400; mutable.logDepth = 3; mutable.evidenceFeedback.length = 0; mutable.feedbackSequence = 0; calls.length = 0; },
     setEvidenceImage: (bytes, width, height) => { mutable.evidenceImage = Buffer.from(bytes); mutable.evidenceWidth = width; mutable.evidenceHeight = height; },
     failNextTaskUpdate: () => { mutable.failNextTaskUpdate = true; },
     releaseDelayed: () => { for (const release of delayedReplies) release(); delayedReplies.clear(); },
@@ -890,6 +919,11 @@ async function main() {
             && await repo.locator(`a[href="#/decisions/${REPO}"]`).count() === 1
             && await repo.locator('a[href="#/tests"]').count() === 1
             && await repo.locator('a[href="#/health"]').count() === 1);
+          check(`${label}: Tests and Health expose only available repository-attributed detail`,
+            await repo.locator('[data-summary="tests"] .deployment-summary-facts > div').count() === 3
+            && await repo.locator('[data-summary="health"] .deployment-summary-facts > div').count() === 4
+            && await legacy.locator('[data-summary="tests"] .deployment-summary-facts').count() === 0
+            && await legacy.locator('[data-summary="health"] .deployment-summary-facts > div').count() === 4);
           check(`${label}: removed declared-only area stays absent`, !/Declared, not applied|tool@worktree/.test(metrics.text));
         }
         if (scenarioName === 'populated' && ['#/tests', '#/health'].includes(view)) check(`${label}: large numbers humanized`, /MiB|GiB|TiB/.test(metrics.text), metrics.text.slice(0, 80));
@@ -931,10 +965,22 @@ async function main() {
             && /Shown in Plan order/.test(metrics.text)
             && !/Priority queue|Release impact|dependency|ranked by|\d+\.\d+ days|TECHNICAL-(?:UNBLOCK|REOPEN)-MARKER/.test(metrics.text));
           check(`${label}: progress distinguishes daily bars from running-total lines`,
-            await page.locator('.progress-bar').count() > 0
+            await page.locator('.progress-completed-bar').count() > 0
+            && await page.locator('.progress-incoming-bar').count() > 0
             && await page.locator('.progress-running-line').count() === 2
-            && /Bars = finished that/.test(metrics.text)
-            && /Line = total during this period/.test(metrics.text));
+            && /Solid above = completed · outlined below = incoming/.test(metrics.text)
+            && /Line = completed running total/.test(metrics.text));
+          const opposingGeometry = await page.locator('.progress-bar-line-chart').evaluateAll((charts) => charts.every((chart) => {
+            const baseline = Number(chart.querySelector('.progress-zero-line')?.getAttribute('y1'));
+            const completed = [...chart.querySelectorAll('.progress-completed-bar')];
+            const incoming = [...chart.querySelectorAll('.progress-incoming-bar')];
+            return Number.isFinite(baseline) && completed.length > 0 && incoming.length > 0
+              && completed.every((bar) => Number(bar.getAttribute('y')) < baseline
+                && Number(bar.getAttribute('y')) + Number(bar.getAttribute('height')) <= baseline + .1)
+              && incoming.every((bar) => Number(bar.getAttribute('y')) >= baseline
+                && Number(bar.getAttribute('height')) > 0);
+          }));
+          check(`${label}: completed work is above the baseline and added work is below it`, opposingGeometry);
           const labelLayering = await page.locator('.progress-bar-line-chart').evaluateAll((charts) => charts.every((chart) => {
             const line = chart.querySelector('.progress-running-line');
             const labels = [...chart.querySelectorAll('.progress-bar-value')];
@@ -944,8 +990,8 @@ async function main() {
           }));
           check(`${label}: progress value labels paint above the running line with a readability halo`, labelLayering);
           check(`${label}: progress labels estimated lines truthfully`,
-            /Planned lines completed/.test(metrics.text)
-            && /Current task estimates/.test(metrics.text)
+            /Planned lines completed and added/.test(metrics.text)
+            && /Completed above · added below/.test(metrics.text)
             && !/Git lines completed/.test(metrics.text));
         }
         if (scenario.delayMs) {
@@ -1035,6 +1081,74 @@ async function main() {
   check('deployments list groups rows under repository headers',
     groupHeads.length === 2 && groupHeads.some((t) => /repo-one/.test(t)) && groupHeads.some((t) => /legacy-repo/.test(t)),
     groupHeads.join(' | '));
+  let dashboardRepo = page.locator(`[data-repository-id="${REPO}"]`);
+  let legacyDashboardRepo = page.locator('[data-repository-id="r9999999999999999"]');
+  const repositoryToggle = dashboardRepo.locator('[data-deployment-repository-toggle]');
+  check('deployments: every repository and deployment starts expanded with an accessible collapse control',
+    await page.locator('[data-deployment-repository-toggle][aria-expanded="true"]').count() === 2
+    && await page.locator('[data-deployment-toggle][aria-expanded="true"]').count() === 3
+    && await page.locator('.deployment-repository-body:not([hidden])').count() === 2
+    && await page.locator('.deployment-record-body:not([hidden])').count() === 3);
+  await repositoryToggle.focus();
+  await page.keyboard.press('Enter');
+  check('interaction: Enter collapses only the selected repository while its identity and status remain visible',
+    await repositoryToggle.getAttribute('aria-expanded') === 'false'
+    && await dashboardRepo.locator('.deployment-repository-body[hidden]').count() === 1
+    && await dashboardRepo.locator('.deployment-repository-head:visible').count() === 1
+    && /repo-one/.test(await dashboardRepo.locator('.deployment-repository-head').innerText())
+    && /Attention/.test(await dashboardRepo.locator('.deployment-repository-head').innerText())
+    && await legacyDashboardRepo.locator('.deployment-repository-body:not([hidden])').count() === 1);
+  await page.keyboard.press('Space');
+  check('interaction: Space expands the selected repository and restores every summary and deployment',
+    await repositoryToggle.getAttribute('aria-expanded') === 'true'
+    && await dashboardRepo.locator('.deployment-summary-item:visible').count() === 6
+    && await dashboardRepo.locator('.deployment-record:visible').count() === 2);
+  let firstDashboardRecord = dashboardRepo.locator('.deployment-record').first();
+  let secondDashboardRecord = dashboardRepo.locator('.deployment-record').nth(1);
+  const firstDeploymentToggle = firstDashboardRecord.locator('[data-deployment-toggle]');
+  await firstDeploymentToggle.focus();
+  await page.keyboard.press('Enter');
+  check('interaction: a deployment collapses independently while its identity and state remain visible',
+    await firstDeploymentToggle.getAttribute('aria-expanded') === 'false'
+    && await firstDashboardRecord.locator('.deployment-record-body[hidden]').count() === 1
+    && await firstDashboardRecord.locator('.deployment-record-identity:visible').count() === 1
+    && await firstDashboardRecord.locator('.deployment-record-status:visible').count() === 1
+    && await firstDashboardRecord.locator('[data-cmd]:visible, [data-edit-domain]:visible').count() === 0
+    && await secondDashboardRecord.locator('.deployment-record-body:not([hidden])').count() === 1);
+  await page.evaluate(() => { location.hash = '#/health'; });
+  await page.waitForSelector('.health-summary');
+  await page.evaluate(() => { location.hash = '#/deployments'; });
+  await page.waitForSelector(`[data-repository-id="${REPO}"]`);
+  dashboardRepo = page.locator(`[data-repository-id="${REPO}"]`);
+  firstDashboardRecord = dashboardRepo.locator('.deployment-record').first();
+  check('interaction: the selected deployment stays collapsed through a same-session page rerender',
+    await firstDashboardRecord.locator('[data-deployment-toggle]').getAttribute('aria-expanded') === 'false'
+    && await firstDashboardRecord.locator('.deployment-record-body[hidden]').count() === 1);
+  await firstDashboardRecord.locator('[data-deployment-toggle]').click();
+  await dashboardRepo.locator('[data-deployment-repository-toggle]').click();
+  await page.evaluate(() => { location.hash = '#/tests'; });
+  await page.waitForSelector('.tests-tablewrap');
+  await page.evaluate(() => { location.hash = '#/deployments'; });
+  await page.waitForSelector(`[data-repository-id="${REPO}"]`);
+  dashboardRepo = page.locator(`[data-repository-id="${REPO}"]`);
+  check('interaction: the selected repository stays collapsed through a same-session page rerender',
+    await dashboardRepo.locator('[data-deployment-repository-toggle]').getAttribute('aria-expanded') === 'false'
+    && await dashboardRepo.locator('.deployment-repository-body[hidden]').count() === 1);
+  await dashboardRepo.locator('[data-deployment-repository-toggle]').click();
+  const testSummary = dashboardRepo.locator('[data-summary="tests"]');
+  const healthSummary = dashboardRepo.locator('[data-summary="health"]');
+  check('deployments: Tests shows selected-run tier, elapsed time, output, recency, and proof type',
+    /unit · running/.test(await testSummary.innerText())
+    && /Diagnostic run · started/.test(await testSummary.innerText())
+    && /Tier\s+Pre-merge/.test(await testSummary.innerText())
+    && /Elapsed\s+\d+s/.test(await testSummary.innerText())
+    && /Output\s+118 MiB/.test(await testSummary.innerText()));
+  check('deployments: Health shows current repository CPU, memory, storage, and deployment count',
+    /Unhealthy · CPU 40\.1%/.test(await healthSummary.innerText())
+    && /CPU\s+40\.1%/.test(await healthSummary.innerText())
+    && /Memory\s+46\.6 GiB/.test(await healthSummary.innerText())
+    && /Storage\s+373 GiB/.test(await healthSummary.innerText())
+    && /Deployments\s+2/.test(await healthSummary.innerText()));
   const repositorySummaryJourneys = [
     [`#/plan/${REPO}`, '#/plan'],
     [`#/progress/${REPO}`, '#/progress'],
@@ -1080,6 +1194,61 @@ async function main() {
     daemon.calls.some((c) => c.command === 'deployment.restart' && c.args.deployment_id === OBS));
   await page.goto(`http://${HOST}:${port}/#/tests`);
   await page.waitForSelector('button[data-test-logs]');
+  const runningRow = page.locator('[data-test-run-id="t20260101T000000Z-abc123"]');
+  const visualRow = page.locator(`[data-test-run-id="${TEST_RUN}"]`);
+  check('tests: evidence availability is truthful before opening a run',
+    /Evidence pending/.test(await runningRow.innerText())
+    && /Evidence · 8 images/.test(await visualRow.innerText())
+    && await runningRow.locator('a[href^="#/tests/"]').count() === 0
+    && await visualRow.locator(`a[href="#/tests/${TEST_RUN}"]`).count() === 1);
+  await page.setViewportSize(VIEWPORTS.narrow);
+  const narrowTests = await page.evaluate(() => {
+    const collection = document.querySelector('.tests-tablewrap');
+    const evidence = document.querySelector('[data-test-run-id="t20260101T000000Z-abc123"] td.actions .badge');
+    const rect = evidence?.getBoundingClientRect();
+    return {
+      documentOverflow: document.documentElement.scrollWidth - innerWidth,
+      collectionOverflow: collection ? collection.scrollWidth - collection.clientWidth : null,
+      evidenceRect: rect ? { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom } : null,
+    };
+  });
+  check('tests: narrow rows expose evidence and controls without a horizontal discovery path',
+    narrowTests.documentOverflow <= 0
+    && narrowTests.collectionOverflow <= 0
+    && narrowTests.evidenceRect?.left >= 0
+    && narrowTests.evidenceRect?.right <= VIEWPORTS.narrow.width
+    && narrowTests.evidenceRect?.bottom <= VIEWPORTS.narrow.height,
+  JSON.stringify(narrowTests));
+  await page.setViewportSize(VIEWPORTS.wide);
+  await page.click('#test-capacity-open');
+  await page.waitForSelector('dialog#test-capacity-dialog[open]');
+  await page.locator('#test-capacity-dialog input').focus();
+  daemon.setScenario({ ...SCENARIOS.populated, testFinished: true, targetedOnly: true });
+  await page.waitForFunction(() => {
+    const row = document.querySelector('[data-test-run-id="t20260101T000000Z-abc123"]');
+    return row && /passed/.test(row.textContent) && /Evidence not produced/.test(row.textContent);
+  });
+  check('tests: live refresh replaces stale running state and stop action without closing active work',
+    await page.locator('dialog#test-capacity-dialog[open]').count() === 1
+    && await page.locator('#test-capacity-dialog:focus-within').count() === 1
+    && await runningRow.locator('[data-cmd="test.stop"]').count() === 0
+    && /Up to date/.test(await page.innerText('#test-live-status')));
+  await page.click('#test-capacity-cancel');
+  daemon.setScenario(SCENARIOS.populated);
+  await page.goto(`http://${HOST}:${port}/#/health`);
+  await page.goto(`http://${HOST}:${port}/#/tests`);
+  await page.waitForSelector('#test-live-status');
+  daemon.setScenario(SCENARIOS.error);
+  await page.waitForFunction(() => /retrying/.test(document.querySelector('#test-live-status')?.textContent || ''));
+  daemon.setScenario({ ...SCENARIOS.populated, testFinished: true, targetedOnly: true });
+  await page.waitForFunction(() => /Up to date/.test(document.querySelector('#test-live-status')?.textContent || ''));
+  check('tests: a failed live read preserves the page and recovers on the next bounded refresh',
+    /passed/.test(await page.innerText('[data-test-run-id="t20260101T000000Z-abc123"]'))
+    && await page.locator('.tests-tablewrap').count() === 1);
+  daemon.setScenario(SCENARIOS.populated);
+  await page.goto(`http://${HOST}:${port}/#/health`);
+  await page.goto(`http://${HOST}:${port}/#/tests`);
+  await page.waitForSelector('button[data-test-logs]');
   daemon.calls.length = 0;
   await page.click('button[data-test-logs]');
   await page.waitForSelector('dialog#test-logs-dialog[open] #test-log-read-result pre.log');
@@ -1088,7 +1257,7 @@ async function main() {
   check('interaction: Logs catalogues first and then opens readable output automatically',
     catalogIndex >= 0 && initialTailIndex > catalogIndex);
   check('tests: stream names describe human-readable output instead of repeating internal phases',
-    await page.locator('#test-log-stream option').allTextContents().then((options) => options.join(' | ') === 'unit · parser-17 · Error output | Test runner · Standard output'));
+    await page.locator('#test-log-stream option').allTextContents().then((options) => options.join(' | ') === 'unit · parser-17 · Error output | Test runner · Standard output | structured · Standard output'));
   check('tests: ordinary log reading exposes no line, byte, start, end, or numeric range form',
     await page.locator('#test-logs-dialog input[type="number"], #test-log-range').count() === 0
     && !/Range type|Read range/.test(await page.innerText('#test-logs-dialog')));
@@ -1107,23 +1276,53 @@ async function main() {
   check('interaction: automatic output uses the exact catalogued check, case, phase, and stream', daemon.calls.some((c) => c.command === 'test.log.tail'
     && c.args.check === 'unit' && c.args.phase === 'case' && c.args.case === 'parser-17'
     && c.args.stream === 'stderr' && c.args.lines === 200 && c.args.max_bytes === 49152));
-  check('tests: retrieved output carries stable line coordinates', /Lines 41999–42000/.test(await page.innerText('#test-log-read-result')));
+  check('tests: retrieved output carries stable source-line coordinates', /Lines 41801–42000/.test(await page.innerText('#test-log-read-result')));
   check('tests: every retrieved stream is explicitly labelled untrusted',
     await page.locator('#test-log-read-result pre[aria-label="Untrusted log text"]').count() === 1
     && /Untrusted log output/.test(await page.innerText('.test-log-view-head')));
-  await page.locator('#test-log-page').scrollIntoViewIfNeeded();
-  const beforeEarlier = await page.locator('#test-log-read-result').evaluate((element) => ({ top: element.scrollTop, height: element.scrollHeight }));
-  await page.click('#test-log-page');
+  check('tests: raw text highlights numbers, timestamps, and textual outcomes without creating source markup',
+    await page.locator('#test-log-read-result .log-token-number').count() >= 200
+    && await page.locator('#test-log-read-result .log-token-time').count() === 1
+    && await page.locator('#test-log-read-result .log-token-warning').count() >= 1
+    && await page.locator('#test-log-read-result .log-token-success').count() >= 1
+    && await page.locator('#test-log-read-result .log-token-failure').count() >= 1
+    && await page.locator('#test-log-read-result script').count() === 0
+    && /<script>alert\(1\)<\/script>/.test(await page.innerText('#test-log-read-result')));
+  check('tests: no visible or hidden manual paging control remains in the log reader',
+    await page.locator('#test-log-page, .log-page-button').count() === 0
+    && !/Load earlier output|Show more matches|Show more failures/.test(await page.innerText('#test-logs-dialog')));
+  const beforeEarlier = await page.locator('#test-log-read-result').evaluate((element) => {
+    element.scrollTop = 0;
+    const anchor = [...element.querySelectorAll('.log-result')].find((entry) => entry.textContent.includes('build step 41801'));
+    return { top: element.scrollTop, height: element.scrollHeight,
+      anchorTop: anchor?.getBoundingClientRect().top - element.getBoundingClientRect().top };
+  });
+  await page.locator('#test-log-read-result').evaluate((element) => element.dispatchEvent(new Event('scroll')));
   await waitForSettledCall(daemon, page, (call) => call.command === 'test.log.tail' && call.args.cursor === 'older-tail');
-  const afterEarlier = await page.locator('#test-log-read-result').evaluate((element) => ({ top: element.scrollTop, height: element.scrollHeight }));
+  await page.waitForFunction(() => document.querySelector('#test-log-read-result')?.textContent.includes('earlier setup output 1'));
+  const afterEarlier = await page.locator('#test-log-read-result').evaluate((element) => {
+    const anchor = [...element.querySelectorAll('.log-result')].find((entry) => entry.textContent.includes('build step 41801'));
+    return { top: element.scrollTop, height: element.scrollHeight,
+      anchorTop: anchor?.getBoundingClientRect().top - element.getBoundingClientRect().top };
+  });
   const progressiveText = await page.innerText('#test-log-read-result');
-  check('interaction: Load earlier output follows the exact cursor and prepends without duplicates',
+  check('interaction: reaching the upper boundary follows the exact cursor and prepends without duplicates',
     progressiveText.indexOf('earlier setup output 1') >= 0
     && progressiveText.indexOf('earlier setup output 1') < progressiveText.indexOf('assertion failed')
     && (progressiveText.match(/assertion failed/g) || []).length === 1);
   check('interaction: prepending older output preserves the prior reading position',
-    afterEarlier.height > beforeEarlier.height && afterEarlier.top > beforeEarlier.top,
+    afterEarlier.height > beforeEarlier.height && afterEarlier.top > beforeEarlier.top
+    && Math.abs(afterEarlier.anchorTop - beforeEarlier.anchorTop) <= 2,
   JSON.stringify({ beforeEarlier, afterEarlier }));
+  await page.locator('#test-log-read-result').evaluate((element) => {
+    element.scrollTop = 0; element.dispatchEvent(new Event('scroll'));
+  });
+  await waitForSettledCall(daemon, page, (call) => call.command === 'test.log.tail' && call.args.cursor === 'oldest-tail');
+  await page.waitForFunction(() => document.querySelector('#test-log-read-result')?.textContent.includes('oldest retained output 1'));
+  check('interaction: repeated upward scrolling continues until the retained beginning',
+    /Start of output/.test(await page.innerText('#test-log-read-result'))
+    && (await page.innerText('#test-log-read-result')).indexOf('oldest retained output 1')
+      < (await page.innerText('#test-log-read-result')).indexOf('earlier setup output 1'));
   check('tests: browsing older output offers a plain return to the newest lines',
     await page.locator('#test-log-latest:visible').count() === 1
     && await page.innerText('#test-log-latest') === 'Jump to latest');
@@ -1136,15 +1335,15 @@ async function main() {
     && /assertion failed/.test(await page.innerText('#test-log-read-result')));
   await page.fill('#test-log-search [name=text]', '[literal].*');
   await page.click('#test-log-search button[type=submit]');
-  await page.waitForSelector('#test-log-page');
+  await waitForSettledCall(daemon, page, (call) => call.command === 'test.log.search' && call.args.cursor === 'next-search');
+  await page.waitForFunction(() => document.querySelector('#test-log-read-result')?.textContent.includes('pending state persisted'));
   check('interaction: search remains literal and bounded', daemon.calls.some((c) => c.command === 'test.log.search'
     && c.args.text === '[literal].*' && c.args.max_matches === 20 && c.args.context_lines === 2));
-  check('tests: search changes the reader mode and offers plain pagination',
+  check('tests: search changes the reader mode and extends automatically without a paging control',
     /Search results/.test(await page.innerText('.test-log-view-head'))
-    && await page.innerText('#test-log-page') === 'Show more matches');
-  await page.click('#test-log-page');
-  await waitForSettledCall(daemon, page, (call) => call.command === 'test.log.search' && call.args.cursor === 'next-search');
-  check('interaction: Show more matches continues from the exact cursor without replacing prior results',
+    && await page.locator('#test-log-page, .log-page-button').count() === 0
+    && /All results shown/.test(await page.innerText('#test-log-read-result')));
+  check('interaction: search continuation uses the exact returned cursor without replacing prior results',
     /assertion failed/.test(await page.innerText('#test-log-read-result'))
     && /pending state persisted/.test(await page.innerText('#test-log-read-result')));
   await page.click('[data-log-read="failure_context"]');
@@ -1156,16 +1355,35 @@ async function main() {
   await page.selectOption('#test-log-stream', '1');
   await waitForSettledCall(daemon, page, (call) => daemon.calls.indexOf(call) >= beforeStreamChange
     && call.command === 'test.log.tail' && call.args.phase === 'executor' && call.args.stream === 'stdout');
-  check('interaction: choosing another stream opens its newest text automatically',
-    /executor finished successfully/.test(await page.innerText('#test-log-read-result')));
+  check('interaction: choosing another stream opens and pretty-prints its newest structured text automatically',
+    /executor finished successfully/.test(await page.innerText('#test-log-read-result'))
+    && /Formatted JSON lines/.test(await page.innerText('#test-log-read-result'))
+    && await page.locator('#test-log-read-result .log-result.structured').count() === 1
+    && await page.locator('#test-log-read-result .log-token-key').count() >= 6
+    && await page.locator('#test-log-read-result .log-token-number').count() >= 3
+    && await page.locator('#test-log-read-result .log-token-keyword').count() >= 2
+    && await page.locator('#test-log-read-result .log-token-string').count() >= 3);
   check('tests: an active stream offers an explicit refresh without exposing coordinates',
     await page.locator('#test-log-latest:visible').count() === 1
     && await page.innerText('#test-log-latest') === 'Refresh latest'
     && /In progress · Active/.test(await page.innerText('#test-log-summary')));
+  await page.selectOption('#test-log-stream', '2');
+  await page.waitForFunction(() => document.querySelector('#test-log-read-result')?.textContent.includes('Formatted JSON'));
+  check('tests: a whole JSON record is pretty-printed, highlighted, and hostile markup stays literal',
+    /Formatted JSON/.test(await page.innerText('#test-log-read-result'))
+    && /"passed": 12/.test(await page.innerText('#test-log-read-result'))
+    && await page.locator('#test-log-read-result .log-token-key').count() >= 6
+    && await page.locator('#test-log-read-result .log-token-number').count() >= 3
+    && await page.locator('#test-log-read-result img, #test-log-read-result [onerror]').count() === 0
+    && /<img src=x onerror=alert\(1\)>/.test(await page.innerText('#test-log-read-result')));
   check('tests: the Console never calls exact numeric range retrieval',
     !daemon.calls.some((c) => c.command === 'test.log.range'));
+  daemon.setScenario({ ...SCENARIOS.populated, testFinished: true, targetedOnly: true });
+  await page.waitForFunction(() => /passed/.test(document.querySelector('[data-test-run-id="t20260101T000000Z-abc123"]')?.textContent || ''));
   await page.click('#test-logs-dialog .dialog-close');
-  check('interaction: closing Logs returns focus to the invoking run', await page.locator('button[data-test-logs]:focus').count() === 1);
+  check('interaction: closing Logs returns focus after live refresh replaced the invoking row',
+    await page.locator('[data-test-run-id="t20260101T000000Z-abc123"] button[data-test-logs]:focus').count() === 1);
+  daemon.setScenario(SCENARIOS.populated);
   check('tests: the run collection remains primary and capacity details stay in the action dialog',
     await page.locator('#test-runs-heading').count() === 1
     && await page.locator('.tests-tablewrap').count() === 1
@@ -1187,6 +1405,7 @@ async function main() {
   check('interaction: retention saves both boundaries directly and schedules cleanup', daemon.calls.some((c) => c.command === 'test.log.retention.set'
     && c.args.max_age_seconds === 7200 && c.args.case_depth === 5),
   JSON.stringify(daemon.calls.filter((c) => c.command === 'test.log.retention.set').map((c) => c.args)));
+  await page.waitForFunction(() => document.activeElement?.id === 'test-log-retention-open');
   check('interaction: saving retention returns focus to the Log retention action', await page.locator('#test-log-retention-open:focus').count() === 1);
   await page.click('#test-log-retention-open');
   await page.waitForSelector('dialog#test-log-retention-dialog[open]');
@@ -1241,11 +1460,45 @@ async function main() {
   await page.click('button[data-test-logs]');
   await page.waitForSelector('#test-log-more');
   await page.click('#test-log-more');
-  await page.waitForFunction(() => document.querySelectorAll('#test-log-stream option').length === 3);
+  await page.waitForFunction(() => document.querySelectorAll('#test-log-stream option').length === 4);
   check('interaction: Show more streams follows the catalogue cursor and preserves the reader',
     daemon.calls.some((call) => call.command === 'test.log.catalog' && call.args.cursor === 'more-streams')
     && await page.locator('#test-log-more').count() === 0
     && /assertion failed/.test(await page.innerText('#test-log-read-result')));
+  await page.click('#test-logs-dialog .dialog-close');
+  daemon.setScenario(SCENARIOS.logShortPaged);
+  await page.goto(`http://${HOST}:${port}/#/tests`);
+  await page.waitForSelector('button[data-test-logs]');
+  daemon.calls.length = 0;
+  await page.click('button[data-test-logs]');
+  await waitForSettledCall(daemon, page, (call) => call.command === 'test.log.tail' && call.args.cursor === 'older-tail');
+  await page.waitForFunction(() => document.querySelector('#test-log-read-result')?.textContent.includes('earlier setup output 1'));
+  check('interaction: a short newest page auto-fills from one bounded earlier cursor without a paging control',
+    daemon.calls.filter((call) => call.command === 'test.log.tail').length === 2
+    && await page.locator('#test-log-page, .log-page-button').count() === 0
+    && /recent output 41999/.test(await page.innerText('#test-log-read-result')));
+  await page.click('#test-logs-dialog .dialog-close');
+  daemon.setScenario(SCENARIOS.logPageError);
+  await page.goto(`http://${HOST}:${port}/#/tests`);
+  await page.waitForSelector('button[data-test-logs]');
+  await page.click('button[data-test-logs]');
+  await page.waitForSelector('#test-log-read-result pre.log');
+  await waitForRenderFrame(page);
+  await page.locator('#test-log-read-result').evaluate((element) => {
+    element.scrollTop = 0; element.dispatchEvent(new Event('scroll'));
+  });
+  await page.waitForSelector('#test-log-read-result .log-page-error');
+  check('tests: an earlier-page failure preserves visible output and offers one specific retry',
+    /Earlier output is temporarily unavailable/.test(await page.innerText('.log-page-error'))
+    && /assertion failed/.test(await page.innerText('#test-log-read-result'))
+    && await page.locator('.log-page-error button').count() === 1);
+  const beforePageRetry = daemon.calls.length;
+  await page.click('.log-page-error button');
+  await waitForSettledCall(daemon, page, (call) => daemon.calls.indexOf(call) >= beforePageRetry
+    && call.command === 'test.log.tail' && call.args.cursor === 'older-tail');
+  await page.waitForFunction(() => document.querySelector('#test-log-read-result')?.textContent.includes('earlier setup output 1'));
+  check('interaction: retry resumes the same cursor-driven infinite-scroll page',
+    daemon.calls.filter((call) => call.command === 'test.log.tail' && call.args.cursor === 'older-tail').length === 2);
   await page.click('#test-logs-dialog .dialog-close');
   daemon.setScenario(SCENARIOS.logReadError);
   await page.goto(`http://${HOST}:${port}/#/tests`);
@@ -1807,7 +2060,9 @@ async function main() {
   check('interaction: hourly progress reads hourly repository buckets',
     daemon.calls.some((call) => call.command === 'progress.repository'
       && call.args.repository_id === REPO && call.args.period === 'hour')
-    && await page.locator('[data-progress-period="hour"]:focus').count() === 1);
+    && await page.locator('[data-progress-period="hour"]:focus').count() === 1
+    && await page.locator('.progress-completed-bar').count() > 0
+    && await page.locator('.progress-incoming-bar').count() > 0);
   daemon.calls.length = 0;
   await page.click('[data-progress-period="day"]');
   await waitForSettledCall(daemon, page,
@@ -1815,7 +2070,9 @@ async function main() {
   check('interaction: daily progress reads daily repository buckets',
     daemon.calls.some((call) => call.command === 'progress.repository'
       && call.args.repository_id === REPO && call.args.period === 'day')
-    && await page.locator('[data-progress-period="day"]:focus').count() === 1);
+    && await page.locator('[data-progress-period="day"]:focus').count() === 1
+    && await page.locator('.progress-completed-bar').count() > 0
+    && await page.locator('.progress-incoming-bar').count() > 0);
   daemon.calls.length = 0;
   await page.click('[data-progress-period="week"]');
   await page.waitForSelector('.progress-pulse-chart');
@@ -1824,10 +2081,14 @@ async function main() {
   check('interaction: weekly progress re-reads aligned repository buckets and restores focus',
     daemon.calls.some((call) => call.command === 'progress.repository'
       && call.args.repository_id === REPO && call.args.period === 'week')
-    && await page.locator('[data-progress-period="week"]:focus').count() === 1);
+    && await page.locator('[data-progress-period="week"]:focus').count() === 1
+    && await page.locator('.progress-completed-bar').count() > 0
+    && await page.locator('.progress-incoming-bar').count() > 0);
   await page.click('.progress-exact summary');
   check('interaction: exact progress values and counting rules expand in place',
     await page.locator('.progress-exact[open] tbody tr').count() === 8
+    && /Planned lines added/.test(await page.innerText('.progress-exact'))
+    && /estimate reductions and dropped work are excluded/.test(await page.innerText('.progress-exact'))
     && /not measured Git changes/.test(await page.innerText('.progress-exact')));
   await page.click(`.progress-actions a[href="#/plan/${REPO}"]`);
   await page.waitForURL(new RegExp(`#\\/plan\\/${REPO}$`));
@@ -2225,6 +2486,7 @@ async function main() {
     { width: 959, height: 960 },
     { width: 960, height: 960 },
     { width: 961, height: 960 },
+    { width: 1095, height: 876 },
     { width: 834, height: 1194 },
     { width: 1179, height: 900 },
     { width: 1180, height: 900 },
@@ -2278,6 +2540,47 @@ async function main() {
     check(`deployments ${viewport.width}px: no clipping, off-canvas controls, or document overflow`,
       layout.overflow <= 0 && layout.controlsContained && layout.clippedText.length === 0,
       JSON.stringify(layout));
+    if ([390, 1095].includes(viewport.width)) {
+      const firstRepository = deploymentPage.locator('.deployment-repository').first();
+      const repositoryToggle = firstRepository.locator('[data-deployment-repository-toggle]');
+      await repositoryToggle.click();
+      await deploymentPage.screenshot({ path: path.join(OUT, `deployments-${viewport.width}-repository-collapsed.png`), fullPage: true });
+      const repositoryCollapsed = await deploymentPage.evaluate(() => {
+        const section = document.querySelector('.deployment-repository');
+        const header = section.querySelector('.deployment-repository-head').getBoundingClientRect();
+        const toggle = section.querySelector('[data-deployment-repository-toggle]').getBoundingClientRect();
+        return { hidden: section.querySelector('.deployment-repository-body').hidden,
+          expanded: section.querySelector('[data-deployment-repository-toggle]').getAttribute('aria-expanded'),
+          headerVisible: header.width > 0 && header.height > 0,
+          toggleContained: toggle.left >= -1 && toggle.right <= innerWidth + 1,
+          overflow: document.documentElement.scrollWidth - innerWidth };
+      });
+      check(`deployments ${viewport.width}px: collapsed repository stays recognizable and contained`,
+        repositoryCollapsed.hidden && repositoryCollapsed.expanded === 'false'
+        && repositoryCollapsed.headerVisible && repositoryCollapsed.toggleContained
+        && repositoryCollapsed.overflow <= 0, JSON.stringify(repositoryCollapsed));
+      await repositoryToggle.click();
+      const firstRecord = firstRepository.locator('.deployment-record').first();
+      await firstRecord.locator('[data-deployment-toggle]').click();
+      await deploymentPage.screenshot({ path: path.join(OUT, `deployments-${viewport.width}-deployment-collapsed.png`), fullPage: true });
+      const deploymentCollapsed = await firstRecord.evaluate((record) => {
+        const identity = record.querySelector('.deployment-record-identity').getBoundingClientRect();
+        const status = record.querySelector('.deployment-record-status').getBoundingClientRect();
+        const toggle = record.querySelector('[data-deployment-toggle]').getBoundingClientRect();
+        return { hidden: record.querySelector('.deployment-record-body').hidden,
+          expanded: record.querySelector('[data-deployment-toggle]').getAttribute('aria-expanded'),
+          identityVisible: identity.width > 0 && identity.height > 0,
+          statusVisible: status.width > 0 && status.height > 0,
+          toggleContained: toggle.left >= -1 && toggle.right <= innerWidth + 1,
+          overflow: document.documentElement.scrollWidth - innerWidth };
+      });
+      check(`deployments ${viewport.width}px: collapsed deployment keeps identity and state without overflow`,
+        deploymentCollapsed.hidden && deploymentCollapsed.expanded === 'false'
+        && deploymentCollapsed.identityVisible && deploymentCollapsed.statusVisible
+        && deploymentCollapsed.toggleContained && deploymentCollapsed.overflow <= 0,
+      JSON.stringify(deploymentCollapsed));
+      await firstRecord.locator('[data-deployment-toggle]').click();
+    }
   }
   await deploymentContext.close();
 

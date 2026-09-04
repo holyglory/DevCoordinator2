@@ -117,11 +117,16 @@ context.
 Inside a governed DevCoordinator2 check, the executor supplies one private
 run/leaf evidence directory. With no explicit output override, the verifier
 writes its complete bundle there, including a strict path-free
-`journey-evidence.json` manifest. That manifest orders every declared
-route/state/viewport cell, binds its masked screenshots by SHA-256 and actual
-dimensions, and omits action values and selectors. The Console may replay this
-manifest while the owning run remains within test-log retention; the original
-PNG files never become editable review state.
+`journey-evidence.json` manifest. When a caller deliberately keeps reports and
+screenshots at explicit artifact paths, the verifier preserves those outputs
+and atomically publishes a confined immutable Console copy under
+`formal-runs/<bundle>/` in the same evidence leaf. Separate or concurrent
+formal batches receive distinct bundle directories, so no valid journey is
+replaced. Each manifest orders every declared route/state/viewport cell, binds
+its masked screenshots by SHA-256 and actual dimensions, and omits action
+values and selectors. The Console may replay every bundle while the owning run
+remains within test-log retention; the original PNG files never become editable
+review state.
 
 Full Markdown stdout is compatibility behavior for an attended human terminal
 only. It requires the explicit `--human-readable-stdout` opt-in and still writes

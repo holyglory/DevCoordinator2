@@ -221,6 +221,67 @@ def test_evidence_metadata_is_path_free_and_image_chunks_verify_integrity(world)
     assert not world.db.query("SELECT 1 FROM tasks")
 
 
+def test_multiple_formal_bundles_share_one_governed_check_without_overwrite(world):
+    bundle = world.evidence / "formal-runs" / ("b" * 64)
+    screenshots = bundle / "screenshots"
+    screenshots.mkdir(parents=True)
+    screenshot = screenshots / "second-viewport.png"
+    screenshot.write_bytes(PNG)
+    manifest = json.loads(json.dumps(world.manifest))
+    manifest["runId"] = "formal-web-ui-second"
+    manifest["cells"][0]["cellId"] = "cell-2"
+    manifest["cells"][0]["targetName"] = "Account [base]"
+    manifest["cells"][0]["screenshots"]["viewport"]["path"] = (
+        "screenshots/second-viewport.png"
+    )
+    (bundle / "journey-evidence.json").write_text(
+        json.dumps(manifest), encoding="utf-8"
+    )
+
+    result = world.service.get(world.repo, RUN_ID, caller())
+    assert [item["formal_run_id"] for item in result["bundles"]] == [
+        "formal-web-ui-example",
+        "formal-web-ui-second",
+    ]
+    assert result["image_count"] == 2
+    assert result["issues"] == []
+    second = result["bundles"][1]["cells"][0]["screenshots"]["viewport"]
+    chunk = world.service.image(
+        world.repo,
+        {"run_id": RUN_ID, "image_id": second["image_id"]},
+        caller(),
+    )
+    assert base64.b64decode(chunk["base64"]) == PNG
+    assert world.service.summary(world.repo, RUN_ID, caller()) == {
+        "status": "available",
+        "bundle_count": 2,
+        "image_count": 2,
+        "issue_count": 0,
+        "issues_truncated": False,
+    }
+
+
+def test_nested_bundle_discovery_ignores_symlinks_and_unrecognized_names(world):
+    outside = world.repo / "outside"
+    outside.mkdir()
+    (outside / "journey-evidence.json").write_text(
+        json.dumps(world.manifest), encoding="utf-8"
+    )
+    formal_runs = world.evidence / "formal-runs"
+    formal_runs.mkdir()
+    (formal_runs / ("c" * 64)).symlink_to(outside, target_is_directory=True)
+    unrecognized = formal_runs / "not-a-bundle"
+    unrecognized.mkdir()
+    (unrecognized / "journey-evidence.json").write_text(
+        json.dumps(world.manifest), encoding="utf-8"
+    )
+
+    result = world.service.get(world.repo, RUN_ID, caller())
+    assert len(result["bundles"]) == 1
+    assert result["image_count"] == 1
+    assert result["issues"] == []
+
+
 def test_invalid_or_expired_evidence_is_truthful(world):
     world.manifest["governedRunId"] = "another-run"
     (world.evidence / "journey-evidence.json").write_text(
@@ -395,3 +456,34 @@ def test_handlers_validate_exact_evidence_arguments(world):
             },
             caller(),
         )
+
+
+def test_test_list_includes_bounded_visual_evidence_availability(world):
+    class Lifecycle:
+        @staticmethod
+        def list_current():
+            return [
+                {
+                    "run_id": RUN_ID,
+                    "worktree_path": str(world.repo),
+                    "status": "passed",
+                }
+            ]
+
+    world.service.summary = lambda *_args: pytest.fail(
+        "test.list must not repeat caller worktree discovery"
+    )
+    handlers = build_handlers(
+        world.config,
+        world.registry,
+        lifecycle=Lifecycle(),
+        test_evidence=world.service,
+    )
+    listed = handlers["test.list"]({}, caller())["runs"][0]
+    assert listed["visual_evidence"] == {
+        "status": "available",
+        "bundle_count": 1,
+        "image_count": 1,
+        "issue_count": 0,
+        "issues_truncated": False,
+    }

@@ -45,6 +45,8 @@ const state = {
   evidenceSelectedFeedbackId: null,
   evidenceImageUrls: new Map(),
   evidenceImagePromises: new Map(),
+  collapsedDeploymentRepositories: new Set(),
+  collapsedDeployments: new Set(),
 };
 const RANGES = {
   '1h': { minutes: 60, points: 60 },
@@ -372,11 +374,12 @@ function dashboardLink(label, href, repositoryName) {
   return `<a class="deployment-summary-link" href="${esc(href)}" aria-label="${esc(`${label} for ${repositoryName}`)}"><span>${esc(label)}</span>${planIcon('arrow-right')}</a>`;
 }
 
-function deploymentSummaryItem({ label, value, note = '', kind = '', href = '', link, repositoryName }) {
+function deploymentSummaryItem({ label, value, note = '', facts = [], kind = '', href = '', link, repositoryName }) {
   return `<div class="deployment-summary-item" data-summary="${esc(label.toLowerCase().replaceAll(' ', '-'))}">
     <span class="deployment-summary-label">${esc(label)}</span>
     <strong class="deployment-summary-value ${esc(kind)}">${esc(value)}</strong>
     ${note ? `<small>${esc(note)}</small>` : ''}
+    ${facts.length ? `<dl class="deployment-summary-facts">${facts.map(([name, fact]) => `<div><dt>${esc(name)}</dt><dd>${esc(fact)}</dd></div>`).join('')}</dl>` : ''}
     ${dashboardLink(link, href, repositoryName)}
   </div>`;
 }
@@ -387,13 +390,16 @@ function deploymentRecord(deployment, admin) {
   const domain = deployment.domain ? esc(deployment.domain) : '<span class="muted">—</span>';
   const stateKind = ['degraded', 'failed'].includes(deployment.state)
     || deployment.health === 'unhealthy' ? 'attention' : deployment.state === 'applying' ? 'applying' : 'normal';
-  return `<article class="deployment-record ${stateKind}" data-deployment-id="${esc(deployment.deployment_id)}">
+  const collapsed = state.collapsedDeployments.has(deployment.deployment_id);
+  const bodyId = `deployment-record-body-${deployment.deployment_id}`;
+  return `<article class="deployment-record ${stateKind}${collapsed ? ' collapsed' : ''}" data-deployment-id="${esc(deployment.deployment_id)}">
     <div class="deployment-record-identity">
-      <a href="#/deployments/${esc(deployment.deployment_id)}"><strong>${esc(deployment.name)}@${esc(deployment.source)}</strong></a>
+      <div class="deployment-record-title"><a href="#/deployments/${esc(deployment.deployment_id)}"><strong>${esc(deployment.name)}@${esc(deployment.source)}</strong></a>
+        <button class="deployment-collapse-toggle deployment-record-toggle" type="button" data-deployment-toggle="${esc(deployment.deployment_id)}" data-ui-continuation-anchor aria-expanded="${!collapsed}" aria-controls="${esc(bodyId)}" aria-label="${collapsed ? 'Expand' : 'Collapse'} ${esc(deployment.name)} deployment">${planIcon(collapsed ? 'chevron-right' : 'chevron-down')}</button></div>
       <span class="muted mono">${esc(deployment.deployment_id)}</span>
     </div>
     <div class="deployment-record-status" aria-label="Deployment status">${badge(deployment.state)} ${health} ${deployment.observed_only ? badge('observed') : ''}</div>
-    <dl class="deployment-record-facts deployment-record-endpoint">
+    <div class="deployment-record-body" id="${esc(bodyId)}"${collapsed ? ' hidden' : ''}><dl class="deployment-record-facts deployment-record-endpoint">
       <div><dt>Domain</dt><dd><span class="deployment-domain">${domain}</span>${admin ? ` <button class="btn btn-small deployment-domain-edit" data-edit-domain="${esc(deployment.deployment_id)}" aria-label="Edit domain for ${esc(deployment.name)}@${esc(deployment.source)}">edit</button>` : ''}</dd></div>
       <div><dt>Port</dt><dd>${deployment.route_port ?? '—'}</dd></div>
     </dl>
@@ -402,8 +408,14 @@ function deploymentRecord(deployment, admin) {
       <div><dt>Updated</dt><dd>${ago(deployment.updated_at)}</dd></div>
     </dl>
     <div class="deployment-record-actions"><span>Actions</span><div class="actions">${lifecycleButtons(deployment.deployment_id, null, 'btn btn-small', deployment.state)}
-      ${!deployment.observed_only && admin ? `<button class="btn btn-small" data-cmd="deployment.apply" data-args='${esc(JSON.stringify({ deployment_id: deployment.deployment_id }))}'${deployment.state === 'applying' ? ' disabled aria-disabled="true" title="Apply already in progress"' : ''}>apply</button>` : ''}</div></div>
+      ${!deployment.observed_only && admin ? `<button class="btn btn-small" data-cmd="deployment.apply" data-args='${esc(JSON.stringify({ deployment_id: deployment.deployment_id }))}'${deployment.state === 'applying' ? ' disabled aria-disabled="true" title="Apply already in progress"' : ''}>apply</button>` : ''}</div></div></div>
   </article>`;
+}
+
+function dashboardTestElapsed(test) {
+  if (test.duration_seconds != null) return durationMs(Number(test.duration_seconds) * 1000);
+  const started = Date.parse(test.started_at || '');
+  return test.status === 'running' && Number.isFinite(started) ? durationMs(Date.now() - started) : '—';
 }
 
 function repositoryDashboardSection(group, sources, decisions, admin, index) {
@@ -439,24 +451,38 @@ function repositoryDashboardSection(group, sources, decisions, admin, index) {
   } else if (usage?.coverage) usageValue = coverageText(usage.coverage, true);
   else if (sources.usage.error) usageValue = 'Usage unavailable';
 
-  let testValue = 'No current run'; let testKind = '';
+  let testValue = 'No current run'; let testNote = ''; let testFacts = []; let testKind = '';
   if (!canReadTests) testValue = 'Administrator access required';
   else if (sources.tests.error) testValue = 'Tests unavailable';
   else if (tests.length) {
     const test = tests.find((run) => run.status === 'running')
       || tests.find((run) => ['failed', 'timed-out', 'interrupted'].includes(run.status)) || tests[0];
     testValue = `${test.test} · ${test.status}`;
+    testNote = `${test.readiness_eligible ? 'Readiness proof' : 'Diagnostic run'} · started ${ago(test.started_at)}`;
+    const outputObserved = test.stdout_bytes_observed == null && test.stderr_bytes_observed == null
+      ? null : Number(test.stdout_bytes_observed || 0) + Number(test.stderr_bytes_observed || 0);
+    testFacts = [
+      ['Tier', testTierLabel(test.requested_tier)],
+      ['Elapsed', dashboardTestElapsed(test)],
+      ['Output', outputObserved == null ? '—' : bytes(outputObserved)],
+    ];
     testKind = test.status === 'running' || test.status === 'passed' ? 'ok'
       : ['failed', 'timed-out'].includes(test.status) ? 'bad' : 'warn';
   }
 
-  let healthValue = 'No health record'; let healthKind = '';
+  let healthValue = 'No health record'; let healthFacts = []; let healthKind = '';
   if (sources.healthResult.error) healthValue = 'Health unavailable';
   else if (health) {
     const healthName = health.health === 'healthy' && deployments.length === 1
       ? 'Deployment healthy'
       : health.health && health.health !== 'none' ? healthLabel(health.health, {}) : 'No incidents recorded';
     healthValue = `${healthName}${health.health === 'healthy' || health.cpu_percent == null ? '' : ` · CPU ${pct(health.cpu_percent)}`}`;
+    healthFacts = [
+      ['CPU', pct(health.cpu_percent)],
+      ['Memory', bytes(health.memory_bytes)],
+      ['Storage', bytes(health.storage_bytes)],
+      ['Deployments', String(health.deployments?.length ?? deployments.length)],
+    ];
     healthKind = health.health === 'unhealthy' ? 'bad' : health.health === 'healthy' ? 'ok' : '';
   }
 
@@ -474,22 +500,52 @@ function repositoryDashboardSection(group, sources, decisions, admin, index) {
     deploymentSummaryItem({ label: 'Plan', value: planValue, href: planHref, link: 'Open Plan', repositoryName }),
     deploymentSummaryItem({ label: 'Progress', value: progressValue, href: progressHref, link: 'Open Progress', repositoryName }),
     deploymentSummaryItem({ label: 'Usage · 24h', value: usageValue, note: usageNote, href: usageHref, link: 'Open Codex Usage', repositoryName }),
-    deploymentSummaryItem({ label: 'Tests', value: testValue, kind: testKind, href: canReadTests ? '#/tests' : '', link: `Open Tests (${repositoryName})`, repositoryName }),
-    deploymentSummaryItem({ label: 'Health', value: healthValue, kind: healthKind, href: '#/health', link: `Open Health (${repositoryName})`, repositoryName }),
+    deploymentSummaryItem({ label: 'Tests', value: testValue, note: testNote, facts: testFacts, kind: testKind, href: canReadTests ? '#/tests' : '', link: `Open Tests (${repositoryName})`, repositoryName }),
+    deploymentSummaryItem({ label: 'Health', value: healthValue, facts: healthFacts, kind: healthKind, href: '#/health', link: `Open Health (${repositoryName})`, repositoryName }),
     deploymentSummaryItem({ label: 'Latest decision', value: decisionValue, note: decisionNote, href: decisionsHref, link: `Open Decisions (${repositoryName})`, repositoryName }),
   ].join('');
   const titleId = `deployment-repository-${index}`;
+  const bodyId = `deployment-repository-body-${index}`;
+  const collapseKey = repositoryId || `unattributed:${deployments[0]?.deployment_id || index}`;
+  const collapsed = state.collapsedDeploymentRepositories.has(collapseKey);
   const count = deployments.length;
-  return `<section class="deployment-repository" data-repository-id="${esc(repositoryId)}" aria-labelledby="${titleId}">
+  return `<section class="deployment-repository${collapsed ? ' collapsed' : ''}" data-repository-id="${esc(repositoryId)}" aria-labelledby="${titleId}">
     <header class="deployment-repository-head">
       <h2 id="${titleId}">${esc(repositoryName)}</h2>
       ${repositoryId ? `<span class="muted mono">${esc(repositoryId)}</span>` : ''}
       <span class="deployment-repository-count">${count} ${count === 1 ? 'deployment' : 'deployments'}</span>
       <strong class="deployment-repository-status ${overall.kind}">${esc(overall.text)}</strong>
+      <button class="deployment-collapse-toggle deployment-repository-toggle" type="button" data-deployment-repository-toggle="${esc(collapseKey)}" data-ui-continuation-anchor aria-expanded="${!collapsed}" aria-controls="${bodyId}" aria-label="${collapsed ? 'Expand' : 'Collapse'} ${esc(repositoryName)} repository">${planIcon(collapsed ? 'chevron-right' : 'chevron-down')}</button>
     </header>
-    <div class="deployment-repository-summary" aria-label="${esc(`${repositoryName} repository summary`)}">${summary}</div>
-    <div class="deployment-records">${deployments.map((deployment) => deploymentRecord(deployment, admin)).join('')}</div>
+    <div class="deployment-repository-body" id="${bodyId}"${collapsed ? ' hidden' : ''}><div class="deployment-repository-summary" aria-label="${esc(`${repositoryName} repository summary`)}">${summary}</div>
+    <div class="deployment-records">${deployments.map((deployment) => deploymentRecord(deployment, admin)).join('')}</div></div>
   </section>`;
+}
+
+function bindDeploymentCollapsibles(root) {
+  root.querySelectorAll('[data-deployment-repository-toggle]').forEach((button) => button.addEventListener('click', () => {
+    const key = button.dataset.deploymentRepositoryToggle;
+    const collapsed = !state.collapsedDeploymentRepositories.has(key);
+    if (collapsed) state.collapsedDeploymentRepositories.add(key); else state.collapsedDeploymentRepositories.delete(key);
+    const section = button.closest('.deployment-repository');
+    const body = document.getElementById(button.getAttribute('aria-controls'));
+    section?.classList.toggle('collapsed', collapsed); if (body) body.hidden = collapsed;
+    button.setAttribute('aria-expanded', String(!collapsed));
+    button.setAttribute('aria-label', `${collapsed ? 'Expand' : 'Collapse'} ${section?.querySelector('h2')?.textContent || 'repository'} repository`);
+    button.innerHTML = planIcon(collapsed ? 'chevron-right' : 'chevron-down');
+  }));
+  root.querySelectorAll('[data-deployment-toggle]').forEach((button) => button.addEventListener('click', () => {
+    const deploymentId = button.dataset.deploymentToggle;
+    const collapsed = !state.collapsedDeployments.has(deploymentId);
+    if (collapsed) state.collapsedDeployments.add(deploymentId); else state.collapsedDeployments.delete(deploymentId);
+    const record = button.closest('.deployment-record');
+    const body = document.getElementById(button.getAttribute('aria-controls'));
+    record?.classList.toggle('collapsed', collapsed); if (body) body.hidden = collapsed;
+    button.setAttribute('aria-expanded', String(!collapsed));
+    const name = record?.querySelector('.deployment-record-identity strong')?.textContent || 'deployment';
+    button.setAttribute('aria-label', `${collapsed ? 'Expand' : 'Collapse'} ${name} deployment`);
+    button.innerHTML = planIcon(collapsed ? 'chevron-right' : 'chevron-down');
+  }));
 }
 
 const viewDeployments = guard(async () => {
@@ -527,6 +583,7 @@ const viewDeployments = guard(async () => {
   const decisions = new Map(decisionEntries);
   main.innerHTML = `<section class="deployments-dashboard">${pageHeading('Deployments', '#/deployments')}<div class="deployment-repositories">${orderedGroups.map((group, index) => repositoryDashboardSection(group, sources, decisions, admin, index)).join('')}</div></section>`;
   bind(main);
+  bindDeploymentCollapsibles(main);
   bindDomainButtons(main, deployments);
 });
 
@@ -729,6 +786,9 @@ function logResultRows(result) {
 function logRowKey(row) {
   return [row.line_start, row.line_end, row.byte_start, row.byte_end, row.text, row.base64].join('\u0000');
 }
+function logRowAnchor(row) {
+  return [row.line_start ?? 'bytes', row.line_end ?? 'bytes', row.byte_start ?? 0, row.byte_end ?? 0].join('-');
+}
 function mergeLogRows(current, incoming, prepend = false) {
   const ordered = prepend ? [...incoming, ...current] : [...current, ...incoming];
   const seen = new Set();
@@ -738,6 +798,57 @@ function mergeLogRows(current, incoming, prepend = false) {
     seen.add(key); return true;
   });
 }
+function formatStructuredLogText(content) {
+  const text = String(content ?? '');
+  const pretty = (value, trailingNewline = false) => {
+    const formatted = JSON.stringify(value, null, 2);
+    return `${formatted}${trailingNewline ? '\n' : ''}`;
+  };
+  const trimmed = text.trim();
+  if (trimmed && ['{', '['].includes(trimmed[0])) {
+    try {
+      return { text: pretty(JSON.parse(trimmed), text.endsWith('\n')), format: 'Formatted JSON' };
+    } catch { /* try JSON lines below */ }
+  }
+  let jsonLines = 0;
+  let previousJson = false;
+  const lines = [];
+  for (const line of text.split('\n')) {
+    const candidate = line.trim();
+    if (!candidate || !['{', '['].includes(candidate[0])) {
+      lines.push(line); previousJson = false; continue;
+    }
+    try {
+      const indent = line.slice(0, line.length - line.trimStart().length);
+      if (previousJson) lines.push('');
+      jsonLines += 1;
+      lines.push(pretty(JSON.parse(candidate)).split('\n').map((part) => `${indent}${part}`).join('\n'));
+      previousJson = true;
+    } catch { lines.push(line); previousJson = false; }
+  }
+  return { text: lines.join('\n'), format: jsonLines ? 'Formatted JSON lines' : '' };
+}
+function highlightLogText(text) {
+  const pattern = /"(?:\\.|[^"\\])*"|\b[A-Za-z_][A-Za-z0-9_.-]*(?=\s*[:=])|\b\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z\b|\b(?:0x[0-9a-f]+|\d+(?:\.\d+)?(?:e[+-]?\d+)?)\b|\b(?:true|false|null|undefined)\b|\b(?:fatal|error|failed|failure|panic)\b|\b(?:warn|warning|timeout|timed-out|retry)\b|\b(?:ok|pass|passed|success|successful|running|complete|completed)\b/gi;
+  let html = ''; let cursor = 0;
+  for (const match of text.matchAll(pattern)) {
+    const token = match[0]; const index = match.index;
+    html += esc(text.slice(cursor, index));
+    const after = text.slice(index + token.length);
+    let kind = 'string';
+    if (token.startsWith('"')) kind = /^\s*:/.test(after) ? 'key' : 'string';
+    else if (/^[A-Za-z_]/.test(token) && /^\s*[:=]/.test(after)) kind = 'key';
+    else if (/^\d{4}-\d{2}-\d{2}T/i.test(token)) kind = 'time';
+    else if (/^(?:0x|\d)/i.test(token)) kind = 'number';
+    else if (/^(?:true|false|null|undefined)$/i.test(token)) kind = 'keyword';
+    else if (/^(?:fatal|error|failed|failure|panic)$/i.test(token)) kind = 'failure';
+    else if (/^(?:warn|warning|timeout|timed-out|retry)$/i.test(token)) kind = 'warning';
+    else if (/^(?:ok|pass|passed|success|successful|running|complete|completed)$/i.test(token)) kind = 'success';
+    html += `<span class="log-token log-token-${kind}">${esc(token)}</span>`;
+    cursor = index + token.length;
+  }
+  return `${html}${esc(text.slice(cursor))}`;
+}
 function renderLogRows(rows, emptyCopy = 'No log output yet.') {
   if (!rows.length) return stateBlock('empty', emptyCopy);
   return `<div class="log-results">${rows.map((row) => {
@@ -746,7 +857,8 @@ function renderLogRows(rows, emptyCopy = 'No log output yet.') {
       : `Bytes ${row.byte_start ?? 0}–${row.byte_end ?? 0}`;
     const count = row.occurrences > 1 ? ` · ${row.occurrences} occurrences` : '';
     const content = row.text != null ? row.text : (row.base64 != null ? `base64:${row.base64}` : '');
-    return `<section class="log-result"><h3>${esc(coordinates)}${esc(count)}</h3><pre class="log" aria-label="Untrusted log text">${esc(content)}</pre></section>`;
+    const formatted = formatStructuredLogText(content);
+    return `<section class="log-result${formatted.format ? ' structured' : ''}" data-log-row-anchor="${esc(logRowAnchor(row))}"><h3>${esc(coordinates)}${esc(count)}${formatted.format ? `<span class="log-format-badge">${esc(formatted.format)}</span>` : ''}</h3><pre class="log" aria-label="Untrusted log text"><code>${highlightLogText(formatted.text)}</code></pre></section>`;
   }).join('')}</div>`;
 }
 function renderLogError(message) {
@@ -759,7 +871,12 @@ async function openTestLogsDialog(run, retention, opener) {
   dlg.innerHTML = `<div class="dialog-head"><h2>Test logs</h2><button class="dialog-close" type="button" aria-label="Close test logs">×</button></div>
     <div id="test-log-catalog">${skeleton()}</div>`;
   document.body.appendChild(dlg);
-  const close = () => { dlg.close(); dlg.remove(); if (opener?.isConnected) opener.focus(); };
+  const close = () => {
+    dlg.close(); dlg.remove();
+    const returnTarget = opener?.isConnected ? opener
+      : document.querySelector(`[data-test-logs][data-run-id="${CSS.escape(run.run_id)}"]`);
+    returnTarget?.focus();
+  };
   $('.dialog-close', dlg).addEventListener('click', close);
   dlg.addEventListener('cancel', (event) => { event.preventDefault(); close(); });
   dlg.showModal();
@@ -769,6 +886,9 @@ async function openTestLogsDialog(run, retention, opener) {
   let catalogCursor = null;
   let selectedIndex = 0;
   let readVersion = 0;
+  let paging = false;
+  let pagingPaused = false;
+  let adjustingScroll = false;
   let reader = { operation: 'tail', options: {}, rows: [], cursor: null, atLatest: true };
   const catalogArgs = () => ({ path: run.worktree_path, run_id: run.run_id, limit: 100,
     ...(catalogCursor ? { cursor: catalogCursor } : {}) });
@@ -799,45 +919,74 @@ async function openTestLogsDialog(run, retention, opener) {
     latest.hidden = reader.atLatest && entry.complete;
     latest.closest('.test-log-toolbar')?.classList.toggle('show-latest', !latest.hidden);
   };
-  const renderReader = (scroll = 'top', priorHeight = 0, priorTop = 0) => {
+  const renderReader = (scroll = 'top', scrollAnchor = null) => {
     const target = $('#test-log-read-result', dlg);
     if (!target) return;
-    const pageLabel = reader.operation === 'tail' ? 'Load earlier output'
-      : reader.operation === 'search' ? 'Show more matches' : 'Show more failures';
-    const pageButton = reader.cursor ? `<button class="btn log-page-button" type="button" id="test-log-page">${pageLabel}</button>` : '';
+    adjustingScroll = true;
     const emptyCopy = reader.operation === 'search' ? 'No matching log lines.'
       : reader.operation === 'failure_context' ? 'No likely failure was found in this stream.' : 'No log output yet.';
+    const boundary = reader.rows.length && !reader.cursor
+      ? `<div class="log-boundary">${reader.operation === 'tail' ? 'Start of output' : 'All results shown'}</div>` : '';
     target.innerHTML = reader.operation === 'tail'
-      ? `${pageButton}${renderLogRows(reader.rows, emptyCopy)}`
-      : `${renderLogRows(reader.rows, emptyCopy)}${pageButton}`;
+      ? `${boundary}${renderLogRows(reader.rows, emptyCopy)}`
+      : `${renderLogRows(reader.rows, emptyCopy)}${boundary}`;
     target.setAttribute('aria-busy', 'false');
     $('#test-log-view-title', dlg).textContent = readerTitle();
     $('#test-log-view-status', dlg).textContent = readerStatus();
     syncReaderActions();
-    $('#test-log-page', target)?.addEventListener('click', () => read(
-      reader.operation, reader.options, reader.cursor,
-      reader.operation === 'tail' ? 'prepend' : 'append'));
     requestAnimationFrame(() => {
       if (scroll === 'bottom') target.scrollTop = target.scrollHeight;
-      else if (scroll === 'prepend') target.scrollTop = priorTop + Math.max(0, target.scrollHeight - priorHeight);
+      else if (scroll === 'prepend' && scrollAnchor) {
+        const anchor = target.querySelector(`[data-log-row-anchor="${CSS.escape(scrollAnchor.id)}"]`);
+        if (anchor) {
+          const offset = anchor.getBoundingClientRect().top - target.getBoundingClientRect().top;
+          target.scrollTop = Math.max(0, offset - scrollAnchor.offset);
+        }
+      }
       else if (scroll === 'top') target.scrollTop = 0;
+      requestAnimationFrame(() => {
+        adjustingScroll = false;
+        if (reader.cursor && target.scrollHeight <= target.clientHeight + 1) maybeLoadMore();
+      });
     });
+  };
+  const maybeLoadMore = () => {
+    const target = $('#test-log-read-result', dlg);
+    if (!target || paging || pagingPaused || adjustingScroll || !reader.cursor || target.getAttribute('aria-busy') === 'true') return;
+    const nearBoundary = reader.operation === 'tail'
+      ? target.scrollTop <= 56
+      : target.scrollHeight - target.scrollTop - target.clientHeight <= 56;
+    if (!nearBoundary) return;
+    read(reader.operation, reader.options, reader.cursor,
+      reader.operation === 'tail' ? 'prepend' : 'append');
   };
   const read = async (operation, options = {}, cursor = null, direction = 'replace') => {
     const entry = selectedEntry();
     if (!entry) return;
+    if (direction !== 'replace' && paging) return;
+    if (direction === 'replace') { paging = false; pagingPaused = false; }
+    else { paging = true; pagingPaused = false; }
     const version = ++readVersion;
     const target = $('#test-log-read-result', dlg);
     const priorRows = reader.rows;
-    const priorHeight = target?.scrollHeight || 0;
-    const priorTop = target?.scrollTop || 0;
+    const anchorRow = direction === 'prepend' ? priorRows[0] : null;
+    const anchorElement = anchorRow ? target?.querySelector(`[data-log-row-anchor="${CSS.escape(logRowAnchor(anchorRow))}"]`) : null;
+    const scrollAnchor = anchorElement ? {
+      id: logRowAnchor(anchorRow),
+      offset: anchorElement.getBoundingClientRect().top - target.getBoundingClientRect().top,
+    } : null;
     if (direction === 'replace') {
       target.innerHTML = skeleton();
       $('#test-log-view-title', dlg).textContent = operation === 'search' ? 'Searching log'
         : operation === 'failure_context' ? 'Finding likely failure' : 'Loading latest output';
       $('#test-log-view-status', dlg).textContent = '';
     } else {
-      $('#test-log-page', target)?.setAttribute('disabled', '');
+      target.querySelector('.log-page-error')?.remove();
+      const indicator = document.createElement('div');
+      indicator.className = 'log-loading-more'; indicator.id = 'test-log-loading-more';
+      indicator.textContent = operation === 'tail' ? 'Loading earlier output…' : 'Loading more results…';
+      if (operation === 'tail') target.prepend(indicator); else target.append(indicator);
+      $('#test-log-view-status', dlg).textContent = indicator.textContent;
     }
     target.setAttribute('aria-busy', 'true');
     try {
@@ -845,6 +994,7 @@ async function openTestLogsDialog(run, retention, opener) {
         path: run.worktree_path, ...logSelector(entry), ...options, ...(cursor ? { cursor } : {}),
       }, false);
       if (version !== readVersion || !dlg.isConnected) return;
+      paging = false;
       const incoming = logResultRows(result);
       const rows = direction === 'prepend' ? mergeLogRows(priorRows, incoming, true)
         : direction === 'append' ? mergeLogRows(priorRows, incoming) : incoming;
@@ -852,14 +1002,27 @@ async function openTestLogsDialog(run, retention, opener) {
         operation, options, rows, cursor: result.next_cursor || null,
         atLatest: operation === 'tail' && cursor == null,
       };
-      renderReader(direction === 'prepend' ? 'prepend' : operation === 'tail' ? 'bottom' : 'top', priorHeight, priorTop);
+      renderReader(direction === 'prepend' ? 'prepend' : operation === 'tail' ? 'bottom' : 'top', scrollAnchor);
     } catch (error) {
       if (version !== readVersion || !dlg.isConnected) return;
+      paging = false;
       target.setAttribute('aria-busy', 'false');
-      target.innerHTML = `${renderLogError(error.message)}<button class="btn" type="button" id="test-log-retry">Try again</button>`;
-      $('#test-log-view-title', dlg).textContent = 'Log unavailable';
-      $('#test-log-view-status', dlg).textContent = '';
-      $('#test-log-retry', target).addEventListener('click', () => read(operation, options, cursor, direction));
+      if (direction === 'replace') {
+        target.innerHTML = `${renderLogError(error.message)}<button class="btn" type="button" id="test-log-retry">Try again</button>`;
+        $('#test-log-view-title', dlg).textContent = 'Log unavailable';
+        $('#test-log-view-status', dlg).textContent = '';
+        $('#test-log-retry', target).addEventListener('click', () => read(operation, options, cursor, direction));
+      } else {
+        pagingPaused = true;
+        target.querySelector('#test-log-loading-more')?.remove();
+        const errorBox = document.createElement('div'); errorBox.className = 'log-page-error';
+        errorBox.innerHTML = `<span>${esc(error.message)}</span><button class="btn btn-small" type="button">Try again</button>`;
+        if (operation === 'tail') target.prepend(errorBox); else target.append(errorBox);
+        $('#test-log-view-status', dlg).textContent = 'More output could not be loaded';
+        $('button', errorBox).addEventListener('click', () => {
+          pagingPaused = false; read(operation, options, cursor, direction);
+        });
+      }
     }
   };
   const readLatest = () => read('tail', { lines: 200, max_bytes: 49152 });
@@ -878,7 +1041,7 @@ async function openTestLogsDialog(run, retention, opener) {
         <button class="btn" type="button" data-log-read="failure_context">Show likely failure</button>
         <button class="btn" type="button" id="test-log-latest" hidden>Jump to latest</button>
       </div>
-      <section class="test-log-viewer" aria-labelledby="test-log-view-title"><div class="test-log-view-head"><div><strong id="test-log-view-title">Loading latest output</strong><span id="test-log-view-status"></span></div><span class="test-log-trust">Untrusted log output</span></div>
+      <section class="test-log-viewer" aria-labelledby="test-log-view-title"><div class="test-log-view-head"><div><strong id="test-log-view-title" data-ui-continuation-anchor>Loading latest output</strong><span id="test-log-view-status"></span></div><span class="test-log-trust">Untrusted log output</span></div>
         <div id="test-log-read-result" class="test-log-scroll" tabindex="0" aria-live="polite" aria-busy="true">${skeleton()}</div></section>
       </div>`;
     const metadata = () => {
@@ -895,7 +1058,7 @@ async function openTestLogsDialog(run, retention, opener) {
     };
     metadata();
     $('#test-log-stream', dlg).addEventListener('change', (event) => {
-      selectedIndex = Number(event.target.value); readVersion += 1; metadata(); readLatest();
+      selectedIndex = Number(event.target.value); readVersion += 1; paging = false; pagingPaused = false; metadata(); readLatest();
     });
     $('[data-log-read="failure_context"]', dlg).addEventListener('click', () => read(
       'failure_context', { limit: 20, context_lines: 2, max_bytes: 32768 }));
@@ -906,6 +1069,7 @@ async function openTestLogsDialog(run, retention, opener) {
       if (!text) return;
       read('search', { text, max_matches: 20, context_lines: 2, max_bytes: 32768 });
     });
+    $('#test-log-read-result', dlg).addEventListener('scroll', maybeLoadMore, { passive: true });
     $('#test-log-more', dlg)?.addEventListener('click', loadCatalogue);
     readLatest();
   };
@@ -1713,28 +1877,100 @@ async function viewTestEvidence(runId) {
   main.innerHTML = evidenceWorkspace(run, data); refreshEvidenceSelection();
 }
 
+const TEST_REFRESH_INTERVAL_MS = 2000;
+
+function testEvidenceAction(run) {
+  const evidence = run.visual_evidence || {};
+  const control = `data-test-row-control="${esc(`${run.run_id}:evidence`)}"`;
+  if (evidence.status === 'available' && Number(evidence.bundle_count) > 0) {
+    const count = Number(evidence.image_count) || 0;
+    const label = count === 1 ? 'Evidence · 1 image' : `Evidence · ${count} images`;
+    return `<a class="btn btn-small" ${control} href="#/tests/${encodeURIComponent(run.run_id)}">${esc(label)}</a>`;
+  }
+  if (Number(evidence.issue_count) > 0) {
+    return `<a class="btn btn-small" ${control} href="#/tests/${encodeURIComponent(run.run_id)}">Evidence invalid</a>`;
+  }
+  if (run.status === 'running') {
+    return '<span class="badge warn" title="No visual journey bundle has been published yet.">Evidence pending</span>';
+  }
+  if (evidence.error_code) {
+    return '<span class="badge" title="The retained evidence could not be read.">Evidence unavailable</span>';
+  }
+  return '<span class="badge" title="This test run did not publish a visual journey bundle.">Evidence not produced</span>';
+}
+
+function testRunRow(run) {
+  return `<tr data-test-run-id="${esc(run.run_id)}">
+    <td class="wrap"><span class="test-cell-label">Repository / worktree</span><strong>${esc(run.display_name)}</strong><div class="muted mono">${esc(run.worktree_path)}</div></td><td><span class="test-cell-label">Test</span>${esc(run.test)}</td><td><span class="test-cell-label">Tier</span>${badge(testTierLabel(run.requested_tier), run.readiness_eligible ? 'ok' : '')}<div class="muted">${run.readiness_eligible ? 'Readiness proof' : 'Diagnostic only'}</div></td><td><span class="test-cell-label">Result</span>${badge(run.status)}</td><td><span class="test-cell-label">Duration</span>${run.duration_seconds != null ? `${run.duration_seconds}s` : '—'}</td><td><span class="test-cell-label">Started</span>${ago(run.started_at)}</td><td><span class="test-cell-label">Exit</span>${run.exit_code ?? '—'}</td>
+    <td><span class="test-cell-label">Output</span>${bytes(run.stdout_bytes_observed)} / ${bytes(run.stderr_bytes_observed)}</td>
+    <td class="actions"><span class="test-cell-label">Actions</span>${testEvidenceAction(run)}<button class="btn btn-small" data-test-logs data-test-row-control="${esc(`${run.run_id}:logs`)}" data-run-id="${esc(run.run_id)}">Logs</button>
+      ${run.status === 'running' ? `<button class="btn btn-small" data-test-row-control="${esc(`${run.run_id}:stop`)}" data-cmd="test.stop" data-args='${esc(JSON.stringify({ path: run.worktree_path }))}'>stop</button>` : `<label class="test-tier-control"><span>Tier</span><select data-test-tier data-test-row-control="${esc(`${run.run_id}:tier`)}" data-path="${esc(run.worktree_path)}" aria-label="Validation tier for ${esc(run.display_name)}">${TEST_TIERS.map((tier) => `<option value="${tier}"${tier === 'release' ? ' selected' : ''}>${testTierLabel(tier)}</option>`).join('')}</select></label><button class="btn btn-small" data-test-row-control="${esc(`${run.run_id}:start`)}" type="button" data-test-start data-path="${esc(run.worktree_path)}">start</button>`}</td></tr>`;
+}
+
+function testRunCollection(runs) {
+  return runs.length ? `<div class="tablewrap tests-tablewrap"><table><thead><tr><th>Repository / worktree</th><th>Test</th><th>Tier</th><th>Result</th><th>Duration</th><th>Started</th><th>Exit</th><th>Output</th><th>Actions</th></tr></thead><tbody>${runs.map(testRunRow).join('')}</tbody></table></div>` : stateBlock('empty', 'No test runs yet.');
+}
+
+function bindTestRunRows(root, runs, retention) {
+  bind(root);
+  root.querySelectorAll('[data-test-start]').forEach((button) => button.addEventListener('click', () => {
+    const tier = root.querySelector(`[data-test-tier][data-path="${CSS.escape(button.dataset.path)}"]`)?.value || 'release';
+    act(button, 'test.start', { path: button.dataset.path, tier }, () => render());
+  }));
+  root.querySelectorAll('[data-test-logs]').forEach((button) => button.addEventListener('click', () => {
+    const run = runs.find((row) => row.run_id === button.dataset.runId);
+    if (run) openTestLogsDialog(run, retention, button);
+  }));
+}
+
+function updateTestRunCollection(root, runs, previousSignature, retention) {
+  const signature = JSON.stringify(runs);
+  if (signature === previousSignature) return signature;
+  const active = root.contains(document.activeElement) ? document.activeElement : null;
+  const focusKey = active?.dataset?.testRowControl || null;
+  const tierValues = new Map(
+    [...root.querySelectorAll('[data-test-tier]')].map((select) => [select.dataset.path, select.value]),
+  );
+  const scrollX = window.scrollX; const scrollY = window.scrollY;
+  root.innerHTML = testRunCollection(runs);
+  for (const select of root.querySelectorAll('[data-test-tier]')) {
+    if (tierValues.has(select.dataset.path)) select.value = tierValues.get(select.dataset.path);
+  }
+  bindTestRunRows(root, runs, retention);
+  if (focusKey) root.querySelector(`[data-test-row-control="${CSS.escape(focusKey)}"]`)?.focus();
+  window.scrollTo(scrollX, scrollY);
+  return signature;
+}
+
 const viewTests = guard(async (runId = null) => {
   if (runId) return viewTestEvidence(runId);
   main.innerHTML = `${pageHeading('Tests', '#/tests')}${skeleton()}`;
   const [{ runs }, capacity, retention] = await Promise.all([api('test.list', {}), api('test.capacity.get', {}), api('test.log.retention.get', {})]);
-  const heading = `<div class="tests-heading">${pageHeading('Tests', '#/tests')}<div class="actions"><button class="btn" type="button" id="test-log-retention-open">Logs · ${esc(Math.round(retention.max_age_seconds / 3600))}h / ${esc(retention.case_depth)}</button><button class="btn" type="button" id="test-capacity-open">Capacity · ${esc(capacity.effective_capacity)}</button></div></div>`;
-  const collection = runs.length ? `<div class="tablewrap tests-tablewrap"><table><thead><tr><th>Repository / worktree</th><th>Test</th><th>Tier</th><th>Result</th><th>Duration</th><th>Started</th><th>Exit</th><th>Output</th><th>Actions</th></tr></thead><tbody>${runs.map((r) => `<tr>
-    <td class="wrap"><strong>${esc(r.display_name)}</strong><div class="muted mono">${esc(r.worktree_path)}</div></td><td>${esc(r.test)}</td><td>${badge(testTierLabel(r.requested_tier), r.readiness_eligible ? 'ok' : '')}<div class="muted">${r.readiness_eligible ? 'Readiness proof' : 'Diagnostic only'}</div></td><td>${badge(r.status)}</td><td>${r.duration_seconds != null ? `${r.duration_seconds}s` : '—'}</td><td>${ago(r.started_at)}</td><td>${r.exit_code ?? '—'}</td>
-    <td>${bytes(r.stdout_bytes_observed)} / ${bytes(r.stderr_bytes_observed)}</td>
-    <td class="actions"><a class="btn btn-small" href="#/tests/${encodeURIComponent(r.run_id)}">Evidence</a><button class="btn btn-small" data-test-logs data-run-id="${esc(r.run_id)}">Logs</button>
-      ${r.status === 'running' ? `<button class="btn btn-small" data-cmd="test.stop" data-args='${esc(JSON.stringify({ path: r.worktree_path }))}'>stop</button>` : `<label class="test-tier-control"><span>Tier</span><select data-test-tier data-path="${esc(r.worktree_path)}" aria-label="Validation tier for ${esc(r.display_name)}">${TEST_TIERS.map((tier) => `<option value="${tier}"${tier === 'release' ? ' selected' : ''}>${testTierLabel(tier)}</option>`).join('')}</select></label><button class="btn btn-small" type="button" data-test-start data-path="${esc(r.worktree_path)}">start</button>`}</td></tr>`).join('')}</tbody></table></div>` : stateBlock('empty', 'No test runs yet.');
-  main.innerHTML = `<section class="tests-page">${heading}<section aria-labelledby="test-runs-heading"><h2 id="test-runs-heading">Current runs</h2>${collection}</section><div id="logs"></div></section>`;
-  bind(main);
+  const refreshing = runs.some((run) => run.status === 'running');
+  const heading = `<div class="tests-heading">${pageHeading('Tests', '#/tests')}<div class="actions"><span id="test-live-status" class="muted" aria-live="polite">${refreshing ? 'Live updates on' : 'Up to date'}</span><button class="btn" type="button" id="test-log-retention-open">Logs · ${esc(Math.round(retention.max_age_seconds / 3600))}h / ${esc(retention.case_depth)}</button><button class="btn" type="button" id="test-capacity-open">Capacity · ${esc(capacity.effective_capacity)}</button></div></div>`;
+  main.innerHTML = `<section class="tests-page">${heading}<section aria-labelledby="test-runs-heading"><h2 id="test-runs-heading">Current runs</h2><div id="test-runs-collection">${testRunCollection(runs)}</div></section><div id="logs"></div></section>`;
+  const collection = $('#test-runs-collection', main);
+  bindTestRunRows(collection, runs, retention);
   $('#test-capacity-open', main).addEventListener('click', (event) => openTestCapacityDialog(capacity, event.currentTarget));
   $('#test-log-retention-open', main).addEventListener('click', (event) => openTestLogRetentionDialog(retention, event.currentTarget));
-  main.querySelectorAll('[data-test-start]').forEach((button) => button.addEventListener('click', () => {
-    const tier = main.querySelector(`[data-test-tier][data-path="${CSS.escape(button.dataset.path)}"]`)?.value || 'release';
-    act(button, 'test.start', { path: button.dataset.path, tier }, () => render());
-  }));
-  main.querySelectorAll('[data-test-logs]').forEach((button) => button.addEventListener('click', () => {
-    const run = runs.find((row) => row.run_id === button.dataset.runId);
-    if (run) openTestLogsDialog(run, retention, button);
-  }));
+  const controller = viewAbort;
+  let signature = JSON.stringify(runs);
+  const refresh = async () => {
+    if (controller !== viewAbort || controller.signal.aborted || location.hash !== '#/tests') return;
+    try {
+      const next = await api('test.list', {});
+      if (controller !== viewAbort || controller.signal.aborted || location.hash !== '#/tests') return;
+      signature = updateTestRunCollection(collection, next.runs || [], signature, retention);
+      const active = (next.runs || []).some((run) => run.status === 'running');
+      $('#test-live-status', main).textContent = active ? 'Live updates on' : 'Up to date';
+      if (active) setTimeout(refresh, TEST_REFRESH_INTERVAL_MS);
+    } catch (error) {
+      if (error.code === 'stale' || controller !== viewAbort || controller.signal.aborted) return;
+      $('#test-live-status', main).textContent = 'Live update paused; retrying';
+      setTimeout(refresh, TEST_REFRESH_INTERVAL_MS);
+    }
+  };
+  if (refreshing) setTimeout(refresh, TEST_REFRESH_INTERVAL_MS);
 });
 
 // --- Health --------------------------------------------------------------
@@ -2209,31 +2445,46 @@ function progressBucketLabel(ms, period) {
   ];
 }
 
-function progressBarLineLane(data, { key, cumulativeKey, label, detail, cls, format }) {
+function progressBarLineLane(data, {
+  key, incomingKey, cumulativeKey, label, completedLabel, incomingLabel,
+  detail, cls, format,
+}) {
   const series = progressChartValues(data);
   const width = Math.max(760, 235 + series.length * 48);
-  const height = 136; const left = 168; const right = 92;
-  const top = 20; const bottom = 42; const plotHeight = height - top - bottom;
+  const height = 174; const left = 168; const right = 104;
+  const top = 18; const bottom = 40; const baseline = 76;
   const chartWidth = width - left - right; const step = chartWidth / Math.max(1, series.length);
   const center = (index) => left + step * (index + .5);
   const values = series.map((point) => Number(point[key] || 0));
+  const incoming = series.map((point) => Number(point[incomingKey] || 0));
   const cumulative = series.map((point) => Number(point[cumulativeKey] || 0));
-  const dailyMax = Math.max(...values, 1); const cumulativeMax = Math.max(...cumulative, 1);
-  const barY = (value) => top + plotHeight - (value / dailyMax) * (plotHeight - 14);
-  const lineY = (value) => top + plotHeight - (value / cumulativeMax) * (plotHeight - 14);
+  const completedMax = Math.max(...values, 1); const incomingMax = Math.max(...incoming, 1);
+  const cumulativeMax = Math.max(...cumulative, 1);
+  const barY = (value) => baseline - (value / completedMax) * (baseline - top - 14);
+  const incomingHeight = (value) => (value / incomingMax) * (height - bottom - baseline - 14);
+  const lineY = (value) => baseline - (value / cumulativeMax) * (baseline - top - 14);
   const barWidth = Math.max(7, Math.min(28, step * .48));
   const bars = values.map((value, index) => {
     if (!value) return '';
     const y = barY(value);
-    return `<rect x="${(center(index) - barWidth / 2).toFixed(1)}" y="${y.toFixed(1)}" width="${barWidth.toFixed(1)}" height="${(top + plotHeight - y).toFixed(1)}" rx="2" class="progress-bar progress-bar-${cls}"><title>${esc(`${label} that bucket: ${format(value)} · ${utcBucket(series[index].bucket_start_ms, true)} UTC`)}</title></rect>`;
+    return `<rect x="${(center(index) - barWidth / 2).toFixed(1)}" y="${y.toFixed(1)}" width="${barWidth.toFixed(1)}" height="${(baseline - y).toFixed(1)}" rx="2" class="progress-bar progress-completed-bar progress-bar-${cls}"><title>${esc(`${completedLabel} that bucket: ${format(value)} · ${utcBucket(series[index].bucket_start_ms, true)} UTC`)}</title></rect>`;
+  }).join('');
+  const incomingBars = incoming.map((value, index) => {
+    if (!value) return '';
+    return `<rect x="${(center(index) - barWidth / 2).toFixed(1)}" y="${baseline}" width="${barWidth.toFixed(1)}" height="${incomingHeight(value).toFixed(1)}" rx="2" class="progress-bar progress-incoming-bar progress-incoming-${cls}"><title>${esc(`${incomingLabel} that bucket: ${format(value)} · ${utcBucket(series[index].bucket_start_ms, true)} UTC`)}</title></rect>`;
   }).join('');
   const barLabels = values.map((value, index) => {
     if (!value) return '';
     const y = barY(value);
     return `<text x="${center(index).toFixed(1)}" y="${Math.max(top + 9, y - 5).toFixed(1)}" text-anchor="middle" class="progress-bar-value">${esc(format(value))}</text>`;
   }).join('');
+  const incomingLabels = incoming.map((value, index) => {
+    if (!value) return '';
+    const y = Math.min(height - bottom - 2, baseline + incomingHeight(value) + 11);
+    return `<text x="${center(index).toFixed(1)}" y="${y.toFixed(1)}" text-anchor="middle" class="progress-bar-value progress-incoming-value">${esc(format(value))}</text>`;
+  }).join('');
   const linePoints = cumulative.map((value, index) => `${center(index).toFixed(1)},${lineY(value).toFixed(1)}`);
-  const dots = cumulative.map((value, index) => `<circle cx="${center(index).toFixed(1)}" cy="${lineY(value).toFixed(1)}" r="3" class="progress-running-dot progress-running-${cls}"><title>${esc(`${label} running total: ${format(value)} · ${utcBucket(series[index].bucket_start_ms, true)} UTC`)}</title></circle>`).join('');
+  const dots = cumulative.map((value, index) => `<circle cx="${center(index).toFixed(1)}" cy="${lineY(value).toFixed(1)}" r="3" class="progress-running-dot progress-running-${cls}"><title>${esc(`${completedLabel} running total: ${format(value)} · ${utcBucket(series[index].bucket_start_ms, true)} UTC`)}</title></circle>`).join('');
   const every = Math.max(1, Math.ceil(series.length / 8));
   const labels = series.map((point, index) => {
     if (index % every && index !== series.length - 1) return '';
@@ -2242,8 +2493,11 @@ function progressBarLineLane(data, { key, cumulativeKey, label, detail, cls, for
     return `<text x="${centerX}" y="${height - (parts.length > 1 ? 24 : 14)}" text-anchor="middle">${parts.map((part, partIndex) => `<tspan x="${centerX}" dy="${partIndex ? 12 : 0}">${esc(part)}</tspan>`).join('')}</text>`;
   }).join('');
   const total = cumulative.at(-1) || 0;
-  const empty = total ? '' : `<text x="${left + chartWidth / 2}" y="${top + plotHeight / 2}" text-anchor="middle" class="progress-chart-empty">No ${esc(label.toLowerCase())} in this period</text>`;
-  return `<svg class="progress-pulse-chart progress-bar-line-chart" viewBox="0 0 ${width} ${height}" role="img" aria-label="${esc(label)} by ${esc(data.period)} with running total"><title>${esc(label)} by ${esc(data.period)}</title><desc>Bars show finished work in each bucket. The thin line shows the running total. Exact values follow the chart.</desc><line x1="${left}" x2="${width - right}" y1="${top + plotHeight}" y2="${top + plotHeight}" class="progress-grid-h"/><text x="14" y="${top + 16}" class="progress-lane-title">${esc(label)}</text><text x="14" y="${top + 38}" class="progress-lane-detail">${esc(detail)}</text><text x="${width - 10}" y="${top + 28}" text-anchor="end" class="progress-lane-value progress-running-${cls}">${esc(format(total))}</text><text x="${width - 10}" y="${top + 46}" text-anchor="end" class="progress-lane-detail">total</text><polyline points="${linePoints.join(' ')}" class="progress-running-line progress-running-${cls}"/>${dots}${bars}${barLabels}${empty}${labels}</svg>`;
+  const incomingTotal = incoming.reduce((sum, value) => sum + value, 0);
+  const completedVerb = completedLabel.split(' ').at(-1).toLowerCase();
+  const incomingVerb = incomingLabel.split(' ').at(-1).toLowerCase();
+  const empty = total || incomingTotal ? '' : `<text x="${left + chartWidth / 2}" y="${baseline - 8}" text-anchor="middle" class="progress-chart-empty">No recorded movement in this period</text>`;
+  return `<svg class="progress-pulse-chart progress-bar-line-chart" viewBox="0 0 ${width} ${height}" role="img" aria-label="${esc(label)} by ${esc(data.period)}: completed above the baseline, ${esc(incomingLabel.toLowerCase())} below, with completed running total"><title>${esc(label)} by ${esc(data.period)}</title><desc>Solid bars above the baseline show completed work. Outlined bars below show incoming work. The thin line shows the completed running total. Exact values follow the chart.</desc><line x1="${left}" x2="${width - right}" y1="${baseline}" y2="${baseline}" class="progress-grid-h progress-zero-line"/><text x="14" y="${top + 14}" class="progress-lane-title">${esc(label)}</text><text x="14" y="${top + 34}" class="progress-lane-detail">${esc(detail)}</text><text x="${width - 10}" y="${top + 22}" text-anchor="end" class="progress-lane-value progress-running-${cls}">${esc(format(total))}</text><text x="${width - 10}" y="${top + 38}" text-anchor="end" class="progress-lane-detail">${esc(completedVerb)}</text><text x="${width - 10}" y="${baseline + 24}" text-anchor="end" class="progress-lane-value progress-incoming-${cls}">${esc(format(incomingTotal))}</text><text x="${width - 10}" y="${baseline + 40}" text-anchor="end" class="progress-lane-detail">${esc(incomingVerb)}</text><polyline points="${linePoints.join(' ')}" class="progress-running-line progress-running-${cls}"/>${dots}${bars}${incomingBars}${barLabels}${incomingLabels}${empty}${labels}</svg>`;
 }
 
 function progressEvidenceLane(data, { key, label, detail, cls, format, fixedMax = null }) {
@@ -2269,7 +2523,7 @@ function progressEvidenceLane(data, { key, label, detail, cls, format, fixedMax 
 
 function progressPulseChart(data) {
   if (!data.series.length) return stateBlock('empty', 'No progress buckets in this period.');
-  return `<div class="progress-chart-scroll" tabindex="0" aria-label="Scrollable daily progress charts"><div class="progress-chart-canvas"><div class="progress-chart-legend"><span><i class="progress-legend-bar" aria-hidden="true"></i>Green = tasks finished</span><span><i class="progress-legend-bar progress-legend-lines" aria-hidden="true"></i>Blue = planned lines completed</span><span>Bars = finished that ${esc(data.period)}</span><span><i class="progress-legend-line" aria-hidden="true"></i>Line = total during this period</span></div>${progressBarLineLane(data, { key: 'tasks_completed', cumulativeKey: 'tasks_cumulative', label: 'Tasks finished', detail: 'Recorded completed tasks', cls: 'tasks', format: compactNumber })}${progressBarLineLane(data, { key: 'planned_lines_completed', cumulativeKey: 'lines_cumulative', label: 'Planned lines completed', detail: 'Current task estimates', cls: 'lines', format: compactNumber })}${progressEvidenceLane(data, { key: 'test_pass_rate', label: 'Test pass rate', detail: 'Recorded terminal runs', cls: 'tests', format: progressPercent, fixedMax: 1 })}${progressEvidenceLane(data, { key: 'total_tokens', label: 'Token use', detail: 'Provider total tokens', cls: 'tokens', format: compactNumber })}<p class="progress-missing-note">Missing information stays blank and is never counted as zero.</p></div></div>`;
+  return `<div class="progress-chart-scroll" tabindex="0" aria-label="Scrollable daily progress charts"><div class="progress-chart-canvas"><div class="progress-chart-legend"><span><i class="progress-legend-bar" aria-hidden="true"></i>Green = tasks</span><span><i class="progress-legend-bar progress-legend-lines" aria-hidden="true"></i>Blue = planned lines</span><span><i class="progress-legend-bar progress-legend-incoming" aria-hidden="true"></i>Solid above = completed · outlined below = incoming</span><span><i class="progress-legend-line" aria-hidden="true"></i>Line = completed running total</span></div>${progressBarLineLane(data, { key: 'tasks_completed', incomingKey: 'tasks_created', cumulativeKey: 'tasks_cumulative', label: 'Tasks finished and created', completedLabel: 'Tasks finished', incomingLabel: 'Tasks created', detail: 'Finished above · created below', cls: 'tasks', format: compactNumber })}${progressBarLineLane(data, { key: 'planned_lines_completed', incomingKey: 'planned_lines_added', cumulativeKey: 'lines_cumulative', label: 'Planned lines completed and added', completedLabel: 'Planned lines completed', incomingLabel: 'Planned lines added', detail: 'Completed above · added below', cls: 'lines', format: compactNumber })}${progressEvidenceLane(data, { key: 'test_pass_rate', label: 'Test pass rate', detail: 'Recorded terminal runs', cls: 'tests', format: progressPercent, fixedMax: 1 })}${progressEvidenceLane(data, { key: 'total_tokens', label: 'Token use', detail: 'Provider total tokens', cls: 'tokens', format: compactNumber })}<p class="progress-missing-note">Missing information stays blank and is never counted as zero.</p></div></div>`;
 }
 
 function progressReleaseWork(data, repositoryId) {
@@ -2289,14 +2543,16 @@ function progressComparison(data) {
   const current = data.comparison.current; const previous = data.comparison.previous;
   const items = [
     ['Tasks completed', compactNumber(current.tasks_completed), compactNumber(previous.tasks_completed), progressDelta(current.tasks_completed, previous.tasks_completed)],
+    ['Tasks created', compactNumber(current.tasks_created), compactNumber(previous.tasks_created), progressDelta(current.tasks_created, previous.tasks_created, { lowerIsBetter: true })],
     ['Planned lines completed', compactNumber(current.planned_lines_completed), compactNumber(previous.planned_lines_completed), progressDelta(current.planned_lines_completed, previous.planned_lines_completed)],
+    ['Planned lines added', compactNumber(current.planned_lines_added), compactNumber(previous.planned_lines_added), progressDelta(current.planned_lines_added, previous.planned_lines_added, { lowerIsBetter: true })],
   ];
   const previousRange = `${progressDate(data.window.comparison_start_ms)} – ${progressDate(data.window.start_ms - 1, true)}`;
   return `<section class="progress-comparison" aria-labelledby="progress-comparison-title"><h2 id="progress-comparison-title">Compared with the previous matching period (${esc(previousRange)})</h2><div>${items.map(([label, now, before, delta]) => `<article><span>${esc(label)}</span><strong>${esc(now)}</strong><small>Previous ${esc(before)}</small>${delta}</article>`).join('')}</div></section>`;
 }
 
 function progressExactTable(data) {
-  return `<details class="progress-exact"><summary>Exact values and counting method</summary><div class="tablewrap"><table><thead><tr><th>UTC bucket</th><th>Tasks done</th><th>Planned lines done</th><th>Tests</th><th>Pass rate</th><th>Total tokens</th><th>Token data</th></tr></thead><tbody>${data.series.map((point) => `<tr><td>${esc(utcBucket(point.bucket_start_ms, true))}</td><td>${point.tasks_completed}</td><td>${Number(point.planned_lines_completed).toLocaleString('en-US')}</td><td>${point.test_runs}</td><td>${point.test_pass_rate == null ? '—' : progressPercent(point.test_pass_rate)}</td><td>${point.total_tokens == null ? '—' : Number(point.total_tokens).toLocaleString('en-US')}</td><td>${esc(bucketDataStatus(point.token_coverage))}</td></tr>`).join('')}</tbody></table></div><p>${esc(data.semantics.lines)}. ${esc(data.semantics.tests)}. ${esc(data.semantics.tokens)}. ${esc(data.semantics.forecast)}.</p></details>`;
+  return `<details class="progress-exact"><summary>Exact values and counting method</summary><div class="tablewrap"><table><thead><tr><th>UTC bucket</th><th>Tasks done</th><th>Tasks created</th><th>Planned lines done</th><th>Planned lines added</th><th>Tests</th><th>Pass rate</th><th>Total tokens</th><th>Token data</th></tr></thead><tbody>${data.series.map((point) => `<tr><td>${esc(utcBucket(point.bucket_start_ms, true))}</td><td>${point.tasks_completed}</td><td>${point.tasks_created}</td><td>${Number(point.planned_lines_completed).toLocaleString('en-US')}</td><td>${Number(point.planned_lines_added).toLocaleString('en-US')}</td><td>${point.test_runs}</td><td>${point.test_pass_rate == null ? '—' : progressPercent(point.test_pass_rate)}</td><td>${point.total_tokens == null ? '—' : Number(point.total_tokens).toLocaleString('en-US')}</td><td>${esc(bucketDataStatus(point.token_coverage))}</td></tr>`).join('')}</tbody></table></div><p>${esc(data.semantics.lines)}. Planned lines added means ${esc(data.semantics.lines_added)}. ${esc(data.semantics.tests)}. ${esc(data.semantics.tokens)}. ${esc(data.semantics.forecast)}.</p></details>`;
 }
 
 function renderProgressDashboard(data, projects, repositoryId) {

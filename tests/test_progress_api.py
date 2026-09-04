@@ -132,6 +132,7 @@ def test_day_report_combines_measured_sources_and_explainable_forecast(world):
     assert report["period"] == "day" and len(report["series"]) == 7
     assert report["comparison"]["current"]["tasks_completed"] == 2
     assert report["comparison"]["current"]["planned_lines_completed"] == 300
+    assert report["comparison"]["current"]["planned_lines_added"] == 0
     assert report["comparison"]["current"]["test_pass_rate"] == 0.5
     assert report["comparison"]["current"]["total_tokens"] is not None
     assert report["forecast"]["state"] == "available"
@@ -149,6 +150,36 @@ def test_day_report_combines_measured_sources_and_explainable_forecast(world):
     assert "outcome" not in known and "priorities" not in report
     assert report["coverage"]["state"] == "partial"  # history starts mid-window
     assert report["semantics"]["lines"].startswith("current planned")
+
+
+def test_series_counts_created_tasks_and_only_positive_planned_line_additions(world):
+    resized = call(world, "task.create", repository_id="r1",
+                   title="Resize planned work", kind="goal", estimated_loc=100)
+    call(world, "task.update", task_id=resized["task_id"], estimated_loc=150)
+    call(world, "task.update", task_id=resized["task_id"], estimated_loc=120)
+    dropped = call(world, "task.create", repository_id="r1",
+                   title="Remove planned work", kind="goal", estimated_loc=40)
+    call(world, "task.update", task_id=dropped["task_id"], status="dropped")
+    sized_later = call(world, "task.create", repository_id="r1",
+                       title="Estimate planned work", kind="goal")
+    call(world, "task.update", task_id=sized_later["task_id"], estimated_loc=60)
+    with world.db.transaction() as conn:
+        conn.execute(
+            "UPDATE plan_events SET at='2026-08-29T01:00:00Z'"
+            " WHERE subject_id IN (?,?,?)",
+            (resized["task_id"], dropped["task_id"], sized_later["task_id"]))
+
+    repository = Registry(world.db).list_repositories()[0]
+    report = repository_report(world.db, repository, FakeUsage(), "day", NOW)
+    bucket = next(point for point in report["series"]
+                  if point["tasks_created"] == 3)
+
+    assert bucket["planned_lines_added"] == 250
+    assert bucket["scope_lines_changed"] == 180
+    assert report["comparison"]["current"]["tasks_created"] == 3
+    assert report["comparison"]["current"]["planned_lines_added"] == 250
+    assert report["comparison"]["current"]["scope_lines_changed"] == 180
+    assert report["semantics"]["lines_added"].startswith("initial task estimates")
 
 
 def test_no_release_or_history_returns_honest_unavailable_states(world):

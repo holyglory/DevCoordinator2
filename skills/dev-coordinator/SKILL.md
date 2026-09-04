@@ -108,14 +108,17 @@ source or artifacts. Use the structured JUnit, Playwright, Rust, or
 DevCoordinator diagnostic channel when a repository can supply it; do not add
 an LLM summarizer or scrape arbitrary console prose into normal completion.
 
-Formal Web UI checks may publish one `journey-evidence.json` bundle in the
-executor-supplied private evidence directory. It is retained and pruned with
-that exact check/case log leaf. Catalogue the privacy-safe journey metadata
-with `test evidence show`; request image chunks only for an exact returned
-image identity. Never infer or expose its filesystem path. The Console is the
-normal owner-review surface: saved annotations are immutable overlays and each
-top-level suggestion is an ordinary Plan `user_feedback` task, so agents must
-treat its replies and reopened state as current completion-ledger context.
+Formal Web UI checks publish `journey-evidence.json` bundles in the
+executor-supplied private evidence directory. A single default-output verifier
+uses the leaf root; explicit-output and concurrent formal batches use unique
+immutable `formal-runs/<bundle>/` children in that same leaf. They are retained
+and pruned with the exact check/case logs. Catalogue the privacy-safe journey
+metadata with `test evidence show`; request image chunks only for an exact
+returned image identity. Never infer or expose its filesystem path. The Console
+is the normal owner-review surface: saved annotations are immutable overlays
+and each top-level suggestion is an ordinary Plan `user_feedback` task, so
+agents must treat its replies and reopened state as current completion-ledger
+context.
 
 `test start --check <name>` and `test retry --run-id <run> --check <name>` are
 diagnostic shortcuts with proof `selected` and `retry`, respectively. Retry

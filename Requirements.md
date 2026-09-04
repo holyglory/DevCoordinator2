@@ -152,9 +152,12 @@ not contradict them.
   context; range reads an exact line or byte interval; failure-context applies
   the deterministic REQ-TEST-21 ranking. No command performs language-model
   summarization or returns an unbounded stream.
-- **REQ-TEST-23** (2026-09-02, done): A formal Web UI check running under the
+- **REQ-TEST-23** (2026-09-03, done): A formal Web UI check running under the
   governed executor receives one private run/leaf evidence directory and
-  publishes `journey-evidence.json` there. The strict manifest orders every
+  publishes `journey-evidence.json` there. A caller that keeps reports at
+  explicit artifact paths retains those outputs and also publishes a unique,
+  atomic, immutable bundle below `formal-runs/`; concurrent formal batches do
+  not replace one another. The strict manifest orders every
   declared route/state/viewport cell, records only action kinds/outcomes and
   finding kinds, and binds its masked viewport/full-page PNGs by actual size,
   dimensions, and SHA-256. It contains no action values, selectors,
@@ -189,16 +192,22 @@ not contradict them.
   file chunk; the CLI can reconstruct selected trees only in a new caller-owned
   destination and revalidates every file and tree hash. No operation exposes a
   private source/storage path or writes a caller-selected server-side export.
-- **REQ-TEST-27** (2026-09-03, done): Opening a retained test stream in the
-  Console immediately renders its newest bounded text. The ordinary reading
-  journey never asks for line or byte coordinates: people can load earlier
-  output, return to the newest output, search literal text, or show likely
-  failure context with plainly labelled controls. Technical stream metadata is
-  available on request without preceding the output. Switching streams loads
-  the selected stream automatically, active streams expose a refresh action,
-  and progressive pages preserve reading position without repeating excerpts.
-  The Console continues to compose the bounded REQ-TEST-22 operations; it does
-  not request or render an unbounded stream.
+- **REQ-TEST-27** (2026-09-03, done; amended 2026-09-03): Opening a retained
+  test stream in the Console immediately renders its newest bounded text. The
+  ordinary reading journey never asks for a paging control or line/byte
+  coordinates: reaching the earlier-output boundary automatically follows one
+  returned tail cursor and preserves the exact reading anchor; short pages
+  auto-fill only until scrollable or exhausted. Search and failure results
+  extend from their lower boundary, while return/refresh latest remains an
+  explicit action. Numbers, timestamps, keys, strings, boolean/null values,
+  and textual failure/warning/success terms receive deterministic highlighting;
+  valid JSON and JSON-lines are pretty-printed with a textual format label.
+  Every source token is escaped and remains untrusted text tied to its original
+  line coordinates. Technical metadata stays available on request, stream
+  switching loads automatically, paging failures preserve visible output with
+  an exact retry, and a refreshed Tests row does not break dialog focus return.
+  The Console continues to compose bounded REQ-TEST-22 operations and never
+  requests or renders an unbounded stream.
 
 ## Deployments (REQ-DEPLOY, P3)
 
@@ -245,6 +254,18 @@ not contradict them.
   receipts, volumes, and routes remain untouched. Live service and aggregate
   state distinguish an intentional stop from failure, and CLI, MCP, and
   Console expose the same reviewed controls.
+- **REQ-DEPLOY-10** (2026-09-03, done): Every repository section and every
+  deployment on the Deployments dashboard starts expanded and can be collapsed
+  independently. A collapsed repository retains its identity, deployment
+  count, and overall condition; a collapsed deployment retains its identity
+  and state while routing facts and lifecycle actions remain hidden until it
+  is expanded. The choice survives same-session Console rerenders, controls are
+  keyboard operable with truthful `aria-expanded`/`aria-controls`, and no API
+  call occurs merely to change density. Repository Tests additionally show the
+  selected real run's tier, elapsed time, output size, recency, and proof type;
+  Health shows current CPU, memory, storage, and deployment count. Missing or
+  restricted facts remain absent or explicitly unavailable and never borrow
+  another repository's data.
 
 ## Accountability and health (REQ-HEALTH, P3/P4)
 
@@ -346,12 +367,16 @@ not contradict them.
   natural height. Repository attribution becomes a labelled stacked layout at
   960 px and below, and every shared-storage category keeps its label and value
   visible without document-level horizontal scrolling.
-- **REQ-CONSOLE-04** (2026-09-02, done): Tests keeps the run collection as
+- **REQ-CONSOLE-04** (2026-09-03, done): Tests keeps the run collection as
   its primary content, lets an administrator start development, pre-merge, or
   release validation with release selected by default, and places host-wide
   Capacity in a focused dialog showing learned/effective capacity, cap,
   active/waiting work, pause state, and last-adjustment evidence. Saving or
-  clearing the cap acts immediately. Every authorized administrator action
+  clearing the cap acts immediately. While a run remains active, the collection
+  refreshes without moving focus or closing dialogs; evidence is labelled
+  pending, available with an image count, invalid, unavailable, or not produced
+  from current retained state instead of exposing one unconditional action.
+  Every authorized administrator action
   acts without a second confirmation dialog; destructive controls name their
   target and effect, and deployment removal has separate keep-data and
   delete-data actions.

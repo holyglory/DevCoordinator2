@@ -1,3 +1,127 @@
+# Infinite scrolling and highlighted test-log viewer design QA
+
+final result: passed
+
+## Comparison target
+
+- Source visual truth: the owner-marked live Tests screenshot supplied with this request, plus the same 1095 × 876 current-source reproduction at `/tmp/dc2-infinite-logs-source-1095.png`.
+- Browser-rendered implementation: highlighted raw output at `/tmp/dc2-infinite-logs-highlighted-1095.png`, formatted JSON-lines at `/tmp/dc2-infinite-logs-structured-1095.png`, and the 390 × 844 structured mobile view at `/tmp/dc2-infinite-logs-structured-390.png`.
+- Source and desktop implementation CSS viewport: 1095 × 876 at device scale factor 1; mobile comparison: 390 × 844 at device scale factor 1. No crop, density conversion, or device frame was used.
+- State: dark Console Tests page, retained long raw output with an earlier cursor, plus valid JSON-lines and whole-JSON streams.
+- Full-view comparison: `/tmp/dc2-infinite-logs-before-after.png` places the same raw-log source and implementation together. The dialog structure and bounded-log trust boundary are preserved while the manual paging control disappears and useful output gains visual hierarchy.
+- Focused comparison: all raw, JSON-lines, and whole-JSON readers were inspected separately at 390, 719, 720, 721, and 1095 px because the toolbar changes composition at 720 px.
+
+## Findings
+
+- No actionable P0, P1, or P2 issue remains.
+- The owner-reported manual-paging defect is removed: reaching the top loads the next bounded earlier page automatically, preserves the exact visible line, and eventually shows **Start of output**. Short pages fill only until scrollable or exhausted.
+- Raw numbers, timestamps, keys, strings, booleans, failures, warnings, and success terms are visually differentiated without altering the source coordinates. Valid JSON and JSON-lines are indented and receive an explicit format badge.
+- Hostile tags and event attributes remain inert literal text. A continuation error leaves already visible output in place and offers one exact retry instead of resetting the reader.
+- Five automated visibility warnings describe raw content above the deliberately bottom-positioned newest-output viewport; three scroll-topology warnings describe the expected page plus inner log reader on narrow screens. All related viewport and full-page captures were inspected and show reachable content without clipping or overlap.
+
+## Required fidelity surfaces
+
+- Fonts and typography: the existing system UI hierarchy is preserved; the reader uses the established monospaced face with increased line height, disabled ligatures, stable whitespace, and distinct but non-decorative syntax colours.
+- Spacing and layout rhythm: the output remains the dominant dialog region. Search and failure actions stack at 720 px and below, return to an inline toolbar at 721 px, and never displace or cover the reader.
+- Colors and visual tokens: syntax accents reuse the Console's blue, green, amber, red, cyan, violet, and muted text tokens on the existing navy surface. Every sampled token class passed contrast measurement; there is no gradient or new decorative language.
+- Image quality and asset fidelity: the log reader contains no raster imagery and introduces no icon asset, handcrafted SVG, CSS drawing, emoji, or placeholder.
+- Copy and content: **Start of output**, **Jump/Refresh latest**, the format badges, stable line ranges, and one retry state describe real reader state. There is no paging instruction or numeric coordinate field in the ordinary journey.
+- States and interactions: top-boundary loading, repeated continuation, short-page fill, anchor preservation, latest return, search/failure continuation, stream switching, active refresh, continuation failure/retry, live-row replacement, close/focus return, structured formatting, hostile markup, and responsive variants are exercised through the rendered UI.
+
+## Browser evidence
+
+- Complete frozen-candidate Console matrix: 1,672 checks, zero failures in `/tmp/dc2-infinite-logs-console-final-merged/report.json`.
+- Focused merged Tests/log interaction inventory: 326 checks, zero failures in `/tmp/dc2-infinite-logs-merged-focused/report.json`.
+- Formal run `formal-web-ui-mtm3f78l-c39ddd7e`: 15/15 exact raw/JSON-lines/whole-JSON cells at 390, 719, 720, 721, and 1095 px; zero critical findings, eight reviewed intentional scroll/initial-position warnings, and passing coverage.
+- All thirty final viewport/full-page images were inspected; fifteen pass decisions and zero gaps were finalized in `/tmp/formal-web-ui-verification-TVedif/manual-review.json`.
+- Browser console and network failures: none in the complete or focused passes.
+
+## Comparison history
+
+1. The source required a visible **Load earlier output** action and rendered every line as flat monochrome text.
+2. The first continuous-reader implementation exposed a real anchor bug: prepending relative to scroll height could shift the exact line being read. The reader now measures the first visible row before the request and restores that same DOM anchor after insertion.
+3. The combined live-refresh pass found focus sampling could race a Tests rerender. Close now resolves the current replacement action by run identity, and verification waits for the observable focus result. A fresh complete Console pass and final formal review found no remaining P0/P1/P2 issue.
+
+## Implementation checklist
+
+- [x] Remove the earlier-output paging control from every reader state.
+- [x] Load bounded earlier and result pages at the appropriate scroll boundary.
+- [x] Preserve the exact reading anchor and avoid duplicate/cascaded requests.
+- [x] Highlight useful raw tokens and format valid JSON/JSON-lines.
+- [x] Escape every source token and preserve stable source-line ranges.
+- [x] Keep latest, search, failure, refresh, retry, and focus recovery working.
+- [x] Verify mobile, desktop, and the exact responsive boundary.
+
+## Follow-up polish
+
+- No follow-up is required for the requested log-reader correction.
+
+---
+
+## Archived prior design QA
+
+# Collapsible deployment dashboard design QA
+
+final result: passed
+
+## Comparison target
+
+- Source visual truth: the four owner-marked live Deployments screenshots supplied with this request, plus the same-state current-source reproduction at `/tmp/dc2-collapse-dashboard-source-1095.png`.
+- Browser-rendered implementation: expanded `/tmp/dc2-collapse-dashboard-focused-2/deployments-1095.png`, repository collapsed `/tmp/dc2-collapse-dashboard-focused-2/deployments-1095-repository-collapsed.png`, deployment collapsed `/tmp/dc2-collapse-dashboard-focused-2/deployments-1095-deployment-collapsed.png`, and mobile equivalents in the same directory.
+- Source and implementation CSS viewport: 1095 × 876 at device scale factor 1; mobile comparison: 390 × 844 at device scale factor 1. Full-page heights differ because the added factual summary rows make the expanded implementation taller and collapsing makes selected sections shorter; width and density were not normalized or cropped.
+- State: dark Console Deployments dashboard with two repository groups, healthy/degraded deployments, expanded Test and Health summaries, plus each requested collapsed state.
+- Full-view comparison: `/tmp/dc2-collapse-dashboard-before-after.png` places the same-state source and expanded implementation together. The existing repository-first structure, status hierarchy, operational color, responsive grid, links, and lifecycle controls are preserved; only the requested density controls and factual Test/Health detail are added.
+- Focused comparison: the repository header, individual deployment header, Tests card, and Health card were inspected in the owner-reported viewport. Separate 390 px and 619/620/621 px captures verify the changed stacked composition and collapse controls where the full-view comparison is too small to judge precisely.
+
+## Findings
+
+- No actionable P0, P1, or P2 issue remains.
+- Repository collapse keeps the repository name, identity, deployment count, overall condition, and restore control visible. It hides only that repository's summaries and deployments; every sibling remains unchanged.
+- Deployment collapse keeps the deployment name, immutable identity, state/health badges, and restore control visible. Routing facts and lifecycle actions return on expansion.
+- Tests now shows the selected run's proof type, start recency, tier, elapsed time, and combined observed output. Health now shows current CPU, memory, storage, and deployment count. Missing and restricted data produce no synthetic details.
+- Ten formal warnings report low initial visibility for the intentionally compact collapsed region. The reviewed screenshots show the selected identity/status row exactly as requested; no content is clipped, obscured, or unreachable.
+
+## Required fidelity surfaces
+
+- Fonts and typography: the existing system font stack, weights, monospaced identities, compact facts, wrapping, and operational hierarchy are preserved. New facts use smaller optical weight than the primary status and remain readable at every sampled width.
+- Spacing and layout rhythm: the 1095 px summary remains a balanced 3-by-2 grid; Test and Health use an aligned two-column fact grid. Collapse toggles align at the right edge of repository headers and beside deployment identity. Mobile uses labelled stacked sections with 38 px controls and no document overflow.
+- Colors and visual tokens: all new controls and facts reuse the Console's navy/slate panels, cool borders, blue focus/link color, green healthy/running, amber attention, and red unhealthy tokens. No decorative palette or new visual language was introduced.
+- Image quality and asset fidelity: this dashboard contains no raster imagery. Collapse controls use the repository's existing official Tabler chevron assets; no handcrafted SVG, CSS drawing, emoji, gradient, or placeholder was introduced.
+- Copy and content: labels state the real concepts—Tier, Elapsed, Output, CPU, Memory, Storage, and Deployments—and every value comes from the existing repository-attributed APIs. Collapse labels include the exact project or deployment for assistive technology.
+- States and interactions: repository and deployment expand/collapse, mouse, Enter, Space, independent sibling state, same-session rerender preservation, lifecycle actions after re-expansion, summary continuations, missing/restricted facts, and responsive variants are exercised through the rendered UI.
+
+## Browser evidence
+
+- Complete frozen-candidate Console matrix: 1,659 checks, zero failures in `/tmp/dc2-collapse-dashboard-console-release/report.json`.
+- Focused interaction inventory: 315 checks, zero failures in `/tmp/dc2-collapse-dashboard-focused-2/report.json`.
+- Formal run `formal-web-ui-mtm0yz1n`: 15/15 exact expanded/repository-collapsed/deployment-collapsed cells at 390, 619, 620, 621, and 1095 px; zero critical findings, ten reviewed intentional compact-region warnings, and passing coverage.
+- All thirty final viewport/full-page screenshots were inspected; fifteen pass decisions and zero gaps were finalized in `/tmp/formal-web-ui-verification-qDKHVa/manual-review.json`.
+- Browser console and network failures: none in the complete or focused passes.
+
+## Comparison history
+
+1. The source and owner comments identified four gaps: repositories could not collapse, individual local deployments could not collapse, and Tests/Health left useful API-backed facts out of large summary cards.
+2. The first implementation added independent controls and factual details. Focused desktop/mobile review found the structure readable and all interactions working.
+3. The first formal run found that icon-only toggles were not explicitly recognizable as continuation anchors. The exact controls received the verifier's semantic anchor marker. A fresh complete run passed; the remaining low-visibility warnings are the deliberate effect of collapsing, confirmed in all thirty screenshots.
+
+## Implementation checklist
+
+- [x] Collapse and expand each repository independently.
+- [x] Collapse and expand each managed or observed deployment independently.
+- [x] Preserve identity and condition while detail/actions are hidden.
+- [x] Keep collapse choices through same-session page rerenders.
+- [x] Add factual Test and Health detail without new backend or cross-repository data.
+- [x] Preserve every continuation and lifecycle control when expanded.
+- [x] Verify wide, mobile, and exact responsive-boundary states.
+
+## Follow-up polish
+
+- No follow-up is required for the four requested dashboard changes.
+
+---
+
+## Archived prior design QA
+
 # Readable test-log viewer design QA
 
 final result: passed

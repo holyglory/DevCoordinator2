@@ -29,11 +29,19 @@ a native select.
    becoming zero or borrowing another repository's value. Plan, Progress,
    Codex Usage, and Decisions continue to the exact repository route; Tests
    and Health links retain the repository name while continuing to their
-   existing destinations. The repository's deployments and lifecycle controls
-   follow immediately below its summary, with complete identity, state,
+   existing destinations. Tests also names the selected run's tier, elapsed
+   time, output size, recency, and proof type; Health adds current repository
+   CPU, memory, storage, and deployment count. Each repository starts expanded
+   and has an independent keyboard-operable collapse control that keeps its
+   identity, count, and overall condition visible. The repository's
+   deployments and lifecycle controls follow immediately below its summary,
+   with complete identity, state,
    domain, port, generation, and recency. At tablet widths the summaries become
    a 3-by-2 grid and deployment facts use two rows; on mobile both become
-   labelled stacked layouts without document-level horizontal scrolling. An
+   labelled stacked layouts without document-level horizontal scrolling. Each
+   deployment also starts expanded and may collapse independently to its
+   identity and state; the current session preserves these choices while the
+   Console rerenders. An
    **edit** button beside every administrator-visible domain opens the pop-up
    domain editor in place; start/stop/restart remain available to operators —
    observed ones drive the exact recorded containers
@@ -106,15 +114,26 @@ a native select.
    history.
 5. **Tests** — the current/most-recent run collection remains first: result,
    requested development/pre-merge/release tier, readiness eligibility, and
-   duration. **Logs** opens a focused catalogue-first dialog; raw content loads
-   only after an explicit bounded case/stream action and is labelled untrusted.
+   duration. While any listed run is active, the collection re-reads bounded
+   current state without moving focus, closing an open dialog, or continuing
+   after navigation. **Logs** opens a focused catalogue-first dialog and
+   immediately shows the selected stream's newest bounded text. Scrolling to
+   the earlier boundary loads one prior page without moving the line being
+   read; short pages fill only until they become scrollable. Search and likely
+   failure results extend at their lower boundary, while **Jump/Refresh latest**
+   remains explicit. Numbers and common syntax/status tokens are highlighted;
+   valid JSON and JSON-lines are pretty-printed, textually labelled, and still
+   escaped and labelled untrusted.
    **Log retention** edits the host age/depth boundaries and re-reads the stored
    state. Administrators stop a running test or start a prior worktree at a
    selected tier, with release selected by default. The adjacent **Capacity** action opens a
    focused dialog showing learned/effective capacity, the optional maximum,
    active/waiting leaves, admission pause state, and the last adjustment's
    measured evidence. Saving or clearing the host-wide maximum acts directly.
-   Every run also offers **Evidence**. A retained formal UI bundle opens as the
+   Visual evidence is labelled **pending** while a run is active and has not
+   published a bundle, **not produced** after a terminal nonvisual run, or with
+   its retained image count when available; only available or invalid evidence
+   is an action. A retained formal UI bundle opens as the
    selected three-zone review board: ordered journey states and viewport
    choices on the left, the immutable screenshot and complete annotation
    toolbar as the dominant centre workspace, and capture facts, automatic
@@ -182,6 +201,7 @@ explicit permission-denied notice instead of partial data.
 | Control | API call | Proof of state change |
 |---|---|---|
 | Repository dashboard continuations | `plan.overview`, `progress.repositories`, `usage.repositories`, `test.list`, `health.repositories`, and repository-scoped `decision.tail` reads; then real hash links | Every value remains inside the matching repository section. Plan, Progress, Codex Usage, and Decisions open that repository; Tests and Health open their existing destinations with the repository named in the originating link. Restricted reads show an honest access state without an enabled dead link. |
+| Collapse/expand repository or deployment | — (client-side) | Only the selected section's details are hidden or restored; identity and condition stay visible, sibling sections do not change, keyboard focus stays on the toggle, and the choice survives same-session rerenders. |
 | Deployment start/stop/restart (list, detail, component; managed and observed) | `deployment.start/stop/restart` | view re-fetches `deployment.status`; header/component badges change |
 | Independent Compose-service start/stop/restart (detail only; explicitly declared services) | `deployment.start/stop/restart {component: "stack/service"}` | service badge and aggregate header change; unrelated service and route remain |
 | Domain edit / clear (pop-up from list rows and the detail page, administrators) | `deployment.set_domain {deployment_id, domain|null, port?, public?}` | status re-read; route document republished |
@@ -189,7 +209,7 @@ explicit permission-denied notice instead of partial data.
 | Health container inventory / unhealthy deployment details | — (real hash links) | opens the Containers or exact deployment destination; Back/Health returns to the same Health context |
 | Codex Usage repository selection and range (24h/7d/30d) | `usage.repositories {range}` / `usage.repository {repository_id, range}` | repository heading, totals, phase chart, exact table, and data-completeness explanation re-render from canonical reads |
 | Codex Usage completeness hint | — (client-side) | opens the full environment and excluded-not-zero explanation in a labelled DOM pop-up; Escape, focus departure, outside click, or the toggle closes it |
-| Progress period (Hour/Day/Week) | `progress.repository {repository_id, period}` | daily bars, running totals, test/token evidence, forecast quality, Plan-ordered work, comparison totals, and exact values re-render from one bounded report |
+| Progress period (Hour/Day/Week) | `progress.repository {repository_id, period}` | completed bars above the baseline, newly added work below it, completion running totals, test/token evidence, forecast quality, Plan-ordered work, comparison totals, and exact values re-render from one bounded report |
 | Select release work | — (client-side) | only row selection and the Plan-continuation target change; the workspace node, scroll, focus, task order, and release scope remain unchanged |
 | Open selected in plan | — (real hash navigation with local task continuation) | opens the same repository Plan with the exact selected task highlighted |
 | Progress exact values disclosure | — (client-side) | exposes every visible bucket value, coverage status, and counting method without hover |
@@ -200,7 +220,7 @@ explicit permission-denied notice instead of partial data.
 | Apply / rollback | `deployment.apply` / `deployment.rollback` | status re-read |
 | Remove deployment — keep data / Remove deployment and delete data | `deployment.remove {delete_data: false|true}` | list re-read |
 | Component logs | `deployment.logs` | tail rendered on demand |
-| Test logs | `test.log.catalog`, then an automatic bounded `tail`; plain Load earlier, Jump/Refresh latest, Search, and Show likely failure controls compose `tail`, `search`, and `failure_context` | newest text is immediately readable; stream switching loads automatically; older pages preserve position; technical details are collapsed; no line/byte coordinate form appears |
+| Test logs | `test.log.catalog`, then automatic bounded `tail`; scroll boundaries, Jump/Refresh latest, Search, and Show likely failure compose `tail`, `search`, and `failure_context` | newest text is immediately readable; earlier/results cursors load through scrolling without a paging button; position survives prepends; JSON/JSONL is formatted and escaped; useful tokens are highlighted; technical details stay collapsed |
 | Test start/stop | `test.start {tier}` / `test.stop` | list re-read; the selected tier is recorded |
 | Test capacity | `test.capacity.get` / `test.capacity.set {cap: integer|null}` | dialog and Tests action re-read learned/effective capacity and the administrator maximum |
 | Test log retention | `test.log.retention.get` / `test.log.retention.set {max_age_seconds, case_depth}` | focused dialog re-reads the stored age/depth boundaries; active logs remain protected |
