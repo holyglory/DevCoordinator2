@@ -459,6 +459,20 @@ enum SkillsCommand {
         #[command(subcommand)]
         command: PolicyCommand,
     },
+    SelfTest {
+        #[command(subcommand)]
+        command: SkillSelfTestCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum SkillSelfTestCommand {
+    DevCoordinator {
+        #[arg(long, default_value = ".")]
+        source_root: PathBuf,
+        #[arg(long)]
+        control_binary: Option<PathBuf>,
+    },
 }
 
 #[derive(Debug, Args)]
@@ -717,9 +731,42 @@ fn main() -> ExitCode {
         Command::Skills {
             command: SkillsCommand::Policy { command },
         } => run_policy(command),
+        Command::Skills {
+            command: SkillsCommand::SelfTest { command },
+        } => run_skill_self_test(command),
         Command::Legacy { command } => run_legacy(command),
         Command::Decision { command } => run_decision(command),
         Command::Install { command } => run_install(command),
+    }
+}
+
+fn run_skill_self_test(command: SkillSelfTestCommand) -> ExitCode {
+    match command {
+        SkillSelfTestCommand::DevCoordinator {
+            source_root,
+            control_binary,
+        } => {
+            let result = (|| {
+                let source_root = source_root
+                    .canonicalize()
+                    .map_err(|error| format!("cannot resolve source root: {error}"))?;
+                let control_binary = match control_binary {
+                    Some(path) => path,
+                    None => devcoordinator2_tooling::skill_selftest::sibling_control_binary()?,
+                };
+                devcoordinator2_tooling::skill_selftest::dev_coordinator(
+                    &source_root,
+                    &control_binary,
+                )
+            })();
+            match result {
+                Ok(result) => {
+                    println!("{}", serde_json::to_string_pretty(&result).unwrap());
+                    ExitCode::SUCCESS
+                }
+                Err(error) => tooling_error(&error, 1),
+            }
+        }
     }
 }
 
@@ -2450,6 +2497,25 @@ mod tests {
             Command::Skills {
                 command: SkillsCommand::Policy {
                     command: PolicyCommand::Plan { .. }
+                }
+            }
+        ));
+        let skill_self_test = Cli::try_parse_from([
+            "devcoordinator2-tooling",
+            "skills",
+            "self-test",
+            "dev-coordinator",
+            "--source-root",
+            "/repo",
+            "--control-binary",
+            "/tmp/devcoordinator2",
+        ])
+        .expect("dev-coordinator skill self-test command");
+        assert!(matches!(
+            skill_self_test.command,
+            Command::Skills {
+                command: SkillsCommand::SelfTest {
+                    command: SkillSelfTestCommand::DevCoordinator { .. }
                 }
             }
         ));
