@@ -447,7 +447,7 @@ impl CodexUsage {
     ) -> Result<String, ProtocolError> {
         let uid = source.uid;
         let repository_id = repository.repository_id.clone();
-        if let Some(key) = self
+        let cached = self
             .authority
             .call(move |connection| {
                 connection
@@ -459,12 +459,9 @@ impl CodexUsage {
                     .optional()
                     .map_err(DatabaseError::from)
             })
-            .map_err(database_error)?
-        {
-            return Ok(key);
-        }
+            .map_err(database_error)?;
         if !resolve_missing {
-            return Err(source_error("mapping_pending"));
+            return cached.ok_or_else(|| source_error("mapping_pending"));
         }
         let (key, schema, taxonomy) = self
             .probe
@@ -1867,15 +1864,20 @@ mod tests {
     use tempfile::tempdir;
     use time::macros::datetime;
 
-    struct NoProbe;
-    impl RepositoryProbe for NoProbe {
+    struct FixtureProbe;
+    impl RepositoryProbe for FixtureProbe {
         fn probe(
             &self,
-            _source: &CodexUsageSource,
+            source: &CodexUsageSource,
             _repository: &Path,
             _now_ms: u64,
         ) -> Result<(String, u32, u32), String> {
-            Err("probe_was_not_expected".into())
+            let connection = open_source(source)?;
+            Ok((
+                "b".repeat(64),
+                maximum_version(&connection, "_sqlx_migrations")?,
+                1,
+            ))
         }
     }
 
@@ -2095,7 +2097,11 @@ mod tests {
         };
         std::fs::create_dir(&repository.root_path).unwrap();
         let repository_id = repository.repository_id.clone();
-        let canonical_for_db = canonical.clone();
+        let canonical_for_db = "c".repeat(64);
+        let source_connection = Connection::open(codex_home.join("usage/usage.sqlite3")).unwrap();
+        source_connection
+            .execute("INSERT INTO repositories VALUES(?1)", [&canonical_for_db])
+            .unwrap();
         let uid = rustix::process::getuid().as_raw();
         authority.transaction(move |transaction| {
             transaction.execute("INSERT INTO repositories(repository_id,root_path,display_name,registered_at,registered_by_uid,last_seen_at) VALUES(?1,'/repo','Example','t',1,'t')",[&repository_id])?;
@@ -2106,7 +2112,7 @@ mod tests {
             config,
             authority,
             Arc::new(FixedClock(datetime!(2026-09-04 00:00 UTC))),
-            Arc::new(NoProbe),
+            Arc::new(FixtureProbe),
         );
         let report = usage
             .repository_at(&repository, UsageRange::Hours24, now_ms)
@@ -2193,7 +2199,7 @@ mod tests {
             config,
             authority,
             Arc::new(FixedClock(datetime!(2026-09-04 00:00 UTC))),
-            Arc::new(NoProbe),
+            Arc::new(FixtureProbe),
         );
         let detail = usage
             .repository_buckets(
@@ -2306,7 +2312,7 @@ mod tests {
             config.clone(),
             authority,
             Arc::new(FixedClock(datetime!(2026-09-04 00:00 UTC))),
-            Arc::new(NoProbe),
+            Arc::new(FixtureProbe),
         );
         let report = usage
             .repository_at(&repository, UsageRange::Hours24, now_ms)
@@ -2320,7 +2326,7 @@ mod tests {
             config,
             Database::open(temporary.path().join("empty.sqlite3")).unwrap(),
             Arc::new(FixedClock(datetime!(2026-09-04 00:00 UTC))),
-            Arc::new(NoProbe),
+            Arc::new(FixtureProbe),
         )
         .repository_at(&repository, UsageRange::Hours24, now_ms)
         .unwrap();

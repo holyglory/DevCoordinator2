@@ -2232,7 +2232,7 @@ function coverageKind(value) {
   if (coverage?.snapshot?.refreshing) return 'indexing';
   if (coverage?.snapshot?.refresh_failed) return coverage.snapshot.updated_at_ms ? 'warn' : 'bad';
   if (coverage?.unavailable_reasons?.indexing) return 'indexing';
-  if (stateName === 'unavailable' && coverage?.unavailable_reasons?.mapping_pending) {
+  if (stateName === 'unavailable' && (coverage?.unavailable_reasons?.mapping_pending || coverage?.unavailable_reasons?.mapping_unavailable)) {
     return 'setup';
   }
   return stateName === 'complete' ? 'ok' : stateName === 'partial' ? 'warn'
@@ -2259,7 +2259,7 @@ function coverageText(coverage, compact = false) {
   if (coverage.state === 'unobserved') {
     return compact ? 'No usage measured' : 'No usage measured in this period';
   }
-  if (coverage.unavailable_reasons?.mapping_pending) {
+  if (coverage.unavailable_reasons?.mapping_pending || coverage.unavailable_reasons?.mapping_unavailable) {
     return compact
       ? 'Not connected in all environments'
       : 'Not connected in every configured Codex environment';
@@ -2284,7 +2284,7 @@ function coverageExplanation(coverage) {
       ? ' This repository is not connected in every configured environment.' : '';
     return `${introduction} The connected environments contained no measured usage for this repository and period.${setup}`;
   }
-  if (coverage.unavailable_reasons?.mapping_pending) {
+  if (coverage.unavailable_reasons?.mapping_pending || coverage.unavailable_reasons?.mapping_unavailable) {
     return `${introduction} This repository has not yet been connected in every configured environment.`;
   }
   if (coverage.state === 'unavailable') {

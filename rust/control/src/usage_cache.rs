@@ -125,7 +125,13 @@ impl UsageCache {
                     && report.coverage.available_collectors
                         >= entry.report.coverage.available_collectors
                     && (report.coverage.available_collectors > 0
-                        || report.coverage.configured_collectors == 0)
+                        || report.coverage.configured_collectors == 0
+                        || (!report.coverage.unavailable_reasons.is_empty()
+                            && report
+                                .coverage
+                                .unavailable_reasons
+                                .keys()
+                                .all(|reason| reason == "mapping_unavailable")))
             });
             if let Ok(report) = result {
                 if usable {
@@ -256,6 +262,27 @@ mod tests {
                 .total_tokens,
             None
         );
+    }
+
+    #[test]
+    fn missing_repository_history_is_not_a_refresh_failure() {
+        let cache = UsageCache::default();
+        cache.get("key".into(), report(None), || {
+            let mut missing = report(None);
+            missing.coverage.configured_collectors = 1;
+            missing.coverage.available_collectors = 0;
+            missing
+                .coverage
+                .unavailable_reasons
+                .insert("mapping_unavailable".into(), 1);
+            Ok(missing)
+        });
+        cache.wait(None);
+        let missing = cache.get("key".into(), report(None), || panic!("fresh loader"));
+        assert_eq!(missing.totals.total_tokens, None);
+        let snapshot = missing.coverage.snapshot.unwrap();
+        assert_eq!(snapshot.updated_at_ms, Some(100));
+        assert!(!snapshot.refresh_failed);
     }
 
     #[test]
