@@ -3630,7 +3630,7 @@ fn validate_skill_contract(root: &Path) -> Result<(), String> {
         "journey_review_contract.md",
         "review-queue.json",
         "journey-evidence.json",
-        "formal_web_ui_review.py",
+        "devcoordinator2-tooling formal-ui review",
         "secondary-workflow-precedes-primary",
         "insufficient-text-contrast",
         "declared-theme-contradiction",

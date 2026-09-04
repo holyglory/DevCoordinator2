@@ -503,8 +503,6 @@ struct SkillValidationArgs {
     run_root: Option<PathBuf>,
     #[arg(long)]
     temp_root: Option<PathBuf>,
-    #[arg(long)]
-    allow_python_oracle: bool,
 }
 
 #[derive(Debug, Subcommand)]
@@ -525,8 +523,6 @@ enum SkillValidationCommand {
         name: String,
         #[arg(long, default_value = ".")]
         root: PathBuf,
-        #[arg(long)]
-        allow_python_oracle: bool,
     },
     SelfTest {
         #[arg(long)]
@@ -543,6 +539,15 @@ enum SkillSelfTestCommand {
         source_root: PathBuf,
         #[arg(long)]
         control_binary: Option<PathBuf>,
+    },
+    /// Run the complete Rust self-test matrix shared by the four audit skills.
+    AuditTooling {
+        #[arg(long, default_value = ".")]
+        source_root: PathBuf,
+        #[arg(long, default_value = "cargo")]
+        cargo: String,
+        #[arg(long)]
+        cargo_target_dir: Option<PathBuf>,
     },
 }
 
@@ -888,6 +893,29 @@ fn run_skill_self_test(command: SkillSelfTestCommand) -> ExitCode {
                 Err(error) => tooling_error(&error, 1),
             }
         }
+        SkillSelfTestCommand::AuditTooling {
+            source_root,
+            cargo,
+            cargo_target_dir,
+        } => {
+            let result = (|| {
+                let source_root = source_root
+                    .canonicalize()
+                    .map_err(|error| format!("cannot resolve source root: {error}"))?;
+                devcoordinator2_tooling::skill_selftest::audit_tooling(
+                    &source_root,
+                    &cargo,
+                    cargo_target_dir.as_deref(),
+                )
+            })();
+            match result {
+                Ok(result) => {
+                    println!("{}", serde_json::to_string_pretty(&result).unwrap());
+                    ExitCode::SUCCESS
+                }
+                Err(error) => tooling_error(&error, 1),
+            }
+        }
     }
 }
 
@@ -940,7 +968,6 @@ fn validation_options(
             cargo_program: options.cargo,
             cargo_target_dir,
             temp_root,
-            allow_python_oracle: options.allow_python_oracle,
         },
     )
 }
@@ -948,15 +975,9 @@ fn validation_options(
 fn run_skill_validation(command: SkillValidationCommand) -> ExitCode {
     use devcoordinator2_tooling::skill_validation;
     match command {
-        SkillValidationCommand::InternalCheck {
-            name,
-            root,
-            allow_python_oracle,
-        } => {
+        SkillValidationCommand::InternalCheck { name, root } => {
             let root = root.canonicalize().map_err(|error| error.to_string());
-            match root.and_then(|root| {
-                skill_validation::run_internal_check(&root, &name, allow_python_oracle)
-            }) {
+            match root.and_then(|root| skill_validation::run_internal_check(&root, &name)) {
                 Ok(result) => {
                     println!("{}", result);
                     ExitCode::SUCCESS
@@ -2828,6 +2849,25 @@ mod tests {
                 }
             }
         ));
+        let audit_self_test = Cli::try_parse_from([
+            "devcoordinator2-tooling",
+            "skills",
+            "self-test",
+            "audit-tooling",
+            "--source-root",
+            "/repo",
+            "--cargo-target-dir",
+            "/tmp/cargo-target",
+        ])
+        .expect("audit tooling self-test command");
+        assert!(matches!(
+            audit_self_test.command,
+            Command::Skills {
+                command: SkillsCommand::SelfTest {
+                    command: SkillSelfTestCommand::AuditTooling { .. }
+                }
+            }
+        ));
         let skill_validation = Cli::try_parse_from([
             "devcoordinator2-tooling",
             "skills",
@@ -2835,7 +2875,6 @@ mod tests {
             "plan",
             "--root",
             "/repo",
-            "--allow-python-oracle",
             "--run-id",
             "shape-only",
         ])

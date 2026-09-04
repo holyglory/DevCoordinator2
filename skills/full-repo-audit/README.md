@@ -101,13 +101,14 @@ is user-friendly.
 
 ## Direct Harness Usage
 
-The skill is normally invoked by an agent runtime, but the bundled scripts can be used directly.
+The skill is normally invoked by an agent runtime, but the Rust tooling can be
+used directly.
 
 Run harness self-tests:
 
 ```bash
-cd /path/to/full-repo-audit
-python3 scripts/self_test.py
+devcoordinator2-tooling skills self-test audit-tooling \
+  --source-root /path/to/DevCoordinator2
 ```
 
 Those deterministic tests prove queue/verifier contracts, not whether an agent
@@ -120,8 +121,9 @@ report either self-test as semantic-agent recall evidence.
 Generate an audit queue:
 
 ```bash
-cd /path/to/full-repo-audit
-python3 scripts/build_audit_batches.py --repo /path/to/repo --out /tmp/full-repo-audit-run
+devcoordinator2-tooling audit build-full-repo \
+  --repo /path/to/repo \
+  --out /tmp/full-repo-audit-run
 ```
 
 Before verification, complete the generated `lead_reconciliation.md` prompt and
@@ -136,8 +138,7 @@ once, derive their result from the nine statuses, and never hide a mapped
 Verify saved reports:
 
 ```bash
-cd /path/to/full-repo-audit
-python3 scripts/verify_audit_results.py \
+devcoordinator2-tooling audit verify-full-repo \
   --manifest /tmp/full-repo-audit-run/manifest.json \
   --reports /tmp/full-repo-audit-run/reports \
   --receipt-out /tmp/full-repo-audit-run/verification_receipt.json
@@ -146,8 +147,7 @@ python3 scripts/verify_audit_results.py \
 After verifier success, create and review the exact ledger projection:
 
 ```bash
-CANONICAL_SKILL_ROOT="$(dirname "$(dirname "$(realpath .)")")"
-python3 "$CANONICAL_SKILL_ROOT/full_repo_harness/merge_findings.py" \
+devcoordinator2-tooling audit merge-findings \
   --reports /tmp/full-repo-audit-run/reports \
   --manifest /tmp/full-repo-audit-run/manifest.json \
   --json-out /tmp/full-repo-audit-run/consolidated-findings.json \
@@ -211,7 +211,7 @@ Do not treat queue generation as audit completion. A run is complete only after:
 7. `reports/lead_reconciliation.md` supplies the manifest-declared, verified
    cross-file trace and atomic lead findings.
 8. A passing stable verifier run writes `verification_receipt.json`; manifest-mode consolidation consumes its exact report hashes.
-9. `verify_audit_results.py` returns `ok: true`.
+9. `devcoordinator2-tooling audit verify-full-repo` returns `ok: true`.
 10. Before plan and again before apply, the ledger updater reruns the verifier
     over its guarded input closure and matches the canonical pass result to the
     receipt; a structurally valid or replayed receipt alone is insufficient.

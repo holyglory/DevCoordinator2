@@ -622,7 +622,7 @@ async function startFakeDaemon(dir) {
       if (cmd === 'progress.repository') return reply({ ok: true, data: progressFixture(scenario, req.params.period || 'day') });
       if (cmd === 'progress.repositories') return reply({ ok: true, data: fixtures(scenario)['progress.repositories'] });
       if (cmd === 'usage.repository') {
-        if (scenario.dashboardUsagePending) await new Promise((resolve) => setTimeout(resolve, 100));
+        if (scenario.dashboardUsagePending) await new Promise((resolve) => delayedReplies.add(resolve));
         const result = structuredClone(fixtures({ ...scenario, stopped: mutable.stopped,
           serviceStopped: mutable.serviceStopped })['usage.repository']);
         result.range = req.params.range || '24h';
@@ -1183,18 +1183,19 @@ async function main() {
     && await page.locator('.deployment-summary-item').count() === 12,
   JSON.stringify({ resolvingInitialText, resolvingInitialBusy,
     summaryCount: await page.locator('.deployment-summary-item').count() }));
+  daemon.releaseDelayed();
   await page.waitForFunction((repositoryId) => {
     const card = document.querySelector(`[data-repository-id="${repositoryId}"] [data-summary="usage"]`);
     return /6\.4M tokens · 104 requests/.test(card?.textContent || '')
       && !card?.hasAttribute('aria-busy');
   }, REPO);
-  const usageResolutionCalls = daemon.calls.filter((call) => call.command === 'usage.repository');
+  const usageResolutionCalls = daemon.calls.filter((call) => call.operation === 'usage.repository');
   const resolvingFinalText = await resolvingUsage.innerText();
   const resolvingFinalFocus = await resolvingUsage.locator('.deployment-summary-link:focus').count();
   check('interaction: available project usage resolves once in place without losing link focus',
     usageResolutionCalls.length === 1
-    && usageResolutionCalls[0].args.repository_id === REPO
-    && usageResolutionCalls[0].args.range === '24h'
+    && usageResolutionCalls[0].params.repository_id === REPO
+    && usageResolutionCalls[0].params.range === '24h'
     && resolvingFinalFocus === 1
     && /3 of 4 environments included/.test(resolvingFinalText),
   JSON.stringify({ usageResolutionCalls, resolvingFinalText, resolvingFinalFocus }));
@@ -1790,6 +1791,7 @@ async function main() {
   await page.fill('#evidence-feedback-reply [name=body]', 'Please use the standard primary button treatment.');
   await page.click('#evidence-feedback-reply button[type=submit]');
   await waitForSettledCall(daemon, page, 'test.evidence.feedback.reply');
+  await page.waitForFunction(() => document.querySelectorAll('.evidence-comment').length === 2);
   check('interaction: replies persist in the selected screenshot thread',
     await page.locator('.evidence-comment').count() === 2);
   await page.locator('[data-evidence-edit-comment]').first().click();

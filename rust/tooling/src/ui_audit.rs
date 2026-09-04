@@ -748,9 +748,9 @@ Screenshot, formal-verifier, journey-evidence, changed-review queue, decision, a
 
 Do not edit the audited repository; write only the exact audit artifacts authorized above. Use screenshot-capable tooling to compare the implemented UI against mockups/assets, required UI elements, feature behavior, tests, and user journey requirements. If the UI cannot be rendered, create desktop and mobile `BLOCKED` rows with concrete tool/route evidence and report the missing visual harness as a finding.
 
-For native captures, add `screenshot` or `native-snapshot` records to `visual_evidence.json`. For web evidence, do not transcribe formal artifacts by hand. Run the formal verifier only with the manifest-bound config, complete changed-image review, then invoke `import_formal_web_evidence.py` with the audit root, audit run id, formal report, journey-evidence manifest, review-queue, and manual-review manifest. The importer registers the formal report, ordered journey bundle, screenshot pairs, queue, and review manifest and rejects path/hash/run mismatches.
+For native captures, add `screenshot` or `native-snapshot` records to `visual_evidence.json`. For web evidence, do not transcribe formal artifacts by hand. Run the formal verifier only with the manifest-bound config, complete changed-image review, then invoke `devcoordinator2-tooling audit ui-implementation import-formal` with the audit root, audit run id, formal report, journey-evidence manifest, review-queue, and manual-review manifest. The importer registers the formal report, ordered journey bundle, screenshot pairs, queue, and review manifest and rejects path/hash/run mismatches.
 
-For platform `web`, formal browser evidence is required. For `native`, formal web evidence is not applicable and native screenshots/snapshots are required. For `hybrid`, provide both. Run deterministic checks before manual image review. Read `review-queue.json`: open only each queued cell's initial-viewport and full-page images, never carried unchanged images. Record decisions and finalize them with `formal_web_ui_review.py`.
+For platform `web`, formal browser evidence is required. For `native`, formal web evidence is not applicable and native screenshots/snapshots are required. For `hybrid`, provide both. Run deterministic checks before manual image review. Read `review-queue.json`: open only each queued cell's initial-viewport and full-page images, never carried unchanged images. Record decisions and finalize them with `devcoordinator2-tooling formal-ui review`.
 
 Define the journey decision model and required UI element set. Every rendered viewport must support the primary journey decision unless it is primarily a data-entry form. Run the interaction checklist: badge-detail, row-hit-target, navigation-cursor, transient-disclosure, disclosure-scrollbar, icon-meaning, stable-expansion-width, hover-copy, status-summary, and message-metadata.
 
@@ -1776,7 +1776,7 @@ mod tests {
             std::fs::read_to_string(fixture.out.join("visual_comparison_audit.md")).unwrap();
         for token in [
             "review-queue.json",
-            "formal_web_ui_review.py",
+            "devcoordinator2-tooling formal-ui review",
             "open only each queued cell",
             "initial-viewport and full-page",
             "## Journey Decision Model",

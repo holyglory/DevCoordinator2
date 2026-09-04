@@ -45,7 +45,7 @@ delivery still requires a fresh complete run.
 Run the self-test before relying on it:
 
 ```bash
-python3 skills/formal-web-ui-verification/scripts/self_test.py
+devcoordinator2-tooling formal-ui self-test
 ```
 
 The self-test resolves Playwright explicitly from the repository's locked
@@ -59,7 +59,7 @@ Verify explicit targets through a complete config. Bare `--url` targets fail
 coverage because they have no journey/theme/input contract:
 
 ```bash
-node skills/formal-web-ui-verification/scripts/formal_web_ui_verify.mjs \
+devcoordinator2-tooling formal-ui verify \
   --config formal-web-ui.json \
   --fail-on critical
 ```
@@ -146,7 +146,7 @@ Exit codes:
   failed its source binding, or the minimum checked-page count was not met.
 
 After all automatic checks complete, open only the queue's screenshot pairs and
-finalize decisions with `scripts/formal_web_ui_review.py`. A verifier exit `0`
+finalize decisions with `devcoordinator2-tooling formal-ui review`. A verifier exit `0`
 with pending changed review is not visual completion; unchanged prior gaps stay
 blocking without reopening the same images.
 

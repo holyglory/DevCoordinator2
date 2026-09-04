@@ -159,6 +159,53 @@ pub fn sibling_control_binary() -> Result<PathBuf, String> {
     Ok(directory.join("devcoordinator2"))
 }
 
+pub fn audit_tooling(
+    source_root: &Path,
+    cargo_program: &str,
+    cargo_target_dir: Option<&Path>,
+) -> Result<Value, String> {
+    let manifest = source_root.join("Cargo.toml");
+    if !manifest.is_file() {
+        return Err(format!(
+            "canonical Cargo workspace is missing: {}",
+            manifest.display()
+        ));
+    }
+    let arguments = [
+        "test",
+        "--locked",
+        "--package",
+        "devcoordinator2-tooling",
+        "--features",
+        "selftest-fixtures",
+        "--lib",
+        "--",
+        "--test-threads=1",
+    ];
+    let mut command = Command::new(cargo_program);
+    command
+        .args(arguments)
+        .current_dir(source_root)
+        .env_remove("PYTHONPATH");
+    if let Some(path) = cargo_target_dir {
+        command.env("CARGO_TARGET_DIR", path);
+    }
+    let status = command
+        .status()
+        .map_err(|error| format!("cannot run Rust audit self-tests: {error}"))?;
+    if !status.success() {
+        return Err(format!(
+            "Rust audit self-tests failed with exit {}",
+            status.code().unwrap_or(2)
+        ));
+    }
+    Ok(json!({
+        "ok": true,
+        "suite": "audit-tooling",
+        "package": "devcoordinator2-tooling",
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -200,6 +247,16 @@ mod tests {
             validate_dev_coordinator_contract(root, &missing)
                 .unwrap_err()
                 .contains("failure-context")
+        );
+    }
+
+    #[test]
+    fn audit_tooling_rejects_a_non_workspace_root_before_launch() {
+        let missing = std::env::temp_dir().join("devcoordinator2-missing-workspace-root");
+        assert!(
+            audit_tooling(&missing, "cargo", None)
+                .unwrap_err()
+                .contains("Cargo workspace is missing")
         );
     }
 }

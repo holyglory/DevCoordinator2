@@ -71,7 +71,7 @@ pub fn check_repository_layout(root: &Path) -> Result<(), String> {
     Ok(())
 }
 
-pub fn check_canonical_harness(root: &Path, allow_python_oracle: bool) -> Result<(), String> {
+pub fn check_canonical_harness(root: &Path) -> Result<(), String> {
     for relative in [
         "rust/tooling/src/audit_common.rs",
         "rust/tooling/src/audit_evidence.rs",
@@ -83,7 +83,7 @@ pub fn check_canonical_harness(root: &Path, allow_python_oracle: bool) -> Result
     ] {
         read_text(root, relative)?;
     }
-    if !allow_python_oracle && root.join("full_repo_harness").exists() {
+    if root.join("full_repo_harness").exists() {
         return Err("retired Python full_repo_harness still exists".to_owned());
     }
     for skill in [
@@ -305,14 +305,10 @@ pub fn check_include_glob_exclusions() -> Result<(), String> {
     result
 }
 
-pub fn run_internal_check(
-    root: &Path,
-    name: &str,
-    allow_python_oracle: bool,
-) -> Result<Value, String> {
+pub fn run_internal_check(root: &Path, name: &str) -> Result<Value, String> {
     match name {
         "repository-layout" => check_repository_layout(root)?,
-        "canonical-harness" => check_canonical_harness(root, allow_python_oracle)?,
+        "canonical-harness" => check_canonical_harness(root)?,
         "interaction-parity" => check_interaction_parity(root)?,
         "visual-review-parity" => check_visual_review_parity(root)?,
         "include-glob-exclusions" => check_include_glob_exclusions()?,
@@ -332,7 +328,6 @@ pub struct ValidationOptions {
     pub cargo_program: String,
     pub cargo_target_dir: PathBuf,
     pub temp_root: PathBuf,
-    pub allow_python_oracle: bool,
 }
 
 #[derive(Default)]
@@ -380,15 +375,13 @@ fn tooling_command(options: &ValidationOptions, arguments: &[&str]) -> Vec<Strin
 }
 
 fn internal_command(options: &ValidationOptions, name: &str) -> Vec<String> {
-    let mut command = tooling_command(
+    tooling_command(
         options,
         &["skills", "validate", "internal-check", name, "--root"],
-    );
-    command.push(options.root.to_string_lossy().into_owned());
-    if options.allow_python_oracle {
-        command.push("--allow-python-oracle".to_owned());
-    }
-    command
+    )
+    .into_iter()
+    .chain(std::iter::once(options.root.to_string_lossy().into_owned()))
+    .collect()
 }
 
 fn cargo_test_command(options: &ValidationOptions, filter: &str) -> Vec<String> {
@@ -476,23 +469,21 @@ pub fn validation_checks(options: &ValidationOptions) -> Vec<CheckPlan> {
             internal_command(options, "canonical-harness"),
         ),
     ];
-    if !options.allow_python_oracle {
-        let report = options.current_dir.join("python-free-report.json");
-        preflight_specs.push((
-            "python-free",
-            tooling_command(
-                options,
-                &[
-                    "check",
-                    "python-free",
-                    "--root",
-                    &root,
-                    "--report",
-                    &report.to_string_lossy(),
-                ],
-            ),
-        ));
-    }
+    let report = options.current_dir.join("python-free-report.json");
+    preflight_specs.push((
+        "python-free",
+        tooling_command(
+            options,
+            &[
+                "check",
+                "python-free",
+                "--root",
+                &root,
+                "--report",
+                &report.to_string_lossy(),
+            ],
+        ),
+    ));
 
     let control = options.control_binary.to_string_lossy().into_owned();
     let coordinator_fixture = options.coordinator_fixture.to_string_lossy().into_owned();
@@ -1020,7 +1011,7 @@ pub fn self_test(executor: &Path, leaf: &Path) -> Result<Value, String> {
 mod tests {
     use super::*;
 
-    fn options(allow_python_oracle: bool) -> ValidationOptions {
+    fn options() -> ValidationOptions {
         let root = Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .and_then(Path::parent)
@@ -1036,13 +1027,12 @@ mod tests {
             cargo_target_dir: root.join("target/agent-validation"),
             temp_root: std::env::temp_dir().join("devcoordinator2-agent-validation-tests"),
             root,
-            allow_python_oracle,
         }
     }
 
     #[test]
     fn plan_is_strict_python_free_schema_two_with_complete_invalidation_edges() {
-        let options = options(false);
+        let options = options();
         let plan = build_validation_plan(&options, "shape-only", &"a".repeat(64)).unwrap();
         assert_eq!(plan.proof, ProofKind::Complete);
         assert_eq!(plan.requested_tier, ValidationTier::Release);
@@ -1114,24 +1104,8 @@ mod tests {
     }
 
     #[test]
-    fn migration_oracle_mode_only_removes_the_final_python_gate() {
-        let migration = validation_checks(&options(true));
-        assert!(!migration.iter().any(|check| check.name == "python-free"));
-        assert!(
-            migration
-                .iter()
-                .any(|check| check.name == "canonical-harness")
-        );
-        assert!(
-            migration
-                .iter()
-                .any(|check| check.name == "skill-formal-web-ui-verification")
-        );
-    }
-
-    #[test]
     fn current_rust_internal_checks_and_include_glob_fixture_pass() {
-        let options = options(true);
+        let options = options();
         for name in [
             "repository-layout",
             "canonical-harness",
@@ -1139,7 +1113,7 @@ mod tests {
             "visual-review-parity",
         ] {
             assert_eq!(
-                run_internal_check(&options.root, name, true).unwrap()["status"],
+                run_internal_check(&options.root, name).unwrap()["status"],
                 "passed"
             );
         }

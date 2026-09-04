@@ -15,8 +15,9 @@ one universal agent policy.
 - `skills/user-journey-docs-audit`: journey-documentation readiness audit.
 - `reference/universal/AGENTS.md`: runtime-neutral universal agent policy.
 
-The five audit/verification skills retain standalone packages. The Coordinator
-skill is checked against this repository's live CLI and MCP contracts.
+The five audit/verification skills use the portable Rust tooling package. The
+Coordinator skill is checked against this repository's Rust CLI and MCP
+contracts.
 
 ## One live source checkout
 
@@ -44,11 +45,11 @@ immutable release directory.
 Use the reviewed managers for explicit runtime roots and policy targets:
 
 ```bash
-python3 scripts/skills/manage_skill_links.py plan \
+devcoordinator2-tooling skills links plan \
   --repo-root /home/DevCoordinator2 \
   --target-root /absolute/runtime/skills
 
-python3 scripts/skills/manage_global_policy.py plan \
+devcoordinator2-tooling skills policy plan \
   --repo-root /home/DevCoordinator2 \
   --transaction-dir /absolute/private/transaction \
   --codex-target /absolute/runtime/AGENTS.md
@@ -63,22 +64,34 @@ and runtime files are preserved.
 Product checks:
 
 ```bash
-.venv/bin/ruff check src tests scripts
-.venv/bin/pytest
+cargo fmt --all -- --check
+cargo clippy --locked --workspace --all-targets \
+  --features devcoordinator2-tooling/selftest-fixtures -- -D warnings
+cargo test --locked --workspace \
+  --features devcoordinator2-tooling/selftest-fixtures -- --test-threads=1
+cargo build --locked --release \
+  --package devcoordinator2-control \
+  --package devcoordinator2-tooling \
+  --package devcoordinator2-executor \
+  --features devcoordinator2-tooling/selftest-fixtures
 node --test edge/test/edge.test.mjs
+node console/verify.mjs
 ```
 
 Complete agent-skill and policy gate:
 
 ```bash
 npm ci --ignore-scripts --prefix ci/playwright
-python3 scripts/skills/validate.py
+target/release/devcoordinator2-tooling skills validate run \
+  --root "$PWD" \
+  --temp-root /absolute/external/temp/devcoordinator2-skill-validation
 ```
 
 The skill gate verifies the exact six-skill inventory, shared policy,
-runtime-neutral contracts, issue ledgers, ownership boundary, synchronized
-harness copies, link-manager rollback, public artifacts, real browser fixtures,
-and five standalone packages.
+runtime-neutral contracts, issue ledgers, ownership boundary, Rust harness
+ownership, link-manager rollback, public artifacts, real browser fixtures, and
+all six skill packages. It rejects executable Python and permits only the seven
+explicit inert cross-language audit fixtures.
 
 ## Imported source provenance
 

@@ -802,24 +802,15 @@ fn neutrality_paths(root: &Path) -> Result<(Vec<PathBuf>, Vec<PathBuf>), CheckEr
     markup.dedup();
 
     let mut prompts = Vec::new();
-    let queue = PathBuf::from("full_repo_harness/queue.py");
-    if root.join(&queue).is_file() {
-        prompts.push(queue);
-    }
-    if skills.is_dir() {
-        for relative in walk_tree(&skills)? {
-            let components = relative.components().collect::<Vec<_>>();
-            let name = relative
-                .file_name()
-                .and_then(OsStr::to_str)
-                .unwrap_or_default();
-            if components.len() == 3
-                && components[1].as_os_str() == OsStr::new("scripts")
-                && name.starts_with("build")
-                && name.ends_with(".py")
-            {
-                prompts.push(PathBuf::from("skills").join(relative));
-            }
+    for relative in [
+        "rust/tooling/src/audit_queue.rs",
+        "rust/tooling/src/test_coverage_audit.rs",
+        "rust/tooling/src/ui_audit.rs",
+        "rust/tooling/src/journey_docs.rs",
+    ] {
+        let path = PathBuf::from(relative);
+        if root.join(&path).is_file() {
+            prompts.push(path);
         }
     }
     prompts.sort();
@@ -4129,13 +4120,13 @@ mod tests {
             "interface:\n  default_prompt: Use an isolated worker.\n",
         );
         write(
-            root.join("full_repo_harness/queue.py"),
-            "PROMPT = 'Use an isolated worker.'\n",
+            root.join("rust/tooling/src/audit_queue.rs"),
+            "const PROMPT: &str = \"Use an isolated worker.\";\n",
         );
     }
 
     #[test]
-    fn neutrality_recall_and_adapter_scope_match_the_python_self_test() {
+    fn neutrality_recall_and_adapter_scope_preserve_the_ported_matrix() {
         let tree = TestTree::new("neutrality");
         neutrality_fixture(&tree.path);
         assert!(audit_agent_neutrality(&tree.path).unwrap().is_clean());

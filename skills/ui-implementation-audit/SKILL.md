@@ -105,7 +105,9 @@ do not duplicate those rendered judgments.
    - Run the builder with `--eligibility-only`. Exit `3` means not applicable.
 
 2. **Build the audit queue**
-   - Run the skill self-test unless validation commands are forbidden.
+   - Resolve `UI_IMPLEMENTATION_AUDIT_SKILL_DIR` from the loaded skill path
+     and `CANONICAL_SKILL_ROOT` as its repository root.
+   - Run `devcoordinator2-tooling skills self-test audit-tooling --source-root "$CANONICAL_SKILL_ROOT"` unless validation commands are forbidden.
    - Generate the queue with implemented UI evidence, declared platform, and
      formal config when applicable.
    - Inspect `manifest.json`, `audit_index.md`, and `excluded_files.json`;
@@ -122,9 +124,10 @@ do not duplicate those rendered judgments.
      manifest-bound config. Finish it and other automatic tests before opening
      review images.
    - Review only entries in `review-queue.json`; never reopen carried unchanged
-     screenshots. Finalize decisions with `formal_web_ui_review.py`.
+     screenshots. Finalize decisions with
+     `devcoordinator2-tooling formal-ui review`.
    - Import the completed formal bundle into `visual_evidence.json` using
-     `scripts/import_formal_web_evidence.py`; do not transcribe its screenshot,
+     `devcoordinator2-tooling audit ui-implementation import-formal`; do not transcribe its screenshot,
      journey-evidence, queue, or review records manually.
    - For native/hybrid, register real `native-snapshot` evidence.
    - Compare rendered results against journeys and mockups. Missing mockups are
@@ -150,8 +153,8 @@ do not duplicate those rendered judgments.
    - Write `final-report.md` before running the result verifier.
 
 7. **Verify completion**
-   - Run `verify_ui_implementation_audit_results.py` against the manifest and
-     reports directory.
+   - Run `devcoordinator2-tooling audit ui-implementation verify` against the
+     manifest and reports directory.
    - The verifier checks source/unit coverage, current hashes, worker status,
      formal/native evidence, final-report structure, interaction labels, and
      evidence references.
@@ -164,7 +167,7 @@ do not duplicate those rendered judgments.
 Eligibility only:
 
 ```bash
-python3 "$UI_IMPLEMENTATION_AUDIT_SKILL_DIR/scripts/build_ui_implementation_audit_batches.py" \
+devcoordinator2-tooling audit ui-implementation build \
   --repo "$REPO_ROOT" \
   --implemented-ui-file src/App.tsx \
   --eligibility-only
@@ -173,7 +176,7 @@ python3 "$UI_IMPLEMENTATION_AUDIT_SKILL_DIR/scripts/build_ui_implementation_audi
 Web audit queue:
 
 ```bash
-python3 "$UI_IMPLEMENTATION_AUDIT_SKILL_DIR/scripts/build_ui_implementation_audit_batches.py" \
+devcoordinator2-tooling audit ui-implementation build \
   --repo "$REPO_ROOT" \
   --implemented-ui-file src/App.tsx \
   --ui-platform web \
@@ -183,7 +186,7 @@ python3 "$UI_IMPLEMENTATION_AUDIT_SKILL_DIR/scripts/build_ui_implementation_audi
 Import completed formal evidence:
 
 ```bash
-python3 "$UI_IMPLEMENTATION_AUDIT_SKILL_DIR/scripts/import_formal_web_evidence.py" \
+devcoordinator2-tooling audit ui-implementation import-formal \
   --audit-root <audit-output> \
   --run-id <audit-run-id> \
   --formal-report <audit-output>/artifacts/report.json \
@@ -195,7 +198,7 @@ python3 "$UI_IMPLEMENTATION_AUDIT_SKILL_DIR/scripts/import_formal_web_evidence.p
 Verify the complete audit:
 
 ```bash
-python3 "$UI_IMPLEMENTATION_AUDIT_SKILL_DIR/scripts/verify_ui_implementation_audit_results.py" \
+devcoordinator2-tooling audit ui-implementation verify \
   --manifest <audit-output>/manifest.json \
   --reports <audit-output>/reports
 ```

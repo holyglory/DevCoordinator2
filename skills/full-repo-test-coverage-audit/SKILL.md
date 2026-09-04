@@ -43,11 +43,14 @@ Treat documented product intent, confirmed user journeys, source-backed feature 
 ## Workflow
 
 1. Set scope to the current working directory unless the user names another repo.
-2. Preflight the skill scripts, then run:
+2. Resolve `FULL_REPO_TEST_COVERAGE_AUDIT_SKILL_DIR` from the loaded skill
+   path and `CANONICAL_SKILL_ROOT` as its repository root. Preflight the
+   shared Rust harness with `devcoordinator2-tooling skills self-test
+   audit-tooling --source-root "$CANONICAL_SKILL_ROOT"`, then run:
 
    ```bash
    REPO_ROOT="${REPO_ROOT:-$PWD}"
-   python3 "$FULL_REPO_TEST_COVERAGE_AUDIT_SKILL_DIR/scripts/build_test_coverage_audit_batches.py" --repo "$REPO_ROOT"
+   devcoordinator2-tooling audit test-coverage build --repo "$REPO_ROOT"
    ```
 
 3. Inspect `audit_index.md`, `manifest.json`, and `excluded_files.json`. Resolve any `scope_warning: true` rows before claiming full coverage, or disclose downgraded coverage.
@@ -62,14 +65,14 @@ Treat documented product intent, confirmed user journeys, source-backed feature 
 7. Confirm one report per batch under `reports/batch_###.md`, then verify:
 
    ```bash
-   python3 "$FULL_REPO_TEST_COVERAGE_AUDIT_SKILL_DIR/scripts/verify_test_coverage_audit_results.py" --manifest <audit-output>/manifest.json --reports <audit-output>/reports
+   devcoordinator2-tooling audit test-coverage verify --manifest <audit-output>/manifest.json --reports <audit-output>/reports
    ```
 
 8. Reconcile findings, inspect suspicious high-impact gaps directly as lead, and produce a prioritized implementation plan. For large audits, consolidate first:
 
    ```bash
    CANONICAL_SKILL_ROOT="$(dirname "$(dirname "$(realpath "$FULL_REPO_TEST_COVERAGE_AUDIT_SKILL_DIR")")")"
-   python3 "$CANONICAL_SKILL_ROOT/full_repo_harness/merge_findings.py" \
+   devcoordinator2-tooling audit merge-findings \
      --reports <audit-output>/reports \
      --markdown-out <audit-output>/consolidated-findings.md
    ```

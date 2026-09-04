@@ -46,25 +46,27 @@ The universal cross-repository policy is `reference/universal/AGENTS.md`.
 - Keep each `SKILL.md` authoritative and mirror enforceable behavior in its
   self-tests.
 - Detector changes need realistic must-catch cases and false-positive guards.
-- Keep `full_repo_harness/` as the one shared source. Audit-skill scripts
-  resolve their installed direct links back to this checkout; do not create
-  vendored or standalone copies.
+- Keep `rust/tooling/` as the one shared source for audit builders, verifiers,
+  evidence handling, and self-tests. Audit skills invoke the installed
+  `devcoordinator2-tooling` binary; do not create vendored or standalone
+  copies.
 - Do not edit installed skill copies; change this repository and verify the
   direct links.
 
 ## Validation
 
 - Run product lint/tests directly from this repository.
-- Before Python tests or complete skill validation, run
-  `cargo test --locked --workspace` and build the release
-  `devcoordinator2-executor`. The skill validator uses only its `run-local`
+- Before complete skill validation, run the Rust workspace checks and build the
+  release `devcoordinator2`, `devcoordinator2-tooling`, and
+  `devcoordinator2-executor` binaries, including the tooling self-test fixture
+  feature. The skill validator uses only the executor's `run-local`
   self-validation surface; it never self-hosts through the installed daemon.
-- Run `python3 scripts/skills/validate.py` for the six-skill, policy, canonical
-  ownership, and browser matrix. It submits one strict schema-2 plan to the
-  Rust executor; cheap policy, privacy, and ownership preflights invalidate
-  expensive checks while unrelated siblings remain all-settled. Read bounded
-  failures from its receipt and keep complete logs/report in the named
-  `.devcoordinator/agent-validation/` run directory.
+- Run `devcoordinator2-tooling skills validate run` for the six-skill, policy,
+  canonical ownership, Python-free, and browser matrix. It submits one strict
+  schema-2 plan to the Rust executor; cheap policy, privacy, and ownership
+  preflights invalidate expensive checks while unrelated siblings remain
+  all-settled. Read bounded failures from its receipt and keep complete
+  logs/report in the named `.devcoordinator/agent-validation/` run directory.
 - The Formal Web UI self-test runs after the other skill self-tests because it
   measures a strict local response threshold; this is a concrete shared-host
   measurement conflict, not a general reason to serialize validation.
@@ -75,7 +77,8 @@ The universal cross-repository policy is `reference/universal/AGENTS.md`.
 ## Security boundary
 
 - The live checkout is writable only by mutually trusted accounts controlled
-  by the same owner. Its Python source executes as root when the daemon starts.
+  by the same owner. Its verified, commit-stamped Rust daemon binary executes as
+  root when the daemon starts.
 - Review `security-assumptions.md` before changing this trust model, adding a
   writer, or making repository writers mutually distrusting.
 - Secrets, credentials, private instance values, and live evidence never enter

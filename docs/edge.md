@@ -68,6 +68,7 @@ Daemon side: `DEVCOORDINATOR2_EDGE_UID` (the edge service uid) and
 ## Tests
 
 `node --test edge/test` runs the edge against a fixture OIDC issuer, a fake
-daemon socket, and real upstreams; `tests/integration/test_access_edge.py`
-proves identity trust, roles, invitation admission, and revocation over the
-real daemon.
+daemon socket, and real upstreams. The Rust control tests in
+`rust/control/src/access.rs` and `rust/control/src/daemon.rs` prove identity
+trust, roles, invitation admission, revocation, and non-edge spoof rejection at
+the daemon boundary.

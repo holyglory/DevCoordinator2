@@ -422,6 +422,7 @@ name = "devcoordinator2-executor-core"
 version = "0.2.0"
 dependencies = [
  "devcoordinator2-executor-protocol",
+ "libc",
  "quick-xml",
  "rustix",
  "serde",
