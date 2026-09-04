@@ -17,6 +17,10 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    Audit {
+        #[command(subcommand)]
+        command: AuditCommand,
+    },
     Contract {
         #[command(subcommand)]
         command: ContractCommand,
@@ -40,6 +44,27 @@ enum Command {
     Install {
         #[command(subcommand)]
         command: InstallCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum AuditCommand {
+    /// Merge, rank, hash-bind, and optionally project verified audit findings.
+    MergeFindings {
+        #[arg(long)]
+        reports: PathBuf,
+        #[arg(long)]
+        json_out: Option<PathBuf>,
+        #[arg(long)]
+        markdown_out: Option<PathBuf>,
+        #[arg(long)]
+        manifest: Option<PathBuf>,
+        #[arg(long)]
+        verification_receipt: Option<PathBuf>,
+        #[arg(long)]
+        ledger_projection_out: Option<PathBuf>,
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -325,6 +350,7 @@ fn main() -> ExitCode {
     }
     let cli = Cli::parse();
     match cli.command {
+        Command::Audit { command } => run_audit(command),
         Command::Contract {
             command: ContractCommand::Export { output, check },
         } => match devcoordinator2_tooling::export_contract(&output, check) {
@@ -447,6 +473,55 @@ fn main() -> ExitCode {
         Command::Legacy { command } => run_legacy(command),
         Command::Decision { command } => run_decision(command),
         Command::Install { command } => run_install(command),
+    }
+}
+
+fn run_audit(command: AuditCommand) -> ExitCode {
+    match command {
+        AuditCommand::MergeFindings {
+            reports,
+            json_out,
+            markdown_out,
+            manifest,
+            verification_receipt,
+            ledger_projection_out,
+            json,
+        } => {
+            let options = devcoordinator2_tooling::audit_findings::MergeCommandOptions {
+                reports,
+                json_out,
+                markdown_out,
+                manifest,
+                verification_receipt,
+                ledger_projection_out,
+            };
+            match devcoordinator2_tooling::audit_findings::run_merge_command(&options) {
+                Ok(output) if json => match serde_json::to_string_pretty(&output.result) {
+                    Ok(rendered) => {
+                        println!("{rendered}");
+                        ExitCode::SUCCESS
+                    }
+                    Err(error) => tooling_error(&format!("cannot encode findings: {error}"), 2),
+                },
+                Ok(output) => {
+                    let result = output.result;
+                    let count =
+                        |priority: &str| result.priority_counts.get(priority).copied().unwrap_or(0);
+                    println!(
+                        "{} unique findings from {} raw across {} reports (P0 {}, P1 {}, P2 {}, P3 {})",
+                        result.unique_findings,
+                        result.raw_findings,
+                        result.reports_scanned,
+                        count("P0"),
+                        count("P1"),
+                        count("P2"),
+                        count("P3")
+                    );
+                    ExitCode::SUCCESS
+                }
+                Err(error) => tooling_error(&format!("could not merge audit reports: {error}"), 2),
+            }
+        }
     }
 }
 
@@ -1029,6 +1104,24 @@ mod tests {
 
     #[test]
     fn every_ported_command_family_parses_without_python_wrappers() {
+        let audit = Cli::try_parse_from([
+            "devcoordinator2-tooling",
+            "audit",
+            "merge-findings",
+            "--reports",
+            "/tmp/audit/reports",
+            "--manifest",
+            "/tmp/audit/manifest.json",
+            "--json",
+        ])
+        .expect("audit findings command");
+        assert!(matches!(
+            audit.command,
+            Command::Audit {
+                command: AuditCommand::MergeFindings { json: true, .. }
+            }
+        ));
+
         let check = Cli::try_parse_from([
             "devcoordinator2-tooling",
             "check",
