@@ -241,8 +241,26 @@
   sealed run continues unchanged in parallel and gathers the remaining
   failures. Do not inject fixes into its running surface, restart it, or let
   concurrent repair destroy its evidence.
-- Prefer event-driven readiness. A timeout may be a longer failure deadline,
-  but no deliberate sleep or polling interval may exceed 100 ms.
+
+## Wait for events instead of polling
+
+- When a blocking event-subscription or wait facility is available, subscribe
+  once and enter the waiting state. Do not repeatedly call status tools, run
+  periodic shell checks, or spend model turns asking whether state changed.
+- Every subscription must allow an expected-event deadline. If the event does
+  not arrive, the wait facility returns a typed heartbeat result so the agent
+  can reassess.
+- Multiplex pending subscriptions through one wait whenever possible. A
+  heartbeat returns all subscriptions currently due and causes at most one
+  wake-up for that waiting task. One shared scheduler serves many
+  subscriptions; do not create one polling loop, timer process, or model
+  continuation per subscription.
+- On wake-up, retrieve the bounded authoritative state once and continue from
+  the returned cursor. A timeout may be a longer failure deadline, but no
+  deliberate sleep or polling interval may exceed 100 ms.
+- If no event interface exists, keep unavoidable polling inside one
+  software-owned watcher or harness process. Do not implement polling through
+  repeated agent turns.
 
 ## Validate at semantic checkpoints
 
@@ -262,6 +280,29 @@
 - Changes only to test plumbing do not trigger another complete release pass
   until the implementation and test infrastructure are both frozen.
 
+## Deliver UI previews before broad validation
+
+- When an authorized non-production UI surface is available, reproduce the
+  reported defect, implement the fix, and run the narrowest focused automated
+  and rendered checks that could invalidate it.
+- As soon as those focused checks pass, update the non-production surface and
+  give the user the exact URL, route, state, and viewport to inspect. Do not
+  wait for pre-merge validation or the complete test suite.
+- Clearly label this as a preliminary result. Early user inspection is
+  feedback, not readiness evidence or final formal visual review.
+- Run broader validation in the background against a frozen source snapshot
+  while the mutable test surface remains available for further corrections.
+  If the source changes during that run, let the sealed run finish as
+  diagnostic evidence, but do not use it to certify the newer source. Run one
+  fresh complete pass after the accepted candidate is frozen.
+- Never apply this preview-first permission to production unless the user
+  explicitly requests a production deployment.
+- When a repository explicitly declares one shared mutable test surface,
+  agents with non-conflicting page, route, symbol, or source-region ownership
+  may update it concurrently. Do not create isolated preview servers merely
+  because several agents are active. Serialize only actual overlapping edits
+  or server mutations that cannot safely overlap.
+
 ## Finish diagnostic cycles before batch fixing
 
 - For a finite full test, debug, reproduction, audit, migration-rehearsal, or
@@ -280,11 +321,6 @@
   and fix the batch, and rerun the complete relevant cycle. Focused checks may
   accelerate development between the two full passes, but do not replace the
   final full pass.
-- During a deployment already included in the agreed task, if a test server or
-  other non-production target can be deployed safely and is useful despite
-  known gaps, deploy it, tell the user what remains, and let their testing
-  proceed. Report it as an incomplete test deployment, not ready or complete.
-
 ## Keep behavior truthful
 
 - Never present invented facts, data, measurements, media, numbers, parameters,
