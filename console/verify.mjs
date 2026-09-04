@@ -2433,6 +2433,10 @@ async function main() {
   await page.mouse.move(resizeBox.x + resizeBox.width / 2 + 30, resizeBox.y + resizeBox.height / 2, { steps: 3 });
   await page.mouse.up();
   await waitForSettledCall(daemon, page, 'task.update');
+  await page.waitForFunction((taskId) => (
+    [...document.querySelectorAll('.toast.bad')].some((toast) => /resize failed/.test(toast.textContent || ''))
+    && [...document.querySelectorAll('[data-task-row]')].some((row) => row.dataset.taskRow === taskId)
+  ), P_C2);
   const resizeFailureText = await page.locator('.toast.bad').allInnerTexts();
   check('interaction: a failed resize reports failure and keeps the task available', resizeFailureText.some((text) => /resize failed/.test(text)) && await page.locator(`[data-task-row="${P_C2}"]`).count() === 1, resizeFailureText.join(' | '));
 
