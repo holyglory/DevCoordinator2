@@ -23,6 +23,7 @@ use crate::capacity::CapacityBroker;
 use crate::config::Config;
 use crate::daemon::OperationExecutor;
 use crate::database::{Database, DatabaseError};
+use crate::deployments::Deployments;
 use crate::plan::{PlanService, SqliteDeploymentEvidence};
 use crate::platform::{Clock, HostClock};
 use crate::repository::Registry;
@@ -52,6 +53,9 @@ pub const FOUNDATION_OPERATIONS: &[&str] = &[
     "repository.status",
     "repository.archive",
     "repository.unarchive",
+    "deployment.list",
+    "deployment.status",
+    "deployment.set_domain",
     "test.log.catalog",
     "test.log.tail",
     "test.log.search",
@@ -93,6 +97,7 @@ pub struct ControlPlane {
     plan: PlanService,
     logs: TestLogService,
     artifacts: TestArtifactService,
+    deployments: Deployments,
     capacity: CapacityBroker,
     telegram: TelegramService,
     clock: Arc<dyn Clock>,
@@ -116,6 +121,7 @@ impl ControlPlane {
     ) -> Result<Self, ProtocolError> {
         let access = Access::new(&config, database.clone(), publisher)?;
         let registry = Registry::new(database.clone());
+        let deployments = Deployments::new(config.clone(), database.clone(), registry.clone());
         let evidence = Arc::new(SqliteDeploymentEvidence::new(
             database.clone(),
             config.base_domain.clone(),
@@ -133,6 +139,7 @@ impl ControlPlane {
             plan,
             logs,
             artifacts,
+            deployments,
             capacity,
             telegram,
             clock,
@@ -251,6 +258,78 @@ impl ControlPlane {
                     self.registry
                         .unarchive(&params.repository_id, &params.note, caller.uid)?,
                 )
+            }
+            "deployment.list" => encode(self.deployments.list(decode(params)?, caller)?),
+            "deployment.status" => {
+                let params: params::DeploymentReference = decode(params)?;
+                encode(self.deployments.status(
+                    params.path.as_deref(),
+                    params.name.as_deref(),
+                    params.deployment_id.as_deref(),
+                    caller,
+                )?)
+            }
+            "deployment.logs" => {
+                let params: params::DeploymentLogs = decode(params)?;
+                let deployment_id = params.deployment_id.as_deref().ok_or_else(|| {
+                    ProtocolError::new(
+                        ErrorCode::InternalError,
+                        "managed deployment logs are not installed in this migration checkpoint",
+                    )
+                })?;
+                if !self.deployments.store().observed_exists(deployment_id)? {
+                    return Err(ProtocolError::new(
+                        ErrorCode::InternalError,
+                        "managed deployment logs are not installed in this migration checkpoint",
+                    ));
+                }
+                encode(self.deployments.observed_logs(
+                    deployment_id,
+                    &params.component,
+                    params.tail_lines,
+                )?)
+            }
+            "deployment.start" | "deployment.stop" | "deployment.restart" => {
+                let action = operation.split('.').nth(1).unwrap_or_default();
+                let params: params::DeploymentControl = decode(params)?;
+                let deployment_id = params.deployment_id.as_deref().ok_or_else(|| {
+                    ProtocolError::new(
+                        ErrorCode::InternalError,
+                        "managed deployment control is not installed in this migration checkpoint",
+                    )
+                })?;
+                if !self.deployments.store().observed_exists(deployment_id)? {
+                    return Err(ProtocolError::new(
+                        ErrorCode::InternalError,
+                        "managed deployment control is not installed in this migration checkpoint",
+                    ));
+                }
+                let result = self.deployments.control_observed(
+                    action,
+                    deployment_id,
+                    params.component.as_deref(),
+                )?;
+                self.notify(
+                    TelegramEvent::new(operation)
+                        .with("deployment_id", deployment_id)
+                        .with("name", result.name.clone())
+                        .with("source", "observed")
+                        .with("component", params.component)
+                        .with("repository_id", result.repository_id.clone())
+                        .with("state", result.state.clone()),
+                );
+                encode(result)
+            }
+            "deployment.set_domain" => {
+                let params: params::SetDomain = decode(params)?;
+                let deployment_id = params.deployment_id.clone();
+                let result = self.deployments.set_domain(params)?;
+                self.notify(
+                    TelegramEvent::new("deployment.domain_changed")
+                        .with("deployment_id", deployment_id)
+                        .with("domain", result.domain.clone()),
+                );
+                encode(result)
             }
             "test.log.catalog" => {
                 let params: params::LogCatalog = decode(params)?;

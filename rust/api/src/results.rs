@@ -917,7 +917,7 @@ pub struct DeploymentList {
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ComponentBinding {
-    pub kind: String,
+    pub kind: Option<String>,
     pub identity: Option<String>,
 }
 
@@ -928,7 +928,7 @@ pub struct ComposeService {
     pub role: String,
     pub state: String,
     pub desired_state: String,
-    pub containers: Vec<String>,
+    pub containers: u32,
     pub independent: bool,
 }
 

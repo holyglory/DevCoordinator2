@@ -10567,22 +10567,21 @@
                 ]
               },
               "kind": {
-                "type": "string"
+                "type": [
+                  "string",
+                  "null"
+                ]
               }
             },
-            "required": [
-              "kind"
-            ],
             "type": "object"
           },
           "ComposeService": {
             "additionalProperties": false,
             "properties": {
               "containers": {
-                "items": {
-                  "type": "string"
-                },
-                "type": "array"
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
               },
               "desired_state": {
                 "type": "string"
@@ -11138,22 +11137,21 @@
                 ]
               },
               "kind": {
-                "type": "string"
+                "type": [
+                  "string",
+                  "null"
+                ]
               }
             },
-            "required": [
-              "kind"
-            ],
             "type": "object"
           },
           "ComposeService": {
             "additionalProperties": false,
             "properties": {
               "containers": {
-                "items": {
-                  "type": "string"
-                },
-                "type": "array"
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
               },
               "desired_state": {
                 "type": "string"
@@ -11561,22 +11559,21 @@
                 ]
               },
               "kind": {
-                "type": "string"
+                "type": [
+                  "string",
+                  "null"
+                ]
               }
             },
-            "required": [
-              "kind"
-            ],
             "type": "object"
           },
           "ComposeService": {
             "additionalProperties": false,
             "properties": {
               "containers": {
-                "items": {
-                  "type": "string"
-                },
-                "type": "array"
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
               },
               "desired_state": {
                 "type": "string"
@@ -11998,22 +11995,21 @@
                 ]
               },
               "kind": {
-                "type": "string"
+                "type": [
+                  "string",
+                  "null"
+                ]
               }
             },
-            "required": [
-              "kind"
-            ],
             "type": "object"
           },
           "ComposeService": {
             "additionalProperties": false,
             "properties": {
               "containers": {
-                "items": {
-                  "type": "string"
-                },
-                "type": "array"
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
               },
               "desired_state": {
                 "type": "string"
@@ -12435,22 +12431,21 @@
                 ]
               },
               "kind": {
-                "type": "string"
+                "type": [
+                  "string",
+                  "null"
+                ]
               }
             },
-            "required": [
-              "kind"
-            ],
             "type": "object"
           },
           "ComposeService": {
             "additionalProperties": false,
             "properties": {
               "containers": {
-                "items": {
-                  "type": "string"
-                },
-                "type": "array"
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
               },
               "desired_state": {
                 "type": "string"
@@ -12872,22 +12867,21 @@
                 ]
               },
               "kind": {
-                "type": "string"
+                "type": [
+                  "string",
+                  "null"
+                ]
               }
             },
-            "required": [
-              "kind"
-            ],
             "type": "object"
           },
           "ComposeService": {
             "additionalProperties": false,
             "properties": {
               "containers": {
-                "items": {
-                  "type": "string"
-                },
-                "type": "array"
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
               },
               "desired_state": {
                 "type": "string"

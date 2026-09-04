@@ -12,6 +12,7 @@ pub mod control_plane;
 pub mod daemon;
 pub mod database;
 pub mod deployment_state;
+pub mod deployments;
 pub mod docker;
 pub mod ids;
 pub mod mcp;

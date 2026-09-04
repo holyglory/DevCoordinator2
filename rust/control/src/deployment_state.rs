@@ -167,6 +167,10 @@ impl DeploymentStore {
         &self.database
     }
 
+    pub fn current_timestamp(&self) -> Result<String, ProtocolError> {
+        self.timestamp()
+    }
+
     pub fn deployment_id(worktree_id: &str, name: &str, source: &str) -> String {
         let mut digest = Sha256::new();
         digest.update(b"devcoordinator2.deployment\0");
@@ -404,6 +408,26 @@ impl DeploymentStore {
                     "UPDATE deployments SET state=?1,current_generation=?2,previous_generation=?3,updated_at=?4 WHERE deployment_id=?5",
                     rusqlite::params![state,current_generation,previous_generation,now,deployment_id],
                 )?;
+                Ok(())
+            })
+            .map_err(database_error)
+    }
+
+    pub fn set_public(&self, deployment_id: &str, public: bool) -> Result<(), ProtocolError> {
+        let now = self.timestamp()?;
+        let deployment_id = deployment_id.to_owned();
+        self.database
+            .transaction(move |transaction| {
+                let changed = transaction.execute(
+                    "UPDATE deployments SET public=?1,updated_at=?2 WHERE deployment_id=?3",
+                    rusqlite::params![i64::from(public), now, deployment_id],
+                )?;
+                if changed == 0 {
+                    return Err(domain_error(
+                        ErrorCode::DeploymentNotFound,
+                        "deployment does not exist",
+                    ));
+                }
                 Ok(())
             })
             .map_err(database_error)
@@ -1087,7 +1111,7 @@ impl DeploymentStore {
                             health: component_health.clone(),
                             generation: None,
                             binding: ComponentBinding {
-                                kind: "observed-container".into(),
+                                kind: Some("observed-container".into()),
                                 identity: Some(container_id),
                             },
                             port: (route_component.as_deref() == Some(&component_name))

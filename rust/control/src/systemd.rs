@@ -41,6 +41,29 @@ pub struct TransientUnitSpec {
     pub scratch_directory: PathBuf,
 }
 
+#[derive(Clone, Debug)]
+pub struct PersistentUnitSpec {
+    pub unit: String,
+    pub slice_name: String,
+    pub uid: u32,
+    pub gid: u32,
+    pub working_directory: PathBuf,
+    pub environment_file: PathBuf,
+    pub command: Vec<OsString>,
+    pub log_path: PathBuf,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProcessState {
+    pub state: String,
+    pub active_state: String,
+    pub sub_state: String,
+    pub result: String,
+    pub main_pid: u32,
+    pub restarts: u32,
+    pub cgroup: String,
+}
+
 pub trait UnitProcess: Send {
     fn id(&self) -> u32;
     fn take_stdout(&mut self) -> Option<Box<dyn Read + Send>>;
@@ -84,6 +107,8 @@ pub trait SystemdControl: Send + Sync + 'static {
         &self,
         specification: &TransientUnitSpec,
     ) -> Result<Box<dyn UnitProcess>, SystemdError>;
+    fn start_persistent(&self, specification: &PersistentUnitSpec) -> Result<(), SystemdError>;
+    fn process_state(&self, unit: &str) -> Result<ProcessState, SystemdError>;
     fn show_unit(
         &self,
         unit: &str,
@@ -154,6 +179,65 @@ impl SystemdControl for SystemdCli {
             .spawn()
             .map_err(|error| invocation_error(&self.systemd_run, error))?;
         Ok(Box::new(ChildUnitProcess(child)))
+    }
+
+    fn start_persistent(&self, specification: &PersistentUnitSpec) -> Result<(), SystemdError> {
+        rotate_log(&specification.log_path)?;
+        let argv = build_persistent_systemd_run_argv(specification)?;
+        let output = run_bounded(&self.systemd_run, &argv[1..], STOP_TIMEOUT)?;
+        if output.status.success() {
+            Ok(())
+        } else {
+            Err(SystemdError::Operation(format!(
+                "systemd-run failed: {}",
+                bounded_lossy(&output.stderr, 1_024)
+            )))
+        }
+    }
+
+    fn process_state(&self, unit: &str) -> Result<ProcessState, SystemdError> {
+        let values = self.show_unit(
+            unit,
+            &[
+                "ActiveState",
+                "SubState",
+                "Result",
+                "MainPID",
+                "NRestarts",
+                "ExecMainStatus",
+                "ControlGroup",
+            ],
+        )?;
+        let active = property(&values, "ActiveState").unwrap_or_default();
+        let cgroup = property(&values, "ControlGroup").unwrap_or_default();
+        let state = if matches!(active, "" | "inactive") && cgroup.is_empty() {
+            "stopped"
+        } else if active == "active" {
+            "running"
+        } else if matches!(active, "activating" | "reloading") {
+            "starting"
+        } else if active == "deactivating" {
+            "stopping"
+        } else {
+            "failed"
+        };
+        Ok(ProcessState {
+            state: state.into(),
+            active_state: if active.is_empty() {
+                "absent".into()
+            } else {
+                active.into()
+            },
+            sub_state: property(&values, "SubState").unwrap_or_default().into(),
+            result: property(&values, "Result").unwrap_or_default().into(),
+            main_pid: property(&values, "MainPID")
+                .and_then(|value| value.parse().ok())
+                .unwrap_or(0),
+            restarts: property(&values, "NRestarts")
+                .and_then(|value| value.parse().ok())
+                .unwrap_or(0),
+            cgroup: cgroup.into(),
+        })
     }
 
     fn show_unit(
@@ -294,6 +378,77 @@ pub fn build_systemd_run_argv(
     Ok(build_argv_with_identity(specification, &user, &groups))
 }
 
+pub fn build_persistent_systemd_run_argv(
+    specification: &PersistentUnitSpec,
+) -> Result<Vec<OsString>, SystemdError> {
+    validate_atom("unit", &specification.unit)?;
+    validate_atom("slice", &specification.slice_name)?;
+    if specification.command.is_empty()
+        || !specification.working_directory.is_absolute()
+        || !specification.environment_file.is_absolute()
+        || !specification.log_path.is_absolute()
+    {
+        return Err(SystemdError::Invalid(
+            "persistent unit paths or command are invalid".into(),
+        ));
+    }
+    let groups = supplementary_groups(specification.uid)?;
+    let mut argv = vec![
+        OsString::from("systemd-run"),
+        OsString::from("--quiet"),
+        OsString::from(format!("--unit={}", specification.unit)),
+        OsString::from(format!("--slice={}", specification.slice_name)),
+        OsString::from(format!("--uid={}", specification.uid)),
+        OsString::from(format!("--gid={}", specification.gid)),
+        OsString::from("--property=KillMode=control-group"),
+        OsString::from("--property=TimeoutStopSec=15s"),
+        OsString::from("--property=Restart=on-failure"),
+        OsString::from("--property=RestartSec=2s"),
+        OsString::from("--property=StartLimitIntervalSec=120"),
+        OsString::from("--property=StartLimitBurst=5"),
+        OsString::from("--property=NoNewPrivileges=yes"),
+        OsString::from("--property=UMask=0027"),
+        prefixed(
+            "--property=EnvironmentFile=",
+            &specification.environment_file,
+        ),
+        prefixed("--property=StandardOutput=append:", &specification.log_path),
+        prefixed("--property=StandardError=append:", &specification.log_path),
+        prefixed("--working-directory=", &specification.working_directory),
+    ];
+    if !groups.is_empty() {
+        let mut value = OsString::from("--property=SupplementaryGroups=");
+        for (index, (_, name)) in groups.iter().enumerate() {
+            if index > 0 {
+                value.push(" ");
+            }
+            value.push(name);
+        }
+        argv.push(value);
+    }
+    argv.push(OsString::from("--"));
+    argv.extend(specification.command.iter().cloned());
+    Ok(argv)
+}
+
+fn rotate_log(path: &Path) -> Result<(), SystemdError> {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => {
+            return Err(SystemdError::Invalid(
+                "deployment log path must be a regular non-symlink file".into(),
+            ));
+        }
+        Ok(_) => {
+            let mut previous = path.as_os_str().to_owned();
+            previous.push(".1");
+            let _ = std::fs::rename(path, PathBuf::from(previous));
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(invocation_error(path, error)),
+    }
+    Ok(())
+}
+
 #[derive(Clone, Debug)]
 struct UserRecord {
     name: OsString,
@@ -376,6 +531,10 @@ pub fn supplementary_groups(uid: u32) -> Result<Vec<(u32, OsString)>, SystemdErr
         .filter(|gid| *gid != 0)
         .map(|gid| Ok((gid, group_name(gid)?)))
         .collect()
+}
+
+pub fn primary_gid(uid: u32) -> Result<u32, SystemdError> {
+    user_record_with_gid(uid).map(|(_, gid)| gid)
 }
 
 fn user_record(uid: u32) -> Result<UserRecord, SystemdError> {
@@ -702,6 +861,53 @@ mod tests {
             cli.control_group_path("one.service").expect("cgroup"),
             Some(temporary.path().join("cgroup/slice/unit"))
         );
+        let state = cli.process_state("one.service").expect("process state");
+        assert_eq!(state.state, "running");
+        assert_eq!(state.active_state, "active");
+    }
+
+    #[test]
+    fn persistent_unit_uses_exact_properties_and_rotates_one_bounded_log() {
+        let temporary = tempdir().expect("tempdir");
+        let recorder = temporary.path().join("arguments");
+        let launcher = temporary.path().join("systemd-run");
+        std::fs::write(
+            &launcher,
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\n",
+                recorder.display()
+            ),
+        )
+        .expect("launcher");
+        std::fs::set_permissions(&launcher, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let systemctl = temporary.path().join("systemctl");
+        std::fs::write(&systemctl, "#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::set_permissions(&systemctl, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let log = temporary.path().join("component.log");
+        std::fs::write(&log, "prior").unwrap();
+        let uid = rustix::process::getuid().as_raw();
+        let gid = rustix::process::getgid().as_raw();
+        let cli = SystemdCli::with_paths(systemctl, launcher, temporary.path().join("cgroup"));
+        cli.start_persistent(&PersistentUnitSpec {
+            unit: "devcoordinator2-deploy-d1-api-g1.service".into(),
+            slice_name: "devcoordinator2-deploy-d1.slice".into(),
+            uid,
+            gid,
+            working_directory: temporary.path().to_owned(),
+            environment_file: temporary.path().join("environment"),
+            command: vec![OsString::from("/usr/bin/true")],
+            log_path: log.clone(),
+        })
+        .expect("persistent start");
+        assert_eq!(
+            std::fs::read_to_string(log.with_extension("log.1")).unwrap(),
+            "prior"
+        );
+        let arguments = std::fs::read_to_string(recorder).unwrap();
+        assert!(arguments.contains("--property=Restart=on-failure"));
+        assert!(arguments.contains("--property=NoNewPrivileges=yes"));
+        assert!(arguments.contains("--property=StandardOutput=append:"));
+        assert!(arguments.contains("/usr/bin/true"));
     }
 
     #[test]
