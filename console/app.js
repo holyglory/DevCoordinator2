@@ -2530,10 +2530,10 @@ function progressBarLineLane(data, {
   const values = series.map((point) => Number(point[key] || 0));
   const incoming = series.map((point) => Number(point[incomingKey] || 0));
   const cumulative = series.map((point) => Number(point[cumulativeKey] || 0));
-  const completedMax = Math.max(...values, 1); const incomingMax = Math.max(...incoming, 1);
+  const barMax = Math.max(...values, ...incoming, 1);
   const cumulativeMax = Math.max(...cumulative, 1);
-  const barY = (value) => baseline - (value / completedMax) * (baseline - top - 14);
-  const incomingHeight = (value) => (value / incomingMax) * (height - bottom - baseline - 14);
+  const barY = (value) => baseline - (value / barMax) * (baseline - top - 14);
+  const incomingHeight = (value) => (value / barMax) * (height - bottom - baseline - 14);
   const lineY = (value) => baseline - (value / cumulativeMax) * (baseline - top - 14);
   const barWidth = Math.max(7, Math.min(28, step * .48));
   const bars = values.map((value, index) => {
