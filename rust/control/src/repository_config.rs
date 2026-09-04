@@ -205,7 +205,8 @@ impl DeploymentSpec {
     pub fn fingerprint(&self, source: &str) -> String {
         lower_hex(&Sha256::digest(
             serde_json::to_vec(&self.canonical(source)).expect("deployment spec is serializable"),
-        ))
+        ))[..24]
+            .to_owned()
     }
 }
 
