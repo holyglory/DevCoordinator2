@@ -663,7 +663,7 @@ impl CompleteLogWriter {
         for (position, byte) in stored.iter().enumerate() {
             if self.at_line_start {
                 let line = self.lf_lines + 1;
-                if (line - 1).is_multiple_of(LINE_INDEX_STRIDE) {
+                if (line - 1) % LINE_INDEX_STRIDE == 0 {
                     records.extend_from_slice(&line.to_le_bytes());
                     records.extend_from_slice(&(base + position as u64).to_le_bytes());
                 }
