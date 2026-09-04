@@ -62,6 +62,10 @@ enum FormalUiCommand {
         keep: bool,
         #[arg(long, default_value_t = 240)]
         timeout_seconds: u64,
+        #[arg(long, default_value = "all")]
+        phase: String,
+        #[arg(long)]
+        coordinator_fixture: Option<PathBuf>,
     },
     /// Run the retained Node browser verifier through the Rust tooling surface.
     Verify {
@@ -785,11 +789,15 @@ fn run_formal_ui(command: FormalUiCommand) -> ExitCode {
             workspace_parent,
             keep,
             timeout_seconds,
+            phase,
+            coordinator_fixture,
         } => match devcoordinator2_tooling::formal_selftest::run(
             &devcoordinator2_tooling::formal_selftest::SelfTestOptions {
                 workspace_parent,
                 keep,
                 timeout_seconds,
+                phase,
+                coordinator_fixture,
             },
         ) {
             Ok(result) => {

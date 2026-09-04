@@ -12,6 +12,16 @@ name = "devcoordinator2_tooling"
 name = "devcoordinator2-tooling"
 path = "src/main.rs"
 
+[[bin]]
+name = "devcoordinator2-selftest-coordinator"
+path = "src/bin/selftest_coordinator.rs"
+required-features = ["selftest-fixtures"]
+test = false
+bench = false
+
+[features]
+selftest-fixtures = []
+
 [dependencies]
 base64.workspace = true
 clap.workspace = true

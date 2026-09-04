@@ -2213,7 +2213,7 @@ if (result.executionCount !== 1 || result.unsafeStop !== 'browser-authority-lost
             fake_coordinator,
             "#!/usr/bin/env python3\n"
             "import json\n"
-            "print(json.dumps({'ok': True, 'result': {'deployments': [{"
+            "print(json.dumps({'protocol': 2, 'id': 'formal-ui-self-test', 'ok': True, 'data': {'deployments': [{"
             "'name': 'fixture', 'repository_name': 'fixture', "
             "'route_port': 9, 'state': 'running'}]}}))\n",
         )
