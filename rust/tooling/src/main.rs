@@ -80,6 +80,21 @@ enum AuditCommand {
         #[arg(long = "include-glob")]
         include_globs: Vec<String>,
     },
+    /// Validate full-repository batch, journey, lead, and receipt artifacts.
+    VerifyFullRepo {
+        #[arg(long)]
+        manifest: PathBuf,
+        #[arg(long, required = true, num_args = 1..)]
+        reports: Vec<PathBuf>,
+        #[arg(long)]
+        batch_id: Option<String>,
+        #[arg(long)]
+        skip_current_hash_check: bool,
+        #[arg(long)]
+        receipt_out: Option<PathBuf>,
+        #[arg(long)]
+        json: bool,
+    },
     /// Merge, rank, hash-bind, and optionally project verified audit findings.
     MergeFindings {
         #[arg(long)]
@@ -539,6 +554,21 @@ fn run_audit(command: AuditCommand) -> ExitCode {
             include_files,
             include_globs,
         ),
+        AuditCommand::VerifyFullRepo {
+            manifest,
+            reports,
+            batch_id,
+            skip_current_hash_check,
+            receipt_out,
+            json,
+        } => run_full_repo_verify(
+            manifest,
+            reports,
+            batch_id,
+            skip_current_hash_check,
+            receipt_out,
+            json,
+        ),
         AuditCommand::MergeFindings {
             reports,
             json_out,
@@ -583,6 +613,65 @@ fn run_audit(command: AuditCommand) -> ExitCode {
                 Err(error) => tooling_error(&format!("could not merge audit reports: {error}"), 2),
             }
         }
+    }
+}
+
+fn run_full_repo_verify(
+    manifest: PathBuf,
+    reports: Vec<PathBuf>,
+    batch_id: Option<String>,
+    skip_current_hash_check: bool,
+    receipt_out: Option<PathBuf>,
+    json_output: bool,
+) -> ExitCode {
+    let options = devcoordinator2_tooling::audit_verify::VerifyOptions {
+        manifest,
+        reports,
+        batch_id,
+        skip_current_hash_check,
+        receipt_out,
+    };
+    match devcoordinator2_tooling::audit_verify::verify(&options) {
+        Ok(run) if json_output => match serde_json::to_string_pretty(&run.result) {
+            Ok(value) => {
+                println!("{value}");
+                if run.result.get("ok") == Some(&serde_json::json!(true)) {
+                    ExitCode::SUCCESS
+                } else {
+                    ExitCode::from(1)
+                }
+            }
+            Err(error) => tooling_error(&format!("cannot encode verifier result: {error}"), 2),
+        },
+        Ok(run) => {
+            println!("Expected files: {}", run.result["expected_count"]);
+            println!("Reported files: {}", run.result["reported_count"]);
+            println!("Expected batches: {}", run.result["expected_batch_count"]);
+            for key in [
+                "missing",
+                "unchecked",
+                "duplicate",
+                "extra",
+                "missing_batch_reports",
+                "unassigned_reports",
+                "current_hash_mismatches",
+                "effort_ledger_mismatches",
+                "implementation_inventory_issues",
+                "interface_inventory_issues",
+                "lead_reconciliation_issues",
+                "semantic_report_issues",
+            ] {
+                println!("{key}: {}", run.result[key].as_array().map_or(0, Vec::len));
+            }
+            let ok = run.result.get("ok") == Some(&serde_json::json!(true));
+            println!("ok: {ok}");
+            if ok {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::from(1)
+            }
+        }
+        Err(error) => tooling_error(&error, 2),
     }
 }
 
@@ -1336,6 +1425,29 @@ mod tests {
                 command: AuditCommand::BuildFullRepo {
                     no_include_config: true,
                     include_assets: true,
+                    ..
+                }
+            }
+        ));
+        let verify = Cli::try_parse_from([
+            "devcoordinator2-tooling",
+            "audit",
+            "verify-full-repo",
+            "--manifest",
+            "/tmp/audit/manifest.json",
+            "--reports",
+            "/tmp/audit/reports",
+            "--batch-id",
+            "batch_001",
+            "--json",
+        ])
+        .expect("audit verifier command");
+        assert!(matches!(
+            verify.command,
+            Command::Audit {
+                command: AuditCommand::VerifyFullRepo {
+                    batch_id: Some(_),
+                    json: true,
                     ..
                 }
             }
