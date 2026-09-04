@@ -3,6 +3,11 @@ use std::process::ExitCode;
 
 use clap::{Args, Parser, Subcommand};
 
+const SOURCE_COMMIT: &str = match option_env!("DEVCOORDINATOR2_SOURCE_COMMIT") {
+    Some(value) => value,
+    None => "development",
+};
+
 #[derive(Debug, Parser)]
 #[command(name = "devcoordinator2-tooling", version)]
 struct Cli {
@@ -31,6 +36,34 @@ enum Command {
     Decision {
         #[command(subcommand)]
         command: DecisionCommand,
+    },
+    Install {
+        #[command(subcommand)]
+        command: InstallCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum InstallCommand {
+    Preflight {
+        #[arg(long, default_value = ".")]
+        source_root: PathBuf,
+        #[arg(long)]
+        fetch: bool,
+    },
+    Build {
+        #[arg(long, default_value = ".")]
+        source_root: PathBuf,
+        #[arg(long, default_value = "/etc/devcoordinator2/install-manifest.json")]
+        manifest: PathBuf,
+    },
+    Verify {
+        #[arg(long, default_value = "/etc/devcoordinator2/install-manifest.json")]
+        manifest: PathBuf,
+    },
+    Plan {
+        #[arg(long, default_value = "/etc/devcoordinator2/install-manifest.json")]
+        manifest: PathBuf,
     },
 }
 
@@ -238,6 +271,10 @@ enum CheckCommand {
 }
 
 fn main() -> ExitCode {
+    if source_commit_requested() {
+        println!("{SOURCE_COMMIT}");
+        return ExitCode::SUCCESS;
+    }
     let cli = Cli::parse();
     match cli.command {
         Command::Contract {
@@ -361,7 +398,72 @@ fn main() -> ExitCode {
         } => run_policy(command),
         Command::Legacy { command } => run_legacy(command),
         Command::Decision { command } => run_decision(command),
+        Command::Install { command } => run_install(command),
     }
+}
+
+fn run_install(command: InstallCommand) -> ExitCode {
+    use devcoordinator2_tooling::install::{self, HostRunner};
+    let result = match command {
+        InstallCommand::Preflight { source_root, fetch } => {
+            install::validate_live_checkout(&source_root, fetch, &HostRunner).map(|commit| {
+                serde_json::json!({
+                    "source_root": source_root,
+                    "source_commit": commit,
+                    "clean_main": true,
+                })
+            })
+        }
+        InstallCommand::Build {
+            source_root,
+            manifest: manifest_path,
+        } => (|| {
+            if rustix::process::geteuid().as_raw() != 0 {
+                return Err("install build must run as root".to_owned());
+            }
+            let source_root = source_root
+                .canonicalize()
+                .map_err(|error| format!("cannot resolve source root: {error}"))?;
+            let source_commit = install::validate_live_checkout(&source_root, false, &HostRunner)?;
+            let identity = install::checkout_build_identity(&source_root)?;
+            let binaries = install::build_release_binaries(
+                &source_root,
+                &source_commit,
+                &identity,
+                &install::BuildTools::default(),
+                &HostRunner,
+            )?;
+            let built_at = timestamp()?;
+            let document = install::manifest(&source_root, &source_commit, &built_at, binaries)?;
+            install::write_manifest(&manifest_path, &document, (0, 0))?;
+            serde_json::to_value(document)
+                .map_err(|error| format!("cannot encode installation manifest: {error}"))
+        })(),
+        InstallCommand::Verify { manifest } => {
+            install::read_and_verify_manifest(&manifest, &HostRunner).and_then(|document| {
+                serde_json::to_value(document)
+                    .map_err(|error| format!("cannot encode installation manifest: {error}"))
+            })
+        }
+        InstallCommand::Plan { manifest } => {
+            install::read_and_verify_manifest(&manifest, &HostRunner)
+                .and_then(|document| install::installation_plan(&document, &manifest))
+                .and_then(|plan| {
+                    serde_json::to_value(plan)
+                        .map_err(|error| format!("cannot encode installation plan: {error}"))
+                })
+        }
+    };
+    match result {
+        Ok(value) => emit_report(value, true, 1),
+        Err(error) => tooling_error(&error, 2),
+    }
+}
+
+fn source_commit_requested() -> bool {
+    let mut arguments = std::env::args_os().skip(1);
+    arguments.next().as_deref() == Some(std::ffi::OsStr::new("--source-commit"))
+        && arguments.next().is_none()
 }
 
 fn run_legacy(command: LegacyCommand) -> ExitCode {
@@ -744,6 +846,21 @@ mod tests {
             decision.command,
             Command::Decision {
                 command: DecisionCommand::Import(_)
+            }
+        ));
+
+        let install = Cli::try_parse_from([
+            "devcoordinator2-tooling",
+            "install",
+            "preflight",
+            "--source-root",
+            "/repo",
+        ])
+        .expect("install preflight command");
+        assert!(matches!(
+            install.command,
+            Command::Install {
+                command: InstallCommand::Preflight { .. }
             }
         ));
     }

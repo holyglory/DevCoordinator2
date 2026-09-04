@@ -17,6 +17,7 @@ clap.workspace = true
 devcoordinator2-api = { path = "../api" }
 getrandom.workspace = true
 ignore.workspace = true
+libc.workspace = true
 regex.workspace = true
 rusqlite.workspace = true
 rustix.workspace = true

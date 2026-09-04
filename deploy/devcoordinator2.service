@@ -1,6 +1,6 @@
-# DevCoordinator2 daemon. Runs as root: PID 1 applies per-test credential
-# changes via systemd-run --uid/--gid; the daemon never manipulates
-# credentials itself (DecisionHistory DC2-2026-08-22-LAUNCH-MODE).
+# DevCoordinator2 Rust daemon. Runs as root: PID 1 applies per-test identity
+# through systemd-run --uid/--gid; governed commands remain in the separate
+# non-root executor process (DecisionHistory DC2-2026-08-22-LAUNCH-MODE).
 # Install-time steps (see docs/instance-configuration.md):
 #   - create /etc/devcoordinator2/instance.env (root:CLIENT_GROUP, 0640)
 #   - create the client group named there and add trusted accounts
@@ -11,8 +11,7 @@ After=network.target
 [Service]
 Type=exec
 User=root
-ExecStart=/usr/bin/python3 -m devcoordinator2.daemon
-Environment=PYTHONPATH=/home/DevCoordinator2/src
+ExecStart=/home/DevCoordinator2/target/release/devcoordinator2 daemon
 EnvironmentFile=-/etc/devcoordinator2/instance.env
 NoNewPrivileges=yes
 ProtectSystem=full

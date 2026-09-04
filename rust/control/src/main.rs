@@ -22,6 +22,10 @@ type JoinedService = Result<ServiceResult, tokio::task::JoinError>;
 
 #[tokio::main]
 async fn main() -> ExitCode {
+    if source_commit_requested() {
+        println!("{}", devcoordinator2_control::SOURCE_COMMIT);
+        return ExitCode::SUCCESS;
+    }
     tracing_subscriber::fmt()
         .with_writer(std::io::stderr)
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
@@ -128,6 +132,12 @@ async fn main() -> ExitCode {
             Err(error) => configuration_error(format, &error.to_string()),
         },
     }
+}
+
+fn source_commit_requested() -> bool {
+    let mut arguments = std::env::args_os().skip(1);
+    arguments.next().as_deref() == Some(std::ffi::OsStr::new("--source-commit"))
+        && arguments.next().is_none()
 }
 
 fn configuration_error(format: OutputFormat, detail: &str) -> ExitCode {

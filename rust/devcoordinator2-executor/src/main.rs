@@ -13,6 +13,11 @@ use devcoordinator2_executor_core::{
 };
 use serde_json::json;
 
+const SOURCE_COMMIT: &str = match option_env!("DEVCOORDINATOR2_SOURCE_COMMIT") {
+    Some(value) => value,
+    None => "development",
+};
+
 fn load_plan(path: &Path) -> Result<ExecutionPlan, String> {
     let input = read_bounded(path)?;
     if path.extension().and_then(|value| value.to_str()) == Some("toml") {
@@ -49,6 +54,10 @@ async fn dispatch(args: Vec<std::ffi::OsString>) -> Result<i32, String> {
         return Err(usage());
     };
     match command {
+        "--source-commit" if args.len() == 1 => {
+            println!("{SOURCE_COMMIT}");
+            Ok(0)
+        }
         "validate" if args.len() == 2 => {
             let plan = load_plan(Path::new(&args[1]))?;
             println!(

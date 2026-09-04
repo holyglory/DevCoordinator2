@@ -447,6 +447,7 @@ dependencies = [
  "devcoordinator2-api",
  "getrandom 0.3.4",
  "ignore",
+ "libc",
  "regex",
  "rusqlite",
  "rustix",
