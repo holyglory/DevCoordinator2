@@ -539,14 +539,14 @@ pub fn write_bytes_nofollow(path: &Path, bytes: &[u8], mode: u32) -> Result<(), 
     Ok(())
 }
 
-/// Read a regular UTF-8 file without following any supplied path symlink.
+/// Read a regular file without following any supplied path symlink.
 ///
 /// `Ok(None)` means the path does not exist. Any other unsafe object or
 /// unstable read fails closed.
-pub fn read_text_nofollow(
+pub fn read_bytes_nofollow(
     path: &Path,
     anchor: Option<&Path>,
-) -> Result<Option<String>, LedgerError> {
+) -> Result<Option<Vec<u8>>, LedgerError> {
     let (absolute, components) = absolute_components(path)?;
     if components.is_empty() {
         return Err(LedgerError(format!(
@@ -637,6 +637,16 @@ pub fn read_text_nofollow(
             path.display()
         )));
     }
+    Ok(Some(bytes))
+}
+
+pub fn read_text_nofollow(
+    path: &Path,
+    anchor: Option<&Path>,
+) -> Result<Option<String>, LedgerError> {
+    let Some(bytes) = read_bytes_nofollow(path, anchor)? else {
+        return Ok(None);
+    };
     String::from_utf8(bytes)
         .map(Some)
         .map_err(|_| LedgerError(format!("ledger is not valid UTF-8: {}", path.display())))

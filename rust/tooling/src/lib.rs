@@ -1,7 +1,10 @@
 use std::path::Path;
 
+pub mod audit_common;
+pub mod audit_evidence;
 pub mod audit_findings;
 pub mod audit_ledger;
+pub mod audit_targets;
 pub mod cutover;
 pub mod decision_import;
 pub mod install;
