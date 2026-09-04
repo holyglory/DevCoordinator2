@@ -76,6 +76,10 @@ enum FormalUiCommand {
 
 #[derive(Debug, Subcommand)]
 enum AuditCommand {
+    MarkerFree {
+        #[command(subcommand)]
+        command: MarkerFreeCommand,
+    },
     UiImplementation {
         #[command(subcommand)]
         command: UiImplementationCommand,
@@ -150,6 +154,28 @@ enum AuditCommand {
         ledger_projection_out: Option<PathBuf>,
         #[arg(long)]
         json: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum MarkerFreeCommand {
+    ValidateSuite {
+        #[arg(long)]
+        suite_root: Option<PathBuf>,
+    },
+    ValidateResponse {
+        #[arg(long)]
+        suite_root: Option<PathBuf>,
+        #[arg(long = "case")]
+        case_id: String,
+        #[arg(long)]
+        response: PathBuf,
+    },
+    Score {
+        #[arg(long)]
+        suite_root: Option<PathBuf>,
+        #[arg(long)]
+        responses: PathBuf,
     },
 }
 
@@ -783,6 +809,7 @@ fn formal_ui_error(error: &str) -> ExitCode {
 
 fn run_audit(command: AuditCommand) -> ExitCode {
     match command {
+        AuditCommand::MarkerFree { command } => run_marker_free(command),
         AuditCommand::UiImplementation { command } => run_ui_implementation(command),
         AuditCommand::TestCoverage { command } => run_test_coverage(command),
         AuditCommand::JourneyDocs { command } => run_journey_docs(command),
@@ -875,6 +902,40 @@ fn run_audit(command: AuditCommand) -> ExitCode {
                 Err(error) => tooling_error(&format!("could not merge audit reports: {error}"), 2),
             }
         }
+    }
+}
+
+fn run_marker_free(command: MarkerFreeCommand) -> ExitCode {
+    let result = match command {
+        MarkerFreeCommand::ValidateSuite { suite_root } => {
+            let root =
+                suite_root.unwrap_or_else(devcoordinator2_tooling::marker_free::default_root);
+            devcoordinator2_tooling::marker_free::validate_suite_result(&root)
+        }
+        MarkerFreeCommand::ValidateResponse {
+            suite_root,
+            case_id,
+            response,
+        } => {
+            let root =
+                suite_root.unwrap_or_else(devcoordinator2_tooling::marker_free::default_root);
+            devcoordinator2_tooling::marker_free::validate_one_response(&root, &case_id, &response)
+        }
+        MarkerFreeCommand::Score {
+            suite_root,
+            responses,
+        } => {
+            let root =
+                suite_root.unwrap_or_else(devcoordinator2_tooling::marker_free::default_root);
+            devcoordinator2_tooling::marker_free::score_response_directory(&root, &responses)
+        }
+    };
+    match result {
+        Ok(result) => {
+            println!("{}", serde_json::to_string_pretty(&result).unwrap());
+            ExitCode::SUCCESS
+        }
+        Err(error) => tooling_error(&format!("marker-free eval error: {error}"), 2),
     }
 }
 
@@ -2154,6 +2215,23 @@ mod tests {
             audit.command,
             Command::Audit {
                 command: AuditCommand::MergeFindings { json: true, .. }
+            }
+        ));
+        let marker_free = Cli::try_parse_from([
+            "devcoordinator2-tooling",
+            "audit",
+            "marker-free",
+            "score",
+            "--responses",
+            "/tmp/responses",
+        ])
+        .expect("marker-free scorer command");
+        assert!(matches!(
+            marker_free.command,
+            Command::Audit {
+                command: AuditCommand::MarkerFree {
+                    command: MarkerFreeCommand::Score { .. }
+                }
             }
         ));
         let journey_inventory = Cli::try_parse_from([

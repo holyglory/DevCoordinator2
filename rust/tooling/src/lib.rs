@@ -15,6 +15,7 @@ pub mod instance;
 pub mod journey_docs;
 pub mod legacy_export;
 pub mod legacy_import;
+pub mod marker_free;
 pub mod python_guard;
 pub mod repository_checks;
 pub mod skill_links;
