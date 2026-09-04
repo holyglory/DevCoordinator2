@@ -10,10 +10,13 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::{OsStr, OsString};
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
+use std::os::fd::AsRawFd;
 use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
 
+use base64::Engine as _;
+use rusqlite::{Connection, OpenFlags};
 use rustix::fs::{Mode, OFlags, open as unix_open};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -41,6 +44,8 @@ pub struct CommandOutput {
     pub success: bool,
     pub stdout: String,
     pub stderr: String,
+    pub stdout_truncated: bool,
+    pub stderr_truncated: bool,
 }
 
 pub trait CommandRunner: Send + Sync {
@@ -62,13 +67,34 @@ impl CommandRunner for HostRunner {
             command.env_clear();
         }
         command.envs(&request.environment);
-        let output = command
-            .output()
+        let mut child = command
+            .spawn()
             .map_err(|error| format!("cannot run {}: {error}", request.program.display()))?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| "command stdout was not captured".to_owned())?;
+        let stderr = child
+            .stderr
+            .take()
+            .ok_or_else(|| "command stderr was not captured".to_owned())?;
+        let stdout = std::thread::spawn(move || read_bounded_stream(stdout));
+        let stderr = std::thread::spawn(move || read_bounded_stream(stderr));
+        let status = child
+            .wait()
+            .map_err(|error| format!("cannot wait for {}: {error}", request.program.display()))?;
+        let (stdout, stdout_truncated) = stdout
+            .join()
+            .map_err(|_| "command stdout reader failed".to_owned())??;
+        let (stderr, stderr_truncated) = stderr
+            .join()
+            .map_err(|_| "command stderr reader failed".to_owned())??;
         Ok(CommandOutput {
-            success: output.status.success(),
-            stdout: bounded_output(output.stdout),
-            stderr: bounded_output(output.stderr),
+            success: status.success(),
+            stdout,
+            stderr,
+            stdout_truncated,
+            stderr_truncated,
         })
     }
 }
@@ -128,6 +154,14 @@ pub struct InstallationPlan {
     pub binary_links: BTreeMap<String, String>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RepositoryConfigReceipt {
+    pub worktree: String,
+    pub tests: Vec<String>,
+    pub deployments: Vec<String>,
+}
+
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ComposeAuthorization {
@@ -148,6 +182,88 @@ pub struct LocalAccount {
     pub uid: u32,
     pub gid: u32,
     pub home: PathBuf,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct IdentityReceipt {
+    pub client_group: String,
+    pub client_gid: u32,
+    pub edge_uid: u32,
+    pub edge_gid: u32,
+    pub client_accounts: Vec<String>,
+}
+
+pub trait IdentityDirectory {
+    fn group_gid(&self, name: &str) -> Result<Option<u32>, String>;
+    fn account(&self, name: &str) -> Result<Option<LocalAccount>, String>;
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct HostIdentityDirectory;
+
+impl IdentityDirectory for HostIdentityDirectory {
+    fn group_gid(&self, name: &str) -> Result<Option<u32>, String> {
+        group_by_name(name)
+    }
+
+    fn account(&self, name: &str) -> Result<Option<LocalAccount>, String> {
+        match account_by_name(name) {
+            Ok(account) => Ok(Some(account)),
+            Err(error) if error.contains("does not exist") => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct PreparePaths {
+    pub etc_dir: PathBuf,
+    pub runtime_dir: PathBuf,
+    pub state_dir: PathBuf,
+    pub bugs_dir: PathBuf,
+    pub edge_state_dir: PathBuf,
+    pub tmpfiles_target: PathBuf,
+}
+
+impl Default for PreparePaths {
+    fn default() -> Self {
+        Self {
+            etc_dir: "/etc/devcoordinator2".into(),
+            runtime_dir: "/run/devcoordinator2".into(),
+            state_dir: "/var/lib/devcoordinator2".into(),
+            bugs_dir: "/var/lib/devcoordinator2-bugs".into(),
+            edge_state_dir: "/var/lib/devcoordinator2-edge".into(),
+            tmpfiles_target: "/etc/tmpfiles.d/devcoordinator2.conf".into(),
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct PrepareRequest {
+    pub source_root: PathBuf,
+    pub base_domain: String,
+    pub admin_emails: String,
+    pub identities: IdentityReceipt,
+    pub edge_account: LocalAccount,
+    pub system_owner: (u32, u32),
+    pub canary: bool,
+    pub canary_port: u16,
+    pub compose_authorizations: Vec<ComposeAuthorization>,
+    pub usage_sources: Vec<CodexUsageSource>,
+    pub paths: PreparePaths,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PrepareReceipt {
+    pub source_root: String,
+    pub created_instance_env: bool,
+    pub created_edge_env: bool,
+    pub created_session_secret: bool,
+    pub compose_policy_changed: bool,
+    pub usage_policy_changed: bool,
+    pub edge_source_acl_entries: u32,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -268,6 +384,12 @@ pub fn build_release_binaries<R: CommandRunner>(
             "--init-groups".into(),
             "--reset-env".into(),
             "--".into(),
+            "/usr/bin/env".into(),
+            "-i".into(),
+            format!("HOME={}", identity.home.display()).into(),
+            "PATH=/usr/bin:/bin".into(),
+            format!("DEVCOORDINATOR2_SOURCE_COMMIT={source_commit}").into(),
+            format!("CARGO_TARGET_DIR={}", source_root.join("target").display()).into(),
             tools.cargo.as_os_str().to_owned(),
             "build".into(),
             "--locked".into(),
@@ -276,18 +398,7 @@ pub fn build_release_binaries<R: CommandRunner>(
             manifest.as_os_str().to_owned(),
             "--workspace".into(),
         ],
-        environment: BTreeMap::from([
-            (OsString::from("HOME"), identity.home.as_os_str().to_owned()),
-            (OsString::from("PATH"), OsString::from("/usr/bin:/bin")),
-            (
-                OsString::from("DEVCOORDINATOR2_SOURCE_COMMIT"),
-                OsString::from(source_commit),
-            ),
-            (
-                OsString::from("CARGO_TARGET_DIR"),
-                source_root.join("target").into_os_string(),
-            ),
-        ]),
+        environment: BTreeMap::from([(OsString::from("PATH"), OsString::from("/usr/bin:/bin"))]),
         clear_environment: true,
     };
     let output = runner.run(&request)?;
@@ -300,7 +411,7 @@ pub fn build_release_binaries<R: CommandRunner>(
     verify_release_binaries(source_root, source_commit, runner)
 }
 
-pub fn verify_release_binaries<R: CommandRunner>(
+pub fn verify_release_binaries<R: CommandRunner + ?Sized>(
     source_root: &Path,
     source_commit: &str,
     runner: &R,
@@ -317,7 +428,7 @@ pub fn verify_release_binaries<R: CommandRunner>(
             environment: BTreeMap::new(),
             clear_environment: true,
         })?;
-        if !output.success || output.stdout.trim() != source_commit {
+        if !output.success || output.stdout_truncated || output.stdout.trim() != source_commit {
             return Err(format!(
                 "Rust release binary {name} does not embed source commit {source_commit}"
             ));
@@ -368,14 +479,14 @@ pub fn write_manifest(
     atomic_file(path, &payload, 0o600, Some(owner))
 }
 
-pub fn read_and_verify_manifest<R: CommandRunner>(
+pub fn read_and_verify_manifest<R: CommandRunner + ?Sized>(
     path: &Path,
     runner: &R,
 ) -> Result<InstallManifest, String> {
     read_and_verify_manifest_owned(path, runner, 0)
 }
 
-pub fn read_and_verify_manifest_owned<R: CommandRunner>(
+pub fn read_and_verify_manifest_owned<R: CommandRunner + ?Sized>(
     path: &Path,
     runner: &R,
     expected_uid: u32,
@@ -447,6 +558,88 @@ pub fn installation_plan(
     })
 }
 
+pub fn validate_registered_repository_configs(
+    database_path: &Path,
+    control_binary: &Path,
+    runner: &dyn CommandRunner,
+) -> Result<Vec<RepositoryConfigReceipt>, String> {
+    validate_regular(control_binary, true)
+        .map_err(|error| format!("Rust control binary is unavailable: {error}"))?;
+    let connection = Connection::open_with_flags(
+        database_path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY
+            | OpenFlags::SQLITE_OPEN_NOFOLLOW
+            | OpenFlags::SQLITE_OPEN_PRIVATE_CACHE,
+    )
+    .map_err(|error| format!("cannot open registered repository database: {error}"))?;
+    connection
+        .pragma_update(None, "query_only", true)
+        .map_err(|error| format!("cannot protect registered repository query: {error}"))?;
+    let mut statement = connection
+        .prepare(
+            "SELECT w.worktree_path FROM worktrees w JOIN repositories r ON r.repository_id=w.repository_id WHERE r.archived_at IS NULL ORDER BY w.worktree_path",
+        )
+        .map_err(|error| format!("cannot inventory registered repository configs: {error}"))?;
+    let worktrees = statement
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(|error| format!("cannot inventory registered repository configs: {error}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("cannot inventory registered repository configs: {error}"))?;
+    drop(statement);
+    let mut receipts = Vec::new();
+    for worktree in worktrees {
+        let worktree = PathBuf::from(worktree);
+        let config = worktree.join(".devcoordinator.toml");
+        let metadata = match config.symlink_metadata() {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                return Err(format!(
+                    "cannot inspect registered repository config: {error}"
+                ));
+            }
+        };
+        if metadata.file_type().is_symlink() || !metadata.is_file() {
+            return Err("registered repository config is not a regular file".to_owned());
+        }
+        let output = runner.run(&CommandRequest {
+            program: control_binary.to_owned(),
+            args: vec![
+                "--validate-repository-config".into(),
+                worktree.as_os_str().to_owned(),
+            ],
+            environment: BTreeMap::from([(
+                OsString::from("PATH"),
+                OsString::from("/usr/bin:/bin"),
+            )]),
+            clear_environment: true,
+        })?;
+        if !output.success {
+            return Err(format!(
+                "registered repository is not ready for strict schema 2: {}",
+                useful_failure(&output)
+            ));
+        }
+        if output.stdout_truncated {
+            return Err("repository config validator output exceeded 64 KiB".to_owned());
+        }
+        let value: Value = serde_json::from_str(&output.stdout).map_err(|error| {
+            format!("repository config validator returned invalid JSON: {error}")
+        })?;
+        if value.get("schema").and_then(Value::as_u64) != Some(2) {
+            return Err("repository config validator returned an unsupported schema".to_owned());
+        }
+        let tests = string_array(value.get("tests"), "tests")?;
+        let deployments = string_array(value.get("deployments"), "deployments")?;
+        receipts.push(RepositoryConfigReceipt {
+            worktree: path_text(&worktree)?,
+            tests,
+            deployments,
+        });
+    }
+    Ok(receipts)
+}
+
 pub fn render_daemon_unit(source_root: &Path) -> Result<String, String> {
     let template = read_template(&source_root.join("deploy/devcoordinator2.service"))?;
     let binary = path_text(&source_root.join("target/release/devcoordinator2"))?;
@@ -466,6 +659,10 @@ pub fn render_edge_unit(source_root: &Path, canary: bool) -> Result<String, Stri
     let mut rendered = template.replace(
         "/home/DevCoordinator2/edge/devcoordinator2-edge.mjs",
         &script,
+    );
+    rendered = rendered.replace(
+        "ReadOnlyPaths=/home/DevCoordinator2",
+        &format!("ReadOnlyPaths={}", path_text(source_root)?),
     );
     if canary {
         rendered = rendered
@@ -792,6 +989,346 @@ pub fn account_by_name(name: &str) -> Result<LocalAccount, String> {
     Err(format!("local account {name} does not exist"))
 }
 
+pub fn ensure_identities<R: CommandRunner, D: IdentityDirectory>(
+    client_group: &str,
+    client_accounts: &[String],
+    edge_account_name: &str,
+    runner: &R,
+    directory: &D,
+) -> Result<(IdentityReceipt, LocalAccount), String> {
+    validate_account_name(client_group, "client group")?;
+    validate_account_name(edge_account_name, "edge account")?;
+    let client_gid = match directory.group_gid(client_group)? {
+        Some(gid) => gid,
+        None => {
+            run_required(
+                runner,
+                Path::new("/usr/sbin/groupadd"),
+                &["--system", client_group],
+                "create client group",
+            )?;
+            directory
+                .group_gid(client_group)?
+                .ok_or_else(|| "client group was not created".to_owned())?
+        }
+    };
+    let mut seen = BTreeSet::new();
+    for name in client_accounts {
+        validate_account_name(name, "client account")?;
+        if !seen.insert(name.clone()) {
+            return Err(format!("duplicate client account {name}"));
+        }
+        directory
+            .account(name)?
+            .ok_or_else(|| format!("local account {name} does not exist"))?;
+        run_required(
+            runner,
+            Path::new("/usr/sbin/usermod"),
+            &["-aG", client_group, name],
+            "add client account to group",
+        )?;
+    }
+    let edge = match directory.account(edge_account_name)? {
+        Some(account) => {
+            run_required(
+                runner,
+                Path::new("/usr/sbin/usermod"),
+                &["-aG", client_group, edge_account_name],
+                "add edge account to client group",
+            )?;
+            account
+        }
+        None => {
+            run_required(
+                runner,
+                Path::new("/usr/sbin/useradd"),
+                &[
+                    "--system",
+                    "--no-create-home",
+                    "--shell",
+                    "/usr/sbin/nologin",
+                    "--home-dir",
+                    "/var/lib/devcoordinator2-edge",
+                    "-G",
+                    client_group,
+                    edge_account_name,
+                ],
+                "create edge account",
+            )?;
+            directory
+                .account(edge_account_name)?
+                .ok_or_else(|| "edge account was not created".to_owned())?
+        }
+    };
+    Ok((
+        IdentityReceipt {
+            client_group: client_group.to_owned(),
+            client_gid,
+            edge_uid: edge.uid,
+            edge_gid: edge.gid,
+            client_accounts: seen.into_iter().collect(),
+        },
+        edge,
+    ))
+}
+
+pub fn prepare_instance<R: CommandRunner>(
+    request: &PrepareRequest,
+    runner: &R,
+) -> Result<PrepareReceipt, String> {
+    let source_root = request
+        .source_root
+        .canonicalize()
+        .map_err(|error| format!("cannot resolve canonical source: {error}"))?;
+    validate_domain(&request.base_domain)?;
+    if request.admin_emails.trim().is_empty()
+        || request
+            .admin_emails
+            .chars()
+            .any(|character| character.is_control())
+    {
+        return Err("administrator e-mail list is invalid".to_owned());
+    }
+    let acl_count = ensure_edge_source_access(&source_root, "devcoordinator2-edge", runner)?;
+    ensure_directory(&request.paths.runtime_dir, 0o755, request.system_owner)?;
+    ensure_directory(&request.paths.state_dir, 0o751, request.system_owner)?;
+    ensure_directory(
+        &request.paths.state_dir.join("public"),
+        0o755,
+        request.system_owner,
+    )?;
+    ensure_directory(
+        &request.paths.bugs_dir,
+        0o777,
+        (request.system_owner.0, request.identities.client_gid),
+    )?;
+    ensure_directory(
+        &request.paths.edge_state_dir,
+        0o750,
+        (request.edge_account.uid, request.edge_account.gid),
+    )?;
+    let tmpfiles = read_template(&source_root.join("deploy/devcoordinator2.tmpfiles.conf"))?;
+    atomic_file(
+        &request.paths.tmpfiles_target,
+        tmpfiles.as_bytes(),
+        0o644,
+        Some(request.system_owner),
+    )?;
+
+    ensure_directory(&request.paths.etc_dir, 0o755, request.system_owner)?;
+    let instance_env = request.paths.etc_dir.join("instance.env");
+    let created_instance_env = write_if_absent(
+        &instance_env,
+        &format!(
+            "DEVCOORDINATOR2_BASE_DOMAIN={}\nDEVCOORDINATOR2_ADMIN_EMAILS={}\nDEVCOORDINATOR2_CLIENT_GROUP={}\nDEVCOORDINATOR2_EDGE_UID={}\nDEVCOORDINATOR2_PORT_RANGE=20000-29999\n# DEVCOORDINATOR2_TELEGRAM_TOKEN_FILE=/etc/devcoordinator2/telegram.token\n",
+            request.base_domain,
+            request.admin_emails,
+            request.identities.client_group,
+            request.edge_account.uid,
+        ),
+        0o640,
+        (request.system_owner.0, request.identities.client_gid),
+    )?;
+    let compose_path = request.paths.etc_dir.join("compose-env-allowlist.json");
+    let compose_policy_changed =
+        if !request.compose_authorizations.is_empty() || compose_path.exists() {
+            let changed = merge_compose_env_allowlist(
+                &compose_path,
+                &request.compose_authorizations,
+                request.system_owner,
+            )?;
+            ensure_env_value(
+                &instance_env,
+                "DEVCOORDINATOR2_COMPOSE_ENV_ALLOWLIST_FILE",
+                &path_text(&compose_path)?,
+            )?;
+            changed
+        } else {
+            false
+        };
+    let usage_path = request.paths.etc_dir.join("codex-usage-sources.json");
+    let usage_policy_changed = if !request.usage_sources.is_empty() || usage_path.exists() {
+        let changed =
+            merge_codex_usage_sources(&usage_path, &request.usage_sources, request.system_owner)?;
+        ensure_env_value(
+            &instance_env,
+            "DEVCOORDINATOR2_CODEX_USAGE_SOURCES_FILE",
+            &path_text(&usage_path)?,
+        )?;
+        changed
+    } else {
+        false
+    };
+
+    let edge_env = request.paths.etc_dir.join("edge.env");
+    let mut edge_lines = vec![
+        format!("EDGE_BASE_DOMAIN={}", request.base_domain),
+        format!(
+            "EDGE_ROUTES_FILE={}",
+            request.paths.state_dir.join("public/routes.json").display()
+        ),
+        format!(
+            "EDGE_DAEMON_SOCKET={}",
+            request.paths.runtime_dir.join("daemon.sock").display()
+        ),
+        format!("EDGE_CONSOLE_DIR={}", source_root.join("console").display()),
+    ];
+    if request.canary {
+        edge_lines.extend([
+            "EDGE_HTTP_ONLY=1".to_owned(),
+            format!("EDGE_HTTP_PORT={}", request.canary_port),
+            format!(
+                "EDGE_SESSION_SECRET_FILE={}",
+                request.paths.etc_dir.join("edge/session.secret").display()
+            ),
+            "# OIDC for the canary: set client ID and secret files after registering its redirect URI".to_owned(),
+        ]);
+    }
+    let created_edge_env = write_if_absent(
+        &edge_env,
+        &(edge_lines.join("\n") + "\n"),
+        0o640,
+        (request.system_owner.0, request.edge_account.gid),
+    )?;
+    set_env_value(
+        &edge_env,
+        "EDGE_CONSOLE_DIR",
+        &path_text(&source_root.join("console"))?,
+    )?;
+    let edge_secrets = request.paths.etc_dir.join("edge");
+    ensure_directory(
+        &edge_secrets,
+        0o750,
+        (request.system_owner.0, request.edge_account.gid),
+    )?;
+    let mut secret = [0u8; 48];
+    getrandom::fill(&mut secret)
+        .map_err(|error| format!("cannot generate edge session secret: {error}"))?;
+    let secret = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(secret);
+    let created_session_secret = write_if_absent(
+        &edge_secrets.join("session.secret"),
+        &secret,
+        0o640,
+        (request.system_owner.0, request.edge_account.gid),
+    )?;
+    Ok(PrepareReceipt {
+        source_root: path_text(&source_root)?,
+        created_instance_env,
+        created_edge_env,
+        created_session_secret,
+        compose_policy_changed,
+        usage_policy_changed,
+        edge_source_acl_entries: u32::try_from(acl_count).unwrap_or(u32::MAX),
+    })
+}
+
+pub fn ensure_edge_source_access<R: CommandRunner>(
+    source_root: &Path,
+    edge_account: &str,
+    runner: &R,
+) -> Result<usize, String> {
+    validate_account_name(edge_account, "edge account")?;
+    let source_root = source_root
+        .canonicalize()
+        .map_err(|error| format!("cannot resolve source root for edge access: {error}"))?;
+    let mut commands = vec![(
+        vec![
+            "-m".to_owned(),
+            format!("u:{edge_account}:--x"),
+            path_text(&source_root)?,
+        ],
+        "grant edge source-root traversal",
+    )];
+    for tree_name in ["edge", "console"] {
+        let tree = source_root.join(tree_name);
+        let metadata = tree
+            .symlink_metadata()
+            .map_err(|error| format!("required edge source tree is unavailable: {error}"))?;
+        if metadata.file_type().is_symlink() || !metadata.is_dir() {
+            return Err("required edge source tree is unavailable".to_owned());
+        }
+        let mut pending = vec![tree];
+        while let Some(directory) = pending.pop() {
+            commands.push((
+                vec![
+                    "-m".to_owned(),
+                    format!("u:{edge_account}:r-x"),
+                    path_text(&directory)?,
+                ],
+                "grant edge source directory access",
+            ));
+            commands.push((
+                vec![
+                    "-m".to_owned(),
+                    format!("d:u:{edge_account}:r-x"),
+                    path_text(&directory)?,
+                ],
+                "grant edge default source directory access",
+            ));
+            let mut entries = std::fs::read_dir(&directory)
+                .map_err(|error| format!("cannot inventory edge source tree: {error}"))?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|error| format!("cannot inventory edge source tree: {error}"))?;
+            entries.sort_by_key(std::fs::DirEntry::file_name);
+            for entry in entries.into_iter().rev() {
+                let metadata = entry
+                    .path()
+                    .symlink_metadata()
+                    .map_err(|error| format!("cannot inspect edge source entry: {error}"))?;
+                if metadata.file_type().is_symlink() {
+                    return Err("edge source tree may not contain symlinks".to_owned());
+                }
+                if metadata.is_dir() {
+                    pending.push(entry.path());
+                } else if metadata.is_file() {
+                    commands.push((
+                        vec![
+                            "-m".to_owned(),
+                            format!("u:{edge_account}:r--"),
+                            path_text(&entry.path())?,
+                        ],
+                        "grant edge source file access",
+                    ));
+                } else {
+                    return Err("edge source tree contains a special file".to_owned());
+                }
+            }
+        }
+    }
+    for (arguments, label) in &commands {
+        let refs = arguments.iter().map(String::as_str).collect::<Vec<_>>();
+        run_required(runner, Path::new("/usr/bin/setfacl"), &refs, label)?;
+    }
+    Ok(commands.len())
+}
+
+pub fn ensure_owned_directory(path: &Path, mode: u32, owner: (u32, u32)) -> Result<(), String> {
+    ensure_directory(path, mode, owner)
+}
+
+pub fn retire_legacy_skill_link(path: &Path) -> Result<bool, String> {
+    let metadata = match path.symlink_metadata() {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(format!("cannot inspect legacy skill link: {error}")),
+    };
+    if !metadata.file_type().is_symlink() {
+        return Ok(false);
+    }
+    let target = std::fs::read_link(path)
+        .map_err(|error| format!("cannot read legacy skill link: {error}"))?;
+    let components = target.components().collect::<Vec<_>>();
+    let managed = components.len() >= 2
+        && components[components.len() - 2].as_os_str() == OsStr::new("skills")
+        && components[components.len() - 1].as_os_str() == OsStr::new("codex-dev-coordinator");
+    if !managed {
+        return Ok(false);
+    }
+    std::fs::remove_file(path)
+        .map_err(|error| format!("cannot retire legacy skill link: {error}"))?;
+    Ok(true)
+}
+
 fn git<R, I, S>(root: &Path, args: I, runner: &R) -> Result<String, String>
 where
     R: CommandRunner,
@@ -801,6 +1338,9 @@ where
     let output = run_git_raw(root, args, runner)?;
     if !output.success {
         return Err(format!("Git preflight failed: {}", useful_failure(&output)));
+    }
+    if output.stdout_truncated {
+        return Err("Git preflight output exceeded 64 KiB".to_owned());
     }
     Ok(output.stdout)
 }
@@ -836,6 +1376,119 @@ fn validate_env_pair(key: &str, value: &str) -> Result<(), String> {
         return Err("environment entry is invalid".to_owned());
     }
     Ok(())
+}
+
+fn validate_account_name(value: &str, label: &str) -> Result<(), String> {
+    if value.is_empty()
+        || value.len() > 32
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+        || !value
+            .as_bytes()
+            .first()
+            .is_some_and(|byte| byte.is_ascii_alphabetic() || *byte == b'_')
+    {
+        return Err(format!("{label} name is invalid"));
+    }
+    Ok(())
+}
+
+fn validate_domain(value: &str) -> Result<(), String> {
+    if value.is_empty()
+        || value.len() > 253
+        || value.split('.').any(|label| {
+            label.is_empty()
+                || label.len() > 63
+                || label.starts_with('-')
+                || label.ends_with('-')
+                || !label
+                    .bytes()
+                    .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+        })
+    {
+        return Err("base domain is invalid".to_owned());
+    }
+    Ok(())
+}
+
+fn group_by_name(name: &str) -> Result<Option<u32>, String> {
+    let groups = std::fs::read_to_string("/etc/group")
+        .map_err(|error| format!("cannot read local group registry: {error}"))?;
+    for line in groups.lines() {
+        let fields = line.split(':').collect::<Vec<_>>();
+        if fields.len() >= 4 && fields[0] == name {
+            return fields[2]
+                .parse::<u32>()
+                .map(Some)
+                .map_err(|_| format!("local group {name} has an invalid gid"));
+        }
+    }
+    Ok(None)
+}
+
+fn run_required<R: CommandRunner>(
+    runner: &R,
+    program: &Path,
+    arguments: &[&str],
+    label: &str,
+) -> Result<(), String> {
+    let output = runner.run(&CommandRequest {
+        program: program.to_owned(),
+        args: arguments.iter().map(OsString::from).collect(),
+        environment: BTreeMap::from([(
+            OsString::from("PATH"),
+            OsString::from("/usr/sbin:/usr/bin:/sbin:/bin"),
+        )]),
+        clear_environment: true,
+    })?;
+    if output.success {
+        Ok(())
+    } else {
+        Err(format!("{label} failed: {}", useful_failure(&output)))
+    }
+}
+
+fn ensure_directory(path: &Path, mode: u32, owner: (u32, u32)) -> Result<(), String> {
+    std::fs::create_dir_all(path)
+        .map_err(|error| format!("cannot create installation directory: {error}"))?;
+    let descriptor = unix_open(
+        path,
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+        Mode::empty(),
+    )
+    .map(File::from)
+    .map_err(|error| format!("cannot open installation directory: {error}"))?;
+    descriptor
+        .set_permissions(std::fs::Permissions::from_mode(mode))
+        .map_err(|error| format!("cannot set installation directory mode: {error}"))?;
+    let metadata = descriptor
+        .metadata()
+        .map_err(|error| format!("cannot inspect installation directory: {error}"))?;
+    if (metadata.uid(), metadata.gid()) != owner
+        // SAFETY: `descriptor` owns a valid open directory for the call.
+        && unsafe { libc::fchown(descriptor.as_raw_fd(), owner.0, owner.1) } != 0
+    {
+        return Err(format!(
+            "cannot set installation directory owner: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    Ok(())
+}
+
+fn string_array(value: Option<&Value>, label: &str) -> Result<Vec<String>, String> {
+    value
+        .and_then(Value::as_array)
+        .ok_or_else(|| format!("repository config validator has no {label} array"))?
+        .iter()
+        .map(|value| {
+            value
+                .as_str()
+                .map(str::to_owned)
+                .ok_or_else(|| format!("repository config validator {label} is invalid"))
+        })
+        .collect()
 }
 
 fn validate_relative_file(value: &str) -> Result<(), String> {
@@ -900,10 +1553,13 @@ fn merge_policy<T: Serialize>(
             || metadata.gid() != owner.1
             || metadata.mode() & 0o777 != mode;
         if changed {
-            let file = OpenOptions::new()
-                .write(true)
-                .open(path)
-                .map_err(|error| format!("cannot open installed policy metadata: {error}"))?;
+            let file = unix_open(
+                path,
+                OFlags::WRONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK,
+                Mode::empty(),
+            )
+            .map(File::from)
+            .map_err(|error| format!("cannot open installed policy metadata: {error}"))?;
             file.set_permissions(std::fs::Permissions::from_mode(mode))
                 .map_err(|error| format!("cannot set installed policy mode: {error}"))?;
             if (metadata.uid(), metadata.gid()) != owner
@@ -1000,7 +1656,7 @@ fn hash_file(path: &Path) -> Result<String, String> {
     Ok(hex(&digest.finalize()))
 }
 
-fn atomic_file(
+pub(crate) fn atomic_file(
     path: &Path,
     payload: &[u8],
     mode: u32,
@@ -1111,9 +1767,25 @@ fn file_identity(metadata: &std::fs::Metadata) -> (u64, u64, u64, i64, i64, i64,
     )
 }
 
-fn bounded_output(bytes: Vec<u8>) -> String {
-    let start = bytes.len().saturating_sub(OUTPUT_CAP);
-    String::from_utf8_lossy(&bytes[start..]).into_owned()
+fn read_bounded_stream(mut stream: impl Read) -> Result<(String, bool), String> {
+    let mut retained = Vec::new();
+    let mut truncated = false;
+    let mut block = [0u8; 16 * 1024];
+    loop {
+        let count = stream
+            .read(&mut block)
+            .map_err(|error| format!("cannot read command output: {error}"))?;
+        if count == 0 {
+            break;
+        }
+        retained.extend_from_slice(&block[..count]);
+        if retained.len() > OUTPUT_CAP {
+            truncated = true;
+            let excess = retained.len() - OUTPUT_CAP;
+            retained.drain(..excess);
+        }
+    }
+    Ok((String::from_utf8_lossy(&retained).into_owned(), truncated))
 }
 
 fn useful_failure(output: &CommandOutput) -> String {
@@ -1178,11 +1850,40 @@ mod tests {
         }
     }
 
+    #[derive(Default)]
+    struct AlwaysRunner {
+        requests: Mutex<Vec<CommandRequest>>,
+    }
+
+    impl CommandRunner for AlwaysRunner {
+        fn run(&self, request: &CommandRequest) -> Result<CommandOutput, String> {
+            self.requests.lock().unwrap().push(request.clone());
+            Ok(success(""))
+        }
+    }
+
+    struct StaticIdentities {
+        gid: u32,
+        accounts: BTreeMap<String, LocalAccount>,
+    }
+
+    impl IdentityDirectory for StaticIdentities {
+        fn group_gid(&self, _name: &str) -> Result<Option<u32>, String> {
+            Ok(Some(self.gid))
+        }
+
+        fn account(&self, name: &str) -> Result<Option<LocalAccount>, String> {
+            Ok(self.accounts.get(name).cloned())
+        }
+    }
+
     fn success(stdout: &str) -> CommandOutput {
         CommandOutput {
             success: true,
             stdout: stdout.to_owned(),
             stderr: String::new(),
+            stdout_truncated: false,
+            stderr_truncated: false,
         }
     }
 
@@ -1285,12 +1986,9 @@ mod tests {
         let requests = runner.requests.lock().unwrap();
         assert_eq!(requests[0].program, tools.setpriv);
         assert!(requests[0].args.contains(&OsString::from("--workspace")));
-        assert_eq!(
-            requests[0]
-                .environment
-                .get(OsStr::new("DEVCOORDINATOR2_SOURCE_COMMIT")),
-            Some(&OsString::from(&commit))
-        );
+        assert!(requests[0].args.contains(&OsString::from(format!(
+            "DEVCOORDINATOR2_SOURCE_COMMIT={commit}"
+        ))));
         assert!(
             requests[1..]
                 .iter()
@@ -1348,6 +2046,7 @@ mod tests {
         assert!(!daemon.contains("python"));
         let edge = render_edge_unit(&source, false).unwrap();
         assert!(edge.contains("ProtectHome=read-only"));
+        assert!(edge.contains(&format!("ReadOnlyPaths={}", source.display())));
         let plan = installation_plan(&manifest, &manifest_path).unwrap();
         assert_eq!(
             plan.binary_links["/usr/local/bin/devcoordinator2"],
@@ -1523,5 +2222,207 @@ mod tests {
                 executable: home.join(".local/bin/codex").display().to_string(),
             }]
         );
+    }
+
+    #[test]
+    fn every_registered_schema_two_configuration_is_validated_by_the_built_binary() {
+        let temporary = tempfile::tempdir().unwrap();
+        let worktree = temporary.path().join("repo");
+        std::fs::create_dir(&worktree).unwrap();
+        std::fs::write(worktree.join(".devcoordinator.toml"), "schema = 2\n").unwrap();
+        let database = temporary.path().join("authority.sqlite3");
+        let connection = Connection::open(&database).unwrap();
+        connection
+            .execute_batch(include_str!("../../control/src/schema.sql"))
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO repositories(repository_id,root_path,display_name,registered_at,registered_by_uid,last_seen_at) VALUES('r1',?1,'repo','t',1,'t')",
+                [worktree.display().to_string()],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO worktrees VALUES('w1','r1',?1,'t','t')",
+                [worktree.display().to_string()],
+            )
+            .unwrap();
+        drop(connection);
+        let binary = temporary.path().join("devcoordinator2");
+        std::fs::write(&binary, "binary").unwrap();
+        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let runner = FakeRunner::with_outputs(vec![success(
+            "{\"schema\":2,\"tests\":[\"unit\",\"release\"],\"deployments\":[\"web\"]}\n",
+        )]);
+        let receipts = validate_registered_repository_configs(&database, &binary, &runner).unwrap();
+        assert_eq!(
+            receipts,
+            [RepositoryConfigReceipt {
+                worktree: worktree.display().to_string(),
+                tests: vec!["unit".to_owned(), "release".to_owned()],
+                deployments: vec!["web".to_owned()],
+            }]
+        );
+        let request = &runner.requests.lock().unwrap()[0];
+        assert_eq!(request.program, binary);
+        assert_eq!(
+            request.args,
+            [
+                OsString::from("--validate-repository-config"),
+                worktree.as_os_str().to_owned()
+            ]
+        );
+    }
+
+    #[test]
+    fn identity_setup_uses_exact_account_commands_and_preserves_numeric_ids() {
+        let temporary = tempfile::tempdir().unwrap();
+        let account = LocalAccount {
+            uid: 1000,
+            gid: 1001,
+            home: temporary.path().join("developer"),
+        };
+        let edge = LocalAccount {
+            uid: 1100,
+            gid: 1100,
+            home: PathBuf::from("/var/lib/devcoordinator2-edge"),
+        };
+        let directory = StaticIdentities {
+            gid: 1200,
+            accounts: BTreeMap::from([
+                ("developer".to_owned(), account),
+                ("devcoordinator2-edge".to_owned(), edge.clone()),
+            ]),
+        };
+        let runner = AlwaysRunner::default();
+        let (receipt, selected_edge) = ensure_identities(
+            "devcoordinator2-clients",
+            &["developer".to_owned()],
+            "devcoordinator2-edge",
+            &runner,
+            &directory,
+        )
+        .unwrap();
+        assert_eq!(receipt.client_gid, 1200);
+        assert_eq!(receipt.edge_uid, 1100);
+        assert_eq!(selected_edge, edge);
+        let requests = runner.requests.lock().unwrap();
+        assert_eq!(requests.len(), 2);
+        assert!(
+            requests
+                .iter()
+                .all(|request| request.program == Path::new("/usr/sbin/usermod"))
+        );
+        assert!(requests.iter().all(|request| request.clear_environment));
+    }
+
+    #[test]
+    fn host_command_runner_drains_but_retains_only_bounded_output() {
+        let output = HostRunner
+            .run(&CommandRequest {
+                program: "/usr/bin/seq".into(),
+                args: vec!["1".into(), "50000".into()],
+                environment: BTreeMap::new(),
+                clear_environment: true,
+            })
+            .unwrap();
+        assert!(output.success);
+        assert!(output.stdout_truncated);
+        assert!(output.stdout.len() <= OUTPUT_CAP);
+        assert!(!output.stderr_truncated);
+    }
+
+    #[test]
+    fn instance_preparation_is_private_idempotent_and_edge_read_only() {
+        let temporary = tempfile::tempdir().unwrap();
+        let source = temporary.path().join("source");
+        for relative in ["edge/lib/module.mjs", "console/app.js"] {
+            let path = source.join(relative);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, "source").unwrap();
+        }
+        std::fs::create_dir_all(source.join("deploy")).unwrap();
+        std::fs::write(
+            source.join("deploy/devcoordinator2.tmpfiles.conf"),
+            "d /run/devcoordinator2 0755 root root -\n",
+        )
+        .unwrap();
+        let uid = rustix::process::getuid().as_raw();
+        let gid = rustix::process::getgid().as_raw();
+        let paths = PreparePaths {
+            etc_dir: temporary.path().join("etc"),
+            runtime_dir: temporary.path().join("run"),
+            state_dir: temporary.path().join("state"),
+            bugs_dir: temporary.path().join("bugs"),
+            edge_state_dir: temporary.path().join("edge-state"),
+            tmpfiles_target: temporary.path().join("tmpfiles/devcoordinator2.conf"),
+        };
+        let request = PrepareRequest {
+            source_root: source.clone(),
+            base_domain: "example.test".to_owned(),
+            admin_emails: "owner@example.test".to_owned(),
+            identities: IdentityReceipt {
+                client_group: "devcoordinator2-clients".to_owned(),
+                client_gid: gid,
+                edge_uid: uid,
+                edge_gid: gid,
+                client_accounts: vec!["developer".to_owned()],
+            },
+            edge_account: LocalAccount {
+                uid,
+                gid,
+                home: paths.edge_state_dir.clone(),
+            },
+            system_owner: (uid, gid),
+            canary: true,
+            canary_port: 28080,
+            compose_authorizations: vec![ComposeAuthorization {
+                repository_id: format!("r{}", "a".repeat(16)),
+                path: "private/dev.env".to_owned(),
+            }],
+            usage_sources: vec![CodexUsageSource {
+                uid,
+                codex_home: "/home/developer/.codex".to_owned(),
+                executable: "/home/developer/.local/bin/codex".to_owned(),
+            }],
+            paths: paths.clone(),
+        };
+        let runner = AlwaysRunner::default();
+        let first = prepare_instance(&request, &runner).unwrap();
+        assert!(first.created_instance_env);
+        assert!(first.created_edge_env);
+        assert!(first.created_session_secret);
+        assert!(first.compose_policy_changed);
+        assert!(first.usage_policy_changed);
+        let second = prepare_instance(&request, &runner).unwrap();
+        assert!(!second.created_instance_env);
+        assert!(!second.created_edge_env);
+        assert!(!second.created_session_secret);
+        assert!(!second.compose_policy_changed);
+        assert!(!second.usage_policy_changed);
+        assert_eq!(
+            std::fs::metadata(paths.etc_dir.join("codex-usage-sources.json"))
+                .unwrap()
+                .mode()
+                & 0o777,
+            0o600
+        );
+        assert!(
+            std::fs::read_to_string(paths.etc_dir.join("edge.env"))
+                .unwrap()
+                .contains(&format!("EDGE_CONSOLE_DIR={}/console", source.display()))
+        );
+        let requests = runner.requests.lock().unwrap();
+        assert!(
+            requests
+                .iter()
+                .all(|request| request.program == Path::new("/usr/bin/setfacl"))
+        );
+        assert!(requests.iter().all(|request| {
+            !request
+                .args
+                .iter()
+                .any(|argument| argument.to_string_lossy().contains("rwx"))
+        }));
     }
 }

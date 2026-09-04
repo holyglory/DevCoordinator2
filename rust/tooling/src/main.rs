@@ -45,6 +45,26 @@ enum Command {
 
 #[derive(Debug, Subcommand)]
 enum InstallCommand {
+    Configure {
+        #[arg(long, default_value = ".")]
+        source_root: PathBuf,
+        #[arg(long)]
+        base_domain: String,
+        #[arg(long)]
+        admin_emails: String,
+        #[arg(long)]
+        client_accounts: String,
+        #[arg(long, default_value = "devcoordinator2-clients")]
+        client_group: String,
+        #[arg(long)]
+        canary: bool,
+        #[arg(long, default_value_t = 28080)]
+        canary_port: u16,
+        #[arg(long = "compose-env-authorization")]
+        compose_env_authorizations: Vec<String>,
+        #[arg(long = "codex-usage-account")]
+        codex_usage_accounts: Vec<String>,
+    },
     Preflight {
         #[arg(long, default_value = ".")]
         source_root: PathBuf,
@@ -54,16 +74,44 @@ enum InstallCommand {
     Build {
         #[arg(long, default_value = ".")]
         source_root: PathBuf,
-        #[arg(long, default_value = "/etc/devcoordinator2/install-manifest.json")]
+        #[arg(
+            long,
+            default_value = "/etc/devcoordinator2/candidate-install-manifest.json"
+        )]
         manifest: PathBuf,
     },
     Verify {
-        #[arg(long, default_value = "/etc/devcoordinator2/install-manifest.json")]
+        #[arg(
+            long,
+            default_value = "/etc/devcoordinator2/candidate-install-manifest.json"
+        )]
         manifest: PathBuf,
     },
     Plan {
-        #[arg(long, default_value = "/etc/devcoordinator2/install-manifest.json")]
+        #[arg(
+            long,
+            default_value = "/etc/devcoordinator2/candidate-install-manifest.json"
+        )]
         manifest: PathBuf,
+    },
+    Activate {
+        #[arg(
+            long,
+            default_value = "/etc/devcoordinator2/candidate-install-manifest.json"
+        )]
+        candidate_manifest: PathBuf,
+        #[arg(long, default_value = "/var/lib/devcoordinator2/cutover/rust-v2")]
+        transaction_dir: PathBuf,
+        #[arg(long)]
+        canary: bool,
+        #[arg(long)]
+        yes: bool,
+    },
+    Recover {
+        #[arg(long, default_value = "/var/lib/devcoordinator2/cutover/rust-v2")]
+        transaction_dir: PathBuf,
+        #[arg(long)]
+        yes: bool,
     },
 }
 
@@ -405,6 +453,70 @@ fn main() -> ExitCode {
 fn run_install(command: InstallCommand) -> ExitCode {
     use devcoordinator2_tooling::install::{self, HostRunner};
     let result = match command {
+        InstallCommand::Configure {
+            source_root,
+            base_domain,
+            admin_emails,
+            client_accounts,
+            client_group,
+            canary,
+            canary_port,
+            compose_env_authorizations,
+            codex_usage_accounts,
+        } => (|| {
+            if rustix::process::geteuid().as_raw() != 0 {
+                return Err("install configure must run as root".to_owned());
+            }
+            let source_root = source_root
+                .canonicalize()
+                .map_err(|error| format!("cannot resolve source root: {error}"))?;
+            let source_commit = install::validate_live_checkout(&source_root, false, &HostRunner)?;
+            let accounts = client_accounts
+                .split(',')
+                .map(str::trim)
+                .filter(|account| !account.is_empty())
+                .map(str::to_owned)
+                .collect::<Vec<_>>();
+            if accounts.is_empty() {
+                return Err("--client-accounts must name at least one account".to_owned());
+            }
+            let (identities, edge_account) = install::ensure_identities(
+                &client_group,
+                &accounts,
+                "devcoordinator2-edge",
+                &HostRunner,
+                &install::HostIdentityDirectory,
+            )?;
+            let compose_authorizations =
+                install::compose_env_authorizations(&compose_env_authorizations, &HostRunner)?;
+            let usage_sources = install::codex_usage_sources(&codex_usage_accounts, |name| {
+                install::account_by_name(name)
+            })?;
+            let paths = install::PreparePaths::default();
+            let prepared = install::prepare_instance(
+                &install::PrepareRequest {
+                    source_root: source_root.clone(),
+                    base_domain,
+                    admin_emails,
+                    identities: identities.clone(),
+                    edge_account,
+                    system_owner: (0, 0),
+                    canary,
+                    canary_port,
+                    compose_authorizations,
+                    usage_sources,
+                    paths: paths.clone(),
+                },
+                &HostRunner,
+            )?;
+            let links = install_agent_links(&source_root, &accounts, &paths.state_dir)?;
+            Ok(serde_json::json!({
+                "source_commit": source_commit,
+                "identities": identities,
+                "prepared": prepared,
+                "agent_links": links,
+            }))
+        })(),
         InstallCommand::Preflight { source_root, fetch } => {
             install::validate_live_checkout(&source_root, fetch, &HostRunner).map(|commit| {
                 serde_json::json!({
@@ -453,11 +565,175 @@ fn run_install(command: InstallCommand) -> ExitCode {
                         .map_err(|error| format!("cannot encode installation plan: {error}"))
                 })
         }
+        InstallCommand::Activate {
+            candidate_manifest,
+            transaction_dir,
+            canary,
+            yes,
+        } => {
+            if !yes {
+                return tooling_error(
+                    "install activate requires --yes after the reviewed cutover plan is ready",
+                    2,
+                );
+            }
+            if rustix::process::geteuid().as_raw() != 0 {
+                return tooling_error("install activate must run as root", 2);
+            }
+            let config = devcoordinator2_tooling::cutover::HostCutoverConfig {
+                candidate_manifest,
+                transaction_dir,
+                canary,
+                ..Default::default()
+            };
+            install::read_and_verify_manifest(&config.candidate_manifest, &HostRunner).and_then(
+                |candidate| {
+                    let checkout_commit = install::validate_live_checkout(
+                        std::path::Path::new(&candidate.source_root),
+                        false,
+                        &HostRunner,
+                    )?;
+                    if checkout_commit != candidate.source_commit {
+                        return Err(
+                            "candidate binaries do not match the current clean main checkout"
+                                .to_owned(),
+                        );
+                    }
+                    let control_binary = candidate
+                        .binaries
+                        .iter()
+                        .find(|binary| binary.name == "devcoordinator2")
+                        .map(|binary| PathBuf::from(&binary.path))
+                        .ok_or_else(|| "candidate manifest has no control binary".to_owned())?;
+                    let validated = install::validate_registered_repository_configs(
+                        &config.database_path,
+                        &control_binary,
+                        &HostRunner,
+                    )?;
+                    let mut host = devcoordinator2_tooling::cutover::HostCutover::new(
+                        config,
+                        std::sync::Arc::new(HostRunner),
+                    )?;
+                    let receipt = devcoordinator2_tooling::cutover::activate(&mut host)?;
+                    Ok(serde_json::json!({
+                        "cutover": receipt,
+                        "validated_repository_configs": validated,
+                    }))
+                },
+            )
+        }
+        InstallCommand::Recover {
+            transaction_dir,
+            yes,
+        } => {
+            if !yes {
+                return tooling_error(
+                    "install recover requires --yes to restore the captured prior installation",
+                    2,
+                );
+            }
+            if rustix::process::geteuid().as_raw() != 0 {
+                return tooling_error("install recover must run as root", 2);
+            }
+            let config = devcoordinator2_tooling::cutover::RecoveryConfig {
+                transaction_dir,
+                ..Default::default()
+            };
+            devcoordinator2_tooling::cutover::recover_host(&config, &HostRunner, (0, 0)).and_then(
+                |receipt| {
+                    serde_json::to_value(receipt)
+                        .map_err(|error| format!("cannot encode recovery receipt: {error}"))
+                },
+            )
+        }
     };
     match result {
         Ok(value) => emit_report(value, true, 1),
         Err(error) => tooling_error(&error, 2),
     }
+}
+
+fn install_agent_links(
+    source_root: &std::path::Path,
+    accounts: &[String],
+    state_dir: &std::path::Path,
+) -> Result<serde_json::Value, String> {
+    use devcoordinator2_tooling::skill_links::{self, PolicyTarget};
+    let mut skill_roots = Vec::new();
+    let mut policy_targets = Vec::new();
+    let mut retired = Vec::new();
+    for name in accounts {
+        let account = devcoordinator2_tooling::install::account_by_name(name)?;
+        for agent in [".codex", ".claude"] {
+            let root = account.home.join(agent);
+            if !root.is_dir() {
+                continue;
+            }
+            let skills = root.join("skills");
+            devcoordinator2_tooling::install::ensure_owned_directory(
+                &skills,
+                0o755,
+                (account.uid, account.gid),
+            )?;
+            let legacy = skills.join("codex-dev-coordinator");
+            if devcoordinator2_tooling::install::retire_legacy_skill_link(&legacy)? {
+                retired.push(legacy);
+            }
+            skill_roots.push(skills);
+            policy_targets.push(if agent == ".codex" {
+                PolicyTarget::codex(root.join("AGENTS.md"))
+            } else {
+                PolicyTarget::claude(root.join("CLAUDE.md"))
+            });
+        }
+    }
+    let transaction_root = state_dir.join("install-transactions");
+    std::fs::create_dir_all(&transaction_root)
+        .map_err(|error| format!("cannot create install transaction directory: {error}"))?;
+    let nonce = transaction_nonce();
+    let skill_changes = if skill_roots.is_empty() {
+        0
+    } else {
+        skill_links::apply_skill_links(
+            source_root,
+            &skill_roots,
+            &transaction_root.join(format!("skills-{nonce}")),
+            &skill_links::SkillLinkApplyOptions {
+                selected_skills: None,
+                allow_noncanonical: false,
+                failure_after_links: None,
+            },
+        )
+        .map_err(|error| error.to_string())?
+        .changed_entries
+    };
+    let policy_changes = if policy_targets.is_empty() {
+        0
+    } else {
+        let transaction = transaction_root.join(format!("policy-{nonce}"));
+        let receipt = skill_links::create_policy_plan(source_root, &transaction, &policy_targets)
+            .map_err(|error| error.to_string())?;
+        skill_links::apply_policy_transaction(&transaction, &receipt.digest)
+            .map_err(|error| error.to_string())?
+            .targets
+            .len()
+    };
+    Ok(serde_json::json!({
+        "skill_roots": skill_roots,
+        "skill_changes": skill_changes,
+        "policy_targets": policy_targets.len(),
+        "policy_changes": policy_changes,
+        "retired_legacy_links": retired,
+    }))
+}
+
+fn transaction_nonce() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    format!("{:x}-{:x}", std::process::id(), nanos)
 }
 
 fn source_commit_requested() -> bool {
@@ -861,6 +1137,42 @@ mod tests {
             install.command,
             Command::Install {
                 command: InstallCommand::Preflight { .. }
+            }
+        ));
+        let configure = Cli::try_parse_from([
+            "devcoordinator2-tooling",
+            "install",
+            "configure",
+            "--base-domain",
+            "example.test",
+            "--admin-emails",
+            "owner@example.test",
+            "--client-accounts",
+            "developer",
+        ])
+        .expect("install configuration command");
+        assert!(matches!(
+            configure.command,
+            Command::Install {
+                command: InstallCommand::Configure { .. }
+            }
+        ));
+        let activate =
+            Cli::try_parse_from(["devcoordinator2-tooling", "install", "activate", "--yes"])
+                .expect("install activation command");
+        assert!(matches!(
+            activate.command,
+            Command::Install {
+                command: InstallCommand::Activate { yes: true, .. }
+            }
+        ));
+        let recover =
+            Cli::try_parse_from(["devcoordinator2-tooling", "install", "recover", "--yes"])
+                .expect("install recovery command");
+        assert!(matches!(
+            recover.command,
+            Command::Install {
+                command: InstallCommand::Recover { yes: true, .. }
             }
         ));
     }

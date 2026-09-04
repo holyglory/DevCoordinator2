@@ -26,6 +26,9 @@ async fn main() -> ExitCode {
         println!("{}", devcoordinator2_control::SOURCE_COMMIT);
         return ExitCode::SUCCESS;
     }
+    if let Some(path) = repository_config_validation_requested() {
+        return validate_repository_config(&path);
+    }
     tracing_subscriber::fmt()
         .with_writer(std::io::stderr)
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
@@ -138,6 +141,43 @@ fn source_commit_requested() -> bool {
     let mut arguments = std::env::args_os().skip(1);
     arguments.next().as_deref() == Some(std::ffi::OsStr::new("--source-commit"))
         && arguments.next().is_none()
+}
+
+fn repository_config_validation_requested() -> Option<std::path::PathBuf> {
+    let mut arguments = std::env::args_os().skip(1);
+    if arguments.next().as_deref() != Some(std::ffi::OsStr::new("--validate-repository-config")) {
+        return None;
+    }
+    let path = arguments.next()?;
+    arguments.next().is_none().then(|| path.into())
+}
+
+fn validate_repository_config(path: &std::path::Path) -> ExitCode {
+    let result = (|| {
+        let tests = devcoordinator2_control::repository_config::validate_test_config(path)
+            .map_err(|error| error.to_string())?;
+        let deployments = devcoordinator2_control::repository_config::list_deployment_names(path)
+            .map_err(|error| error.to_string())?;
+        for name in &deployments {
+            devcoordinator2_control::repository_config::load_deployment_spec(path, name)
+                .map_err(|error| error.to_string())?;
+        }
+        Ok::<_, String>(serde_json::json!({
+            "schema":2,
+            "tests":tests.into_iter().map(|test| test.name).collect::<Vec<_>>(),
+            "deployments":deployments,
+        }))
+    })();
+    match result {
+        Ok(value) => {
+            println!("{value}");
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            eprintln!("repository configuration is not ready for schema 2: {error}");
+            ExitCode::from(2)
+        }
+    }
 }
 
 fn configuration_error(format: OutputFormat, detail: &str) -> ExitCode {

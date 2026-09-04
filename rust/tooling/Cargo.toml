@@ -13,6 +13,7 @@ name = "devcoordinator2-tooling"
 path = "src/main.rs"
 
 [dependencies]
+base64.workspace = true
 clap.workspace = true
 devcoordinator2-api = { path = "../api" }
 getrandom.workspace = true
