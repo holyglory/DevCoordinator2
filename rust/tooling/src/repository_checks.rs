@@ -3849,6 +3849,21 @@ pub fn find_app_wide_policy_violations(text: &str) -> Vec<String> {
 
     let ordered_contracts: &[(&str, &str, &[&str])] = &[
         (
+            "Implement the exact scope",
+            "reported bugs require repair through the original verified outcome without bypassing controls",
+            &[
+                "treat a user-reported bug as a request to investigate, fix, and verify",
+                "do not require the user to say",
+                "explicit explanation-only, investigation-only",
+                "preserve the original user-visible acceptance criterion",
+                "not a fix while the reported behavior still fails",
+                "original affected surface with real data",
+                "do not end a repair with only an apology, diagnosis, plan, or offer to fix",
+                "if genuinely blocked",
+                "preserves existing approval, security, production, and scope boundaries",
+            ],
+        ),
+        (
             "Ground security-posture decisions in confirmed assumptions",
             "every security-posture change or omission must read confirmed assumptions first",
             &[
@@ -4735,6 +4750,51 @@ mod tests {
         assert!(boundaries.is_clean(), "{:?}", boundaries.findings);
         let waits = check_no_test_timer_waits(&root).unwrap();
         assert!(waits.is_clean(), "{:?}", waits.findings);
+    }
+
+    #[test]
+    fn bug_reports_require_repairs_without_losing_request_limits() {
+        let policy =
+            fs::read_to_string(repository_root().join("reference/universal/AGENTS.md")).unwrap();
+        assert!(find_app_wide_policy_violations(&policy).is_empty());
+        for (required, weakened) in [
+            ("investigate, fix, and verify", "investigate and explain"),
+            ("Do not require the", "Always require the"),
+            ("explanation-only, investigation-only", "unrestricted"),
+            (
+                "original user-visible acceptance criterion",
+                "latest supporting subtask",
+            ),
+            (
+                "not a fix while the reported behavior still",
+                "a fix even when the reported behavior still",
+            ),
+            (
+                "original affected surface with real data",
+                "isolated fixture with sample data",
+            ),
+            (
+                "Do not end a repair with only an apology",
+                "End a repair with only an apology",
+            ),
+            ("If genuinely blocked", "If further effort is needed"),
+            (
+                "existing approval, security, production, and scope boundaries",
+                "no approval boundaries",
+            ),
+        ] {
+            assert!(
+                policy.contains(required),
+                "missing fixture target {required}"
+            );
+            let changed = policy.replacen(required, weakened, 1);
+            assert!(
+                find_app_wide_policy_violations(&changed)
+                    .iter()
+                    .any(|item| item.contains("reported bugs require repair")),
+                "accepted weakened repair mandate: {required}"
+            );
+        }
     }
 
     #[test]
