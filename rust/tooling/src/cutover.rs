@@ -548,27 +548,31 @@ impl CutoverAdapter for HostCutover {
 
     fn verify_live(&mut self) -> Result<Vec<String>, String> {
         let binary = self.installed_binary("devcoordinator2")?;
-        let output = self.runner.run(&CommandRequest {
-            program: binary,
-            args: vec!["ping".into()],
-            environment: std::collections::BTreeMap::from([
-                (OsString::from("PATH"), OsString::from("/usr/bin:/bin")),
-                (
-                    OsString::from("DEVCOORDINATOR2_INSTANCE_ENV"),
-                    self.config.instance_env.as_os_str().to_owned(),
-                ),
-            ]),
-            clear_environment: true,
-        })?;
-        if !output.success {
-            return Err(command_failure("v2 ping", &output.stderr, &output.stdout));
-        }
-        let response: Value = serde_json::from_str(&output.stdout)
-            .map_err(|error| format!("v2 ping returned invalid JSON: {error}"))?;
-        if response.get("protocol").and_then(Value::as_u64) != Some(2)
-            || response.get("ok") != Some(&Value::Bool(true))
-        {
-            return Err("v2 ping did not report a successful protocol-2 outcome".to_owned());
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            let output = self.runner.run(&CommandRequest {
+                program: binary.clone(),
+                args: vec!["ping".into()],
+                environment: std::collections::BTreeMap::from([
+                    (OsString::from("PATH"), OsString::from("/usr/bin:/bin")),
+                    (
+                        OsString::from("DEVCOORDINATOR2_INSTANCE_ENV"),
+                        self.config.instance_env.as_os_str().to_owned(),
+                    ),
+                ]),
+                clear_environment: true,
+            })?;
+            let response = serde_json::from_str::<Value>(&output.stdout).ok();
+            if output.success && response.as_ref().is_some_and(successful_v2_ping) {
+                break;
+            }
+            if !response.as_ref().is_some_and(retryable_v2_ping)
+                || std::time::Instant::now() >= deadline
+            {
+                return Err(command_failure("v2 ping", &output.stderr, &output.stdout));
+            }
+            self.systemctl(&["is-active", "--quiet", &self.config.daemon_unit])?;
+            std::thread::sleep(std::time::Duration::from_millis(100));
         }
         self.systemctl(&["is-active", "--quiet", &self.config.daemon_unit])?;
         self.systemctl(&["is-active", "--quiet", &self.config.edge_unit])?;
@@ -651,6 +655,21 @@ impl CutoverAdapter for HostCutover {
     fn reopen_admission(&mut self, drain: Self::Drain) -> Result<(), String> {
         end_drain(&drain)
     }
+}
+
+fn successful_v2_ping(response: &Value) -> bool {
+    response.get("protocol").and_then(Value::as_u64) == Some(2)
+        && response.get("ok") == Some(&Value::Bool(true))
+}
+
+fn retryable_v2_ping(response: &Value) -> bool {
+    response.get("protocol").and_then(Value::as_u64) == Some(2)
+        && response.get("ok") == Some(&Value::Bool(false))
+        && response
+            .get("error")
+            .and_then(|error| error.get("code"))
+            .and_then(Value::as_str)
+            == Some("daemon_unavailable")
 }
 
 pub fn recover_host(
@@ -1319,6 +1338,7 @@ mod tests {
     use std::collections::VecDeque;
     use std::os::unix::net::UnixListener;
     use std::sync::Mutex;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     struct Fake {
         calls: Vec<&'static str>,
@@ -1550,6 +1570,7 @@ mod tests {
     struct HostFake {
         commit: String,
         fail_ping: bool,
+        retryable_ping_failures: AtomicUsize,
         requests: Mutex<Vec<CommandRequest>>,
     }
 
@@ -1566,6 +1587,21 @@ mod tests {
                 });
             }
             if request.args == [OsString::from("ping")] {
+                if self
+                    .retryable_ping_failures
+                    .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |remaining| {
+                        remaining.checked_sub(1)
+                    })
+                    .is_ok()
+                {
+                    return Ok(crate::install::CommandOutput {
+                        success: false,
+                        stdout: "{\"protocol\":2,\"id\":\"x\",\"ok\":false,\"error\":{\"code\":\"daemon_unavailable\",\"message\":\"not ready\",\"detail\":\"\"}}\n".to_owned(),
+                        stderr: String::new(),
+                        stdout_truncated: false,
+                        stderr_truncated: false,
+                    });
+                }
                 return Ok(crate::install::CommandOutput {
                     success: !self.fail_ping,
                     stdout: if self.fail_ping {
@@ -1757,6 +1793,33 @@ mod tests {
                 .exists()
         );
         assert!(!world.config.runtime_dir.join(DRAIN_FILE).exists());
+    }
+
+    #[test]
+    fn concrete_host_adapter_waits_for_the_daemon_socket_to_bind() {
+        let world = host_world();
+        let runner = Arc::new(HostFake {
+            commit: world.commit.clone(),
+            retryable_ping_failures: AtomicUsize::new(1),
+            ..HostFake::default()
+        });
+        let mut host =
+            HostCutover::new_owned(world.config.clone(), runner.clone(), world.expected_owner)
+                .unwrap();
+
+        let receipt = activate(&mut host).unwrap();
+
+        assert_eq!(receipt.status, "activated");
+        assert_eq!(
+            runner
+                .requests
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|request| request.args == [OsString::from("ping")])
+                .count(),
+            2
+        );
     }
 
     #[test]
