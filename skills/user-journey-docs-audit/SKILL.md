@@ -82,7 +82,11 @@ material ambiguity. Possible topics are:
 ## Workflow
 
 1. **Inventory documentation**
-   - Run `python3 <skill-dir>/scripts/build_journey_docs_inventory.py --repo <repo> --json` unless the user forbids commands.
+   - Resolve `USER_JOURNEY_DOCS_AUDIT_SKILL_DIR` from the loaded skill path
+     and `CANONICAL_SKILL_ROOT` as its repository root, then run
+     `devcoordinator2-tooling skills self-test audit-tooling --source-root
+     "$CANONICAL_SKILL_ROOT"` unless validation commands are forbidden.
+   - Run `devcoordinator2-tooling audit journey-docs inventory --repo <repo> --json` unless the user forbids commands.
    - Inspect README, docs, specs, architecture notes, route maps, onboarding docs, product docs, MDX, Storybook notes, and operational Markdown.
    - Treat UI/source files only as supporting hints for missing docs, not as proof that documentation is complete.
 
@@ -138,7 +142,7 @@ material ambiguity. Possible topics are:
    - Include enough detail that another engineer or agent can write the missing docs without inventing product intent.
    - When a deterministic completion gate is required, save the final Markdown
      report and run
-     `python3 <skill-dir>/scripts/verify_journey_docs_audit_results.py <report.md>`.
+     `devcoordinator2-tooling audit journey-docs verify <report.md>`.
      This checks report shape, interview/confirmation status, journey-status
      labels, unconfirmed-assumption propagation, and the interaction/metadata
      checklist; it does not replace lead judgment.

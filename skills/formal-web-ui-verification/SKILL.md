@@ -80,7 +80,7 @@ directory explicitly:
 
 ```bash
 FORMAL_WEB_UI_SKILL_DIR="/absolute/path/to/formal-web-ui-verification"
-python3 "$FORMAL_WEB_UI_SKILL_DIR/scripts/self_test.py"
+devcoordinator2-tooling formal-ui self-test
 ```
 
 The self-test resolves Playwright from an explicit module directory derived
@@ -96,7 +96,7 @@ Verify explicit routes through a complete config (the linked contract reference
 contains a full example):
 
 ```bash
-node "$FORMAL_WEB_UI_SKILL_DIR/scripts/formal_web_ui_verify.mjs" \
+devcoordinator2-tooling formal-ui verify \
   --config formal-web-ui.json \
   --fail-on critical
 ```
@@ -156,7 +156,7 @@ failure. Explicit targets fail closed on navigation, HTTP, or non-HTML errors.
 Verify healthy coordinator-managed web URLs without starting duplicate servers:
 
 ```bash
-node "$FORMAL_WEB_UI_SKILL_DIR/scripts/formal_web_ui_verify.mjs" \
+devcoordinator2-tooling formal-ui verify \
   --config formal-web-ui.json \
   --coordinator-command devcoordinator2 \
   --only-current \
@@ -304,7 +304,8 @@ skill; callers can always provide explicit `--url` targets instead.
      full-page screenshots, and record `pass`, `gap`, or `blocked`. Never reopen
      carried unchanged screenshots; carried gaps remain blocking.
    - Finalize and validate `manual-review.json` with
-     `scripts/formal_web_ui_review.py` as shown in the contract reference. A
+     `devcoordinator2-tooling formal-ui review` as shown in the contract
+     reference. A
      formal exit `0` with pending review is not visual completion.
 
 ## Default Rule Set

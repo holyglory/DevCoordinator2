@@ -39,15 +39,15 @@ For each case:
 Validate the suite and score a complete response set with:
 
 ```bash
-python3 skills/full-repo-audit/evals/marker-free/score.py validate-suite
-python3 skills/full-repo-audit/evals/marker-free/score.py score \
+devcoordinator2-tooling audit marker-free validate-suite
+devcoordinator2-tooling audit marker-free score \
   --responses <responses-dir>
 ```
 
 Validate one response while iterating with:
 
 ```bash
-python3 skills/full-repo-audit/evals/marker-free/score.py validate-response \
+devcoordinator2-tooling audit marker-free validate-response \
   --case ignored-input-config \
   --response <responses-dir>/ignored-input-config.json
 ```
@@ -72,7 +72,8 @@ source, oracle, and the scorer self-test in the same change.
 Run the evaluation infrastructure self-test with:
 
 ```bash
-python3 skills/full-repo-audit/evals/marker-free/self_test.py
+devcoordinator2-tooling skills self-test audit-tooling \
+  --source-root /path/to/DevCoordinator2
 ```
 
 This self-test synthesizes responses from the hidden oracle to exercise schema

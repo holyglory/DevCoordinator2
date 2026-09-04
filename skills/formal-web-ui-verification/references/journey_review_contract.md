@@ -336,7 +336,7 @@ a small JSON artifact, and finalize the immutable reviewed manifest:
 ```
 
 ```bash
-python3 "$FORMAL_WEB_UI_SKILL_DIR/scripts/formal_web_ui_review.py" \
+devcoordinator2-tooling formal-ui review \
   --report /path/report.json \
   --queue /path/review-queue.json \
   --decisions /path/decisions.json \
@@ -350,7 +350,7 @@ tampered evidence chain.
 Supply a prior reviewed manifest explicitly on the next run:
 
 ```bash
-node "$FORMAL_WEB_UI_SKILL_DIR/scripts/formal_web_ui_verify.mjs" \
+devcoordinator2-tooling formal-ui verify \
   --config formal-web-ui.json \
   --review-against /path/prior-manual-review.json
 ```

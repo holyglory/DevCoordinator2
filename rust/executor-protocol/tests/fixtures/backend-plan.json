@@ -27,7 +27,7 @@
       "completion": "process",
       "on_failure": "continue",
       "produces": [],
-      "command": ["python3", "-m", "compileall", "src"]
+      "command": ["cargo", "check", "--locked", "--workspace"]
     },
     {
       "name": "unit",
@@ -42,7 +42,7 @@
       "completion": "process",
       "on_failure": "continue",
       "produces": [],
-      "command": ["python3", "-m", "pytest", "-q"]
+      "command": ["cargo", "test", "--locked", "--workspace"]
     },
     {
       "name": "browser-cases",

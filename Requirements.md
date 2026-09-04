@@ -436,7 +436,7 @@ not contradict them.
   the owner and agents; FTS5 absence is a refused start, not a silent
   degrade.
 - **REQ-PLAN-10** (S8): `DecisionHistory.md` is retired in favor of the
-  database: `scripts/decision_import.py` imports the existing entries with
+  database: `devcoordinator2-tooling decision import` imports the existing entries with
   their `DC2-…` refs preserved, after which the file is a pointer stub and
   new DC2-repository decisions are recorded only in the database
   (owner-executed import).

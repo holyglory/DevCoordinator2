@@ -22,7 +22,7 @@ authenticated routes only), and a static file server for the Console.
   change and every 5 s.
 - Hosts: `<label>.<base domain>` routes to the published port; the console
   host (`console.<base domain>` by default) serves `/auth/*`, `/healthz`,
-  the Console (Phase 7), and the `/api/<command>` bridge.
+  the Console (Phase 7), and the `/api/v2/<operation>` bridge.
 - Authorization per request: `auth: public` routes proxy without sign-in;
   authenticated routes require a session whose identity is an owner or
   holds any grant for that exact `deployment_id`. Revocation is effective on
@@ -33,15 +33,17 @@ authenticated routes only), and a static file server for the Console.
   (`user.accept_invitation`, trusted only because the edge's Unix uid is the
   configured `DEVCOORDINATOR2_EDGE_UID`). A session is issued regardless;
   what it may reach is decided by the route document and the daemon.
-- `/api/<command>` (POST JSON args, session required): forwarded to the
+- `/api/v2/<operation>` (POST JSON params, session required): forwarded to the
   daemon with `client.identity = <signed-in e-mail>`; the daemon applies
-  roles (`docs/contract-commands.md`). Command names must match
+  roles (`docs/contract-commands.md`). Operation names must match
   dot-separated operation grammar such as `family.name` or
   `family.area.action` (lowercase, `[a-z_]` after each dot) or be exactly
   `ping` — anything else is refused at the edge and never reaches the
   daemon. Public callers address deployments
   by `deployment_id`; actions on their behalf execute as the account that
   created the deployment.
+- The former `/api/<operation>` route returns a bounded protocol-2
+  `protocol_unsupported` error and never forwards the request.
 
 ## Configuration (instance data, never in the repository)
 
@@ -66,6 +68,7 @@ Daemon side: `DEVCOORDINATOR2_EDGE_UID` (the edge service uid) and
 ## Tests
 
 `node --test edge/test` runs the edge against a fixture OIDC issuer, a fake
-daemon socket, and real upstreams; `tests/integration/test_access_edge.py`
-proves identity trust, roles, invitation admission, and revocation over the
-real daemon.
+daemon socket, and real upstreams. The Rust control tests in
+`rust/control/src/access.rs` and `rust/control/src/daemon.rs` prove identity
+trust, roles, invitation admission, revocation, and non-edge spoof rejection at
+the daemon boundary.

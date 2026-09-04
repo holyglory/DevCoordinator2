@@ -1,8 +1,9 @@
 # Local Unix-Socket JSON Protocol
 
-Version: `protocol: 1`. One shared request/response/result schema serves the
-CLI, the MCP server, and (later) the Console API. Command-level schemas are
-in `contract-commands.md`.
+Version: `protocol: 2`. One generated request/response/data contract serves
+the CLI, MCP server, and Console API. The committed JSON Schema 2020-12 bundle
+is `contracts/devcoordinator2-v2.schema.json`; `contract-commands.md` explains
+the domain operations.
 
 ## Transport and framing
 
@@ -13,8 +14,9 @@ in `contract-commands.md`.
   caller, connectable even from sandboxes whose user namespace maps the
   client group away; the group remains for organizational ownership only).
   The kernel peer credentials (`SO_PEERCRED`: pid, uid, gid) are read on
-  accept; the **uid is the physical caller identity** for every request.
-  Nothing in a request body can assert or override identity.
+  accept; the **uid is the physical caller identity** for every request. Only
+  the exact configured edge uid may add a signed-in public e-mail identity;
+  every other body identity assertion is rejected.
 - One connection carries exactly one request and one response, then closes.
   UTF-8 JSON, single line, terminated by `\n`.
 - Once the daemon accepts and begins a mutation, client disconnect or a lost
@@ -28,27 +30,33 @@ in `contract-commands.md`.
 
 ```json
 {
-  "protocol": 1,
+  "protocol": 2,
   "id": "<client-generated opaque string, echoed back>",
-  "command": "test.start",
-  "args": { },
-  "client": {"kind": "codex", "session": "<optional task id>"}
+  "operation": "test.start",
+  "params": { },
+  "client": {
+    "kind": "codex",
+    "session": "<optional task id>",
+    "identity": "<edge-only signed-in e-mail>"
+  }
 }
 ```
 
 - `client` is descriptive attribution only (`codex`, `claude`, `cursor`,
-  `antigravity`, `human`, `other`); it is recorded, never trusted.
-- Unknown top-level or `args` keys are rejected (`args_invalid`).
+  `antigravity`, `human`, `other`, `edge`); only the edge identity assertion
+  has authorization meaning, after peer-uid verification.
+- Unknown envelope or operation-parameter fields are rejected. Protocol 1 is
+  rejected with `protocol_unsupported` and is never translated or executed.
 
 ## Response
 
-Success: `{"protocol": 1, "id": "…", "ok": true, "result": { }}`
+Success: `{"protocol": 2, "id": "…", "ok": true, "data": { }}`
 
 Failure:
 
 ```json
 {
-  "protocol": 1, "id": "…", "ok": false,
+  "protocol": 2, "id": "…", "ok": false,
   "error": {
     "code": "test_start_failed",
     "message": "<one sentence>",
@@ -63,10 +71,11 @@ Stable snake_case, terminal (no retry/queue semantics):
 
 | code | meaning |
 |---|---|
-| `protocol_invalid` | not JSON, wrong `protocol`, missing envelope fields |
+| `protocol_invalid` | malformed JSON or invalid/missing envelope fields |
+| `protocol_unsupported` | protocol is absent or is not version 2 |
 | `request_too_large` | request frame over 64 KiB |
-| `command_unknown` | command not in the registry |
-| `args_invalid` | args fail the command schema |
+| `operation_unknown` | operation is not in the exhaustive registry |
+| `params_invalid` | parameters fail the generated operation schema |
 | `repository_not_found` | path is not inside a registered/registerable Git repository |
 | `repository_config_invalid` | `.devcoordinator.toml` fails validation |
 | `repository_archived` | repository is historical; response names its active replacement when present |
@@ -89,8 +98,9 @@ Stable snake_case, terminal (no retry/queue semantics):
 
 ## Result conventions
 
-- Results are compact conclusions plus exact file or continuation
-  references (`summary_path`, `log_path`); never raw logs or metric series.
+- Results are typed operation data. Private host paths and unrequested raw
+  evidence are omitted; bounded log, screenshot, and artifact chunks require
+  their dedicated exact-reference operations.
 - Mutation success means the requested observable state was reached (e.g.
   `test.start` returns only after the unit's process exists), not merely
   that a handler ran or a row was saved.

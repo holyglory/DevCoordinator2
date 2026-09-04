@@ -6,17 +6,23 @@ the owner, deliberately, with a rollback path. Concrete names (domain,
 accounts, legacy unit names, paths) are instance data kept in the untracked
 `instance/` directory; this runbook uses placeholders.
 
-## State of play after Phase 8 tooling
+## Rust cutover preparation
 
-- A **canary** instance is installed beside the legacy system
-  (`scripts/install.py --canary`): daemon on `/run/devcoordinator2/daemon.sock`,
-  edge http-only on a private port, release under `/opt/devcoordinator2`,
-  CLI shim `/usr/local/bin/devcoordinator2`, client group and edge system
-  user created, instance configuration templates in `/etc/devcoordinator2/`.
-  The legacy edge keeps 80/443. Nothing legacy was modified.
-- `scripts/legacy_export.py` produced a reviewable read-only export of the
+- `devcoordinator2-tooling install configure` creates or preserves the client
+  group, edge account, instance configuration, private source policies,
+  direct skill/policy links, and the edge's read-only access to the canonical
+  checkout. `--canary` keeps the edge HTTP-only on the selected private port.
+- `devcoordinator2-tooling install build` accepts only a clean canonical
+  `main` equal to the already-fetched `origin/main`. It builds all three Rust
+  executables as the checkout owner, probes their embedded commit, hashes
+  them, and writes a root-owned mode-0600 candidate manifest. There is no
+  copied release tree.
+- `devcoordinator2-tooling install verify` rechecks the candidate manifest,
+  embedded commits, hashes, and executable identities. `install plan` shows
+  the exact unit and direct-link targets without changing the live service.
+- `devcoordinator2-tooling legacy export` produced a reviewable read-only export of the
   legacy stores (no secrets) at `instance/legacy-export.json`.
-- `scripts/legacy_import.py --dry-run` prints what would be imported and a
+- `devcoordinator2-tooling legacy import --dry-run` prints what would be imported and a
   deployment declaration plan; without `--dry-run` it imports
   administrators, Telegram chat links/subscriptions, and open bugs.
 
@@ -47,22 +53,24 @@ accounts, legacy unit names, paths) are instance data kept in the untracked
    Telegram state) to a dated directory outside both repositories.
 7. **Fence legacy mutations**: stop the legacy API/broker/test units
    (names in `instance/legacy-notes.md`) but leave its edge running.
-8. **Import reviewed state**: `scripts/legacy_import.py --export
+8. **Import reviewed state**: `devcoordinator2-tooling legacy import --export
    instance/legacy-export.json --state-dir /var/lib/devcoordinator2
    --bugs-dir /var/lib/devcoordinator2-bugs`; apply the reviewed deployment
    declarations so every public route of step 2 exists with its domain;
    re-decide the pending access request (invite or ignore).
-9. **Switch the edge**: reinstall without `--canary` (TLS credentials in
-   `/etc/devcoordinator2/edge/`, `EDGE_HTTP_ONLY=0`, ports 80/443), then
-   `scripts/edge_switch.py --to devcoordinator2 --legacy-units <legacy edge
-   units> --yes`. Rollback at any time: `--to legacy --yes`.
+9. **Activate once**: configure without `--canary` after installing the TLS
+   credentials, build and verify the frozen candidate, then run
+   `devcoordinator2-tooling install activate --yes`. The command closes test
+   admission, fences the old socket, waits for accepted work, rejects an
+   applying deployment, creates the private SQLite backup and installation
+   snapshot, switches the units and direct binary links, and verifies the v2
+   daemon and Node edge. If interrupted, run
+   `devcoordinator2-tooling install recover --yes`; it restores the captured
+   installation and restores the database only when integrity fails.
    Subsequent source updates are developed and validated in worktrees, merged
    to `origin/main`, then fetched and fast-forwarded into the clean
-   `/home/DevCoordinator2` checkout. `scripts/install.py --start` verifies that
-   exact state, closes test admission, waits on exact activity receipts until
-   every active test and cleanup finishes, and restarts both units directly
-   from the checkout. Abort restores admission and leaves the existing process
-   running.
+   `/home/DevCoordinator2` checkout. A later `install build`, `verify`, and
+   reviewed `activate --yes` cycle repeats the same provenance and drain gates.
 10. **Docker authoritative mode** (owner decision DC2-…-DOCKER-MODE): remove
     agent accounts from the `docker` group, restart their sessions, verify
     `devcoordinator2 health containers` attributions; the observational
@@ -75,7 +83,7 @@ accounts, legacy unit names, paths) are instance data kept in the untracked
 
 `systemctl disable --now devcoordinator2 devcoordinator2-edge`, remove
 `/etc/systemd/system/devcoordinator2*.service`, `/etc/tmpfiles.d/devcoordinator2.conf`,
-`/usr/local/bin/devcoordinator2`, any inactive historical `/opt/devcoordinator2`
-source copies, and — only if the
+`/usr/local/bin/devcoordinator2`, `/usr/local/bin/devcoordinator2-tooling`, any
+inactive historical `/opt/devcoordinator2` source copies, and — only if the
 state is not wanted — `/var/lib/devcoordinator2*`, `/etc/devcoordinator2`,
 the `devcoordinator2-edge` user and `devcoordinator2-clients` group.
