@@ -79,6 +79,17 @@
   a temporary bridge in the authoritative completion ledger and replace it
   before readiness.
 
+## Tool orchestration
+
+- Before tool use, partition calls into dependency layers.
+- Execute all safe, independent calls in the same layer concurrently.
+- Prefer programmatic orchestration for bounded read-only workflows,
+  pagination, filtering, joining, deduplication, and aggregation.
+- Use sequential direct calls only when the next action requires semantic
+  judgment, approval, or data from the preceding call.
+- Never parallelize conflicting mutations.
+- Emit compact structured results containing conclusions, evidence, and errors.
+
 ## Ground security-posture decisions in confirmed assumptions
 
 - This gate applies to every decision that adds, changes, weakens, removes, or
@@ -163,45 +174,32 @@
   the smallest architecture that delivers the request.
 - Do not equate more checks, parsers, adapters, or supported formats with a more
   complete implementation.
-- Every explicit requirement, user-selected detail, visible promise, exposed
-  value, and necessary supporting behavior within that exact scope must work end
-  to end from the first delivery or remain an active, specific item in the project's
-  authoritative completion ledger. No agreed gap is too small to record, and
-  work is not ready while one remains.
-- Use DevCoordinator2's planning database as the one authoritative
-  completion ledger with permanent event history. Read it with
-  `plan_overview` and `task_history`; record and change work items with
-  `task_create` and `task_update` (CLI: `devcoordinator2 plan|task …`).
-  Size tasks in estimated lines of code and split large work into subtask
-  trees. A `daemon_unavailable` or database error from these tools blocks
-  the affected completion claim.
-- Record active unresolved partial implementations, temporary bridges, missing
-  integrations, limitations, affected-path TODOs, improvements, and
-  generalizations as database issues. Write every issue for a reader who does
-  not know the implementation: the remaining outcome starts in plain language;
-  impact states what users or the product cannot do and whether readiness is
-  blocked; current state names the concrete unblock condition; and verification
-  names the observable proof that will close the gap. Technical detail,
-  affected paths, identifiers, and test names may follow but never replace that
-  account; raw logs remain in cold artifacts. Create each such issue with
-  `task_create` (kind `stub`, `improvement`, or `user_feedback`).
-- Never delete an issue or prior event. Mark implementation, verification,
-  reopening, reassignment, release moves, and supersession as append-only state
-  transitions. Normal queries return the bounded active projection; load one
-  issue's bounded history only for a concrete recurrence, decision, or audit
-  need. A database outage blocks affected completion claims and never
-  authorizes a file, alternate store, or chat-memory fallback.
-- Record consequential choices in the decision history (`decision_record`),
-  not as duplicate ledger state. The database event history is the only
-  completion history.
-- Keep externally blocked work unresolved and name its unblock condition.
-  Before readiness, reconcile requirements, implementation, acceptance
-  criteria, tests, and the ledger. Readiness requires end-to-end behavior and
-  no request-related unresolved entry.
-- When reporting incomplete work, summarize the ledger's direction, current
-  capabilities, user-visible gaps, and blockers in plain language before any
-  technical detail. Do not make the user decode the table to understand where
-  development is going.
+
+## Keep completion and execution histories separate
+
+- The completion ledger contains durable unfinished outcomes, never execution
+  attempts. Record every passed, failed, cancelled, timed-out, invalidated,
+  retried, or superseded run only in governed run history.
+- Diagnose failures before changing work state. Create or reopen one task only
+  when evidence proves a durable missing or regressed outcome not already
+  represented. A passing run may support completion but never closes a task
+  automatically; a failing run never changes task status automatically.
+- Link runs to tasks through structured evidence references; do not copy run
+  status, logs, or failure prose into task history. Keep compact referenced run
+  receipts after verbose evidence expires.
+- Execution-only actions are not tasks. Implementing missing test or harness
+  capability may be a task; running or rerunning it is not.
+- Keep every agreed gap active until resolved or explicitly removed. Use the
+  configured software-owned database, size and split large work, preserve
+  append-only history, and never fall back to files or chat memory. Database
+  unavailability blocks the affected completion claim.
+- Write tasks for a non-specialist: remaining outcome, user impact, unblock
+  condition, and observable proof first; technical detail may follow. Keep
+  externally blocked outcomes open.
+- Put consequential choices in decision history, not task state. Readiness
+  requires both no request-related unfinished outcome and fresh required run
+  evidence. Report direction, capabilities, gaps, and blockers in plain
+  language.
 
 ## Delegate only contract-ready work
 
@@ -218,16 +216,10 @@
 
 ## Parallelize independent work and first-failure fixing
 
-- Before substantive multi-step work, identify the dependencies and
-  mutable-state ownership needed to distinguish ready work from conflicts.
-  Start every ready, non-conflicting item concurrently using the available
-  runtime or tool support, and submit newly ready work as prior work finishes.
-  For governed checks, submit every dependency-ready leaf immediately and let
-  the configured coordinator's measured host-wide adaptive admission decide
-  when it starts. Do not add repository-local worker counts, fake dependency
-  chains, or a second capacity controller. Serialize only for a concrete
-  dependency, a shared mutable-state conflict, or an actual runtime/tool
-  limitation, and state that reason.
+- Start dependency-ready, non-conflicting work immediately. Submit governed
+  leaves to the configured host-wide scheduler; do not add local worker limits,
+  fake dependencies, or another capacity controller. Serialize only for a real
+  dependency, mutable-state conflict, or runtime limitation.
 - Make cheap checks that can invalidate expensive downstream evidence real
   success dependencies. Run independent preflights together; when one fails,
   do not start its invalidated targets, but continue unrelated safe branches.
@@ -244,23 +236,14 @@
 
 ## Wait for events instead of polling
 
-- When a blocking event-subscription or wait facility is available, subscribe
-  once and enter the waiting state. Do not repeatedly call status tools, run
-  periodic shell checks, or spend model turns asking whether state changed.
-- Every subscription must allow an expected-event deadline. If the event does
-  not arrive, the wait facility returns a typed heartbeat result so the agent
-  can reassess.
-- Multiplex pending subscriptions through one wait whenever possible. A
-  heartbeat returns all subscriptions currently due and causes at most one
-  wake-up for that waiting task. One shared scheduler serves many
-  subscriptions; do not create one polling loop, timer process, or model
-  continuation per subscription.
-- On wake-up, retrieve the bounded authoritative state once and continue from
-  the returned cursor. A timeout may be a longer failure deadline, but no
-  deliberate sleep or polling interval may exceed 100 ms.
-- If no event interface exists, keep unavoidable polling inside one
-  software-owned watcher or harness process. Do not implement polling through
-  repeated agent turns.
+- Subscribe once through a blocking event wait; never spend model turns on
+  status polling or periodic shell checks.
+- Give every subscription an expected-event deadline and multiplex pending
+  subscriptions. One shared scheduler returns all due heartbeats in one wake.
+- On wake, fetch bounded authoritative state once and continue from its cursor.
+  If events are unavailable, one software-owned watcher may poll; the agent
+  never does. Timeouts are failure ceilings, and deliberate polling intervals
+  may not exceed 100 ms.
 
 ## Validate at semantic checkpoints
 
@@ -282,45 +265,30 @@
 
 ## Deliver UI previews before broad validation
 
-- When an authorized non-production UI surface is available, reproduce the
-  reported defect, implement the fix, and run the narrowest focused automated
-  and rendered checks that could invalidate it.
-- As soon as those focused checks pass, update the non-production surface and
-  give the user the exact URL, route, state, and viewport to inspect. Do not
-  wait for pre-merge validation or the complete test suite.
-- Clearly label this as a preliminary result. Early user inspection is
-  feedback, not readiness evidence or final formal visual review.
-- Run broader validation in the background against a frozen source snapshot
-  while the mutable test surface remains available for further corrections.
-  If the source changes during that run, let the sealed run finish as
-  diagnostic evidence, but do not use it to certify the newer source. Run one
-  fresh complete pass after the accepted candidate is frozen.
-- Never apply this preview-first permission to production unless the user
-  explicitly requests a production deployment.
-- When a repository explicitly declares one shared mutable test surface,
-  agents with non-conflicting page, route, symbol, or source-region ownership
-  may update it concurrently. Do not create isolated preview servers merely
-  because several agents are active. Serialize only actual overlapping edits
-  or server mutations that cannot safely overlap.
+- On an authorized non-production surface, reproduce the defect, implement the
+  fix, and run the narrowest focused automated and rendered checks.
+- Once they pass, update that surface and give the user the exact URL, route,
+  state, and viewport without waiting for broad validation. Label the result
+  preliminary; it is feedback, not readiness or final visual review.
+- Run broader validation against a frozen snapshot while the mutable preview
+  remains available. Later changes leave that run diagnostic-only; verify the
+  final frozen candidate afresh.
+- Never infer production permission. When a repository declares one shared
+  preview, agents may update non-conflicting routes or source regions together;
+  serialize only actual edit or server conflicts.
 
 ## Finish diagnostic cycles before batch fixing
 
-- For a finite full test, debug, reproduction, audit, migration-rehearsal, or
-  deployment cycle, continue to the end after non-critical failures. Record
-  each actionable gap concisely in the authoritative completion ledger as it
-  appears, keep
-  complete raw output in a cold artifact when useful, and use later failures
-  and edge paths as evidence. Do not fix one small gap and restart the full
-  cycle while the remaining pass can still produce valid information.
+- Let finite tests, debugging, audits, rehearsals, and deployments finish after
+  ordinary failures. Store every execution in governed run history and verbose
+  output in cold artifacts; do not create tasks as findings appear.
 - Stop or mitigate immediately only when continuing could cause security or
   safety harm, data loss, shared-state corruption, destruction of useful
   evidence, or results invalid enough to make the rest of the pass misleading.
-- Diagnosis and isolated fixing may already be underway after the first
-  ordinary failure. After the complete evidence pass, reconcile every finding,
-  group findings by cause, strengthen the narrowest effective guardrails, finish
-  and fix the batch, and rerun the complete relevant cycle. Focused checks may
-  accelerate development between the two full passes, but do not replace the
-  final full pass.
+- Diagnose and repair ordinary failures in isolated state while the run
+  continues. Afterwards, group findings by cause, promote only durable gaps,
+  batch fixes, use focused checks, then run one final complete pass.
+
 ## Keep behavior truthful
 
 - Never present invented facts, data, measurements, media, numbers, parameters,
@@ -352,11 +320,8 @@
 - Never use plausible synthetic numbers, parameters, statuses, or results as a
   production stand-in for missing data, processing, or persistence. Show the
   honest unavailable state and ledger the agreed missing behavior instead.
-- Immediately put each missing or partial agreed behavior in the authoritative
-  completion ledger as a specific entry naming affected journeys, screens and
-  responsive variants, controls, files, missing behavior, user impact, unblock
-  condition, and required rendered end-to-end verification. A generic
-  future-production item is insufficient.
+- Record each agreed missing behavior as a specific durable outcome naming its
+  affected journey, user impact, unblock condition, and rendered proof.
 - An unimplemented control may appear only when the specification explicitly
   requires communicating future availability. It is semantically disabled and
   non-actionable, visibly labelled unavailable, and specifically ledgered; the
