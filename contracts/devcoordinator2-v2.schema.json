@@ -19734,6 +19734,9 @@
               "lines": {
                 "type": "string"
               },
+              "lines_added": {
+                "type": "string"
+              },
               "tasks": {
                 "type": "string"
               },
@@ -19747,6 +19750,7 @@
             "required": [
               "tasks",
               "lines",
+              "lines_added",
               "tests",
               "tokens",
               "forecast"
@@ -19764,6 +19768,10 @@
               "bucket_start_ms": {
                 "format": "uint64",
                 "minimum": 0,
+                "type": "integer"
+              },
+              "planned_lines_added": {
+                "format": "int64",
                 "type": "integer"
               },
               "planned_lines_completed": {
@@ -19825,6 +19833,7 @@
               "tasks_created",
               "tasks_reopened",
               "planned_lines_completed",
+              "planned_lines_added",
               "scope_lines_changed",
               "test_runs",
               "tests_passed",
@@ -19835,6 +19844,10 @@
           "ProgressTotals": {
             "additionalProperties": false,
             "properties": {
+              "planned_lines_added": {
+                "format": "int64",
+                "type": "integer"
+              },
               "planned_lines_completed": {
                 "format": "int64",
                 "type": "integer"
@@ -19918,6 +19931,7 @@
               "tasks_created",
               "tasks_reopened",
               "planned_lines_completed",
+              "planned_lines_added",
               "scope_lines_changed",
               "test_runs",
               "tests_passed",

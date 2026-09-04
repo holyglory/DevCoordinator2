@@ -28,6 +28,7 @@ use crate::deployments::Deployments;
 use crate::health::HealthService;
 use crate::plan::{PlanService, SqliteDeploymentEvidence};
 use crate::platform::{Clock, HostClock};
+use crate::progress::ProgressService;
 use crate::repository::Registry;
 use crate::routes::RouteFilePublisher;
 use crate::telegram::{TelegramEvent, TelegramScope, TelegramService, parse_scope};
@@ -35,6 +36,7 @@ use crate::test_artifacts::TestArtifactService;
 use crate::test_lifecycle::{TestLifecycle, TestLifecycleEvent};
 use crate::test_logs::TestLogService;
 use crate::test_state::ActiveTestArchiveBlocker;
+use crate::usage::UsageService;
 use crate::{DATABASE_SCHEMA_VERSION, SOURCE_COMMIT};
 
 const TIMESTAMP_FORMAT: &[FormatItem<'static>] =
@@ -89,6 +91,10 @@ pub const FOUNDATION_OPERATIONS: &[&str] = &[
     "health.history",
     "health.containers",
     "health.container_remove",
+    "usage.repositories",
+    "usage.repository",
+    "progress.repositories",
+    "progress.repository",
     "telegram.link",
     "telegram.subscribe",
     "telegram.unsubscribe",
@@ -123,6 +129,8 @@ pub struct ControlPlane {
     deployments: Deployments,
     capacity: CapacityBroker,
     health: HealthService,
+    usage: UsageService,
+    progress: ProgressService,
     telegram: TelegramService,
     clock: Arc<dyn Clock>,
 }
@@ -163,6 +171,18 @@ impl ControlPlane {
             config.clone(),
             database.clone(),
             registry.clone(),
+            Arc::clone(&clock),
+        );
+        let usage = UsageService::with_clock(
+            config.clone(),
+            database.clone(),
+            registry.clone(),
+            Arc::clone(&clock),
+        );
+        let progress = ProgressService::with_clock(
+            database.clone(),
+            registry.clone(),
+            usage.usage().clone(),
             Arc::clone(&clock),
         );
         let tests = TestLifecycle::new(
@@ -217,6 +237,8 @@ impl ControlPlane {
             deployments,
             capacity,
             health,
+            usage,
+            progress,
             telegram,
             clock,
         })
@@ -236,6 +258,14 @@ impl ControlPlane {
 
     pub fn health(&self) -> &HealthService {
         &self.health
+    }
+
+    pub fn usage(&self) -> &UsageService {
+        &self.usage
+    }
+
+    pub fn progress(&self) -> &ProgressService {
+        &self.progress
     }
 
     pub fn logs(&self) -> &TestLogService {
@@ -555,6 +585,13 @@ impl ControlPlane {
                 let params: params::RemoveContainer = decode(params)?;
                 encode(self.health.remove_container(&params.container_id)?)
             }
+            "usage.repositories" => encode(self.usage.repositories(decode(params)?)?),
+            "usage.repository" => encode(self.usage.repository(decode(params)?)?),
+            "progress.repositories" => {
+                let _: params::Empty = decode(params)?;
+                encode(self.progress.repositories()?)
+            }
+            "progress.repository" => encode(self.progress.repository(decode(params)?)?),
             "telegram.link" => {
                 let params: params::TelegramLink = decode(params)?;
                 let principal = self.access.principal(caller)?;

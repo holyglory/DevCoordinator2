@@ -1666,6 +1666,7 @@ pub struct ProgressSeriesPoint {
     pub tasks_created: u32,
     pub tasks_reopened: u32,
     pub planned_lines_completed: i64,
+    pub planned_lines_added: i64,
     pub scope_lines_changed: i64,
     pub test_runs: u32,
     pub tests_passed: u32,
@@ -1681,6 +1682,7 @@ pub struct ProgressTotals {
     pub tasks_created: u32,
     pub tasks_reopened: u32,
     pub planned_lines_completed: i64,
+    pub planned_lines_added: i64,
     pub scope_lines_changed: i64,
     pub test_runs: u32,
     pub tests_passed: u32,
@@ -1790,6 +1792,7 @@ pub struct ProgressCoverage {
 pub struct ProgressSemantics {
     pub tasks: String,
     pub lines: String,
+    pub lines_added: String,
     pub tests: String,
     pub tokens: String,
     pub forecast: String,
