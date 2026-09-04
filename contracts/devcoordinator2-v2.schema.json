@@ -2,6 +2,15 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "operations": [
     {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "ping"
+          }
+        ]
+      },
       "description": "Report daemon, schema, protocol, source, and socket identity.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -9,6 +18,7 @@
         "title": "EmptyParams",
         "type": "object"
       },
+      "mcpExcludedReason": "Deliberately not exposed as an MCP tool.",
       "mcpTools": [],
       "name": "ping",
       "outputSchema": {
@@ -61,6 +71,10 @@
       }
     },
     {
+      "cli": {
+        "excludedReason": "The signed-in identity is served directly by the Console edge.",
+        "routes": []
+      },
       "description": "Show the current public identity and grants.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -68,6 +82,7 @@
         "title": "Empty",
         "type": "object"
       },
+      "mcpExcludedReason": "Deliberately not exposed as an MCP tool.",
       "mcpTools": [],
       "name": "user.whoami",
       "outputSchema": {
@@ -126,6 +141,10 @@
       }
     },
     {
+      "cli": {
+        "excludedReason": "Invitation acceptance is bound to the authenticated Console edge.",
+        "routes": []
+      },
       "description": "Accept an invitation for the edge-authenticated identity.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -156,6 +175,7 @@
         "title": "AcceptInvitation",
         "type": "object"
       },
+      "mcpExcludedReason": "Deliberately not exposed as an MCP tool.",
       "mcpTools": [],
       "name": "user.accept_invitation",
       "outputSchema": {
@@ -192,6 +212,10 @@
       }
     },
     {
+      "cli": {
+        "excludedReason": "User administration is a Console-only owner workflow.",
+        "routes": []
+      },
       "description": "List public Console users and invitations.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -199,6 +223,7 @@
         "title": "Empty",
         "type": "object"
       },
+      "mcpExcludedReason": "Deliberately not exposed as an MCP tool.",
       "mcpTools": [],
       "name": "user.list",
       "outputSchema": {
@@ -386,6 +411,10 @@
       }
     },
     {
+      "cli": {
+        "excludedReason": "User administration is a Console-only owner workflow.",
+        "routes": []
+      },
       "description": "Invite a public Console user.",
       "inputSchema": {
         "$defs": {
@@ -441,6 +470,7 @@
         "title": "InviteUser",
         "type": "object"
       },
+      "mcpExcludedReason": "Deliberately not exposed as an MCP tool.",
       "mcpTools": [],
       "name": "user.invite",
       "outputSchema": {
@@ -473,6 +503,10 @@
       }
     },
     {
+      "cli": {
+        "excludedReason": "User administration is a Console-only owner workflow.",
+        "routes": []
+      },
       "description": "Remove one public Console user.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -489,6 +523,7 @@
         "title": "EmailOnly",
         "type": "object"
       },
+      "mcpExcludedReason": "Deliberately not exposed as an MCP tool.",
       "mcpTools": [],
       "name": "user.remove",
       "outputSchema": {
@@ -521,6 +556,10 @@
       }
     },
     {
+      "cli": {
+        "excludedReason": "Access grants are a Console-only owner workflow.",
+        "routes": []
+      },
       "description": "Set one deployment access role.",
       "inputSchema": {
         "$defs": {
@@ -557,6 +596,7 @@
         "title": "SetGrant",
         "type": "object"
       },
+      "mcpExcludedReason": "Deliberately not exposed as an MCP tool.",
       "mcpTools": [],
       "name": "grant.set",
       "outputSchema": {
@@ -600,6 +640,10 @@
       }
     },
     {
+      "cli": {
+        "excludedReason": "Access grants are a Console-only owner workflow.",
+        "routes": []
+      },
       "description": "Remove one deployment access grant.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -621,6 +665,7 @@
         "title": "RemoveGrant",
         "type": "object"
       },
+      "mcpExcludedReason": "Deliberately not exposed as an MCP tool.",
       "mcpTools": [],
       "name": "grant.remove",
       "outputSchema": {
@@ -653,6 +698,15 @@
       }
     },
     {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "repository register"
+          }
+        ]
+      },
       "description": "Register the repository containing a path.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -669,6 +723,7 @@
         "title": "PathOnly",
         "type": "object"
       },
+      "mcpExcludedReason": "Deliberately not exposed as an MCP tool.",
       "mcpTools": [],
       "name": "repository.register",
       "outputSchema": {
@@ -713,6 +768,15 @@
       }
     },
     {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "repository list"
+          }
+        ]
+      },
       "description": "List registered repositories.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -726,6 +790,7 @@
         "title": "RepositoryList",
         "type": "object"
       },
+      "mcpExcludedReason": null,
       "mcpTools": [
         {
           "inputSchema": {
@@ -849,6 +914,15 @@
       }
     },
     {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "repository status"
+          }
+        ]
+      },
       "description": "Show one registered repository.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -865,6 +939,7 @@
         "title": "PathOnly",
         "type": "object"
       },
+      "mcpExcludedReason": "Deliberately not exposed as an MCP tool.",
       "mcpTools": [],
       "name": "repository.status",
       "outputSchema": {
@@ -998,6 +1073,15 @@
       }
     },
     {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "repository archive"
+          }
+        ]
+      },
       "description": "Archive a repository after its blockers are cleared.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -1025,6 +1109,7 @@
         "title": "ArchiveRepository",
         "type": "object"
       },
+      "mcpExcludedReason": null,
       "mcpTools": [
         {
           "inputSchema": {
@@ -1128,6 +1213,15 @@
       }
     },
     {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "repository unarchive"
+          }
+        ]
+      },
       "description": "Restore one archived repository.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -1150,6 +1244,7 @@
         "title": "UnarchiveRepository",
         "type": "object"
       },
+      "mcpExcludedReason": null,
       "mcpTools": [
         {
           "inputSchema": {
@@ -1248,6 +1343,15 @@
       }
     },
     {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "test start"
+          }
+        ]
+      },
       "description": "Start or supersede one governed validation run.",
       "inputSchema": {
         "$defs": {
@@ -1292,6 +1396,7 @@
         "title": "StartTest",
         "type": "object"
       },
+      "mcpExcludedReason": null,
       "mcpTools": [
         {
           "inputSchema": {
@@ -1443,6 +1548,15 @@
       }
     },
     {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "test retry"
+          }
+        ]
+      },
       "description": "Retry one failed check from a completed run.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -1476,6 +1590,7 @@
         "title": "RetryTest",
         "type": "object"
       },
+      "mcpExcludedReason": null,
       "mcpTools": [
         {
           "inputSchema": {
@@ -1616,6 +1731,15 @@
       }
     },
     {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "test status"
+          }
+        ]
+      },
       "description": "Show the current governed validation result.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -1632,6 +1756,7 @@
         "title": "PathOnly",
         "type": "object"
       },
+      "mcpExcludedReason": null,
       "mcpTools": [
         {
           "inputSchema": {
@@ -2554,6 +2679,15 @@
       }
     },
     {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "test log catalog"
+          }
+        ]
+      },
       "description": "List retained log metadata without content.",
       "inputSchema": {
         "$defs": {
@@ -2647,6 +2781,7 @@
         "title": "LogCatalog",
         "type": "object"
       },
+      "mcpExcludedReason": null,
       "mcpTools": [
         {
           "inputSchema": {
@@ -2922,6 +3057,15 @@
       }
     },
     {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "test log tail"
+          }
+        ]
+      },
       "description": "Read a bounded final-line log slice.",
       "inputSchema": {
         "$defs": {
@@ -3006,6 +3150,7 @@
         "title": "LogTail",
         "type": "object"
       },
+      "mcpExcludedReason": null,
       "mcpTools": [
         {
           "inputSchema": {
@@ -3211,6 +3356,15 @@
       }
     },
     {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "test log search"
+          }
+        ]
+      },
       "description": "Search one retained stream literally.",
       "inputSchema": {
         "$defs": {
@@ -3308,6 +3462,7 @@
         "title": "LogSearch",
         "type": "object"
       },
+      "mcpExcludedReason": null,
       "mcpTools": [
         {
           "inputSchema": {
@@ -3526,6 +3681,15 @@
       }
     },
     {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "test log range"
+          }
+        ]
+      },
       "description": "Read one exact bounded log range.",
       "inputSchema": {
         "$defs": {
@@ -3639,6 +3803,7 @@
         "title": "LogRange",
         "type": "object"
       },
+      "mcpExcludedReason": null,
       "mcpTools": [
         {
           "inputSchema": {
@@ -3873,6 +4038,15 @@
       }
     },
     {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "test log failure-context"
+          }
+        ]
+      },
       "description": "Read deterministic bounded failure context.",
       "inputSchema": {
         "$defs": {
@@ -3964,6 +4138,7 @@
         "title": "LogFailureContext",
         "type": "object"
       },
+      "mcpExcludedReason": null,
       "mcpTools": [
         {
           "inputSchema": {
@@ -4446,6 +4621,15 @@
       }
     },
     {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "test log retention show"
+          }
+        ]
+      },
       "description": "Show governed-log retention settings.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -4453,6 +4637,7 @@
         "title": "Empty",
         "type": "object"
       },
+      "mcpExcludedReason": null,
       "mcpTools": [
         {
           "inputSchema": {
@@ -4550,6 +4735,15 @@
       }
     },
     {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "test log retention set"
+          }
+        ]
+      },
       "description": "Change governed-log retention settings.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -4575,6 +4769,7 @@
         "title": "SetRetention",
         "type": "object"
       },
+      "mcpExcludedReason": null,
       "mcpTools": [
         {
           "inputSchema": {
@@ -4690,6 +4885,15 @@
       }
     },
     {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "test evidence show"
+          }
+        ]
+      },
       "description": "List retained journey evidence.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -4711,6 +4915,7 @@
         "title": "EvidenceReference",
         "type": "object"
       },
+      "mcpExcludedReason": null,
       "mcpTools": [
         {
           "inputSchema": {
@@ -5600,6 +5805,15 @@
       }
     },
     {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "test evidence image"
+          }
+        ]
+      },
       "description": "Read one verified screenshot chunk.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -5640,6 +5854,7 @@
         "title": "EvidenceImage",
         "type": "object"
       },
+      "mcpExcludedReason": null,
       "mcpTools": [
         {
           "inputSchema": {
@@ -5746,6 +5961,15 @@
       }
     },
     {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "test artifact catalog"
+          }
+        ]
+      },
       "description": "List retained artifact-tree metadata.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -5797,6 +6021,7 @@
         "title": "ArtifactCatalog",
         "type": "object"
       },
+      "mcpExcludedReason": null,
       "mcpTools": [
         {
           "inputSchema": {
@@ -6036,6 +6261,15 @@
       }
     },
     {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "test artifact file"
+          }
+        ]
+      },
       "description": "Read one verified retained artifact chunk.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -6088,6 +6322,7 @@
         "title": "ArtifactFile",
         "type": "object"
       },
+      "mcpExcludedReason": null,
       "mcpTools": [
         {
           "inputSchema": {
@@ -6214,6 +6449,15 @@
       }
     },
     {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "test evidence feedback create"
+          }
+        ]
+      },
       "description": "Create screenshot-anchored project feedback.",
       "inputSchema": {
         "$defs": {
@@ -6486,6 +6730,7 @@
         "title": "CreateFeedback",
         "type": "object"
       },
+      "mcpExcludedReason": null,
       "mcpTools": [
         {
           "inputSchema": {
@@ -7179,6 +7424,15 @@
       }
     },
     {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "test evidence feedback reply"
+          }
+        ]
+      },
       "description": "Reply to screenshot-anchored feedback.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -7208,6 +7462,7 @@
         "title": "FeedbackReply",
         "type": "object"
       },
+      "mcpExcludedReason": null,
       "mcpTools": [
         {
           "inputSchema": {
@@ -7644,6 +7899,15 @@
       }
     },
     {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "test evidence feedback edit"
+          }
+        ]
+      },
       "description": "Edit the caller's feedback comment.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -7677,6 +7941,7 @@
         "title": "FeedbackEdit",
         "type": "object"
       },
+      "mcpExcludedReason": null,
       "mcpTools": [
         {
           "inputSchema": {
@@ -8117,6 +8382,15 @@
       }
     },
     {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "test evidence feedback state"
+          }
+        ]
+      },
       "description": "Resolve or reopen screenshot feedback.",
       "inputSchema": {
         "$defs": {
@@ -8153,6 +8427,7 @@
         "title": "FeedbackStateChange",
         "type": "object"
       },
+      "mcpExcludedReason": null,
       "mcpTools": [
         {
           "inputSchema": {
@@ -8596,6 +8871,15 @@
       }
     },
     {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "test evidence feedback delete"
+          }
+        ]
+      },
       "description": "Delete the caller's screenshot annotation.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -8619,6 +8903,7 @@
         "title": "FeedbackDelete",
         "type": "object"
       },
+      "mcpExcludedReason": null,
       "mcpTools": [
         {
           "inputSchema": {
@@ -9049,6 +9334,15 @@
       }
     },
     {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "test stop"
+          }
+        ]
+      },
       "description": "Cancel the current governed run.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -9073,6 +9367,7 @@
         "title": "StopTest",
         "type": "object"
       },
+      "mcpExcludedReason": null,
       "mcpTools": [
         {
           "inputSchema": {
@@ -9165,6 +9460,15 @@
       }
     },
     {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "test list"
+          }
+        ]
+      },
       "description": "List current governed runs.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -9172,6 +9476,7 @@
         "title": "Empty",
         "type": "object"
       },
+      "mcpExcludedReason": null,
       "mcpTools": [
         {
           "inputSchema": {
@@ -10160,6 +10465,15 @@
       }
     },
     {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "test capacity show"
+          }
+        ]
+      },
       "description": "Show host-wide validation capacity.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -10167,6 +10481,7 @@
         "title": "Empty",
         "type": "object"
       },
+      "mcpExcludedReason": null,
       "mcpTools": [
         {
           "inputSchema": {
@@ -10320,6 +10635,19 @@
       }
     },
     {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "test capacity set"
+          },
+          {
+            "dispatch": "protocol",
+            "route": "test capacity clear"
+          }
+        ]
+      },
       "description": "Set or clear the validation capacity cap.",
       "inputSchema": {
         "$defs": {
@@ -10350,6 +10678,7 @@
         "title": "SetCapacity",
         "type": "object"
       },
+      "mcpExcludedReason": null,
       "mcpTools": [
         {
           "inputSchema": {
@@ -10536,6 +10865,15 @@
       }
     },
     {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "deployment list"
+          }
+        ]
+      },
       "description": "List visible deployments.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -10552,6 +10890,7 @@
         "title": "DeploymentList",
         "type": "object"
       },
+      "mcpExcludedReason": null,
       "mcpTools": [
         {
           "inputSchema": {
@@ -10717,6 +11056,15 @@
       }
     },
     {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "deployment status"
+          }
+        ]
+      },
       "description": "Show one deployment.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -10747,6 +11095,7 @@
         "title": "DeploymentReference",
         "type": "object"
       },
+      "mcpExcludedReason": null,
       "mcpTools": [
         {
           "inputSchema": {
@@ -11139,6 +11488,15 @@
       }
     },
     {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "deployment logs"
+          }
+        ]
+      },
       "description": "Read bounded deployment logs.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -11182,6 +11540,7 @@
         "title": "DeploymentLogs",
         "type": "object"
       },
+      "mcpExcludedReason": null,
       "mcpTools": [
         {
           "inputSchema": {
@@ -11287,6 +11646,15 @@
       }
     },
     {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "deployment apply"
+          }
+        ]
+      },
       "description": "Apply a declared deployment.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -11317,6 +11685,7 @@
         "title": "DeploymentReference",
         "type": "object"
       },
+      "mcpExcludedReason": null,
       "mcpTools": [
         {
           "inputSchema": {
@@ -11709,6 +12078,15 @@
       }
     },
     {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "deployment rollback"
+          }
+        ]
+      },
       "description": "Roll back to the prior generation.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -11739,6 +12117,7 @@
         "title": "DeploymentReference",
         "type": "object"
       },
+      "mcpExcludedReason": null,
       "mcpTools": [
         {
           "inputSchema": {
@@ -12131,6 +12510,15 @@
       }
     },
     {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "deployment start"
+          }
+        ]
+      },
       "description": "Start a deployment or selected service.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -12168,6 +12556,7 @@
         "title": "DeploymentControl",
         "type": "object"
       },
+      "mcpExcludedReason": null,
       "mcpTools": [
         {
           "inputSchema": {
@@ -12567,6 +12956,15 @@
       }
     },
     {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "deployment stop"
+          }
+        ]
+      },
       "description": "Stop a deployment or selected service.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -12604,6 +13002,7 @@
         "title": "DeploymentControl",
         "type": "object"
       },
+      "mcpExcludedReason": null,
       "mcpTools": [
         {
           "inputSchema": {
@@ -13003,6 +13402,15 @@
       }
     },
     {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "deployment restart"
+          }
+        ]
+      },
       "description": "Restart a deployment or selected service.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -13040,6 +13448,7 @@
         "title": "DeploymentControl",
         "type": "object"
       },
+      "mcpExcludedReason": null,
       "mcpTools": [
         {
           "inputSchema": {
@@ -13439,6 +13848,15 @@
       }
     },
     {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "deployment set-domain"
+          }
+        ]
+      },
       "description": "Set or clear a deployment route.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -13485,6 +13903,7 @@
         "title": "SetDomain",
         "type": "object"
       },
+      "mcpExcludedReason": null,
       "mcpTools": [
         {
           "inputSchema": {
@@ -13598,6 +14017,15 @@
       }
     },
     {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "deployment remove"
+          }
+        ]
+      },
       "description": "Remove a deployment with an explicit data outcome.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -13632,6 +14060,7 @@
         "title": "RemoveDeployment",
         "type": "object"
       },
+      "mcpExcludedReason": "Deliberately not exposed as an MCP tool.",
       "mcpTools": [],
       "name": "deployment.remove",
       "outputSchema": {
@@ -13671,6 +14100,15 @@
       }
     },
     {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "health summary"
+          }
+        ]
+      },
       "description": "Show host health and active alerts.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -13678,6 +14116,7 @@
         "title": "Empty",
         "type": "object"
       },
+      "mcpExcludedReason": null,
       "mcpTools": [
         {
           "inputSchema": {
@@ -14130,6 +14569,15 @@
       }
     },
     {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "health repositories"
+          }
+        ]
+      },
       "description": "Show visible per-repository resource use.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -14137,6 +14585,7 @@
         "title": "Empty",
         "type": "object"
       },
+      "mcpExcludedReason": null,
       "mcpTools": [
         {
           "inputSchema": {
@@ -14643,6 +15092,15 @@
       }
     },
     {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "health repository"
+          }
+        ]
+      },
       "description": "Show one repository's resource use.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -14659,6 +15117,7 @@
         "title": "PathOnly",
         "type": "object"
       },
+      "mcpExcludedReason": null,
       "mcpTools": [
         {
           "inputSchema": {
@@ -14920,6 +15379,15 @@
       }
     },
     {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "health history"
+          }
+        ]
+      },
       "description": "Show bounded resource history.",
       "inputSchema": {
         "$defs": {
@@ -14994,6 +15462,7 @@
         "title": "HealthHistory",
         "type": "object"
       },
+      "mcpExcludedReason": "Deliberately not exposed as an MCP tool.",
       "mcpTools": [],
       "name": "health.history",
       "outputSchema": {
@@ -15109,6 +15578,15 @@
       }
     },
     {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "health containers"
+          }
+        ]
+      },
       "description": "List every container with truthful attribution.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -15116,6 +15594,7 @@
         "title": "Empty",
         "type": "object"
       },
+      "mcpExcludedReason": null,
       "mcpTools": [
         {
           "inputSchema": {
@@ -15295,6 +15774,10 @@
       }
     },
     {
+      "cli": {
+        "excludedReason": "Container removal is deliberately exposed only by the authenticated Console.",
+        "routes": []
+      },
       "description": "Remove one exact unmanaged container.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -15312,6 +15795,7 @@
         "title": "RemoveContainer",
         "type": "object"
       },
+      "mcpExcludedReason": "Deliberately not exposed as an MCP tool.",
       "mcpTools": [],
       "name": "health.container_remove",
       "outputSchema": {
@@ -15357,6 +15841,15 @@
       }
     },
     {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "plan overview"
+          }
+        ]
+      },
       "description": "Show releases and the active completion plan.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -15380,6 +15873,7 @@
         "title": "PlanReference",
         "type": "object"
       },
+      "mcpExcludedReason": null,
       "mcpTools": [
         {
           "inputSchema": {
@@ -15847,6 +16341,15 @@
       }
     },
     {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "task history"
+          }
+        ]
+      },
       "description": "Show one task and its permanent history.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -15862,6 +16365,7 @@
         "title": "TaskHistory",
         "type": "object"
       },
+      "mcpExcludedReason": null,
       "mcpTools": [
         {
           "inputSchema": {
@@ -16119,6 +16623,15 @@
       }
     },
     {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "task create"
+          }
+        ]
+      },
       "description": "Create one completion-ledger task.",
       "inputSchema": {
         "$defs": {
@@ -16234,6 +16747,7 @@
         "title": "TaskCreate",
         "type": "object"
       },
+      "mcpExcludedReason": null,
       "mcpTools": [
         {
           "inputSchema": {
@@ -16472,6 +16986,15 @@
       }
     },
     {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "task update"
+          }
+        ]
+      },
       "description": "Append a task state or wording change.",
       "inputSchema": {
         "$defs": {
@@ -16603,6 +17126,7 @@
         "title": "TaskUpdate",
         "type": "object"
       },
+      "mcpExcludedReason": null,
       "mcpTools": [
         {
           "inputSchema": {
@@ -16879,6 +17403,15 @@
       }
     },
     {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "release create"
+          }
+        ]
+      },
       "description": "Create a planned release.",
       "inputSchema": {
         "$defs": {
@@ -16941,6 +17474,7 @@
         "title": "ReleaseCreate",
         "type": "object"
       },
+      "mcpExcludedReason": null,
       "mcpTools": [
         {
           "inputSchema": {
@@ -17089,6 +17623,15 @@
       }
     },
     {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "release update"
+          }
+        ]
+      },
       "description": "Change a planned release.",
       "inputSchema": {
         "$defs": {
@@ -17149,6 +17692,7 @@
         "title": "ReleaseUpdate",
         "type": "object"
       },
+      "mcpExcludedReason": "Deliberately not exposed as an MCP tool.",
       "mcpTools": [],
       "name": "release.update",
       "outputSchema": {
@@ -17231,6 +17775,15 @@
       }
     },
     {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "release request"
+          }
+        ]
+      },
       "description": "Request a preview deployment.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -17268,6 +17821,7 @@
         "title": "ReleaseRequest",
         "type": "object"
       },
+      "mcpExcludedReason": "Deliberately not exposed as an MCP tool.",
       "mcpTools": [],
       "name": "release.request",
       "outputSchema": {
@@ -17350,6 +17904,15 @@
       }
     },
     {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "release deliver"
+          }
+        ]
+      },
       "description": "Attach real delivery evidence to a release.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -17376,6 +17939,7 @@
         "title": "ReleaseDeliver",
         "type": "object"
       },
+      "mcpExcludedReason": null,
       "mcpTools": [
         {
           "inputSchema": {
@@ -17539,6 +18103,15 @@
       }
     },
     {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "decision tail"
+          }
+        ]
+      },
       "description": "Read the rolling decision summary and latest decisions.",
       "inputSchema": {
         "$defs": {
@@ -17607,6 +18180,7 @@
         "title": "DecisionTail",
         "type": "object"
       },
+      "mcpExcludedReason": null,
       "mcpTools": [
         {
           "inputSchema": {
@@ -17893,6 +18467,15 @@
       }
     },
     {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "decision search"
+          }
+        ]
+      },
       "description": "Search permanent repository decisions.",
       "inputSchema": {
         "$defs": {
@@ -17960,6 +18543,7 @@
         "title": "DecisionSearch",
         "type": "object"
       },
+      "mcpExcludedReason": null,
       "mcpTools": [
         {
           "inputSchema": {
@@ -18203,6 +18787,15 @@
       }
     },
     {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "decision record"
+          }
+        ]
+      },
       "description": "Record a permanent repository decision.",
       "inputSchema": {
         "$defs": {
@@ -18283,6 +18876,7 @@
         "title": "DecisionRecord",
         "type": "object"
       },
+      "mcpExcludedReason": null,
       "mcpTools": [
         {
           "inputSchema": {
@@ -18474,6 +19068,15 @@
       }
     },
     {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "decision summarize"
+          }
+        ]
+      },
       "description": "Store a new rolling decision summary.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -18511,6 +19114,7 @@
         "title": "DecisionSummarize",
         "type": "object"
       },
+      "mcpExcludedReason": null,
       "mcpTools": [
         {
           "inputSchema": {
@@ -18653,6 +19257,10 @@
       }
     },
     {
+      "cli": {
+        "excludedReason": "Usage analytics are presented by the Console, not the preserved CLI.",
+        "routes": []
+      },
       "description": "Show privacy-preserving usage across visible repositories.",
       "inputSchema": {
         "$defs": {
@@ -18676,6 +19284,7 @@
         "title": "UsageRepositories",
         "type": "object"
       },
+      "mcpExcludedReason": "Deliberately not exposed as an MCP tool.",
       "mcpTools": [],
       "name": "usage.repositories",
       "outputSchema": {
@@ -18869,6 +19478,10 @@
       }
     },
     {
+      "cli": {
+        "excludedReason": "Usage analytics are presented by the Console, not the preserved CLI.",
+        "routes": []
+      },
       "description": "Show privacy-preserving usage for one repository.",
       "inputSchema": {
         "$defs": {
@@ -18898,6 +19511,7 @@
         "title": "UsageRepository",
         "type": "object"
       },
+      "mcpExcludedReason": "Deliberately not exposed as an MCP tool.",
       "mcpTools": [],
       "name": "usage.repository",
       "outputSchema": {
@@ -19374,6 +19988,10 @@
       }
     },
     {
+      "cli": {
+        "excludedReason": "Progress analytics are presented by the Console, not the preserved CLI.",
+        "routes": []
+      },
       "description": "Show delivery progress across visible repositories.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -19381,6 +19999,7 @@
         "title": "Empty",
         "type": "object"
       },
+      "mcpExcludedReason": "Deliberately not exposed as an MCP tool.",
       "mcpTools": [],
       "name": "progress.repositories",
       "outputSchema": {
@@ -19489,6 +20108,10 @@
       }
     },
     {
+      "cli": {
+        "excludedReason": "Progress analytics are presented by the Console, not the preserved CLI.",
+        "routes": []
+      },
       "description": "Show delivery progress for one repository.",
       "inputSchema": {
         "$defs": {
@@ -19518,6 +20141,7 @@
         "title": "ProgressRepository",
         "type": "object"
       },
+      "mcpExcludedReason": "Deliberately not exposed as an MCP tool.",
       "mcpTools": [],
       "name": "progress.repository",
       "outputSchema": {
@@ -20308,6 +20932,15 @@
       }
     },
     {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "telegram link"
+          }
+        ]
+      },
       "description": "Link one Telegram chat to an identity.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -20331,6 +20964,7 @@
         "title": "TelegramLink",
         "type": "object"
       },
+      "mcpExcludedReason": "Deliberately not exposed as an MCP tool.",
       "mcpTools": [],
       "name": "telegram.link",
       "outputSchema": {
@@ -20360,6 +20994,15 @@
       }
     },
     {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "telegram subscribe"
+          }
+        ]
+      },
       "description": "Subscribe one linked chat to notices.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -20380,6 +21023,7 @@
         "title": "TelegramSubscription",
         "type": "object"
       },
+      "mcpExcludedReason": "Deliberately not exposed as an MCP tool.",
       "mcpTools": [],
       "name": "telegram.subscribe",
       "outputSchema": {
@@ -20415,6 +21059,15 @@
       }
     },
     {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "telegram unsubscribe"
+          }
+        ]
+      },
       "description": "Remove one notice subscription.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -20435,6 +21088,7 @@
         "title": "TelegramSubscription",
         "type": "object"
       },
+      "mcpExcludedReason": "Deliberately not exposed as an MCP tool.",
       "mcpTools": [],
       "name": "telegram.unsubscribe",
       "outputSchema": {
@@ -20470,6 +21124,15 @@
       }
     },
     {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "telegram list"
+          }
+        ]
+      },
       "description": "List the caller's linked chats and subscriptions.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -20477,6 +21140,7 @@
         "title": "Empty",
         "type": "object"
       },
+      "mcpExcludedReason": "Deliberately not exposed as an MCP tool.",
       "mcpTools": [],
       "name": "telegram.list",
       "outputSchema": {
@@ -20562,6 +21226,15 @@
       }
     },
     {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "local",
+            "route": "bug report"
+          }
+        ]
+      },
       "description": "Report or count a Coordinator defect while the daemon may be unavailable.",
       "inputSchema": {
         "$defs": {
@@ -20653,6 +21326,7 @@
         "title": "BugReport",
         "type": "object"
       },
+      "mcpExcludedReason": null,
       "mcpTools": [
         {
           "inputSchema": {
@@ -20862,6 +21536,15 @@
       }
     },
     {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "local",
+            "route": "bug list"
+          }
+        ]
+      },
       "description": "List open Coordinator defects.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -20869,6 +21552,7 @@
         "title": "Empty",
         "type": "object"
       },
+      "mcpExcludedReason": null,
       "mcpTools": [
         {
           "inputSchema": {
@@ -21015,6 +21699,15 @@
       }
     },
     {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "local",
+            "route": "bug close"
+          }
+        ]
+      },
       "description": "Close one Coordinator defect.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -21031,6 +21724,7 @@
         "title": "BugClose",
         "type": "object"
       },
+      "mcpExcludedReason": null,
       "mcpTools": [
         {
           "inputSchema": {

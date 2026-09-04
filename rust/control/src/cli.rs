@@ -5,7 +5,9 @@ use std::io::{self, Write};
 use std::path::PathBuf;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
-use devcoordinator2_api::{ClientContext, ClientKind, ProtocolError, ResponseEnvelope, operation};
+use devcoordinator2_api::{
+    CliDispatch, ClientContext, ClientKind, ProtocolError, ResponseEnvelope, operation,
+};
 use serde_json::{Map, Value, json};
 use thiserror::Error;
 
@@ -163,6 +165,8 @@ pub enum CliValidationError {
     },
     #[error("CLI route {0} is absent from the operation registry")]
     MissingOperation(&'static str),
+    #[error("operation {0} has no protocol CLI route in the operation registry")]
+    MissingCliRoute(&'static str),
 }
 
 #[derive(Debug, Subcommand)]
@@ -1970,6 +1974,13 @@ fn invalid(message: impl Into<String>) -> CliValidationError {
 fn remote(operation_name: &'static str, params: Value) -> Result<Invocation, CliValidationError> {
     let definition =
         operation(operation_name).ok_or(CliValidationError::MissingOperation(operation_name))?;
+    if !definition
+        .cli_routes
+        .iter()
+        .any(|route| route.dispatch == CliDispatch::Protocol)
+    {
+        return Err(CliValidationError::MissingCliRoute(operation_name));
+    }
     (definition.validate_params)(&params).map_err(|source| CliValidationError::Contract {
         operation: operation_name,
         source,
@@ -2556,10 +2567,35 @@ mod tests {
             ),
         ];
 
+        let mut seen_routes = HashSet::new();
         for (args, expected) in cases {
             let (actual, _) = remote_invocation(args);
             assert_eq!(actual, *expected, "{args:?}");
+            let route = devcoordinator2_api::OPERATIONS
+                .iter()
+                .flat_map(|operation| {
+                    operation
+                        .cli_routes
+                        .iter()
+                        .map(move |route| (operation, route))
+                })
+                .filter(|(_, route)| route.dispatch == CliDispatch::Protocol)
+                .filter(|(_, route)| {
+                    let route = route.route.split_whitespace().collect::<Vec<_>>();
+                    args.starts_with(&route)
+                })
+                .max_by_key(|(_, route)| route.route.split_whitespace().count())
+                .unwrap_or_else(|| panic!("{args:?} has no registered protocol CLI route"));
+            assert_eq!(route.0.name, *expected, "{args:?}");
+            seen_routes.insert(route.1.route);
         }
+        let registered_routes = devcoordinator2_api::OPERATIONS
+            .iter()
+            .flat_map(|operation| operation.cli_routes)
+            .filter(|route| route.dispatch == CliDispatch::Protocol)
+            .map(|route| route.route)
+            .collect::<HashSet<_>>();
+        assert_eq!(seen_routes, registered_routes);
     }
 
     #[test]
@@ -2715,6 +2751,16 @@ mod tests {
             .unwrap(),
             Invocation::ArtifactMaterialize { .. }
         ));
+        for (route, operation) in [
+            ("bug report", "bug.report"),
+            ("bug list", "bug.list"),
+            ("bug close", "bug.close"),
+        ] {
+            let (definition, metadata) =
+                devcoordinator2_api::operation_for_cli_route(route).expect("local CLI route");
+            assert_eq!(definition.name, operation);
+            assert_eq!(metadata.dispatch, CliDispatch::Local);
+        }
     }
 
     #[test]

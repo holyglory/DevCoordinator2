@@ -361,11 +361,27 @@ pub struct OperationDefinition {
     pub name: &'static str,
     pub description: &'static str,
     pub policy: OperationPolicy,
+    pub cli_routes: &'static [CliRouteDefinition],
+    pub cli_exclusion: Option<&'static str>,
     pub mcp_names: &'static [&'static str],
+    pub mcp_exclusion: Option<&'static str>,
     pub mcp_overrides: &'static [McpToolOverride],
     pub input_schema: fn() -> Value,
     pub output_schema: fn() -> Value,
     pub validate_params: fn(&Value) -> Result<(), ProtocolError>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CliDispatch {
+    Protocol,
+    Local,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CliRouteDefinition {
+    pub route: &'static str,
+    pub dispatch: CliDispatch,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -504,12 +520,33 @@ const IDEMPOTENT_EXTERNAL_SELF: OperationPolicy =
     OperationPolicy::new(Scope::Self_, Role::Self_, Effect::External, true);
 
 macro_rules! operation {
-    ($name:literal, $description:literal, $policy:expr, [$($mcp:literal),* $(,)?], $input:ty, $output:ty) => {
+    ($name:literal, $description:literal, $policy:expr, $dispatch:ident [$($cli:literal),+ $(,)?], [$($mcp:literal),* $(,)?], $input:ty, $output:ty) => {
         OperationDefinition {
             name: $name,
             description: $description,
             policy: $policy,
+            cli_routes: &[$(CliRouteDefinition {
+                route: $cli,
+                dispatch: CliDispatch::$dispatch,
+            }),+],
+            cli_exclusion: None,
             mcp_names: &[$($mcp),*],
+            mcp_exclusion: mcp_exclusion!($($mcp),*),
+            mcp_overrides: &[],
+            input_schema: schema_for::<$input>,
+            output_schema: schema_for::<$output>,
+            validate_params: validate_params::<$input>,
+        }
+    };
+    ($name:literal, $description:literal, $policy:expr, excluded $reason:literal, [$($mcp:literal),* $(,)?], $input:ty, $output:ty) => {
+        OperationDefinition {
+            name: $name,
+            description: $description,
+            policy: $policy,
+            cli_routes: &[],
+            cli_exclusion: Some($reason),
+            mcp_names: &[$($mcp),*],
+            mcp_exclusion: mcp_exclusion!($($mcp),*),
             mcp_overrides: &[],
             input_schema: schema_for::<$input>,
             output_schema: schema_for::<$output>,
@@ -518,11 +555,21 @@ macro_rules! operation {
     };
 }
 
+macro_rules! mcp_exclusion {
+    () => {
+        Some("Deliberately not exposed as an MCP tool.")
+    };
+    ($($mcp:literal),+ $(,)?) => {
+        None
+    };
+}
+
 pub static OPERATIONS: &[OperationDefinition] = &[
     operation!(
         "ping",
         "Report daemon, schema, protocol, source, and socket identity.",
         READ_PUBLIC,
+        Protocol["ping"],
         [],
         EmptyParams,
         PingData
@@ -531,6 +578,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         "user.whoami",
         "Show the current public identity and grants.",
         READ_PUBLIC,
+        excluded "The signed-in identity is served directly by the Console edge.",
         [],
         params::Empty,
         results::WhoAmI
@@ -539,6 +587,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         "user.accept_invitation",
         "Accept an invitation for the edge-authenticated identity.",
         APPEND_SELF,
+        excluded "Invitation acceptance is bound to the authenticated Console edge.",
         [],
         params::AcceptInvitation,
         results::AcceptedInvitation
@@ -547,6 +596,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         "user.list",
         "List public Console users and invitations.",
         READ_SERVER_ADMIN,
+        excluded "User administration is a Console-only owner workflow.",
         [],
         params::Empty,
         results::UserList
@@ -555,6 +605,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         "user.invite",
         "Invite a public Console user.",
         APPEND_SERVER_ADMIN,
+        excluded "User administration is a Console-only owner workflow.",
         [],
         params::InviteUser,
         results::InvitedUser
@@ -563,6 +614,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         "user.remove",
         "Remove one public Console user.",
         DESTRUCTIVE_SERVER_ADMIN,
+        excluded "User administration is a Console-only owner workflow.",
         [],
         params::EmailOnly,
         results::RemovedUser
@@ -571,6 +623,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         "grant.set",
         "Set one deployment access role.",
         IDEMPOTENT_REVERSIBLE_DEPLOYMENT_ADMIN,
+        excluded "Access grants are a Console-only owner workflow.",
         [],
         params::SetGrant,
         results::GrantSet
@@ -579,6 +632,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         "grant.remove",
         "Remove one deployment access grant.",
         DESTRUCTIVE_DEPLOYMENT_ADMIN,
+        excluded "Access grants are a Console-only owner workflow.",
         [],
         params::RemoveGrant,
         results::GrantRemoved
@@ -587,6 +641,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         "repository.register",
         "Register the repository containing a path.",
         IDEMPOTENT_APPEND_SERVER_ADMIN,
+        Protocol["repository register"],
         [],
         params::PathOnly,
         results::RegisteredRepository
@@ -595,6 +650,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         "repository.list",
         "List registered repositories.",
         READ_SERVER_ADMIN,
+        Protocol["repository list"],
         ["repository_list"],
         params::RepositoryList,
         results::RepositoryList
@@ -603,6 +659,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         "repository.status",
         "Show one registered repository.",
         READ_REPOSITORY_ADMIN,
+        Protocol["repository status"],
         [],
         params::PathOnly,
         results::RepositoryStatus
@@ -611,6 +668,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         "repository.archive",
         "Archive a repository after its blockers are cleared.",
         REVERSIBLE_SERVER_ADMIN,
+        Protocol["repository archive"],
         ["repository_archive"],
         params::ArchiveRepository,
         results::Repository
@@ -619,6 +677,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         "repository.unarchive",
         "Restore one archived repository.",
         REVERSIBLE_SERVER_ADMIN,
+        Protocol["repository unarchive"],
         ["repository_unarchive"],
         params::UnarchiveRepository,
         results::Repository
@@ -627,6 +686,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         "test.start",
         "Start or supersede one governed validation run.",
         DESTRUCTIVE_REPOSITORY_ADMIN,
+        Protocol["test start"],
         ["test_start"],
         params::StartTest,
         results::TestStarted
@@ -635,6 +695,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         "test.retry",
         "Retry one failed check from a completed run.",
         DESTRUCTIVE_REPOSITORY_ADMIN,
+        Protocol["test retry"],
         ["test_retry"],
         params::RetryTest,
         results::TestStarted
@@ -643,6 +704,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         "test.status",
         "Show the current governed validation result.",
         READ_REPOSITORY_ADMIN,
+        Protocol["test status"],
         ["test_status"],
         params::PathOnly,
         results::TestSummary
@@ -651,6 +713,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         "test.log.catalog",
         "List retained log metadata without content.",
         READ_REPOSITORY_ADMIN,
+        Protocol["test log catalog"],
         ["test_log_catalog"],
         params::LogCatalog,
         results::LogCatalog
@@ -659,6 +722,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         "test.log.tail",
         "Read a bounded final-line log slice.",
         READ_REPOSITORY_ADMIN,
+        Protocol["test log tail"],
         ["test_log_tail"],
         params::LogTail,
         results::LogContent
@@ -667,6 +731,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         "test.log.search",
         "Search one retained stream literally.",
         READ_REPOSITORY_ADMIN,
+        Protocol["test log search"],
         ["test_log_search"],
         params::LogSearch,
         results::LogSearch
@@ -675,6 +740,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         "test.log.range",
         "Read one exact bounded log range.",
         READ_REPOSITORY_ADMIN,
+        Protocol["test log range"],
         ["test_log_range"],
         params::LogRange,
         results::LogContent
@@ -683,6 +749,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         "test.log.failure_context",
         "Read deterministic bounded failure context.",
         READ_REPOSITORY_ADMIN,
+        Protocol["test log failure-context"],
         ["test_log_failure_context"],
         params::LogFailureContext,
         results::LogFailureContext
@@ -691,6 +758,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         "test.log.retention.get",
         "Show governed-log retention settings.",
         READ_SERVER_ADMIN,
+        Protocol["test log retention show"],
         ["test_log_retention_show"],
         params::Empty,
         results::Retention
@@ -699,6 +767,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         "test.log.retention.set",
         "Change governed-log retention settings.",
         DESTRUCTIVE_SERVER_ADMIN,
+        Protocol["test log retention set"],
         ["test_log_retention_set"],
         params::SetRetention,
         results::Retention
@@ -707,6 +776,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         "test.evidence.get",
         "List retained journey evidence.",
         READ_REPOSITORY_ADMIN,
+        Protocol["test evidence show"],
         ["test_evidence_get"],
         params::EvidenceReference,
         results::EvidenceGet
@@ -715,6 +785,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         "test.evidence.image",
         "Read one verified screenshot chunk.",
         READ_REPOSITORY_ADMIN,
+        Protocol["test evidence image"],
         ["test_evidence_image"],
         params::EvidenceImage,
         results::ImageChunk
@@ -723,6 +794,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         "test.artifact.catalog",
         "List retained artifact-tree metadata.",
         READ_REPOSITORY_ADMIN,
+        Protocol["test artifact catalog"],
         ["test_artifact_catalog"],
         params::ArtifactCatalog,
         results::ArtifactCatalog
@@ -731,6 +803,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         "test.artifact.file",
         "Read one verified retained artifact chunk.",
         READ_REPOSITORY_ADMIN,
+        Protocol["test artifact file"],
         ["test_artifact_file"],
         params::ArtifactFile,
         results::ArtifactChunk
@@ -739,6 +812,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         "test.evidence.feedback.create",
         "Create screenshot-anchored project feedback.",
         APPEND_REPOSITORY_ADMIN,
+        Protocol["test evidence feedback create"],
         ["test_evidence_feedback_create"],
         params::CreateFeedback,
         results::FeedbackCreated
@@ -747,6 +821,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         "test.evidence.feedback.reply",
         "Reply to screenshot-anchored feedback.",
         APPEND_REPOSITORY_ADMIN,
+        Protocol["test evidence feedback reply"],
         ["test_evidence_feedback_reply"],
         params::FeedbackReply,
         results::FeedbackMutation
@@ -755,6 +830,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         "test.evidence.feedback.edit",
         "Edit the caller's feedback comment.",
         REVERSIBLE_REPOSITORY_ADMIN,
+        Protocol["test evidence feedback edit"],
         ["test_evidence_feedback_edit"],
         params::FeedbackEdit,
         results::FeedbackMutation
@@ -763,6 +839,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         "test.evidence.feedback.state",
         "Resolve or reopen screenshot feedback.",
         IDEMPOTENT_REVERSIBLE_REPOSITORY_ADMIN,
+        Protocol["test evidence feedback state"],
         ["test_evidence_feedback_state"],
         params::FeedbackStateChange,
         results::FeedbackMutation
@@ -771,6 +848,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         "test.evidence.feedback.delete",
         "Delete the caller's screenshot annotation.",
         IDEMPOTENT_DESTRUCTIVE_REPOSITORY_ADMIN,
+        Protocol["test evidence feedback delete"],
         ["test_evidence_feedback_delete"],
         params::FeedbackDelete,
         results::FeedbackMutation
@@ -779,6 +857,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         "test.stop",
         "Cancel the current governed run.",
         IDEMPOTENT_DESTRUCTIVE_REPOSITORY_ADMIN,
+        Protocol["test stop"],
         ["test_stop"],
         params::StopTest,
         results::StopTest
@@ -787,6 +866,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         "test.list",
         "List current governed runs.",
         READ_SERVER_ADMIN,
+        Protocol["test list"],
         ["test_list"],
         params::Empty,
         results::TestList
@@ -795,6 +875,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         "test.capacity.get",
         "Show host-wide validation capacity.",
         READ_SERVER_ADMIN,
+        Protocol["test capacity show"],
         ["test_capacity_show"],
         params::Empty,
         results::Capacity
@@ -803,7 +884,19 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         name: "test.capacity.set",
         description: "Set or clear the validation capacity cap.",
         policy: REVERSIBLE_SERVER_ADMIN,
+        cli_routes: &[
+            CliRouteDefinition {
+                route: "test capacity set",
+                dispatch: CliDispatch::Protocol,
+            },
+            CliRouteDefinition {
+                route: "test capacity clear",
+                dispatch: CliDispatch::Protocol,
+            },
+        ],
+        cli_exclusion: None,
         mcp_names: &["test_capacity_set"],
+        mcp_exclusion: None,
         mcp_overrides: &[McpToolOverride {
             name: "test_capacity_clear",
             input_schema: schema_for::<params::Empty>,
@@ -818,6 +911,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         "deployment.list",
         "List visible deployments.",
         READ_DEPLOYMENT_VIEWER,
+        Protocol["deployment list"],
         ["deployment_list"],
         params::DeploymentList,
         results::DeploymentList
@@ -826,6 +920,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         "deployment.status",
         "Show one deployment.",
         READ_DEPLOYMENT_VIEWER,
+        Protocol["deployment status"],
         ["deployment_status"],
         params::DeploymentReference,
         results::DeploymentStatus
@@ -834,6 +929,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         "deployment.logs",
         "Read bounded deployment logs.",
         READ_DEPLOYMENT_VIEWER,
+        Protocol["deployment logs"],
         ["deployment_logs"],
         params::DeploymentLogs,
         results::DeploymentLog
@@ -842,6 +938,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         "deployment.apply",
         "Apply a declared deployment.",
         REVERSIBLE_DEPLOYMENT_ADMIN,
+        Protocol["deployment apply"],
         ["deployment_apply"],
         params::DeploymentReference,
         results::DeploymentStatus
@@ -850,6 +947,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         "deployment.rollback",
         "Roll back to the prior generation.",
         REVERSIBLE_DEPLOYMENT_ADMIN,
+        Protocol["deployment rollback"],
         ["deployment_rollback"],
         params::DeploymentReference,
         results::DeploymentStatus
@@ -858,6 +956,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         "deployment.start",
         "Start a deployment or selected service.",
         IDEMPOTENT_REVERSIBLE_DEPLOYMENT_OPERATOR,
+        Protocol["deployment start"],
         ["deployment_start"],
         params::DeploymentControl,
         results::DeploymentStatus
@@ -866,6 +965,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         "deployment.stop",
         "Stop a deployment or selected service.",
         IDEMPOTENT_REVERSIBLE_DEPLOYMENT_OPERATOR,
+        Protocol["deployment stop"],
         ["deployment_stop"],
         params::DeploymentControl,
         results::DeploymentStatus
@@ -874,6 +974,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         "deployment.restart",
         "Restart a deployment or selected service.",
         REVERSIBLE_DEPLOYMENT_OPERATOR,
+        Protocol["deployment restart"],
         ["deployment_restart"],
         params::DeploymentControl,
         results::DeploymentStatus
@@ -882,6 +983,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         "deployment.set_domain",
         "Set or clear a deployment route.",
         IDEMPOTENT_REVERSIBLE_DEPLOYMENT_ADMIN,
+        Protocol["deployment set-domain"],
         ["deployment_set_domain"],
         params::SetDomain,
         results::DomainChanged
@@ -890,6 +992,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         "deployment.remove",
         "Remove a deployment with an explicit data outcome.",
         DESTRUCTIVE_DEPLOYMENT_ADMIN,
+        Protocol["deployment remove"],
         [],
         params::RemoveDeployment,
         results::DeploymentRemoved
@@ -898,6 +1001,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         "health.summary",
         "Show host health and active alerts.",
         READ_SERVER_ADMIN,
+        Protocol["health summary"],
         ["health_summary"],
         params::Empty,
         results::HealthSummary
@@ -906,6 +1010,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         "health.repositories",
         "Show visible per-repository resource use.",
         READ_REPOSITORY_VIEWER,
+        Protocol["health repositories"],
         ["health_repositories"],
         params::Empty,
         results::HealthRepositories
@@ -914,6 +1019,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         "health.repository",
         "Show one repository's resource use.",
         READ_REPOSITORY_VIEWER,
+        Protocol["health repository"],
         ["health_repository"],
         params::PathOnly,
         results::HealthRepository
@@ -922,6 +1028,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         "health.history",
         "Show bounded resource history.",
         READ_REPOSITORY_VIEWER,
+        Protocol["health history"],
         [],
         params::HealthHistory,
         results::HealthHistory
@@ -930,6 +1037,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         "health.containers",
         "List every container with truthful attribution.",
         READ_SERVER_ADMIN,
+        Protocol["health containers"],
         ["health_containers"],
         params::Empty,
         results::ContainerList
@@ -938,6 +1046,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         "health.container_remove",
         "Remove one exact unmanaged container.",
         DESTRUCTIVE_SERVER_ADMIN,
+        excluded "Container removal is deliberately exposed only by the authenticated Console.",
         [],
         params::RemoveContainer,
         results::RemovedContainer
@@ -946,6 +1055,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         "plan.overview",
         "Show releases and the active completion plan.",
         READ_REPOSITORY_VIEWER,
+        Protocol["plan overview"],
         ["plan_overview"],
         params::PlanReference,
         results::PlanOverview
@@ -954,6 +1064,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         "task.history",
         "Show one task and its permanent history.",
         READ_REPOSITORY_VIEWER,
+        Protocol["task history"],
         ["task_history"],
         params::TaskHistory,
         results::TaskHistory
@@ -962,6 +1073,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         "task.create",
         "Create one completion-ledger task.",
         APPEND_REPOSITORY_ADMIN,
+        Protocol["task create"],
         ["task_create"],
         params::TaskCreate,
         results::TaskCreated
@@ -970,6 +1082,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         "task.update",
         "Append a task state or wording change.",
         DESTRUCTIVE_REPOSITORY_ADMIN,
+        Protocol["task update"],
         ["task_update"],
         params::TaskUpdate,
         results::TaskMutation
@@ -978,6 +1091,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         "release.create",
         "Create a planned release.",
         APPEND_REPOSITORY_ADMIN,
+        Protocol["release create"],
         ["release_create"],
         params::ReleaseCreate,
         results::Release
@@ -986,6 +1100,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         "release.update",
         "Change a planned release.",
         DESTRUCTIVE_REPOSITORY_ADMIN,
+        Protocol["release update"],
         [],
         params::ReleaseUpdate,
         results::Release
@@ -994,6 +1109,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         "release.request",
         "Request a preview deployment.",
         APPEND_REPOSITORY_ADMIN,
+        Protocol["release request"],
         [],
         params::ReleaseRequest,
         results::Release
@@ -1002,6 +1118,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         "release.deliver",
         "Attach real delivery evidence to a release.",
         APPEND_REPOSITORY_ADMIN,
+        Protocol["release deliver"],
         ["release_deliver"],
         params::ReleaseDeliver,
         results::ReleaseDelivered
@@ -1010,6 +1127,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         "decision.tail",
         "Read the rolling decision summary and latest decisions.",
         READ_REPOSITORY_VIEWER,
+        Protocol["decision tail"],
         ["decision_tail"],
         params::DecisionTail,
         results::DecisionTail
@@ -1018,6 +1136,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         "decision.search",
         "Search permanent repository decisions.",
         READ_REPOSITORY_VIEWER,
+        Protocol["decision search"],
         ["decision_search"],
         params::DecisionSearch,
         results::DecisionSearch
@@ -1026,6 +1145,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         "decision.record",
         "Record a permanent repository decision.",
         APPEND_REPOSITORY_ADMIN,
+        Protocol["decision record"],
         ["decision_record"],
         params::DecisionRecord,
         results::DecisionRecorded
@@ -1034,6 +1154,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         "decision.summarize",
         "Store a new rolling decision summary.",
         APPEND_REPOSITORY_ADMIN,
+        Protocol["decision summarize"],
         ["decision_summarize"],
         params::DecisionSummarize,
         results::DecisionSummarized
@@ -1042,6 +1163,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         "usage.repositories",
         "Show privacy-preserving usage across visible repositories.",
         READ_REPOSITORY_OPERATOR,
+        excluded "Usage analytics are presented by the Console, not the preserved CLI.",
         [],
         params::UsageRepositories,
         results::UsageRepositories
@@ -1050,6 +1172,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         "usage.repository",
         "Show privacy-preserving usage for one repository.",
         READ_REPOSITORY_OPERATOR,
+        excluded "Usage analytics are presented by the Console, not the preserved CLI.",
         [],
         params::UsageRepository,
         results::UsageRepository
@@ -1058,6 +1181,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         "progress.repositories",
         "Show delivery progress across visible repositories.",
         READ_REPOSITORY_OPERATOR,
+        excluded "Progress analytics are presented by the Console, not the preserved CLI.",
         [],
         params::Empty,
         results::ProgressRepositories
@@ -1066,6 +1190,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         "progress.repository",
         "Show delivery progress for one repository.",
         READ_REPOSITORY_OPERATOR,
+        excluded "Progress analytics are presented by the Console, not the preserved CLI.",
         [],
         params::ProgressRepository,
         results::ProgressRepository
@@ -1074,6 +1199,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         "telegram.link",
         "Link one Telegram chat to an identity.",
         EXTERNAL_SELF,
+        Protocol["telegram link"],
         [],
         params::TelegramLink,
         results::TelegramLinked
@@ -1082,6 +1208,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         "telegram.subscribe",
         "Subscribe one linked chat to notices.",
         EXTERNAL_SELF,
+        Protocol["telegram subscribe"],
         [],
         params::TelegramSubscription,
         results::TelegramSubscription
@@ -1090,6 +1217,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         "telegram.unsubscribe",
         "Remove one notice subscription.",
         IDEMPOTENT_EXTERNAL_SELF,
+        Protocol["telegram unsubscribe"],
         [],
         params::TelegramSubscription,
         results::TelegramSubscription
@@ -1098,6 +1226,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         "telegram.list",
         "List the caller's linked chats and subscriptions.",
         READ_SELF,
+        Protocol["telegram list"],
         [],
         params::Empty,
         results::TelegramList
@@ -1106,6 +1235,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         "bug.report",
         "Report or count a Coordinator defect while the daemon may be unavailable.",
         APPEND_SELF,
+        Local["bug report"],
         ["bug_report"],
         params::BugReport,
         results::BugRecord
@@ -1114,6 +1244,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         "bug.list",
         "List open Coordinator defects.",
         READ_SELF,
+        Local["bug list"],
         ["bug_list"],
         params::Empty,
         results::BugList
@@ -1122,6 +1253,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         "bug.close",
         "Close one Coordinator defect.",
         DESTRUCTIVE_SELF,
+        Local["bug close"],
         ["bug_close"],
         params::BugClose,
         results::BugClosed
@@ -1130,6 +1262,18 @@ pub static OPERATIONS: &[OperationDefinition] = &[
 
 pub fn operation(name: &str) -> Option<&'static OperationDefinition> {
     OPERATIONS.iter().find(|definition| definition.name == name)
+}
+
+pub fn operation_for_cli_route(
+    route: &str,
+) -> Option<(&'static OperationDefinition, &'static CliRouteDefinition)> {
+    OPERATIONS.iter().find_map(|operation| {
+        operation
+            .cli_routes
+            .iter()
+            .find(|candidate| candidate.route == route)
+            .map(|candidate| (operation, candidate))
+    })
 }
 
 pub fn mcp_tools() -> Vec<McpToolDefinition> {
@@ -1269,6 +1413,14 @@ pub fn contract_document() -> Value {
             "name": definition.name,
             "description": definition.description,
             "policy": definition.policy,
+            "cli": {
+                "routes": definition.cli_routes.iter().map(|route| serde_json::json!({
+                    "route": route.route,
+                    "dispatch": route.dispatch,
+                })).collect::<Vec<_>>(),
+                "excludedReason": definition.cli_exclusion,
+            },
+            "mcpExcludedReason": definition.mcp_exclusion,
             "mcpTools": definition.mcp_names.iter().map(|name| serde_json::json!({
                 "name": name,
                 "transform": "identity",
@@ -1346,14 +1498,37 @@ mod tests {
     fn registry_names_and_mcp_tools_are_unique() {
         let mut operations = std::collections::BTreeSet::new();
         let mut tools = std::collections::BTreeSet::new();
+        let mut cli_routes = std::collections::BTreeSet::new();
         for definition in OPERATIONS {
             assert!(operations.insert(definition.name), "duplicate operation");
+            assert_eq!(
+                definition.cli_routes.is_empty(),
+                definition.cli_exclusion.is_some(),
+                "{} must declare routes or one deliberate CLI exclusion",
+                definition.name
+            );
+            for route in definition.cli_routes {
+                assert!(!route.route.is_empty());
+                assert!(cli_routes.insert(route.route), "duplicate CLI route");
+                assert_eq!(
+                    operation_for_cli_route(route.route)
+                        .map(|(operation, candidate)| (operation.name, candidate.dispatch)),
+                    Some((definition.name, route.dispatch))
+                );
+            }
+            assert_eq!(
+                definition.mcp_names.is_empty() && definition.mcp_overrides.is_empty(),
+                definition.mcp_exclusion.is_some(),
+                "{} must declare MCP tools or one deliberate exclusion",
+                definition.name
+            );
         }
         for tool in mcp_tools() {
             assert!(tools.insert(tool.name), "duplicate MCP tool");
         }
         assert_eq!(OPERATIONS.len(), 75);
         assert_eq!(tools.len(), 53);
+        assert_eq!(cli_routes.len(), 64);
     }
 
     #[test]
