@@ -8,7 +8,7 @@ use std::os::fd::AsRawFd;
 use std::os::unix::ffi::OsStringExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -32,6 +32,9 @@ use crate::config::{CodexUsageSource, Config};
 use crate::database::{Database, DatabaseError};
 use crate::platform::{Clock, HostClock};
 use crate::repository::Registry;
+
+#[path = "usage_cache.rs"]
+mod cache;
 
 const SUPPORTED_DATABASE_SCHEMAS: &[u32] = &[4, 5];
 const SUPPORTED_TAXONOMY: u32 = 1;
@@ -76,8 +79,7 @@ pub struct CodexUsage {
     authority: Database,
     clock: Arc<dyn Clock>,
     probe: Arc<dyn RepositoryProbe>,
-    collection_cache: Arc<Mutex<HashMap<String, (Instant, UsageRepositories)>>>,
-    collection_refreshing: Arc<Mutex<BTreeSet<String>>>,
+    cache: cache::UsageCache,
 }
 
 #[derive(Clone, Debug)]
@@ -179,7 +181,12 @@ impl UsageService {
         params: UsageRepositoriesParams,
     ) -> Result<UsageRepositories, ProtocolError> {
         let records = self.records()?;
-        self.usage.repositories(&records, params.range)
+        let report = self.usage.repositories(&records, params.range.clone())?;
+        if params.wait_for_refresh {
+            self.usage.wait_for_refresh(None);
+            return self.usage.repositories(&records, params.range);
+        }
+        Ok(report)
     }
 
     pub fn repository(
@@ -193,7 +200,12 @@ impl UsageService {
             .ok_or_else(|| {
                 ProtocolError::new(ErrorCode::RepositoryNotFound, "no registered repository")
             })?;
-        self.usage.repository(&repository, params.range)
+        let report = self.usage.repository(&repository, params.range.clone())?;
+        if params.wait_for_refresh {
+            self.usage.wait_for_refresh(Some(&repository.repository_id));
+            return self.usage.repository(&repository, params.range);
+        }
+        Ok(report)
     }
 
     fn records(&self) -> Result<Vec<RepositoryRecord>, ProtocolError> {
@@ -232,8 +244,7 @@ impl CodexUsage {
             authority,
             clock,
             probe,
-            collection_cache: Arc::new(Mutex::new(HashMap::new())),
-            collection_refreshing: Arc::new(Mutex::new(BTreeSet::new())),
+            cache: cache::UsageCache::default(),
         }
     }
 
@@ -243,93 +254,9 @@ impl CodexUsage {
         range: UsageRange,
     ) -> Result<UsageRepositories, ProtocolError> {
         let now_ms = self.now_ms()?;
-        let key = format!(
-            "{}:{}",
-            range_name(&range),
-            repositories
-                .iter()
-                .map(|repository| repository.repository_id.as_str())
-                .collect::<Vec<_>>()
-                .join(",")
-        );
-        if let Some(cached) = self
-            .collection_cache
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get(&key)
-            .filter(|(expires, _)| *expires > Instant::now())
-            .map(|(_, report)| report.clone())
-        {
-            return Ok(cached);
-        }
-        let result = self.repositories_at(repositories, range.clone(), now_ms, false)?;
-        let mapping_pending = result.repositories.iter().any(|repository| {
-            repository
-                .coverage
-                .unavailable_reasons
-                .contains_key("mapping_pending")
-        });
-        if mapping_pending {
-            let mut refreshing = self
-                .collection_refreshing
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if refreshing.insert(key.clone()) {
-                let usage = self.clone();
-                let repositories = repositories.to_vec();
-                let refresh_range = range.clone();
-                thread::spawn(move || {
-                    if let Ok(report) =
-                        usage.repositories_at(&repositories, refresh_range, now_ms, true)
-                    {
-                        usage
-                            .collection_cache
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner)
-                            .insert(
-                                key.clone(),
-                                (Instant::now() + Duration::from_secs(30), report),
-                            );
-                    }
-                    usage
-                        .collection_refreshing
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .remove(&key);
-                });
-            }
-        } else {
-            self.collection_cache
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .insert(
-                    key,
-                    (Instant::now() + Duration::from_secs(30), result.clone()),
-                );
-        }
-        Ok(result)
-    }
-
-    fn repositories_at(
-        &self,
-        repositories: &[RepositoryRecord],
-        range: UsageRange,
-        now_ms: u64,
-        resolve_missing: bool,
-    ) -> Result<UsageRepositories, ProtocolError> {
         let mut rows = Vec::new();
         for repository in repositories {
-            let (start, end, bucket, count) = usage_window(&range, now_ms);
-            let report = self.repository_window(
-                repository,
-                range.clone(),
-                now_ms,
-                start,
-                end,
-                bucket,
-                count,
-                resolve_missing,
-            )?;
+            let report = self.repository(repository, range.clone())?;
             rows.push(UsageRepositoryRow {
                 repository_id: report.repository_id,
                 display_name: report.display_name,
@@ -348,12 +275,18 @@ impl CodexUsage {
         })
     }
 
+    pub fn wait_for_refresh(&self, repository_id: Option<&str>) {
+        self.cache.wait(repository_id);
+    }
+
     pub fn repository(
         &self,
         repository: &RepositoryRecord,
         range: UsageRange,
     ) -> Result<UsageRepository, ProtocolError> {
-        self.repository_at(repository, range, self.now_ms()?)
+        let now_ms = self.now_ms()?;
+        let (start, end, bucket, count) = usage_window(&range, now_ms);
+        self.cached_window(repository, range, now_ms, start, end, bucket, count, true)
     }
 
     pub fn repository_at(
@@ -390,7 +323,7 @@ impl CodexUsage {
         let start = aligned_end_ms.saturating_sub(
             bucket_ms.saturating_mul(u64::try_from(bucket_count).unwrap_or(u64::MAX)),
         );
-        self.repository_window(
+        self.cached_window(
             repository,
             range,
             now_ms,
@@ -400,6 +333,51 @@ impl CodexUsage {
             bucket_count,
             resolve_missing,
         )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn cached_window(
+        &self,
+        repository: &RepositoryRecord,
+        range: UsageRange,
+        now_ms: u64,
+        start_ms: u64,
+        end_ms: u64,
+        bucket_ms: u64,
+        bucket_count: usize,
+        resolve_missing: bool,
+    ) -> Result<UsageRepository, ProtocolError> {
+        let key = format!(
+            "{}:{:?}:{}:{start_ms}:{bucket_ms}:{bucket_count}",
+            repository.repository_id,
+            repository.root_path,
+            range_name(&range)
+        );
+        let empty = combine(
+            repository,
+            range.clone(),
+            now_ms,
+            start_ms,
+            bucket_ms,
+            bucket_count,
+            &[],
+            BTreeMap::new(),
+            self.config.codex_usage_sources.len(),
+        );
+        let usage = self.clone();
+        let repository = repository.clone();
+        Ok(self.cache.get(key, empty, move || {
+            usage.repository_window(
+                &repository,
+                range,
+                now_ms,
+                start_ms,
+                end_ms,
+                bucket_ms,
+                bucket_count,
+                resolve_missing,
+            )
+        }))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1372,6 +1350,7 @@ fn combine(
         range,
         generated_at_ms: now_ms,
         coverage: UsageCoverage {
+            snapshot: None,
             state: coverage_state.clone(),
             has_gaps: coverage_state != CoverageState::Complete,
             configured_collectors: u32::try_from(configured).unwrap_or(u32::MAX),
@@ -2177,6 +2156,19 @@ mod tests {
                 true,
             )
             .unwrap();
+        assert!(detail.coverage.snapshot.as_ref().unwrap().refreshing);
+        usage.wait_for_refresh(Some(&repository.repository_id));
+        let detail = usage
+            .repository_buckets(
+                &repository,
+                UsageRange::Hours24,
+                60_000,
+                2,
+                now_ms,
+                now_ms,
+                true,
+            )
+            .unwrap();
         assert_eq!(detail.totals.total_tokens, Some(100));
         assert_eq!(
             detail
@@ -2356,15 +2348,17 @@ mod tests {
             .repositories(&[repository], UsageRange::Hours24)
             .unwrap();
         assert!(started.elapsed() < Duration::from_millis(250));
-        assert_eq!(
-            result.repositories[0].coverage.unavailable_reasons["mapping_pending"],
-            1
+        assert!(
+            result.repositories[0]
+                .coverage
+                .snapshot
+                .as_ref()
+                .unwrap()
+                .refreshing
         );
+        assert_eq!(result.repositories[0].total_tokens, None);
         probe.released.store(true, Ordering::SeqCst);
-        let deadline = Instant::now() + Duration::from_secs(1);
-        while probe.entered.load(Ordering::SeqCst) == 0 && Instant::now() < deadline {
-            thread::sleep(Duration::from_millis(10));
-        }
+        usage.wait_for_refresh(None);
         assert_eq!(probe.entered.load(Ordering::SeqCst), 1);
     }
 

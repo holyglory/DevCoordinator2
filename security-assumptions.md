@@ -109,6 +109,11 @@ untracked `instance/` directory and in the installed instance configuration
   DevCoordinator opens it read-only and stores only the privacy-preserving
   link between its registered repository and that collector's repository key
   (DC2-2026-08-29-CODEX-USAGE-SOURCE).
+- The owner approved daemon-owned display caching on 2026-09-04. Rebuildable
+  display projections may be retained in daemon memory under the same access
+  and privacy boundary; collector databases remain read-only accounting truth.
+  This approval does not add a durable database mirror, change source access,
+  or authorize retaining prohibited values (DC2-2026-09-04-DAEMON-USAGE-SNAPSHOT-CACHE).
 
 ## Formal UI verification evidence
 

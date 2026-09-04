@@ -929,6 +929,8 @@ pub struct DecisionSummarize {
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct UsageRepositories {
+    #[serde(default)]
+    pub wait_for_refresh: bool,
     #[serde(default = "default_usage_range")]
     pub range: UsageRange,
 }
@@ -940,6 +942,8 @@ fn default_usage_range() -> UsageRange {
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct UsageRepository {
+    #[serde(default)]
+    pub wait_for_refresh: bool,
     pub repository_id: String,
     #[serde(default = "default_usage_range")]
     pub range: UsageRange,
@@ -948,6 +952,8 @@ pub struct UsageRepository {
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProgressRepository {
+    #[serde(default)]
+    pub wait_for_refresh: bool,
     pub repository_id: String,
     #[serde(default = "default_progress_period")]
     pub period: ProgressPeriod,

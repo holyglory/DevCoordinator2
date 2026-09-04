@@ -92,6 +92,13 @@ a native select.
    preview now" (replaced by a pending notice while one is requested),
    explicitly labelled immediate drop-task action, and an "Ask for a change" form that files a
    `user_feedback` task. Viewers get the same chart read-only.
+   Collector-backed displays use daemon-memory snapshots shared by repository
+   and exact window. Cold reads show loading; stale reads retain saved values
+   while a background refresh runs. Snapshot time and refresh failures remain
+   visible. Completion waits update the page without polling and preserve open
+   counting details and range focus. Restart clears this disposable cache; no
+   collector database is copied or changed. Source indexing remains necessary
+   when a collector cannot be read within its existing deadline.
 3. **Progress** — an operator/administrator repository dashboard that aligns
    terminal task completions, current planned task lines completed, terminal
    test pass rate, and provider total-token use on hourly, daily, or

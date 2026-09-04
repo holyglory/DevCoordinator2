@@ -353,6 +353,19 @@ not contradict them.
   measured data is amber, complete data green, no measurements neutral, and
   red is reserved for an actual source/read failure.
 
+- **REQ-HEALTH-09** (2026-09-04): Collector-backed usage collection, detail,
+  and Progress token displays use disposable daemon-memory snapshots. Cold
+  and stale reads return immediately and initiate one background refresh per
+  exact repository/window. Save only display-ready projections, never source
+  database copies; bound the cache to 128 entries and reuse snapshots for 30
+  seconds after a refresh completes. A failed refresh retains prior measured
+  values with explicit saved-time/failure status, while an empty cache shows
+  loading or unavailable rather than zero. Bounded completion waits update
+  active pages without polling or overwriting a different route/range.
+  Restart discards snapshots. Collector authority, existing query deadlines,
+  and operator/admin access remain unchanged. Collector indexing is a separate
+  dependency; cache delivery does not prove an unreadable source is fixed.
+
 ## Repository progress and forecasting (REQ-PROGRESS)
 
 - **REQ-PROGRESS-01** (2026-08-30, done): An operator or administrator can

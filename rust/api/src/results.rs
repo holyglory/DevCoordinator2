@@ -1526,6 +1526,8 @@ pub enum CoverageState {
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct UsageCoverage {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snapshot: Option<UsageSnapshot>,
     pub state: CoverageState,
     pub has_gaps: bool,
     pub configured_collectors: u32,
@@ -1537,6 +1539,14 @@ pub struct UsageCoverage {
     pub unavailable_reasons: BTreeMap<String, u64>,
     pub database_schemas: Vec<u32>,
     pub taxonomy_versions: Vec<u32>,
+}
+
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UsageSnapshot {
+    pub updated_at_ms: Option<u64>,
+    pub refreshing: bool,
+    pub refresh_failed: bool,
 }
 
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
@@ -1821,6 +1831,8 @@ pub struct TestCoverage {
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TokenCoverage {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snapshot: Option<UsageSnapshot>,
     pub state: CoverageState,
     pub has_gaps: bool,
     pub configured_collectors: u32,

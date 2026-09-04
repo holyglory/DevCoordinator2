@@ -207,7 +207,7 @@ const fixtures = (scenario) => {
   const usageSourceFailureCoverage = { ...usageMappingPendingCoverage,
     unavailable_reasons: { source_unavailable: 4 } };
   const usageIndexingCoverage = { ...usageMappingPendingCoverage,
-    unavailable_reasons: { indexing: 4 } };
+    unavailable_reasons: { indexing: 4 }, snapshot: { updated_at_ms: null, refreshing: true, refresh_failed: false } };
   const usageSeries = usageHasNoMeasurements ? [] : Array.from({ length: 24 }, (_, index) => {
     const start = Date.UTC(2026, 7, 28, 19 + index);
     const phases = {
@@ -453,6 +453,7 @@ async function startFakeDaemon(dir) {
     return result;
   };
   const server = net.createServer({ allowHalfOpen: true }, (socket) => {
+    socket.on('error', (error) => { if (!['EPIPE', 'ECONNRESET'].includes(error.code)) throw error; });
     let buf = '';
     socket.on('data', async (c) => {
       buf += c; if (!buf.endsWith('\n')) return;
@@ -479,9 +480,32 @@ async function startFakeDaemon(dir) {
           waiter.resolve(req);
         }
       };
-      const reply = (payload) => socket.end(`${JSON.stringify({ protocol: 2, id: req.id, ...payload })}\n`, markSettled);
+      const reply = (payload) => {
+        if (scenario.cacheState && payload.ok && ['usage.repository', 'usage.repositories', 'progress.repository'].includes(req.operation)) {
+          payload = structuredClone(payload);
+          const ready = !!req.params.wait_for_refresh;
+          const cold = scenario.cacheState === 'loading' && !ready;
+          const snapshot = { updated_at_ms: cold ? null : Date.UTC(2026, 8, 4, 12),
+            refreshing: !ready && scenario.cacheState !== 'failed', refresh_failed: scenario.cacheState === 'failed' };
+          const items = req.operation === 'usage.repositories' ? payload.data.repositories : [payload.data];
+          for (const item of items) {
+            const coverage = req.operation === 'progress.repository' ? item.coverage.tokens : item.coverage;
+            coverage.snapshot = snapshot;
+            if (cold) {
+              coverage.state = 'unavailable';
+              coverage.available_collectors = 0;
+              coverage.contributing_collectors = 0;
+              if (item.totals) item.totals.total_tokens = null;
+              if ('total_tokens' in item) item.total_tokens = null;
+              for (const point of item.series || []) point.total_tokens = null;
+            }
+          }
+        }
+        socket.end(JSON.stringify({ protocol: 2, id: req.id, ...payload }) + '\n', markSettled);
+      };
       if (scenario.delayMs) await new Promise((resolve) => delayedReplies.add(resolve));
       const cmd = req.operation;
+      if ((scenario.cacheState || scenario.usageIndexing) && req.params.wait_for_refresh && !mutable.cacheReleased) await new Promise((resolve) => delayedReplies.add(resolve));
       if (cmd === 'user.whoami' && process.env.CONSOLE_VERIFY_RESET_PLAN_ON_SESSION === '1') {
         mutable.taskUpdates.clear();
         mutable.createdTasks.length = 0;
@@ -668,10 +692,10 @@ async function startFakeDaemon(dir) {
   return {
     socketPath,
     calls,
-    setScenario: (s) => { for (const release of delayedReplies) release(); delayedReplies.clear(); scenario = s; mutable.stopped = false; mutable.serviceStopped = false; mutable.taskUpdates.clear(); mutable.createdTasks.length = 0; mutable.previewRequested = false; mutable.failNextTaskUpdate = false; mutable.failNextLogCatalog = !!s.logCatalogError; mutable.failNextLogRead = !!s.logReadError; mutable.failNextLogPage = !!s.logPageError; mutable.usageCollectionReads = 0; mutable.capacityCap = 80; mutable.logAge = 86400; mutable.logDepth = 3; mutable.evidenceFeedback.length = 0; mutable.feedbackSequence = 0; calls.length = 0; },
+    setScenario: (s) => { for (const release of delayedReplies) release(); delayedReplies.clear(); scenario = s; mutable.cacheReleased = false; mutable.stopped = false; mutable.serviceStopped = false; mutable.taskUpdates.clear(); mutable.createdTasks.length = 0; mutable.previewRequested = false; mutable.failNextTaskUpdate = false; mutable.failNextLogCatalog = !!s.logCatalogError; mutable.failNextLogRead = !!s.logReadError; mutable.failNextLogPage = !!s.logPageError; mutable.usageCollectionReads = 0; mutable.capacityCap = 80; mutable.logAge = 86400; mutable.logDepth = 3; mutable.evidenceFeedback.length = 0; mutable.feedbackSequence = 0; calls.length = 0; },
     setEvidenceImage: (bytes, width, height) => { mutable.evidenceImage = Buffer.from(bytes); mutable.evidenceWidth = width; mutable.evidenceHeight = height; },
     failNextTaskUpdate: () => { mutable.failNextTaskUpdate = true; },
-    releaseDelayed: () => { for (const release of delayedReplies) release(); delayedReplies.clear(); },
+    releaseDelayed: () => { mutable.cacheReleased = true; for (const release of delayedReplies) release(); delayedReplies.clear(); },
     waitForReceivedAfter: (after) => {
       if (calls.length > after) return Promise.resolve(calls[after]);
       return new Promise((resolve) => receivedWaiters.add({ after, resolve }));
@@ -778,6 +802,53 @@ async function main() {
   const appSource = await fs.readFile(new URL('./app.js', import.meta.url), 'utf8');
   check('administrator controls have no native or data-driven confirmation path',
     !/window\.confirm|data-confirm|data-delete-data/.test(appSource));
+
+  if (process.env.CONSOLE_VERIFY_CACHE_ONLY) {
+    try {
+      for (const viewport of [{ width: 1110, height: 876 }, { width: 390, height: 844 }]) {
+        const context = await browser.newContext({ viewport });
+        const { cookie } = sessions.issue({ sub: 'sub', email: 'owner@example.test' });
+        await context.addCookies([{ name: 'dc2_session', value: cookie.split(';')[0].split('=')[1], domain: '.' + BASE, path: '/' }]);
+        const page = await context.newPage();
+        for (const route of ['usage', 'usage/' + REPO, 'progress/' + REPO, 'deployments'].filter(route => !process.env.CONSOLE_VERIFY_CACHE_ROUTE || route.startsWith(process.env.CONSOLE_VERIFY_CACHE_ROUTE))) {
+          for (const cacheState of ['loading', 'stale', 'failed']) {
+            try {
+            daemon.setScenario({ ...SCENARIOS.populated, cacheState });
+            const operation = route === 'usage' ? 'usage.repositories' : route.startsWith('progress') ? 'progress.repository' : 'usage.repository';
+            const waitRequest = cacheState === 'failed' ? null : page.waitForRequest(request => request.url().endsWith('/api/v2/' + operation) && request.postDataJSON()?.wait_for_refresh === true).catch(error => ({ error }));
+            await page.goto('http://' + HOST + ':' + port + '/?cache=' + cacheState + '#/' + route);
+            await page.waitForFunction(() => /Loading usage|Saved usage|Refresh failed|refresh failed/i.test(document.querySelector('main').innerText));
+            const before = await page.locator('main').innerText();
+            check('cache ' + viewport.width + ' ' + route + ' ' + cacheState + ': truthful snapshot label', cacheState === 'loading' ? /Loading usage/.test(before) : cacheState === 'failed' ? /refresh failed/i.test(before) : /saved usage/i.test(before));
+            if (cacheState === 'loading' && route === 'usage/' + REPO) check('cache cold detail hides unmeasured metrics', await page.locator('.usage-metrics').count() === 0);
+            if (cacheState === 'loading' && route === 'progress/' + REPO) check('cache cold Progress leaves token evidence blank', await page.locator('[data-progress-evidence="tokens"] > strong').textContent() === '—');
+            const details = route === 'progress/' + REPO ? '.progress-exact' : route === 'usage/' + REPO ? '.usage-provenance' : null;
+            if (cacheState === 'stale' && details) await page.locator(details + ' summary').click();
+            if (waitRequest) {
+              const received = await waitRequest;
+              if (received.error) throw received.error;
+              daemon.releaseDelayed();
+              await page.waitForFunction(() => !/Loading usage|Saved usage · updating|Updating saved usage/.test(document.querySelector('main').innerText));
+              if (cacheState === 'stale' && details) check('cache ' + route + ': open details survive refresh', await page.locator(details).getAttribute('open') !== null);
+              check('cache ' + route + ': completion uses bounded event wait', daemon.calls.some(call => call.operation === operation && call.params.wait_for_refresh === true));
+            }
+            check('cache ' + viewport.width + ' ' + route + ': no document overflow', await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth));
+            await page.screenshot({ path: path.join(OUT, viewport.width + '-' + route.replaceAll('/', '-') + '-' + cacheState + '-initial.png') });
+            await page.screenshot({ path: path.join(OUT, viewport.width + '-' + route.replaceAll('/', '-') + '-' + cacheState + '-full.png'), fullPage: true });
+            } catch (error) {
+              check('cache ' + viewport.width + ' ' + route + ' ' + cacheState, false, error.message + ' usage cards: ' + (await page.locator('[data-summary="usage"]').allTextContents()).join(' | ').slice(0, 600));
+              daemon.releaseDelayed();
+            }
+          }
+        }
+        await context.close();
+      }
+      await fs.writeFile(path.join(OUT, 'report.json'), JSON.stringify(report, null, 2));
+      console.log(JSON.stringify({ checks: report.checks.length, failures: report.failures, report: path.join(OUT, 'report.json') }));
+      process.exitCode = report.failures.length ? 1 : 0;
+    } finally { daemon.releaseDelayed(); await browser.close(); await edge.close(); await daemon.close(); }
+    return;
+  }
 
   if (!process.env.CONSOLE_VERIFY_INTERACTIONS_ONLY) for (const [scenarioName, scenario] of Object.entries(SCENARIOS).filter(([, scenario]) => !scenario.targetedOnly)) {
     daemon.setScenario(scenario);
@@ -2081,9 +2152,10 @@ async function main() {
   const usageIndexingFirstRow = await page.innerText('.usage-collection-table tbody tr');
   const usageIndexingVisibleMs = Date.now() - usageIndexingStarted;
   await page.focus('[data-codex-range="24h"]');
+  daemon.releaseDelayed();
   check('usage: indexing collection appears within one second without fake zeroes',
     usageIndexingVisibleMs < 1000
-    && /Updating usage data/.test(usageIndexingFirstRow)
+    && /Loading usage/.test(usageIndexingFirstRow)
     && (usageIndexingFirstRow.match(/—/g) || []).length >= 4,
     JSON.stringify({ usageIndexingVisibleMs, usageIndexingFirstRow }));
   await page.waitForFunction(() => {

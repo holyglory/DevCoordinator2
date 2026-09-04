@@ -170,7 +170,12 @@ impl ProgressService {
             .ok_or_else(|| {
                 ProtocolError::new(ErrorCode::RepositoryNotFound, "no registered repository")
             })?;
-        self.repository_at(&repository, params.period, self.now_ms()?)
+        let report = self.repository_at(&repository, params.period.clone(), self.now_ms()?)?;
+        if params.wait_for_refresh {
+            self.usage.wait_for_refresh(Some(&repository.id));
+            return self.repository_at(&repository, params.period, self.now_ms()?);
+        }
+        Ok(report)
     }
 
     fn repository_at(
@@ -236,6 +241,7 @@ impl ProgressService {
             .filter(|task| task.status != "dropped")
             .collect::<Vec<_>>();
         let token_coverage = TokenCoverage {
+            snapshot: usage.coverage.snapshot.clone(),
             state: usage.coverage.state.clone(),
             has_gaps: usage.coverage.has_gaps,
             configured_collectors: usage.coverage.configured_collectors,
@@ -1283,6 +1289,7 @@ mod tests {
         let progress = ProgressService::with_clock(database, registry, usage, clock);
         let report = progress
             .repository(ProgressRepositoryParams {
+                wait_for_refresh: false,
                 repository_id: registered.repository_id.clone(),
                 period: ProgressPeriod::Day,
             })

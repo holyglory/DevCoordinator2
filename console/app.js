@@ -380,7 +380,7 @@ function deploymentSummaryItem({ label, summaryKey = '', value, note = '', facts
   return `<div class="deployment-summary-item" data-summary="${esc(key)}"${live ? ' aria-live="polite"' : ''}${busy ? ' aria-busy="true"' : ''}>
     <span class="deployment-summary-label">${esc(label)}</span>
     <strong class="deployment-summary-value ${esc(kind)}">${esc(value)}</strong>
-    ${note ? `<small>${esc(note)}</small>` : ''}
+    ${note ? `<small data-summary-note>${esc(note)}</small>` : ''}
     ${facts.length ? `<dl class="deployment-summary-facts">${facts.map(([name, fact]) => `<div><dt>${esc(name)}</dt><dd>${esc(fact)}</dd></div>`).join('')}</dl>` : ''}
     ${dashboardLink(link, href, repositoryName)}
   </div>`;
@@ -418,7 +418,7 @@ function dashboardUsageDisplay(usage, canOperate, sourceError = null, resolving 
   if (totals?.total_tokens != null) {
     return {
       value: `${compactNumber(totals.total_tokens)} tokens · ${Number(totals.model_requests || 0).toLocaleString('en-US')} requests`,
-      note: coverage ? coverageText(coverage, true) : '',
+      note: coverage?.snapshot ? usageSnapshotText(coverage) : coverage ? coverageText(coverage, true) : '',
     };
   }
   if (resolving && coverage?.unavailable_reasons?.mapping_pending) {
@@ -430,15 +430,15 @@ function dashboardUsageDisplay(usage, canOperate, sourceError = null, resolving 
 }
 
 function pendingDashboardUsage(usage, canOperate) {
-  return Boolean(canOperate && usage?.total_tokens == null
-    && usage?.coverage?.unavailable_reasons?.mapping_pending);
+  return Boolean(canOperate && (usage?.coverage?.snapshot?.refreshing
+    || (usage?.total_tokens == null && usage?.coverage?.unavailable_reasons?.mapping_pending)));
 }
 
 function resolveDashboardUsage(repositoryId) {
   const existing = state.deploymentUsageResolutions.get(repositoryId);
   if (existing) return existing;
   const resolution = optionalDashboardRead('usage.repository', {
-    repository_id: repositoryId, range: '24h',
+    repository_id: repositoryId, range: '24h', wait_for_refresh: true,
   });
   state.deploymentUsageResolutions.set(repositoryId, resolution);
   resolution.then(
@@ -481,6 +481,9 @@ async function hydratePendingDeploymentUsage(groups, usageRows) {
     const card = section?.querySelector('[data-summary="usage"]');
     if (!card) continue;
     updateDeploymentUsageCard(card, dashboardUsageDisplay(result.value, canOperate, result.error));
+    if (result.value?.coverage?.snapshot?.refreshing) {
+      queueMicrotask(() => hydratePendingDeploymentUsage([group], new Map([[group.repositoryId, result.value]])));
+    }
   }
 }
 
@@ -2187,9 +2190,47 @@ function utcBucket(ms, includeDate = false) {
   return `${day}, ${time}`;
 }
 
+function usageSnapshotText(coverage) {
+  const snapshot = coverage?.snapshot;
+  if (!snapshot) return '';
+  if (!snapshot.updated_at_ms) return snapshot.refreshing ? 'Loading usage…' : 'Usage unavailable; refresh failed.';
+  const saved = ago(new Date(snapshot.updated_at_ms).toISOString());
+  if (snapshot.refresh_failed) return 'Refresh failed; showing saved usage · ' + saved;
+  return (snapshot.refreshing ? 'Updating saved usage · ' : 'Usage snapshot · ') + saved;
+}
+
+function usageViewIdentity() {
+  return [location.hash, state.codexUsageRange, state.progressPeriod].join(':');
+}
+
+function usageRefreshContext(waiting) {
+  if (!waiting) return () => {};
+  const opened = ['.progress-exact', '.usage-provenance'].filter((selector) => main.querySelector(selector)?.open);
+  const focus = document.activeElement;
+  const attribute = focus?.hasAttribute('data-progress-period') ? 'data-progress-period'
+    : focus?.hasAttribute('data-codex-range') ? 'data-codex-range' : null;
+  const value = attribute ? focus.getAttribute(attribute) : null;
+  return () => {
+    for (const selector of opened) { const details = main.querySelector(selector); if (details) details.open = true; }
+    if (attribute) main.querySelector('[' + attribute + '="' + CSS.escape(value) + '"]')?.focus({ preventScroll: true });
+  };
+}
+
+function continueUsageRefresh(coverages, refresh) {
+  if (!coverages.some((coverage) => coverage?.snapshot?.refreshing)) return;
+  const identity = usageViewIdentity();
+  const controller = viewAbort;
+  queueMicrotask(() => {
+    if (controller !== viewAbort || controller?.signal.aborted || identity !== usageViewIdentity()) return;
+    refresh();
+  });
+}
+
 function coverageKind(value) {
   const coverage = value && typeof value === 'object' ? value : null;
   const stateName = coverage?.state || value;
+  if (coverage?.snapshot?.refreshing) return 'indexing';
+  if (coverage?.snapshot?.refresh_failed) return coverage.snapshot.updated_at_ms ? 'warn' : 'bad';
   if (coverage?.unavailable_reasons?.indexing) return 'indexing';
   if (stateName === 'unavailable' && coverage?.unavailable_reasons?.mapping_pending) {
     return 'setup';
@@ -2199,6 +2240,10 @@ function coverageKind(value) {
 }
 
 function coverageText(coverage, compact = false) {
+  if (coverage.snapshot?.refreshing || coverage.snapshot?.refresh_failed) {
+    if (!coverage.snapshot.updated_at_ms) return coverage.snapshot.refreshing ? 'Loading usage…' : 'Usage refresh failed';
+    return coverage.snapshot.refresh_failed ? 'Saved usage · refresh failed' : 'Saved usage · updating';
+  }
   const configured = Number(coverage.configured_collectors || 0);
   const included = Number(coverage.contributing_collectors || 0);
   if (coverage.unavailable_reasons?.indexing) return 'Updating usage data…';
@@ -2257,7 +2302,7 @@ function bucketDataStatus(stateName) {
 }
 
 function coverageMark(coverage, compact = false) {
-  return `<span class="usage-coverage-mark ${coverageKind(coverage)}"><i aria-hidden="true"></i>${esc(coverageText(coverage, compact))}</span>`;
+  return `<span class="usage-coverage-mark ${coverageKind(coverage)}"><i aria-hidden="true"></i>${esc(coverageText(coverage, compact))}</span>${coverage.snapshot?.updated_at_ms ? `<small class="muted">Saved ${esc(ago(new Date(coverage.snapshot.updated_at_ms).toISOString()))}</small>` : ''}`;
 }
 
 function coverageHint(coverage) {
@@ -2377,9 +2422,12 @@ function exactUsageTable(data) {
   return `<section class="usage-exact"><h3>Exact bucket values</h3><div class="tablewrap"><table><thead><tr><th>UTC bucket</th><th>Total</th>${USAGE_PHASES.map((phase) => `<th>${USAGE_PHASE_LABELS[phase]}</th>`).join('')}<th>Data status</th></tr></thead><tbody>${data.series.map((point) => `<tr><td>${esc(utcBucket(point.bucket_start_ms, true))}</td><td>${Number(point.total_tokens).toLocaleString('en-US')}</td>${USAGE_PHASES.map((phase) => `<td>${Number(point.phases?.[phase] || 0).toLocaleString('en-US')}</td>`).join('')}<td>${badge(bucketDataStatus(point.coverage), coverageKind(point.coverage))}</td></tr>`).join('')}</tbody></table></div></section>`;
 }
 
-const viewCodexUsageRepositories = guard(async () => {
-  main.innerHTML = `${pageHeading('Codex Usage', '#/usage')}${skeleton(5)}`;
-  const result = await api('usage.repositories', { range: state.codexUsageRange });
+const viewCodexUsageRepositories = guard(async (waitForRefresh = false) => {
+  const identity = usageViewIdentity();
+  if (!waitForRefresh) main.innerHTML = `${pageHeading('Codex Usage', '#/usage')}${skeleton(5)}`;
+  const result = await api('usage.repositories', { range: state.codexUsageRange, ...(waitForRefresh ? { wait_for_refresh: true } : {}) });
+  if (identity !== usageViewIdentity()) return;
+  const restore = usageRefreshContext(waitForRefresh);
   const rows = result.repositories || [];
   const measured = (row) => ['complete', 'partial'].includes(row.coverage.state)
     || Number(row.coverage.contributing_collectors || 0) > 0;
@@ -2388,36 +2436,28 @@ const viewCodexUsageRepositories = guard(async () => {
     state.codexUsageRange = range;
     render().then(() => $(`[data-codex-range="${range}"]`, main)?.focus());
   });
-  if (rows.some((row) => row.coverage.unavailable_reasons?.indexing)) {
-    const requestedRange = state.codexUsageRange;
-    setTimeout(() => {
-      const [, view, repositoryId] = (location.hash || '').slice(1).split('/');
-      if (view !== 'usage' || repositoryId || state.codexUsageRange !== requestedRange) return;
-      const restoreRangeFocus = document.activeElement?.dataset?.codexRange;
-      viewCodexUsageRepositories().then(() => {
-        if (restoreRangeFocus) {
-          $(`[data-codex-range="${restoreRangeFocus}"]`, main)?.focus();
-        }
-      });
-    }, 750);
-  }
+  restore();
+  continueUsageRefresh(rows.map((row) => row.coverage), () => viewCodexUsageRepositories(true));
 });
 
-const viewCodexUsage = guard(async (repositoryId) => {
-  main.innerHTML = `<div class="usage-loading">${pageHeading('Codex Usage', '#/usage')}${skeleton(8)}</div>`;
+const viewCodexUsage = guard(async (repositoryId, waitForRefresh = false) => {
+  const identity = usageViewIdentity();
+  if (!waitForRefresh) main.innerHTML = `<div class="usage-loading">${pageHeading('Codex Usage', '#/usage')}${skeleton(8)}</div>`;
   const [data, projectList] = await Promise.all([
-    api('usage.repository', { repository_id: repositoryId, range: state.codexUsageRange }),
+    api('usage.repository', { repository_id: repositoryId, range: state.codexUsageRange, ...(waitForRefresh ? { wait_for_refresh: true } : {}) }),
     api('usage.repositories', { range: state.codexUsageRange }),
   ]);
   const projects = [...(projectList.repositories || []), {
     repository_id: repositoryId, display_name: data.display_name,
   }];
+  if (identity !== usageViewIdentity()) return;
+  const restore = usageRefreshContext(waitForRefresh);
   const subsets = [
     ['input', data.totals.input_tokens], ['cached', data.totals.cached_input_tokens],
     ['output', data.totals.output_tokens], ['reasoning', data.totals.reasoning_tokens],
   ].filter(([, value]) => value != null).map(([label, value]) => `${label} ${compactNumber(value)}`).join(' · ');
   main.innerHTML = `<section class="usage-dashboard" data-ui-region="codex-usage-dashboard">
-    <div class="usage-context"><div class="usage-title"><span class="usage-repo-mark" aria-hidden="true">${planIcon('focus-centered')}</span><h1>${destinationLink('Codex Usage', '#/usage')}</h1><span class="usage-slash" aria-hidden="true">/</span>${projectPicker(projects, repositoryId, (id) => `#/usage/${id}`, 'usage')}</div><div class="usage-range">${seg(['24h', '7d', '30d'], state.codexUsageRange, 'codex-range')}</div><div class="usage-coverage">${coverageHint(data.coverage)}<span class="muted">Data current ${data.coverage.freshest_at_ms ? ago(new Date(data.coverage.freshest_at_ms).toISOString()) : '—'}</span></div></div>
+    <div class="usage-context"><div class="usage-title"><span class="usage-repo-mark" aria-hidden="true">${planIcon('focus-centered')}</span><h1>${destinationLink('Codex Usage', '#/usage')}</h1><span class="usage-slash" aria-hidden="true">/</span>${projectPicker(projects, repositoryId, (id) => `#/usage/${id}`, 'usage')}</div><div class="usage-range">${seg(['24h', '7d', '30d'], state.codexUsageRange, 'codex-range')}</div><div class="usage-coverage">${coverageHint(data.coverage)}<span class="muted">${data.coverage.snapshot ? esc(usageSnapshotText(data.coverage)) : `Data current ${data.coverage.freshest_at_ms ? ago(new Date(data.coverage.freshest_at_ms).toISOString()) : '—'}`}</span></div></div>
     <div class="usage-metrics" data-ui-verify-min-content-inset="12">${usageMetric('Total tokens', compactNumber(data.totals.total_tokens))}${usageMetric('Model requests', compactNumber(data.totals.model_requests))}${usageMetric('Tool calls', compactNumber(data.totals.tool_calls))}${usageMetric('Execution time', durationMs(data.time.execution_wall.measured_ms))}</div>
     <section class="usage-primary" data-ui-region="usage-primary-trend"><div class="usage-section-title"><h2>Provider-reported total tokens by work phase</h2></div>${phaseLegend()}${usagePhaseChart(data.series)}</section>
     <div class="usage-lower"><section><h2>Activity breakdown</h2>${activityRows(data)}</section><section><h2>Time breakdown <span class="muted">(separate, not added together)</span></h2>${timeRails(data)}</section><section><h2>Tool outcomes</h2>${toolOutcomeRows(data)}</section></div>
@@ -2425,6 +2465,12 @@ const viewCodexUsage = guard(async (repositoryId) => {
   </section>`;
   bindProjectPicker(main);
   bindCoverageHint(main);
+  if (data.coverage.snapshot && (!data.coverage.snapshot.updated_at_ms || !data.coverage.available_collectors)) {
+    main.querySelectorAll('.usage-metrics, .usage-primary, .usage-lower, .usage-provenance').forEach((element) => element.remove());
+    main.querySelector('.usage-context').insertAdjacentHTML('afterend', stateBlock('empty', usageSnapshotText(data.coverage)));
+  }
+  restore();
+  continueUsageRefresh([data.coverage], () => viewCodexUsage(repositoryId, true));
   bindSeg(main, 'codex-range', (range) => {
     state.codexUsageRange = range;
     render().then(() => $(`[data-codex-range="${range}"]`, main)?.focus());
@@ -2579,9 +2625,10 @@ function progressEvidenceLane(data, {
   const observedValues = values.filter((value) => value != null);
   const observed = observedValues.length > 0;
   const coverage = cls === 'tests' ? data.coverage.tests : data.coverage.tokens;
-  const unavailable = cls === 'tests'
+  const snapshotText = cls === 'tokens' ? usageSnapshotText(coverage) : '';
+  const unavailable = (coverage.snapshot?.refreshing || coverage.snapshot?.refresh_failed ? snapshotText : '') || (cls === 'tests'
     ? 'No test runs recorded for this period.'
-    : coverage.state === 'unobserved' ? 'No token data recorded for this period.' : 'Some token data is missing.';
+    : coverage.state === 'unobserved' ? 'No token data recorded for this period.' : 'Some token data is missing.');
   if (!observed) return `<div class="progress-evidence-lane" data-progress-evidence="${esc(cls)}"><div><strong>${esc(label)}</strong><small>${esc(detail)}</small></div><p>${esc(unavailable)}</p><strong>—</strong></div>`;
   const width = Math.max(650, 220 + values.length * 38); const height = 58;
   const left = 168; const right = 92; const top = 8; const bottom = 8;
@@ -2594,9 +2641,9 @@ function progressEvidenceLane(data, {
   const summary = summarize
     ? summarize(observedValues)
     : [...values].reverse().find((value) => value != null);
-  const note = coverage.state === 'complete' ? detail : cls === 'tokens'
+  const note = snapshotText || (coverage.state === 'complete' ? detail : cls === 'tokens'
     ? 'Measured total; missing buckets stay blank.'
-    : 'Some data is missing; gaps stay blank.';
+    : 'Some data is missing; gaps stay blank.');
   return `<div class="progress-evidence-lane" data-progress-evidence="${esc(cls)}"><div><strong>${esc(label)}</strong><small>${esc(note)}</small></div><svg class="progress-evidence-chart" viewBox="0 0 ${width} ${height}" role="img" aria-label="${esc(label)} across this period"><line x1="${left}" x2="${width - right}" y1="${height - bottom}" y2="${height - bottom}" class="progress-grid-h"/>${polylines}${dots}</svg><strong aria-label="${esc(`${label} measured in this period: ${format(summary)}`)}">${esc(format(summary))}</strong></div>`;
 }
 
@@ -2669,18 +2716,23 @@ const viewProgressRepositories = guard(async () => {
   main.innerHTML = `<section data-ui-region="progress-repositories">${pageHeading('Progress', '#/progress')}${repositories.length ? `<div class="tablewrap"><table><thead><tr><th>Repository</th><th>Next release</th><th>Plan progress</th><th>Open tasks</th><th></th></tr></thead><tbody>${repositories.map((row) => `<tr><td><a href="#/progress/${esc(row.repository_id)}"><strong>${esc(row.display_name)}</strong></a></td><td>${row.next_release ? `${esc(row.next_release.name)} ${planBadge(row.next_release.status)}` : '<span class="muted">No release planned</span>'}</td><td>${row.planned_lines_total ? `${meter(row.planned_lines_done / row.planned_lines_total)}<span class="muted">${locN(row.planned_lines_done)} of ${locN(row.planned_lines_total)} planned lines done</span>` : '<span class="muted">Nothing sized yet</span>'}</td><td>${row.open_tasks}</td><td><a class="btn btn-small" href="#/progress/${esc(row.repository_id)}">View progress</a></td></tr>`).join('')}</tbody></table></div>` : stateBlock('empty', 'No repositories are available for progress analytics.')}</section>`;
 });
 
-const viewProgress = guard(async (repositoryId) => {
+const viewProgress = guard(async (repositoryId, waitForRefresh = false) => {
+  const identity = usageViewIdentity();
   if (state.progressRepositoryId !== repositoryId) {
     state.progressRepositoryId = repositoryId;
     state.progressSelectedTaskId = null;
   }
-  main.innerHTML = `<div class="progress-loading">${pageHeading('Progress', '#/progress')}${skeleton(8)}</div>`;
+  if (!waitForRefresh) main.innerHTML = `<div class="progress-loading">${pageHeading('Progress', '#/progress')}${skeleton(8)}</div>`;
   const [data, list] = await Promise.all([
-    api('progress.repository', { repository_id: repositoryId, period: state.progressPeriod }),
+    api('progress.repository', { repository_id: repositoryId, period: state.progressPeriod, ...(waitForRefresh ? { wait_for_refresh: true } : {}) }),
     api('progress.repositories', {}),
   ]);
   const projects = [...(list.repositories || []), { repository_id: repositoryId, display_name: data.display_name }];
+  if (identity !== usageViewIdentity()) return;
+  const restore = usageRefreshContext(waitForRefresh);
   renderProgressDashboard(data, projects, repositoryId);
+  restore();
+  continueUsageRefresh([data.coverage.tokens], () => viewProgress(repositoryId, true));
 });
 
 // --- Bugs ----------------------------------------------------------------
