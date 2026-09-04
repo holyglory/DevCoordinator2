@@ -924,7 +924,12 @@ fn wait_for_socket_connections(
     loop {
         let output = runner.run(&CommandRequest {
             program: ss.to_owned(),
-            args: vec!["-xan".into()],
+            args: vec![
+                "-xanH".into(),
+                "src".into(),
+                "=".into(),
+                socket.clone().into(),
+            ],
             environment: std::collections::BTreeMap::from([(
                 OsString::from("PATH"),
                 OsString::from("/usr/bin:/bin"),
@@ -1516,6 +1521,29 @@ mod tests {
             "u_str ESTAB 0 0 /run/devcoordinator2/daemon.sock 1 * 2\n",
             socket
         ));
+    }
+
+    #[test]
+    fn socket_wait_queries_only_the_daemon_endpoint() {
+        let runner = HostFake::default();
+        wait_for_socket_connections(
+            &runner,
+            Path::new("/usr/bin/ss"),
+            Path::new("/run/devcoordinator2/daemon.sock"),
+        )
+        .unwrap();
+
+        let requests = runner.requests.lock().unwrap();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(
+            requests[0].args,
+            [
+                OsString::from("-xanH"),
+                OsString::from("src"),
+                OsString::from("="),
+                OsString::from("/run/devcoordinator2/daemon.sock"),
+            ]
+        );
     }
 
     #[derive(Default)]
