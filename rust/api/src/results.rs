@@ -1176,7 +1176,7 @@ pub struct RepositoryStorage {
 pub struct RepositoryHealthRow {
     pub repository_id: String,
     pub display_name: String,
-    pub root_path: String,
+    pub root_path: Option<String>,
     pub cpu_percent: f64,
     pub memory_bytes: u64,
     pub storage_bytes: Option<u64>,

@@ -228,6 +228,10 @@ impl ResultFilter {
                             "repository row is not an object",
                         )
                     })?;
+                    // Public repository viewers never receive a host path;
+                    // security-assumptions.md keeps filesystem topology on
+                    // the trusted local side of the edge boundary.
+                    row.insert("root_path".to_owned(), Value::Null);
                     retain_rows(
                         row.get_mut("deployments"),
                         "deployment_id",
@@ -1984,6 +1988,7 @@ mod tests {
             .expect("health filter");
         assert_eq!(health.as_object().expect("object").len(), 1);
         assert_eq!(health["repositories"].as_array().expect("repos").len(), 1);
+        assert!(health["repositories"][0]["root_path"].is_null());
         assert_eq!(
             health["repositories"][0]["deployments"],
             serde_json::json!([

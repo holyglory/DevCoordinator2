@@ -14360,7 +14360,10 @@
                 "type": "string"
               },
               "root_path": {
-                "type": "string"
+                "type": [
+                  "string",
+                  "null"
+                ]
               },
               "storage": {
                 "$ref": "#/$defs/RepositoryStorage"
@@ -14400,7 +14403,6 @@
             "required": [
               "repository_id",
               "display_name",
-              "root_path",
               "cpu_percent",
               "memory_bytes",
               "storage",

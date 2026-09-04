@@ -231,6 +231,7 @@ async fn run_daemon(config: &Config) -> ExitCode {
     ));
     let capacity = plane.capacity().clone();
     let logs = plane.logs().clone();
+    let metrics = plane.health().sampler().clone();
     let expiry_plane = plane.clone();
     let telegram_service = plane.telegram().clone();
     let telegram = telegram_service.start();
@@ -263,9 +264,14 @@ async fn run_daemon(config: &Config) -> ExitCode {
         )
     });
     let mut expiry_shutdown = shutdown_rx.clone();
+    let metrics_shutdown = shutdown_rx.clone();
     services.spawn(async move {
         logs.serve_maintenance(shutdown_rx).await;
         ("log maintenance", Ok(()))
+    });
+    services.spawn(async move {
+        metrics.serve(metrics_shutdown).await;
+        ("metric sampler", Ok(()))
     });
     services.spawn(async move {
         let mut next_expiry = tokio::time::Instant::now() + Duration::from_secs(60);

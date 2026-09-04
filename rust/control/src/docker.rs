@@ -913,6 +913,66 @@ pub trait DockerControl: Send + Sync {
         .is_ok_and(|output| output.success())
     }
 
+    fn postgres_facts(
+        &self,
+        container_id: &ExactContainerId,
+        user: &str,
+        database: &str,
+    ) -> Result<Option<BTreeMap<String, u64>>, DockerError> {
+        if user.is_empty()
+            || database.is_empty()
+            || !user
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+            || !database
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+        {
+            return Err(DockerError::InvalidRequest(
+                "PostgreSQL metric identity is invalid".into(),
+            ));
+        }
+        const SQL: &str = "select (select count(*) from pg_stat_activity), (select coalesce(sum(size),0) from pg_ls_waldir()), (select coalesce(sum(temp_bytes),0) from pg_stat_database), (select coalesce(sum(pg_database_size(datname)),0) from pg_database where not datistemplate)";
+        let output = self.invoke(DockerInvocation::new(
+            vec![
+                "exec".into(),
+                container_id.as_str().into(),
+                "psql".into(),
+                "-U".into(),
+                user.into(),
+                "-d".into(),
+                database.into(),
+                "-tA".into(),
+                "-F".into(),
+                "|".into(),
+                "-c".into(),
+                SQL.into(),
+            ],
+            Duration::from_secs(20),
+        )?)?;
+        if !output.success() || output.stdout_truncated || output.stderr_truncated {
+            return Ok(None);
+        }
+        let values = output
+            .stdout
+            .trim()
+            .split('|')
+            .map(str::parse::<u64>)
+            .collect::<Result<Vec<_>, _>>();
+        let Ok(values) = values else {
+            return Ok(None);
+        };
+        let [connections, wal, temporary, database] = values.as_slice() else {
+            return Ok(None);
+        };
+        Ok(Some(BTreeMap::from([
+            ("pg_connections".into(), *connections),
+            ("pg_wal_bytes".into(), *wal),
+            ("pg_temp_bytes".into(), *temporary),
+            ("pg_database_bytes".into(), *database),
+        ])))
+    }
+
     fn follow_logs(&self, container_id: &ExactContainerId) -> Result<LogFollower, DockerError> {
         self.spawn_follow_logs(container_id)
     }
@@ -2066,6 +2126,26 @@ mod tests {
             2
         );
         assert!(matches!(events.last(), Some(PostgresLogEvent::Closed)));
+    }
+
+    #[test]
+    fn postgres_facts_are_numeric_and_use_one_fixed_exact_id_query() {
+        let docker = FakeDocker::new(vec![output(0, "1|2|3|4\n", "")]);
+        let facts = docker
+            .postgres_facts(&id('d'), "app", "app_test")
+            .unwrap()
+            .unwrap();
+        assert_eq!(facts["pg_connections"], 1);
+        assert_eq!(facts["pg_database_bytes"], 4);
+        let calls = docker.calls();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].args[0], "exec");
+        assert_eq!(calls[0].args[1], "d".repeat(64));
+        assert_eq!(
+            &calls[0].args[2..8],
+            ["psql", "-U", "app", "-d", "app_test", "-tA"]
+        );
+        assert!(calls[0].args.last().unwrap().starts_with("select "));
     }
 
     fn labels() -> ManagedLabelContext {

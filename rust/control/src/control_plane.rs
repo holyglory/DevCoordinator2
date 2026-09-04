@@ -18,12 +18,14 @@ use serde_json::Value;
 use time::{format_description::FormatItem, macros::format_description};
 
 use crate::access::{Access, Caller, RoutePublisher};
+use crate::alerts::AlertEvent;
 use crate::bugs;
 use crate::capacity::CapacityBroker;
 use crate::config::Config;
 use crate::daemon::OperationExecutor;
 use crate::database::{Database, DatabaseError};
 use crate::deployments::Deployments;
+use crate::health::HealthService;
 use crate::plan::{PlanService, SqliteDeploymentEvidence};
 use crate::platform::{Clock, HostClock};
 use crate::repository::Registry;
@@ -81,6 +83,12 @@ pub const FOUNDATION_OPERATIONS: &[&str] = &[
     "test.artifact.file",
     "test.capacity.get",
     "test.capacity.set",
+    "health.summary",
+    "health.repositories",
+    "health.repository",
+    "health.history",
+    "health.containers",
+    "health.container_remove",
     "telegram.link",
     "telegram.subscribe",
     "telegram.unsubscribe",
@@ -114,6 +122,7 @@ pub struct ControlPlane {
     artifacts: TestArtifactService,
     deployments: Deployments,
     capacity: CapacityBroker,
+    health: HealthService,
     telegram: TelegramService,
     clock: Arc<dyn Clock>,
 }
@@ -150,6 +159,12 @@ impl ControlPlane {
         let logs = TestLogService::new(database.clone(), registry.clone());
         let artifacts = TestArtifactService::new(database.clone(), registry.clone());
         let capacity = CapacityBroker::new(database.clone(), config.capacity_socket_path())?;
+        let health = HealthService::with_clock(
+            config.clone(),
+            database.clone(),
+            registry.clone(),
+            Arc::clone(&clock),
+        );
         let tests = TestLifecycle::new(
             config.clone(),
             database.clone(),
@@ -159,8 +174,24 @@ impl ControlPlane {
             Arc::clone(&clock),
         )?;
         let telegram = TelegramService::from_config(&config, database.clone());
+        let alert_telegram = telegram.clone();
+        health
+            .sampler()
+            .alerts()
+            .set_event_sink(Arc::new(move |event: AlertEvent| {
+                let notification = TelegramEvent::new(event.kind)
+                    .with("alert_key", event.alert_key)
+                    .with("alert_kind", event.alert_kind)
+                    .with("subject_kind", event.subject_kind)
+                    .with("subject_id", event.subject_id)
+                    .with("severity", event.severity)
+                    .with("message", event.message);
+                let _ = alert_telegram.enqueue_event(&notification);
+            }));
         let test_telegram = telegram.clone();
+        let test_sampler = health.sampler().clone();
         tests.set_event_sink(Arc::new(move |event: TestLifecycleEvent| {
+            test_sampler.request_storage();
             let status = serde_json::to_value(event.status).unwrap_or(Value::Null);
             let notification = TelegramEvent::new(event.kind)
                 .with("run_id", event.run_id)
@@ -185,6 +216,7 @@ impl ControlPlane {
             artifacts,
             deployments,
             capacity,
+            health,
             telegram,
             clock,
         })
@@ -200,6 +232,10 @@ impl ControlPlane {
 
     pub fn capacity(&self) -> &CapacityBroker {
         &self.capacity
+    }
+
+    pub fn health(&self) -> &HealthService {
+        &self.health
     }
 
     pub fn logs(&self) -> &TestLogService {
@@ -285,10 +321,11 @@ impl ControlPlane {
             }
             "repository.register" => {
                 let params: params::PathOnly = decode(params)?;
-                encode(
+                let result =
                     self.registry
-                        .register(Path::new(&params.path), caller.uid, caller.gid)?,
-                )
+                        .register(Path::new(&params.path), caller.uid, caller.gid)?;
+                self.health.sampler().request_storage();
+                encode(result)
             }
             "repository.list" => {
                 let params: params::RepositoryList = decode(params)?;
@@ -336,6 +373,7 @@ impl ControlPlane {
                     params.deployment_id.as_deref(),
                     caller,
                 )?;
+                self.health.sampler().request_storage();
                 self.notify(deployment_event("deployment.applied", &result, None));
                 encode(result)
             }
@@ -347,6 +385,7 @@ impl ControlPlane {
                     params.deployment_id.as_deref(),
                     caller,
                 )?;
+                self.health.sampler().request_storage();
                 self.notify(deployment_event("deployment.rolled_back", &result, None));
                 encode(result)
             }
@@ -384,6 +423,7 @@ impl ControlPlane {
                     params.delete_data,
                     caller,
                 )?;
+                self.health.sampler().request_storage();
                 self.notify(
                     TelegramEvent::new("deployment.removed")
                         .with("deployment_id", result.deployment_id.clone())
@@ -493,6 +533,27 @@ impl ControlPlane {
                     params::CapacityCap::Null => None,
                 };
                 encode(self.capacity.set_cap(cap, &actor)?)
+            }
+            "health.summary" => {
+                let _: params::Empty = decode(params)?;
+                encode(self.health.summary()?)
+            }
+            "health.repositories" => {
+                let _: params::Empty = decode(params)?;
+                encode(self.health.repositories()?)
+            }
+            "health.repository" => {
+                let params: params::PathOnly = decode(params)?;
+                encode(self.health.repository(&params.path, caller)?)
+            }
+            "health.history" => encode(self.health.history(decode(params)?)?),
+            "health.containers" => {
+                let _: params::Empty = decode(params)?;
+                encode(self.health.containers()?)
+            }
+            "health.container_remove" => {
+                let params: params::RemoveContainer = decode(params)?;
+                encode(self.health.remove_container(&params.container_id)?)
             }
             "telegram.link" => {
                 let params: params::TelegramLink = decode(params)?;
