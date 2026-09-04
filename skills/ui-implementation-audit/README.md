@@ -83,7 +83,7 @@ After confirming app/views/contacts.html implements a real product surface, use 
 You can force known design or requirement inputs:
 
 ```bash
-devcoordinator2-tooling audit ui-implementation build \
+python3 skills/ui-implementation-audit/scripts/build_ui_implementation_audit_batches.py \
   --repo /path/to/repo \
   --implemented-ui-file src/App.tsx \
   --ui-platform web \
@@ -122,14 +122,13 @@ The harness creates an audit output directory containing:
 Run harness self-tests:
 
 ```bash
-devcoordinator2-tooling skills self-test audit-tooling \
-  --source-root /path/to/DevCoordinator2
+python3 skills/ui-implementation-audit/scripts/self_test.py
 ```
 
 Generate an audit queue:
 
 ```bash
-devcoordinator2-tooling audit ui-implementation build \
+python3 skills/ui-implementation-audit/scripts/build_ui_implementation_audit_batches.py \
   --repo /path/to/repo \
   --implemented-ui-file src/App.tsx \
   --ui-platform web \
@@ -140,7 +139,7 @@ devcoordinator2-tooling audit ui-implementation build \
 Check eligibility without creating artifacts:
 
 ```bash
-devcoordinator2-tooling audit ui-implementation build \
+python3 skills/ui-implementation-audit/scripts/build_ui_implementation_audit_batches.py \
   --repo /path/to/repo \
   --implemented-ui-file src/App.tsx \
   --eligibility-only
@@ -149,7 +148,7 @@ devcoordinator2-tooling audit ui-implementation build \
 Exceptional preflight for an unrecognized toolkit, after manual inspection:
 
 ```bash
-devcoordinator2-tooling audit ui-implementation build \
+python3 skills/ui-implementation-audit/scripts/build_ui_implementation_audit_batches.py \
   --repo /path/to/repo \
   --implemented-ui-override src/contacts.rs 'canvas_kit::ContactSurface' build_contacts \
   --eligibility-only
@@ -158,15 +157,13 @@ devcoordinator2-tooling audit ui-implementation build \
 Verify saved reports:
 
 ```bash
-devcoordinator2-tooling audit ui-implementation verify \
-  --manifest /tmp/ui-implementation-audit-run/manifest.json \
-  --reports /tmp/ui-implementation-audit-run/reports
+python3 skills/ui-implementation-audit/scripts/verify_ui_implementation_audit_results.py --manifest /tmp/ui-implementation-audit-run/manifest.json --reports /tmp/ui-implementation-audit-run/reports
 ```
 
 Import a completed formal Web UI evidence bundle before verification:
 
 ```bash
-devcoordinator2-tooling audit ui-implementation import-formal \
+python3 skills/ui-implementation-audit/scripts/import_formal_web_evidence.py \
   --audit-root /tmp/ui-implementation-audit-run \
   --run-id <audit-run-id> \
   --formal-report /tmp/ui-implementation-audit-run/artifacts/report.json \
@@ -194,7 +191,7 @@ A run is complete only after:
 4. `execution_ledger.json` records completed lead, worker, and fallback status.
 5. `final-report.md` contains the required non-empty synthesis and interaction
    checklist.
-6. `devcoordinator2-tooling audit ui-implementation verify` returns `ok: true`.
+6. `verify_ui_implementation_audit_results.py` returns `ok: true`.
 
 The verifier checks structure, hashes, report coverage, current source drift,
 scope warnings, visual comparison evidence shape, first-viewport journey

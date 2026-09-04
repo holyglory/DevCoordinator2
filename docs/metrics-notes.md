@@ -1,7 +1,7 @@
 # Health Metrics Notes (Phase 4 — design only)
 
 Owner decision DC2-2026-08-22-METRICS. Implemented in Phase 4
-(`rust/control/src/metrics_sampler.rs`, `metrics.rs`, and `alerts.rs`); this note records the
+(`metrics_sampler.py`, `metrics_store.py`, `alerts.py`); this note records the
 cadence and model.
 
 ## Cadence and retention

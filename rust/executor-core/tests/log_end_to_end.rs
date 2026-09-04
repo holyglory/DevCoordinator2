@@ -74,10 +74,8 @@ fn run_git(root: &Path, args: &[&str]) {
     assert!(status.success(), "git command failed");
 }
 
-fn fixture(arguments: &[&str]) -> Vec<String> {
-    std::iter::once(env!("CARGO_BIN_EXE_devcoordinator2-executor-test-fixture").to_owned())
-        .chain(arguments.iter().map(|argument| (*argument).to_owned()))
-        .collect()
+fn python(script: &str) -> Vec<String> {
+    vec!["python3".into(), "-c".into(), script.into()]
 }
 
 fn direct(name: &str, command: Vec<String>) -> CheckPlan {
@@ -158,25 +156,41 @@ async fn executor_logs_remain_complete_queryable_and_catalogue_safe() {
 
     let mut preflight = direct(
         "source-preflight",
-        fixture(&["stderr-exit", "RAW-PREFLIGHT-DETAIL", "7"]),
+        python("import sys; sys.stderr.write('RAW-PREFLIGHT-DETAIL\\n'); raise SystemExit(7)"),
     );
     preflight.role = CheckRole::Preflight;
     preflight.invalidates = vec!["never-started".into()];
 
     let mut never_started = direct(
         "never-started",
-        fixture(&["write-relative", "NEVER_STARTED", "incorrectly started"]),
+        python("from pathlib import Path; Path('NEVER_STARTED').write_text('incorrectly started')"),
     );
     never_started.requires = vec!["source-preflight".into()];
 
     let noisy = direct(
         "large-output",
-        fixture(&["large-output-sentinel", "5242880"]),
+        python(
+            "import sys; sys.stdout.buffer.write(b'x' * (5 * 1024 * 1024) + b'\\nFINAL-SENTINEL\\n')",
+        ),
     );
 
-    let mut structured = direct("structured-cases", fixture(&["exit", "0"]));
+    let junit_script = r#"
+import os
+from pathlib import Path
+
+report = '''<testsuite name="parser">
+  <testcase classname="Parser" name="rejects-final-state" file="src/parser.rs" line="37" column="5">
+    <failure expected="ready" actual="pending">PRIVATE-JUNIT-PROSE</failure>
+    <failure expected="ready" actual="pending">PRIVATE-JUNIT-PROSE</failure>
+  </testcase>
+</testsuite>'''
+root = Path(os.environ["DEVCOORDINATOR_DIAGNOSTICS_DIR"])
+(root / "junit.xml").write_text(report)
+print("structured case output")
+"#;
+    let mut structured = direct("structured-cases", python("raise SystemExit(0)"));
     structured.command = None;
-    structured.case_command = Some(fixture(&["junit", "log-case"]));
+    structured.case_command = Some(python(junit_script));
     structured.cases = Some(vec![CaseSpec {
         id: "case-alpha".into(),
         args: Vec::new(),

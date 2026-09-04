@@ -1,4 +1,4 @@
-// DevCoordinator2 Console: a static app over the edge's /api/v2/<operation> bridge.
+// DevCoordinator2 Console: a static app over the edge's /api/<command> bridge.
 // Every control calls the real API and re-reads state to prove the change.
 'use strict';
 
@@ -228,10 +228,10 @@ function toast(text, kind = '') {
 
 class ApiError extends Error { constructor(code, message) { super(message); this.code = code; } }
 let viewAbort = null; // render() aborts the previous view's pending reads so a slow stale load can never overwrite the current view
-async function api(operation, params = {}, abortable = true) {
+async function api(command, args = {}, abortable = true) {
   let res;
   try {
-    res = await fetch(`/api/v2/${operation}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(params), signal: abortable ? viewAbort?.signal : undefined });
+    res = await fetch(`/api/${command}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(args), signal: abortable ? viewAbort?.signal : undefined });
   } catch (error) {
     if (error.name === 'AbortError') throw new ApiError('stale', 'superseded by navigation');
     throw new ApiError('network', `edge unreachable: ${error.message}`);
@@ -239,7 +239,7 @@ async function api(operation, params = {}, abortable = true) {
   if (res.status === 401) { location.href = `/auth/login?rt=${encodeURIComponent(location.pathname + location.hash)}`; throw new ApiError('unauthenticated', 'sign in'); }
   const body = await res.json().catch(() => ({ ok: false, error: { code: 'bad_response', message: `HTTP ${res.status}` } }));
   if (!body.ok) throw new ApiError(body.error?.code || 'error', body.error?.message || 'request failed');
-  return body.data;
+  return body.result;
 }
 async function history(kind, id, metric, rangeKey) {
   const r = RANGES[rangeKey] || RANGES['24h'];
