@@ -10,6 +10,7 @@ pub mod audit_verify;
 pub mod cutover;
 pub mod decision_import;
 pub mod formal_review;
+pub mod formal_selftest;
 pub mod install;
 pub mod instance;
 pub mod journey_docs;

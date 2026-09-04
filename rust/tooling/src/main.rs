@@ -54,6 +54,15 @@ enum Command {
 
 #[derive(Debug, Subcommand)]
 enum FormalUiCommand {
+    /// Exercise the retained browser verifier with Rust-hosted realistic fixtures.
+    SelfTest {
+        #[arg(long)]
+        workspace_parent: Option<PathBuf>,
+        #[arg(long)]
+        keep: bool,
+        #[arg(long, default_value_t = 240)]
+        timeout_seconds: u64,
+    },
     /// Run the retained Node browser verifier through the Rust tooling surface.
     Verify {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
@@ -772,6 +781,23 @@ fn run_skill_self_test(command: SkillSelfTestCommand) -> ExitCode {
 
 fn run_formal_ui(command: FormalUiCommand) -> ExitCode {
     match command {
+        FormalUiCommand::SelfTest {
+            workspace_parent,
+            keep,
+            timeout_seconds,
+        } => match devcoordinator2_tooling::formal_selftest::run(
+            &devcoordinator2_tooling::formal_selftest::SelfTestOptions {
+                workspace_parent,
+                keep,
+                timeout_seconds,
+            },
+        ) {
+            Ok(result) => {
+                println!("{}", serde_json::to_string_pretty(&result).unwrap());
+                ExitCode::SUCCESS
+            }
+            Err(error) => formal_ui_error(&error),
+        },
         FormalUiCommand::Verify { arguments } => {
             let source_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                 .parent()
@@ -2245,6 +2271,21 @@ mod tests {
             Command::FormalUi {
                 command: FormalUiCommand::Verify { arguments }
             } if arguments.len() == 4
+        ));
+        let formal_self_test = Cli::try_parse_from([
+            "devcoordinator2-tooling",
+            "formal-ui",
+            "self-test",
+            "--workspace-parent",
+            "/var/tmp",
+            "--keep",
+        ])
+        .expect("formal UI Rust self-test command");
+        assert!(matches!(
+            formal_self_test.command,
+            Command::FormalUi {
+                command: FormalUiCommand::SelfTest { keep: true, .. }
+            }
         ));
 
         let audit = Cli::try_parse_from([
