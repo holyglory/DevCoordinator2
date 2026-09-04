@@ -5,7 +5,7 @@ final result: passed
 ## Comparison target
 
 - Source visual truth: the two owner-marked live Deployments screenshots supplied with this request at 1526 × 876, showing one expander on every worker and a false **Not connected in all environments** Usage value for a project with available measurements.
-- Browser-rendered implementation: expanded desktop `/var/tmp/dc2-workers-usage.gpYU0z/formal-web-ui-verification-ysSLfa/screenshots/cell-0002-grouped-workers-and-available-usage-owner-desktop-viewport.png`, collapsed desktop `cell-0007-grouped-workers-and-available-usage_workers-collapsed-owner-desktop-viewport.png`, and the mobile/breakpoint pairs in the same screenshot directory.
+- Browser-rendered implementation: expanded desktop `/var/tmp/dc2-workers-usage.gpYU0z/formal-web-ui-verification-uiZPGJ/screenshots/cell-0002-grouped-workers-and-available-usage-owner-desktop-viewport.png`, collapsed desktop `cell-0007-grouped-workers-and-available-usage_workers-collapsed-owner-desktop-viewport.png`, and the mobile/breakpoint pairs in the same screenshot directory.
 - Desktop CSS viewport: 1526 × 876 at device scale factor 1; mobile: 390 × 844; exact responsive boundary: 619/620/621 × 900. No crop, frame, or density conversion was used.
 - State: dark Deployments dashboard with the marked project first, two workers, mapping-pending 24-hour usage that resolves to real measured totals, and an independently expanded sibling repository.
 - Full-view comparison: the implementation preserves the repository-level collapse control and complete worker facts, removes every row-level expander, adds one labelled Workers disclosure with a factual count, and replaces the false setup result with the project’s measured usage.
@@ -30,16 +30,16 @@ final result: passed
 
 ## Browser evidence
 
-- Complete current-source Console matrix: 1,678 checks, zero failures in `/var/tmp/dc2-workers-usage.gpYU0z/console-full-1/report.json`.
-- Focused interaction inventory: 332 checks, zero failures in `/var/tmp/dc2-workers-usage.gpYU0z/focused3/report.json`.
-- Formal run `formal-web-ui-mtmpiwe5-0b8dbda6`: 10/10 expanded/Workers-collapsed cells at 390, 619, 620, 621, and 1526 px; zero critical findings, five reviewed low-initial-visibility warnings, and passing coverage.
-- All twenty final viewport/full-page images were inspected; ten pass decisions and zero gaps were finalized in `/var/tmp/dc2-workers-usage.gpYU0z/formal-web-ui-verification-ysSLfa/manual-review.json`.
+- Complete merged-source Console matrix: 1,679 checks, zero failures in `/var/tmp/dc2-workers-usage.gpYU0z/merged-console-final/report.json`.
+- Focused merged interaction inventory: 333 checks, zero failures in `/var/tmp/dc2-workers-usage.gpYU0z/merged-focused/report.json`.
+- Formal run `formal-web-ui-mtmq0rvy-d2740e86`: 10/10 expanded/Workers-collapsed cells at 390, 619, 620, 621, and 1526 px; zero critical findings, five reviewed low-initial-visibility warnings, and passing coverage.
+- All twenty final viewport/full-page images were inspected; ten pass decisions and zero gaps were finalized in `/var/tmp/dc2-workers-usage.gpYU0z/formal-web-ui-verification-uiZPGJ/manual-review.json`.
 - Browser console and network failures: none in the complete or focused passes.
 
 ## Comparison history
 
 1. The owner identified that collapsing one worker had no meaningful dashboard use and that the project’s Usage card contradicted the available Usage destination.
-2. The first product pass removed row controls, introduced one Workers disclosure, and hydrated only mapping-pending usage. Its focused test initially read stale populated DOM because identical-hash navigation did not reload; the harness now performs real state reloads, and the complete 332-check interaction pass is green.
+2. The first product pass removed row controls, introduced one Workers disclosure, and hydrated only mapping-pending usage. Its focused test initially read stale populated DOM because identical-hash navigation did not reload; the harness now performs real state reloads, and the merged 333-check interaction pass is green.
 3. The first formal run used a stale fixture process whose repository order displaced the target project and forced the action to scroll. A current-source fixture and fresh complete formal run passed; one preceding cold-start TTFB outlier did not repeat.
 
 ## Implementation checklist
