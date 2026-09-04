@@ -56,7 +56,7 @@ impl FixtureMonotonic {
 
 impl MonotonicClock for FixtureMonotonic {
     fn seconds(&self) -> f64 {
-        self.started.elapsed().as_secs_f64()
+        self.started.elapsed().as_secs_f64() * 100.0
     }
 }
 
@@ -227,6 +227,14 @@ struct FixtureProcess {
     stderr: Option<Box<dyn Read + Send>>,
 }
 
+struct ErrorReader;
+
+impl Read for ErrorReader {
+    fn read(&mut self, _buffer: &mut [u8]) -> io::Result<usize> {
+        Err(io::Error::other("fixture capture failure"))
+    }
+}
+
 impl UnitProcess for FixtureProcess {
     fn id(&self) -> u32 {
         500
@@ -258,6 +266,8 @@ struct FixtureSystemd {
     starts: AtomicU64,
     stops: AtomicU64,
     fail_spawn: AtomicBool,
+    fail_capture: AtomicBool,
+    mismatch_uid: AtomicBool,
 }
 
 impl FixtureSystemd {
@@ -268,6 +278,8 @@ impl FixtureSystemd {
             starts: AtomicU64::new(0),
             stops: AtomicU64::new(0),
             fail_spawn: AtomicBool::new(false),
+            fail_capture: AtomicBool::new(false),
+            mismatch_uid: AtomicBool::new(false),
         }
     }
 
@@ -401,7 +413,11 @@ impl SystemdControl for FixtureSystemd {
         self.starts.fetch_add(1, Ordering::SeqCst);
         Ok(Box::new(FixtureProcess {
             state,
-            stdout: Some(Box::new(Cursor::new(b"wrapper out\n".to_vec()))),
+            stdout: Some(if self.fail_capture.load(Ordering::SeqCst) {
+                Box::new(ErrorReader) as Box<dyn Read + Send>
+            } else {
+                Box::new(Cursor::new(b"wrapper out\n".to_vec())) as Box<dyn Read + Send>
+            }),
             stderr: Some(Box::new(Cursor::new(b"wrapper err\n".to_vec()))),
         }))
     }
@@ -492,7 +508,13 @@ impl SystemdControl for FixtureSystemd {
     fn process_uids(&self, pid: u32) -> Option<[u32; 4]> {
         self.runs.lock().unwrap().values().find_map(|state| {
             let state = state.0.lock().unwrap();
-            (!state.done && pid == 500).then_some([state.uid; 4])
+            (!state.done && pid == 500).then_some(
+                [if self.mismatch_uid.load(Ordering::SeqCst) {
+                    state.uid.saturating_add(1)
+                } else {
+                    state.uid
+                }; 4],
+            )
         })
     }
 }
@@ -731,6 +753,47 @@ fn lifecycle_completes_cancels_supersedes_lists_and_retries() {
             .code,
         devcoordinator2_api::ErrorCode::TestNotFound
     );
+
+    world.systemd.fail_spawn.store(false, Ordering::SeqCst);
+    world.systemd.fail_capture.store(true, Ordering::SeqCst);
+    let stops_before = world.systemd.stops.load(Ordering::SeqCst);
+    let capture_start = world.lifecycle.start(
+        StartTest {
+            path: world.worktree.to_string_lossy().into_owned(),
+            test: Some("all".into()),
+            checks: Vec::new(),
+            tier: ApiValidationTier::Release,
+        },
+        &world.caller,
+    );
+    match capture_start {
+        Ok(started) => {
+            let failed = world.wait_status(TestStatus::Failed);
+            assert_eq!(failed.run_id, started.run_id);
+        }
+        Err(error) => {
+            assert_eq!(error.code, devcoordinator2_api::ErrorCode::TestStartFailed);
+            world.wait_status(TestStatus::Failed);
+        }
+    }
+    assert!(world.systemd.stops.load(Ordering::SeqCst) > stops_before);
+
+    world.systemd.fail_capture.store(false, Ordering::SeqCst);
+    world.systemd.mismatch_uid.store(true, Ordering::SeqCst);
+    let mismatch = world.lifecycle.start(
+        StartTest {
+            path: world.worktree.to_string_lossy().into_owned(),
+            test: Some("all".into()),
+            checks: Vec::new(),
+            tier: ApiValidationTier::Release,
+        },
+        &world.caller,
+    );
+    assert_eq!(
+        mismatch.unwrap_err().code,
+        devcoordinator2_api::ErrorCode::TestStartFailed
+    );
+    world.wait_status(TestStatus::Failed);
 }
 
 #[test]

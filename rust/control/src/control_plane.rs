@@ -135,10 +135,7 @@ impl ControlPlane {
         clock: Arc<dyn Clock>,
     ) -> Result<Self, ProtocolError> {
         let access = Access::new(&config, database.clone(), publisher)?;
-        let registry = Registry::with_archive_blockers(
-            database.clone(),
-            ActiveTestArchiveBlocker,
-        );
+        let registry = Registry::with_archive_blockers(database.clone(), ActiveTestArchiveBlocker);
         let deployments = Deployments::with_clock(
             config.clone(),
             database.clone(),
