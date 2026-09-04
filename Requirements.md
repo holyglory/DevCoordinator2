@@ -209,45 +209,6 @@ not contradict them.
   The Console continues to compose bounded REQ-TEST-22 operations and never
   requests or renders an unbounded stream.
 
-## Event notifications (REQ-EVENT)
-
-- **REQ-EVENT-01** (2026-09-04, done): `event.wait` is one generated protocol-v2
-  operation exposed by CLI and MCP. One request contains 1..32 filters for
-  test, deployment, planning, health, feedback, or other owned changes, one
-  monotonic cursor, and a 1..100 result limit. Every filter has a unique safe
-  identifier plus optional exact kinds, repository/deployment scopes, and RFC
-  3339 deadline.
-- **REQ-EVENT-02** (2026-09-04, done): One durable schema-16 SQLite journal
-  allocates increasing global cursors and retains exactly the newest 1,024
-  bounded typed events. Duplicate source identities reuse their cursor;
-  occurrence timestamps never reorder delivery. A cursor below the retained
-  floor or above the head returns `cursor_stale`; bounded floor/head evidence
-  is disclosed only to trusted local or administrator callers.
-- **REQ-EVENT-03** (2026-09-04, done): One scheduler owns every subscription
-  and nearest deadline. It never creates a timer or polling loop per filter or
-  client. A wake returns every due unsatisfied filter for that client together;
-  a matching event suppresses that filter's heartbeat while unrelated due
-  filters remain in the same response.
-- **REQ-EVENT-04** (2026-09-04, done): Cursor capture and scheduler registration
-  have no publication gap; a supplied cursor replays an event that arrived
-  before the wait. CLI and MCP keep the request connection open, and socket,
-  HTTP, or MCP cancellation drops the subscription. At most 256 waits and a
-  bounded command queue are admitted; excess demand returns `busy`.
-- **REQ-EVENT-05** (2026-09-04, done): Every scheduler wake reauthorizes the
-  physical local caller or verified edge identity against current grants.
-  Public callers receive only
-  repository/deployment events visible through current grants; feedback and
-  server-only events remain administrator-only. Payloads are category-specific,
-  at most 8 KiB, and contain no raw output, credentials, e-mail addresses,
-  private paths, or arbitrary source fields.
-- **REQ-EVENT-06** (2026-09-04, done): Native test lifecycle, deployment,
-  planning, feedback, repository, access, bug, and daemon-start boundaries
-  publish directly. The existing centralized health sampler/alert observer is
-  the sole polling boundary for owned health sources without native events.
-  Restart ends current waits but retained cursors replay after reconnect. The
-  Coordinator models only events and elapsed filter deadlines—not agents,
-  task execution, conversations, turns, wake-ups, or server-initiated action.
-
 ## Deployments (REQ-DEPLOY, P3)
 
 - **REQ-DEPLOY-01** (P3, done): One permanent deployment containing HTTP, worker,

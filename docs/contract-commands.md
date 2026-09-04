@@ -11,46 +11,12 @@ server exposes applicable operations as tools such as `test_start`, `test_retry`
 `test_log_range`, `test_log_failure_context`, `test_log_retention_get`,
 `test_log_retention_set`, `test_stop`, `test_capacity_get`,
 `test_capacity_set`, and `repository_list`. All three
-surfaces return the identical result JSON. `event_wait` is the blocking
-multi-filter event/heartbeat tool described below.
+surfaces return the identical result JSON.
 
 ## ping
 
 Args: none.
-Result: `{"daemon_version": "<semver>", "schema_version": 16, "socket": "<path>"}`
-
-## event.wait
-
-CLI: `event wait`; MCP: `event_wait`. The operation blocks until at least one
-authorized retained/new event matches, or one or more filter deadlines become
-due. One request accepts 1..32 filters and returns at most 100 events.
-
-Each filter has a unique `filter_id`, optional category list
-(`test|deployment|planning|health|feedback|other`), optional exact event kinds,
-optional repository/deployment allowlists, and optional RFC 3339
-`deadline_at`. The request carries one optional monotonic `cursor` and a
-`limit`. Omitting the cursor captures the journal head immediately before
-registration, so publication cannot fall into a check/subscribe gap. Passing a
-cursor replays retained events after it, including an event that arrived before
-the wait request. A cursor outside retained history returns `cursor_stale`;
-only trusted local or administrator callers receive bounded floor/head
-diagnostics.
-
-The result is `{cursor,events,heartbeat_due}`. Each event appears
-once with every matching `filter_id`; a filter satisfied by an event does not
-also receive a heartbeat. When the shared scheduler wakes, every due unsatisfied
-filter for that client is returned together. Events have category-specific,
-redacted payloads and global increasing cursors; the journal retains the newest
-1,024 entries; public callers receive no global activity counts.
-Disconnect and MCP cancellation remove the wait. The daemon has
-one scheduler for all waits, not a timer or polling loop per subscription.
-
-Native test, deployment, planning, feedback, repository, access, bug, and
-startup changes publish directly. Health changes come from the existing single
-host sampler/alert observer, which is the centralized polling boundary for
-owned sources without a native event mechanism. No agent, conversation, turn,
-task-execution, or wake-up semantics are introduced; clients decide what an
-event or elapsed heartbeat means.
+Result: `{"daemon_version": "<semver>", "schema_version": 13, "socket": "<path>"}`
 
 ## test.start
 

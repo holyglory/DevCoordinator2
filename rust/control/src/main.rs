@@ -264,25 +264,10 @@ async fn run_daemon(config: &Config) -> ExitCode {
             return ExitCode::from(1);
         }
     };
-    let plane_config = config.clone();
-    let initializer = match std::thread::Builder::new()
-        .name("devcoordinator2-initialize".to_owned())
-        .spawn(move || ControlPlane::new(plane_config, database))
-    {
-        Ok(initializer) => initializer,
+    let plane = match ControlPlane::new(config.clone(), database) {
+        Ok(plane) => plane,
         Err(error) => {
-            eprintln!("daemon initialization thread failed: {error}");
-            return ExitCode::from(1);
-        }
-    };
-    let plane = match initializer.join() {
-        Ok(Ok(plane)) => plane,
-        Ok(Err(error)) => {
             eprintln!("daemon initialization failed: {error}");
-            return ExitCode::from(1);
-        }
-        Err(_) => {
-            eprintln!("daemon initialization thread panicked");
             return ExitCode::from(1);
         }
     };
@@ -301,23 +286,6 @@ async fn run_daemon(config: &Config) -> ExitCode {
     let telegram_service = plane.telegram().clone();
     let telegram = telegram_service.start();
     let _ = telegram_service.enqueue_event(&TelegramEvent::new("coordinator.started"));
-    let _ = plane
-        .events()
-        .publish(devcoordinator2_control::events::NewEvent {
-            occurred_at: time::OffsetDateTime::now_utc()
-                .format(&time::format_description::well_known::Rfc3339)
-                .expect("RFC 3339 timestamp"),
-            event: devcoordinator2_api::results::OwnedEvent::Other(
-                devcoordinator2_api::results::OtherOwnedEvent {
-                    kind: "coordinator.started".to_owned(),
-                    repository_id: None,
-                    deployment_id: None,
-                    subject_kind: "coordinator".to_owned(),
-                    subject_id: "daemon".to_owned(),
-                },
-            ),
-            dedupe_key: None,
-        });
     let daemon_socket = config.socket_path.clone();
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let signal_shutdown = shutdown_tx.clone();

@@ -25,7 +25,6 @@ use crate::config::Config;
 use crate::daemon::OperationExecutor;
 use crate::database::{Database, DatabaseError};
 use crate::deployments::Deployments;
-use crate::events::{EventService, NewEvent};
 use crate::health::HealthService;
 use crate::plan::{PlanService, SqliteDeploymentEvidence};
 use crate::platform::{Clock, HostClock};
@@ -108,7 +107,6 @@ pub const FOUNDATION_OPERATIONS: &[&str] = &[
     "telegram.subscribe",
     "telegram.unsubscribe",
     "telegram.list",
-    "event.wait",
     "plan.overview",
     "task.history",
     "task.create",
@@ -138,7 +136,6 @@ pub struct ControlPlane {
     artifacts: TestArtifactService,
     test_evidence: TestEvidenceService,
     deployments: Deployments,
-    events: EventService,
     capacity: CapacityBroker,
     health: HealthService,
     usage: UsageService,
@@ -164,7 +161,6 @@ impl ControlPlane {
         clock: Arc<dyn Clock>,
     ) -> Result<Self, ProtocolError> {
         let access = Access::new(&config, database.clone(), publisher)?;
-        let events = EventService::new(database.clone())?;
         let registry = Registry::with_archive_blockers(database.clone(), ActiveTestArchiveBlocker);
         let deployments = Deployments::with_clock(
             config.clone(),
@@ -210,17 +206,10 @@ impl ControlPlane {
         )?;
         let telegram = TelegramService::from_config(&config, database.clone());
         let alert_telegram = telegram.clone();
-        let alert_events = events.clone();
-        let alert_clock = Arc::clone(&clock);
         health
             .sampler()
             .alerts()
             .set_event_sink(Arc::new(move |event: AlertEvent| {
-                let _ = alert_events.publish(NewEvent {
-                    occurred_at: event_timestamp(alert_clock.as_ref()),
-                    dedupe_key: None,
-                    event: owned_alert_event(&event),
-                });
                 let notification = TelegramEvent::new(event.kind)
                     .with("alert_key", event.alert_key)
                     .with("alert_kind", event.alert_kind)
@@ -232,24 +221,8 @@ impl ControlPlane {
             }));
         let test_telegram = telegram.clone();
         let test_sampler = health.sampler().clone();
-        let test_events = events.clone();
-        let test_clock = Arc::clone(&clock);
         tests.set_event_sink(Arc::new(move |event: TestLifecycleEvent| {
             test_sampler.request_storage();
-            let _ = test_events.publish(NewEvent {
-                occurred_at: event_timestamp(test_clock.as_ref()),
-                dedupe_key: Some(format!("test:{}:{}", event.run_id, event.kind)),
-                event: results::OwnedEvent::Test(results::TestOwnedEvent {
-                    kind: event.kind.to_owned(),
-                    run_id: event.run_id.clone(),
-                    test: event.test.clone(),
-                    status: event.status.clone(),
-                    exit_code: event.exit_code,
-                    repository_id: event.repository_id.clone(),
-                    worktree_id: event.worktree_id.clone(),
-                    duration_seconds: event.duration_seconds,
-                }),
-            });
             let status = serde_json::to_value(event.status).unwrap_or(Value::Null);
             let notification = TelegramEvent::new(event.kind)
                 .with("run_id", event.run_id)
@@ -274,7 +247,6 @@ impl ControlPlane {
             artifacts,
             test_evidence,
             deployments,
-            events,
             capacity,
             health,
             usage,
@@ -318,10 +290,6 @@ impl ControlPlane {
 
     pub fn test_evidence(&self) -> &TestEvidenceService {
         &self.test_evidence
-    }
-
-    pub fn events(&self) -> &EventService {
-        &self.events
     }
 
     pub fn recover_tests(&self) -> Result<(), ProtocolError> {
@@ -403,18 +371,6 @@ impl ControlPlane {
                     self.registry
                         .register(Path::new(&params.path), caller.uid, caller.gid)?;
                 self.health.sampler().request_storage();
-                if result.registered {
-                    self.publish_owned(
-                        results::OwnedEvent::Other(results::OtherOwnedEvent {
-                            kind: "repository.registered".to_owned(),
-                            repository_id: Some(result.repository_id.clone()),
-                            deployment_id: None,
-                            subject_kind: "repository".to_owned(),
-                            subject_id: result.repository_id.clone(),
-                        }),
-                        None,
-                    );
-                }
                 encode(result)
             }
             "repository.list" => {
@@ -431,40 +387,19 @@ impl ControlPlane {
             }
             "repository.archive" => {
                 let params: params::ArchiveRepository = decode(params)?;
-                let result = self.registry.archive(
+                encode(self.registry.archive(
                     &params.repository_id,
                     &params.merged_into_repository_id,
                     &params.note,
                     caller.uid,
-                )?;
-                self.publish_owned(
-                    results::OwnedEvent::Other(results::OtherOwnedEvent {
-                        kind: "repository.archived".to_owned(),
-                        repository_id: Some(result.repository_id.clone()),
-                        deployment_id: None,
-                        subject_kind: "repository".to_owned(),
-                        subject_id: result.repository_id.clone(),
-                    }),
-                    None,
-                );
-                encode(result)
+                )?)
             }
             "repository.unarchive" => {
                 let params: params::UnarchiveRepository = decode(params)?;
-                let result =
+                encode(
                     self.registry
-                        .unarchive(&params.repository_id, &params.note, caller.uid)?;
-                self.publish_owned(
-                    results::OwnedEvent::Other(results::OtherOwnedEvent {
-                        kind: "repository.unarchived".to_owned(),
-                        repository_id: Some(result.repository_id.clone()),
-                        deployment_id: None,
-                        subject_kind: "repository".to_owned(),
-                        subject_id: result.repository_id.clone(),
-                    }),
-                    None,
-                );
-                encode(result)
+                        .unarchive(&params.repository_id, &params.note, caller.uid)?,
+                )
             }
             "deployment.list" => encode(self.deployments.list(decode(params)?, caller)?),
             "deployment.status" => {
@@ -577,112 +512,21 @@ impl ControlPlane {
             }
             "test.evidence.get" => encode(self.test_evidence.get(decode(params)?, caller)?),
             "test.evidence.image" => encode(self.test_evidence.image(decode(params)?, caller)?),
-            "test.evidence.feedback.create" => {
-                let params: params::CreateFeedback = decode(params)?;
-                let repository = self
-                    .registry
-                    .repository_status(Path::new(&params.path), Some((caller.uid, caller.gid)))?;
-                let result = self.test_evidence.create_feedback(params, caller)?;
-                self.publish_feedback(
-                    "feedback.created",
-                    &repository.repository_id,
-                    &result.feedback,
-                    result
-                        .feedback
-                        .comments
-                        .last()
-                        .map(|comment| comment.comment_id.clone()),
-                );
-                self.publish_planning(
-                    "task.created",
-                    &repository.repository_id,
-                    "task",
-                    &result.task_id,
-                    enum_text(&result.feedback.task_status),
-                );
-                encode(result)
-            }
+            "test.evidence.feedback.create" => encode(
+                self.test_evidence
+                    .create_feedback(decode(params)?, caller)?,
+            ),
             "test.evidence.feedback.reply" => {
-                let params: params::FeedbackReply = decode(params)?;
-                let repository = self
-                    .registry
-                    .repository_status(Path::new(&params.path), Some((caller.uid, caller.gid)))?;
-                let result = self.test_evidence.reply(params, caller)?;
-                self.publish_feedback(
-                    "feedback.replied",
-                    &repository.repository_id,
-                    &result.feedback,
-                    result
-                        .feedback
-                        .comments
-                        .last()
-                        .map(|comment| comment.comment_id.clone()),
-                );
-                encode(result)
+                encode(self.test_evidence.reply(decode(params)?, caller)?)
             }
             "test.evidence.feedback.edit" => {
-                let params: params::FeedbackEdit = decode(params)?;
-                let comment_id = params.comment_id.clone();
-                let repository = self
-                    .registry
-                    .repository_status(Path::new(&params.path), Some((caller.uid, caller.gid)))?;
-                let result = self.test_evidence.edit(params, caller)?;
-                self.publish_feedback(
-                    "feedback.edited",
-                    &repository.repository_id,
-                    &result.feedback,
-                    Some(comment_id),
-                );
-                self.publish_planning(
-                    "task.updated",
-                    &repository.repository_id,
-                    "task",
-                    &result.feedback.task_id,
-                    enum_text(&result.feedback.task_status),
-                );
-                encode(result)
+                encode(self.test_evidence.edit(decode(params)?, caller)?)
             }
             "test.evidence.feedback.state" => {
-                let params: params::FeedbackStateChange = decode(params)?;
-                let repository = self
-                    .registry
-                    .repository_status(Path::new(&params.path), Some((caller.uid, caller.gid)))?;
-                let result = self.test_evidence.set_state(params, caller)?;
-                self.publish_feedback(
-                    "feedback.state_changed",
-                    &repository.repository_id,
-                    &result.feedback,
-                    None,
-                );
-                self.publish_planning(
-                    "task.updated",
-                    &repository.repository_id,
-                    "task",
-                    &result.feedback.task_id,
-                    enum_text(&result.feedback.task_status),
-                );
-                encode(result)
+                encode(self.test_evidence.set_state(decode(params)?, caller)?)
             }
             "test.evidence.feedback.delete" => {
-                let params: params::FeedbackDelete = decode(params)?;
-                let repository = self
-                    .registry
-                    .repository_status(Path::new(&params.path), Some((caller.uid, caller.gid)))?;
-                let result = self.test_evidence.delete(params, caller)?;
-                self.publish_feedback(
-                    "feedback.deleted",
-                    &repository.repository_id,
-                    &result.feedback,
-                    None,
-                );
-                self.publish_planning(
-                    "task.updated",
-                    &repository.repository_id,
-                    "task",
-                    &result.feedback.task_id,
-                    enum_text(&result.feedback.task_status),
-                );
-                encode(result)
+                encode(self.test_evidence.delete(decode(params)?, caller)?)
             }
             "test.log.catalog" => {
                 let params: params::LogCatalog = decode(params)?;
@@ -846,29 +690,12 @@ impl ControlPlane {
                     caller,
                     false,
                 )?;
-                let result =
+                encode(
                     self.plan
-                        .create_task(&repository.repository_id, params, &actor, &now)?;
-                self.publish_planning(
-                    "task.created",
-                    &result.repository_id,
-                    "task",
-                    &result.task_id,
-                    enum_text(&result.status),
-                );
-                encode(result)
+                        .create_task(&repository.repository_id, params, &actor, &now)?,
+                )
             }
-            "task.update" => {
-                let result = self.plan.update_task(decode(params)?, &actor, &now)?;
-                self.publish_planning(
-                    "task.updated",
-                    &result.repository_id,
-                    "task",
-                    &result.task_id,
-                    enum_text(&result.status),
-                );
-                encode(result)
-            }
+            "task.update" => encode(self.plan.update_task(decode(params)?, &actor, &now)?),
             "release.create" => {
                 let params: params::ReleaseCreate = decode(params)?;
                 let repository = self.resolve_repository(
@@ -877,31 +704,12 @@ impl ControlPlane {
                     caller,
                     false,
                 )?;
-                let result =
+                encode(
                     self.plan
-                        .create_release(&repository.repository_id, params, &actor, &now)?;
-                self.publish_planning(
-                    "release.created",
-                    &repository.repository_id,
-                    "release",
-                    &result.release_id,
-                    enum_text(&result.status),
-                );
-                encode(result)
+                        .create_release(&repository.repository_id, params, &actor, &now)?,
+                )
             }
-            "release.update" => {
-                let result = self.plan.update_release(decode(params)?, &actor, &now)?;
-                if let Some(repository_id) = &result.repository_id {
-                    self.publish_planning(
-                        "release.updated",
-                        repository_id,
-                        "release",
-                        &result.release_id,
-                        enum_text(&result.status),
-                    );
-                }
-                encode(result)
-            }
+            "release.update" => encode(self.plan.update_release(decode(params)?, &actor, &now)?),
             "release.request" => {
                 let params: params::ReleaseRequest = decode(params)?;
                 let repository = self.resolve_repository(
@@ -913,37 +721,20 @@ impl ControlPlane {
                 let result =
                     self.plan
                         .request_release(&repository.repository_id, params, &actor, &now)?;
-                self.publish_planning(
-                    "release.requested",
-                    &repository.repository_id,
-                    "release",
-                    &result.release_id,
-                    enum_text(&result.status),
-                );
                 self.notify(
                     TelegramEvent::new("release.requested")
                         .with("repository_id", result.repository_id.clone())
                         .with("repository_name", repository.display_name)
-                        .with("name", result.name.clone())
-                        .with("release_id", result.release_id.clone()),
+                        .with("name", result.name.clone()),
                 );
                 encode(result)
             }
             "release.deliver" => {
                 let params: params::ReleaseDeliver = decode(params)?;
-                let release_id = params.release_id.clone();
-                let (repository_id, name) = self.release_event_identity(&release_id)?;
+                let (repository_id, name) = self.release_event_identity(&params.release_id)?;
                 let result = self.plan.deliver_release(params, &actor, &now)?;
-                self.publish_planning(
-                    "release.delivered",
-                    &repository_id,
-                    "release",
-                    &release_id,
-                    enum_text(&result.status),
-                );
                 let mut event = TelegramEvent::new("release.delivered")
                     .with("repository_id", repository_id)
-                    .with("release_id", release_id)
                     .with("name", name)
                     .with("port", result.port)
                     .with("dirty", result.dirty);
@@ -984,17 +775,12 @@ impl ControlPlane {
                     caller,
                     false,
                 )?;
-                let result =
-                    self.plan
-                        .record_decision(&repository.repository_id, params, &actor, &now)?;
-                self.publish_planning(
-                    "decision.recorded",
+                encode(self.plan.record_decision(
                     &repository.repository_id,
-                    "decision",
-                    &result.decision_id,
-                    None,
-                );
-                encode(result)
+                    params,
+                    &actor,
+                    &now,
+                )?)
             }
             "decision.summarize" => {
                 let params: params::DecisionSummarize = decode(params)?;
@@ -1004,20 +790,12 @@ impl ControlPlane {
                     caller,
                     false,
                 )?;
-                let result = self.plan.summarize_decisions(
+                encode(self.plan.summarize_decisions(
                     &repository.repository_id,
                     params,
                     &actor,
                     &now,
-                )?;
-                self.publish_planning(
-                    "decision.summarized",
-                    &repository.repository_id,
-                    "decision_summary",
-                    &result.covers_through_seq.to_string(),
-                    None,
-                );
-                encode(result)
+                )?)
             }
             "bug.report" => {
                 let params: params::BugReport = decode(params)?;
@@ -1255,60 +1033,7 @@ impl ControlPlane {
     }
 
     fn notify(&self, event: TelegramEvent) {
-        if let Some(owned) = owned_notification(&event) {
-            self.publish_owned(owned, None);
-        }
         let _ = self.telegram.enqueue_event(&event);
-    }
-
-    fn publish_owned(&self, event: results::OwnedEvent, dedupe_key: Option<String>) {
-        if let Ok(occurred_at) = self.timestamp() {
-            let _ = self.events.publish(NewEvent {
-                occurred_at,
-                event,
-                dedupe_key,
-            });
-        }
-    }
-
-    fn publish_planning(
-        &self,
-        kind: &str,
-        repository_id: &str,
-        subject_kind: &str,
-        subject_id: &str,
-        status: Option<String>,
-    ) {
-        self.publish_owned(
-            results::OwnedEvent::Planning(results::PlanningOwnedEvent {
-                kind: kind.to_owned(),
-                repository_id: repository_id.to_owned(),
-                subject_kind: subject_kind.to_owned(),
-                subject_id: subject_id.to_owned(),
-                status,
-            }),
-            None,
-        );
-    }
-
-    fn publish_feedback(
-        &self,
-        kind: &str,
-        repository_id: &str,
-        feedback: &results::Feedback,
-        comment_id: Option<String>,
-    ) {
-        self.publish_owned(
-            results::OwnedEvent::Feedback(results::FeedbackOwnedEvent {
-                kind: kind.to_owned(),
-                repository_id: repository_id.to_owned(),
-                feedback_id: feedback.feedback_id.clone(),
-                task_id: feedback.task_id.clone(),
-                comment_id,
-                state: Some(feedback.state.clone()),
-            }),
-            None,
-        );
     }
 }
 
@@ -1323,31 +1048,6 @@ impl OperationExecutor for ControlPlane {
         let result = self.dispatch_authorized(operation, authorization.params.clone(), caller)?;
         authorization.apply_result(result)
     }
-
-    fn defer(
-        &self,
-        operation: &str,
-        params: Value,
-        caller: &Caller,
-    ) -> Option<Result<crate::daemon::DeferredOperation, ProtocolError>> {
-        if operation != "event.wait" {
-            return None;
-        }
-        Some((|| {
-            let authorization = self.access.authorize(operation, &params, caller)?;
-            let request: params::EventWait = decode(authorization.params)?;
-            let access = self.access.clone();
-            let wait_caller = caller.clone();
-            let subscription = self.events.subscribe_with_visibility(
-                request,
-                Arc::new(move || access.event_visibility(&wait_caller)),
-            )?;
-            Ok(
-                Box::pin(async move { encode(subscription.receive().await?) })
-                    as crate::daemon::DeferredOperation,
-            )
-        })())
-    }
 }
 
 struct RepositoryIdentity {
@@ -1360,19 +1060,6 @@ fn decode<T: DeserializeOwned>(params: Value) -> Result<T, ProtocolError> {
         ProtocolError::new(ErrorCode::ParamsInvalid, "operation parameters are invalid")
             .with_detail(error.to_string())
     })
-}
-
-fn event_timestamp(clock: &dyn Clock) -> String {
-    clock
-        .now_utc()
-        .format(TIMESTAMP_FORMAT)
-        .expect("static event timestamp format")
-}
-
-fn enum_text(value: &impl Serialize) -> Option<String> {
-    serde_json::to_value(value)
-        .ok()
-        .and_then(|value| value.as_str().map(str::to_owned))
 }
 
 fn encode<T: Serialize>(result: T) -> Result<Value, ProtocolError> {
@@ -1403,71 +1090,6 @@ fn deployment_event(
         .with("domain", result.domain.clone())
 }
 
-fn owned_alert_event(event: &AlertEvent) -> results::OwnedEvent {
-    results::OwnedEvent::Health(results::HealthOwnedEvent {
-        kind: event.kind.to_owned(),
-        repository_id: (event.subject_kind == "repository").then(|| event.subject_id.clone()),
-        deployment_id: (event.subject_kind == "deployment").then(|| event.subject_id.clone()),
-        subject_kind: event.subject_kind.clone(),
-        subject_id: event.subject_id.clone(),
-        severity: event.severity.clone(),
-    })
-}
-
-fn owned_notification(event: &TelegramEvent) -> Option<results::OwnedEvent> {
-    let repository_id = event
-        .fields
-        .get("repository_id")
-        .and_then(Value::as_str)
-        .map(str::to_owned);
-    let deployment_id = event
-        .fields
-        .get("deployment_id")
-        .and_then(Value::as_str)
-        .map(str::to_owned);
-    if event.kind.starts_with("deployment.")
-        || event.kind.starts_with("preview.")
-        || event.kind.starts_with("component.")
-    {
-        return deployment_id.map(|deployment_id| {
-            results::OwnedEvent::Deployment(results::DeploymentOwnedEvent {
-                kind: event.kind.clone(),
-                repository_id,
-                deployment_id,
-                component: event
-                    .fields
-                    .get("component")
-                    .and_then(Value::as_str)
-                    .map(str::to_owned),
-                state: event
-                    .fields
-                    .get("state")
-                    .and_then(Value::as_str)
-                    .map(str::to_owned),
-            })
-        });
-    }
-    let (subject_kind, subject_id) = if event.kind.starts_with("user.") {
-        ("access", "users".to_owned())
-    } else if event.kind.starts_with("grant.") {
-        (
-            "access",
-            deployment_id.clone().unwrap_or_else(|| "grants".to_owned()),
-        )
-    } else if event.kind.starts_with("bug.") {
-        ("bug", "registry".to_owned())
-    } else {
-        return None;
-    };
-    Some(results::OwnedEvent::Other(results::OtherOwnedEvent {
-        kind: event.kind.clone(),
-        repository_id,
-        deployment_id,
-        subject_kind: subject_kind.to_owned(),
-        subject_id,
-    }))
-}
-
 fn bug_error(error: bugs::BugError) -> ProtocolError {
     ProtocolError::new(ErrorCode::ParamsInvalid, error.to_string())
 }
@@ -1483,7 +1105,6 @@ fn database_error(error: DatabaseError) -> ProtocolError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::events::EventVisibility;
     use devcoordinator2_api::params::{
         AccessRole, InvitationGrant, InviteUser, TaskKind, TaskStatus,
     };
@@ -1535,7 +1156,7 @@ mod tests {
     }
 
     #[test]
-    fn composed_dispatch_authorizes_persists_and_publishes_typed_planning_results() {
+    fn composed_dispatch_authorizes_and_persists_typed_planning_results() {
         let temporary = tempdir().expect("tempdir");
         let database = Database::open(temporary.path().join("authority.sqlite3")).expect("db");
         database
@@ -1567,33 +1188,6 @@ mod tests {
             .expect("task create");
         assert_eq!(created["status"], serde_json::json!(TaskStatus::Planned));
         assert_eq!(created["repository_id"], "r1111111111111111");
-        let event = plane
-            .events
-            .subscribe(
-                params::EventWait {
-                    cursor: Some(0),
-                    filters: vec![params::EventFilter {
-                        filter_id: "planning".into(),
-                        categories: vec![params::EventCategory::Planning],
-                        kinds: vec!["task.created".into()],
-                        repository_ids: vec!["r1111111111111111".into()],
-                        deployment_ids: Vec::new(),
-                        deadline_at: None,
-                    }],
-                    limit: 100,
-                },
-                EventVisibility::unrestricted(),
-            )
-            .expect("event subscription")
-            .blocking_receive()
-            .expect("planning event");
-        assert_eq!(event.events.len(), 1);
-        assert_eq!(event.events[0].filter_ids, ["planning"]);
-        assert!(matches!(
-            &event.events[0].event.event,
-            results::OwnedEvent::Planning(event)
-                if event.subject_id == created["task_id"].as_str().unwrap()
-        ));
         let overview = plane
             .execute(
                 "plan.overview",
@@ -1624,58 +1218,6 @@ mod tests {
             .map(|operation| operation.name)
             .collect::<HashSet<_>>();
         assert_eq!(implemented, registered);
-    }
-
-    #[test]
-    fn notification_projection_keeps_only_typed_redacted_event_fields() {
-        let access = TelegramEvent::new("user.invited").with("email", "private@example.test");
-        let owned = owned_notification(&access).expect("access event");
-        let encoded = serde_json::to_string(&owned).unwrap();
-        assert!(!encoded.contains("private@example.test"));
-        assert!(matches!(
-            owned,
-            results::OwnedEvent::Other(results::OtherOwnedEvent {
-                subject_kind,
-                subject_id,
-                ..
-            }) if subject_kind == "access" && subject_id == "users"
-        ));
-
-        let health = owned_alert_event(&AlertEvent {
-            kind: "alert.opened",
-            alert_key: "private-alert-key".into(),
-            alert_kind: "cpu".into(),
-            subject_kind: "deployment".into(),
-            subject_id: "d1111111111111111".into(),
-            severity: Some("warning".into()),
-            message: "private diagnostic prose".into(),
-        });
-        let encoded = serde_json::to_string(&health).unwrap();
-        assert!(!encoded.contains("private-alert-key"));
-        assert!(!encoded.contains("private diagnostic prose"));
-        assert!(matches!(
-            health,
-            results::OwnedEvent::Health(results::HealthOwnedEvent {
-                deployment_id,
-                severity,
-                ..
-            }) if deployment_id.as_deref() == Some("d1111111111111111")
-                && severity.as_deref() == Some("warning")
-        ));
-
-        let deployment = TelegramEvent::new("deployment.restarted")
-            .with("repository_id", "r1111111111111111")
-            .with("deployment_id", "d1111111111111111")
-            .with("component", "web")
-            .with("domain", "private.example.test");
-        let owned = owned_notification(&deployment).expect("deployment event");
-        let encoded = serde_json::to_string(&owned).unwrap();
-        assert!(!encoded.contains("private.example.test"));
-        assert!(matches!(
-            owned,
-            results::OwnedEvent::Deployment(results::DeploymentOwnedEvent { component, .. })
-                if component.as_deref() == Some("web")
-        ));
     }
 
     #[test]

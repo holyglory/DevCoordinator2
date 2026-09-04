@@ -18,18 +18,13 @@ the domain operations.
   the exact configured edge uid may add a signed-in public e-mail identity;
   every other body identity assertion is rejected.
 - One connection carries exactly one request and one response, then closes.
-  UTF-8 JSON, single line, terminated by `\n`. `event.wait` may remain open
-  until an authorized event or filter deadline is due; its caller keeps the
-  write side open so disconnect can cancel the subscription.
+  UTF-8 JSON, single line, terminated by `\n`.
 - Once the daemon accepts and begins a mutation, client disconnect or a lost
   response does not cancel it. The daemon completes the observable operation;
   the client re-queries status. Deployment mutations remain mutually exclusive
   and conflicting actions return `busy` while the original operation runs.
-- Limits: request ≤ 65536 bytes, response ≤ 262144 bytes. Server request-read
-  timeout is 5 s and response-write timeout is 10 s. Ordinary clients use a
-  10-second response deadline; `event.wait` has no client response deadline
-  beyond its per-filter deadlines and is still one bounded response, never a
-  stream, session, or pipeline.
+- Limits: request ≤ 65536 bytes, response ≤ 262144 bytes. Server read
+  timeout 5 s, write timeout 10 s. No streaming, sessions, or pipelining.
 
 ## Request
 
@@ -81,8 +76,6 @@ Stable snake_case, terminal (no retry/queue semantics):
 | `request_too_large` | request frame over 64 KiB |
 | `operation_unknown` | operation is not in the exhaustive registry |
 | `params_invalid` | parameters fail the generated operation schema |
-| `cursor_stale` | event/log cursor is older than retained history or ahead of its journal |
-| `busy` | bounded wait or mutation admission is full |
 | `repository_not_found` | path is not inside a registered/registerable Git repository |
 | `repository_config_invalid` | `.devcoordinator.toml` fails validation |
 | `repository_archived` | repository is historical; response names its active replacement when present |
@@ -115,6 +108,3 @@ Stable snake_case, terminal (no retry/queue semantics):
 - IDs are opaque strings with stable one-letter prefixes
   (`r` repository, `w` worktree, `t` test run, `d` deployment,
   `p` plan task, `v` release, `n` decision — see `database-ledger.md`).
-- `event.wait` returns only typed, bounded, authorization-filtered event
-  metadata or heartbeat-due entries. It never returns raw logs, secrets,
-  private paths, agent/task orchestration state, or an instruction to act.

@@ -1,6 +1,4 @@
-use std::future::Future;
 use std::path::Path;
-use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -35,19 +33,7 @@ pub trait OperationExecutor: Send + Sync + 'static {
         params: Value,
         caller: &Caller,
     ) -> Result<Value, ProtocolError>;
-
-    fn defer(
-        &self,
-        _operation: &str,
-        _params: Value,
-        _caller: &Caller,
-    ) -> Option<Result<DeferredOperation, ProtocolError>> {
-        None
-    }
 }
-
-pub type DeferredOperation =
-    Pin<Box<dyn Future<Output = Result<Value, ProtocolError>> + Send + 'static>>;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PeerCredentials {
@@ -128,21 +114,12 @@ impl App {
             Ok(caller) => caller,
             Err(error) => return ResponseEnvelope::failure(id, error),
         };
-        let operation = request.operation;
-        let params = request.params;
-        if let Some(deferred) = self.executor.defer(&operation, params.clone(), &caller) {
-            return response_from_result(
-                id,
-                match deferred {
-                    Ok(deferred) => deferred.await,
-                    Err(error) => Err(error),
-                },
-            );
-        }
         let executor = Arc::clone(&self.executor);
-        let result =
-            tokio::task::spawn_blocking(move || executor.execute(&operation, params, &caller))
-                .await;
+        let operation = request.operation;
+        let result = tokio::task::spawn_blocking(move || {
+            executor.execute(&operation, request.params, &caller)
+        })
+        .await;
         match result {
             Ok(Ok(data)) => ResponseEnvelope::success(id.clone(), data)
                 .unwrap_or_else(|error| ResponseEnvelope::failure(id, error)),
@@ -153,31 +130,6 @@ impl App {
                     .with_detail(error.to_string()),
             ),
         }
-    }
-
-    fn deferred(
-        &self,
-        request: &RequestEnvelope,
-        peer: PeerCredentials,
-    ) -> Result<Option<DeferredOperation>, ProtocolError> {
-        let caller = Caller::from_client(
-            peer.pid,
-            peer.uid,
-            peer.gid,
-            request.client.clone(),
-            self.edge_uid,
-        )?;
-        self.executor
-            .defer(&request.operation, request.params.clone(), &caller)
-            .transpose()
-    }
-}
-
-fn response_from_result(id: String, result: Result<Value, ProtocolError>) -> ResponseEnvelope {
-    match result {
-        Ok(data) => ResponseEnvelope::success(id.clone(), data)
-            .unwrap_or_else(|error| ResponseEnvelope::failure(id, error)),
-        Err(error) => ResponseEnvelope::failure(id, error),
     }
 }
 
@@ -279,33 +231,7 @@ async fn serve_connection(mut stream: UnixStream, app: Arc<App>) -> std::io::Res
         )
     } else {
         match parse_request(&raw) {
-            Ok(request) => {
-                let id = request.id.clone();
-                match app.deferred(&request, peer) {
-                    Ok(Some(deferred)) => {
-                        let mut unexpected = [0_u8; 1];
-                        let result = tokio::select! {
-                            result = deferred => Some(response_from_result(id.clone(), result)),
-                            read = stream.read(&mut unexpected) => match read {
-                                Ok(0) | Err(_) => None,
-                                Ok(_) => Some(ResponseEnvelope::failure(
-                                    id.clone(),
-                                    ProtocolError::new(
-                                        ErrorCode::ProtocolInvalid,
-                                        "event wait connection sent data after its request frame",
-                                    ),
-                                )),
-                            },
-                        };
-                        let Some(response) = result else {
-                            return Ok(());
-                        };
-                        response
-                    }
-                    Ok(None) => app.dispatch(request, peer).await,
-                    Err(error) => ResponseEnvelope::failure(id, error),
-                }
-            }
+            Ok(request) => app.dispatch(request, peer).await,
             Err(error) => ResponseEnvelope::failure(id, error),
         }
     };
@@ -348,94 +274,7 @@ fn set_socket_mode(path: &Path) -> std::io::Result<()> {
 mod tests {
     use super::*;
     use devcoordinator2_api::{ClientContext, ResponseEnvelope};
-    use std::sync::Mutex;
     use tempfile::tempdir;
-
-    struct WaitingExecutor {
-        started: Arc<Mutex<Option<tokio::sync::oneshot::Sender<()>>>>,
-        dropped: Arc<Mutex<Option<tokio::sync::oneshot::Sender<()>>>>,
-    }
-
-    struct EventExecutor {
-        events: crate::events::EventService,
-    }
-
-    impl OperationExecutor for EventExecutor {
-        fn execute(
-            &self,
-            _operation: &str,
-            _params: Value,
-            _caller: &Caller,
-        ) -> Result<Value, ProtocolError> {
-            unreachable!("event fixture only serves deferred waits")
-        }
-
-        fn defer(
-            &self,
-            operation: &str,
-            params: Value,
-            _caller: &Caller,
-        ) -> Option<Result<DeferredOperation, ProtocolError>> {
-            if operation != "event.wait" {
-                return None;
-            }
-            Some((|| {
-                let request = serde_json::from_value(params).map_err(|error| {
-                    ProtocolError::new(ErrorCode::ParamsInvalid, "invalid event wait")
-                        .with_detail(error.to_string())
-                })?;
-                let subscription = self
-                    .events
-                    .subscribe(request, crate::events::EventVisibility::unrestricted())?;
-                Ok(Box::pin(async move {
-                    serde_json::to_value(subscription.receive().await?).map_err(|error| {
-                        ProtocolError::new(ErrorCode::InternalError, "cannot encode event wait")
-                            .with_detail(error.to_string())
-                    })
-                }) as DeferredOperation)
-            })())
-        }
-    }
-
-    struct DropSignal(Option<tokio::sync::oneshot::Sender<()>>);
-
-    impl Drop for DropSignal {
-        fn drop(&mut self) {
-            if let Some(sender) = self.0.take() {
-                let _ = sender.send(());
-            }
-        }
-    }
-
-    impl OperationExecutor for WaitingExecutor {
-        fn execute(
-            &self,
-            _operation: &str,
-            _params: Value,
-            _caller: &Caller,
-        ) -> Result<Value, ProtocolError> {
-            unreachable!("wait operations are deferred")
-        }
-
-        fn defer(
-            &self,
-            operation: &str,
-            _params: Value,
-            _caller: &Caller,
-        ) -> Option<Result<DeferredOperation, ProtocolError>> {
-            if operation != "event.wait" {
-                return None;
-            }
-            if let Some(sender) = self.started.lock().unwrap().take() {
-                let _ = sender.send(());
-            }
-            let signal = self.dropped.lock().unwrap().take();
-            Some(Ok(Box::pin(async move {
-                let _signal = DropSignal(signal);
-                std::future::pending::<Result<Value, ProtocolError>>().await
-            })))
-        }
-    }
 
     #[tokio::test]
     async fn ping_crosses_real_unix_socket() {
@@ -478,115 +317,5 @@ mod tests {
         ));
         shutdown_tx.send(true).expect("shutdown");
         server.await.expect("server task").expect("server result");
-    }
-
-    #[tokio::test]
-    async fn disconnect_cancels_a_deferred_event_wait() {
-        let temporary = tempdir().expect("tempdir");
-        let socket = temporary.path().join("daemon.sock");
-        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
-        let (dropped_tx, dropped_rx) = tokio::sync::oneshot::channel();
-        let app = Arc::new(App::with_executor(
-            None,
-            Arc::new(WaitingExecutor {
-                started: Arc::new(Mutex::new(Some(started_tx))),
-                dropped: Arc::new(Mutex::new(Some(dropped_tx))),
-            }),
-        ));
-        let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
-        let server_socket = socket.clone();
-        let server =
-            tokio::spawn(
-                async move { serve_with_app(&server_socket, &mut shutdown_rx, app).await },
-            );
-        while !socket.exists() {
-            tokio::task::yield_now().await;
-        }
-        let mut stream = UnixStream::connect(&socket).await.unwrap();
-        stream
-            .write_all(
-                b"{\"protocol\":2,\"id\":\"wait\",\"operation\":\"event.wait\",\"params\":{\"filters\":[{\"filter_id\":\"disconnect\",\"categories\":[\"health\"]}]},\"client\":{}}\n",
-            )
-            .await
-            .unwrap();
-        tokio::time::timeout(Duration::from_secs(2), started_rx)
-            .await
-            .expect("deferred operation start deadline")
-            .expect("start signal");
-        stream.shutdown().await.unwrap();
-        drop(stream);
-        tokio::time::timeout(Duration::from_secs(2), dropped_rx)
-            .await
-            .expect("deferred operation drop deadline")
-            .expect("drop signal");
-        shutdown_tx.send(true).unwrap();
-        server.await.unwrap().unwrap();
-    }
-
-    #[tokio::test]
-    async fn event_wait_crosses_the_real_socket_without_an_event_before_wait_race() {
-        let temporary = tempdir().expect("tempdir");
-        let socket = temporary.path().join("daemon.sock");
-        let database =
-            crate::database::Database::open(temporary.path().join("authority.sqlite3")).unwrap();
-        let events = crate::events::EventService::new(database).unwrap();
-        let app = Arc::new(App::with_executor(
-            None,
-            Arc::new(EventExecutor {
-                events: events.clone(),
-            }),
-        ));
-        let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
-        let server_socket = socket.clone();
-        let server =
-            tokio::spawn(
-                async move { serve_with_app(&server_socket, &mut shutdown_rx, app).await },
-            );
-        while !socket.exists() {
-            tokio::task::yield_now().await;
-        }
-        let wait_socket = socket.clone();
-        let waiting = tokio::spawn(async move {
-            crate::client::call(
-                &wait_socket,
-                "event.wait",
-                serde_json::json!({
-                    "cursor":0,
-                    "filters":[{"filter_id":"health","categories":["health"]}]
-                }),
-                ClientContext::default(),
-            )
-            .await
-        });
-        events
-            .publish(crate::events::NewEvent {
-                occurred_at: "2026-09-04T12:00:00Z".to_owned(),
-                event: devcoordinator2_api::results::OwnedEvent::Health(
-                    devcoordinator2_api::results::HealthOwnedEvent {
-                        kind: "health.changed".to_owned(),
-                        repository_id: None,
-                        deployment_id: None,
-                        subject_kind: "host".to_owned(),
-                        subject_id: "host".to_owned(),
-                        severity: None,
-                    },
-                ),
-                dedupe_key: Some("socket-health".to_owned()),
-            })
-            .unwrap();
-        let response = tokio::time::timeout(Duration::from_secs(2), waiting)
-            .await
-            .expect("socket event wait deadline")
-            .expect("client task")
-            .expect("event response");
-        let ResponseEnvelope::Success { data, .. } = response else {
-            panic!("event wait failed");
-        };
-        let result: devcoordinator2_api::results::EventWaitResult =
-            serde_json::from_value(data).unwrap();
-        assert_eq!(result.events.len(), 1);
-        assert_eq!(result.events[0].filter_ids, ["health"]);
-        shutdown_tx.send(true).unwrap();
-        server.await.unwrap().unwrap();
     }
 }

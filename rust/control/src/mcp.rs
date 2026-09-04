@@ -110,11 +110,10 @@ impl ServerHandler for McpAdapter {
             .client_info()
             .map(|client| client_kind(&client.name))
             .unwrap_or_default();
-        let execution = self.execute(tool, request.arguments.unwrap_or_default(), kind);
-        tokio::select! {
-            result = execution => Ok(result.into()),
-            _ = context.ct.cancelled() => Err(McpError::internal_error("tool request cancelled", None)),
-        }
+        Ok(self
+            .execute(tool, request.arguments.unwrap_or_default(), kind)
+            .await
+            .into())
     }
 }
 
@@ -180,12 +179,11 @@ fn visible_error(error: ProtocolError) -> CallToolResult {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     #[test]
     fn tools_are_deterministic_typed_and_annotated() {
         let tools = McpAdapter::tools();
-        assert_eq!(tools.len(), 54);
+        assert_eq!(tools.len(), 53);
         assert!(tools.windows(2).all(|pair| pair[0].name < pair[1].name));
         for tool in &tools {
             assert!(
@@ -216,62 +214,5 @@ mod tests {
     fn client_names_map_only_to_descriptive_kinds() {
         assert_eq!(client_kind("OpenAI Codex"), ClientKind::Codex);
         assert_eq!(client_kind("unknown host"), ClientKind::Other);
-    }
-
-    #[tokio::test]
-    async fn event_wait_mcp_returns_matching_structured_and_text_results() {
-        let temporary = tempfile::tempdir().unwrap();
-        let socket = temporary.path().join("daemon.sock");
-        let listener = tokio::net::UnixListener::bind(&socket).unwrap();
-        let server = tokio::spawn(async move {
-            let (mut stream, _) = listener.accept().await.unwrap();
-            let mut raw = Vec::new();
-            loop {
-                let mut chunk = [0_u8; 512];
-                let read = stream.read(&mut chunk).await.unwrap();
-                assert!(read > 0);
-                raw.extend_from_slice(&chunk[..read]);
-                if raw.ends_with(b"\n") {
-                    break;
-                }
-            }
-            let request: devcoordinator2_api::RequestEnvelope =
-                serde_json::from_slice(&raw).unwrap();
-            assert_eq!(request.operation, "event.wait");
-            let response = devcoordinator2_api::ResponseEnvelope::success(
-                request.id,
-                devcoordinator2_api::results::EventWaitResult {
-                    cursor: 7,
-                    events: Vec::new(),
-                    heartbeat_due: vec![devcoordinator2_api::results::HeartbeatDue {
-                        filter_id: "health".to_owned(),
-                        deadline_at: "2026-09-05T00:00:00Z".to_owned(),
-                    }],
-                },
-            )
-            .unwrap();
-            stream
-                .write_all(&devcoordinator2_api::encode_response(&response))
-                .await
-                .unwrap();
-            stream.shutdown().await.unwrap();
-        });
-        let adapter = McpAdapter::new(&socket);
-        let tool = mcp_tool("event_wait").unwrap();
-        let arguments = serde_json::json!({
-            "cursor":6,
-            "filters":[{"filter_id":"health","categories":["health"],"deadline_at":"2026-09-05T00:00:00Z"}]
-        })
-        .as_object()
-        .unwrap()
-        .clone();
-        let result = adapter.execute(tool, arguments, ClientKind::Codex).await;
-        server.await.unwrap();
-        let encoded = serde_json::to_value(result).unwrap();
-        let structured = &encoded["structuredContent"];
-        let text: Value =
-            serde_json::from_str(encoded["content"][0]["text"].as_str().unwrap()).unwrap();
-        assert_eq!(&text, structured);
-        assert_eq!(structured["heartbeat_due"][0]["filter_id"], "health");
     }
 }

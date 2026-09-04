@@ -14,7 +14,7 @@ import { canonicalJson } from '../lib/routes-store.mjs';
 import { startIssuer } from './fixture-issuer.mjs';
 
 const BASE = 'example.test';
-let tmp; let issuer; let upstream; let upstreamPort; let daemonSock; let daemon; let daemonCalls = []; let edge; let port; let pendingWaitHooks;
+let tmp; let issuer; let upstream; let upstreamPort; let daemonSock; let daemon; let daemonCalls = []; let edge; let port;
 
 function document(routes, access, generation) {
   const payload = { generation, published_at: '2026-01-01T00:00:00Z', domain: BASE, routes, access };
@@ -77,11 +77,6 @@ before(async () => {
       const req = JSON.parse(buf); daemonCalls.push(req);
       assert.equal(req.protocol, 2);
       assert.deepEqual(Object.keys(req).sort(), ['client', 'id', 'operation', 'params', 'protocol']);
-      if (req.operation === 'event.wait' && pendingWaitHooks) {
-        socket.once('close', pendingWaitHooks.closed);
-        pendingWaitHooks.received();
-        return;
-      }
       socket.end(`${JSON.stringify({ protocol: 2, id: req.id, ok: true, data: { echoed: req.operation, identity: req.client.identity, params: req.params } })}\n`);
     } });
   });
@@ -190,28 +185,4 @@ test('malformed, stale, or tampered route documents never clear served routes', 
   const lkg = JSON.parse(await fs.readFile(path.join(tmp, 'edge-state', 'routes.last-known-good.json'), 'utf8'));
   assert.equal(lkg.generation, before.generation);
   assert.equal((await get('/healthz')).status, 200);
-});
-
-test('disconnecting a Console event wait closes the daemon subscription', async () => {
-  const session = await signIn();
-  let receivedResolve; let closedResolve;
-  const received = new Promise((resolve) => { receivedResolve = resolve; });
-  const closed = new Promise((resolve) => { closedResolve = resolve; });
-  pendingWaitHooks = { received: receivedResolve, closed: closedResolve };
-  const request = http.request({
-    host: '127.0.0.1', port, path: '/api/v2/event.wait', method: 'POST',
-    headers: { host: `console.${BASE}`, cookie: session, 'content-type': 'application/json' },
-  });
-  request.on('error', () => {});
-  request.end(JSON.stringify({ filters: [{ filter_id: 'health', categories: ['health'] }] }));
-  await Promise.race([
-    received,
-    new Promise((_, reject) => setTimeout(() => reject(new Error('daemon wait was not received')), 1000)),
-  ]);
-  request.destroy();
-  await Promise.race([
-    closed,
-    new Promise((_, reject) => setTimeout(() => reject(new Error('daemon wait socket stayed open')), 1000)),
-  ]);
-  pendingWaitHooks = null;
 });

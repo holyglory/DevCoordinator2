@@ -8,8 +8,6 @@ ever**. Docker/process observations are current projections plus bounded
 samples, not an append-only archive. The planning/decision tables (schema 8)
 are the deliberate exception: the product's first append-only permanent
 history — their rows are never deleted (DC2-2026-08-24-PLANNING-LEDGER).
-The schema-16 owned event journal is a separate bounded notification history,
-not a completion ledger; it retains only the newest 1,024 rows.
 
 Terminal test trend metadata remains repository-local rather than becoming a
 database table: `.devcoordinator/test/history.json` keeps at most 1,000 safe
@@ -160,23 +158,6 @@ normalized overlay, and discussion persist in the authority database.
 | `visual_feedback_comments` | comment_id PK, feedback_id FK, per-thread sequence, current plain body, created/updated/deleted attribution; unique thread sequence | done |
 | `visual_feedback_events` | append-only event_id, feedback/comment identity, event, before/after value, actor, time | done |
 
-## Schema version 16 (bounded owned-state event journal, 2026-09-04)
-
-One shared notification journal assigns global increasing cursors to typed,
-redacted test, deployment, planning, health, feedback, and other owned state
-changes. It is operational history, not permanent completion history: every
-append transaction prunes rows older than the newest 1,024. A source may bind
-one safe `dedupe_key`; replaying that source identity reuses its original
-cursor. Occurrence time is descriptive and never controls cursor ordering.
-
-| Table | Fields | Status |
-|---|---|---|
-| `owned_events` | cursor INTEGER PK AUTOINCREMENT, occurred_at, category, kind, optional repository/deployment identity, typed payload JSON capped at 8 KiB, optional unique dedupe key; indexes on repository/cursor, deployment/cursor, and category/cursor | done |
-
-The version 15→16 upgrade is additive. A failed activation that changed schema
-restores the private pre-activation database backup before starting the prior
-binary; same-schema failures keep intact current data.
-
 ## Reserved ID-prefix namespace
 
 Deterministic opaque TEXT IDs; later phases never migrate existing IDs.
@@ -211,7 +192,6 @@ Deterministic opaque TEXT IDs; later phases never migrate existing IDs.
 | current alerts | 4 | done |
 | users, invitations, deployment grants | 5 | done |
 | Telegram subscriptions + bounded outbox | 6 | done |
-| bounded typed owned-state event journal | 16 | done |
 
 ## Change rules
 

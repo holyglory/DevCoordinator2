@@ -422,16 +422,3 @@ CREATE TABLE IF NOT EXISTS visual_feedback_events (
   at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS visual_feedback_events_thread ON visual_feedback_events(feedback_id,event_id);
-CREATE TABLE IF NOT EXISTS owned_events (
-  cursor INTEGER PRIMARY KEY AUTOINCREMENT,
-  occurred_at TEXT NOT NULL,
-  category TEXT NOT NULL CHECK(category IN ('test','deployment','planning','health','feedback','other')),
-  kind TEXT NOT NULL,
-  repository_id TEXT,
-  deployment_id TEXT,
-  payload_json TEXT NOT NULL CHECK(length(payload_json) <= 8192),
-  dedupe_key TEXT UNIQUE
-);
-CREATE INDEX IF NOT EXISTS owned_events_repository_cursor ON owned_events(repository_id,cursor);
-CREATE INDEX IF NOT EXISTS owned_events_deployment_cursor ON owned_events(deployment_id,cursor);
-CREATE INDEX IF NOT EXISTS owned_events_category_cursor ON owned_events(category,cursor);

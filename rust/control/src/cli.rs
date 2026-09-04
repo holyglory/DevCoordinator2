@@ -84,7 +84,6 @@ impl Cli {
                 action: command.into_action(),
             }),
             Command::Telegram { command } => command.into_invocation(),
-            Command::Event { command } => command.into_invocation(),
             Command::Repository { command } => command.into_invocation(),
             Command::Plan { command } => command.into_invocation(),
             Command::Task { command } => command.into_invocation(),
@@ -194,10 +193,6 @@ enum Command {
     Telegram {
         #[command(subcommand)]
         command: TelegramCommand,
-    },
-    Event {
-        #[command(subcommand)]
-        command: EventCommand,
     },
     Repository {
         #[command(subcommand)]
@@ -885,18 +880,6 @@ enum TelegramCommand {
         chat_id: i64,
         #[arg(long)]
         scope: String,
-    },
-}
-
-#[derive(Debug, Subcommand)]
-enum EventCommand {
-    Wait {
-        #[arg(long)]
-        cursor: Option<u64>,
-        #[arg(long = "filter", required = true)]
-        filters: Vec<String>,
-        #[arg(long, default_value_t = 100)]
-        limit: u16,
     },
 }
 
@@ -1697,38 +1680,6 @@ impl TelegramCommand {
                 "telegram.unsubscribe",
                 json!({"chat_id":chat_id,"scope":scope}),
             ),
-        }
-    }
-}
-
-impl EventCommand {
-    fn into_invocation(self) -> Result<Invocation, CliValidationError> {
-        match self {
-            Self::Wait {
-                cursor,
-                filters,
-                limit,
-            } => {
-                require_range("--limit", u32::from(limit), 1, 100)?;
-                let filters = filters
-                    .into_iter()
-                    .map(|filter| {
-                        serde_json::from_str::<devcoordinator2_api::params::EventFilter>(&filter)
-                            .map_err(|error| invalid(format!("--filter is invalid JSON: {error}")))
-                    })
-                    .collect::<Result<Vec<_>, _>>()?;
-                remote(
-                    "event.wait",
-                    serde_json::to_value(devcoordinator2_api::params::EventWait {
-                        cursor,
-                        filters,
-                        limit,
-                    })
-                    .map_err(|error| {
-                        invalid(format!("event wait parameters are invalid: {error}"))
-                    })?,
-                )
-            }
         }
     }
 }
@@ -2614,17 +2565,6 @@ mod tests {
                 ],
                 "decision.summarize",
             ),
-            (
-                &[
-                    "event",
-                    "wait",
-                    "--cursor",
-                    "42",
-                    "--filter",
-                    r#"{"filter_id":"health","categories":["health"],"deadline_at":"2026-09-05T00:00:00Z"}"#,
-                ],
-                "event.wait",
-            ),
         ];
 
         let mut seen_routes = HashSet::new();
@@ -2748,22 +2688,6 @@ mod tests {
         ]);
         assert_eq!(clear["domain"], Value::Null);
         assert_eq!(clear["public"], false);
-
-        let (_, event_wait) = remote_invocation(&[
-            "event",
-            "wait",
-            "--cursor",
-            "9",
-            "--filter",
-            r#"{"filter_id":"tests","categories":["test"]}"#,
-            "--filter",
-            r#"{"filter_id":"deployments","categories":["deployment"]}"#,
-            "--limit",
-            "25",
-        ]);
-        assert_eq!(event_wait["cursor"], 9);
-        assert_eq!(event_wait["filters"].as_array().unwrap().len(), 2);
-        assert_eq!(event_wait["limit"], 25);
     }
 
     #[test]
@@ -2910,15 +2834,6 @@ mod tests {
                 "relative",
             ],
             vec!["decision", "tail", "/tmp/repo", "-n", "51"],
-            vec![
-                "event",
-                "wait",
-                "--filter",
-                r#"{"filter_id":"health"}"#,
-                "--limit",
-                "0",
-            ],
-            vec!["event", "wait", "--filter", "not-json"],
         ] {
             assert!(invocation(&args).is_err(), "{args:?} should fail locally");
         }

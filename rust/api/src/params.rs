@@ -1012,54 +1012,6 @@ pub struct BugClose {
     pub bug_id: String,
 }
 
-#[derive(Clone, Copy, Debug, Eq, JsonSchema, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum EventCategory {
-    Test,
-    Deployment,
-    Planning,
-    Health,
-    Feedback,
-    Other,
-}
-
-#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct EventFilter {
-    #[schemars(regex(pattern = r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"))]
-    pub filter_id: String,
-    #[serde(default)]
-    #[schemars(length(max = 6))]
-    pub categories: Vec<EventCategory>,
-    #[serde(default)]
-    #[schemars(length(max = 32))]
-    pub kinds: Vec<String>,
-    #[serde(default)]
-    #[schemars(length(max = 32))]
-    pub repository_ids: Vec<String>,
-    #[serde(default)]
-    #[schemars(length(max = 32))]
-    pub deployment_ids: Vec<String>,
-    #[serde(default)]
-    pub deadline_at: Option<String>,
-}
-
-#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct EventWait {
-    #[serde(default)]
-    pub cursor: Option<u64>,
-    #[schemars(length(min = 1, max = 32))]
-    pub filters: Vec<EventFilter>,
-    #[serde(default = "default_event_limit")]
-    #[schemars(range(min = 1, max = 100))]
-    pub limit: u16,
-}
-
-fn default_event_limit() -> u16 {
-    100
-}
-
 /// Used only for private access-guard filtering after public input validation.
 pub type RepositoryAllowlist = BTreeMap<String, bool>;
 

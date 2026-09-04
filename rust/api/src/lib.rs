@@ -1232,15 +1232,6 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         results::TelegramList
     ),
     operation!(
-        "event.wait",
-        "Wait for authorized owned-state events or per-filter heartbeat deadlines.",
-        READ_SELF,
-        Protocol["event wait"],
-        ["event_wait"],
-        params::EventWait,
-        results::EventWaitResult
-    ),
-    operation!(
         "bug.report",
         "Report or count a Coordinator defect while the daemon may be unavailable.",
         APPEND_SELF,
@@ -1560,9 +1551,9 @@ mod tests {
         for tool in mcp_tools() {
             assert!(tools.insert(tool.name), "duplicate MCP tool");
         }
-        assert_eq!(OPERATIONS.len(), 76);
-        assert_eq!(tools.len(), 54);
-        assert_eq!(cli_routes.len(), 65);
+        assert_eq!(OPERATIONS.len(), 75);
+        assert_eq!(tools.len(), 53);
+        assert_eq!(cli_routes.len(), 64);
     }
 
     #[test]

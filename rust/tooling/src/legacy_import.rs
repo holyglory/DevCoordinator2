@@ -1,4 +1,4 @@
-//! Reviewed import of legacy state into the current Coordinator database.
+//! Reviewed import of legacy state into the unchanged schema-15 database.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::{File, OpenOptions};
@@ -888,19 +888,16 @@ fn open_database(path: &Path) -> Result<Connection, String> {
             |row| row.get::<_, String>(0),
         )
         .ok();
-    if version
-        .as_deref()
-        .is_some_and(|version| !matches!(version, "15" | "16"))
-    {
+    if version.as_deref().is_some_and(|version| version != "15") {
         return Err(format!(
-            "legacy import target must use database schema 15 or 16, found {}",
+            "legacy import target must use database schema 15, found {}",
             version.unwrap_or_default()
         ));
     }
     connection.execute_batch(SCHEMA).map_err(sql_error)?;
     connection
         .execute(
-            "INSERT OR REPLACE INTO meta(key,value) VALUES('schema_version','16')",
+            "INSERT OR REPLACE INTO meta(key,value) VALUES('schema_version','15')",
             [],
         )
         .map_err(sql_error)?;

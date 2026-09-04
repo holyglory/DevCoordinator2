@@ -16,8 +16,6 @@ pub async fn call(
     params: Value,
     client: ClientContext,
 ) -> Result<ResponseEnvelope, ProtocolError> {
-    let operation = operation.into();
-    let blocking_wait = operation == "event.wait";
     let mut stream = timeout(Duration::from_secs(5), UnixStream::connect(socket_path))
         .await
         .map_err(|_| {
@@ -33,7 +31,7 @@ pub async fn call(
     let request = RequestEnvelope {
         protocol: PROTOCOL_VERSION,
         id: request_id(),
-        operation,
+        operation: operation.into(),
         params,
         client,
     };
@@ -51,31 +49,26 @@ pub async fn call(
             )
         })?
         .map_err(transport_error)?;
-    if !blocking_wait {
-        timeout(Duration::from_secs(5), stream.shutdown())
-            .await
-            .map_err(|_| {
-                ProtocolError::new(
-                    ErrorCode::DaemonUnavailable,
-                    "daemon request shutdown timed out",
-                )
-            })?
-            .map_err(transport_error)?;
-    }
+    timeout(Duration::from_secs(5), stream.shutdown())
+        .await
+        .map_err(|_| {
+            ProtocolError::new(
+                ErrorCode::DaemonUnavailable,
+                "daemon request shutdown timed out",
+            )
+        })?
+        .map_err(transport_error)?;
 
     let mut response = Vec::new();
-    let mut limited = (&mut stream).take((MAX_RESPONSE_BYTES + 1) as u64);
-    let read = limited.read_to_end(&mut response);
-    if blocking_wait {
-        read.await.map_err(transport_error)?;
-    } else {
-        timeout(Duration::from_secs(10), read)
-            .await
-            .map_err(|_| {
-                ProtocolError::new(ErrorCode::DaemonUnavailable, "daemon response timed out")
-            })?
-            .map_err(transport_error)?;
-    }
+    timeout(
+        Duration::from_secs(10),
+        stream
+            .take((MAX_RESPONSE_BYTES + 1) as u64)
+            .read_to_end(&mut response),
+    )
+    .await
+    .map_err(|_| ProtocolError::new(ErrorCode::DaemonUnavailable, "daemon response timed out"))?
+    .map_err(transport_error)?;
     if response.len() > MAX_RESPONSE_BYTES {
         return Err(ProtocolError::new(
             ErrorCode::ProtocolInvalid,

@@ -28,26 +28,17 @@ function responseEnvelope(value, requestId) {
 }
 
 export function createDaemonClient({ socketPath, connectTimeoutMs = 5000, timeoutMs = 10000 }) {
-  function call(operation, params = {}, identity = null, { signal } = {}) {
+  function call(operation, params = {}, identity = null) {
     return new Promise((resolve, reject) => {
       const socket = net.createConnection(socketPath);
       const chunks = [];
       let bytes = 0;
       let settled = false;
-      const onAbort = () => { socket.destroy(); finish(reject, new Error('daemon request cancelled')); };
-      const finish = (fn, value) => {
-        if (!settled) {
-          settled = true;
-          signal?.removeEventListener('abort', onAbort);
-          fn(value);
-        }
-      };
-      if (signal?.aborted) return onAbort();
-      signal?.addEventListener('abort', onAbort, { once: true });
+      const finish = (fn, value) => { if (!settled) { settled = true; fn(value); } };
       socket.setTimeout(connectTimeoutMs, () => { socket.destroy(); finish(reject, new Error('daemon connect timeout')); });
       socket.on('error', (error) => finish(reject, error));
       socket.on('connect', () => {
-        socket.setTimeout(operation === 'event.wait' ? 0 : timeoutMs, () => { socket.destroy(); finish(reject, new Error('daemon response timeout')); });
+        socket.setTimeout(timeoutMs, () => { socket.destroy(); finish(reject, new Error('daemon response timeout')); });
         const requestId = crypto.randomBytes(6).toString('hex');
         const request = {
           protocol: 2,
@@ -62,8 +53,7 @@ export function createDaemonClient({ socketPath, connectTimeoutMs = 5000, timeou
           return;
         }
         socket.requestId = requestId;
-        if (operation === 'event.wait') socket.write(encoded);
-        else socket.end(encoded);
+        socket.end(encoded);
       });
       socket.on('data', (chunk) => {
         bytes += chunk.length;

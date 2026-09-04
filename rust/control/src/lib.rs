@@ -18,7 +18,6 @@ pub mod deployment_health;
 pub mod deployment_state;
 pub mod deployments;
 pub mod docker;
-pub mod events;
 pub mod health;
 pub mod ids;
 pub mod inventory;
@@ -44,7 +43,7 @@ pub mod test_logs;
 pub mod test_state;
 pub mod usage;
 
-pub const DATABASE_SCHEMA_VERSION: u32 = 16;
+pub const DATABASE_SCHEMA_VERSION: u32 = 15;
 pub const SOURCE_COMMIT: &str = match option_env!("DEVCOORDINATOR2_SOURCE_COMMIT") {
     Some(value) => value,
     None => "development",
