@@ -1678,6 +1678,134 @@
             ],
             "type": "object"
           },
+          "Capacity": {
+            "additionalProperties": false,
+            "properties": {
+              "active": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "cap": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "effective_capacity": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "last_adjustment": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/CapacityAdjustment"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "learned_capacity": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "paused": {
+                "type": "boolean"
+              },
+              "waiting": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "learned_capacity",
+              "effective_capacity",
+              "active",
+              "waiting",
+              "paused"
+            ],
+            "type": "object"
+          },
+          "CapacityAdjustment": {
+            "additionalProperties": false,
+            "properties": {
+              "actor": {
+                "type": "string"
+              },
+              "at": {
+                "type": "string"
+              },
+              "cap": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "epoch_seconds": {
+                "format": "double",
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "event_id": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "new_capacity": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "p95_cpu_percent": {
+                "format": "double",
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "p95_memory_percent": {
+                "format": "double",
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "previous_capacity": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "reason": {
+                "type": "string"
+              },
+              "saturation_fraction": {
+                "format": "double",
+                "type": [
+                  "number",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "event_id",
+              "at",
+              "actor",
+              "reason",
+              "previous_capacity",
+              "new_capacity"
+            ],
+            "type": "object"
+          },
           "CaseProjection": {
             "additionalProperties": false,
             "properties": {
@@ -2233,6 +2361,16 @@
             "format": "uint32",
             "minimum": 0,
             "type": "integer"
+          },
+          "capacity": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/Capacity"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "capacity_wait_count": {
             "format": "uint64",
@@ -9023,6 +9161,134 @@
             ],
             "type": "object"
           },
+          "Capacity": {
+            "additionalProperties": false,
+            "properties": {
+              "active": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "cap": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "effective_capacity": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "last_adjustment": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/CapacityAdjustment"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "learned_capacity": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "paused": {
+                "type": "boolean"
+              },
+              "waiting": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "learned_capacity",
+              "effective_capacity",
+              "active",
+              "waiting",
+              "paused"
+            ],
+            "type": "object"
+          },
+          "CapacityAdjustment": {
+            "additionalProperties": false,
+            "properties": {
+              "actor": {
+                "type": "string"
+              },
+              "at": {
+                "type": "string"
+              },
+              "cap": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "epoch_seconds": {
+                "format": "double",
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "event_id": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "new_capacity": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "p95_cpu_percent": {
+                "format": "double",
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "p95_memory_percent": {
+                "format": "double",
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "previous_capacity": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "reason": {
+                "type": "string"
+              },
+              "saturation_fraction": {
+                "format": "double",
+                "type": [
+                  "number",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "event_id",
+              "at",
+              "actor",
+              "reason",
+              "previous_capacity",
+              "new_capacity"
+            ],
+            "type": "object"
+          },
           "CaseProjection": {
             "additionalProperties": false,
             "properties": {
@@ -9557,6 +9823,16 @@
                 "format": "uint32",
                 "minimum": 0,
                 "type": "integer"
+              },
+              "capacity": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Capacity"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
               },
               "capacity_wait_count": {
                 "format": "uint64",

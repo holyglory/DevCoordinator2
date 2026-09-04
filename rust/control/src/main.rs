@@ -221,6 +221,10 @@ async fn run_daemon(config: &Config) -> ExitCode {
             return ExitCode::from(1);
         }
     };
+    if let Err(error) = plane.recover_tests() {
+        eprintln!("governed-test recovery failed: {error}");
+        return ExitCode::from(1);
+    }
     let app = Arc::new(daemon::App::with_executor(
         config.edge_uid,
         Arc::new(plane.clone()),

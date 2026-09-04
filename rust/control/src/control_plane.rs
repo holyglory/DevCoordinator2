@@ -30,7 +30,9 @@ use crate::repository::Registry;
 use crate::routes::RouteFilePublisher;
 use crate::telegram::{TelegramEvent, TelegramScope, TelegramService, parse_scope};
 use crate::test_artifacts::TestArtifactService;
+use crate::test_lifecycle::{TestLifecycle, TestLifecycleEvent};
 use crate::test_logs::TestLogService;
+use crate::test_state::ActiveTestArchiveBlocker;
 use crate::{DATABASE_SCHEMA_VERSION, SOURCE_COMMIT};
 
 const TIMESTAMP_FORMAT: &[FormatItem<'static>] =
@@ -63,6 +65,11 @@ pub const FOUNDATION_OPERATIONS: &[&str] = &[
     "deployment.logs",
     "deployment.remove",
     "deployment.set_domain",
+    "test.start",
+    "test.retry",
+    "test.status",
+    "test.stop",
+    "test.list",
     "test.log.catalog",
     "test.log.tail",
     "test.log.search",
@@ -103,6 +110,7 @@ pub struct ControlPlane {
     registry: Registry,
     plan: PlanService,
     logs: TestLogService,
+    tests: TestLifecycle,
     artifacts: TestArtifactService,
     deployments: Deployments,
     capacity: CapacityBroker,
@@ -127,7 +135,10 @@ impl ControlPlane {
         clock: Arc<dyn Clock>,
     ) -> Result<Self, ProtocolError> {
         let access = Access::new(&config, database.clone(), publisher)?;
-        let registry = Registry::new(database.clone());
+        let registry = Registry::with_archive_blockers(
+            database.clone(),
+            ActiveTestArchiveBlocker,
+        );
         let deployments = Deployments::with_clock(
             config.clone(),
             database.clone(),
@@ -142,7 +153,30 @@ impl ControlPlane {
         let logs = TestLogService::new(database.clone(), registry.clone());
         let artifacts = TestArtifactService::new(database.clone(), registry.clone());
         let capacity = CapacityBroker::new(database.clone(), config.capacity_socket_path())?;
+        let tests = TestLifecycle::new(
+            config.clone(),
+            database.clone(),
+            registry.clone(),
+            capacity.clone(),
+            logs.clone(),
+            Arc::clone(&clock),
+        )?;
         let telegram = TelegramService::from_config(&config, database.clone());
+        let test_telegram = telegram.clone();
+        tests.set_event_sink(Arc::new(move |event: TestLifecycleEvent| {
+            let status = serde_json::to_value(event.status).unwrap_or(Value::Null);
+            let notification = TelegramEvent::new(event.kind)
+                .with("run_id", event.run_id)
+                .with("test", event.test)
+                .with("status", status)
+                .with("exit_code", event.exit_code)
+                .with("repository_id", event.repository_id)
+                .with("worktree_id", event.worktree_id)
+                .with("duration_seconds", event.duration_seconds)
+                .with("caller_uid", event.caller_uid)
+                .with("client", event.client);
+            let _ = test_telegram.enqueue_event(&notification);
+        }));
         Ok(Self {
             config: Arc::new(config),
             database,
@@ -150,6 +184,7 @@ impl ControlPlane {
             registry,
             plan,
             logs,
+            tests,
             artifacts,
             deployments,
             capacity,
@@ -172,6 +207,14 @@ impl ControlPlane {
 
     pub fn logs(&self) -> &TestLogService {
         &self.logs
+    }
+
+    pub fn tests(&self) -> &TestLifecycle {
+        &self.tests
+    }
+
+    pub fn recover_tests(&self) -> Result<(), ProtocolError> {
+        self.tests.recover()
     }
 
     pub fn telegram(&self) -> &TelegramService {
@@ -256,12 +299,11 @@ impl ControlPlane {
             }
             "repository.status" => {
                 let params: params::PathOnly = decode(params)?;
-                encode(
-                    self.registry.repository_status(
-                        Path::new(&params.path),
-                        Some((caller.uid, caller.gid)),
-                    )?,
-                )
+                let mut result = self
+                    .registry
+                    .repository_status(Path::new(&params.path), Some((caller.uid, caller.gid)))?;
+                result.current_test = self.tests.current_summary_ref(&params.path, caller);
+                encode(result)
             }
             "repository.archive" => {
                 let params: params::ArchiveRepository = decode(params)?;
@@ -362,6 +404,26 @@ impl ControlPlane {
                         .with("domain", result.domain.clone()),
                 );
                 encode(result)
+            }
+            "test.start" => {
+                let result = self.tests.start(decode(params)?, caller)?;
+                encode(result)
+            }
+            "test.retry" => {
+                let result = self.tests.retry(decode(params)?, caller)?;
+                encode(result)
+            }
+            "test.status" => {
+                let params: params::PathOnly = decode(params)?;
+                encode(self.tests.status(&params.path, caller)?)
+            }
+            "test.stop" => {
+                let params: params::StopTest = decode(params)?;
+                encode(self.tests.stop(&params.path, params.reason, caller)?)
+            }
+            "test.list" => {
+                let _: params::Empty = decode(params)?;
+                encode(self.tests.list_current()?)
             }
             "test.log.catalog" => {
                 let params: params::LogCatalog = decode(params)?;
@@ -1008,10 +1070,10 @@ mod tests {
         );
         assert_eq!(overview["tasks"][0]["estimated_loc"], 120);
 
-        let unavailable = plane
+        let invalid_start = plane
             .execute("test.start", serde_json::json!({"path":"/repo"}), &local())
-            .expect_err("not yet installed");
-        assert_eq!(unavailable.code, ErrorCode::InternalError);
+            .expect_err("invalid repository is rejected by the installed lifecycle");
+        assert_eq!(invalid_start.code, ErrorCode::RepositoryNotFound);
     }
 
     #[test]

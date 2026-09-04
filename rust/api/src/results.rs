@@ -452,6 +452,7 @@ pub struct TestSummary {
     pub source_changed: Option<bool>,
     pub execution_capacity: Option<ExecutionCapacity>,
     pub capacity_wait_count: Option<u64>,
+    pub capacity: Option<Capacity>,
 }
 
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]

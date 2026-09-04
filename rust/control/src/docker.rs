@@ -10,7 +10,7 @@ use std::fmt;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStderr, ChildStdout, Command, ExitStatus, Stdio};
-use std::sync::mpsc;
+use std::sync::mpsc::{self, RecvTimeoutError};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -608,6 +608,43 @@ fn bounded_tail(value: &str, limit: usize) -> String {
     value[start..].to_owned()
 }
 
+#[derive(Clone, Copy)]
+enum PostgresLogEvent {
+    Ready,
+    Closed,
+    Failed,
+}
+
+fn scan_postgres_ready(mut source: impl Read, sender: mpsc::Sender<PostgresLogEvent>) {
+    const NEEDLE: &[u8] = b"database system is ready to accept connections";
+    let mut carry = Vec::new();
+    let mut buffer = [0_u8; 8 * 1024];
+    loop {
+        let read = match source.read(&mut buffer) {
+            Ok(read) => read,
+            Err(_) => {
+                let _ = sender.send(PostgresLogEvent::Failed);
+                return;
+            }
+        };
+        if read == 0 {
+            let _ = sender.send(PostgresLogEvent::Closed);
+            return;
+        }
+        carry.extend_from_slice(&buffer[..read]);
+        for _ in carry
+            .windows(NEEDLE.len())
+            .filter(|window| *window == NEEDLE)
+        {
+            if sender.send(PostgresLogEvent::Ready).is_err() {
+                return;
+            }
+        }
+        let keep = NEEDLE.len().saturating_sub(1).min(carry.len());
+        carry.drain(..carry.len() - keep);
+    }
+}
+
 fn first_error(output: &DockerOutput, limit: usize, fallback: &str) -> DockerError {
     let detail = bounded_prefix(&output.stderr, limit);
     DockerError::Command(if detail.is_empty() {
@@ -878,6 +915,98 @@ pub trait DockerControl: Send + Sync {
 
     fn follow_logs(&self, container_id: &ExactContainerId) -> Result<LogFollower, DockerError> {
         self.spawn_follow_logs(container_id)
+    }
+
+    fn wait_postgres_ready(
+        &self,
+        container_id: &ExactContainerId,
+        user: &str,
+        database: &str,
+        timeout: Duration,
+    ) -> Result<(), DockerError> {
+        if user.is_empty() || database.is_empty() || timeout.is_zero() {
+            return Err(DockerError::InvalidRequest(
+                "PostgreSQL readiness identity and timeout are required".into(),
+            ));
+        }
+        let mut follower = self.follow_logs(container_id)?;
+        let (sender, receiver) = mpsc::channel();
+        let mut readers = Vec::new();
+        let streams: [Option<Box<dyn Read + Send>>; 2] = [
+            follower
+                .take_stdout()
+                .map(|stream| Box::new(stream) as Box<dyn Read + Send>),
+            follower
+                .take_stderr()
+                .map(|stream| Box::new(stream) as Box<dyn Read + Send>),
+        ];
+        for stream in streams.into_iter().flatten() {
+            let sender = sender.clone();
+            readers.push(thread::spawn(move || scan_postgres_ready(stream, sender)));
+        }
+        drop(sender);
+        let deadline = Instant::now() + timeout;
+        let mut ready_events = 0_u8;
+        let mut open = readers.len();
+        let result = loop {
+            if ready_events >= 2 {
+                let arguments = vec![
+                    "pg_isready".into(),
+                    "-h".into(),
+                    "127.0.0.1".into(),
+                    "-U".into(),
+                    user.into(),
+                    "-d".into(),
+                    database.into(),
+                ];
+                break if self.exec_ok(container_id, &arguments, Duration::from_secs(30)) {
+                    Ok(())
+                } else {
+                    Err(DockerError::Command(
+                        "ephemeral PostgreSQL final readiness verification failed".into(),
+                    ))
+                };
+            }
+            if open == 0 {
+                break Err(DockerError::Command(
+                    "ephemeral PostgreSQL logs ended before readiness".into(),
+                ));
+            }
+            let now = Instant::now();
+            if now >= deadline {
+                break Err(DockerError::Timeout {
+                    operation: "ephemeral PostgreSQL readiness".into(),
+                });
+            }
+            match receiver.recv_timeout(READINESS_POLL.min(deadline - now)) {
+                Ok(PostgresLogEvent::Ready) => ready_events += 1,
+                Ok(PostgresLogEvent::Closed) => open = open.saturating_sub(1),
+                Ok(PostgresLogEvent::Failed) => {
+                    break Err(DockerError::Command(
+                        "ephemeral PostgreSQL readiness log failed".into(),
+                    ));
+                }
+                Err(RecvTimeoutError::Timeout) => {}
+                Err(RecvTimeoutError::Disconnected) => open = 0,
+            }
+        };
+        let _ = follower.terminate();
+        let cleanup_deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            match follower.try_wait() {
+                Ok(Some(_)) => break,
+                Ok(None) if Instant::now() < cleanup_deadline => thread::sleep(READINESS_POLL),
+                _ => {
+                    let _ = follower.kill();
+                    let _ = follower.wait();
+                    break;
+                }
+            }
+        }
+        for reader in readers {
+            let _ = reader.join();
+        }
+        result
     }
 
     fn start_container(&self, container_id: &ExactContainerId) -> Result<(), DockerError> {
@@ -1916,6 +2045,27 @@ mod tests {
 
     fn id(byte: char) -> ExactContainerId {
         ExactContainerId::parse(byte.to_string().repeat(64)).expect("id")
+    }
+
+    #[test]
+    fn postgres_readiness_scanner_counts_exact_events_without_retaining_logs() {
+        let (sender, receiver) = mpsc::channel();
+        scan_postgres_ready(
+            std::io::Cursor::new(
+                b"database system is ready to accept connections\nnoise\ndatabase system is ready to accept connections\n"
+                    .to_vec(),
+            ),
+            sender,
+        );
+        let events = receiver.into_iter().collect::<Vec<_>>();
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(event, PostgresLogEvent::Ready))
+                .count(),
+            2
+        );
+        assert!(matches!(events.last(), Some(PostgresLogEvent::Closed)));
     }
 
     fn labels() -> ManagedLabelContext {
