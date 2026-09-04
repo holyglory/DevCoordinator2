@@ -564,6 +564,14 @@ enum ContractCommand {
 
 #[derive(Debug, Subcommand)]
 enum CheckCommand {
+    PublicArtifacts {
+        #[arg(long, default_value = ".")]
+        repo: PathBuf,
+        #[arg(long)]
+        allow_internal_symlinks: bool,
+        #[arg(long)]
+        json: bool,
+    },
     /// Reject every executable Python dependency while retaining the seven
     /// approved inert audit fixtures.
     PythonFree {
@@ -634,6 +642,45 @@ fn main() -> ExitCode {
                 ExitCode::from(1)
             }
         },
+        Command::Check {
+            command:
+                CheckCommand::PublicArtifacts {
+                    repo,
+                    allow_internal_symlinks,
+                    json: json_output,
+                },
+        } => {
+            match devcoordinator2_tooling::public_artifacts::scan(&repo, allow_internal_symlinks) {
+                Ok(report) => {
+                    if json_output {
+                        println!("{}", serde_json::to_string_pretty(&report).unwrap());
+                    } else if report["ok"] == true {
+                        println!(
+                            "public artifact guard ok ({} publishable files)",
+                            report["scanned"]
+                        );
+                    } else if let Some(findings) = report["findings"].as_array() {
+                        for finding in findings {
+                            let location = finding["line"].as_u64().map_or_else(
+                                || finding["path"].as_str().unwrap_or("").to_owned(),
+                                |line| format!("{}:{line}", finding["path"].as_str().unwrap_or("")),
+                            );
+                            println!(
+                                "{location}: {}: {}",
+                                finding["rule"].as_str().unwrap_or("invalid"),
+                                finding["detail"].as_str().unwrap_or("")
+                            );
+                        }
+                    }
+                    if report["ok"] == true {
+                        ExitCode::SUCCESS
+                    } else {
+                        ExitCode::from(1)
+                    }
+                }
+                Err(error) => tooling_error(&format!("public artifact guard failed: {error}"), 2),
+            }
+        }
         Command::Check {
             command: CheckCommand::PythonFree { root, report },
         } => {
@@ -2503,6 +2550,21 @@ mod tests {
             check.command,
             Command::Check {
                 command: CheckCommand::RepositoryFreshness { .. }
+            }
+        ));
+        let public_artifacts = Cli::try_parse_from([
+            "devcoordinator2-tooling",
+            "check",
+            "public-artifacts",
+            "--repo",
+            "/repo",
+            "--json",
+        ])
+        .expect("public artifact guard command");
+        assert!(matches!(
+            public_artifacts.command,
+            Command::Check {
+                command: CheckCommand::PublicArtifacts { json: true, .. }
             }
         ));
 
