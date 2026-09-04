@@ -358,6 +358,23 @@ impl World {
         list_units(&format!("{}-*.service", self.unit_prefix))
     }
 
+    fn wait_units_empty(&self, timeout: Duration) -> Result<(), String> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            let units = self.units()?;
+            if units.is_empty() {
+                return Ok(());
+            }
+            if Instant::now() >= deadline {
+                return Err(format!(
+                    "test units survived retirement deadline: {}",
+                    units.join(", ")
+                ));
+            }
+            thread::sleep(Duration::from_millis(50));
+        }
+    }
+
     fn deployment_units(&self) -> Result<Vec<String>, String> {
         list_units(&format!(
             "{}-deploy*.service",
@@ -1390,7 +1407,7 @@ fn case_timeout_kills_whole_cgroup(world: &mut World) -> Result<(), String> {
         final_status["exit_code"].is_null(),
         "timed-out run exposed an exit code"
     );
-    ensure!(world.units()?.is_empty(), "timed-out cgroup unit survived");
+    world.wait_units_empty(Duration::from_secs(10))?;
     ensure!(
         response_text(&world.log_tail(&run_id, "main", "stdout")?).contains("timeout-log-sentinel"),
         "timeout log sentinel was lost"
