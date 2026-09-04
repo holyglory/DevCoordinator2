@@ -19,6 +19,9 @@ pub mod python_guard;
 pub mod repository_checks;
 pub mod skill_links;
 pub mod test_coverage_audit;
+pub mod ui_audit;
+pub mod ui_audit_verify;
+pub mod ui_gate;
 
 pub fn export_contract(path: &Path, check: bool) -> Result<(), String> {
     let document = devcoordinator2_api::contract_document();

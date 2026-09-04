@@ -76,6 +76,10 @@ enum FormalUiCommand {
 
 #[derive(Debug, Subcommand)]
 enum AuditCommand {
+    UiImplementation {
+        #[command(subcommand)]
+        command: UiImplementationCommand,
+    },
     TestCoverage {
         #[command(subcommand)]
         command: TestCoverageCommand,
@@ -144,6 +148,82 @@ enum AuditCommand {
         verification_receipt: Option<PathBuf>,
         #[arg(long)]
         ledger_projection_out: Option<PathBuf>,
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum UiImplementationCommand {
+    Build {
+        #[arg(long, default_value = ".")]
+        repo: PathBuf,
+        #[arg(long)]
+        out: Option<PathBuf>,
+        #[arg(long, default_value_t = 6)]
+        batch_size: usize,
+        #[arg(long, default_value_t = 60_000)]
+        max_batch_bytes: usize,
+        #[arg(long, overrides_with = "no_include_config")]
+        include_config: bool,
+        #[arg(long, overrides_with = "include_config")]
+        no_include_config: bool,
+        #[arg(long)]
+        include_env: bool,
+        #[arg(long)]
+        include_generated: bool,
+        #[arg(long)]
+        include_vendor: bool,
+        #[arg(long, overrides_with = "no_include_assets")]
+        include_assets: bool,
+        #[arg(long, overrides_with = "include_assets")]
+        no_include_assets: bool,
+        #[arg(long)]
+        run_id: Option<String>,
+        #[arg(long = "exclude-glob")]
+        exclude_globs: Vec<String>,
+        #[arg(long = "include-file")]
+        include_files: Vec<String>,
+        #[arg(long = "include-glob")]
+        include_globs: Vec<String>,
+        #[arg(long)]
+        mockup: Vec<String>,
+        #[arg(long = "journey-file")]
+        journey_files: Vec<String>,
+        #[arg(long)]
+        split_visual_discovery: bool,
+        #[arg(long)]
+        ui_platform: Option<String>,
+        #[arg(long)]
+        formal_config: Option<String>,
+        #[arg(long = "implemented-ui-file")]
+        implemented_ui_files: Vec<String>,
+        #[arg(long = "implemented-ui-override", num_args = 3, action = clap::ArgAction::Append)]
+        implemented_ui_overrides: Vec<String>,
+        #[arg(long)]
+        eligibility_only: bool,
+    },
+    ImportFormal {
+        #[arg(long)]
+        audit_root: PathBuf,
+        #[arg(long)]
+        run_id: String,
+        #[arg(long)]
+        formal_report: PathBuf,
+        #[arg(long)]
+        journey_evidence: PathBuf,
+        #[arg(long)]
+        review_queue: PathBuf,
+        #[arg(long)]
+        manual_review: PathBuf,
+    },
+    Verify {
+        #[arg(long)]
+        manifest: PathBuf,
+        #[arg(long, required = true, num_args = 1..)]
+        reports: Vec<PathBuf>,
+        #[arg(long)]
+        skip_current_hash_check: bool,
         #[arg(long)]
         json: bool,
     },
@@ -703,6 +783,7 @@ fn formal_ui_error(error: &str) -> ExitCode {
 
 fn run_audit(command: AuditCommand) -> ExitCode {
     match command {
+        AuditCommand::UiImplementation { command } => run_ui_implementation(command),
         AuditCommand::TestCoverage { command } => run_test_coverage(command),
         AuditCommand::JourneyDocs { command } => run_journey_docs(command),
         AuditCommand::BuildFullRepo {
@@ -794,6 +875,261 @@ fn run_audit(command: AuditCommand) -> ExitCode {
                 Err(error) => tooling_error(&format!("could not merge audit reports: {error}"), 2),
             }
         }
+    }
+}
+
+fn run_ui_implementation(command: UiImplementationCommand) -> ExitCode {
+    match command {
+        UiImplementationCommand::Build {
+            repo,
+            out,
+            batch_size,
+            max_batch_bytes,
+            include_config: _,
+            no_include_config,
+            include_env,
+            include_generated,
+            include_vendor,
+            include_assets: _,
+            no_include_assets,
+            run_id,
+            exclude_globs,
+            include_files,
+            include_globs,
+            mockup,
+            journey_files,
+            split_visual_discovery,
+            ui_platform,
+            formal_config,
+            implemented_ui_files,
+            implemented_ui_overrides,
+            eligibility_only,
+        } => {
+            let result = (|| {
+                use devcoordinator2_tooling::audit_queue as queue;
+                use devcoordinator2_tooling::ui_audit;
+                use devcoordinator2_tooling::ui_gate::ExplicitUiBasis;
+                let repo = repo
+                    .canonicalize()
+                    .map_err(|error| format!("Repo path is not a directory: {error}"))?;
+                if implemented_ui_overrides.len() % 3 != 0 {
+                    return Err(
+                        "--implemented-ui-override requires PATH UI-KIND SOURCE-ANCHOR".to_owned(),
+                    );
+                }
+                let mut evidence = std::collections::BTreeMap::new();
+                for raw in implemented_ui_files {
+                    let path = queue::validate_repo_relative_include(&repo, &raw)?;
+                    if evidence.insert(path.clone(), None).is_some() {
+                        return Err(format!("duplicate implemented UI evidence path: {path}"));
+                    }
+                }
+                for raw in implemented_ui_overrides.chunks_exact(3) {
+                    let path = queue::validate_repo_relative_include(&repo, &raw[0])?;
+                    let basis = ExplicitUiBasis {
+                        ui_kind: raw[1].clone(),
+                        source_anchor: raw[2].clone(),
+                    };
+                    if evidence.insert(path.clone(), Some(basis)).is_some() {
+                        return Err(format!(
+                            "name each implementation path with only one evidence mode; duplicated: {path}"
+                        ));
+                    }
+                }
+                let include_files = include_files
+                    .iter()
+                    .map(|path| queue::validate_repo_relative_include(&repo, path))
+                    .collect::<Result<std::collections::BTreeSet<_>, _>>()?;
+                let forced_mockups = mockup
+                    .iter()
+                    .map(|path| queue::validate_repo_relative_include(&repo, path))
+                    .collect::<Result<std::collections::BTreeSet<_>, _>>()?;
+                let forced_journey_files = journey_files
+                    .iter()
+                    .map(|path| queue::validate_repo_relative_include(&repo, path))
+                    .collect::<Result<std::collections::BTreeSet<_>, _>>()?;
+                let run_id = match run_id {
+                    Some(run_id) => queue::run_id_token(&run_id)?,
+                    None => random_audit_run_id()?,
+                };
+                let stamp = audit_archive_stamp()?;
+                let out = match out {
+                    Some(path) if path.is_absolute() => path,
+                    Some(path) => std::env::current_dir()
+                        .map_err(|error| error.to_string())?
+                        .join(path),
+                    None => std::env::temp_dir()
+                        .join("ui-implementation-audit")
+                        .join(repo.file_name().unwrap_or_default())
+                        .join(format!("{stamp}-{}", &run_id[..8])),
+                };
+                let output_rel = queue::relative_dir_if_child(&repo, &out);
+                if output_rel.as_deref() == Some("") {
+                    return Err("--out cannot be the repository root; choose a dedicated audit output directory.".to_owned());
+                }
+                let owner = queue::ArtifactOwnership {
+                    owner: ui_audit::ARTIFACT_OWNER.to_owned(),
+                    marker_name: ui_audit::ARTIFACT_MARKER.to_owned(),
+                    ..queue::ArtifactOwnership::default()
+                };
+                let mut output_rel_dirs = output_rel.into_iter().collect::<Vec<_>>();
+                for owned in queue::discover_owned_output_dirs(
+                    &repo,
+                    include_generated,
+                    include_vendor,
+                    &owner,
+                ) {
+                    if !output_rel_dirs.contains(&owned) {
+                        output_rel_dirs.push(owned);
+                    }
+                }
+                let mut all_includes = include_files;
+                all_includes.extend(evidence.keys().cloned());
+                let collection = queue::CollectOptions {
+                    include_config: !no_include_config,
+                    include_env,
+                    include_generated,
+                    include_vendor,
+                    include_assets: !no_include_assets,
+                    exclude_globs,
+                    include_files: all_includes,
+                    include_globs,
+                    output_rel_dirs,
+                };
+                let (_, gate) = ui_audit::collect_and_assess_gate(&repo, &collection, &evidence);
+                if eligibility_only {
+                    return Ok((gate, None));
+                }
+                if gate["status"] != "passed" {
+                    let rejected = gate["rejected_files"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|item| {
+                            Some(format!(
+                                "{}: {}",
+                                item["rel_path"].as_str()?,
+                                item["reason"].as_str()?
+                            ))
+                        })
+                        .collect::<Vec<_>>()
+                        .join("; ");
+                    return Err(format!(
+                        "UI implementation audit is not applicable: {}{}",
+                        gate["reason"].as_str().unwrap_or("gate failed"),
+                        if rejected.is_empty() {
+                            String::new()
+                        } else {
+                            format!("; {rejected}")
+                        }
+                    ));
+                }
+                let ui_platform = ui_platform.ok_or_else(|| {
+                    "--ui-platform is required for a full UI implementation audit".to_owned()
+                })?;
+                let verifier_program =
+                    std::env::current_exe().map_err(|error| error.to_string())?;
+                let manifest = ui_audit::build(&ui_audit::BuildOptions {
+                    repo,
+                    out: out.clone(),
+                    run_id,
+                    generated_at: timestamp()?,
+                    archive_stamp: stamp,
+                    verifier_program,
+                    batch_size,
+                    max_batch_bytes,
+                    collection,
+                    forced_mockups,
+                    forced_journey_files,
+                    implementation_evidence: evidence,
+                    split_visual_discovery,
+                    ui_platform,
+                    formal_config,
+                })?;
+                Ok((manifest, Some(out)))
+            })();
+            match result {
+                Ok((gate, None)) => {
+                    println!("{}", serde_json::to_string_pretty(&gate).unwrap());
+                    if gate["status"] == "passed" {
+                        ExitCode::SUCCESS
+                    } else {
+                        ExitCode::from(devcoordinator2_tooling::ui_audit::INAPPLICABLE_EXIT)
+                    }
+                }
+                Ok((manifest, Some(out))) => {
+                    println!(
+                        "Wrote {} UI implementation batches covering {} interface source files to {}",
+                        manifest["batch_count"],
+                        manifest["source_file_count"],
+                        out.display()
+                    );
+                    ExitCode::SUCCESS
+                }
+                Err(error) if error.contains("not applicable") => tooling_error(&error, 3),
+                Err(error) => tooling_error(&error, 2),
+            }
+        }
+        UiImplementationCommand::ImportFormal {
+            audit_root,
+            run_id,
+            formal_report,
+            journey_evidence,
+            review_queue,
+            manual_review,
+        } => match devcoordinator2_tooling::ui_audit::import_formal_evidence(
+            &devcoordinator2_tooling::ui_audit::ImportFormalOptions {
+                audit_root,
+                run_id,
+                formal_report,
+                journey_evidence,
+                review_queue,
+                manual_review,
+            },
+        ) {
+            Ok(result) => {
+                println!("{}", serde_json::to_string_pretty(&result).unwrap());
+                ExitCode::SUCCESS
+            }
+            Err(error) => tooling_error(&error, 2),
+        },
+        UiImplementationCommand::Verify {
+            manifest,
+            reports,
+            skip_current_hash_check,
+            json,
+        } => match devcoordinator2_tooling::ui_audit_verify::verify(
+            &manifest,
+            &reports,
+            skip_current_hash_check,
+        ) {
+            Ok(result) if json => {
+                println!("{}", serde_json::to_string_pretty(&result).unwrap());
+                if result["ok"] == true {
+                    ExitCode::SUCCESS
+                } else {
+                    ExitCode::from(1)
+                }
+            }
+            Ok(result) => {
+                println!("ok: {}", result["ok"]);
+                println!("run_id: {}", result["run_id"]);
+                if let Some(issues) = result["issues"].as_object() {
+                    for (kind, values) in issues {
+                        let count = values.as_array().map_or(0, Vec::len);
+                        if count > 0 {
+                            println!("{kind}: {count}");
+                        }
+                    }
+                }
+                if result["ok"] == true {
+                    ExitCode::SUCCESS
+                } else {
+                    ExitCode::from(1)
+                }
+            }
+            Err(error) => tooling_error(&error, 2),
+        },
     }
 }
 
@@ -1856,6 +2192,76 @@ mod tests {
             Command::Audit {
                 command: AuditCommand::TestCoverage {
                     command: TestCoverageCommand::Build { .. }
+                }
+            }
+        ));
+        let ui_build = Cli::try_parse_from([
+            "devcoordinator2-tooling",
+            "audit",
+            "ui-implementation",
+            "build",
+            "--repo",
+            "/repo",
+            "--implemented-ui-override",
+            "src/surface.canvas",
+            "canvas_kit::Surface",
+            "build_surface",
+            "--ui-platform",
+            "web",
+        ])
+        .expect("UI implementation build command");
+        assert!(matches!(
+            ui_build.command,
+            Command::Audit {
+                command: AuditCommand::UiImplementation {
+                    command: UiImplementationCommand::Build { .. }
+                }
+            }
+        ));
+        let ui_import = Cli::try_parse_from([
+            "devcoordinator2-tooling",
+            "audit",
+            "ui-implementation",
+            "import-formal",
+            "--audit-root",
+            "/tmp/ui-audit",
+            "--run-id",
+            "run-1",
+            "--formal-report",
+            "/tmp/ui-audit/formal.json",
+            "--journey-evidence",
+            "/tmp/ui-audit/journey.json",
+            "--review-queue",
+            "/tmp/ui-audit/queue.json",
+            "--manual-review",
+            "/tmp/ui-audit/review.json",
+        ])
+        .expect("UI formal evidence import command");
+        assert!(matches!(
+            ui_import.command,
+            Command::Audit {
+                command: AuditCommand::UiImplementation {
+                    command: UiImplementationCommand::ImportFormal { .. }
+                }
+            }
+        ));
+        let ui_verify = Cli::try_parse_from([
+            "devcoordinator2-tooling",
+            "audit",
+            "ui-implementation",
+            "verify",
+            "--manifest",
+            "/tmp/ui-audit/manifest.json",
+            "--reports",
+            "/tmp/ui-audit/reports",
+            "--json",
+        ])
+        .expect("UI audit verifier command");
+        assert!(matches!(
+            ui_verify.command,
+            Command::Audit {
+                command: AuditCommand::UiImplementation {
+                    command: UiImplementationCommand::Verify { json: true, .. }
                 }
             }
         ));
