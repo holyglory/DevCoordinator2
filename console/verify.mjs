@@ -1850,7 +1850,7 @@ async function main() {
   await page.click('#invite-form button[type=submit]');
   await waitForSettledCall(daemon, page, 'user.invite');
   check('interaction: invite form calls user.invite', daemon.calls.some((c) => c.operation === 'user.invite' && c.params.email === 'new2@example.test'));
-  await page.waitForFunction(() => /daemon 0\.1\.0/.test(document.querySelector('#server')?.textContent || ''), null, { timeout: 10000 });
+  await page.waitForFunction(() => /daemon 0\.2\.0 · schema 16/.test(document.querySelector('#server')?.textContent || ''), null, { timeout: 10000 });
   check('admin: the Server line renders daemon version, schema, and route generation',
     /daemon 0\.2\.0 · schema 16 · route document generation 1/.test(await page.innerText('#server')),
     await page.innerText('#server'));
