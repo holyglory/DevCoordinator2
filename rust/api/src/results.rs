@@ -1580,7 +1580,7 @@ pub struct UsageSeriesPoint {
     pub bucket_end_ms: u64,
     pub coverage: CoverageState,
     pub phases: BTreeMap<String, u64>,
-    pub total_tokens: u64,
+    pub total_tokens: Option<u64>,
 }
 
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]

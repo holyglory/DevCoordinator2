@@ -39,6 +39,7 @@ const SOURCE_OUTPUT_BYTES: usize = 256 * 1024;
 const QUERY_TIMEOUT: Duration = Duration::from_secs(2);
 const SOURCE_TIMEOUT: Duration = Duration::from_secs(15);
 const PROCESS_POLL: Duration = Duration::from_millis(10);
+const SQLITE_VARIABLE_CHUNK: usize = 20_000;
 const PHASES: &[&str] = &[
     "planning",
     "implementation",
@@ -116,6 +117,7 @@ struct SourceReport {
     tokens: BTreeMap<String, u64>,
     token_observations: BTreeMap<String, u64>,
     phase_series: Vec<BTreeMap<String, u64>>,
+    token_buckets_observed: Vec<bool>,
     bucket_coverage: Vec<CoverageState>,
     activities: BTreeMap<(String, String), u64>,
     activity_operations: BTreeMap<(String, String), u64>,
@@ -691,28 +693,6 @@ fn source_report(
     bucket_ms: u64,
     bucket_count: usize,
 ) -> Result<SourceReport, String> {
-    let effective = {
-        let mut statement = connection
-            .prepare(
-                "SELECT operation_id,phase,activity,activity_state,provenance FROM effective_classification_events",
-            )
-            .map_err(|_| "source_unavailable".to_owned())?;
-        statement
-            .query_map([], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    (
-                        row.get::<_, String>(1)?,
-                        row.get::<_, String>(2)?,
-                        row.get::<_, String>(3)?,
-                        row.get::<_, String>(4)?,
-                    ),
-                ))
-            })
-            .map_err(|_| "source_unavailable".to_owned())?
-            .collect::<Result<HashMap<_, _>, _>>()
-            .map_err(|_| "source_unavailable".to_owned())?
-    };
     let mut values = family
         .iter()
         .cloned()
@@ -721,52 +701,125 @@ fn source_report(
     values.push(SqlValue::Integer(i64_value(end_ms)?));
     values.push(SqlValue::Integer(i64_value(start_ms)?));
     let sql = format!(
-        "SELECT operation.id,operation.operation_kind,operation.agent_id,operation.started_at_ms,operation.phase,operation.activity,operation.activity_state,operation.attribution_provenance,terminal.occurred_at_ms,terminal.event_kind,tool.operation_family FROM operations operation LEFT JOIN operation_events terminal ON terminal.operation_id=operation.id AND terminal.terminal=1 LEFT JOIN tool_invocations tool ON tool.operation_id=operation.id WHERE EXISTS(SELECT 1 FROM repository_attributions attribution WHERE attribution.operation_id=operation.id AND attribution.repository_id IN ({})) AND operation.started_at_ms<? AND (terminal.occurred_at_ms IS NULL OR terminal.occurred_at_ms>?)",
+        "SELECT operation.id,operation.operation_kind,operation.agent_id,operation.started_at_ms,operation.phase,operation.activity,operation.activity_state,operation.attribution_provenance,terminal.occurred_at_ms,terminal.event_kind,tool.operation_family,tool.id,request.id FROM operations operation LEFT JOIN operation_events terminal ON terminal.operation_id=operation.id AND terminal.terminal=1 LEFT JOIN tool_invocations tool ON tool.operation_id=operation.id LEFT JOIN model_requests request ON request.operation_id=operation.id WHERE EXISTS(SELECT 1 FROM repository_attributions attribution WHERE attribution.operation_id=operation.id AND attribution.repository_id IN ({})) AND operation.started_at_ms<? AND (terminal.occurred_at_ms IS NULL OR terminal.occurred_at_ms>?)",
         placeholders(family.len())
     );
     let mut statement = connection
         .prepare(&sql)
         .map_err(|_| "source_unavailable".to_owned())?;
-    let rows = statement
-        .query_map(params_from_iter(values), |row| {
-            let id = row.get::<_, String>(0)?;
-            let original = (
-                row.get::<_, String>(4)?,
-                row.get::<_, String>(5)?,
-                row.get::<_, String>(6)?,
-                row.get::<_, String>(7)?,
-            );
-            let classification = effective.get(&id).cloned().unwrap_or(original);
-            Ok(Operation {
-                id,
-                kind: row.get(1)?,
-                agent_id: row.get(2)?,
-                started_at_ms: u64::try_from(row.get::<_, i64>(3)?).unwrap_or(0),
-                finished_at_ms: row
-                    .get::<_, Option<i64>>(8)?
-                    .and_then(|value| u64::try_from(value).ok()),
-                phase: safe_phase(&classification.0),
-                activity: safe_label(&classification.1),
-                activity_state: safe_label(&classification.2),
-                provenance: safe_label(&classification.3),
-                terminal_event: row.get(9)?,
-                tool_family: row
-                    .get::<_, Option<String>>(10)?
-                    .map(|value| safe_label(&value)),
-            })
-        })
-        .map_err(|_| "source_unavailable".to_owned())?
-        .collect::<Result<Vec<_>, _>>()
+    let mut rows = statement
+        .query(params_from_iter(values))
         .map_err(|_| "source_unavailable".to_owned())?;
+    let mut operations_by_id = BTreeMap::new();
+    let mut request_operations = HashMap::new();
+    let mut tool_operations = HashMap::new();
+    while let Some(row) = rows.next().map_err(|_| "source_unavailable".to_owned())? {
+        let id = row
+            .get::<_, String>(0)
+            .map_err(|_| "source_unavailable".to_owned())?;
+        if let Some(tool_id) = row
+            .get::<_, Option<String>>(11)
+            .map_err(|_| "source_unavailable".to_owned())?
+        {
+            tool_operations.insert(tool_id, id.clone());
+        }
+        if let Some(request_id) = row
+            .get::<_, Option<String>>(12)
+            .map_err(|_| "source_unavailable".to_owned())?
+        {
+            request_operations.insert(request_id, id.clone());
+        }
+        if operations_by_id.contains_key(&id) {
+            continue;
+        }
+        operations_by_id.insert(
+            id.clone(),
+            Operation {
+                id,
+                kind: row.get(1).map_err(|_| "source_unavailable".to_owned())?,
+                agent_id: row.get(2).map_err(|_| "source_unavailable".to_owned())?,
+                started_at_ms: u64::try_from(
+                    row.get::<_, i64>(3)
+                        .map_err(|_| "source_unavailable".to_owned())?,
+                )
+                .map_err(|_| "source_unavailable".to_owned())?,
+                finished_at_ms: row
+                    .get::<_, Option<i64>>(8)
+                    .map_err(|_| "source_unavailable".to_owned())?
+                    .and_then(|value| u64::try_from(value).ok()),
+                phase: safe_phase(
+                    &row.get::<_, String>(4)
+                        .map_err(|_| "source_unavailable".to_owned())?,
+                ),
+                activity: safe_label(
+                    &row.get::<_, String>(5)
+                        .map_err(|_| "source_unavailable".to_owned())?,
+                ),
+                activity_state: safe_label(
+                    &row.get::<_, String>(6)
+                        .map_err(|_| "source_unavailable".to_owned())?,
+                ),
+                provenance: safe_label(
+                    &row.get::<_, String>(7)
+                        .map_err(|_| "source_unavailable".to_owned())?,
+                ),
+                terminal_event: row.get(9).map_err(|_| "source_unavailable".to_owned())?,
+                tool_family: row
+                    .get::<_, Option<String>>(10)
+                    .map_err(|_| "source_unavailable".to_owned())?
+                    .map(|value| safe_label(&value)),
+            },
+        );
+    }
+    drop(rows);
+    drop(statement);
+    let operation_ids = operations_by_id.keys().cloned().collect::<Vec<_>>();
+    for identifiers in operation_ids.chunks(SQLITE_VARIABLE_CHUNK) {
+        let sql = format!(
+            "SELECT operation_id,phase,activity,activity_state,provenance FROM effective_classification_events WHERE operation_id IN ({})",
+            placeholders(identifiers.len())
+        );
+        let mut statement = connection
+            .prepare(&sql)
+            .map_err(|_| "source_unavailable".to_owned())?;
+        let mut rows = statement
+            .query(params_from_iter(identifiers.iter().cloned()))
+            .map_err(|_| "source_unavailable".to_owned())?;
+        while let Some(row) = rows.next().map_err(|_| "source_unavailable".to_owned())? {
+            let operation_id = row
+                .get::<_, String>(0)
+                .map_err(|_| "source_unavailable".to_owned())?;
+            let Some(operation) = operations_by_id.get_mut(&operation_id) else {
+                continue;
+            };
+            operation.phase = safe_phase(
+                &row.get::<_, String>(1)
+                    .map_err(|_| "source_unavailable".to_owned())?,
+            );
+            operation.activity = safe_label(
+                &row.get::<_, String>(2)
+                    .map_err(|_| "source_unavailable".to_owned())?,
+            );
+            operation.activity_state = safe_label(
+                &row.get::<_, String>(3)
+                    .map_err(|_| "source_unavailable".to_owned())?,
+            );
+            operation.provenance = safe_label(
+                &row.get::<_, String>(4)
+                    .map_err(|_| "source_unavailable".to_owned())?,
+            );
+        }
+    }
     let mut report = SourceReport {
         database_schema: schema,
         taxonomy_version: taxonomy,
         phase_series: vec![BTreeMap::new(); bucket_count],
+        token_buckets_observed: vec![false; bucket_count],
         bucket_coverage: vec![CoverageState::Unobserved; bucket_count],
         ..Default::default()
     };
     let mut by_id = HashMap::new();
-    for operation in rows {
+    for operation in operations_by_id.into_values() {
         report.evidence = true;
         report.operation_count = report.operation_count.saturating_add(1);
         report.freshest_at_ms = Some(
@@ -808,6 +861,8 @@ fn source_report(
         connection,
         &mut report,
         &by_id,
+        &request_operations,
+        &tool_operations,
         family,
         start_ms,
         end_ms,
@@ -832,90 +887,116 @@ fn add_tokens(
     connection: &Connection,
     report: &mut SourceReport,
     operations: &HashMap<String, Operation>,
+    request_operations: &HashMap<String, String>,
+    tool_operations: &HashMap<String, String>,
     family: &[String],
     start_ms: u64,
     end_ms: u64,
     bucket_ms: u64,
     bucket_count: usize,
 ) -> Result<(), String> {
-    let mut values = family
-        .iter()
-        .cloned()
-        .map(SqlValue::Text)
-        .collect::<Vec<_>>();
-    values.extend(
-        TOKEN_CATEGORIES
-            .iter()
-            .map(|(name, _)| SqlValue::Text((*name).into())),
-    );
-    values.push(SqlValue::Integer(i64_value(start_ms)?));
-    values.push(SqlValue::Integer(i64_value(end_ms)?));
-    let sql = format!(
-        "SELECT token.category_path,token.token_count,token.coverage_state,token.observed_at_ms,COALESCE(request.operation_id,tool.operation_id) FROM token_observations token LEFT JOIN model_requests request ON request.id=token.model_request_id LEFT JOIN tool_invocations tool ON tool.id=token.tool_invocation_id WHERE token.repository_bucket IN ({}) AND token.category_path IN ({}) AND token.measurement_provenance='provider_reported' AND token.observed_at_ms>=? AND token.observed_at_ms<?",
-        placeholders(family.len()),
-        placeholders(TOKEN_CATEGORIES.len()),
-    );
-    let mut statement = connection
-        .prepare(&sql)
-        .map_err(|_| "source_unavailable".to_owned())?;
-    let mut rows = statement
-        .query(params_from_iter(values))
-        .map_err(|_| "source_unavailable".to_owned())?;
-    while let Some(row) = rows.next().map_err(|_| "source_unavailable".to_owned())? {
-        let operation_id = row
-            .get::<_, Option<String>>(4)
-            .map_err(|_| "source_unavailable")?;
-        let Some(operation) = operation_id.and_then(|id| operations.get(&id)) else {
-            continue;
-        };
-        let category = row.get::<_, String>(0).map_err(|_| "source_unavailable")?;
-        if !TOKEN_CATEGORIES
-            .iter()
-            .any(|(allowed, _)| *allowed == category)
-        {
-            continue;
-        }
-        let coverage = safe_coverage(&row.get::<_, String>(2).map_err(|_| "source_unavailable")?);
-        let observed = u64::try_from(row.get::<_, i64>(3).map_err(|_| "source_unavailable")?)
-            .map_err(|_| "source_unavailable")?;
-        report.evidence = true;
-        increment(&mut report.token_observations, coverage_name(&coverage));
-        report.freshest_at_ms = Some(report.freshest_at_ms.unwrap_or(0).max(observed));
-        let token_count = row
-            .get::<_, Option<i64>>(1)
-            .map_err(|_| "source_unavailable")?
-            .and_then(|value| u64::try_from(value).ok());
-        let Some(token_count) = token_count else {
-            continue;
-        };
-        *report.tokens.entry(category.clone()).or_default() = report
-            .tokens
-            .get(&category)
-            .copied()
-            .unwrap_or(0)
-            .saturating_add(token_count);
-        if category == "total_tokens"
-            && let Some(index) = bucket_index(observed, start_ms, bucket_ms, bucket_count)
-        {
-            *report.phase_series[index]
-                .entry(operation.phase.clone())
-                .or_default() = report.phase_series[index]
-                .get(&operation.phase)
-                .copied()
-                .unwrap_or(0)
-                .saturating_add(token_count);
-            report.bucket_coverage[index] = if coverage == CoverageState::Complete
-                && report.bucket_coverage[index] != CoverageState::Partial
-            {
-                CoverageState::Complete
-            } else {
-                CoverageState::Partial
-            };
-            increment_pair(
-                &mut report.activities,
-                (&operation.phase, &operation.activity),
-                token_count,
+    for (column, source_operations) in [
+        ("model_request_id", request_operations),
+        ("tool_invocation_id", tool_operations),
+    ] {
+        let mut identifiers = source_operations.keys().cloned().collect::<Vec<_>>();
+        identifiers.sort();
+        for identifier_chunk in identifiers.chunks(SQLITE_VARIABLE_CHUNK) {
+            let mut values = identifier_chunk
+                .iter()
+                .cloned()
+                .map(SqlValue::Text)
+                .collect::<Vec<_>>();
+            values.extend(family.iter().cloned().map(SqlValue::Text));
+            values.extend(
+                TOKEN_CATEGORIES
+                    .iter()
+                    .map(|(name, _)| SqlValue::Text((*name).into())),
             );
+            values.push(SqlValue::Integer(i64_value(start_ms)?));
+            values.push(SqlValue::Integer(i64_value(end_ms)?));
+            let sql = format!(
+                "SELECT category_path,token_count,coverage_state,observed_at_ms,{column} FROM token_observations WHERE {column} IN ({}) AND repository_bucket IN ({}) AND category_path IN ({}) AND measurement_provenance='provider_reported' AND observed_at_ms>=? AND observed_at_ms<?",
+                placeholders(identifier_chunk.len()),
+                placeholders(family.len()),
+                placeholders(TOKEN_CATEGORIES.len()),
+            );
+            let mut statement = connection
+                .prepare(&sql)
+                .map_err(|_| "source_unavailable".to_owned())?;
+            let mut rows = statement
+                .query(params_from_iter(values))
+                .map_err(|_| "source_unavailable".to_owned())?;
+            while let Some(row) = rows.next().map_err(|_| "source_unavailable".to_owned())? {
+                let source_id = row
+                    .get::<_, String>(4)
+                    .map_err(|_| "source_unavailable".to_owned())?;
+                let Some(operation) = source_operations
+                    .get(&source_id)
+                    .and_then(|operation_id| operations.get(operation_id))
+                else {
+                    continue;
+                };
+                let category = row
+                    .get::<_, String>(0)
+                    .map_err(|_| "source_unavailable".to_owned())?;
+                if !TOKEN_CATEGORIES
+                    .iter()
+                    .any(|(allowed, _)| *allowed == category)
+                {
+                    continue;
+                }
+                let coverage = safe_coverage(
+                    &row.get::<_, String>(2)
+                        .map_err(|_| "source_unavailable".to_owned())?,
+                );
+                let observed = u64::try_from(
+                    row.get::<_, i64>(3)
+                        .map_err(|_| "source_unavailable".to_owned())?,
+                )
+                .map_err(|_| "source_unavailable".to_owned())?;
+                report.evidence = true;
+                increment(&mut report.token_observations, coverage_name(&coverage));
+                report.freshest_at_ms = Some(report.freshest_at_ms.unwrap_or(0).max(observed));
+                let token_count = row
+                    .get::<_, Option<i64>>(1)
+                    .map_err(|_| "source_unavailable".to_owned())?
+                    .and_then(|value| u64::try_from(value).ok());
+                let Some(token_count) = token_count else {
+                    continue;
+                };
+                *report.tokens.entry(category.clone()).or_default() = report
+                    .tokens
+                    .get(&category)
+                    .copied()
+                    .unwrap_or(0)
+                    .saturating_add(token_count);
+                if category != "total_tokens" {
+                    continue;
+                }
+                if let Some(index) = bucket_index(observed, start_ms, bucket_ms, bucket_count) {
+                    report.token_buckets_observed[index] = true;
+                    *report.phase_series[index]
+                        .entry(operation.phase.clone())
+                        .or_default() = report.phase_series[index]
+                        .get(&operation.phase)
+                        .copied()
+                        .unwrap_or(0)
+                        .saturating_add(token_count);
+                    report.bucket_coverage[index] = if coverage == CoverageState::Complete
+                        && report.bucket_coverage[index] != CoverageState::Partial
+                    {
+                        CoverageState::Complete
+                    } else {
+                        CoverageState::Partial
+                    };
+                }
+                increment_pair(
+                    &mut report.activities,
+                    (&operation.phase, &operation.activity),
+                    token_count,
+                );
+            }
         }
     }
     Ok(())
@@ -931,28 +1012,43 @@ fn add_coverage(
     bucket_ms: u64,
     bucket_count: usize,
 ) -> Result<(), String> {
-    let mut statement = connection
-        .prepare(
-            "SELECT operation_id,coverage_state,occurred_at_ms FROM coverage_events WHERE occurred_at_ms>=?1 AND occurred_at_ms<?2",
-        )
-        .map_err(|_| "source_unavailable".to_owned())?;
-    let mut rows = statement
-        .query(rusqlite::params![i64_value(start_ms)?, i64_value(end_ms)?])
-        .map_err(|_| "source_unavailable".to_owned())?;
-    while let Some(row) = rows.next().map_err(|_| "source_unavailable".to_owned())? {
-        let operation = row.get::<_, String>(0).map_err(|_| "source_unavailable")?;
-        if !operations.contains_key(&operation) {
-            continue;
-        }
-        let coverage = safe_coverage(&row.get::<_, String>(1).map_err(|_| "source_unavailable")?);
-        let at = u64::try_from(row.get::<_, i64>(2).map_err(|_| "source_unavailable")?)
-            .map_err(|_| "source_unavailable")?;
-        increment(&mut report.coverage_events, coverage_name(&coverage));
-        report.evidence = true;
-        if coverage != CoverageState::Complete
-            && let Some(index) = bucket_index(at, start_ms, bucket_ms, bucket_count)
-        {
-            report.bucket_coverage[index] = CoverageState::Partial;
+    let mut operation_ids = operations.keys().cloned().collect::<Vec<_>>();
+    operation_ids.sort();
+    for identifiers in operation_ids.chunks(SQLITE_VARIABLE_CHUNK) {
+        let mut values = identifiers
+            .iter()
+            .cloned()
+            .map(SqlValue::Text)
+            .collect::<Vec<_>>();
+        values.push(SqlValue::Integer(i64_value(start_ms)?));
+        values.push(SqlValue::Integer(i64_value(end_ms)?));
+        let sql = format!(
+            "SELECT operation_id,coverage_state,occurred_at_ms FROM coverage_events WHERE operation_id IN ({}) AND occurred_at_ms>=? AND occurred_at_ms<?",
+            placeholders(identifiers.len())
+        );
+        let mut statement = connection
+            .prepare(&sql)
+            .map_err(|_| "source_unavailable".to_owned())?;
+        let mut rows = statement
+            .query(params_from_iter(values))
+            .map_err(|_| "source_unavailable".to_owned())?;
+        while let Some(row) = rows.next().map_err(|_| "source_unavailable".to_owned())? {
+            let coverage = safe_coverage(
+                &row.get::<_, String>(1)
+                    .map_err(|_| "source_unavailable".to_owned())?,
+            );
+            let at = u64::try_from(
+                row.get::<_, i64>(2)
+                    .map_err(|_| "source_unavailable".to_owned())?,
+            )
+            .map_err(|_| "source_unavailable".to_owned())?;
+            increment(&mut report.coverage_events, coverage_name(&coverage));
+            report.evidence = true;
+            if coverage != CoverageState::Complete
+                && let Some(index) = bucket_index(at, start_ms, bucket_ms, bucket_count)
+            {
+                report.bucket_coverage[index] = CoverageState::Partial;
+            }
         }
     }
     Ok(())
@@ -967,29 +1063,37 @@ fn add_intervals(
 ) -> Result<(), String> {
     let mut waits: BTreeMap<String, Vec<(u64, u64)>> = BTreeMap::new();
     let mut unknown_waits = BTreeSet::new();
-    let mut statement = connection
-        .prepare(
-            "SELECT span.operation_id,span.started_at_ms,ended.occurred_at_ms FROM activity_spans span LEFT JOIN activity_span_events ended ON ended.activity_span_id=span.id AND ended.event_kind='ended'",
-        )
-        .map_err(|_| "source_unavailable".to_owned())?;
-    let mut rows = statement
-        .query([])
-        .map_err(|_| "source_unavailable".to_owned())?;
-    while let Some(row) = rows.next().map_err(|_| "source_unavailable".to_owned())? {
-        let operation = row.get::<_, String>(0).map_err(|_| "source_unavailable")?;
-        if !operations.contains_key(&operation) {
-            continue;
-        }
-        let started = u64::try_from(row.get::<_, i64>(1).map_err(|_| "source_unavailable")?)
-            .map_err(|_| "source_unavailable")?;
-        let ended = row
-            .get::<_, Option<i64>>(2)
-            .map_err(|_| "source_unavailable")?
-            .and_then(|value| u64::try_from(value).ok());
-        if let Some(interval) = clip_interval(started, ended, start_ms, end_ms) {
-            waits.entry(operation).or_default().push(interval);
-        } else {
-            unknown_waits.insert(operation);
+    let mut operation_ids = operations.keys().cloned().collect::<Vec<_>>();
+    operation_ids.sort();
+    for identifiers in operation_ids.chunks(SQLITE_VARIABLE_CHUNK) {
+        let sql = format!(
+            "SELECT span.operation_id,span.started_at_ms,ended.occurred_at_ms FROM activity_spans span LEFT JOIN activity_span_events ended ON ended.activity_span_id=span.id AND ended.event_kind='ended' WHERE span.operation_id IN ({})",
+            placeholders(identifiers.len())
+        );
+        let mut statement = connection
+            .prepare(&sql)
+            .map_err(|_| "source_unavailable".to_owned())?;
+        let mut rows = statement
+            .query(params_from_iter(identifiers.iter().cloned()))
+            .map_err(|_| "source_unavailable".to_owned())?;
+        while let Some(row) = rows.next().map_err(|_| "source_unavailable".to_owned())? {
+            let operation = row
+                .get::<_, String>(0)
+                .map_err(|_| "source_unavailable".to_owned())?;
+            let started = u64::try_from(
+                row.get::<_, i64>(1)
+                    .map_err(|_| "source_unavailable".to_owned())?,
+            )
+            .map_err(|_| "source_unavailable".to_owned())?;
+            let ended = row
+                .get::<_, Option<i64>>(2)
+                .map_err(|_| "source_unavailable".to_owned())?
+                .and_then(|value| u64::try_from(value).ok());
+            if let Some(interval) = clip_interval(started, ended, start_ms, end_ms) {
+                waits.entry(operation).or_default().push(interval);
+            } else {
+                unknown_waits.insert(operation);
+            }
         }
     }
     for operation in operations.values() {
@@ -1058,6 +1162,7 @@ fn combine(
     let mut token_coverage = BTreeMap::new();
     let mut coverage_events = BTreeMap::new();
     let mut series = vec![BTreeMap::new(); bucket_count];
+    let mut token_buckets_observed = vec![false; bucket_count];
     let mut bucket_coverage = vec![CoverageState::Unobserved; bucket_count];
     let mut activities = BTreeMap::new();
     let mut activity_operations = BTreeMap::new();
@@ -1088,6 +1193,14 @@ fn combine(
         merge_counts(&mut coverage_events, &report.coverage_events);
         for (index, values) in report.phase_series.iter().enumerate() {
             merge_counts(&mut series[index], values);
+            let observed = report
+                .token_buckets_observed
+                .get(index)
+                .copied()
+                .unwrap_or(!values.is_empty());
+            if observed {
+                token_buckets_observed[index] = true;
+            }
             match report.bucket_coverage[index] {
                 CoverageState::Partial => bucket_coverage[index] = CoverageState::Partial,
                 CoverageState::Complete if bucket_coverage[index] == CoverageState::Unobserved => {
@@ -1237,7 +1350,7 @@ fn combine(
                 bucket_start_ms: start_ms.saturating_add(bucket_ms.saturating_mul(index as u64)),
                 bucket_end_ms: start_ms.saturating_add(bucket_ms.saturating_mul(index as u64 + 1)),
                 coverage: bucket_coverage[index].clone(),
-                total_tokens: phases.values().copied().sum(),
+                total_tokens: token_buckets_observed[index].then(|| phases.values().copied().sum()),
                 phases,
             }
         })
@@ -1775,7 +1888,12 @@ mod tests {
              CREATE TABLE coverage_events(operation_id TEXT,coverage_state TEXT,occurred_at_ms INTEGER);
              CREATE TABLE activity_spans(id TEXT PRIMARY KEY,operation_id TEXT,started_at_ms INTEGER);
              CREATE TABLE activity_span_events(activity_span_id TEXT,event_kind TEXT,occurred_at_ms INTEGER);
-             CREATE TABLE effective_classification_events(operation_id TEXT,phase TEXT,activity TEXT,activity_state TEXT,provenance TEXT);",
+             CREATE TABLE effective_classification_events(operation_id TEXT,phase TEXT,activity TEXT,activity_state TEXT,provenance TEXT);
+             CREATE INDEX token_model_lookup ON token_observations(model_request_id,repository_bucket,category_path,observed_at_ms);
+             CREATE INDEX token_tool_lookup ON token_observations(tool_invocation_id,repository_bucket,category_path,observed_at_ms);
+             CREATE INDEX coverage_operation_lookup ON coverage_events(operation_id,occurred_at_ms);
+             CREATE INDEX effective_operation_lookup ON effective_classification_events(operation_id);
+             CREATE INDEX span_operation_lookup ON activity_spans(operation_id);",
         )
         .unwrap();
         connection
@@ -1946,13 +2064,19 @@ mod tests {
         assert_eq!(report.time.request_to_delivery.measured_ms, 10_000);
         assert_eq!(report.time.execution_wall.measured_ms, 10_000);
         assert_eq!(report.time.summed_agent_active.measured_ms, 9_000);
+        let observed = report
+            .series
+            .iter()
+            .filter_map(|point| point.total_tokens)
+            .collect::<Vec<_>>();
+        assert_eq!(observed, vec![100]);
         assert_eq!(
             report
                 .series
                 .iter()
-                .map(|point| point.total_tokens)
-                .sum::<u64>(),
-            100
+                .filter(|point| point.total_tokens.is_none())
+                .count(),
+            report.series.len() - 1
         );
         let rendered = serde_json::to_string(&report).unwrap();
         for private in [
@@ -1965,6 +2089,128 @@ mod tests {
         ] {
             assert!(!rendered.contains(private));
         }
+    }
+
+    #[test]
+    fn repository_detail_uses_indexed_identifiers_at_production_scale() {
+        let temporary = tempdir().unwrap();
+        let codex_home = temporary.path().join("codex-home");
+        let (canonical, now_ms) = source_database(&codex_home, 4);
+        let source_path = codex_home.join("usage/usage.sqlite3");
+        let mut source = Connection::open(source_path).unwrap();
+        let transaction = source.transaction().unwrap();
+        {
+            let mut token = transaction
+                .prepare("INSERT INTO token_observations VALUES('total_tokens',1,'complete',?1,'unrelated',NULL,?2,'provider_reported')")
+                .unwrap();
+            let mut coverage = transaction
+                .prepare("INSERT INTO coverage_events VALUES('unrelated','complete',?1)")
+                .unwrap();
+            let at = i64::try_from(now_ms - 30_000).unwrap();
+            let bucket = "a".repeat(64);
+            for _ in 0..100_000 {
+                token.execute(rusqlite::params![at, bucket]).unwrap();
+                coverage.execute([at]).unwrap();
+            }
+        }
+        transaction.commit().unwrap();
+        drop(source);
+
+        let config = config(temporary.path(), codex_home);
+        std::fs::create_dir_all(&config.state_dir).unwrap();
+        let authority = Database::open(config.database_path()).unwrap();
+        let repository = RepositoryRecord {
+            repository_id: "r0123456789abcdef".into(),
+            display_name: "Example".into(),
+            root_path: temporary.path().join("repo"),
+        };
+        std::fs::create_dir(&repository.root_path).unwrap();
+        let repository_id = repository.repository_id.clone();
+        let uid = rustix::process::getuid().as_raw();
+        authority
+            .transaction(move |transaction| {
+                transaction.execute("INSERT INTO repositories(repository_id,root_path,display_name,registered_at,registered_by_uid,last_seen_at) VALUES(?1,'/repo','Example','t',1,'t')",[&repository_id])?;
+                transaction.execute("INSERT INTO codex_usage_repository_links VALUES(?1,?2,?3,4,1,'t')",rusqlite::params![uid,repository_id,canonical])?;
+                Ok(())
+            })
+            .unwrap();
+        let usage = CodexUsage::with_probe(
+            config,
+            authority,
+            Arc::new(FixedClock(datetime!(2026-09-04 00:00 UTC))),
+            Arc::new(NoProbe),
+        );
+        let detail = usage
+            .repository_buckets(
+                &repository,
+                UsageRange::Hours24,
+                60_000,
+                2,
+                now_ms,
+                now_ms,
+                true,
+            )
+            .unwrap();
+        assert_eq!(detail.totals.total_tokens, Some(100));
+        assert_eq!(
+            detail
+                .series
+                .iter()
+                .map(|point| point.total_tokens)
+                .collect::<Vec<_>>(),
+            vec![None, Some(100)]
+        );
+    }
+
+    #[test]
+    fn partial_source_failure_keeps_missing_bucket_blank_and_real_zero_measured() {
+        let report = SourceReport {
+            database_schema: 4,
+            taxonomy_version: 1,
+            evidence: true,
+            tokens: BTreeMap::from([("total_tokens".into(), 0)]),
+            token_observations: BTreeMap::from([("complete".into(), 1)]),
+            phase_series: vec![
+                BTreeMap::new(),
+                BTreeMap::from([("implementation".into(), 0)]),
+            ],
+            token_buckets_observed: vec![false, true],
+            bucket_coverage: vec![CoverageState::Unobserved, CoverageState::Complete],
+            ..SourceReport::default()
+        };
+        let combined = combine(
+            &RepositoryRecord {
+                repository_id: "r1".into(),
+                display_name: "Example".into(),
+                root_path: "/repo".into(),
+            },
+            UsageRange::Hours24,
+            120_000,
+            0,
+            60_000,
+            2,
+            &[(1, report)],
+            BTreeMap::from([("source_unavailable".into(), 1)]),
+            2,
+        );
+        assert_eq!(combined.coverage.state, CoverageState::Partial);
+        assert_eq!(
+            combined
+                .series
+                .iter()
+                .map(|point| point.coverage.clone())
+                .collect::<Vec<_>>(),
+            vec![CoverageState::Partial, CoverageState::Partial]
+        );
+        assert_eq!(
+            combined
+                .series
+                .iter()
+                .map(|point| point.total_tokens)
+                .collect::<Vec<_>>(),
+            vec![None, Some(0)]
+        );
+        assert_eq!(combined.totals.total_tokens, Some(0));
     }
 
     #[test]

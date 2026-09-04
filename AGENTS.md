@@ -14,6 +14,31 @@ The universal cross-repository policy is `reference/universal/AGENTS.md`.
 - A dirty, stale, non-main, or non-fast-forward live checkout blocks service
   restart and readiness.
 
+## Shared DevCoordinator2 test surface
+
+- DevCoordinator2 is always a non-production test environment for its own
+  development. Its existing Console server and port are the default shared UI
+  preview surface; agents do not need to ask whether they may publish an
+  in-scope preliminary UI correction there.
+- Keep one shared server on the same port. Do not create per-agent preview
+  servers or ports.
+- Assume concurrent agents are working on different pages or URLs unless the
+  assigned work or discovered edits show otherwise. They may update the shared
+  test surface concurrently and must preserve one another's changes.
+- Different pages or routes remain non-conflicting when their implementations
+  occupy distinct symbols or source regions inside one file. Coordinate only
+  an actual overlapping symbol, hunk, shared component, or incompatible server
+  mutation.
+- Keep the server running and expose asset-only changes through reload or
+  revalidation. When a restart is genuinely required, coalesce the current
+  shared changes into one restart so agents do not restart over one another.
+- Preserve the canonical clean-main requirement. When serving unmerged UI
+  changes, direct the shared server at a designated shared development
+  worktree rather than editing the canonical checkout.
+- The test-server designation authorizes rapid preview and verification. It
+  does not make persistent data, credentials, authorization controls, or
+  root-service state disposable.
+
 ## Authoritative project context
 
 - Read `security-assumptions.md`, relevant requirements and decisions, and

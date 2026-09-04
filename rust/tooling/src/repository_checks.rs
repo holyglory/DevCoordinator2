@@ -2481,14 +2481,18 @@ pub fn audit_user_issue_ledgers(root: &Path) -> UserIssueLedgerResult {
     }
 }
 
-pub const REQUIRED_POLICY_SECTIONS: [&str; 17] = [
+pub const REQUIRED_POLICY_SECTIONS: [&str; 21] = [
     "Use relevant authoritative context",
+    "Tool orchestration",
     "Ground security-posture decisions in confirmed assumptions",
     "Keep decisions compact and usable",
     "Implement the exact scope",
+    "Keep completion and execution histories separate",
     "Delegate only contract-ready work",
     "Parallelize independent work and first-failure fixing",
+    "Wait for events instead of polling",
     "Validate at semantic checkpoints",
+    "Deliver UI previews before broad validation",
     "Finish diagnostic cycles before batch fixing",
     "Keep behavior truthful",
     "Prohibit unimplemented product behavior",
@@ -2623,6 +2627,19 @@ const CONTEXT_TERMS: &[&str] = &[
     "single-user environment",
 ];
 
+const TOOL_ORCHESTRATION_TERMS: &[&str] = &[
+    "partition calls into dependency layers",
+    "safe, independent calls in the same layer concurrently",
+    "programmatic orchestration",
+    "bounded read-only workflows",
+    "pagination, filtering, joining, deduplication, and aggregation",
+    "sequential direct calls only when",
+    "semantic judgment, approval, or data from the preceding call",
+    "never parallelize conflicting mutations",
+    "compact structured results",
+    "conclusions, evidence, and errors",
+];
+
 const SECURITY_TERMS: &[&str] = &[
     "every decision that adds, changes, weakens, removes, or intentionally omits",
     "security-posture control",
@@ -2729,49 +2746,35 @@ const EXACT_SCOPE_TERMS: &[&str] = &[
     "pause once and explain the actual scope before continuing",
     "recommend the smallest architecture that delivers the request",
     "do not equate more checks, parsers, adapters, or supported formats with a more complete implementation",
-    "every explicit requirement",
-    "user-selected detail",
-    "visible promise",
-    "exposed value",
-    "necessary supporting behavior",
-    "no agreed gap is too small to record",
-    "devcoordinator2's planning database",
-    "one authoritative",
-    "permanent event history",
-    "`plan_overview`",
-    "`task_history`",
-    "`task_create`",
-    "`task_update`",
-    "estimated lines of code",
-    "subtask trees",
-    "`daemon_unavailable`",
-    "blocks the affected completion claim",
-    "database issues",
-    "partial implementations",
-    "reader who does not know the implementation",
-    "remaining outcome starts in plain language",
-    "what users or the product cannot do",
-    "readiness is blocked",
-    "concrete unblock condition",
-    "observable proof",
-    "technical detail",
-    "never replace that account",
-    "raw logs remain in cold artifacts",
-    "kind `stub`, `improvement`, or `user_feedback`",
-    "never delete an issue or prior event",
-    "append-only state transitions",
-    "bounded active projection",
-    "bounded history",
-    "database outage blocks affected completion claims",
-    "never authorizes a file, alternate store, or chat-memory fallback",
-    "database event history is the only completion history",
-    "`decision_record`",
-    "before readiness",
-    "end-to-end",
-    "unblock condition",
-    "direction, current capabilities, user-visible gaps, and blockers",
-    "plain language before any technical detail",
-    "decode the table",
+];
+
+const COMPLETION_HISTORY_TERMS: &[&str] = &[
+    "completion ledger contains durable unfinished outcomes, never execution attempts",
+    "passed, failed, cancelled, timed-out, invalidated, retried, or superseded run",
+    "only in governed run history",
+    "diagnose failures before changing work state",
+    "create or reopen one task only when evidence proves",
+    "durable missing or regressed outcome not already represented",
+    "passing run may support completion but never closes a task automatically",
+    "failing run never changes task status automatically",
+    "structured evidence references",
+    "do not copy run status, logs, or failure prose into task history",
+    "compact referenced run receipts",
+    "execution-only actions are not tasks",
+    "implementing missing test or harness capability may be a task",
+    "running or rerunning it is not",
+    "keep every agreed gap active until resolved or explicitly removed",
+    "configured software-owned database",
+    "size and split large work",
+    "append-only history",
+    "never fall back to files or chat memory",
+    "database unavailability blocks the affected completion claim",
+    "write tasks for a non-specialist",
+    "remaining outcome, user impact, unblock condition, and observable proof",
+    "externally blocked outcomes open",
+    "consequential choices in decision history, not task state",
+    "no request-related unfinished outcome and fresh required run evidence",
+    "direction, capabilities, gaps, and blockers in plain language",
 ];
 
 const DELEGATION_TERMS: &[&str] = &[
@@ -2794,20 +2797,15 @@ const DELEGATION_TERMS: &[&str] = &[
 ];
 
 const PARALLEL_TERMS: &[&str] = &[
-    "dependencies",
-    "mutable-state ownership",
-    "start every ready",
-    "concurrently",
-    "available runtime or tool support",
-    "configured coordinator",
-    "measured host-wide adaptive admission",
-    "do not add repository-local worker counts",
-    "fake dependency chains",
-    "second capacity controller",
+    "dependency-ready, non-conflicting work immediately",
+    "configured host-wide scheduler",
+    "do not add local worker limits",
+    "fake dependencies",
+    "another capacity controller",
     "serialize only",
-    "concrete dependency",
-    "shared mutable-state conflict",
-    "actual runtime/tool limitation",
+    "real dependency",
+    "mutable-state conflict",
+    "runtime limitation",
     "all-settled sibling behavior",
     "ordinary failure does not cancel",
     "missing capability",
@@ -2818,13 +2816,24 @@ const PARALLEL_TERMS: &[&str] = &[
     "original sealed run continues unchanged",
     "gathers the remaining failures",
     "do not inject fixes",
-    "event-driven readiness",
-    "100 ms",
-    "failure deadline",
     "invalidate expensive downstream evidence",
     "real success dependencies",
     "independent preflights",
     "unrelated safe branches",
+];
+
+const WAIT_TERMS: &[&str] = &[
+    "subscribe once through a blocking event wait",
+    "never spend model turns on status polling or periodic shell checks",
+    "expected-event deadline",
+    "multiplex pending subscriptions",
+    "one shared scheduler returns all due heartbeats in one wake",
+    "fetch bounded authoritative state once",
+    "continue from its cursor",
+    "one software-owned watcher may poll",
+    "agent never does",
+    "timeouts are failure ceilings",
+    "polling intervals may not exceed 100 ms",
 ];
 
 const VALIDATION_TERMS: &[&str] = &[
@@ -2850,24 +2859,39 @@ const VALIDATION_TERMS: &[&str] = &[
     "implementation and test infrastructure are both frozen",
 ];
 
+const PREVIEW_TERMS: &[&str] = &[
+    "authorized non-production surface",
+    "narrowest focused automated and rendered checks",
+    "update that surface",
+    "exact url, route, state, and viewport",
+    "without waiting for broad validation",
+    "label the result preliminary",
+    "feedback, not readiness or final visual review",
+    "broader validation against a frozen snapshot",
+    "mutable preview remains available",
+    "later changes leave that run diagnostic-only",
+    "verify the final frozen candidate afresh",
+    "never infer production permission",
+    "one shared preview",
+    "non-conflicting routes or source regions together",
+    "serialize only actual edit or server conflicts",
+];
+
 const CYCLE_TERMS: &[&str] = &[
-    "continue to the end",
-    "non-critical failures",
-    "authoritative completion ledger",
-    "cold artifact",
-    "do not fix one small gap and restart",
+    "finite tests, debugging, audits, rehearsals, and deployments finish after ordinary failures",
+    "every execution in governed run history",
+    "verbose output in cold artifacts",
+    "do not create tasks as findings appear",
     "security or safety harm",
     "data loss",
     "shared-state corruption",
     "destruction of useful evidence",
+    "diagnose and repair ordinary failures in isolated state while the run continues",
     "group findings by cause",
-    "fix the batch",
-    "rerun the complete relevant cycle",
-    "test server",
-    "already included in the agreed task",
-    "deploy it",
-    "tell the user what remains",
-    "incomplete test deployment",
+    "promote only durable gaps",
+    "batch fixes",
+    "focused checks",
+    "one final complete pass",
 ];
 
 const TRUTHFUL_TERMS: &[&str] = &[
@@ -2905,15 +2929,11 @@ const PRODUCT_BEHAVIOR_TERMS: &[&str] = &[
     "production stand-in",
     "honest unavailable state",
     "ledger the agreed missing behavior",
-    "each missing or partial agreed behavior",
-    "authoritative completion ledger",
-    "generic future-production item is insufficient",
-    "affected journeys",
-    "screens and responsive variants",
-    "files",
+    "each agreed missing behavior as a specific durable outcome",
+    "affected journey",
     "user impact",
     "unblock condition",
-    "required rendered end-to-end verification",
+    "rendered proof",
     "specification explicitly requires communicating future availability",
     "semantically disabled",
     "visibly labelled unavailable",
@@ -3697,6 +3717,11 @@ pub fn find_app_wide_policy_violations(text: &str) -> Vec<String> {
             CONTEXT_TERMS,
         ),
         (
+            "Tool orchestration",
+            "tool-orchestration contract",
+            TOOL_ORCHESTRATION_TERMS,
+        ),
+        (
             "Ground security-posture decisions in confirmed assumptions",
             "security-assumptions gate",
             SECURITY_TERMS,
@@ -3712,6 +3737,11 @@ pub fn find_app_wide_policy_violations(text: &str) -> Vec<String> {
             EXACT_SCOPE_TERMS,
         ),
         (
+            "Keep completion and execution histories separate",
+            "completion-versus-execution contract",
+            COMPLETION_HISTORY_TERMS,
+        ),
+        (
             "Delegate only contract-ready work",
             "contract-ready delegation contract",
             DELEGATION_TERMS,
@@ -3722,9 +3752,19 @@ pub fn find_app_wide_policy_violations(text: &str) -> Vec<String> {
             PARALLEL_TERMS,
         ),
         (
+            "Wait for events instead of polling",
+            "event-wait contract",
+            WAIT_TERMS,
+        ),
+        (
             "Validate at semantic checkpoints",
             "semantic-checkpoint validation contract",
             VALIDATION_TERMS,
+        ),
+        (
+            "Deliver UI previews before broad validation",
+            "preview-first contract",
+            PREVIEW_TERMS,
         ),
         (
             "Finish diagnostic cycles before batch fixing",
@@ -5101,6 +5141,11 @@ mod tests {
             fs::read_to_string(repository_root().join("reference/universal/AGENTS.md")).unwrap();
         let section_cases = [
             (
+                "Tool orchestration",
+                "- Run every tool call one at a time and return its full raw output.",
+                "tool-orchestration contract",
+            ),
+            (
                 "Ground security-posture decisions in confirmed assumptions",
                 "- Apply generally accepted security practices in proportion to the work.\n- Ask before expanding the requested scope.",
                 "security-assumptions gate",
@@ -5126,9 +5171,24 @@ mod tests {
                 "parallel-work contract",
             ),
             (
+                "Wait for events instead of polling",
+                "- Poll status from a new agent turn once per minute.",
+                "event-wait contract",
+            ),
+            (
                 "Implement the exact scope",
                 "- Keep a historical list of completed work and call partial work done.",
                 "exact-scope contract",
+            ),
+            (
+                "Keep completion and execution histories separate",
+                "- Turn every passing and failing run into a completion task.",
+                "completion-versus-execution contract",
+            ),
+            (
+                "Deliver UI previews before broad validation",
+                "- Withhold the test preview until every broad release check finishes.",
+                "preview-first contract",
             ),
             (
                 "Learn from agent-made mistakes",
@@ -5212,7 +5272,7 @@ mod tests {
                 "decision-memory contract",
             ),
             (
-                "measured host-wide adaptive admission",
+                "configured host-wide scheduler",
                 "repository-selected fixed admission",
                 "parallel-work contract",
             ),
@@ -5222,9 +5282,9 @@ mod tests {
                 "semantic-checkpoint validation contract",
             ),
             (
-                "Never delete an issue or prior event",
-                "Delete issues and prior events after release",
-                "exact-scope contract",
+                "never fall back to files or chat memory",
+                "fall back to a Markdown file when the database is unavailable",
+                "completion-versus-execution contract",
             ),
         ];
         for (old, new, expected) in replacements {

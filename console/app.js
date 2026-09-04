@@ -2572,14 +2572,17 @@ function progressBarLineLane(data, {
   return `<svg class="progress-pulse-chart progress-bar-line-chart" viewBox="0 0 ${width} ${height}" role="img" aria-label="${esc(label)} by ${esc(data.period)}: completed above the baseline, ${esc(incomingLabel.toLowerCase())} below, with completed running total"><title>${esc(label)} by ${esc(data.period)}</title><desc>Solid bars above the baseline show completed work. Outlined bars below show incoming work. The thin line shows the completed running total. Exact values follow the chart.</desc><line x1="${left}" x2="${width - right}" y1="${baseline}" y2="${baseline}" class="progress-grid-h progress-zero-line"/><text x="14" y="${top + 14}" class="progress-lane-title">${esc(label)}</text><text x="14" y="${top + 34}" class="progress-lane-detail">${esc(detail)}</text><text x="${width - 10}" y="${top + 22}" text-anchor="end" class="progress-lane-value progress-running-${cls}">${esc(format(total))}</text><text x="${width - 10}" y="${top + 38}" text-anchor="end" class="progress-lane-detail">${esc(completedVerb)}</text><text x="${width - 10}" y="${baseline + 24}" text-anchor="end" class="progress-lane-value progress-incoming-${cls}">${esc(format(incomingTotal))}</text><text x="${width - 10}" y="${baseline + 40}" text-anchor="end" class="progress-lane-detail">${esc(incomingVerb)}</text><polyline points="${linePoints.join(' ')}" class="progress-running-line progress-running-${cls}"/>${dots}${bars}${incomingBars}${barLabels}${incomingLabels}${empty}${labels}</svg>`;
 }
 
-function progressEvidenceLane(data, { key, label, detail, cls, format, fixedMax = null }) {
+function progressEvidenceLane(data, {
+  key, label, detail, cls, format, fixedMax = null, summarize = null,
+}) {
   const values = data.series.map((point) => point[key]);
-  const observed = values.some((value) => value != null);
+  const observedValues = values.filter((value) => value != null);
+  const observed = observedValues.length > 0;
   const coverage = cls === 'tests' ? data.coverage.tests : data.coverage.tokens;
   const unavailable = cls === 'tests'
     ? 'No test runs recorded for this period.'
     : coverage.state === 'unobserved' ? 'No token data recorded for this period.' : 'Some token data is missing.';
-  if (!observed) return `<div class="progress-evidence-lane"><div><strong>${esc(label)}</strong><small>${esc(detail)}</small></div><p>${esc(unavailable)}</p><strong>—</strong></div>`;
+  if (!observed) return `<div class="progress-evidence-lane" data-progress-evidence="${esc(cls)}"><div><strong>${esc(label)}</strong><small>${esc(detail)}</small></div><p>${esc(unavailable)}</p><strong>—</strong></div>`;
   const width = Math.max(650, 220 + values.length * 38); const height = 58;
   const left = 168; const right = 92; const top = 8; const bottom = 8;
   const chartWidth = width - left - right;
@@ -2588,14 +2591,18 @@ function progressEvidenceLane(data, { key, label, detail, cls, format, fixedMax 
   const y = (value) => top + (height - top - bottom) - (Number(value) / max) * (height - top - bottom - 10);
   const polylines = progressSegments(values, x, y).map((points) => `<polyline points="${points.join(' ')}" class="progress-evidence-line progress-running-${cls}"/>`).join('');
   const dots = values.map((value, index) => value == null ? '' : `<circle cx="${x(index).toFixed(1)}" cy="${y(value).toFixed(1)}" r="3" class="progress-evidence-dot progress-running-${cls}"><title>${esc(`${label}: ${format(value)} · ${utcBucket(data.series[index].bucket_start_ms, true)} UTC`)}</title></circle>`).join('');
-  const last = [...values].reverse().find((value) => value != null);
-  const note = coverage.state === 'complete' ? detail : 'Some data is missing; gaps stay blank.';
-  return `<div class="progress-evidence-lane"><div><strong>${esc(label)}</strong><small>${esc(note)}</small></div><svg class="progress-evidence-chart" viewBox="0 0 ${width} ${height}" role="img" aria-label="${esc(label)} across this period"><line x1="${left}" x2="${width - right}" y1="${height - bottom}" y2="${height - bottom}" class="progress-grid-h"/>${polylines}${dots}</svg><strong>${esc(format(last))}</strong></div>`;
+  const summary = summarize
+    ? summarize(observedValues)
+    : [...values].reverse().find((value) => value != null);
+  const note = coverage.state === 'complete' ? detail : cls === 'tokens'
+    ? 'Measured total; missing buckets stay blank.'
+    : 'Some data is missing; gaps stay blank.';
+  return `<div class="progress-evidence-lane" data-progress-evidence="${esc(cls)}"><div><strong>${esc(label)}</strong><small>${esc(note)}</small></div><svg class="progress-evidence-chart" viewBox="0 0 ${width} ${height}" role="img" aria-label="${esc(label)} across this period"><line x1="${left}" x2="${width - right}" y1="${height - bottom}" y2="${height - bottom}" class="progress-grid-h"/>${polylines}${dots}</svg><strong aria-label="${esc(`${label} measured in this period: ${format(summary)}`)}">${esc(format(summary))}</strong></div>`;
 }
 
 function progressPulseChart(data) {
   if (!data.series.length) return stateBlock('empty', 'No progress buckets in this period.');
-  return `<div class="progress-chart-scroll" tabindex="0" aria-label="Scrollable daily progress charts"><div class="progress-chart-canvas"><div class="progress-chart-legend"><span><i class="progress-legend-bar" aria-hidden="true"></i>Green = tasks</span><span><i class="progress-legend-bar progress-legend-lines" aria-hidden="true"></i>Blue = planned lines</span><span><i class="progress-legend-bar progress-legend-incoming" aria-hidden="true"></i>Solid above = completed · outlined below = incoming</span><span><i class="progress-legend-line" aria-hidden="true"></i>Line = completed running total</span></div>${progressBarLineLane(data, { key: 'tasks_completed', incomingKey: 'tasks_created', cumulativeKey: 'tasks_cumulative', label: 'Tasks finished and created', completedLabel: 'Tasks finished', incomingLabel: 'Tasks created', detail: 'Finished above · created below', cls: 'tasks', format: compactNumber })}${progressBarLineLane(data, { key: 'planned_lines_completed', incomingKey: 'planned_lines_added', cumulativeKey: 'lines_cumulative', label: 'Planned lines completed and added', completedLabel: 'Planned lines completed', incomingLabel: 'Planned lines added', detail: 'Completed above · added below', cls: 'lines', format: compactNumber })}${progressEvidenceLane(data, { key: 'test_pass_rate', label: 'Test pass rate', detail: 'Recorded terminal runs', cls: 'tests', format: progressPercent, fixedMax: 1 })}${progressEvidenceLane(data, { key: 'total_tokens', label: 'Token use', detail: 'Provider total tokens', cls: 'tokens', format: compactNumber })}<p class="progress-missing-note">Missing information stays blank and is never counted as zero.</p></div></div>`;
+  return `<div class="progress-chart-scroll" tabindex="0" aria-label="Scrollable daily progress charts"><div class="progress-chart-canvas"><div class="progress-chart-legend"><span><i class="progress-legend-bar" aria-hidden="true"></i>Green = tasks</span><span><i class="progress-legend-bar progress-legend-lines" aria-hidden="true"></i>Blue = planned lines</span><span><i class="progress-legend-bar progress-legend-incoming" aria-hidden="true"></i>Solid above = completed · outlined below = incoming</span><span><i class="progress-legend-line" aria-hidden="true"></i>Line = completed running total</span></div>${progressBarLineLane(data, { key: 'tasks_completed', incomingKey: 'tasks_created', cumulativeKey: 'tasks_cumulative', label: 'Tasks finished and created', completedLabel: 'Tasks finished', incomingLabel: 'Tasks created', detail: 'Finished above · created below', cls: 'tasks', format: compactNumber })}${progressBarLineLane(data, { key: 'planned_lines_completed', incomingKey: 'planned_lines_added', cumulativeKey: 'lines_cumulative', label: 'Planned lines completed and added', completedLabel: 'Planned lines completed', incomingLabel: 'Planned lines added', detail: 'Completed above · added below', cls: 'lines', format: compactNumber })}${progressEvidenceLane(data, { key: 'test_pass_rate', label: 'Test pass rate', detail: 'Recorded terminal runs', cls: 'tests', format: progressPercent, fixedMax: 1 })}${progressEvidenceLane(data, { key: 'total_tokens', label: 'Token use', detail: 'Provider tokens · selected period', cls: 'tokens', format: compactNumber, summarize: (items) => items.reduce((sum, value) => sum + Number(value), 0) })}<p class="progress-missing-note">Missing information stays blank and is never counted as zero.</p></div></div>`;
 }
 
 function progressReleaseWork(data, repositoryId) {

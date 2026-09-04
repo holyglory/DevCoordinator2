@@ -210,8 +210,7 @@ impl ProgressService {
         )?;
         for (bucket, point) in buckets.iter_mut().zip(&usage.series) {
             bucket.token_coverage = point.coverage.clone();
-            bucket.total_tokens =
-                (point.coverage != CoverageState::Unobserved).then_some(point.total_tokens);
+            bucket.total_tokens = point.total_tokens;
         }
         let split = window.current_buckets;
         let (previous_buckets, current_buckets) = buckets.split_at(split);

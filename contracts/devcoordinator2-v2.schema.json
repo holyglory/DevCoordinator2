@@ -19913,15 +19913,17 @@
               "total_tokens": {
                 "format": "uint64",
                 "minimum": 0,
-                "type": "integer"
+                "type": [
+                  "integer",
+                  "null"
+                ]
               }
             },
             "required": [
               "bucket_start_ms",
               "bucket_end_ms",
               "coverage",
-              "phases",
-              "total_tokens"
+              "phases"
             ],
             "type": "object"
           },
