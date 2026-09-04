@@ -932,7 +932,7 @@ database="app_test"
 }
 
 #[test]
-fn recovery_stops_stale_runtime_and_records_interrupted_summary() {
+fn recovery_skips_unavailable_worktree_and_records_interrupted_summary() {
     let temporary = tempdir().unwrap();
     let worktree = temporary.path().join("repository");
     std::fs::create_dir(&worktree).unwrap();
@@ -982,6 +982,23 @@ fn recovery_stops_stale_runtime_and_records_interrupted_summary() {
     let registered = registry
         .register(&worktree, caller.uid, caller.gid)
         .unwrap();
+    let unavailable = temporary.path().join("unavailable-repository");
+    std::fs::create_dir(&unavailable).unwrap();
+    assert!(
+        std::process::Command::new("git")
+            .args(["init", "--quiet"])
+            .current_dir(&unavailable)
+            .env_clear()
+            .env("PATH", "/usr/bin:/bin")
+            .env("HOME", "/nonexistent")
+            .status()
+            .unwrap()
+            .success()
+    );
+    registry
+        .register(&unavailable, caller.uid, caller.gid)
+        .unwrap();
+    std::fs::remove_dir_all(&unavailable).unwrap();
     let run_id = "t20260904T000000Z-aabbcc";
     let store = TestRunStore;
     let prepared = store

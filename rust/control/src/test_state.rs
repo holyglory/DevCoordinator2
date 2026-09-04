@@ -205,7 +205,9 @@ impl TestRunStore {
         &self,
         worktree: &Path,
     ) -> Result<Option<TestSummary>, TestStateError> {
-        let root = open_worktree(worktree)?;
+        let Some(root) = open_worktree_if_present(worktree)? else {
+            return Ok(None);
+        };
         let Some(current) = open_chain(&root, &[".devcoordinator", "test", "current"])? else {
             return Ok(None);
         };
@@ -221,7 +223,9 @@ impl TestRunStore {
     }
 
     pub fn open_current(&self, worktree: &Path) -> Result<Option<File>, TestStateError> {
-        let root = open_worktree(worktree)?;
+        let Some(root) = open_worktree_if_present(worktree)? else {
+            return Ok(None);
+        };
         open_chain(&root, &[".devcoordinator", "test", "current"])
     }
 
@@ -570,18 +574,25 @@ pub fn executor_tier(tier: devcoordinator2_api::params::ValidationTier) -> Valid
 }
 
 fn open_worktree(path: &Path) -> Result<File, TestStateError> {
+    open_worktree_if_present(path)?
+        .ok_or_else(|| errno("open worktree root", rustix::io::Errno::NOENT))
+}
+
+fn open_worktree_if_present(path: &Path) -> Result<Option<File>, TestStateError> {
     if !path.is_absolute() {
         return Err(TestStateError::Invalid(
             "worktree root must be absolute".into(),
         ));
     }
-    unix_fs::open(
+    match unix_fs::open(
         path,
         OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
         Mode::empty(),
-    )
-    .map(File::from)
-    .map_err(|error| errno("open worktree root", error))
+    ) {
+        Ok(descriptor) => Ok(Some(File::from(descriptor))),
+        Err(rustix::io::Errno::NOENT) => Ok(None),
+        Err(error) => Err(errno("open worktree root", error)),
+    }
 }
 
 fn open_chain(root: &File, names: &[&str]) -> Result<Option<File>, TestStateError> {
