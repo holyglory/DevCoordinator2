@@ -12,6 +12,7 @@ pub mod decision_import;
 pub mod formal_review;
 pub mod install;
 pub mod instance;
+pub mod journey_docs;
 pub mod legacy_export;
 pub mod legacy_import;
 pub mod python_guard;

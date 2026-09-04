@@ -76,6 +76,10 @@ enum FormalUiCommand {
 
 #[derive(Debug, Subcommand)]
 enum AuditCommand {
+    JourneyDocs {
+        #[command(subcommand)]
+        command: JourneyDocsCommand,
+    },
     /// Build a deterministic full-repository audit queue and manifest.
     BuildFullRepo {
         #[arg(long, default_value = ".")]
@@ -139,6 +143,19 @@ enum AuditCommand {
         #[arg(long)]
         json: bool,
     },
+}
+
+#[derive(Debug, Subcommand)]
+enum JourneyDocsCommand {
+    /// Inventory existing product and journey documentation.
+    Inventory {
+        #[arg(long, default_value = ".")]
+        repo: PathBuf,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Verify a finished journey-documentation audit report.
+    Verify { report: PathBuf },
 }
 
 #[derive(Debug, Subcommand)]
@@ -636,6 +653,7 @@ fn formal_ui_error(error: &str) -> ExitCode {
 
 fn run_audit(command: AuditCommand) -> ExitCode {
     match command {
+        AuditCommand::JourneyDocs { command } => run_journey_docs(command),
         AuditCommand::BuildFullRepo {
             repo,
             out,
@@ -723,6 +741,51 @@ fn run_audit(command: AuditCommand) -> ExitCode {
                     ExitCode::SUCCESS
                 }
                 Err(error) => tooling_error(&format!("could not merge audit reports: {error}"), 2),
+            }
+        }
+    }
+}
+
+fn run_journey_docs(command: JourneyDocsCommand) -> ExitCode {
+    match command {
+        JourneyDocsCommand::Inventory { repo, json } => {
+            match devcoordinator2_tooling::journey_docs::build_inventory(&repo) {
+                Ok(inventory) if json => match serde_json::to_string_pretty(&inventory) {
+                    Ok(value) => {
+                        println!("{value}");
+                        ExitCode::SUCCESS
+                    }
+                    Err(error) => tooling_error(&format!("cannot encode inventory: {error}"), 2),
+                },
+                Ok(inventory) => {
+                    print!(
+                        "{}",
+                        devcoordinator2_tooling::journey_docs::render_inventory(&inventory)
+                    );
+                    ExitCode::SUCCESS
+                }
+                Err(error) => tooling_error(&error, 2),
+            }
+        }
+        JourneyDocsCommand::Verify { report } => {
+            let bytes =
+                match devcoordinator2_tooling::audit_ledger::read_bytes_nofollow(&report, None) {
+                    Ok(Some(bytes)) => bytes,
+                    _ => {
+                        println!("ERROR: report not found: {}", report.display());
+                        return ExitCode::from(1);
+                    }
+                };
+            let text = String::from_utf8_lossy(&bytes);
+            let issues = devcoordinator2_tooling::journey_docs::verify_report(&text);
+            if issues.is_empty() {
+                println!("journey-docs audit report verified");
+                ExitCode::SUCCESS
+            } else {
+                for issue in issues {
+                    println!("ERROR: {issue}");
+                }
+                ExitCode::from(1)
             }
         }
     }
@@ -1555,6 +1618,24 @@ mod tests {
             audit.command,
             Command::Audit {
                 command: AuditCommand::MergeFindings { json: true, .. }
+            }
+        ));
+        let journey_inventory = Cli::try_parse_from([
+            "devcoordinator2-tooling",
+            "audit",
+            "journey-docs",
+            "inventory",
+            "--repo",
+            "/repo",
+            "--json",
+        ])
+        .expect("journey docs inventory command");
+        assert!(matches!(
+            journey_inventory.command,
+            Command::Audit {
+                command: AuditCommand::JourneyDocs {
+                    command: JourneyDocsCommand::Inventory { json: true, .. }
+                }
             }
         ));
         let build = Cli::try_parse_from([
