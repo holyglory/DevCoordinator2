@@ -1,3 +1,52 @@
+# Console Option 3 design QA
+
+Final result: passed
+
+Reviewed September 5, 2026 against the approved Option 3 light and dark
+references. Scope: the shared Console visual language, unified Tests results,
+progressive disclosure, and discoverability of retained earlier screenshots.
+
+## Reference comparison
+
+Rendered both themes at the reference size, 1456 × 1080. The implementation
+preserves the graphite navigation, teal emphasis, unified ruled results,
+expandable run information, and secondary technical disclosures. It deliberately
+retains real account controls rather than the reference's illustrative avatar,
+uses compact operational typography, and represents actual running/error states
+rather than copying the mockup's example outcomes. No “Needs attention” section
+is present. Fixture names and counts are isolated to browser tests.
+
+## Verification
+
+- Complete Console interaction suite: 1,681 checks, zero failures.
+- Focused theme, disclosure, historical provenance, mobile geometry, and recovery
+  suite: 179 checks, zero failures.
+- Formal rendered matrix: 15 templates/routes × two themes × desktop/narrow,
+  60 cells, zero critical findings. Reviewed all 120 viewport/full-page captures
+  in paired contact sheets, with additional full-resolution Tests and narrow
+  evidence-viewer inspection. The 90 nonblocking warnings include intentional
+  horizontal scrolling in existing dense operational tables.
+- Formal performance budget: TTFB below 50 ms and LCP below 800 ms on the local
+  fixture/proxy topology. These are test-surface measurements, not public-network
+  production latency claims.
+- Rust workspace: 443 tests passed. Edge integration and static cache/font
+  checks passed. Existing Console interactions remain covered; synthetic fixtures
+  do not establish the live repository's screenshot count.
+
+## Evidence and boundaries
+
+Private cold artifacts: `/tmp/dc2-shared-theme-verified-console/report.json`,
+`/tmp/dc2-shared-theme-focused-ready/report.json`, and
+`/tmp/dc2-shared-theme-formal-ready/manual-review.json`. Reference-aligned rendered
+captures are `reference-light.png` and `reference-dark.png` in that formal run
+directory. These local artifacts are not application content or a completion
+ledger. Deployment and real retained-evidence proof are separate operational
+acceptance steps; this report records the frozen source design review.
+
+---
+
+## Prior design reviews
+
 # Grouped workers and available deployment usage design QA
 
 final result: passed

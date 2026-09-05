@@ -19,6 +19,11 @@ dialog{background:var(--panel);color:var(--fg);border:1px solid var(--line);bord
 @media(max-width:900px){.top{padding:12px 20px;gap:12px}.main{padding:26px 24px}.top .who .mono{display:none}}
 @media(max-width:600px){.top{padding:10px 14px;min-height:58px;gap:9px}.brand{font-size:13px}.top .who{gap:6px}.top #theme-toggle{font-size:11px;padding:5px 7px}.top .who>a{font-size:11px;padding:5px 7px}.main{padding:24px 16px}.main h1{font-size:26px}.tests-heading{align-items:flex-start;margin-bottom:26px;gap:12px}.tests-heading>.actions{gap:8px;justify-content:flex-end}.tests-heading #test-live-status{display:none}.test-result-summary{grid-template-columns:minmax(0,1fr) auto 14px;gap:10px;padding:17px 16px;min-height:88px}.test-result-name{grid-row:1 / span 2}.test-result-summary>.badge{grid-column:2;grid-row:1}.test-result-duration{grid-column:2;grid-row:2;text-align:left}.test-result-summary>.ti{grid-column:3;grid-row:1 / span 2}.test-result-body{padding:18px 16px 16px}.test-result-actions{gap:8px}.test-evidence-card{left:auto;right:0;width:250px}.test-technical{grid-template-columns:90px minmax(0,1fr);gap:10px}.test-check{flex-wrap:wrap}.test-latest{flex-wrap:wrap}.test-result-name strong{font-size:14px}}
 @media(prefers-reduced-motion:reduce){.btn{transition:none}}
+.evidence-tool .ti{display:inline-block}
+@media(max-width:560px){.evidence-workspace{height:auto;min-height:0}.evidence-stage{flex:none;height:clamp(280px,45dvh,420px);min-height:280px}}
+.evidence-page-head>div:first-child{min-width:0;max-width:100%}.main h1.evidence-breadcrumb{font-size:18px;line-height:1.4;letter-spacing:-.3px;margin:0;max-width:100%;flex-wrap:wrap}.evidence-breadcrumb strong{overflow-wrap:anywhere;white-space:normal}.evidence-color select{min-width:72px}
+@media(max-width:720px){.usage-metric{padding-bottom:14px}}
+@media(max-width:560px){.main h1.evidence-breadcrumb{font-size:14px}}
 @media(max-width:720px){.tests-heading>.actions{flex-direction:row;align-items:center;flex-wrap:nowrap}.tests-heading #test-live-status{display:none}}
 
 .ti-settings{--ti:url("/icons/tabler/settings.svg")}.ti-circle-check{--ti:url("/icons/tabler/circle-check.svg")}.ti-circle-x{--ti:url("/icons/tabler/circle-x.svg")}.ti-file-text{--ti:url("/icons/tabler/file-text.svg")}.ti-photo{--ti:url("/icons/tabler/photo.svg")}.ti-refresh{--ti:url("/icons/tabler/refresh.svg")}

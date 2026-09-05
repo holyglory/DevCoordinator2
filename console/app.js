@@ -1731,7 +1731,7 @@ function renderEvidenceCurrent(step, cell) {
 function evidenceWorkspace(run, data) {
   const openFeedback = (data.feedback || []).filter((item) => item.state === 'open').length;
   return `<section class="evidence-page" data-ui-region="test-evidence-primary">
-    <header class="evidence-page-head"><div><h1 class="evidence-breadcrumb"><a class="destination-link" href="#/tests">Tests</a><span>/</span><strong>${esc(run.display_name)}</strong><span>/</span><strong>${esc(run.test || 'Test run')}</strong></h1><div class="evidence-run-line"><span class="mono">${esc(run.run_id)}</span>${badge(run.status)}<span class="evidence-run-meta">${esc(testTierLabel(run.requested_tier))}</span><span class="evidence-run-meta">${run.readiness_eligible ? 'Release proof' : 'Diagnostic only'}</span><span class="evidence-run-meta">${esc(ago(run.started_at))}</span></div></div><div class="evidence-review-state"><span>Review status</span>${openFeedback ? badge(`${openFeedback} changes requested`, 'warn') : badge('No changes requested', 'ok')}</div></header>
+    <header class="evidence-page-head"><div><h1 class="evidence-breadcrumb"><a class="destination-link" href="#/tests">Tests</a><span>/</span><strong>${esc(run.display_name)}</strong><span>/</span><strong>${esc(run.test || 'Test run')}</strong></h1><div class="evidence-run-line"><span class="mono">${esc(run.run_id)}</span>${run.isEarlierEvidence ? badge('Earlier visual run') : `${badge(run.status)}<span class="evidence-run-meta">${esc(testTierLabel(run.requested_tier))}</span><span class="evidence-run-meta">${run.readiness_eligible ? 'Release proof' : 'Diagnostic only'}</span>`}<span class="evidence-run-meta">${esc(ago(run.started_at))}</span></div></div><div class="evidence-review-state"><span>Review status</span>${openFeedback ? badge(`${openFeedback} changes requested`, 'warn') : badge('No changes requested', 'ok')}</div></header>
     <div class="evidence-board">
       <aside class="evidence-rail" aria-label="Journey steps"><div class="evidence-rail-head"><h2>Journey</h2><span>${state.evidenceSteps.length} steps</span></div><div id="evidence-step-list">${renderEvidenceRail()}</div></aside>
       <section class="evidence-workspace" data-ui-region="test-evidence-workspace"><header id="evidence-current" class="evidence-current"></header>${evidenceToolbar()}<div id="evidence-scroll" class="evidence-scroll"><div id="evidence-media" class="evidence-media"><img id="evidence-image" alt="Selected user journey screenshot" hidden><canvas id="evidence-canvas" tabindex="0" aria-label="Screenshot annotation canvas"></canvas></div><div id="evidence-image-state" class="evidence-image-state">Loading screenshot…</div></div><section class="evidence-compare" aria-labelledby="evidence-compare-title"><div><h2 id="evidence-compare-title">Viewport comparison</h2><span>Same journey moment</span></div><div id="evidence-variants" class="evidence-variants"></div></section></section>
@@ -1938,7 +1938,11 @@ async function viewTestEvidence(runId) {
   main.innerHTML = `${pageHeading('Tests', '#/tests')}${skeleton()}`;
   const { runs } = await api('test.list', {});
   const owner = (runs || []).find((item) => item.run_id === runId || item.earlier_visual_evidence?.run_id === runId);
-  const run = owner?.run_id === runId ? owner : owner ? { ...owner, ...owner.earlier_visual_evidence } : null;
+  const run = owner?.run_id === runId ? owner : owner ? {
+    worktree_id: owner.worktree_id, worktree_path: owner.worktree_path,
+    repository_id: owner.repository_id, display_name: owner.display_name,
+    ...owner.earlier_visual_evidence, isEarlierEvidence: true,
+  } : null;
   if (!run) {
     main.innerHTML = `${pageHeading('Tests', '#/tests', 'Evidence unavailable')}${stateBlock('empty', 'No visual evidence is available for this run in the current collection.')}`; return;
   }

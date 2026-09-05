@@ -25,6 +25,14 @@ export async function verifyTestsDesign({ page, daemon, check, scenario, baseUrl
   await first.getByRole('link', { name: 'Open screenshots' }).click();
   await page.waitForSelector('.evidence-workspace');
   assert('earlier screenshot opens exact owned run', daemon.calls.some((call) => call.operation === 'test.evidence.get' && call.params.run_id === 't20251231T000000Z-abc111' && call.params.path === '/srv/repos/repo-one'));
+  const provenance = await page.locator('.evidence-run-line').innerText();
+  assert('earlier evidence never inherits latest-run proof', /Earlier visual run/.test(provenance) && !/running|Release proof|Pre-merge|Diagnostic only/i.test(provenance));
+  assert('annotation tool icon remains visible', await page.locator('.evidence-tool.active .ti').isVisible());
+  if (viewport.width < 560) {
+    const comparison = await page.locator('.evidence-compare').boundingBox();
+    const inspector = await page.locator('.evidence-inspector').boundingBox();
+    assert('mobile inspector does not cover screenshot variants', comparison.y + comparison.height <= inspector.y + 1);
+  }
   await page.goto(`${baseUrl}#/tests`);
   await page.locator('.test-result-summary').first().click();
   await first.getByRole('button', { name: 'Open logs' }).click();

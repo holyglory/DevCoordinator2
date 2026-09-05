@@ -18,6 +18,19 @@ a compact custom project menu whose entries are real same-destination links;
 Arrow keys, Home/End, Escape, outside click, and focus restoration work without
 a native select.
 
+## Shared visual language
+
+The signed-in Console uses locally hosted Inter and semantic color tokens in
+`design-system.css` across collection, detail, chart, dialog and inspector
+templates. The initial light/dark mode follows the browser preference; the
+header switch persists an explicit choice across navigation and reloads.
+Authentication and upstream-error pages use matching colors with a system-font
+fallback, keeping those documents self-contained before sign-in.
+
+Unversioned assets revalidate using ETags rather than remaining immutable for an
+hour. The document's versioned asset requests also bypass caches populated by
+the earlier caching policy, so a normal refresh can load the redesigned code.
+
 ## Destinations
 
 1. **Deployments** — a repository-by-repository operations dashboard. Every
