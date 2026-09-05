@@ -19,10 +19,11 @@ use devcoordinator2_api::params::{
     FeedbackState, FeedbackStateChange, Mark, Point, TaskStatus,
 };
 use devcoordinator2_api::results::{
-    AvailableScreenshot, EvidenceAction, EvidenceBundle, EvidenceCell, EvidenceCoverage,
-    EvidenceFinding, EvidenceGet, EvidenceIssue, EvidenceReview, EvidenceScreenshots,
-    EvidenceViewport, Feedback, FeedbackComment, FeedbackCreated, FeedbackMutation, ImageChunk,
-    Screenshot, TestList, UnavailableScreenshot, VisualEvidenceSummary,
+    AvailableScreenshot, EarlierVisualEvidence, EvidenceAction, EvidenceBundle, EvidenceCell,
+    EvidenceCoverage, EvidenceFinding, EvidenceGet, EvidenceIssue, EvidenceReview,
+    EvidenceScreenshots, EvidenceViewport, Feedback, FeedbackComment, FeedbackCreated,
+    FeedbackMutation, ImageChunk, Screenshot, TestList, UnavailableScreenshot,
+    VisualEvidenceSummary,
 };
 use devcoordinator2_api::{ErrorCode, ProtocolError};
 use regex::Regex;
@@ -134,6 +135,23 @@ impl TestEvidenceService {
                     issue_count: 0,
                     issues_truncated: false,
                     error_code: Some(error.code.to_string()),
+                });
+            run.earlier_visual_evidence = crate::test_state::TestRunStore
+                .read_history(Path::new(&run.worktree_path))
+                .unwrap_or_default()
+                .into_iter()
+                .rev()
+                .filter(|entry| entry.run_id != run.summary.run_id)
+                .find_map(|entry| {
+                    let evidence = self
+                        .summary_registered(Path::new(&run.worktree_path), &entry.run_id)
+                        .ok()?;
+                    (evidence.image_count > 0).then_some(EarlierVisualEvidence {
+                        run_id: entry.run_id,
+                        test: entry.test,
+                        started_at: entry.started_at,
+                        visual_evidence: evidence,
+                    })
                 });
         }
     }
@@ -2978,6 +2996,7 @@ mod tests {
                 worktree_path: world.repo.display().to_string(),
                 repository_id: world.repository_id,
                 display_name: "repo".to_owned(),
+                earlier_visual_evidence: None,
                 visual_evidence: VisualEvidenceSummary {
                     status: "unavailable".to_owned(),
                     bundle_count: 0,
@@ -2994,6 +3013,25 @@ mod tests {
         assert_eq!(list.runs[0].visual_evidence.bundle_count, 1);
         assert_eq!(list.runs[0].visual_evidence.image_count, 1);
         assert_eq!(list.runs[0].visual_evidence.error_code, None);
+        assert!(list.runs[0].earlier_visual_evidence.is_none());
+        let mut earlier_summary = list.runs[0].summary.clone();
+        earlier_summary.status = TestStatus::Passed;
+        earlier_summary.finished_at = Some("2026-09-02T01:03:00Z".to_owned());
+        crate::test_state::TestRunStore
+            .record_history(
+                &world.repo,
+                &earlier_summary,
+                rustix::process::getuid().as_raw(),
+                rustix::process::getgid().as_raw(),
+            )
+            .unwrap();
+        list.runs[0].summary.run_id = "t20260902T020000Z-abcdef".to_owned();
+        world.service.enrich_list(&mut list);
+        assert_eq!(list.runs[0].visual_evidence.image_count, 0);
+        let earlier = list.runs[0].earlier_visual_evidence.as_ref().unwrap();
+        assert_eq!(earlier.run_id, RUN_ID);
+        assert_eq!(earlier.started_at, earlier_summary.started_at);
+        assert_eq!(earlier.visual_evidence.image_count, 1);
     }
 
     #[test]

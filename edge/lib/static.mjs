@@ -16,6 +16,7 @@ const MIME = new Map([
   ['.js', 'text/javascript; charset=utf-8'],
   ['.mjs', 'text/javascript; charset=utf-8'],
   ['.svg', 'image/svg+xml'],
+  ['.woff2', 'font/woff2'],
   ['.png', 'image/png'],
   ['.ico', 'image/x-icon'],
   ['.json', 'application/json; charset=utf-8'],

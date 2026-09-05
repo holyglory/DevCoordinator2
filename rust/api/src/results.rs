@@ -469,6 +469,8 @@ pub struct TestListRow {
     pub repository_id: String,
     pub display_name: String,
     pub visual_evidence: VisualEvidenceSummary,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub earlier_visual_evidence: Option<EarlierVisualEvidence>,
     #[serde(flatten)]
     pub summary: TestSummary,
 }
@@ -483,6 +485,15 @@ pub struct VisualEvidenceSummary {
     pub issues_truncated: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error_code: Option<String>,
+}
+
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EarlierVisualEvidence {
+    pub run_id: String,
+    pub test: String,
+    pub started_at: String,
+    pub visual_evidence: VisualEvidenceSummary,
 }
 
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]

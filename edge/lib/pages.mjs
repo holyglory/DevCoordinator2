@@ -53,6 +53,9 @@ form{margin:18px 0 8px}
 .gap-top{margin-top:14px}
 .foot{margin-top:22px;padding-top:14px;border-top:1px solid #1c2837;font-size:11.5px;color:#5d6d85;text-align:center;letter-spacing:.3px}
 @media (max-width:480px){body{padding:14px}.card{padding:24px 18px 14px}}
+:root{color-scheme:light;--bg:#f6f7f8;--panel:#fff;--surface:#eff2f3;--line:#dce2e4;--fg:#202a30;--muted:#596970;--accent:#087e75}
+@media(prefers-color-scheme:dark){:root{color-scheme:dark;--bg:#191d21;--panel:#20262b;--surface:#292f35;--line:#363e45;--fg:#e9eef0;--muted:#a3afb6;--accent:#79d7c6}}
+body{background:var(--bg);color:var(--fg);background-image:none}.card{background:var(--panel);border-color:var(--line);box-shadow:0 12px 36px #14252f18}.brand-domain,code,.block,.btn-ghost{background:var(--surface);border-color:var(--line);color:var(--fg)}.btn-ghost:hover{background:var(--panel)}h1{font-size:24px;letter-spacing:-.6px}p,p.small,.meta-row .k,.status-code,.foot{color:var(--muted)}.meta-row .v{color:var(--fg)}.foot{border-color:var(--line)}a{color:var(--accent)}a:focus-visible,button:focus-visible,input:focus-visible{outline-color:var(--accent)}
 `.trim();
 
 const MARK_SVG =

@@ -4,7 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>DevCoordinator2</title>
+<script src="/theme.js"></script>
 <link rel="stylesheet" href="/app.css">
+<link rel="stylesheet" href="/design-system.css">
 </head>
 <body>
 <header class="top">
@@ -21,7 +23,7 @@
     <a href="#/bugs" data-view="bugs">Bugs</a>
     <a href="#/admin" data-view="admin" id="nav-admin" hidden>Administration</a>
   </nav>
-  <div class="who"><span id="who-email" class="mono"></span> <a href="/auth/logout" class="btn btn-small">Sign out</a></div>
+  <div class="who"><button class="btn btn-small" id="theme-toggle" type="button">Appearance</button><span id="who-email" class="mono"></span> <a href="/auth/logout" class="btn btn-small">Sign out</a></div>
 </header>
 <div id="banner" class="banner" hidden></div>
 <main id="main" class="main"><p class="muted">Loading…</p></main>

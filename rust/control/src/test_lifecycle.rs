@@ -763,6 +763,7 @@ impl TestLifecycle {
                 worktree_path: path,
                 repository_id,
                 display_name,
+                earlier_visual_evidence: None,
                 visual_evidence: devcoordinator2_api::results::VisualEvidenceSummary {
                     status: "unavailable".to_owned(),
                     bundle_count: 0,
