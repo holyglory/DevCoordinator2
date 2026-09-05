@@ -33,6 +33,7 @@ export async function verifyTestsDesign({ page, daemon, check, scenario, baseUrl
   await page.keyboard.press('Escape');
   await first.locator('.test-detail>summary').last().click();
   assert('technical details revealed on demand', await first.locator('.test-technical').isVisible());
+  assert('revealed output sizes are humanized', /MiB/.test(await first.locator('.test-technical').innerText()));
   daemon.setScenario({ ...scenario, testFinished: true, earlierEvidence: true });
   await page.waitForFunction(() => document.querySelector('.test-result-summary .badge')?.textContent === 'passed');
   assert('refresh preserves expanded context', await first.getAttribute('open') !== null && await first.locator('.test-technical').isVisible());

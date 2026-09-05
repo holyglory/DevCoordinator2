@@ -122,11 +122,12 @@ a native select.
    newest-first with aspect badge, optional stable ref, and age; superseded
    decisions collapse and dim; "Show older decisions" pages the permanent
    history.
-5. **Tests** — the current/most-recent run collection remains first: result,
-   requested development/pre-merge/release tier, readiness eligibility, and
-   duration. While any listed run is active, the collection re-reads bounded
-   current state without moving focus, closing an open dialog, or continuing
-   after navigation. **Logs** opens a focused catalogue-first dialog and
+5. **Tests** — one **Latest results** collection leads with repository, test,
+   result and rounded duration. Expand a row for logs, current or earlier visual
+   evidence, check results, and technical details. Tier, readiness eligibility,
+   worktree path, exit code and output sizes stay in technical details. While
+   any listed run is active, refresh preserves expanded rows, focus, dialogs
+   and scroll position and stops after navigation. **Open logs** opens a focused catalogue-first dialog and
    immediately shows the selected stream's newest bounded text. Scrolling to
    the earlier boundary loads one prior page without moving the line being
    read; short pages fill only until they become scrollable. Search and likely
@@ -134,16 +135,20 @@ a native select.
    remains explicit. Numbers and common syntax/status tokens are highlighted;
    valid JSON and JSON-lines are pretty-printed, textually labelled, and still
    escaped and labelled untrusted.
-   **Log retention** edits the host age/depth boundaries and re-reads the stored
-   state. Administrators stop a running test or start a prior worktree at a
-   selected tier, with release selected by default. The adjacent **Capacity** action opens a
+   **Test settings** contains **Log retention**, which edits the host age/depth
+   boundaries and re-reads the stored state. **Run tests** and **Run again** open
+   a repository/tier dialog with release selected by default; a running row
+   instead offers **Stop run**. Settings also contains **Capacity**, which opens a
    focused dialog showing learned/effective capacity, the optional maximum,
    active/waiting leaves, admission pause state, and the last adjustment's
    measured evidence. Saving or clearing the host-wide maximum acts directly.
    Visual evidence is labelled **pending** while a run is active and has not
    published a bundle, **not produced** after a terminal nonvisual run, or with
    its retained image count when available; only available or invalid evidence
-   is an action. A retained formal UI bundle opens as the
+   is an action. The latest retained earlier visual run is separately available
+   through an **earlier screenshots** disclosure with its actual count and date.
+   Opening it resolves that exact run in the same worktree, never pretending its
+   screenshots verify the current run. A retained formal UI bundle opens as the
    selected three-zone review board: ordered journey states and viewport
    choices on the left, the immutable screenshot and complete annotation
    toolbar as the dominant centre workspace, and capture facts, automatic

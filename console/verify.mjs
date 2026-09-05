@@ -1042,7 +1042,10 @@ async function main() {
             && await legacy.locator('[data-summary="health"] .deployment-summary-facts > div').count() === 4);
           check(`${label}: removed declared-only area stays absent`, !/Declared, not applied|tool@worktree/.test(metrics.text));
         }
-        if (scenarioName === 'populated' && ['#/tests', '#/health'].includes(view)) check(`${label}: large numbers humanized`, /MiB|GiB|TiB/.test(metrics.text), metrics.text.slice(0, 80));
+        if (scenarioName === 'populated' && ['#/tests', '#/health'].includes(view)) {
+          const numberText = view === '#/tests' ? await page.locator('.test-technical').first().textContent() : metrics.text;
+          check(`${label}: large numbers humanized`, /MiB|GiB|TiB/.test(numberText), numberText.slice(0, 80));
+        }
         if (scenarioName === 'populated' && view === '#/health') {
           check(`${label}: host capacity and operational status lead as one aligned summary`,
             metrics.health?.capacityCards === 4

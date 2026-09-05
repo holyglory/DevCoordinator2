@@ -1940,7 +1940,7 @@ async function viewTestEvidence(runId) {
   const owner = (runs || []).find((item) => item.run_id === runId || item.earlier_visual_evidence?.run_id === runId);
   const run = owner?.run_id === runId ? owner : owner ? { ...owner, ...owner.earlier_visual_evidence } : null;
   if (!run) {
-    main.innerHTML = `${pageHeading('Tests', '#/tests', 'Evidence unavailable')}${stateBlock('empty', 'This run is no longer in the available evidence collection.')}`; return;
+    main.innerHTML = `${pageHeading('Tests', '#/tests', 'Evidence unavailable')}${stateBlock('empty', 'No visual evidence is available for this run in the current collection.')}`; return;
   }
   if (state.evidenceRunId !== runId) { resetEvidenceImages(); resetEvidenceDraft(); }
   const data = await api('test.evidence.get', { path: run.worktree_path, run_id: run.run_id });

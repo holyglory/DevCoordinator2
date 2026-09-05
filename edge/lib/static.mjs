@@ -1,6 +1,6 @@
 // Static UI file server for the DevOps Console control panel.
 // Contract (docs/architecture.md): serves src/ui/; '/' -> index.html with
-// Cache-Control: no-cache; assets by exact name with a 1h immutable cache;
+// Cache-Control: no-cache for unversioned assets, with conditional ETag reads;
 // fixed MIME map (html/css/js/svg/png/ico/json/txt); ETag from mtime+size;
 // traversal-proof (resolve + prefix check); GET/HEAD only; 404 otherwise.
 
@@ -121,9 +121,7 @@ export function createStaticServer({ dir, log } = {}) {
       const headers = {
         'content-type': MIME.get(ext),
         etag,
-        // index.html (and any html) must revalidate so UI deploys show up;
-        // fingerprint-less assets get the contract's 1h immutable cache.
-        'cache-control': ext === '.html' ? 'no-cache' : 'public, max-age=3600, immutable',
+        'cache-control': 'no-cache',
         'x-content-type-options': 'nosniff',
       };
       if (COMPRESSIBLE.has(ext)) headers.vary = 'Accept-Encoding';
