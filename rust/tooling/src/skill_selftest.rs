@@ -50,6 +50,29 @@ fn require_tokens(text: &str, tokens: &[&str], label: &str) -> Result<(), String
     }
 }
 
+const WORKFLOW_TERMS: &[&str] = &[
+    "After diagnosis establishes a durable missing or regressed outcome",
+    "check whether it is already represented",
+    "Execution attempts stay in governed run history",
+    "failures and suggestions do not automatically create tasks",
+    "passing runs do not automatically complete work",
+    "analysis-only request does not authorize task mutations",
+    "what the user needs to accomplish",
+    "Continuously deliver coherent runnable increments",
+    "authorized non-production surface",
+    "not only when `preview_requested` is set",
+    "Continue independent implementation and testing during publication",
+    "do not wait for user acknowledgement",
+    "Begin diagnosis and repair in isolated state on the first ordinary failure",
+    "without modifying the original run's source or artifacts",
+];
+
+const RETIRED_WORKFLOW_TERMS: &[&str] = &[
+    "The moment you stub, fake, or skip anything",
+    "notice something that can and should be improved, record it",
+    "begin independent read-only diagnosis",
+];
+
 pub fn validate_dev_coordinator_contract(
     source_root: &Path,
     help: &[(Vec<&str>, String)],
@@ -80,6 +103,14 @@ pub fn validate_dev_coordinator_contract(
         ],
         "dev-coordinator skill contract",
     )?;
+    require_tokens(&normalized, WORKFLOW_TERMS, "dev-coordinator workflow")?;
+    for retired in RETIRED_WORKFLOW_TERMS {
+        if normalized.contains(retired) {
+            return Err(format!(
+                "dev-coordinator workflow contains retired guidance: {retired}"
+            ));
+        }
+    }
     let lookup = |path: &[&str]| {
         help.iter()
             .find(|(arguments, _)| arguments.as_slice() == path)
@@ -241,13 +272,37 @@ mod tests {
             validate_dev_coordinator_contract(root, &help).unwrap()["ok"],
             true
         );
-        let mut missing = help;
+        let mut missing = help.clone();
         missing[4].1 = "catalog tail search range retention".to_owned();
         assert!(
             validate_dev_coordinator_contract(root, &missing)
                 .unwrap_err()
                 .contains("failure-context")
         );
+        let temporary = tempfile::tempdir().unwrap();
+        let contract_path = temporary.path().join("skills/dev-coordinator/SKILL.md");
+        std::fs::create_dir_all(contract_path.parent().unwrap()).unwrap();
+        let contract = read_contract(root, "skills/dev-coordinator/SKILL.md").unwrap();
+        let normalized = contract.split_whitespace().collect::<Vec<_>>().join(" ");
+        for required in WORKFLOW_TERMS {
+            let changed = normalized.replace(required, "removed workflow guarantee");
+            std::fs::write(&contract_path, changed).unwrap();
+            assert!(
+                validate_dev_coordinator_contract(temporary.path(), &help)
+                    .unwrap_err()
+                    .contains(required),
+                "accepted missing {required}"
+            );
+        }
+        for retired in RETIRED_WORKFLOW_TERMS {
+            std::fs::write(&contract_path, format!("{contract}\n{retired}\n")).unwrap();
+            assert!(
+                validate_dev_coordinator_contract(temporary.path(), &help)
+                    .unwrap_err()
+                    .contains("retired guidance"),
+                "accepted {retired}"
+            );
+        }
     }
 
     #[test]

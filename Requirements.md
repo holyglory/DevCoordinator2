@@ -462,8 +462,12 @@ not contradict them.
 ## Planning, completion ledger, and decisions (REQ-PLAN, Schemas 8, 11, and 13)
 
 - **REQ-PLAN-01** (S8, done): DevCoordinator owns the single authoritative
-  completion ledger. Anything an agent stubs, fakes, skips, or finds
-  improvable becomes a `tasks` row at once; a daemon or database error
+  completion ledger. After diagnosis establishes a durable missing or
+  regressed outcome within the intended task, create a `tasks` row only if
+  the outcome is not already represented. Execution attempts belong in
+  governed run history; failures and suggestions do not automatically create
+  tasks, and passing runs do not automatically complete them. An analysis-only
+  request does not authorize task mutations. A daemon or database error
   blocks the affected completion claim and never authorizes a file or
   chat-memory fallback.
 - **REQ-PLAN-02** (S8, done): One task tree of arbitrary depth per

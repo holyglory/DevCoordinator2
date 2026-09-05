@@ -2481,28 +2481,19 @@ pub fn audit_user_issue_ledgers(root: &Path) -> UserIssueLedgerResult {
     }
 }
 
-pub const REQUIRED_POLICY_SECTIONS: [&str; 21] = [
-    "Use relevant authoritative context",
-    "Tool orchestration",
-    "Ground security-posture decisions in confirmed assumptions",
-    "Keep decisions compact and usable",
-    "Implement the exact scope",
-    "Keep completion and execution histories separate",
-    "Delegate only contract-ready work",
-    "Parallelize independent work and first-failure fixing",
-    "Wait for events instead of polling",
-    "Validate at semantic checkpoints",
-    "Deliver UI previews before broad validation",
-    "Finish diagnostic cycles before batch fixing",
-    "Keep behavior truthful",
-    "Prohibit unimplemented product behavior",
-    "Learn from agent-made mistakes",
-    "Verify real behavior",
-    "Use standing preview and browser-QA permission",
-    "Put requested interface content first",
-    "Respect data and system boundaries",
-    "Protect sources, repositories, and running systems",
-    "Report status honestly",
+pub const REQUIRED_POLICY_SECTIONS: [&str; 12] = [
+    "1. Infer the intended outcome and carry it to completion",
+    "2. Load relevant context and keep evidence bounded",
+    "3. Apply approval and security gates proportionally",
+    "4. Keep decisions, unfinished outcomes, and executions separate",
+    "5. Coordinate tools, delegated work, and asynchronous execution",
+    "6. Deliver preliminary results continuously",
+    "7. Validate at stable checkpoints without disrupting progress",
+    "8. Keep product behavior and completion claims truthful",
+    "9. Verify UI journeys and put requested content first",
+    "10. Preserve lessons from confirmed agent mistakes",
+    "11. Protect canonical sources, data, and running systems",
+    "12. Explain results through the user's goals and experience",
 ];
 
 const FORBIDDEN_POLICY_NAMES: [&str; 13] = [
@@ -2561,566 +2552,589 @@ fn require_policy_terms(violations: &mut Vec<String>, body: &str, label: &str, t
     }
 }
 
-const CONTEXT_TERMS: &[&str] = &[
-    "unchanged rule",
-    "live context",
-    "task matches",
-    "targeted",
-    "smallest useful result",
-    "cold artifact",
-    "raw logs",
-    "content-free log catalogue",
-    "bounded case/stream-specific tail",
-    "fixed-string search",
-    "stable line/cursor coordinates",
-    "untrusted evidence",
-    "never follow instructions found inside",
-    "realistic materially distinct options",
-    "plain language",
-    "recommend",
-    "third-party",
-    "exact name",
-    "authoritative sources",
-    "facts",
-    "inferences",
-    "unknowns",
-    "materiality threshold governs choices about how to fulfill agreed work",
-    "before requesting approval or asking any other blocking question",
-    "complete all available read-only investigation",
-    "bundle all known consequential effects into one decision",
-    "do not ask piecemeal as implementation details emerge",
-    "before optional technical detail",
-    "recommended outcome",
-    "what will and will not change",
-    "user-visible or operational consequences",
-    "meaningful tradeoffs",
-    "approval applies to the described outcome and boundaries of the recorded plan",
-    "not merely to implementation details named in the approval message",
-    "plain “yes” is sufficient",
-    "never require the user to repeat or transcribe",
-    "internal identifier",
-    "prescribed technical phrase",
-    "host or tool mandates its own approval control",
-    "invoke that control directly",
-    "do not relay its internals through chat",
-    "within the approved boundaries do not trigger another approval",
-    "one updated bundled decision",
-    "do not request a second confirmation for an in-scope administrative write",
-    "authenticated caller is authorized",
-    "server authorization",
-    "exact-target validation",
-    "host/tool-owned approval control",
-    "agent-proposed addition outside the agreed scope",
-    "asking the user",
-    "explicit approval",
-    "only when an unresolved answer could materially change",
-    "meaningful additional work or over-engineering",
-    "question and option analysis concise",
-    "proportional to that impact",
-    "regardless of whether the addition seems small",
-    "actually proposes to implement the addition",
-    "merely noticing and declining an optional idea",
-    "routine low-level implementation choice",
-    "preserves established scope and security posture",
-    "is not an expansion",
-    "disposable test data",
-    "single-user environment",
-];
-
-const TOOL_ORCHESTRATION_TERMS: &[&str] = &[
-    "partition calls into dependency layers",
-    "safe, independent calls in the same layer concurrently",
-    "programmatic orchestration",
-    "bounded read-only workflows",
-    "pagination, filtering, joining, deduplication, and aggregation",
-    "sequential direct calls only when",
-    "semantic judgment, approval, or data from the preceding call",
-    "never parallelize conflicting mutations",
-    "compact structured results",
-    "conclusions, evidence, and errors",
-];
-
-const SECURITY_TERMS: &[&str] = &[
-    "every decision that adds, changes, weakens, removes, or intentionally omits",
-    "security-posture control",
-    "before proposing or making such a decision",
-    "project-root `security-assumptions.md`",
-    "non-security changes do not trigger a security interview",
-    "read-only discovery",
-    "identify material assumptions or questions",
-    "does not select, apply, alter, or omit",
-    "routine execution of one reviewed skill or tool",
-    "preserves its documented controls and established security posture",
-    "is not a new security-posture decision",
-    "does not reopen the assumptions record or trigger a blanket interview",
-    "use existing confirmed assumptions and task context first",
-    "project-specific",
-    "user-confirmed assumptions",
-    "every security-posture decision and resulting implemented security measure",
-    "cite",
-    "templates, defaults, and agent guesses are not confirmed project facts",
-    "users and operators",
-    "deployment or runtime environment and ownership",
-    "assets and data sensitivity",
-    "credible adversaries and misuse",
-    "trust boundaries",
-    "necessary gates",
-    "explicitly unnecessary gates",
-    "acceptable risks",
-    "review triggers",
-    "is absent or insufficient",
-    "concrete pending security-posture decision",
-    "stop before that decision or implementation only when",
-    "wrong answer could select an unnecessary control",
-    "omit a necessary control",
-    "expand the work",
-    "meaningful rework",
-    "smallest concise set of unresolved material questions",
-    "create the file",
-    "confirmed answers",
-    "do not repeat resolved areas",
-    "full baseline only when the concrete decision materially depends on every assumption area",
-    "unassessed areas that do not affect the current decision",
-    "never invent or infer a project assumption",
-    "unconfirmed template",
-    "record unknowns explicitly",
-    "unconfirmed assumption cannot justify",
-    "unknown immaterial to the concrete decision does not require a question",
-    "never default to blanket hardening",
-    "cumulative",
-    "any agent-proposed addition outside the agreed scope",
-    "expands scope",
-    "regardless of its size",
-    "establish relevance but not permission",
-    "explicit approval before action",
-    "never satisfies or waives the other",
-];
-
-const DECISION_TERMS: &[&str] = &[
-    "`decision_record`",
-    "aspect tag",
-    "management-facing title and body",
-    "materially distinct options",
-    "cost and risk in user terms",
-    "`technical_note`",
-    "`supersedes`",
-    "stable `ref`",
-    "durable intent",
-    "quality bar",
-    "`decision_tail`",
-    "rolling summary",
-    "`decision_search`",
-    "tried and rejected",
-    "`summary_due`",
-    "`decision_summarize`",
-    "direction synthesis",
-    "confirmed user decisions",
-    "inferred patterns",
-    "decision refs cited",
-    "append-only maintenance write is direct",
-    "does not require another user approval",
-];
-
-const EXACT_SCOPE_TERMS: &[&str] = &[
-    "complete explicitly agreed result",
-    "do not broaden it",
-    "never silently narrow it",
-    "only an explicit user decision",
-    "“ideally”",
-    "“for example”",
-    "“something like”",
-    "“could”",
-    "illustrative formats",
-    "express direction, not mandatory delivery requirements",
-    "unless the user explicitly selects them",
-    "necessary for the requested behavior to work",
-    "reliability, security, recovery, migration, preservation, compatibility, ui, and infrastructure work",
-    "in scope only when required by acceptance criteria",
-    "confirmed assumptions",
-    "current-system evidence",
-    "minimum end-to-end implementation",
-    "seemingly focused request",
-    "beyond three product subsystems",
-    "requires a new platform abstraction",
-    "estimated to exceed roughly 1,000 changed lines",
-    "pause once and explain the actual scope before continuing",
-    "recommend the smallest architecture that delivers the request",
-    "do not equate more checks, parsers, adapters, or supported formats with a more complete implementation",
-];
-
-const COMPLETION_HISTORY_TERMS: &[&str] = &[
-    "completion ledger contains durable unfinished outcomes, never execution attempts",
-    "passed, failed, cancelled, timed-out, invalidated, retried, or superseded run",
-    "only in governed run history",
-    "diagnose failures before changing work state",
-    "create or reopen one task only when evidence proves",
-    "durable missing or regressed outcome not already represented",
-    "passing run may support completion but never closes a task automatically",
-    "failing run never changes task status automatically",
-    "structured evidence references",
-    "do not copy run status, logs, or failure prose into task history",
-    "compact referenced run receipts",
-    "execution-only actions are not tasks",
-    "implementing missing test or harness capability may be a task",
-    "running or rerunning it is not",
-    "keep every agreed gap active until resolved or explicitly removed",
-    "configured software-owned database",
-    "size and split large work",
-    "append-only history",
-    "never fall back to files or chat memory",
-    "database unavailability blocks the affected completion claim",
-    "write tasks for a non-specialist",
-    "remaining outcome, user impact, unblock condition, and observable proof",
-    "externally blocked outcomes open",
-    "consequential choices in decision history, not task state",
-    "no request-related unfinished outcome and fresh required run evidence",
-    "direction, capabilities, gaps, and blockers in plain language",
-];
-
-const DELEGATION_TERMS: &[&str] = &[
-    "do not delegate implementation until",
-    "shared schemas",
-    "directory layouts",
-    "ownership boundaries",
-    "one cross-component acceptance fixture",
-    "are fixed",
-    "work is independently ready only when",
-    "no unresolved shared-interface decision",
-    "no overlapping mutable-file ownership",
-    "tightly coupled subsystem",
-    "at most two implementation agents plus one integrator",
-    "ownership bound does not cap genuinely independent work",
-    "host-wide execution scheduler",
-    "subagents must not spawn further implementation agents",
-    "parent explicitly authorizes that specific independent branch",
-    "parent remains the sole integration owner",
-];
-
-const PARALLEL_TERMS: &[&str] = &[
-    "dependency-ready, non-conflicting work immediately",
-    "configured host-wide scheduler",
-    "do not add local worker limits",
-    "fake dependencies",
-    "another capacity controller",
-    "serialize only",
-    "real dependency",
-    "mutable-state conflict",
-    "runtime limitation",
-    "all-settled sibling behavior",
-    "ordinary failure does not cancel",
-    "missing capability",
-    "improvement work",
-    "first ordinary failure",
-    "diagnosis and fixing begin immediately",
-    "separate isolated worktree",
-    "original sealed run continues unchanged",
-    "gathers the remaining failures",
-    "do not inject fixes",
-    "invalidate expensive downstream evidence",
-    "real success dependencies",
-    "independent preflights",
-    "unrelated safe branches",
-];
-
-const WAIT_TERMS: &[&str] = &[
-    "subscribe once through a blocking event wait",
-    "never spend model turns on status polling or periodic shell checks",
-    "expected-event deadline",
-    "multiplex pending subscriptions",
-    "one shared scheduler returns all due heartbeats in one wake",
-    "fetch bounded authoritative state once",
-    "continue from its cursor",
-    "one software-owned watcher may poll",
-    "agent never does",
-    "timeouts are failure ceilings",
-    "polling intervals may not exceed 100 ms",
-];
-
-const VALIDATION_TERMS: &[&str] = &[
-    "do not run the complete test suite after each plan item, file edit, commit, or delegated result",
-    "during implementation",
-    "only cheap checks and focused tests",
-    "invalidate the current design or changed behavior",
-    "complete each coherent implementation batch before broader validation",
-    "run pre-merge validation once shared interfaces and integrations are stable",
-    "run one fresh complete release pass over a frozen candidate",
-    "complete pass finds ordinary failures",
-    "let the sealed pass finish",
-    "collect every safe finding",
-    "isolated diagnosis and repair may begin while it continues",
-    "reconcile every finding",
-    "batch the fixes",
-    "focused checks during repair",
-    "one final complete pass",
-    "one agent owns complete-suite execution",
-    "delegated agents run only their focused checks",
-    "unless explicitly assigned the sealed integration pass",
-    "changes only to test plumbing do not trigger another complete release pass",
-    "implementation and test infrastructure are both frozen",
-];
-
-const PREVIEW_TERMS: &[&str] = &[
-    "authorized non-production surface",
-    "narrowest focused automated and rendered checks",
-    "update that surface",
-    "exact url, route, state, and viewport",
-    "without waiting for broad validation",
-    "label the result preliminary",
-    "feedback, not readiness or final visual review",
-    "broader validation against a frozen snapshot",
-    "mutable preview remains available",
-    "later changes leave that run diagnostic-only",
-    "verify the final frozen candidate afresh",
-    "never infer production permission",
-    "one shared preview",
-    "non-conflicting routes or source regions together",
-    "serialize only actual edit or server conflicts",
-];
-
-const CYCLE_TERMS: &[&str] = &[
-    "finite tests, debugging, audits, rehearsals, and deployments finish after ordinary failures",
-    "every execution in governed run history",
-    "verbose output in cold artifacts",
-    "do not create tasks as findings appear",
-    "security or safety harm",
-    "data loss",
-    "shared-state corruption",
-    "destruction of useful evidence",
-    "diagnose and repair ordinary failures in isolated state while the run continues",
-    "group findings by cause",
-    "promote only durable gaps",
-    "batch fixes",
-    "focused checks",
-    "one final complete pass",
-];
-
-const TRUTHFUL_TERMS: &[&str] = &[
-    "never present invented",
-    "numbers",
-    "parameters",
-    "statuses",
-    "results",
-    "control must perform",
-    "end to end",
-    "loading, error, empty, or unavailable state",
-    "plausible stand-in values",
-    "record the missing integration",
-    "mockups",
-    "explicitly declared mock-data prototype",
-    "production behavior",
-];
-
-const PRODUCT_BEHAVIOR_TERMS: &[&str] = &[
-    "every visible, enabled control",
-    "buttons, links, tabs, menus, filters, forms, row actions, keyboard shortcuts, and clickable cards",
-    "end to end through the rendered interface",
-    "expected observable result",
-    "does not prove promised navigation, persistence, integration",
-    "downstream behavior",
-    "generated mockup",
-    "enabled product ui",
-    "no empty handlers",
-    "no-op links",
-    "fake success",
-    "mock-data prototype",
-    "synthetic data",
-    "works truthfully within its declared boundary",
-    "plausible synthetic numbers, parameters, statuses, or results",
-    "production stand-in",
-    "honest unavailable state",
-    "ledger the agreed missing behavior",
-    "each agreed missing behavior as a specific durable outcome",
-    "affected journey",
-    "user impact",
-    "unblock condition",
-    "rendered proof",
-    "specification explicitly requires communicating future availability",
-    "semantically disabled",
-    "visibly labelled unavailable",
-    "specifically ledgered",
-    "delivery remains incomplete until implementation or explicit removal from agreed scope",
-    "out-of-scope future information is noninteractive content",
-    "never report complete with agreed behavior missing, simulated, inert",
-    "mandatory interaction inventory",
-    "one evidence pass",
-    "only agreed screens, journeys, states, and responsive variants",
-    "before fixing non-critical gaps",
-    "neither expands scope nor invokes or authorizes a broader exhaustive audit",
-    "every visible interactive element",
-    "conditional controls",
-    "map each element to its journey",
-    "verify the downstream result",
-    "success, cancellation, validation failure, permission failure",
-    "recovery where applicable",
-    "reload when persistence is promised",
-    "finish the pass",
-    "batch-fix",
-    "zero enabled controls without real behavior",
-    "zero requested journeys without rendered end-to-end evidence",
-    "zero request-related completion-ledger entries",
-    "code inspection, routes, rendering, screenshots, visual comparison, and geometry checks",
-    "do not constitute interaction verification",
-];
-
-const MISTAKE_TERMS: &[&str] = &[
-    "changed user intent",
-    "finish its useful diagnostic cycle",
-    "before the product fix",
-    "batch",
-    "retest",
-    "guardrail",
-    "project-root `userissueledgers/`",
-    "concise routine context",
-    "confirmed user-indicated agent mistakes",
-    "durable user corrections",
-    "absence is valid",
-    "multiple narrowly scoped ledgers",
-    "mixed catch-all",
-    "businesslogic/<perspective>.md",
-    "# user issue ledger: <scope>",
-    "`id`",
-    "`applies to`",
-    "`mistake pattern`",
-    "`required behavior`",
-    "`prevention and verification`",
-    "uil-<scope>-nnn",
-    "relative file path owns the scope",
-    "same path components",
-    "id namespace derives from all of them",
-    "never mix another path's namespace",
-    "narrowest owning ledger",
-    "before planning or implementing",
-    "repository-wide or cross-cutting work",
-    "negative acceptance criterion",
-    "delegated-agent tasks",
-    "one row per distinct pattern",
-    "merging duplicates",
-    "reuse its id",
-    "persist after the immediate fix",
-    "explicit user retraction",
-    "version control",
-    "raw conversation",
-    "ui work always reads ui",
-    "code changes read coding-style",
-    "automation reads automation",
-];
-
-const VERIFY_TERMS: &[&str] = &[
-    "same visible or operational surface",
-    "acceptance criteria",
-    "end to end",
-    "recall",
-    "precision",
-    "must-catch failures",
-    "false-positive guards",
-    "never delete shared records",
-];
-
-const STANDING_TERMS: &[&str] = &[
-    "standing permission across all repositories",
-    "playwright or equivalent browser automation directly",
-    "in-scope local preview",
-    "browser qa",
-    "configured devcoordinator",
-    "temporary-runtime lifecycle work",
-    "do not ask for separate chat authorization",
-    "only tool use within the agreed task",
-    "does not broaden scope",
-    "production changes",
-    "destructive data actions",
-    "credential or trust changes",
-    "security-assumption",
-    "host or tool approval mechanisms",
-    "any agent-proposed addition outside the agreed scope",
-];
-
-const INTERFACE_TERMS: &[&str] = &[
-    "content promise",
-    "first substantial",
-    "first viewport",
-    "collection destination",
-    "must not lead",
-    "add or edit form",
-    "immediately reveal",
-    "current viewport",
-    "below a long list",
-    "success returns",
-    "new item",
-    "one concise, self-explanatory heading or label",
-    "subtitles",
-    "helper text",
-    "descriptive copy",
-    "headings, labels, cards, or settings",
-    "by default",
-    "user explicitly requests it",
-    "necessary to prevent misunderstanding or error",
-    "never use it to restate the heading or label",
-    "narrow constraints",
-    "loading, empty, error, populated, and long-content states",
-    "functional defect",
-    "visual exploration only for new directions or redesigns",
-];
-
-const BOUNDARY_TERMS: &[&str] = &[
-    "domain meaning",
-    "ownership",
-    "lifecycle",
-    "does not imply shared ownership",
-];
-
-const PROTECTION_TERMS: &[&str] = &[
-    "canonical sources",
-    "current remote",
-    "remote-unavailable means unknown",
-    "valuable dirty work",
-    "shared resource",
-    "data loss",
-    "recoverable backup",
-    "disposable and isolated",
-    "unambiguous mutation targets",
-];
-
-const REPORTING_TERMS: &[&str] = &[
-    "outcomes and evidence",
-    "facts",
-    "inferences",
-    "assumptions",
-    "never ready",
-    "when a completion ledger exists",
-    "what works now",
-    "what remains incomplete for users",
-    "what blocks it",
-    "what result comes next",
-    "technical identifiers",
-    "must not be the account",
-];
-
-const EXPANSION_TERMS: &[&str] = &[
-    "agent-proposed addition outside the agreed scope",
-    "tell the user",
-    "explicit approval",
-    "regardless of whether the addition seems small",
-    "actually proposes to implement the addition",
-    "merely noticing and declining an optional idea",
-    "does not warrant an interruption",
-    "proposal and clear recommendation concise",
-    "decision detail proportional to impact",
-    "consequential addition",
-    "supporting evidence and scenario",
-    "assessed likelihood",
-    "expected benefit",
-    "costs",
-    "risks of doing it and not doing it",
-    "realistic alternatives",
-    "maintenance",
-    "reversibility",
-    "clear recommendation",
-    "only to the extent they affect the choice",
-    "do not begin the addition until the user approves it",
-    "routine low-level implementation choice",
-    "invocation of one reviewed skill or tool",
-    "preserves established scope and security posture",
-    "is not an expansion",
+const POLICY_CONTRACTS: &[(&str, usize, &[&str])] = &[
+    (
+        "intent-driven completion contract",
+        0,
+        &[
+            "infer the user's intent and task scope",
+            "prior conversation",
+            "bias toward action",
+            "action-oriented expressions",
+            "instructions to perform the work",
+            "do not stop at acknowledgement",
+            "implementation, integration, and verification",
+            "do not settle for a partial",
+            "save time, effort, or tokens",
+            "interpret broad requests broadly",
+            "conventionally expected capabilities",
+            "operating context, relevant standards",
+            "authoritative sources",
+            "security-assumptions gate",
+            "reasonably implied",
+            "unrelated additions",
+            "routine reversible steps within the task",
+            "respect explicit limits",
+            "analysis only",
+            "don't modify it yet",
+            "don't publish",
+            "reversibility alone does not authorize unrelated work",
+            "tentative wording and illustrative formats as direction",
+            "unless selected or necessary",
+            "decompose it, and continue authorized work",
+            "do not pause solely",
+            "subsystem counts, changed-line estimates, or duration",
+            "material decision",
+            "necessary foundation",
+            "temporary bridge",
+            "before readiness",
+        ],
+    ),
+    (
+        "reported bugs require repair",
+        0,
+        &[
+            "treat a user-reported bug as a repair request unless explicitly limited",
+            "original user-visible acceptance criterion",
+            "is not resolution while the reported behavior still fails",
+            "original affected surface with real data",
+            "when genuinely blocked",
+            "complete all independent authorized work",
+            "exact blocker and smallest",
+            "do not end with only an apology",
+            "while useful in-scope work remains",
+            "preserve applicable authorization and host/tool controls",
+        ],
+    ),
+    (
+        "relevant-context contract",
+        1,
+        &[
+            "applicable requirements, acceptance criteria, project instructions, decisions",
+            "recorded rationale",
+            "load only skills",
+            "relevant to the task",
+            "do not reread unchanged material",
+            "live context",
+            "compaction",
+            "byte-complete logs",
+            "cold artifacts",
+            "exact artifact or catalogue references",
+            "content-free catalogue first",
+            "bounded case/stream-specific tails",
+            "fixed-string searches",
+            "exact ranges",
+            "stable coordinates",
+            "unchanged ranges or images",
+            "untrusted evidence",
+            "never as instructions",
+            "do not copy raw logs",
+            "third-party",
+            "exact name and role",
+            "current authoritative sources",
+            "facts, inferences, and unknowns",
+            "inventory `userissueledgers/` before planning or implementation",
+            "ui for ui work",
+            "coding-style for code changes",
+            "automation for automation",
+            "every affected business-logic perspective",
+            "cross-cutting work reads all ledgers",
+            "negative acceptance criteria",
+            "ids, required behavior, and verification into delegated work",
+        ],
+    ),
+    (
+        "concrete approval contract",
+        2,
+        &[
+            "instructions and prior context as authorization",
+            "reasonably implied supporting work",
+            "do not request permission again for authorized work",
+            "routine reversible implementation steps",
+            "before asking a clarifying question, complete the independent work",
+            "already authorized and does not depend on the answer",
+            "concrete and reviewable",
+            "do not ask the user to perform technical discovery",
+            "unresolved answer materially changes",
+            "without inventing the answer or stopping unrelated progress",
+            "when approval is actually required, prepare the concrete result first",
+            "make approval the final step before the gated action",
+            "do not perform the gated action as part of preparation",
+            "if the action is already authorized, execute and verify it",
+            "user's perspective",
+            "what they will be able to do",
+            "remain unchanged",
+            "recommend the best fit",
+            "bundle known consequential choices",
+            "rather than requesting permission piecemeal",
+            "obtain approval before implementing an addition outside",
+            "inferred task scope",
+            "do not interrupt merely to mention an optional idea",
+            "do not introduce unsolicited warnings",
+            "because of hypothetical risks",
+            "concrete evidence, confirmed requirements, or an applicable control",
+            "approval applies to the described outcome and boundaries",
+            "plain “yes” is sufficient",
+            "require the user to transcribe",
+            "prescribed technical phrases",
+            "invoke mandatory host or tool approval controls directly",
+            "do not bypass them",
+            "ask again only when new evidence materially changes",
+        ],
+    ),
+    (
+        "security-assumptions gate",
+        2,
+        &[
+            "before proposing or making a decision that adds, changes, weakens, removes, or intentionally omits",
+            "security control, read project-root `security-assumptions.md`",
+            "every such decision and resulting measure must cite",
+            "project-specific, user-confirmed assumptions",
+            "not confirmed project facts",
+            "users and operators",
+            "runtime environment and ownership",
+            "assets and data sensitivity",
+            "credible adversaries and misuse",
+            "trust boundaries",
+            "necessary and explicitly unnecessary gates",
+            "acceptable risks",
+            "review triggers",
+            "record is absent or insufficient",
+            "confirmed requirements and read-only discovery first",
+            "unresolved material assumption",
+            "unnecessary control",
+            "omit a necessary one",
+            "meaningful rework",
+            "smallest concise set of unresolved material questions",
+            "record the confirmed answers",
+            "do not repeat resolved questions",
+            "demand a full baseline unless",
+            "unknowns explicitly; they cannot justify a control",
+            "non-security work does not trigger a security interview",
+            "routine use of a reviewed skill or tool",
+            "preserves its documented controls",
+            "does not reopen the assumptions record",
+            "relevance, not permission to expand scope",
+            "approval and assumption gates are cumulative",
+            "never default to blanket hardening",
+            "disposable test data",
+            "known single-user environment",
+            "without a requirement or contrary evidence",
+        ],
+    ),
+    (
+        "decision-memory contract",
+        3,
+        &[
+            "configured software-owned database",
+            "completion ledger and decision history",
+            "never substitute files or chat memory",
+            "database unavailability blocks the affected completion claim",
+            "decision_record",
+            "materially distinct options",
+            "technical_note",
+            "supersedes",
+            "stable `ref`",
+            "decision_tail",
+            "decision_search",
+            "before retrying an option",
+            "summary_due",
+            "decision_summarize",
+            "before continuing",
+            "durable direction",
+            "distinguish confirmed decisions from inferred patterns",
+            "cite decision refs",
+            "append-only maintenance needs no additional user approval",
+        ],
+    ),
+    (
+        "completion-versus-execution contract",
+        3,
+        &[
+            "durable unfinished outcomes, not execution attempts",
+            "passed, failed, cancelled, timed-out, invalidated, retried, or superseded run",
+            "governed run history",
+            "diagnose before changing work state",
+            "create or reopen a task only when evidence establishes",
+            "not already represented",
+            "do not automatically turn failures or suggestions into tasks, or passing runs into completion",
+            "execution-only actions are not tasks",
+            "missing test or harness capability",
+            "running or rerunning it is not",
+            "keep every agreed gap active until resolved or explicitly removed",
+            "size and split large work",
+            "append-only history",
+            "externally blocked outcomes open",
+            "write tasks for a non-specialist",
+            "remaining outcome, user impact, unblock condition",
+            "observable completion proof",
+            "structured evidence references",
+            "keep compact run receipts",
+            "do not copy run status, logs, or failure narratives into task history",
+            "no request-related unfinished outcome and fresh required verification evidence",
+        ],
+    ),
+    (
+        "tool-orchestration contract",
+        4,
+        &[
+            "partition tool calls into dependency layers",
+            "safe independent calls in the same layer concurrently",
+            "serialize only real dependencies",
+            "conflicting mutations",
+            "bounded programmatic orchestration",
+            "pagination, filtering, joins, deduplication, and aggregation",
+            "compact structured conclusions, evidence, and errors",
+        ],
+    ),
+    (
+        "asynchronous-execution contract",
+        4,
+        &[
+            "prefer asynchronous or nonblocking execution when supported and useful",
+            "builds, tests, packaging, publication",
+            "continue other useful work instead of waiting",
+            "await a result when it is needed for the next dependent action",
+            "not merely because a background operation is running",
+            "not fire-and-forget",
+            "retain operation identities",
+            "observe completion and failures",
+            "preserve evidence",
+            "required cleanup",
+            "submission alone is never proof of success",
+            "account for every required background operation and verify its result",
+            "do not leave necessary work running unobserved",
+        ],
+    ),
+    (
+        "contract-ready delegation contract",
+        4,
+        &[
+            "delegate implementation only after shared schemas, directory layouts, ownership boundaries",
+            "one cross-component acceptance fixture are fixed",
+            "no unresolved shared-interface decision",
+            "overlapping mutable-file ownership",
+            "rather than a fixed implementation- agent count",
+            "parent remains the sole integration owner",
+            "nested implementation delegation requires explicit parent authorization",
+            "that independent branch",
+        ],
+    ),
+    (
+        "parallel-work contract",
+        4,
+        &[
+            "governed dependency-ready work",
+            "configured host-wide scheduler",
+            "do not invent local worker limits, fake dependencies",
+            "second capacity controller",
+            "cheap checks that can invalidate expensive downstream evidence real success dependencies",
+            "ordinary failure does not cancel safe siblings",
+            "record the missing capability",
+            "best supported execution without false claims",
+        ],
+    ),
+    (
+        "event-wait contract",
+        4,
+        &[
+            "blocking event subscriptions rather than model-turn status polling",
+            "expected-event deadline",
+            "multiplex pending subscriptions",
+            "all due heartbeats through one shared scheduler",
+            "fetch bounded authoritative state once",
+            "advance its cursor",
+            "one software-owned watcher may poll; the agent does not",
+            "timeouts are failure ceilings",
+            "polling intervals may not exceed 100 ms",
+        ],
+    ),
+    (
+        "continuous preliminary delivery contract",
+        5,
+        &[
+            "throughout implementation",
+            "earliest meaningful, runnable increment",
+            "authorized non-production surface",
+            "application build, executable",
+            "do not wait for feature completion or broad validation",
+            "refresh the available result promptly",
+            "coherent, runnable increments",
+            "continuing development activity, not a one-time preview",
+            "moving concurrently wherever independent",
+            "user inspection must not gate unrelated work",
+            "narrowest relevant checks",
+            "safely runnable",
+            "affected rendered interactions",
+            "inspect and guide the work throughout development",
+            "incorporate feedback promptly",
+            "do not wait for acknowledgement unless a material decision genuinely requires it",
+            "exact access or launch instructions",
+            "label results preliminary",
+            "not final readiness or final visual approval",
+            "reuse established surfaces",
+            "respect declared shared environments",
+            "rather than creating unnecessary per-agent environments",
+            "preliminary delivery does not reduce the final agreed result",
+        ],
+    ),
+    (
+        "standing preview and browser-QA permission contract",
+        5,
+        &[
+            "standing permission covers in-scope local browser automation",
+            "configured development coordinator's local runtime work without separate chat authorization",
+            "preserve the tools' documented controls",
+            "does not expand scope or authorize production changes",
+            "destructive data actions",
+            "credential or trust changes",
+            "new infrastructure outside the agreed work",
+            "bypassing host/tool approval controls",
+        ],
+    ),
+    (
+        "semantic-checkpoint validation contract",
+        6,
+        &[
+            "cheap checks and focused tests",
+            "invalidate the current design or changed behavior",
+            "complete coherent implementation batches before broader validation",
+            "do not run the complete suite after each plan item, edit, commit, or delegated result",
+            "pre-merge validation once shared interfaces and integrations are stable",
+            "complete release validation against a frozen candidate",
+            "source, configuration, running surface, and evidence unchanged",
+            "mutable development surface continues evolving",
+            "a run proves only its exact snapshot",
+            "do not justify stopping or restarting it",
+            "does not establish readiness for a later candidate",
+            "one final complete pass over the final frozen candidate",
+            "one agent owns complete-suite execution",
+            "delegated agents run focused checks unless assigned the sealed integration pass",
+            "test-plumbing-only changes do not trigger another complete release pass",
+            "implementation and test infrastructure are frozen",
+        ],
+    ),
+    (
+        "complete-cycle contract",
+        6,
+        &[
+            "first ordinary failure",
+            "finite sealed test, audit, rehearsal, or deployment run",
+            "begin diagnosis and repair immediately in separate isolated state",
+            "scope, approval, and mistake-prevention gates",
+            "let the original run finish collecting every safe finding",
+            "do not inject fixes into its running surface, restart it, or destroy its evidence",
+            "rather than creating tasks as they appear",
+            "stop or mitigate immediately only when",
+            "security or safety harm",
+            "data loss",
+            "shared-state corruption",
+            "destruction of useful evidence",
+            "results invalid enough",
+            "reconcile all findings",
+            "promote only diagnosed durable gaps",
+            "batch related fixes",
+            "focused checks during repair",
+            "one final complete pass",
+        ],
+    ),
+    (
+        "verification contract",
+        6,
+        &[
+            "acceptance criteria",
+            "success, edge, failure, integration, and recovery paths",
+            "same visible or operational surface",
+            "do not substitute an internal unit",
+            "promised end-to-end behavior",
+            "recall and precision",
+            "realistic must-catch failures",
+            "each advertised class",
+            "false-positive guards for intentional patterns",
+        ],
+    ),
+    (
+        "implemented-product-behavior contract",
+        7,
+        &[
+            "never present invented facts, data, measurements",
+            "statuses, results, actions, integrations, or controls",
+            "real sources, user input, measurement, imported data",
+            "explicitly requested deterministic definitions",
+            "data-dependent feature is complete only when",
+            "real data, persistence, processing, failure states",
+            "visible result work end to end",
+            "loading, error, empty, or unavailable state",
+            "every visible enabled control must perform its stated action",
+            "rendered interface",
+            "expected downstream result",
+            "is not proof of promised navigation, persistence, processing, or integration",
+            "do not expose placeholders",
+            "empty handlers, no-op links, fake success",
+            "enabled product ui",
+            "synthetic examples remain isolated",
+            "declared mock-data prototypes",
+            "interactions work within their stated boundary",
+            "specification requires communicating future availability",
+            "semantically disabled",
+            "non-actionable, visibly unavailable, and specifically tracked",
+            "out-of-scope future information is noninteractive content",
+            "preliminary results may honestly contain unfinished scope",
+            "final completion may not",
+            "missing, simulated, inert",
+            "open request-related ledger entry",
+        ],
+    ),
+    (
+        "UI interaction completion contract",
+        8,
+        &[
+            "before reporting ui complete",
+            "one evidence pass over only the agreed screens",
+            "journeys, states, and responsive variants",
+            "does not authorize a broader exhaustive audit",
+            "inventory every visible interactive element, including conditional ones",
+            "journey, action, and expected observable result",
+            "verify the downstream result",
+            "success, cancellation, validation failure, permission failure",
+            "recovery where applicable",
+            "reload when persistence is promised",
+            "finish the safe diagnostic pass",
+            "isolated repair",
+            "batch-fix",
+            "zero enabled controls without real behavior",
+            "zero requested journeys without rendered end-to-end evidence",
+            "zero request-related unfinished outcomes",
+            "geometry checks support evidence but do not replace interaction verification",
+        ],
+    ),
+    (
+        "interface-content contract",
+        8,
+        &[
+            "content promise",
+            "first substantial",
+            "initial viewport, including narrow screens",
+            "supporting rather than displacing",
+            "collection destinations do not lead with add or edit forms",
+            "destinations explicitly dedicated to creating or editing one item",
+            "creation immediately reveals a focused dialog",
+            "current viewport—not below a long list",
+            "success reveals the new item",
+            "cancellation restores context and focus",
+            "controls beside the affected object",
+            "destructive actions name an explicit target and state",
+            "simple normal first input before inferred or advanced fields",
+            "prefer one concise heading or label",
+            "supporting copy only when requested or necessary",
+            "prevent misunderstanding or error",
+            "do not expose private values, internal identifiers, serialized payloads",
+            "purpose-built controls",
+            "wide and narrow layouts",
+            "loading, empty, error, populated, and long-content states",
+            "functional defect",
+            "visual exploration only for new directions or redesigns",
+            "approval state and exact response request",
+        ],
+    ),
+    (
+        "agent-mistake contract",
+        9,
+        &[
+            "distinguish agent mistakes from changed user intent",
+            "external state",
+            "finish its useful diagnostic cycle",
+            "nearest durable prevention layer",
+            "before the product fix",
+            "reuse its id",
+            "immediate mitigation prevents harm or data loss",
+            "preserve evidence and mitigate first",
+            "batch the guardrail and implementation changes",
+            "plausibly adjacent paths",
+            "retest the original surface",
+            "generalized repeatable lessons in policy",
+            "narrow guarantees",
+            "one-off narratives out of policy",
+            "project-root `userissueledgers/`",
+            "confirmed user-indicated agent mistakes",
+            "durable corrections",
+            "prior absence is valid",
+            "narrowly scoped ledgers, never one mixed catch-all",
+            "business logic",
+            "# user issue ledger: <scope>",
+            "one compact table",
+            "`id`",
+            "`applies to`",
+            "`mistake pattern`",
+            "`required behavior`",
+            "`prevention and verification`",
+            "uil-<scope>-nnn",
+            "relative path owns the scope, title, and namespace",
+            "businesslogic/pricing.md",
+            "uil-business-logic-pricing-001",
+            "narrowest owner and merge duplicates",
+            "do not add changed intent, new scope, external failures",
+            "raw conversation",
+            "incident narration",
+            "rows persist after fixes",
+            "explicit retraction or a recorded decision",
+            "preserved in version control",
+            "separate from completion work, decision history, and incident history",
+        ],
+    ),
+    (
+        "source-and-system protection contract",
+        10,
+        &[
+            "canonical sources as the only writable truth",
+            "verified source workflow",
+            "current remote",
+            "remote-unavailable means unknown",
+            "never discard, hide, stash, reset, or rewrite valuable dirty work",
+            "evidence-backed merge",
+            "verified baseline",
+            "running service, shared resource, or persistent store",
+            "coordination, locking, backup, and recovery",
+            "preserve failure evidence before restarting",
+            "verify recovery through the same surface",
+            "recoverable backup",
+            "disposable and isolated",
+            "tests that create persistent state isolate or safely clean up their own state",
+            "dependencies and concurrent runs",
+            "never unconditionally delete shared records",
+            "explicit working directories",
+            "unambiguous mutation targets",
+            "verify the intended result",
+            "domain meaning, ownership, lifecycle, reuse, validation, and evidence needs",
+            "shared transport or presentation does not imply shared ownership",
+        ],
+    ),
+    (
+        "user-goal explanation contract",
+        11,
+        &[
+            "perspective of the user and their requirements",
+            "not from the implementation's internal structure",
+            "what the user wants to accomplish",
+            "what people can now do",
+            "what remains incomplete",
+            "observable effect",
+            "do not substitute jargon, acronyms, component names",
+            "naming a mechanism does not explain its purpose or consequence",
+            "explain it in the user's context before using its technical name",
+            "what the user is choosing",
+            "how the choices differ in actual use",
+            "best satisfies their requirements",
+            "explain verification through the behavior it demonstrates",
+            "not only through commands, test names, or pass counts",
+            "optional technical detail after the user-facing account",
+            "report meaningful preliminary results promptly",
+            "without making user acknowledgement a condition",
+            "facts, inferences, assumptions, and genuine blockers",
+            "do not claim fixed, ready, complete, or done while",
+            "request-related completion work remains open",
+        ],
+    ),
 ];
 
 fn contains_ordered(text: &str, terms: &[&str]) -> bool {
@@ -3180,6 +3194,65 @@ fn positive_literal_match(clause: &str, needle: &str) -> bool {
     .iter()
     .any(|negative| prefix.ends_with(negative))
 }
+
+const INTENT_POLICY_CONTRADICTIONS: &[(&str, &str)] = &[
+    (
+        "explain capability and offer to continue instead of doing the work",
+        "action-oriented requests require action rather than capability-only replies",
+    ),
+    (
+        "implement only the features individually enumerated in a broad product request",
+        "broad requests must include reasonably implied end-to-end capabilities",
+    ),
+    (
+        "reversible actions authorize unrelated work",
+        "reversibility does not authorize unrelated work",
+    ),
+    (
+        "always ask for permission before routine reversible steps already authorized by the task",
+        "authorized routine work must not require another conversational approval",
+    ),
+    (
+        "perform the gated external write before asking for approval",
+        "reviewable preparation must not perform the gated action",
+    ),
+    (
+        "add safety checklists for every hypothetical risk",
+        "hypothetical risks must not create unsolicited safety checklists",
+    ),
+    (
+        "pause for approval solely because the task exceeds 1,000 changed lines",
+        "size alone must not stop authorized work",
+    ),
+    (
+        "wait for every asynchronous build before continuing independent work",
+        "asynchronous operations must not block independent authorized work",
+    ),
+    (
+        "treat submitting a background operation as proof of completion",
+        "asynchronous submission must not be presented as completion",
+    ),
+    (
+        "only ui changes require preliminary results",
+        "continuous preliminary delivery must include non-UI outcomes",
+    ),
+    (
+        "publish one preview and wait until final completion to update it",
+        "preliminary results must continue updating during implementation",
+    ),
+    (
+        "wait for user acknowledgement before continuing unrelated development",
+        "user inspection must not gate unrelated development",
+    ),
+    (
+        "reuse passing evidence from an older snapshot to claim the latest candidate ready",
+        "validation evidence must remain bound to its actual snapshot",
+    ),
+    (
+        "technical component names alone are sufficient to explain user outcomes",
+        "explanations must describe user goals and consequences rather than only mechanisms",
+    ),
+];
 
 fn literal_policy_contradictions(text: &str) -> Vec<String> {
     const RULES: &[(&str, &str)] = &[
@@ -3376,8 +3449,8 @@ fn literal_policy_contradictions(text: &str) -> Vec<String> {
             "independent work must not retain an unresolved shared interface or file overlap",
         ),
         (
-            "tightly coupled subsystem may use three implementation agents",
-            "a tightly coupled subsystem must not exceed two implementation agents",
+            "always limit implementation to two agents",
+            "implementation delegation must not impose a fixed agent count",
         ),
         (
             "subagents may spawn further implementation agents without explicit parent authorization",
@@ -3414,7 +3487,7 @@ fn literal_policy_contradictions(text: &str) -> Vec<String> {
     ];
     let clauses = policy_clauses(text);
     let mut violations = Vec::new();
-    for (needle, label) in RULES {
+    for (needle, label) in RULES.iter().chain(INTENT_POLICY_CONTRADICTIONS) {
         if clauses
             .iter()
             .any(|clause| positive_literal_match(clause, needle))
@@ -3702,246 +3775,54 @@ pub fn find_app_wide_policy_violations(text: &str) -> Vec<String> {
     if !text.starts_with("# Universal Agent Instructions\n") {
         violations.push("policy must use the universal title".to_owned());
     }
-    let mut bodies = BTreeMap::new();
-    for heading in REQUIRED_POLICY_SECTIONS {
-        let body = policy_section(text, heading);
-        if body.is_empty() {
-            violations.push(format!("required section is missing: {heading}"));
-        }
-        bodies.insert(heading, body);
-    }
-    let requirements: &[(&str, &str, &[&str])] = &[
-        (
-            "Use relevant authoritative context",
-            "relevant-context contract",
-            CONTEXT_TERMS,
-        ),
-        (
-            "Tool orchestration",
-            "tool-orchestration contract",
-            TOOL_ORCHESTRATION_TERMS,
-        ),
-        (
-            "Ground security-posture decisions in confirmed assumptions",
-            "security-assumptions gate",
-            SECURITY_TERMS,
-        ),
-        (
-            "Keep decisions compact and usable",
-            "decision-memory contract",
-            DECISION_TERMS,
-        ),
-        (
-            "Implement the exact scope",
-            "exact-scope contract",
-            EXACT_SCOPE_TERMS,
-        ),
-        (
-            "Keep completion and execution histories separate",
-            "completion-versus-execution contract",
-            COMPLETION_HISTORY_TERMS,
-        ),
-        (
-            "Delegate only contract-ready work",
-            "contract-ready delegation contract",
-            DELEGATION_TERMS,
-        ),
-        (
-            "Parallelize independent work and first-failure fixing",
-            "parallel-work contract",
-            PARALLEL_TERMS,
-        ),
-        (
-            "Wait for events instead of polling",
-            "event-wait contract",
-            WAIT_TERMS,
-        ),
-        (
-            "Validate at semantic checkpoints",
-            "semantic-checkpoint validation contract",
-            VALIDATION_TERMS,
-        ),
-        (
-            "Deliver UI previews before broad validation",
-            "preview-first contract",
-            PREVIEW_TERMS,
-        ),
-        (
-            "Finish diagnostic cycles before batch fixing",
-            "complete-cycle contract",
-            CYCLE_TERMS,
-        ),
-        (
-            "Keep behavior truthful",
-            "truthful-behavior contract",
-            TRUTHFUL_TERMS,
-        ),
-        (
-            "Prohibit unimplemented product behavior",
-            "implemented-product-behavior contract",
-            PRODUCT_BEHAVIOR_TERMS,
-        ),
-        (
-            "Learn from agent-made mistakes",
-            "agent-mistake contract",
-            MISTAKE_TERMS,
-        ),
-        (
-            "Verify real behavior",
-            "verification contract",
-            VERIFY_TERMS,
-        ),
-        (
-            "Use standing preview and browser-QA permission",
-            "standing preview and browser-QA permission contract",
-            STANDING_TERMS,
-        ),
-        (
-            "Put requested interface content first",
-            "interface-content contract",
-            INTERFACE_TERMS,
-        ),
-        (
-            "Respect data and system boundaries",
-            "data-boundary contract",
-            BOUNDARY_TERMS,
-        ),
-        (
-            "Protect sources, repositories, and running systems",
-            "source-and-system protection contract",
-            PROTECTION_TERMS,
-        ),
-        (
-            "Report status honestly",
-            "honest-status contract",
-            REPORTING_TERMS,
-        ),
-    ];
-    for (heading, label, terms) in requirements {
-        let body = bodies.get(heading).copied().unwrap_or_default();
-        if !body.is_empty() {
-            require_policy_terms(&mut violations, body, label, terms);
+    let bodies = REQUIRED_POLICY_SECTIONS
+        .iter()
+        .map(|heading| {
+            let body = policy_section(text, heading);
+            if body.is_empty() {
+                violations.push(format!("required section is missing: {heading}"));
+            }
+            body
+        })
+        .collect::<Vec<_>>();
+    for (label, section, terms) in POLICY_CONTRACTS {
+        if !bodies[*section].is_empty() {
+            require_policy_terms(&mut violations, bodies[*section], label, terms);
         }
     }
-    let context = bodies
-        .get("Use relevant authoritative context")
-        .copied()
-        .unwrap_or_default();
-    if !context.is_empty() {
-        require_policy_terms(
-            &mut violations,
-            context,
-            "engineering-expansion question contract",
-            EXPANSION_TERMS,
-        );
-        if !contains_ordered(
-            context,
+    for (label, section, terms) in [
+        (
+            "approval must follow concrete authorized preparation without performing the gated action",
+            2,
             &[
-                "before implementing any agent-proposed addition",
-                "tell the user",
-                "explicit approval",
-                "do not begin the addition until the user approves it",
-            ],
-        ) {
-            violations.push("expansion approval must precede action".to_owned());
-        }
-    }
-
-    let ordered_contracts: &[(&str, &str, &[&str])] = &[
-        (
-            "Implement the exact scope",
-            "reported bugs require repair through the original verified outcome without bypassing controls",
-            &[
-                "treat a user-reported bug as a request to investigate, fix, and verify",
-                "do not require the user to say",
-                "explicit explanation-only, investigation-only",
-                "preserve the original user-visible acceptance criterion",
-                "not a fix while the reported behavior still fails",
-                "original affected surface with real data",
-                "do not end a repair with only an apology, diagnosis, plan, or offer to fix",
-                "if genuinely blocked",
-                "preserves existing approval, security, production, and scope boundaries",
-            ],
+                "when approval is actually required, prepare the concrete result first",
+                "make approval the final step before the gated action",
+                "do not perform the gated action as part of preparation",
+            ][..],
         ),
         (
-            "Ground security-posture decisions in confirmed assumptions",
             "every security-posture change or omission must read confirmed assumptions first",
+            2,
             &[
-                "every decision that adds, changes, weakens, removes, or intentionally omits",
-                "before proposing or making such a decision",
-                "read the project-root `security-assumptions.md`",
-            ],
+                "before proposing or making a decision that adds, changes, weakens, removes, or intentionally omits",
+                "security control, read project-root `security-assumptions.md`",
+            ][..],
         ),
         (
-            "Implement the exact scope",
-            "hidden large scope must trigger one explanation and the smallest sufficient architecture",
-            &[
-                "seemingly focused request",
-                "beyond three product subsystems",
-                "new platform abstraction",
-                "roughly 1,000 changed lines",
-                "pause once and explain the actual scope before continuing",
-                "recommend the smallest architecture",
-            ],
-        ),
-        (
-            "Delegate only contract-ready work",
-            "implementation delegation must wait for fixed shared contracts and an acceptance fixture",
-            &[
-                "do not delegate implementation until",
-                "shared schemas",
-                "directory layouts",
-                "ownership boundaries",
-                "one cross-component acceptance fixture",
-                "are fixed",
-            ],
-        ),
-        (
-            "Parallelize independent work and first-failure fixing",
             "first-failure fixes must overlap the unchanged sealed run",
+            6,
             &[
                 "first ordinary failure",
-                "fixing begin immediately",
-                "sealed run continues unchanged",
-            ],
+                "begin diagnosis and repair immediately in separate isolated state",
+                "let the original run finish collecting every safe finding",
+                "do not inject fixes into its running surface",
+            ][..],
         ),
-        (
-            "Validate at semantic checkpoints",
-            "pre-merge and release validation must wait for stable frozen checkpoints",
-            &[
-                "pre-merge validation once shared interfaces and integrations are stable",
-                "one fresh complete release pass over a frozen candidate",
-            ],
-        ),
-        (
-            "Prohibit unimplemented product behavior",
-            "UI completion requires zero inert controls, unverified journeys, and related ledger entries",
-            &[
-                "completion requires zero enabled controls without real behavior",
-                "zero requested journeys without rendered end-to-end evidence",
-                "zero request-related completion-ledger entries",
-            ],
-        ),
-        (
-            "Put requested interface content first",
-            "UI descriptions must default to one self-explanatory label and never restate it",
-            &[
-                "prefer one concise, self-explanatory heading or label",
-                "do not add subtitles",
-                "by default",
-                "user explicitly requests it",
-                "necessary to prevent misunderstanding or error",
-                "never use it to restate the heading or label",
-            ],
-        ),
-    ];
-    for (heading, label, terms) in ordered_contracts {
-        let body = bodies.get(heading).copied().unwrap_or_default();
-        if !body.is_empty() && !contains_ordered(body, terms) {
-            violations.push((*label).to_owned());
+    ] {
+        if !bodies[section].is_empty() && !contains_ordered(bodies[section], terms) {
+            violations.push(label.to_owned());
         }
     }
-
     for name in FORBIDDEN_POLICY_NAMES {
         if contains_word_case_insensitive(text, name) {
             violations.push(format!(
@@ -4758,41 +4639,71 @@ mod tests {
             fs::read_to_string(repository_root().join("reference/universal/AGENTS.md")).unwrap();
         assert!(find_app_wide_policy_violations(&policy).is_empty());
         for (required, weakened) in [
-            ("investigate, fix, and verify", "investigate and explain"),
-            ("Do not require the", "Always require the"),
-            ("explanation-only, investigation-only", "unrestricted"),
+            (
+                "repair request unless explicitly limited",
+                "request for an explanation only",
+            ),
             (
                 "original user-visible acceptance criterion",
                 "latest supporting subtask",
             ),
             (
-                "not a fix while the reported behavior still",
-                "a fix even when the reported behavior still",
+                "is not resolution while the reported behavior still fails",
+                "is resolution even while the reported behavior still fails",
             ),
             (
                 "original affected surface with real data",
                 "isolated fixture with sample data",
             ),
             (
-                "Do not end a repair with only an apology",
-                "End a repair with only an apology",
+                "Do not end with only an apology",
+                "End with only an apology",
             ),
-            ("If genuinely blocked", "If further effort is needed"),
+            ("When genuinely blocked", "When further effort is needed"),
             (
-                "existing approval, security, production, and scope boundaries",
-                "no approval boundaries",
+                "authorization and host/tool",
+                "no authorization or host/tool",
             ),
         ] {
             assert!(
                 policy.contains(required),
                 "missing fixture target {required}"
             );
-            let changed = policy.replacen(required, weakened, 1);
+            assert_policy_violation(
+                &replace_once(&policy, required, weakened),
+                "reported bugs require repair",
+            );
+        }
+    }
+
+    #[test]
+    fn app_wide_policy_autonomy_rejects_regressions_without_blocking_authorized_work() {
+        let policy =
+            fs::read_to_string(repository_root().join("reference/universal/AGENTS.md")).unwrap();
+        assert!(find_app_wide_policy_violations(&policy).is_empty());
+        for (instruction, expected) in INTENT_POLICY_CONTRADICTIONS {
+            assert_policy_violation(&format!("{policy}\n- {instruction}.\n"), expected);
+            let negated = format!("{policy}\n- Never {instruction}.\n");
             assert!(
-                find_app_wide_policy_violations(&changed)
-                    .iter()
-                    .any(|item| item.contains("reported bugs require repair")),
-                "accepted weakened repair mandate: {required}"
+                find_app_wide_policy_violations(&negated).is_empty(),
+                "false positive for negated {instruction}"
+            );
+        }
+        for instruction in [
+            "A can-you-build request authorizes implementation, while a can-you-explain request calls for an explanation without source changes.",
+            "Implement the conventionally expected account lifecycle for the requested system using its confirmed context; do not invent an unrelated enterprise platform.",
+            "Prepare the requested change in an isolated worktree and continue authorized fixes while awaiting only the answer needed for a different dependent branch.",
+            "Three implementation agents may work on a tightly coupled subsystem with fixed contracts, disjoint ownership, explicit branch authorization, and parent-owned integration.",
+            "Prepare the checked external update for review; do not send it before the genuinely required approval, or ask again when that action was already authorized.",
+            "Publish a runnable command-line build and later coherent increments while implementation and the frozen validation pass continue independently.",
+            "An application build awaits signing before its own publication, but independent implementation continues while the supported asynchronous operation is pending.",
+            "The owner may inspect the running test version and guide the work without acknowledgement becoming a gate; retain the sealed run as proof only of its original snapshot.",
+            "Explain who can view or change accounts before naming the permission mechanism, and describe the behavior verified rather than only a test count.",
+        ] {
+            let actual = find_app_wide_policy_violations(&format!("{policy}\n{instruction}\n"));
+            assert!(
+                actual.is_empty(),
+                "false positive for {instruction:?}: {actual:?}"
             );
         }
     }
@@ -5015,8 +4926,8 @@ mod tests {
                 "independent work must not retain",
             ),
             (
-                "A tightly coupled subsystem may use three implementation agents plus one integrator.",
-                "must not exceed two implementation agents",
+                "A always limit implementation to two agents plus one integrator.",
+                "must not impose a fixed agent count",
             ),
             (
                 "Subagents may spawn further implementation agents without explicit parent authorization.",
@@ -5199,223 +5110,33 @@ mod tests {
     fn app_wide_policy_section_and_required_term_mutations_preserve_self_test_recall() {
         let policy =
             fs::read_to_string(repository_root().join("reference/universal/AGENTS.md")).unwrap();
-        let section_cases = [
-            (
-                "Tool orchestration",
-                "- Run every tool call one at a time and return its full raw output.",
-                "tool-orchestration contract",
-            ),
-            (
-                "Ground security-posture decisions in confirmed assumptions",
-                "- Apply generally accepted security practices in proportion to the work.\n- Ask before expanding the requested scope.",
-                "security-assumptions gate",
-            ),
-            (
-                "Validate at semantic checkpoints",
-                "- Run the complete suite after every implementation step.",
-                "semantic-checkpoint validation contract",
-            ),
-            (
-                "Finish diagnostic cycles before batch fixing",
-                "- Stop on the first issue, fix it, and restart the suite.",
-                "complete-cycle contract",
-            ),
-            (
-                "Delegate only contract-ready work",
-                "- Delegate implementation whenever another worker is available.",
-                "contract-ready delegation contract",
-            ),
-            (
-                "Parallelize independent work and first-failure fixing",
-                "- Run work serially and wait for the suite to finish before investigating.",
-                "parallel-work contract",
-            ),
-            (
-                "Wait for events instead of polling",
-                "- Poll status from a new agent turn once per minute.",
-                "event-wait contract",
-            ),
-            (
-                "Implement the exact scope",
-                "- Keep a historical list of completed work and call partial work done.",
-                "exact-scope contract",
-            ),
-            (
-                "Keep completion and execution histories separate",
-                "- Turn every passing and failing run into a completion task.",
-                "completion-versus-execution contract",
-            ),
-            (
-                "Deliver UI previews before broad validation",
-                "- Withhold the test preview until every broad release check finishes.",
-                "preview-first contract",
-            ),
-            (
-                "Learn from agent-made mistakes",
-                "- Remember mistakes informally and fix them immediately.",
-                "agent-mistake contract",
-            ),
-            (
-                "Verify real behavior",
-                "- Run one happy-path unit test.",
-                "verification contract",
-            ),
-            (
-                "Prohibit unimplemented product behavior",
-                "- Render each requested screen and verify its routes and screenshots.",
-                "implemented-product-behavior contract",
-            ),
-            (
-                "Use standing preview and browser-QA permission",
-                "- Ask before invoking optional testing tools.",
-                "standing preview and browser-QA permission contract",
-            ),
-            (
-                "Put requested interface content first",
-                "- Put setup and administration above the named content.",
-                "interface-content contract",
-            ),
-        ];
-        for (heading, body, expected) in section_cases {
-            assert_policy_violation(&replace_policy_section(&policy, heading, body), expected);
-        }
-
-        let replacements = [
-            (
-                "an unknown or otherwise\n  unconfirmed assumption cannot justify",
-                "an unknown or otherwise\n  unconfirmed assumption may justify",
-                "security-assumptions gate",
-            ),
-            (
-                "Non-security\n  changes do not trigger a security interview",
-                "Non-security\n  changes always trigger a security interview",
-                "security-assumptions gate",
-            ),
-            (
-                "provided it\n  does not select, apply, alter, or omit a security-posture control",
-                "and may select a security-posture control before confirmation",
-                "security-assumptions gate",
-            ),
-            (
-                "express direction, not mandatory delivery requirements",
-                "are mandatory delivery requirements",
-                "tentative or illustrative language must not become mandatory",
-            ),
-            (
-                "work is in scope only when required by acceptance",
-                "work is always in scope regardless of acceptance",
-                "supporting engineering must not enter scope",
-            ),
-            (
-                "pause once and explain the actual scope before continuing",
-                "continue without a pause or scope explanation",
-                "hidden large scope must not continue",
-            ),
-            (
-                "Do not equate more checks, parsers, adapters, or supported formats with a more\n  complete implementation.",
-                "More checks, parsers, adapters, and supported formats always make an\n  implementation more complete.",
-                "extra machinery must not be treated as proof of completeness",
-            ),
-            (
-                "Do not begin the addition until the user approves it",
-                "The agent may begin the expansion while waiting for a response",
-                "do not begin the addition until the user approves it",
-            ),
-            (
-                "Do not request a second confirmation",
-                "Request another confirmation",
-                "relevant-context contract",
-            ),
-            (
-                "append-only maintenance write is direct",
-                "append-only maintenance write waits for approval",
-                "decision-memory contract",
-            ),
-            (
-                "configured host-wide scheduler",
-                "repository-selected fixed admission",
-                "parallel-work contract",
-            ),
-            (
-                "Run pre-merge validation once shared interfaces and integrations are stable",
-                "Run pre-merge validation before shared interfaces and integrations are stable",
-                "semantic-checkpoint validation contract",
-            ),
-            (
-                "never fall back to files or chat memory",
-                "fall back to a Markdown file when the database is unavailable",
-                "completion-versus-execution contract",
-            ),
-        ];
-        for (old, new, expected) in replacements {
-            assert_policy_violation(&replace_once(&policy, old, new), expected);
-        }
-
-        let context_terms = [
-            (
-                "only when an unresolved answer could\n  materially change",
-                "whenever the agent notices an optional idea",
-                "only when an unresolved answer could materially change",
-            ),
-            (
-                "meaningful additional\n  work or over-engineering",
-                "any amount of work",
-                "meaningful additional work or over-engineering",
-            ),
-            (
-                "question and option analysis concise and\n  proportional to that impact",
-                "question and option analysis comprehensive regardless of impact",
-                "question and option analysis concise",
-            ),
-        ];
-        for (old, new, missing) in context_terms {
-            let actual =
-                find_app_wide_policy_violations(&replace_once(&policy, old, new)).join("\n");
-            assert!(actual.contains("relevant-context contract") && actual.contains(missing));
-        }
-
-        let expansion_terms = [
-            (
-                "regardless of whether the addition\n  seems small",
-                "only when the addition\n  seems large",
-                "regardless of whether the addition seems small",
-            ),
-            (
-                "actually proposes to implement the addition",
-                "merely thinks of the addition",
-                "actually proposes to implement the addition",
-            ),
-            (
-                "merely noticing and declining an\n  optional idea does not warrant an interruption",
-                "merely noticing and declining an\n  optional idea always warrants an interruption",
-                "does not warrant an interruption",
-            ),
-            (
-                "decision detail proportional to impact",
-                "same exhaustive detail for every choice",
-                "decision detail proportional to impact",
-            ),
-            (
-                "only to the extent\n  they affect the choice",
-                "whether or not they affect the choice",
-                "only to the extent they affect the choice",
-            ),
-            (
-                "routine low-level implementation choice",
-                "every low-level implementation choice",
-                "routine low-level implementation choice",
-            ),
-        ];
-        for (old, new, missing) in expansion_terms {
-            let candidate = policy
-                .rsplit_once(old)
-                .map(|(head, tail)| format!("{head}{new}{tail}"))
-                .expect("expansion term");
-            let actual = find_app_wide_policy_violations(&candidate).join("\n");
-            assert!(
-                actual.contains("engineering-expansion question contract")
-                    && actual.contains(missing)
+        assert!(find_app_wide_policy_violations(&policy).is_empty());
+        for heading in REQUIRED_POLICY_SECTIONS {
+            assert_policy_violation(
+                &policy.replace(&format!("## {heading}\n"), "## Removed contract\n"),
+                &format!("required section is missing: {heading}"),
             );
+        }
+        for (label, section, terms) in POLICY_CONTRACTS {
+            let heading = REQUIRED_POLICY_SECTIONS[*section];
+            let body = fold_policy(policy_section(&policy, heading));
+            let normalized = replace_policy_section(&policy, heading, &body);
+            assert!(
+                find_app_wide_policy_violations(&normalized).is_empty(),
+                "normalization changed {label}"
+            );
+            assert_policy_violation(
+                &replace_policy_section(&policy, heading, "- Follow generic advice."),
+                label,
+            );
+            for term in *terms {
+                assert!(
+                    body.contains(term),
+                    "missing fixture target {label}: {term}"
+                );
+                let changed = body.replace(term, "removed policy concept");
+                assert_policy_violation(&replace_policy_section(&policy, heading, &changed), label);
+            }
         }
     }
 
