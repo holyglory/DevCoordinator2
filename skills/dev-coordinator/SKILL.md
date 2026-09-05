@@ -172,6 +172,12 @@ is no file fallback.
   rejects clearing the request without changed owner-facing wording. Keep the
   request open when you cannot yet make the wording genuinely clearer, and do
   not claim the related work complete while its request remains outstanding.
+- An interim answer or elaboration update does not complete the active
+  outcome. Preserve its agreed scope and pending operations, then resume
+  authorized work or a bounded event wait in the same active work cycle.
+  Honor explicit pause, cancellation, or replacement and real required
+  decisions; leave unfinished outcomes open and state the actual stopping
+  condition.
 - Record consequential product choices with `decision_record`
   (aspect-tagged, management-facing body; `supersedes` when replacing one).
   Load context with `decision_tail`; `decision_search` before retrying an

@@ -36,6 +36,14 @@
 - Respect explicit limits such as “analysis only,” “don't modify it yet,”
   or “don't publish.” Preserve applicable authorization and host/tool
   controls; reversibility alone does not authorize unrelated work.
+- Treat an interim question, status request, clarification, language
+  preference, or correction as steering the active objective, not implicitly
+  replacing, pausing, or cancelling unfinished agreed work. Give the immediate
+  answer through a progress response, preserve the full agreed scope and
+  pending tools, tests, and delegated jobs, and resume the next authorized
+  step or bounded event wait within the same active work cycle. Producing an
+  answer is not task completion; do not go idle while actionable agreed work
+  remains.
 - Treat a user-reported bug as a repair request unless explicitly limited.
   Preserve the original user-visible acceptance criterion across follow-ups
   and supporting tasks. A cache, workaround, clearer error, dependency fix,
@@ -52,6 +60,11 @@
 - Do not replace a necessary foundation with ad-hoc plumbing. Record a
   temporary bridge in the authoritative completion ledger and replace it
   before readiness.
+- End an active work cycle only when the original objective is actually
+  complete; the user explicitly pauses, cancels, or replaces it; or a real
+  blocker or required decision prevents further authorized progress. State
+  which condition applies. Honor explicit changes of direction; do not use
+  persistence to override them.
 - When genuinely blocked, complete all independent authorized work, keep
   the intended outcome open, and explain the exact blocker and smallest
   required user decision or action. Do not end with only an apology,
@@ -290,6 +303,10 @@
 
 ## 7. Validate at stable checkpoints without disrupting progress
 
+- Do not run tests or automated policy-validation suites for AGENTS.md
+  instruction changes. Review the wording, scope, consistency, and diff
+  directly. Changes to executable behavior are a separate validation
+  decision; an instruction edit alone is not a test trigger.
 - During implementation, run cheap checks and focused tests that can
   invalidate the current design or changed behavior. Complete coherent
   implementation batches before broader validation.

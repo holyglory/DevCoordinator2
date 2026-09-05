@@ -2591,6 +2591,27 @@ const POLICY_CONTRACTS: &[(&str, usize, &[&str])] = &[
         ],
     ),
     (
+        "interim-answer continuation contract",
+        0,
+        &[
+            "interim question, status request, clarification, language preference, or correction",
+            "steering the active objective",
+            "not implicitly replacing, pausing, or cancelling unfinished agreed work",
+            "answer through a progress response",
+            "preserve the full agreed scope and pending tools, tests, and delegated jobs",
+            "resume the next authorized step or bounded event wait",
+            "within the same active work cycle",
+            "producing an answer is not task completion",
+            "do not go idle while actionable agreed work remains",
+            "end an active work cycle only when the original objective is actually complete",
+            "the user explicitly pauses, cancels, or replaces it",
+            "a real blocker or required decision prevents further authorized progress",
+            "state which condition applies",
+            "honor explicit changes of direction",
+            "do not use persistence to override them",
+        ],
+    ),
+    (
         "reported bugs require repair",
         0,
         &[
@@ -3196,6 +3217,38 @@ fn positive_literal_match(clause: &str, needle: &str) -> bool {
 }
 
 const INTENT_POLICY_CONTRADICTIONS: &[(&str, &str)] = &[
+    (
+        "end the work cycle after answering an interim question while authorized work remains",
+        "interim answers must resume unfinished authorized work",
+    ),
+    (
+        "answer a status question and abandon pending tests or delegated jobs",
+        "status answers must preserve pending operations",
+    ),
+    (
+        "treat a language correction as cancellation of unfinished work",
+        "language corrections must not implicitly cancel work",
+    ),
+    (
+        "replace the active objective with every mid-task clarification",
+        "clarifications must not implicitly replace the active objective",
+    ),
+    (
+        "ignore an explicit pause, cancellation, or replacement and continue the original work",
+        "explicit changed direction must be honored",
+    ),
+    (
+        "continue the gated action despite a real required user decision",
+        "continuation must respect real required decisions",
+    ),
+    (
+        "keep working after the objective is complete by inventing more tasks",
+        "actual completion permits stopping without invented work",
+    ),
+    (
+        "restart a finite diagnostic pass after answering a status question",
+        "interim answers must preserve finite diagnostic passes",
+    ),
     (
         "explain capability and offer to continue instead of doing the work",
         "action-oriented requests require action rather than capability-only replies",
@@ -4699,6 +4752,75 @@ mod tests {
             "An application build awaits signing before its own publication, but independent implementation continues while the supported asynchronous operation is pending.",
             "The owner may inspect the running test version and guide the work without acknowledgement becoming a gate; retain the sealed run as proof only of its original snapshot.",
             "Explain who can view or change accounts before naming the permission mechanism, and describe the behavior verified rather than only a test count.",
+        ] {
+            let actual = find_app_wide_policy_violations(&format!("{policy}\n{instruction}\n"));
+            assert!(
+                actual.is_empty(),
+                "false positive for {instruction:?}: {actual:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn app_wide_policy_interim_answers_preserve_the_active_objective() {
+        let policy =
+            fs::read_to_string(repository_root().join("reference/universal/AGENTS.md")).unwrap();
+        assert!(find_app_wide_policy_violations(&policy).is_empty());
+        for (scenario, instruction, expected) in [
+            (
+                "installation question during unfinished release publication",
+                "end the work cycle after answering an interim question while authorized work remains",
+                "interim answers must resume unfinished authorized work",
+            ),
+            (
+                "status question while tests and delegated jobs are running",
+                "answer a status question and abandon pending tests or delegated jobs",
+                "status answers must preserve pending operations",
+            ),
+            (
+                "the user asks for English progress during unfinished work",
+                "treat a language correction as cancellation of unfinished work",
+                "language corrections must not implicitly cancel work",
+            ),
+            (
+                "the user clarifies one requirement without replacing the objective",
+                "replace the active objective with every mid-task clarification",
+                "clarifications must not implicitly replace the active objective",
+            ),
+            (
+                "the user explicitly pauses, cancels, or replaces the original work",
+                "ignore an explicit pause, cancellation, or replacement and continue the original work",
+                "explicit changed direction must be honored",
+            ),
+            (
+                "all independent work is exhausted and required approval is missing",
+                "continue the gated action despite a real required user decision",
+                "continuation must respect real required decisions",
+            ),
+            (
+                "the original objective is complete and no operation remains pending",
+                "keep working after the objective is complete by inventing more tasks",
+                "actual completion permits stopping without invented work",
+            ),
+            (
+                "a status answer arrives during an unchanged finite diagnostic pass",
+                "restart a finite diagnostic pass after answering a status question",
+                "interim answers must preserve finite diagnostic passes",
+            ),
+        ] {
+            assert_policy_violation(
+                &format!("{policy}\n- {scenario}: {instruction}.\n"),
+                expected,
+            );
+        }
+        for instruction in [
+            "During an unfinished release, answer the installation question through progress, then resume authorized publication and repair in the same active work cycle; no new continue instruction is needed.",
+            "Answer the status question, preserve the pending test and delegated-job identities, and resume independent work or the bounded event wait without restarting the finite pass.",
+            "Switch progress to the requested language, apply the clarification to the existing requirement, and continue the remaining agreed implementation.",
+            "When the user explicitly pauses or cancels the work, honor that direction, account for pending operations safely, and report that actual stopping condition rather than continuing the original objective.",
+            "When the user explicitly replaces the release with an explanation-only task, honor the replacement instead of continuing publication; an incidental installation question alone is not that replacement.",
+            "After independent work is exhausted, a genuinely required user decision may stop dependent work; name the missing decision and do not execute the gated action.",
+            "When the agreed objective is actually complete, all required operations are accounted for and verification is finished, report completion and end the work cycle without inventing new work.",
         ] {
             let actual = find_app_wide_policy_violations(&format!("{policy}\n{instruction}\n"));
             assert!(
