@@ -2995,9 +2995,20 @@ function pageVerifier() {
     return false;
   };
 
-  const activeModal = document.activeElement?.closest('dialog:modal') || document.querySelector('dialog:modal');
+  const modalContains = (ancestor, element) => {
+    let node = element;
+    while (node) {
+      if (node === ancestor) return true;
+      node = composedParent(node);
+    }
+    return false;
+  };
+  let modalFocus = document.activeElement;
+  while (modalFocus?.shadowRoot?.activeElement) modalFocus = modalFocus.shadowRoot.activeElement;
+  const nativeModals = allElements.filter((element) => element.matches('dialog:modal'));
+  const activeModal = nativeModals.findLast((modal) => modalContains(modal, modalFocus)) || nativeModals.at(-1);
   const visible = (el) => {
-    if (activeModal && !activeModal.contains(el) && !el.contains(activeModal)) return false;
+    if (activeModal && !modalContains(activeModal, el) && !modalContains(el, activeModal)) return false;
     const style = cs(el);
     if (style.display === "none" || style.visibility === "hidden" || style.visibility === "collapse") return false;
     if (effectiveOpacity(el) <= 0.01) return false;
