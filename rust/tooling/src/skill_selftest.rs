@@ -68,6 +68,11 @@ const WORKFLOW_TERMS: &[&str] = &[
     "do not wait for user acknowledgement",
     "Begin diagnosis and repair in isolated state on the first ordinary failure",
     "without modifying the original run's source or artifacts",
+    "An interim answer or elaboration update does not complete the active outcome",
+    "Preserve its agreed scope and pending operations",
+    "resume authorized work or a bounded event wait in the same active work cycle",
+    "Honor explicit pause, cancellation, or replacement and real required decisions",
+    "leave unfinished outcomes open and state the actual stopping condition",
 ];
 
 const RETIRED_WORKFLOW_TERMS: &[&str] = &[
