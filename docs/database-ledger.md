@@ -177,6 +177,18 @@ The version 15→16 upgrade is additive. A failed activation that changed schema
 restores the private pre-activation database backup before starting the prior
 binary; same-schema failures keep intact current data.
 
+## Schema version 17 (shared and project glossaries, 2026-09-05)
+
+`glossary_profiles` stores each scope's current revision. The shared scope is
+named `shared`; project scopes use existing repository identities. Permanent
+`glossary_revisions` stores incremental concept or settings changes, the exact
+scope revision, readable change summary, actor and timestamp. An indexed
+latest-at-revision projection reconstructs immutable historical glossaries.
+Specialization removal is a history-preserving tombstone, not record deletion.
+Settings hold explicitly adopted shared revisions, glossary languages and
+guidance. No localization message store is imported or managed. See
+`docs/glossary.md` for ownership, authorization and acceptance journeys.
+
 ## Reserved ID-prefix namespace
 
 Deterministic opaque TEXT IDs; later phases never migrate existing IDs.

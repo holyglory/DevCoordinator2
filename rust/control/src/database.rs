@@ -291,7 +291,7 @@ mod tests {
                 )?)
             })
             .expect("version");
-        assert_eq!(version, "16");
+        assert_eq!(version, DATABASE_SCHEMA_VERSION.to_string());
         let tables: Vec<String> = database
             .call(|connection| {
                 let mut statement = connection.prepare(
@@ -328,15 +328,15 @@ mod tests {
         connection
             .execute_batch(
                 "CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);\n\
-                 INSERT INTO meta VALUES('schema_version','17');",
+                 INSERT INTO meta VALUES('schema_version','18');",
             )
             .expect("fixture schema");
         drop(connection);
         assert!(matches!(
             Database::open(path),
             Err(DatabaseError::SchemaTooNew {
-                found: 17,
-                supported: 16
+                found: 18,
+                supported: 17
             })
         ));
     }
@@ -371,7 +371,7 @@ mod tests {
                 ))
             })
             .expect("schema projection");
-        assert_eq!(version, "16");
+        assert_eq!(version, DATABASE_SCHEMA_VERSION.to_string());
         assert_eq!(owned_events, 1);
     }
 

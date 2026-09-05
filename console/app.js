@@ -259,6 +259,7 @@ function currentDestinationHeading() {
     deployments: ['Deployments', '#/deployments'], plan: ['Plan', '#/plan'],
     progress: ['Progress', '#/progress'], usage: ['Codex Usage', '#/usage'],
     decisions: ['Decisions', '#/decisions'],
+    glossary: ['Glossary', '#/glossary'],
     tests: ['Tests', '#/tests'], health: ['Health', '#/health'],
     bugs: ['Bugs', '#/bugs'], admin: ['Administration', '#/admin'],
   };
@@ -3727,12 +3728,14 @@ const viewDecisions = guard(async (repoId) => {
 
 // --- Router ----------------------------------------------------------------
 async function render() {
+  closeGlossaryDialog?.();
   closeActiveProjectPicker?.(false);
   viewAbort?.abort();
   viewAbort = new AbortController();
   const hash = location.hash || '#/deployments';
   const [, view, arg] = hash.slice(1).split('/');
   main.classList.toggle('plan-page', view === 'plan' && !!arg);
+  main.classList.toggle('glossary-page', view === 'glossary');
   main.classList.toggle('usage-page', view === 'usage' && !!arg);
   main.classList.toggle('progress-page', view === 'progress' && !!arg);
   main.classList.toggle('health-page', view === 'health');
@@ -3752,6 +3755,7 @@ async function render() {
   if (view === 'progress') return arg ? viewProgress(arg) : viewProgressRepositories();
   if (view === 'usage') return arg ? viewCodexUsage(arg) : viewCodexUsageRepositories();
   if (view === 'decisions') return arg ? viewDecisions(arg) : viewPlanPicker('decisions');
+  if (view === 'glossary') return viewGlossary();
   if (view === 'tests') return viewTests(arg || null);
   if (view === 'health') return viewHealth(arg);
   if (view === 'bugs') return viewBugs();

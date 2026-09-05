@@ -26,6 +26,7 @@ use crate::daemon::OperationExecutor;
 use crate::database::{Database, DatabaseError};
 use crate::deployments::Deployments;
 use crate::events::{EventService, NewEvent};
+use crate::glossary::GlossaryService;
 use crate::health::HealthService;
 use crate::plan::{PlanService, SqliteDeploymentEvidence};
 use crate::platform::{Clock, HostClock};
@@ -110,6 +111,15 @@ pub const FOUNDATION_OPERATIONS: &[&str] = &[
     "telegram.list",
     "event.wait",
     "plan.overview",
+    "glossary.list",
+    "glossary.resolve",
+    "glossary.get",
+    "glossary.save",
+    "glossary.configure",
+    "glossary.inherit",
+    "glossary.history",
+    "glossary.check",
+    "glossary.impact",
     "task.history",
     "task.create",
     "task.update",
@@ -133,6 +143,7 @@ pub struct ControlPlane {
     access: Access,
     registry: Registry,
     plan: PlanService,
+    glossary: GlossaryService,
     logs: TestLogService,
     tests: TestLifecycle,
     artifacts: TestArtifactService,
@@ -177,6 +188,7 @@ impl ControlPlane {
             config.base_domain.clone(),
         ));
         let plan = PlanService::new(database.clone(), evidence);
+        let glossary = GlossaryService::new(database.clone());
         let logs = TestLogService::new(database.clone(), registry.clone());
         let artifacts = TestArtifactService::new(database.clone(), registry.clone());
         let test_evidence =
@@ -269,6 +281,7 @@ impl ControlPlane {
             access,
             registry,
             plan,
+            glossary,
             logs,
             tests,
             artifacts,
@@ -348,6 +361,55 @@ impl ControlPlane {
     ) -> Result<Value, ProtocolError> {
         let now = self.timestamp()?;
         let actor = caller.actor();
+        if operation.starts_with("glossary.") {
+            let path = params.get("path").and_then(Value::as_str);
+            let repository_id = params.get("repository_id").and_then(Value::as_str);
+            if path.is_some() && repository_id.is_some() {
+                return Err(ProtocolError::new(
+                    ErrorCode::ParamsInvalid,
+                    "Choose a project path or identity, not both",
+                ));
+            }
+            let repository = if path.is_some() || repository_id.is_some() {
+                Some(self.resolve_repository(path, repository_id, caller, true)?)
+            } else {
+                None
+            };
+            let repository = repository
+                .as_ref()
+                .map(|repository| repository.repository_id.as_str());
+            return match operation {
+                "glossary.list" | "glossary.resolve" => {
+                    encode(self.glossary.list(repository, decode(params)?)?)
+                }
+                "glossary.get" => encode(self.glossary.get(repository, decode(params)?)?),
+                "glossary.save" => {
+                    encode(
+                        self.glossary
+                            .save(repository, decode(params)?, &actor, &now)?,
+                    )
+                }
+                "glossary.configure" => {
+                    encode(
+                        self.glossary
+                            .configure(repository, decode(params)?, &actor, &now)?,
+                    )
+                }
+                "glossary.inherit" => {
+                    encode(
+                        self.glossary
+                            .inherit(repository, decode(params)?, &actor, &now)?,
+                    )
+                }
+                "glossary.history" => encode(self.glossary.history(repository, decode(params)?)?),
+                "glossary.check" => encode(self.glossary.check(repository, decode(params)?)?),
+                "glossary.impact" => encode(self.glossary.impact(decode(params)?)?),
+                _ => Err(ProtocolError::new(
+                    ErrorCode::OperationUnknown,
+                    "Unknown glossary operation",
+                )),
+            };
+        }
         match operation {
             "ping" => {
                 let _: EmptyParams = decode(params)?;

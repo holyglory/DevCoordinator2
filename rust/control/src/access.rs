@@ -938,6 +938,12 @@ impl Access {
                     _ => unreachable!(),
                 };
                 let repositories = self.repositories_at_least(&principal, &required)?;
+                if operation_name.starts_with("glossary.")
+                    && params.get("repository_id").is_none_or(Value::is_null)
+                    && params.get("path").is_none_or(Value::is_null)
+                {
+                    return Ok(allow(principal, params.clone()));
+                }
                 if operation_name == "health.repositories" {
                     return Ok(Authorization {
                         result_filter: ResultFilter::HealthRepositories {

@@ -2554,6 +2554,17 @@ fn require_policy_terms(violations: &mut Vec<String>, body: &str, label: &str, t
 
 const POLICY_CONTRACTS: &[(&str, usize, &[&str])] = &[
     (
+        "project terminology ownership",
+        8,
+        &[
+            "effective project glossary",
+            "shared terminology",
+            "concept and language",
+            "localization architecture and exact messages",
+            "reading the glossary is not proof",
+        ],
+    ),
+    (
         "intent-driven completion contract",
         0,
         &[
