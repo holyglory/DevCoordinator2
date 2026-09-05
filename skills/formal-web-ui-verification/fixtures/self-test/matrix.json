@@ -1,6 +1,10 @@
 {
   "schema_version": 1,
   "cases": [
+    {"name":"modal-scroll-reachable","path":"modal-scroll-reachable.html","critical":false,"forbidden_rules":["fixed-offscreen-cut","fixed-offscreen-hidden","occluded"],"target":{"regions":[{"selector":"dialog","role":"primary-content","journey":"fixture-primary"}]}},
+    {"name":"modal-scroll-locked","path":"modal-scroll-locked.html","critical":true,"critical_rules":["clipped-by-ancestor"],"target":{"regions":[{"selector":"dialog","role":"primary-content","journey":"fixture-primary"}]}},
+    {"name":"modal-active-occlusion","path":"modal-active-occlusion.html","critical":true,"critical_rules":["occluded"],"target":{"regions":[{"selector":"dialog","role":"primary-content","journey":"fixture-primary"}]}},
+    {"name":"fixed-unscrollable-cut","path":"fixed-unscrollable-cut.html","critical":true,"critical_rules":["fixed-offscreen-cut"]},
     {"name":"clean","path":"clean.html","critical":false},
     {"name":"clipped-button","path":"clipped-button.html","critical":true,"critical_rules":["clipped-x"]},
     {"name":"clipped-text","path":"clipped-text.html","critical":true,"critical_rules":["clipped-y"]},

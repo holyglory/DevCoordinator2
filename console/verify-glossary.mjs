@@ -229,7 +229,7 @@ async function main() {
 
   await check('CLI and MCP resolve the exact Console glossary revision', async () => {
     const environment = { ...process.env, DEVCOORDINATOR2_SOCKET: socketPath, DEVCOORDINATOR2_INSTANCE_ENV: path.join(temporary, 'absent-instance.env') };
-    const binary = path.join(root, 'target/debug/devcoordinator2');
+    const binary = process.env.GLOSSARY_CLI_BINARY || path.join(root, 'target/debug/devcoordinator2');
     const { stdout } = await execute(binary, ['glossary', 'resolve', '--query', 'Test execution'], { env: environment });
     const result = JSON.parse(stdout);
     assert.equal(result.ok, true);
@@ -346,6 +346,17 @@ async function main() {
         const filename = `${theme}-${viewport.width}-${surface}`;
         await page.screenshot({ path: path.join(out, `${filename}-viewport.png`) });
         await page.screenshot({ path: path.join(out, `${filename}-full.png`), fullPage: true });
+        if (surface === 'editor') {
+          const controls = page.locator('dialog input, dialog textarea, dialog select, dialog button');
+          for (const control of await controls.all()) {
+            if (!await control.isVisible()) continue;
+            await control.focus();
+            await control.click({ trial: true });
+            const rect = await control.boundingBox();
+            assert.ok(rect && rect.x >= 0 && rect.y >= 0 && rect.x + rect.width <= viewport.width + 1 && rect.y + rect.height <= viewport.height + 1);
+          }
+          await page.screenshot({ path: path.join(out, `${filename}-last-controls.png`) });
+        }
       }
       await page.keyboard.press('Escape');
     }, page);

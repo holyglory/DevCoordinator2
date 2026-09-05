@@ -2995,7 +2995,9 @@ function pageVerifier() {
     return false;
   };
 
+  const activeModal = document.activeElement?.closest('dialog:modal') || document.querySelector('dialog:modal');
   const visible = (el) => {
+    if (activeModal && !activeModal.contains(el) && !el.contains(activeModal)) return false;
     const style = cs(el);
     if (style.display === "none" || style.visibility === "hidden" || style.visibility === "collapse") return false;
     if (effectiveOpacity(el) <= 0.01) return false;
@@ -3461,6 +3463,31 @@ function pageVerifier() {
     return value;
   };
 
+  const reachableByInnerScroll = (el, axis) => {
+    if (cs(el).position === 'fixed') return false;
+    const rect = nowRect(el);
+    const vertical = axis === 'y';
+    let node = el.parentElement;
+    while (node && node !== document.documentElement) {
+      const style = cs(node);
+      const overflow = vertical ? style.overflowY : style.overflowX;
+      const size = vertical ? node.clientHeight : node.clientWidth;
+      const extent = vertical ? node.scrollHeight : node.scrollWidth;
+      if (['auto', 'scroll', 'overlay'].includes(overflow) && extent > size + 2) {
+        const box = nowRect(node);
+        const start = (vertical ? box.top + node.clientTop : box.left + node.clientLeft);
+        const viewportSize = vertical ? innerHeight : innerWidth;
+        const position = vertical ? node.scrollTop : node.scrollLeft;
+        const contentStart = (vertical ? rect.top : rect.left) - start + position;
+        const contentEnd = (vertical ? rect.bottom : rect.right) - start + position;
+        if (start >= -2 && start + size <= viewportSize + 2 && contentStart >= -2 && contentEnd <= extent + 2) return true;
+      }
+      if (style.position === 'fixed') break;
+      node = node.parentElement;
+    }
+    return false;
+  };
+
   // Walks ancestors and reports content cut off by an ancestor's overflow
   // clipping. This is the common real-world crop: the element itself has
   // overflow visible, but a parent with overflow hidden/clip cuts it. Scrollable
@@ -3626,15 +3653,17 @@ function pageVerifier() {
     // document origin (negative document coordinates) is equally unreachable.
     if (meaningful && !complexArtifact) {
       if (hasFixedContext(el)) {
-        const cutLeft = Math.max(0, -rect.left);
-        const cutRight = Math.max(0, rect.right - window.innerWidth);
-        const cutTop = Math.max(0, -rect.top);
-        const cutBottom = Math.max(0, rect.bottom - window.innerHeight);
+        const reachableX = reachableByInnerScroll(el, 'x');
+        const reachableY = reachableByInnerScroll(el, 'y');
+        const cutLeft = reachableX ? 0 : Math.max(0, -rect.left);
+        const cutRight = reachableX ? 0 : Math.max(0, rect.right - window.innerWidth);
+        const cutTop = reachableY ? 0 : Math.max(0, -rect.top);
+        const cutBottom = reachableY ? 0 : Math.max(0, rect.bottom - window.innerHeight);
         const visW = Math.max(0, Math.min(rect.right, window.innerWidth) - Math.max(rect.left, 0));
         const visH = Math.max(0, Math.min(rect.bottom, window.innerHeight) - Math.max(rect.top, 0));
         const maxCut = Math.max(cutLeft, cutRight, cutTop, cutBottom);
         const cutFraction = 1 - (visW * visH) / Math.max(1, rect.width * rect.height);
-        if (visW <= 0 || visH <= 0) {
+        if ((!reachableX && visW <= 0) || (!reachableY && visH <= 0)) {
           add("warning", "fixed-offscreen-hidden", el, "Fixed-position text/control is entirely outside the viewport and cannot be scrolled to; verify this state is intentional.", {
             evidence: { viewportWidth: window.innerWidth, viewportHeight: window.innerHeight },
           });

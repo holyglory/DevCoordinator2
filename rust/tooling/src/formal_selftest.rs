@@ -931,6 +931,51 @@ fn run_state_and_wait_phase(
 ) -> Result<usize, String> {
     let base = server.base_url();
     let mut scenarios = 0usize;
+    let dialog_cases = [
+        ("modal-scroll-reachable", None),
+        ("modal-scroll-locked", Some("clipped-by-ancestor")),
+        ("modal-active-occlusion", Some("occluded")),
+        ("fixed-unscrollable-cut", Some("fixed-offscreen-cut")),
+    ];
+    let dialog_report = run_verifier(
+        root,
+        &contracted_config(
+            root,
+            json!({
+                "targets":dialog_cases.iter().map(|(name,_)| json!({
+                    "name":name,"url":format!("{base}/{name}.html"),
+                    "regions":[{"selector":if name.starts_with("modal") {"dialog"} else {"main"},"role":"primary-content","journey":"fixture-primary"}]
+                })).collect::<Vec<_>>(),
+                "viewports":[{"name":"dialog-narrow","width":390,"height":844},{"name":"dialog-wide","width":1440,"height":900}]
+            }),
+        ),
+        &work.join("dialog-reachability"),
+        &[1],
+        timeout,
+        &[],
+    )?;
+    let pages = dialog_report["pages"]
+        .as_array()
+        .ok_or("dialog report omitted pages")?;
+    if pages.len() != 8 {
+        return Err("dialog reachability requires all eight desktop/mobile cells".to_owned());
+    }
+    for page in pages {
+        let name = page
+            .pointer("/target/name")
+            .and_then(Value::as_str)
+            .ok_or("dialog target omitted name")?;
+        let (_, expected) = dialog_cases
+            .iter()
+            .find(|(candidate, _)| *candidate == name)
+            .ok_or("unknown dialog fixture")?;
+        if let Some(rule) = expected {
+            require_rule(page, rule, "critical")?;
+        } else {
+            no_critical(page)?;
+        }
+    }
+    scenarios += pages.len();
     let narrow = run_verifier(
         root,
         &contracted_config(

@@ -292,7 +292,11 @@ mod tests {
             true
         );
         let mut missing = help.clone();
-        missing[4].1 = "catalog tail search range retention".to_owned();
+        missing
+            .iter_mut()
+            .find(|(route, _)| route == &["test", "log"])
+            .unwrap()
+            .1 = "catalog tail search range retention".to_owned();
         assert!(
             validate_dev_coordinator_contract(root, &missing)
                 .unwrap_err()

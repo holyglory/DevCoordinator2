@@ -30,6 +30,10 @@ background, traverses discoverable open shadow roots, evaluates every
 Playwright-reachable iframe, records any reachable context it could not inspect, and lists
 allowed ellipsis/line-clamp truncations, hidden text-like elements, and
 still-loading media, even when the page has no critical layout findings.
+Native modal dialogs exclude their browser-inert background from active-content
+defects. Fixed descendants count as reachable only when an actual inner scroll
+range on the cut axis can expose them within the viewport. Locked scroll regions,
+unscrollable fixed controls and occlusion inside the active dialog still fail.
 Native input placeholders and every selectable native option label are measured
 against the control's rendered inner content width, including the native select
 affordance, without retaining the measured text or any entered value. Visible
