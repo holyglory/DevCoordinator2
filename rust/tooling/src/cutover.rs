@@ -31,7 +31,7 @@ const ACTIVITY_FILE: &str = "test-activity.json";
 const LOCK_FILE: &str = "test-admission.lock";
 const MAX_STATE_BYTES: u64 = 2 * 1024 * 1024;
 const MAX_SNAPSHOT_BYTES: u64 = 1024 * 1024;
-const SUPPORTED_DATABASE_SCHEMAS: &[&str] = &["15", "16"];
+const SUPPORTED_DATABASE_SCHEMAS: &[&str] = &["15", "16", "17"];
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1172,7 +1172,8 @@ fn open_database_read_only(path: &Path) -> Result<Connection, String> {
     let schema = database_schema_from(&connection)?;
     if !SUPPORTED_DATABASE_SCHEMAS.contains(&schema.as_str()) {
         return Err(format!(
-            "cutover requires database schema 15 or 16, found {schema}"
+            "cutover requires database schema {}, found {schema}",
+            SUPPORTED_DATABASE_SCHEMAS.join(", ")
         ));
     }
     Ok(connection)
@@ -1824,6 +1825,29 @@ mod tests {
                 .exists()
         );
         assert!(!world.config.runtime_dir.join(DRAIN_FILE).exists());
+    }
+
+    #[test]
+    fn concrete_host_adapter_activates_glossary_schema_and_rejects_unknown_schema() {
+        let world = host_world();
+        let connection = Connection::open(&world.config.database_path).unwrap();
+        connection
+            .execute("UPDATE meta SET value='17' WHERE key='schema_version'", [])
+            .unwrap();
+        let runner = Arc::new(HostFake {
+            commit: world.commit.clone(),
+            ..HostFake::default()
+        });
+        let mut host =
+            HostCutover::new_owned(world.config.clone(), runner, world.expected_owner).unwrap();
+
+        let receipt = activate(&mut host).unwrap();
+        assert_eq!(receipt.status, "activated");
+        assert_eq!(database_schema(&world.config.database_path).unwrap(), "17");
+        connection
+            .execute("UPDATE meta SET value='18' WHERE key='schema_version'", [])
+            .unwrap();
+        assert!(open_database_read_only(&world.config.database_path).is_err());
     }
 
     #[test]
