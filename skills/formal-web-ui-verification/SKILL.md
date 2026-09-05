@@ -30,11 +30,14 @@ background, traverses discoverable open shadow roots, evaluates every
 Playwright-reachable iframe, records any reachable context it could not inspect, and lists
 allowed ellipsis/line-clamp truncations, hidden text-like elements, and
 still-loading media, even when the page has no critical layout findings.
-Native input placeholders and selected option labels are measured against the
-control's rendered inner content width, including the native select affordance,
-without retaining the measured text or any entered value. Pages may opt
-important cards/forms into a minimum readable-content inset contract. Targets
-may also opt into exact breakpoint-minus-one/at/plus-one samples under a hard
+Native input placeholders and every selectable native option label are measured
+against the control's rendered inner content width, including the native select
+affordance, without retaining the measured text or any entered value. Visible
+native inputs, textareas, and selects must also remain inside each non-scrollable
+layout ancestor; an active horizontal scroll path or explicit overlap allowance
+records intentional exceptions. Pages may opt important cards/forms into a
+minimum readable-content inset contract. Targets may also opt into exact
+breakpoint-minus-one/at/plus-one samples under a hard
 page-cell budget.
 Each checked final main document is also measured before verifier scrolling:
 local navigation TTFB must be strictly below 10 ms and document LCP strictly
@@ -194,6 +197,11 @@ skill; callers can always provide explicit `--url` targets instead.
      Action failures fail the target-coverage gate; arbitrary injected JavaScript
      is deliberately unsupported. Values used by actions are omitted from the
      public report.
+   - Declare mandatory target/state/viewport cells in top-level
+     `requiredCoverage`; add `width` when an exact reported or CSS-boundary
+     width matters. A missing or ambiguous required cell fails coverage with
+     exit `3`. The verifier never infers that a hidden menu, dialog, or
+     expander was tested from a closed base page.
    - A conditional action may name `ownerJourney` and `ownerState`. Outside that
      owner, an absent or hidden control hands off immediately to the exact
      planned owner cell. Visible contradictions, missing/duplicate owners, and
@@ -331,9 +339,14 @@ Critical findings by default:
   (`triple-nested-vertical-scrollbars`).
 - Text/controls clipped by their own `overflow: hidden`/`clip`
   (`clipped-x`/`clipped-y`) without a scroll path or explicit allowance.
-- Rendered native input placeholders or selected option labels wider than the
-  control's real inner content width (`control-text-clipped`). Evidence contains
-  only control kind and geometry; no control text or entered value is retained.
+- Rendered native input placeholders or any selectable option label wider than
+  the control's real inner content width (`control-text-clipped`). A short
+  selected label does not excuse a longer unselected option. Evidence contains
+  only control kind, option count, and geometry; no control text or entered
+  value is retained.
+- A visible native input, textarea, or select escaping a non-scrollable layout
+  ancestor (`control-outside-container`). An active horizontal scroll path is
+  reachable; a reasoned `allowOverlap` exception produces `allowed-overlap`.
 - Rendered text/control content closer to a container edge than an explicitly
   declared minimum readable inset (`content-inset-below-minimum`). There is no
   universal spacing heuristic.
@@ -458,6 +471,7 @@ Use a config file when allowances are route-specific:
     ]
   },
   "targets": [{
+    "name": "dashboard",
     "url": "http://127.0.0.1:3000/dashboard",
     "breakpointProfile": {
       "name": "dashboard-layout",
@@ -482,6 +496,7 @@ Use a config file when allowances are route-specific:
     {"name": "iphone", "device": "iPhone 13"},
     {"name": "desktop", "width": 1440, "height": 900}
   ],
+  "requiredCoverage": [{"target": "dashboard", "state": "account-menu-open", "viewport": "desktop", "width": 1440}],
   "areas": [{"name": "main", "selector": "main"}],
   "ignore": [{"selector": ".third-party-map", "reason": "vendor map internals"}],
   "allowTruncation": [{"selector": ".filename", "reason": "intentional ellipsis"}],
@@ -505,7 +520,9 @@ against each declared container's inner border box. Do not declare the
 contract on fieldsets or attached-control groups whose content is intentionally
 edge-aligned. `data-ui-allow-truncation` and `allowTruncation` also apply to
 native control text; an overflowing declared exception becomes an
-`allowed-truncation` warning with redacted text.
+`allowed-truncation` warning with redacted text. `data-ui-allow-overlap` and
+`allowOverlap` may document intentional native-control container escape; the
+exception remains an `allowed-overlap` warning.
 
 ## Completion Rules
 
@@ -515,9 +532,9 @@ native control text; an overflowing declared exception becomes an
   journeys, primary region, theme, review inputs, or an applicable continuation
   checkpoint.
 - Do not report a run as verified when it exits `3`, checks fewer than the
-  configured minimum pages, leaves a required explicit target unchecked,
-  follows an unexpected final route, or has a missing/mismatched declared
-  deployment/source binding.
+  configured minimum pages, omits or ambiguously maps a required
+  target/state/viewport/width cell, follows an unexpected final route, or has a
+  missing/mismatched declared deployment/source binding.
 - Do not describe responsive width coverage as exhaustive. Report the exact
   sampled widths and retain the hard `maxPageCount` plan evidence.
 - Do not report a checked page as verified while it has an unresolved TTFB or

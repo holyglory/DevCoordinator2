@@ -992,6 +992,177 @@ fn run_state_and_wait_phase(
         return Err("interaction state visibility or action redaction regressed".to_owned());
     }
     scenarios += 1;
+    let opened_menu = run_verifier(
+        root,
+        &contracted_config(
+            root,
+            json!({
+                "targets":[{
+                    "name":"project-actions","url":format!("{base}/transient-menu-offcanvas.html"),"includeBase":false,
+                    "states":[{
+                        "name":"actions-open","actions":[{"action":"click","selector":"#open-actions"}],
+                        "waitFor":{"selector":"#actions-menu:not([hidden])","renderFrames":2,"timeoutMs":1000},
+                        "continuation":{"kind":"in-page","anchor":"#first-action","focusWithin":"#actions-menu"}
+                    }]
+                }],
+                "viewports":[{"name":"reported-narrow","width":601,"height":921}],
+                "requiredCoverage":[{"target":"project-actions","state":"actions-open","viewport":"reported-narrow","width":601}]
+            }),
+        ),
+        &work.join("transient-menu-open"),
+        &[1],
+        timeout,
+        &[],
+    )?;
+    require_rule(&opened_menu, "offcanvas-cut", "critical")?;
+    if opened_menu.pointer("/coverage/requiredCoverage/failed") != Some(&json!(false))
+        || opened_menu.pointer("/coverage/requiredCoverage/satisfiedCount") != Some(&json!(1))
+    {
+        return Err("exact opened menu coverage was not satisfied".to_owned());
+    }
+    let opened_evidence = load_json(
+        &work.join("transient-menu-open/journey-evidence.json"),
+        work,
+        "opened menu journey evidence",
+    )?;
+    if opened_evidence.pointer("/coverage/requiredCoverage/entries/0/status")
+        != Some(&json!("satisfied"))
+    {
+        return Err("journey evidence omitted the required-cell disposition".to_owned());
+    }
+    scenarios += 1;
+
+    let missing_state = run_verifier(
+        root,
+        &contracted_config(
+            root,
+            json!({
+                "targets":[{"name":"project-actions","url":format!("{base}/transient-menu-contained.html")}],
+                "viewports":[{"name":"reported-narrow","width":601,"height":921}],
+                "requiredCoverage":[{"target":"project-actions","state":"actions-open","viewport":"reported-narrow","width":601}]
+            }),
+        ),
+        &work.join("required-state-missing"),
+        &[3],
+        timeout,
+        &[],
+    )?;
+    no_critical(&missing_state)?;
+    if missing_state.pointer("/coverage/requiredCoverage/entries/0/status")
+        != Some(&json!("missing"))
+        || !missing_state
+            .pointer("/coverage/requiredCoverage/entries/0/reason")
+            .and_then(Value::as_str)
+            .is_some_and(|reason| reason.contains("actions-open") && reason.contains("601px"))
+    {
+        return Err(
+            "a missing required transient state did not fail coverage explicitly".to_owned(),
+        );
+    }
+    scenarios += 1;
+
+    let wrong_width = run_verifier(
+        root,
+        &contracted_config(
+            root,
+            json!({
+                "targets":[{
+                    "name":"project-actions","url":format!("{base}/transient-menu-contained.html"),"includeBase":false,
+                    "states":[{
+                        "name":"actions-open","actions":[{"action":"click","selector":"#open-actions"}],
+                        "waitFor":{"selector":"#actions-menu:not([hidden])","renderFrames":2,"timeoutMs":1000},
+                        "continuation":{"kind":"in-page","anchor":"#first-action","focusWithin":"#actions-menu"}
+                    }]
+                }],
+                "viewports":[{"name":"reported-narrow","width":961,"height":921}],
+                "requiredCoverage":[{"target":"project-actions","state":"actions-open","viewport":"reported-narrow","width":601}]
+            }),
+        ),
+        &work.join("required-width-missing"),
+        &[3],
+        timeout,
+        &[],
+    )?;
+    no_critical(&wrong_width)?;
+    if wrong_width.pointer("/coverage/requiredCoverage/entries/0/status") != Some(&json!("missing"))
+    {
+        return Err("a required CSS width accepted a differently sized viewport".to_owned());
+    }
+    scenarios += 1;
+
+    let ambiguous_cell = run_verifier(
+        root,
+        &contracted_config(
+            root,
+            json!({
+                "targets":[
+                    {
+                        "name":"project-actions","url":format!("{base}/transient-menu-contained.html?copy=one"),"includeBase":false,
+                        "states":[{
+                            "name":"actions-open","actions":[{"action":"click","selector":"#open-actions"}],
+                            "waitFor":{"selector":"#actions-menu:not([hidden])","renderFrames":2,"timeoutMs":1000},
+                            "continuation":{"kind":"in-page","anchor":"#first-action","focusWithin":"#actions-menu"}
+                        }]
+                    },
+                    {
+                        "name":"project-actions","url":format!("{base}/transient-menu-contained.html?copy=two"),"includeBase":false,
+                        "states":[{
+                            "name":"actions-open","actions":[{"action":"click","selector":"#open-actions"}],
+                            "waitFor":{"selector":"#actions-menu:not([hidden])","renderFrames":2,"timeoutMs":1000},
+                            "continuation":{"kind":"in-page","anchor":"#first-action","focusWithin":"#actions-menu"}
+                        }]
+                    }
+                ],
+                "viewports":[{"name":"reported-narrow","width":601,"height":921}],
+                "requiredCoverage":[{"target":"project-actions","state":"actions-open","viewport":"reported-narrow","width":601}]
+            }),
+        ),
+        &work.join("required-cell-ambiguous"),
+        &[3],
+        timeout,
+        &[],
+    )?;
+    no_critical(&ambiguous_cell)?;
+    if ambiguous_cell.pointer("/coverage/requiredCoverage/entries/0/status")
+        != Some(&json!("ambiguous"))
+        || ambiguous_cell
+            .pointer("/coverage/requiredCoverage/entries/0/matchingCellIds")
+            .and_then(Value::as_array)
+            .is_none_or(|matches| matches.len() != 2)
+    {
+        return Err("an ambiguous required cell did not fail coverage explicitly".to_owned());
+    }
+    scenarios += 1;
+
+    let contained_menu = run_verifier(
+        root,
+        &contracted_config(
+            root,
+            json!({
+                "targets":[{
+                    "name":"project-actions","url":format!("{base}/transient-menu-contained.html"),"includeBase":false,
+                    "states":[{
+                        "name":"actions-open","actions":[{"action":"click","selector":"#open-actions"}],
+                        "waitFor":{"selector":"#actions-menu:not([hidden])","renderFrames":2,"timeoutMs":1000},
+                        "continuation":{"kind":"in-page","anchor":"#first-action","focusWithin":"#actions-menu"}
+                    }]
+                }],
+                "viewports":[{"name":"reported-narrow","width":601,"height":921}],
+                "requiredCoverage":[{"target":"project-actions","state":"actions-open","viewport":"reported-narrow","width":601}]
+            }),
+        ),
+        &work.join("required-cell-contained"),
+        &[0],
+        timeout,
+        &[],
+    )?;
+    no_critical(&contained_menu)?;
+    if contained_menu.pointer("/coverage/requiredCoverage/entries/0/status")
+        != Some(&json!("satisfied"))
+    {
+        return Err("an exact contained required cell did not pass coverage".to_owned());
+    }
+    scenarios += 1;
 
     let failed = run_verifier(
         root,
@@ -3622,6 +3793,8 @@ fn validate_skill_contract(root: &Path) -> Result<(), String> {
         "human-only",
         "bounded",
         "control-text-clipped",
+        "control-outside-container",
+        "requiredCoverage",
         "data-ui-verify-min-content-inset",
         "breakpointProfile",
         "maxPageCount",

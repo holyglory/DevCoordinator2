@@ -10,12 +10,17 @@ prescribe other strict thresholds. Every horizontal
 scrollbar is a warning; nested horizontal scrolling is blocking. Two vertical
 scroll layers warn and three or more block, with the document scrollbar
 counting as a layer and mixed axes kept separate. It also measures rendered
-placeholders and selected option labels without retaining their text, supports
-opt-in readable-content inset
-contracts, and samples immediately around declared responsive breakpoints.
+placeholders and every native select option label without retaining their text.
+Visible native inputs, textareas, and selects that escape a non-scrollable
+layout owner are blocking unless an active horizontal scroll path or reasoned
+overlap allowance applies. The verifier also supports opt-in readable-content
+inset contracts and samples immediately around declared responsive breakpoints.
 It traverses discoverable open shadow roots, evaluates
 Playwright-reachable frames, supports mobile device descriptors, and can open
-declared interaction states with bounded actions. It complements screenshots
+declared interaction states with bounded actions. Top-level `requiredCoverage`
+can require an exact named target, state, viewport, and optional CSS width;
+missing or ambiguous cells fail coverage, so a closed or differently sized page
+cannot stand in for the reported transient state. It complements screenshots
 and human review; it cannot discover closed shadow roots or prove undeclared UI
 states correct, and it reports reachable contexts it cannot evaluate as
 coverage limits.
@@ -81,6 +86,7 @@ binding are configured together:
     "reviewInputs": [{"path": "src/items", "kind": "ui-code"}]
   },
   "targets": [{
+    "name": "items",
     "url": "http://127.0.0.1:3000/items",
     "breakpointProfile": {
       "name": "items-layout",
@@ -91,6 +97,7 @@ binding are configured together:
     "sourceBinding": {"expected": "git:abc123"}
   }],
   "viewports": [{"name": "desktop", "width": 1440, "height": 900}],
+  "requiredCoverage": [{"target": "items", "state": "base", "viewport": "desktop", "width": 1440}],
   "execution": {"maxConcurrency": 4},
   "performance": {"ttfbMs": 10, "lcpMs": 800, "ttfbLocalOnly": true},
   "maxPageCount": 12

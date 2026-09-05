@@ -73,6 +73,7 @@ fails target coverage.
     {"name": "mobile", "width": 390, "height": 844},
     {"name": "desktop", "width": 1440, "height": 900}
   ],
+  "requiredCoverage": [{"target": "accounts", "state": "add-account-open", "viewport": "mobile", "width": 390}],
   "performance": {"ttfbMs": 10, "lcpMs": 800, "ttfbLocalOnly": true}
 }
 ```
@@ -80,6 +81,29 @@ fails target coverage.
 `targetDefaults` may provide the same fields for coordinator-discovered or
 repeated fixture targets, but every effective target/state still must resolve a
 complete contract.
+
+## Required Coverage Cells
+
+Top-level `requiredCoverage` declares cells that must exist in the full
+target × state × viewport plan. Each entry contains:
+
+- `target`: the target's exact unadorned `name`;
+- `state`: the exact state name, or `base` for the closed/default page;
+- `viewport`: the exact configured or generated viewport name;
+- `width`: an optional positive CSS-pixel width when the defect or breakpoint
+  is tied to an exact reported size.
+
+Each declaration must resolve to exactly one plan cell. No match is `missing`;
+multiple same-name matches are `ambiguous`. Either result fails target
+coverage with exit `3` even when every executed page otherwise passes. The
+report retains the requirement, status, privacy-safe reason, and matching cell
+IDs. Mapping is evaluated against the full declared plan before development
+selection; a development subset remains ineligible for readiness.
+
+Declare transient menus, dialogs, sheets, expanders, validation states, and
+other hidden-by-default surfaces explicitly. The verifier never infers an open
+state from the presence of its closed trigger or from text in an unexecuted DOM
+branch.
 
 ## Journey And Region Rules
 
@@ -241,6 +265,22 @@ identity and complete masked screenshot evidence are written atomically.
 Corrupt or symlinked entries are rejected and rerun. The cache is never a
 hidden baseline and never makes a run readiness-eligible.
 
+## Native Control Geometry
+
+- Empty input/textarea placeholders and every native `select` option label are
+  measured against the closed control's usable text width, including the native
+  affordance reserve. A short selected value does not hide a longer option-set
+  failure.
+- Measurement evidence contains only control kind, option count, and geometry.
+  Option labels, placeholders, and entered values are never retained.
+- Visible native inputs, textareas, and selects must stay inside the inner
+  border edge of each non-scrollable layout ancestor. The nearest escape raises
+  `control-outside-container`.
+- An active horizontal `auto`/`scroll` path makes the control reachable and
+  suppresses the containment failure, but the normal `horizontal-scrollbar`
+  warning remains. Use `allowOverlap` or `data-ui-allow-overlap="reason"`
+  only for a deliberate escape; it remains visible as `allowed-overlap`.
+
 ## Theme And Palette Rules
 
 - Every target/state declares `light`, `dark`, or `mixed` theme intent.
@@ -308,6 +348,8 @@ resource URL.
 - Every run also produces `journey-evidence.json`: an ordered, path-free
   Console index of the declared route/state/viewport cells, action kinds and
   outcomes, automatic finding kinds, and the two screenshot integrity records.
+  Its coverage block retains each required-cell status and matching cell IDs,
+  including missing or ambiguous declarations that have no screenshot.
   It omits selectors and every action value. A governed check stores the bundle
   under its private run leaf so log retention removes the manifest and images
   together. Explicit caller-owned report paths remain unchanged; the verifier

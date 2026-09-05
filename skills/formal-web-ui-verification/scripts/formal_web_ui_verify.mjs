@@ -1416,6 +1416,44 @@ function normalizeDevelopment(config, cli, repoRoot) {
     cache,
   };
 }
+function normalizeRequiredCoverage(value) {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value)) throw new Error("requiredCoverage must be an array");
+  const seen = new Set();
+  return value.map((entry, index) => {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+      throw new Error(`requiredCoverage[${index}] must be an object`);
+    }
+    const allowed = new Set(["target", "state", "viewport", "width"]);
+    const unknown = Object.keys(entry).filter((key) => !allowed.has(key));
+    if (unknown.length) {
+      throw new Error(`requiredCoverage[${index}] has unsupported fields: ${unknown.join(", ")}`);
+    }
+    const normalized = {};
+    for (const key of ["target", "state", "viewport"]) {
+      if (typeof entry[key] !== "string" || !entry[key].trim()) {
+        throw new Error(`requiredCoverage[${index}].${key} must be a non-empty string`);
+      }
+      normalized[key] = entry[key].trim();
+    }
+    if (entry.width !== undefined) {
+      const width = Number(entry.width);
+      if (!Number.isInteger(width) || width <= 0) {
+        throw new Error(`requiredCoverage[${index}].width must be a positive integer`);
+      }
+      normalized.width = width;
+    }
+    const signature = stableJson(normalized);
+    if (seen.has(signature)) {
+      throw new Error(`requiredCoverage[${index}] duplicates an earlier requirement`);
+    }
+    seen.add(signature);
+    return {
+      requirementId: `required-${String(index + 1).padStart(4, "0")}`,
+      ...normalized,
+    };
+  });
+}
 
 function normalizeConfig(config, cli, artifacts) {
   const rules = config.rules && typeof config.rules === "object" ? config.rules : {};
@@ -1520,6 +1558,7 @@ function normalizeConfig(config, cli, artifacts) {
     authProfiles: normalizeAuthProfiles(config.authProfiles),
     priorReview: loadPriorManualReview(cli.reviewAgainst || config.reviewAgainst),
     reviewRemovedCells: normalizeRemovedReviewCells(config.reviewRemovedCells),
+    requiredCoverage: normalizeRequiredCoverage(config.requiredCoverage),
   };
 }
 
@@ -1638,6 +1677,7 @@ function privacySafeConfigContract(config) {
       ? { sha256: config.priorReview.sha256, reviewedRunId: config.priorReview.reviewedRunId }
       : null,
     reviewRemovedCells: config.reviewRemovedCells,
+    requiredCoverage: config.requiredCoverage,
     browserExecutable: config.browserExecutable || null,
     playwrightModuleDir: config.playwrightModuleDir || null,
   };
@@ -1763,6 +1803,34 @@ function buildExecutionPlan(targets, configuredViewports, maxPageCount) {
   }
   return cells;
 }
+function evaluateRequiredCoverage(fullPlan, requirements) {
+  const entries = requirements.map((requirement) => {
+    const matches = fullPlan.filter((cell) =>
+      cell.target.baseTargetName === requirement.target &&
+      (cell.target.stateName || "base") === requirement.state &&
+      cell.viewport.name === requirement.viewport &&
+      (requirement.width === undefined || cell.viewport.width === requirement.width)
+    );
+    const status = matches.length === 1 ? "satisfied" : (matches.length ? "ambiguous" : "missing");
+    const expected = `${requirement.target} [${requirement.state}; ${requirement.viewport}${requirement.width === undefined ? "" : ` @ ${requirement.width}px`}]`;
+    return {
+      ...requirement,
+      status,
+      matchingCellIds: matches.map((cell) => cell.cellId),
+      reason: status === "satisfied"
+        ? ""
+        : (status === "missing"
+          ? `required verification cell is not present: ${expected}`
+          : `required verification cell matches ${matches.length} plan cells and is ambiguous: ${expected}`),
+    };
+  });
+  return {
+    declaredCount: entries.length,
+    satisfiedCount: entries.filter((entry) => entry.status === "satisfied").length,
+    failed: entries.some((entry) => entry.status !== "satisfied"),
+    entries,
+  };
+}
 
 function changedPathMatchesFile(changedPath, filePath) {
   return changedPath === filePath ||
@@ -1818,7 +1886,7 @@ function selectExecutionCells(fullPlan, development) {
   };
 }
 
-function publicExecutionPlan(cells, maxPageCount, selection = null) {
+function publicExecutionPlan(cells, maxPageCount, selection = null, requiredCoverage = null) {
   return {
     pageBudget: maxPageCount,
     plannedPageCount: cells.length,
@@ -1829,6 +1897,7 @@ function publicExecutionPlan(cells, maxPageCount, selection = null) {
       fullPlanCount: cells.length,
       selectedCount: cells.length,
     },
+    requiredCoverage,
     widthCoverage: "sampled-only",
     widthCoverageNote: "Only the listed viewport widths were checked; widths between samples were not inspected.",
     cells: cells.map((cell) => ({
@@ -1844,7 +1913,7 @@ function publicExecutionPlan(cells, maxPageCount, selection = null) {
 }
 
 function publicTarget(target) {
-  const { states, verificationState, includeBase, repositoryRoot, targetGroupId, ...safe } = target;
+  const { states, verificationState, includeBase, repositoryRoot, targetGroupId, baseTargetName, ...safe } = target;
   return safe;
 }
 
@@ -1862,6 +1931,7 @@ function expandTargetStates(targets) {
       expanded.push({
         ...target,
         name: baseName,
+        baseTargetName: baseName,
         stateName: "base",
         continuation: null,
         execution: normalizeExecution(target.execution, "target.execution"),
@@ -1871,6 +1941,7 @@ function expandTargetStates(targets) {
       expanded.push({
         ...target,
         name: `${baseName} [${state.name}]`,
+        baseTargetName: baseName,
         stateName: state.name,
         verificationState: state,
         allowFailure: state.allowFailure || target.allowFailure,
@@ -2761,6 +2832,7 @@ function pageVerifier() {
   const unmeasurableContrast = [];
   const ellipsisTruncations = [];
   const controlTextMeasurements = [];
+  const controlContainmentMeasurements = [];
   const contentInsetMeasurements = [];
   const hiddenTextLike = { displayNone: 0, visibilityHidden: 0, zeroOpacity: 0, zeroSize: 0 };
   let pendingMedia = 0;
@@ -3061,15 +3133,24 @@ function pageVerifier() {
     mirror.style.setProperty("padding", "0", "important");
     mirror.style.setProperty("border", "0", "important");
   };
-  const renderedTextWidth = (value, style) => {
+  const widestRenderedText = (values, style) => {
     const mirror = document.createElement("span");
-    mirror.textContent = value;
     applyTextMeasurementStyle(mirror, style);
     (document.body || document.documentElement).append(mirror);
-    const width = mirror.getBoundingClientRect().width;
+    let value = "";
+    let width = 0;
+    for (const candidate of values) {
+      mirror.textContent = candidate;
+      const candidateWidth = mirror.getBoundingClientRect().width;
+      if (candidateWidth > width) {
+        value = candidate;
+        width = candidateWidth;
+      }
+    }
     mirror.remove();
-    return width;
+    return { value, width };
   };
+  const renderedTextWidth = (value, style) => widestRenderedText([value], style).width;
   const selectNativeReserve = (el, label, labelWidth, style) => {
     const clone = document.createElement("select");
     if (el.multiple) clone.multiple = true;
@@ -3114,17 +3195,16 @@ function pageVerifier() {
       };
     }
     if (el.matches("select")) {
-      const labels = Array.from(el.selectedOptions || []).map((option) => option.label || option.text || "");
+      const labels = Array.from(el.options || []).map((option) => option.label || option.text || "");
       if (!labels.length) return null;
       const style = cs(el);
-      const widths = labels.map((label) => renderedTextWidth(label, style));
-      const widestIndex = widths.indexOf(Math.max(...widths));
+      const widest = widestRenderedText(labels, style);
       return {
-        kind: "selected-option",
+        kind: "option-set",
         labelCount: labels.length,
-        textWidth: widths[widestIndex],
+        textWidth: widest.width,
         style,
-        nativeReserve: selectNativeReserve(el, labels[widestIndex], widths[widestIndex], style),
+        nativeReserve: selectNativeReserve(el, widest.value, widest.width, style),
       };
     }
     return null;
@@ -3167,6 +3247,66 @@ function pageVerifier() {
         redactText: true,
         evidence,
       });
+    }
+  }
+  const activeHorizontalScroller = (element) => {
+    const style = cs(element);
+    return ["auto", "scroll", "overlay"].includes(style.overflowX) &&
+      element.scrollWidth > element.clientWidth + 1;
+  };
+  const nonContainerDisplays = new Set([
+    "contents", "inline", "table-row", "table-row-group", "table-header-group", "table-footer-group",
+  ]);
+  for (const el of candidates.filter((candidate) => candidate.matches("input,textarea,select"))) {
+    const controlStyle = cs(el);
+    if (["absolute", "fixed"].includes(controlStyle.position)) continue;
+    const ancestors = [];
+    for (let ancestor = composedParent(el);
+      ancestor && ancestor !== document.body && ancestor !== document.documentElement;
+      ancestor = composedParent(ancestor)) {
+      ancestors.push(ancestor);
+    }
+    if (ancestors.some(activeHorizontalScroller)) continue;
+    const controlRect = nowRect(el);
+    for (const ancestor of ancestors) {
+      const ancestorStyle = cs(ancestor);
+      if (nonContainerDisplays.has(ancestorStyle.display)) continue;
+      const ancestorRect = nowRect(ancestor);
+      if (ancestorRect.width <= 0 || ancestorRect.height <= 0) continue;
+      const innerLeft = ancestorRect.left + px(ancestorStyle.borderLeftWidth);
+      const innerRight = ancestorRect.right - px(ancestorStyle.borderRightWidth);
+      const cutLeft = Math.max(0, innerLeft - controlRect.left);
+      const cutRight = Math.max(0, controlRect.right - innerRight);
+      if (Math.max(cutLeft, cutRight) <= 2) continue;
+      const evidence = {
+        ownerSelector: selectorPath(ancestor),
+        controlRect: rectObj(controlRect),
+        ownerRect: rectObj(ancestorRect),
+        ownerInnerWidth: round(Math.max(0, innerRight - innerLeft)),
+        cutLeft: round(cutLeft),
+        cutRight: round(cutRight),
+        overflowFraction: round((cutLeft + cutRight) / Math.max(1, controlRect.width)),
+      };
+      const allowance = overlapReason(el);
+      if (controlContainmentMeasurements.length < 200) {
+        controlContainmentMeasurements.push({
+          selector: selectorPath(el),
+          ...evidence,
+          allowed: Boolean(allowance),
+        });
+      }
+      if (allowance) {
+        add("warning", "allowed-overlap", el, "A native form control escapes a non-scrollable layout container under an explicit overlap allowance.", {
+          redactText: true,
+          evidence: { ...evidence, reason: allowance },
+        });
+      } else {
+        add("critical", "control-outside-container", el, "A native form control escapes a non-scrollable layout container.", {
+          redactText: true,
+          evidence,
+        });
+      }
+      break;
     }
   }
 
@@ -4205,6 +4345,7 @@ function pageVerifier() {
       notInspected,
       ellipsisTruncations,
       controlTextMeasurements,
+      controlContainmentMeasurements,
       contentInsetMeasurements,
       themePalette,
       hiddenTextLike,
@@ -4872,6 +5013,15 @@ async function verifyTarget(page, target, viewport, config, cellId) {
         frame: { url: entry.frameUrl, name: entry.frameName },
       })),
     ];
+    mergedMetrics.controlContainmentMeasurements = [
+      ...(mergedMetrics.controlContainmentMeasurements || []),
+      ...(frameResult.metrics?.controlContainmentMeasurements || []).map((item) => ({
+        ...item,
+        selector: prefixSelector(item.selector, entry.frameUrl, entry.frameName),
+        ownerSelector: prefixSelector(item.ownerSelector, entry.frameUrl, entry.frameName),
+        frame: { url: entry.frameUrl, name: entry.frameName },
+      })),
+    ];
     mergedMetrics.contentInsetMeasurements = [
       ...(mergedMetrics.contentInsetMeasurements || []),
       ...(frameResult.metrics?.contentInsetMeasurements || []).map((item) => ({
@@ -5237,6 +5387,7 @@ function writeJourneyEvidenceArtifact(report, evidenceOut) {
       plannedPages: report.plan?.plannedPageCount ?? report.pages.length,
       failed: Boolean(report.coverage?.failed),
       readinessEligible: Boolean(report.coverage?.readinessEligible),
+      requiredCoverage: report.coverage?.requiredCoverage || null,
     },
     cells,
   };
@@ -5355,7 +5506,7 @@ function publishGovernedJourneyEvidenceArtifact(sourceManifest) {
   }
 }
 
-function summarizeCoverage(pages, config, planCells, review, selection = null) {
+function summarizeCoverage(pages, config, planCells, review, selection = null, requiredCoverage = null) {
   const checkedPages = pages.filter((page) => page.outcome === "checked");
   const failures = [];
   const tolerated = [];
@@ -5393,7 +5544,8 @@ function summarizeCoverage(pages, config, planCells, review, selection = null) {
     ? `checked ${checkedPages.length} page(s), below required minimum ${requiredCheckedPages}`
     : null;
   return {
-    failed: failures.length > 0 || Boolean(minimumFailure) || Boolean(review?.coverageFailures?.length),
+    failed: failures.length > 0 || Boolean(minimumFailure) || Boolean(review?.coverageFailures?.length) ||
+      Boolean(requiredCoverage?.failed),
     checkedPages: checkedPages.length,
     plannedPages: planCells.length,
     requiredCheckedPages,
@@ -5425,6 +5577,7 @@ function summarizeCoverage(pages, config, planCells, review, selection = null) {
     tolerated,
     minimumFailure,
     reviewFailures: review?.coverageFailures || [],
+    requiredCoverage,
   };
 }
 
@@ -5547,7 +5700,8 @@ function markdownReport(report) {
     }
   }
   lines.push("", "## Target Coverage", "");
-  if (!report.coverage.failures.length && !report.coverage.minimumFailure && !report.coverage.reviewFailures.length) {
+  if (!report.coverage.failures.length && !report.coverage.minimumFailure &&
+      !report.coverage.reviewFailures.length && !report.coverage.requiredCoverage?.failed) {
     lines.push(`Coverage passed with ${report.coverage.checkedPages} checked page(s).`);
   } else {
     if (report.coverage.minimumFailure) lines.push(`- ${report.coverage.minimumFailure}`);
@@ -5560,6 +5714,13 @@ function markdownReport(report) {
   }
   for (const item of report.coverage.reviewFailures || []) {
     lines.push(`- Review coverage failure ${item.reviewCellKey}: ${item.reason}`);
+  }
+  const requiredCoverage = report.coverage.requiredCoverage;
+  if (requiredCoverage?.declaredCount) {
+    lines.push(`- Required cells satisfied: ${requiredCoverage.satisfiedCount}/${requiredCoverage.declaredCount}.`);
+    for (const item of requiredCoverage.entries.filter((entry) => entry.status !== "satisfied")) {
+      lines.push(`- Required coverage ${item.requirementId} ${item.status}: ${item.reason}`);
+    }
   }
   lines.push("", "## Changed Visual Review", "");
   lines.push(`- Pending changed/new cells: ${report.review.pendingCount}`);
@@ -6344,6 +6505,7 @@ async function main() {
   const { chromium, devices } = resolvePlaywright(config.playwrightModuleDir);
   config.viewports = resolveViewports(config.viewports, devices);
   const fullPlanCells = buildExecutionPlan(targets, config.viewports, config.maxPageCount);
+  const requiredCoverage = evaluateRequiredCoverage(fullPlanCells, config.requiredCoverage);
   const selected = selectExecutionCells(fullPlanCells, config.development);
   const planCells = selected.cells;
   if (config.development.cache) {
@@ -6369,7 +6531,7 @@ async function main() {
     durationMs: null,
     browser: browserLabel,
     targets: targets.map(publicTarget),
-    plan: publicExecutionPlan(planCells, config.maxPageCount, selected.selection),
+    plan: publicExecutionPlan(planCells, config.maxPageCount, selected.selection, requiredCoverage),
     evidence: {
       verifier: { algorithm: "sha256", sha256: verifierSha256 },
       config: {
@@ -6421,6 +6583,7 @@ async function main() {
     planCells,
     report.review,
     selected.selection,
+    requiredCoverage,
   );
   report.endedAt = new Date().toISOString();
   report.generatedAt = report.endedAt;
