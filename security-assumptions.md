@@ -66,6 +66,19 @@ untracked `instance/` directory and in the installed instance configuration
   input, path escape, and lost replies are credible operational failures and
   are handled as such, not as security incidents.
 
+## Glossary boundary
+
+- The approved glossary interface reuses the existing Console roles and
+  same-owner local boundary (DC2-2026-09-05-PROJECT-GLOSSARIES).
+- Admitted Console users may read shared terminology. Project glossary reads
+  require the existing repository viewing authority; private project terms
+  and project-adoption enumeration do not become public shared metadata.
+- Global Console administrators and trusted local callers may edit glossary
+  concepts and guidance. No separate role, confirmation gate, external
+  translation service or message-store access is introduced.
+- Revision checks and inheritance validation protect editing correctness.
+  They do not recast mutually trusted repository writers as hostile tenants.
+
 ## Governed test-log evidence
 
 - The owner requires byte-complete stdout and stderr for governed checks and

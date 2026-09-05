@@ -51,6 +51,9 @@ fn require_tokens(text: &str, tokens: &[&str], label: &str) -> Result<(), String
 }
 
 const WORKFLOW_TERMS: &[&str] = &[
+    "glossary resolve",
+    "Projects retain their localization architecture and exact messages",
+    "Reading the glossary is not proof of UI compliance",
     "After diagnosis establishes a durable missing or regressed outcome",
     "check whether it is already represented",
     "Execution attempts stay in governed run history",
@@ -149,7 +152,12 @@ pub fn validate_dev_coordinator_contract(
         &["catalog", "file", "materialize"],
         "test artifact CLI help",
     )?;
-    for command in ["test", "deployment", "decision"] {
+    require_tokens(
+        lookup(&["glossary"])?,
+        &["resolve", "save", "configure", "history", "check", "impact"],
+        "glossary CLI help",
+    )?;
+    for command in ["test", "deployment", "decision", "glossary"] {
         require_tokens(
             lookup(&[command])?,
             &["Usage:"],
@@ -168,6 +176,7 @@ pub fn dev_coordinator(source_root: &Path, control_binary: &Path) -> Result<Valu
         vec!["test"],
         vec!["deployment"],
         vec!["decision"],
+        vec!["glossary"],
         vec!["test", "log"],
         vec!["test", "evidence"],
         vec!["test", "artifact"],
@@ -258,6 +267,11 @@ mod tests {
             ),
             (vec!["deployment"], "Usage: deployment".to_owned()),
             (vec!["decision"], "Usage: decision".to_owned()),
+            (
+                vec!["glossary"],
+                "Usage: glossary list resolve get save configure inherit history check impact"
+                    .to_owned(),
+            ),
             (
                 vec!["test", "log"],
                 "catalog tail search range failure-context retention".to_owned(),

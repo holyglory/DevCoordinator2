@@ -21,6 +21,11 @@ bench = false
 
 [features]
 root-acceptance = []
+glossary-fixture = []
+
+[[example]]
+name = "glossary_console_fixture"
+required-features = ["glossary-fixture"]
 
 [dependencies]
 base64.workspace = true
@@ -43,6 +48,7 @@ time.workspace = true
 tokio.workspace = true
 toml.workspace = true
 tracing.workspace = true
+unicode-normalization.workspace = true
 tracing-subscriber.workspace = true
 
 [dev-dependencies]

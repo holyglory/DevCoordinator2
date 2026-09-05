@@ -378,6 +378,15 @@ geometry checks support evidence but do not replace interaction verification.
 
 ### Content and interaction design
 
+- Before changing UI wording, read the effective project glossary and
+  applicable shared terminology from their established sources. Resolve
+  vocabulary by concept and language, respect required inherited rules, and
+  explain project specializations rather than inventing competing names.
+  Projects retain their localization architecture and exact messages;
+  glossaries guide meaning and vocabulary, not storage or sentence assembly.
+  Resolve missing concepts and language-review gaps explicitly. Reading the
+  glossary is not proof of UI compliance: verify terminology in the affected
+  user-facing result, preserving legitimate grammar, names and quoted content.
 - A destination's name is a content promise. Its named object, collection,
   task, or honest loading/error/empty state must be the first substantial,
   recognizable content in the initial viewport, including narrow screens.

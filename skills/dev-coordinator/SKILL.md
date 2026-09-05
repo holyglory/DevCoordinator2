@@ -1,6 +1,6 @@
 ---
 name: dev-coordinator
-description: Coordinate host-visible local development tests and governed check graphs, deployments, services, ports, containers, PostgreSQL components, health, and runtime cleanup through the installed DevCoordinator2 CLI or MCP server, and use its authoritative planning/completion ledger and decision history. Use for shared runtime observation or mutation and for all ledger/decision work; do not use for ordinary source inspection, editing, Git work, formatting, or static checks.
+description: Coordinate host-visible local development tests and governed check graphs, deployments, services, ports, containers, PostgreSQL components, health, and runtime cleanup through the installed DevCoordinator2 CLI or MCP server, and use its authoritative planning/completion ledger, decision history and shared/project glossaries. Use for shared runtime observation or mutation and for ledger, decision or glossary work; do not use for ordinary source inspection, editing, Git work, formatting, or static checks.
 ---
 
 # DevCoordinator2
@@ -43,6 +43,8 @@ devcoordinator2 health --help
   the authoritative planning ledger and decision history (below).
 - Use `bug report|list|close` for the independent open-bug registry
   (coordinator defects only; product work items are ledger tasks).
+- Use `glossary list|resolve|get|save|configure|inherit|history|check|impact`
+  for shared and project terminology, never application messages.
 - Use `devcoordinator2 mcp` only as the configured STDIO MCP server.
 
 Read the exact subcommand help before destructive or uncommon administration.
@@ -179,6 +181,33 @@ is no file fallback.
   read reports `summary_due`, write and store the rolling summary via
   `decision_summarize` before continuing. This append-only maintenance write
   is direct: do not ask the user for another approval.
+
+## Project terminology
+
+Before UI wording work, use `glossary resolve --path /absolute/project` to
+read relevant concepts, language equivalents, guidance, inheritance and exact
+scope/shared revisions. Use query/language filters for bounded context and
+follow `next_offset`; preserve `expected_revision` when continuing a snapshot.
+Do not silently use a stale baseline or unreviewed equivalents as approved.
+
+Projects retain their localization architecture and exact messages. Use the
+project's existing database, JSON, text or framework resources. A glossary
+supplies meanings and approved terms, not a universal catalogue or translation
+pipeline. Write natural sentences and declare legitimate grammatical variants.
+
+Use `glossary get` and `history` to inspect a concept and its provenance.
+`save` requires the current expected scope revision. `configure` explicitly
+adopts a shared baseline or updates glossary guidance; inherited required
+concepts and guidelines cannot be silently weakened. A permitted project
+specialization needs its reason, and `inherit` restores the pinned shared
+concept without erasing history. Preserve a stale edit as a draft until its
+conflict is resolved. Missing concepts and language-review gaps remain explicit.
+
+The Console's Glossary is the human editing and navigation surface for the
+same service. Reading the glossary is not proof of UI compliance. Use the
+project's own rendered checks/review and, where useful, `glossary check` for
+explicit `{concept_id, language, term}` usages. That checker validates declared
+forms; it does not certify arbitrary prose, translation quality or user content.
 
 ## Preserve the self-hosting boundary
 

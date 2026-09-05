@@ -66,6 +66,10 @@ pub fn decision_id() -> Result<String, IdError> {
     random_id('n')
 }
 
+pub fn glossary_id() -> Result<String, IdError> {
+    random_id('g')
+}
+
 pub fn feedback_id() -> Result<String, IdError> {
     random_id('f')
 }

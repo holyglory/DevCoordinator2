@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use thiserror::Error;
 
+pub mod glossary;
 pub mod params;
 pub mod results;
 
@@ -105,6 +106,8 @@ pub enum ErrorCode {
     TaskNotFound,
     ReleaseNotFound,
     DecisionNotFound,
+    GlossaryNotFound,
+    GlossaryConflict,
     InternalError,
     DaemonUnavailable,
 }
@@ -1052,6 +1055,87 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         results::RemovedContainer
     ),
     operation!(
+        "glossary.list",
+        "Browse shared or effective project terminology; never application messages.",
+        READ_REPOSITORY_VIEWER,
+        Protocol["glossary list"],
+        ["glossary_list"],
+        glossary::List,
+        glossary::Page
+    ),
+    operation!(
+        "glossary.resolve",
+        "Read the effective glossary before UI work, with pinned shared revision and provenance. Follow the project's own localization mechanism; paginate all needed concepts.",
+        READ_REPOSITORY_VIEWER,
+        Protocol["glossary resolve"],
+        ["glossary_resolve"],
+        glossary::List,
+        glossary::Page
+    ),
+    operation!(
+        "glossary.get",
+        "Read one multilingual concept, optionally at a historical scope revision.",
+        READ_REPOSITORY_VIEWER,
+        Protocol["glossary get"],
+        ["glossary_get"],
+        glossary::Get,
+        glossary::Detail
+    ),
+    operation!(
+        "glossary.save",
+        "Create or revise a concept using an exact expected scope revision. Mandatory inherited concepts cannot be overridden.",
+        REVERSIBLE_REPOSITORY_ADMIN,
+        Protocol["glossary save"],
+        ["glossary_save"],
+        glossary::Save,
+        glossary::Mutation
+    ),
+    operation!(
+        "glossary.configure",
+        "Revise glossary languages and guidance or explicitly adopt a shared revision; this does not change localization files.",
+        REVERSIBLE_REPOSITORY_ADMIN,
+        Protocol["glossary configure"],
+        ["glossary_configure"],
+        glossary::Configure,
+        glossary::Mutation
+    ),
+    operation!(
+        "glossary.inherit",
+        "Remove a project specialization and return to its pinned shared concept, preserving history.",
+        REVERSIBLE_REPOSITORY_ADMIN,
+        Protocol["glossary inherit"],
+        ["glossary_inherit"],
+        glossary::Inherit,
+        glossary::Mutation
+    ),
+    operation!(
+        "glossary.history",
+        "Read bounded permanent glossary revision history.",
+        READ_REPOSITORY_VIEWER,
+        Protocol["glossary history"],
+        ["glossary_history"],
+        glossary::History,
+        glossary::HistoryPage
+    ),
+    operation!(
+        "glossary.check",
+        "Check explicitly identified concept usages against approved localized terms. This is not a general prose or translation-quality detector.",
+        READ_REPOSITORY_VIEWER,
+        Protocol["glossary check"],
+        ["glossary_check"],
+        glossary::Check,
+        glossary::CheckResult
+    ),
+    operation!(
+        "glossary.impact",
+        "Inspect which projects have adopted shared glossary revisions.",
+        READ_SERVER_ADMIN,
+        Protocol["glossary impact"],
+        ["glossary_impact"],
+        glossary::ImpactRequest,
+        glossary::Impact
+    ),
+    operation!(
         "plan.overview",
         "Show releases and the active completion plan.",
         READ_REPOSITORY_VIEWER,
@@ -1560,9 +1644,9 @@ mod tests {
         for tool in mcp_tools() {
             assert!(tools.insert(tool.name), "duplicate MCP tool");
         }
-        assert_eq!(OPERATIONS.len(), 76);
-        assert_eq!(tools.len(), 54);
-        assert_eq!(cli_routes.len(), 65);
+        assert_eq!(OPERATIONS.len(), 85);
+        assert_eq!(tools.len(), 63);
+        assert_eq!(cli_routes.len(), 74);
     }
 
     #[test]

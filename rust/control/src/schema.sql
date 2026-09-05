@@ -435,3 +435,20 @@ CREATE TABLE IF NOT EXISTS owned_events (
 CREATE INDEX IF NOT EXISTS owned_events_repository_cursor ON owned_events(repository_id,cursor);
 CREATE INDEX IF NOT EXISTS owned_events_deployment_cursor ON owned_events(deployment_id,cursor);
 CREATE INDEX IF NOT EXISTS owned_events_category_cursor ON owned_events(category,cursor);
+CREATE TABLE IF NOT EXISTS glossary_profiles (
+    scope TEXT PRIMARY KEY,
+    revision INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS glossary_revisions (
+    scope TEXT NOT NULL REFERENCES glossary_profiles(scope),
+    revision INTEGER NOT NULL,
+    kind TEXT NOT NULL,
+    subject_id TEXT NOT NULL,
+    body TEXT,
+    summary TEXT NOT NULL,
+    actor TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY(scope, revision)
+);
+CREATE INDEX IF NOT EXISTS glossary_subject_history
+    ON glossary_revisions(scope, kind, subject_id, revision);

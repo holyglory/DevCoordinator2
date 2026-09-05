@@ -513,6 +513,11 @@ increments `occurrences` instead of duplicating; closing removes the record.
 
 ## plan.* / task.* / release.* / decision.* (Schemas 8, 11, and 12, implemented)
 
+The glossary command family is documented separately in `docs/glossary.md`.
+Its strict typed schema is `rust/api/src/glossary.rs`; CLI and MCP share
+`glossary.list/resolve/get/save/configure/inherit/history/check/impact`.
+Glossary records are not application messages, completion tasks or decisions.
+
 DC2-owned planning, completion ledger, and decision history
 (DC2-2026-08-24-PLANNING-LEDGER). Append-only: every task/release mutation
 appends `plan_events` rows in the same transaction; nothing is ever deleted.

@@ -11,6 +11,10 @@ use devcoordinator2_api::{
 use serde_json::{Map, Value, json};
 use thiserror::Error;
 
+#[path = "cli_glossary.rs"]
+mod glossary_cli;
+use glossary_cli::GlossaryCommand;
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, ValueEnum)]
 pub enum OutputFormat {
     #[default]
@@ -90,6 +94,7 @@ impl Cli {
             Command::Task { command } => command.into_invocation(),
             Command::Release { command } => command.into_invocation(),
             Command::Decision { command } => command.into_invocation(),
+            Command::Glossary { command } => command.into_invocation(),
         }
     }
 }
@@ -175,6 +180,10 @@ enum Command {
     Daemon,
     Mcp,
     Ping,
+    Glossary {
+        #[command(subcommand)]
+        command: GlossaryCommand,
+    },
     Test {
         #[command(subcommand)]
         command: TestCommand,
@@ -2148,8 +2157,60 @@ mod tests {
     #[test]
     fn clap_hierarchy_and_every_remote_route_map_to_protocol_two_registry() {
         Cli::command().debug_assert();
+        let glossary_inputs = tempfile::tempdir().unwrap();
+        let concept_file = glossary_inputs.path().join("concept.json");
+        let settings_file = glossary_inputs.path().join("settings.json");
+        let usages_file = glossary_inputs.path().join("usages.json");
+        std::fs::write(
+            &concept_file,
+            r#"{"name":"Execution","definition":"One test execution"}"#,
+        )
+        .unwrap();
+        std::fs::write(&settings_file, r#"{"languages":["en"],"guidelines":[]}"#).unwrap();
+        std::fs::write(&usages_file, "[]").unwrap();
         let cases: &[(&[&str], &str)] = &[
             (&["ping"], "ping"),
+            (&["glossary", "list"], "glossary.list"),
+            (&["glossary", "resolve"], "glossary.resolve"),
+            (&["glossary", "get", "g1111111111111111"], "glossary.get"),
+            (
+                &[
+                    "glossary",
+                    "save",
+                    "--expected-revision",
+                    "0",
+                    "--file",
+                    concept_file.to_str().unwrap(),
+                ],
+                "glossary.save",
+            ),
+            (
+                &[
+                    "glossary",
+                    "configure",
+                    "--expected-revision",
+                    "0",
+                    "--file",
+                    settings_file.to_str().unwrap(),
+                ],
+                "glossary.configure",
+            ),
+            (
+                &[
+                    "glossary",
+                    "inherit",
+                    "g1111111111111111",
+                    "--expected-revision",
+                    "1",
+                ],
+                "glossary.inherit",
+            ),
+            (&["glossary", "history"], "glossary.history"),
+            (
+                &["glossary", "check", "--file", usages_file.to_str().unwrap()],
+                "glossary.check",
+            ),
+            (&["glossary", "impact"], "glossary.impact"),
             (
                 &["test", "start", "/tmp/repo", "--check", "unit"],
                 "test.start",
