@@ -457,7 +457,13 @@ not contradict them.
   selecting another run never reuses the previous run's files or test label.
   Wide and narrow, light and dark journeys cover preview, download, cancellation,
   permission failure, changed evidence, and exact retry. Completion requires
-  verification with real retained files on the shared Console.
+  verification with real retained files on the shared Console. Report previews
+  show meaningful structured values with readable field and file labels and
+  syntax highlighting, never raw XML markup, namespace/type wrappers or opaque
+  hashes and generated identifiers. Preserve names, numeric precision, units,
+  statuses and messages without invented interpretation. Repeated readable file
+  names remain distinguishable, malformed or incomplete data has an honest
+  preview-unavailable state, and original downloads remain byte-identical.
 
 ## Public access (REQ-ACCESS, P5)
 

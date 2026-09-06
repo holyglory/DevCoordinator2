@@ -9,6 +9,14 @@ const MANIFEST = 'a'.repeat(64);
 const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk/x8AAusB9Y9Z4rUAAAAASUVORK5CYII=', 'base64');
 const FILES = new Map([
   ['capture.png', PNG],
+  ['11111111-1111-4111-8111-111111111111-child.png', PNG],
+  ['22222222-2222-4222-8222-222222222222-child.png', PNG],
+  ['facts.json', Buffer.from('{"component":"R1","style":"Italic","script":"validate.js","reference":"000123","color":"#abcdef","count":0,"enabled":false,"amount":9007199254740993,"ratio":0.0000000000000000001,"comparison":"Expected < 3, actual > 4","records":[{"name":"First","status":"Passed"},{"name":"Second","status":"Failed"}]}')],
+  ['broken.xml', Buffer.from('<report><result>Failed')],
+  ['external.xml', Buffer.from('<!DOCTYPE report [<!ENTITY payload SYSTEM "https://untrusted.example/secret">]><report>&payload;</report>')],
+  ['opaque.json', Buffer.from(JSON.stringify({ sha256: 'c'.repeat(64), uuid: '11111111-1111-4111-8111-111111111111' }))],
+  ['0305cfd9-5196-4424-a426-22aed07a6cb0-item-delta-desired.xml', Buffer.from('<schematic-data version="1" xmlns="urn:example:schematic"><kicad.schematic.types.SchematicScreenData><metadata><document><project><name>Controller</name><path>/home/example/.devcoordinator/test/scratch/fixture</path></project></document><title_block><title><value>Power supply</value></title><revision><value>A.1</value></revision><company><value>Fixture engineering</value></company></title_block><page><width_mm>200</width_mm><offset_nm>123456789</offset_nm><distance_nm><value>2500000</value></distance_nm><height_mm>300</height_mm><enabled>false</enabled><uuid>0305cfd9-5196-4424-a426-22aed07a6cb0</uuid><sha256>' + 'd'.repeat(64) + '</sha256></page></metadata></kicad.schematic.types.SchematicScreenData></schematic-data>')],
+  ['results.trx', Buffer.from('<TestRun id="0305cfd9-5196-4424-a426-22aed07a6cb0" name="Editor checks"><ResultSummary outcome="Passed"><Counters total="2" passed="2" failed="0" /></ResultSummary><Results><UnitTestResult testId="0305cfd9-5196-4424-a426-22aed07a6cb0" testName="Insert symbol" outcome="Passed" duration="00:00:00.023" /></Results></TestRun>')],
   ['report.json', Buffer.from(JSON.stringify({ result: 'passed', hostile: '<img src=x onerror="window.artifactInjection=true">' }))],
   ['large.txt', Buffer.from('retained output\n'.repeat(80000))],
   ['unpreviewed.bin', Buffer.from([0, 1, 2, 255])],
@@ -89,21 +97,57 @@ export async function verifyTestArtifacts({ page, daemon, check, baseUrl, output
   verify('image preview decodes', await dialog.locator('img').evaluate((image) => image.complete && image.naturalWidth === 1));
   verify('opening keeps continuation in view', await dialog.evaluate((element) => element.contains(document.activeElement) && element.getBoundingClientRect().top >= 0));
   await page.screenshot({ path: path.join(output, `files-${theme}-${viewport.width}.png`) });
-  await dialog.getByRole('button', { name: 'report.json', exact: true }).click();
-  await dialog.locator('pre').waitFor();
-  verify('reports render as escaped text', (await dialog.locator('pre').innerText()).includes('<img') && !await page.evaluate(() => !!window.artifactInjection));
+  await dialog.locator('[data-artifact-file="0305cfd9-5196-4424-a426-22aed07a6cb0-item-delta-desired.xml"]').click();
+  await page.waitForFunction(() => document.querySelector('.artifact-content')?.textContent.includes('Power supply'));
+  const readable = await dialog.locator('.artifact-content').innerText();
+  verify('XML evidence shows data without markup or generated identifiers', !/<schematic-data|<value>|0305cfd9|dddddddd/.test(readable));
+  verify('XML dimensions retain exact values with readable units', /Offset \(mm\)\s+123\.456789/.test(readable) && /Distance \(mm\)\s+2\.5/.test(readable));
+  verify('XML evidence keeps meaningful values', /Power supply/.test(readable) && /Fixture engineering/.test(readable) && /A\.1/.test(readable));
+  verify('evidence labels omit generated identifiers', !/0305cfd9/.test(await dialog.locator('.artifact-navigation').innerText()));
+  verify('structured data values have syntax highlighting', await dialog.locator('.artifact-content .log-token').count() > 0);
+  await dialog.locator('[data-artifact-file="report.json"]').click();
+  await dialog.locator('.artifact-fields').first().waitFor();
+  verify('reports show meaningful data without active or visible markup', (await dialog.locator('.artifact-content').innerText()).includes('passed') && !(await dialog.locator('.artifact-content').innerText()).includes('<img') && !await page.evaluate(() => !!window.artifactInjection));
+  verify('duplicate friendly labels are distinguishable without hashes', await dialog.getByRole('button', { name: 'Child · 1 Screenshot', exact: true }).count() === 1 && await dialog.getByRole('button', { name: 'Child · 2 Screenshot', exact: true }).count() === 1);
+  await dialog.locator('[data-artifact-file="facts.json"]').click();
+  await dialog.locator('.artifact-fields').first().waitFor();
+  const facts = await dialog.locator('.artifact-content').innerText();
+  verify('meaningful identifiers and comparison text are preserved', facts.includes('R1') && facts.includes('Italic') && facts.includes('validate.js') && facts.includes('000123') && facts.includes('#abcdef') && facts.includes('Expected < 3, actual > 4'));
+  verify('numeric precision, zero and false are preserved', facts.includes('9,007,199,254,740,993') && facts.includes('0.0000000000000000001') && facts.includes('false') && /Count\s+0/.test(facts));
+  for (let step = 0; await dialog.locator('.artifact-data-group:not([open]) > summary').count(); step += 1) {
+    assert.ok(step < 20);
+    await dialog.locator('.artifact-data-group:not([open]) > summary').first().click();
+  }
+  verify('nested entries open with actual highlighted outcomes', await dialog.locator('.artifact-data .log-token-success').count() > 0 && await dialog.locator('.artifact-data .log-token-failure').count() > 0);
+  await dialog.locator('[data-artifact-file="results.trx"]').click();
+  await dialog.locator('.artifact-fields').first().waitFor();
+  for (let step = 0; await dialog.locator('.artifact-data-group:not([open]) > summary').count(); step += 1) {
+    assert.ok(step < 20);
+    await dialog.locator('.artifact-data-group:not([open]) > summary').first().click();
+  }
+  verify('test reports show names and outcomes rather than XML', (await dialog.locator('.artifact-content').innerText()).includes('Insert symbol') && !/<TestRun|testId|0305cfd9/.test(await dialog.locator('.artifact-content').innerText()));
+  for (const file of ['broken.xml', 'external.xml']) {
+    await dialog.locator('[data-artifact-file="' + file + '"]').click();
+    await dialog.locator('.artifact-data-unavailable').waitFor();
+    verify(file + ' keeps an honest unavailable preview with original download', !await dialog.locator('.artifact-content pre').count() && await dialog.locator('[data-artifact-download]').isEnabled());
+  }
+  await dialog.locator('[data-artifact-file="opaque.json"]').click();
+  await dialog.getByText('No readable data in this file. The original is available to download.', { exact: true }).waitFor();
+  verify('opaque-only documents never invent useful values', !/cccccccc|11111111/.test(await dialog.locator('.artifact-content').innerText()));
+  await dialog.locator('[data-artifact-file="report.json"]').click();
+  await dialog.locator('.artifact-fields').first().waitFor();
   const downloadEvent = page.waitForEvent('download');
   await dialog.getByRole('button', { name: 'Download file', exact: true }).click();
   const download = await downloadEvent;
   verify('download preserves original bytes', (await fs.readFile(await download.path())).equals(FILES.get('report.json')));
   await dialog.getByRole('button', { name: 'More files', exact: true }).click();
-  await dialog.getByRole('button', { name: 'nested/check-98.txt', exact: true }).waitFor();
+  await dialog.locator('[data-artifact-file="nested/check-98.txt"]').waitFor();
   verify('catalogue follows its bounded continuation', await dialog.locator('[data-artifact-file]').count() === entries.length);
-  verify('pagination preserves the selected report', await dialog.locator('pre').count() === 1);
-  await dialog.getByRole('button', { name: 'large.txt', exact: true }).click();
+  verify('pagination preserves the selected report', await dialog.locator('.artifact-fields').count() === 1);
+  await dialog.locator('[data-artifact-file="large.txt"]').click();
   await dialog.getByText('Preview limited to 1 MiB. Download the file for the complete content.', { exact: true }).waitFor();
   verify('large text is explicitly bounded', (await dialog.locator('pre').innerText()).length <= 1048576);
-  await dialog.getByRole('button', { name: 'unpreviewed.bin', exact: true }).click();
+  await dialog.locator('[data-artifact-file="unpreviewed.bin"]').click();
   await dialog.getByText('No browser preview for this file type.', { exact: true }).waitFor();
   verify('binary is downloadable without rendering active content', await dialog.getByRole('button', { name: 'Download file', exact: true }).isEnabled());
   verify('dialog does not overflow the viewport', await dialog.evaluate((element) => element.getBoundingClientRect().right <= innerWidth && element.getBoundingClientRect().bottom <= innerHeight && element.scrollWidth <= element.clientWidth));

@@ -11,7 +11,7 @@ window.DevCoordinatorArtifacts = (() => {
     return (run.checks || []).flatMap((check) => (check.retained_artifacts || []).map((artifact) => ({ ...artifact, check: check.name })));
   }
 
-  function open(run, opener, { api, esc, bytes, signal }) {
+  function open(run, opener, { api, esc, bytes, signal, highlight }) {
     document.getElementById('test-artifacts-dialog')?.dispatchEvent(new Event('cancel', { cancelable: true }));
     let choices = bundles(run);
     let activeRun = { ...run };
@@ -24,6 +24,7 @@ window.DevCoordinatorArtifacts = (() => {
       <label class="f artifact-bundle"${choices.length < 2 ? ' hidden' : ''}>File collection<select aria-label="File collection">${choices.map((choice, index) => `<option value="${index}">${esc(choice.check)} · ${esc(choice.name)} · ${choice.files} files</option>`).join('')}</select></label>
       <div class="artifact-workspace"><nav class="artifact-navigation" aria-label="Evidence files"><div class="artifact-files"></div><div class="artifact-page-state" role="status"></div></nav><section class="artifact-preview" aria-label="Selected file"><header><h3 class="artifact-name" tabindex="-1"></h3><button class="btn" type="button" data-artifact-download disabled>Download file</button></header><div class="artifact-file-state" role="status"></div><div class="artifact-content"></div></section></div>`;
     document.body.appendChild(dialog);
+    const presenter = window.DevCoordinatorArtifactContent;
     const query = (selector) => dialog.querySelector(selector);
     const fileList = query('.artifact-files');
     const pageState = query('.artifact-page-state');
@@ -97,7 +98,7 @@ window.DevCoordinatorArtifacts = (() => {
       selection = entry;
       const version = ++fileVersion;
       clearPreview();
-      query('.artifact-name').textContent = entry.path;
+      query('.artifact-name').textContent = entry.displayLabel;
       if (focus) query('.artifact-name').focus({ preventScroll: true });
       for (const button of fileList.querySelectorAll('button')) button.setAttribute('aria-current', String(button.dataset.artifactFile === entry.path));
       const extension = entry.path.split('.').pop().toLowerCase();
@@ -119,21 +120,16 @@ window.DevCoordinatorArtifacts = (() => {
         fileState.textContent = blob.size < entry.size ? 'Preview limited to 1 MiB. Download the file for the complete content.' : bytes(entry.size);
         if (imageType) {
           const image = document.createElement('img');
-          image.alt = entry.path;
+          image.alt = entry.displayLabel;
           imageUrl = URL.createObjectURL(new Blob([blob], { type: imageType }));
           image.src = imageUrl;
           await image.decode();
           if (closed || version !== fileVersion) return;
           content.append(image);
         } else {
-          let text = await blob.text();
+          const text = await blob.text();
           if (closed || version !== fileVersion) return;
-          if (extension === 'json' && blob.size === entry.size) {
-            try { text = JSON.stringify(JSON.parse(text), null, 2); } catch {}
-          }
-          const pre = document.createElement('pre');
-          pre.textContent = text;
-          content.append(pre);
+          content.append(presenter.render(text, entry.path, { truncated: blob.size < entry.size, highlight }));
         }
         download.disabled = false;
       } catch (error) {
@@ -159,13 +155,33 @@ window.DevCoordinatorArtifacts = (() => {
         manifest = page.manifest_sha256;
         nextOffset = page.next_offset;
         entries.push(...page.entries);
+        const groups = new Map();
+        for (const entry of entries) {
+          const description = presenter.describe(entry.path);
+          entry.description = description;
+          const key = description.title + ':' + description.kind;
+          if (!groups.has(key)) groups.set(key, []);
+          groups.get(key).push(entry);
+        }
+        for (const group of groups.values()) group.forEach((entry, index) => {
+          entry.displayLabel = entry.description.title + (group.length > 1 ? ' · ' + (index + 1) : '');
+        });
         for (const entry of page.entries) {
           const button = document.createElement('button');
           button.type = 'button'; button.dataset.artifactFile = entry.path;
-          button.textContent = entry.path;
+          const title = document.createElement('span');
+          title.className = 'artifact-file-label';
+          const kind = document.createElement('span');
+          kind.className = 'artifact-file-kind'; kind.textContent = entry.description.kind;
+          button.append(title, kind);
           button.addEventListener('click', () => selectFile(entry));
           fileList.append(button);
         }
+        for (const button of fileList.querySelectorAll('[data-artifact-file]')) {
+          const entry = entries.find((item) => item.path === button.dataset.artifactFile);
+          button.querySelector('.artifact-file-label').textContent = entry.displayLabel;
+        }
+        if (selection) query('.artifact-name').textContent = selection.displayLabel;
         pageState.replaceChildren();
         if (nextOffset != null) {
           const more = document.createElement('button');
@@ -285,7 +301,7 @@ window.DevCoordinatorArtifacts = (() => {
         if (!blob || closed || version !== fileVersion) return;
         const url = URL.createObjectURL(blob);
         const link = document.createElement('a');
-        link.href = url; link.download = entry.path.split('/').pop();
+        link.href = url; link.download = entry.displayLabel.replaceAll('/', ' - ') + (entry.description.extension ? '.' + entry.description.extension : '');
         document.body.appendChild(link); link.click(); link.remove();
         setTimeout(() => URL.revokeObjectURL(url), 1000);
         download.disabled = false;

@@ -161,9 +161,14 @@ the earlier caching policy, so a normal refresh can load the redesigned code.
    one discovers its own check catalogue and file collections, never inheriting the latest test
    name, status or file list. A newer managed or nonvisual run therefore does not
    hide still-retained native screenshots. The focused viewer
-   pages the file catalogue with its manifest identity, previews raster images
-   and escaped text, and downloads the selected original file through verified
-   bounded chunks. Text previews stop at 1 MiB; files above the 32 MiB browser
+   pages the file catalogue with its manifest identity and previews raster images.
+   File labels omit generated identifiers and distinguish repeated readable names.
+   XML, JSON and test reports present meaningful fields and expandable sections with
+   highlighted keys, values and outcomes, not markup, namespaces or opaque hashes.
+   Numeric text stays exact; nanometre measurements display losslessly in millimetres.
+   Malformed, unsupported or incomplete structured data has an explicit unavailable
+   preview rather than a raw-markup fallback. Other text keeps escaped highlighting.
+   Downloads preserve the original bytes through verified bounded chunks. Text previews stop at 1 MiB; files above the 32 MiB browser
    limit remain available through the retained-file command line tools.
    Closing or changing selection discards stale reads and releases image data;
    expired, denied, changed and unavailable files retain an exact retry.

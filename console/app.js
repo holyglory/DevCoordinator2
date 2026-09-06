@@ -2045,7 +2045,7 @@ function bindTestRunRows(root, runs, retention) {
   bind(root);
   root.querySelectorAll('[data-test-artifacts]').forEach((button) => button.addEventListener('click', () => {
     const run = runs.find((row) => row.run_id === button.dataset.runId);
-    if (run) window.DevCoordinatorArtifacts.open(run, button, { api, esc, bytes, signal: viewAbort.signal });
+    if (run) window.DevCoordinatorArtifacts.open(run, button, { api, esc, bytes, signal: viewAbort.signal, highlight: highlightLogText });
   }));
   root.querySelectorAll('[data-test-start]').forEach((button) => button.addEventListener('click', () => {
     openTestRunDialog(runs, button, button.dataset.path);
