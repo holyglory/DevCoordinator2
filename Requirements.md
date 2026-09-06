@@ -448,7 +448,7 @@ not contradict them.
   target and effect, and deployment removal has separate keep-data and
   delete-data actions.
 
-- **REQ-CONSOLE-05** (2026-09-06, in progress): Tests exposes declared retained
+- **REQ-CONSOLE-05** (2026-09-06): Tests exposes declared retained
   files independently of formal journey screenshots. Administrators can inspect
   native screenshots and text reports, page collections, and download the exact
   original file through the bounded, identity-verified artifact reader. Run
