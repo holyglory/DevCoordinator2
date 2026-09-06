@@ -657,6 +657,79 @@ command=["true"]
 }
 
 #[test]
+fn public_run_history_uses_exact_registration_without_edge_git_access() {
+    let world = LifecycleWorld::new();
+    let (finished, completion) = std::sync::mpsc::channel();
+    world
+        .lifecycle
+        .set_event_sink(Arc::new(move |event: TestLifecycleEvent| {
+            if event.kind == "test.finished" {
+                let _ = finished.send(());
+            }
+        }));
+    let started = world.start();
+    world.systemd.finish(&started.unit);
+    completion.recv_timeout(Duration::from_secs(10)).unwrap();
+    let current = world.wait_status(TestStatus::Passed);
+    let public = Caller {
+        uid: 999,
+        gid: 999,
+        client_kind: devcoordinator2_api::ClientKind::Edge,
+        identity: Some("administrator@example.test".into()),
+        ..world.caller.clone()
+    };
+    let query = |path: &Path| devcoordinator2_api::params::TestHistory {
+        path: path.to_string_lossy().into_owned(),
+        before: None,
+        limit: 20,
+    };
+    std::fs::rename(
+        world.worktree.join(".git"),
+        world._temporary.path().join("unavailable-git"),
+    )
+    .unwrap();
+    let history = world
+        .lifecycle
+        .history(query(&world.worktree), &public)
+        .expect("registered history must not run Git as the edge account");
+    assert_eq!(history.runs.len(), 1);
+    assert_eq!(history.runs[0].run_id, current.run_id);
+    assert_eq!(history.runs[0].test, current.test);
+    assert_eq!(history.runs[0].status, TestStatus::Passed);
+    let alias = world._temporary.path().join("repository-alias");
+    std::os::unix::fs::symlink(&world.worktree, &alias).unwrap();
+    let unregistered = LifecycleWorld::new();
+    for path in [
+        world.worktree.join("nested"),
+        world.worktree.join("."),
+        alias,
+        unregistered.worktree.clone(),
+    ] {
+        let error = world
+            .lifecycle
+            .history(query(&path), &public)
+            .expect_err("public history requires an exact registered worktree");
+        assert_eq!(error.code, ErrorCode::RepositoryNotFound);
+        assert!(!error.message.contains(path.to_str().unwrap()));
+        assert!(error.detail.is_empty());
+    }
+    assert_eq!(
+        world
+            .lifecycle
+            .history(query(Path::new("relative")), &public)
+            .unwrap_err()
+            .code,
+        ErrorCode::ParamsInvalid
+    );
+    assert!(
+        world
+            .lifecycle
+            .history(query(&world.worktree), &world.caller)
+            .is_err()
+    );
+}
+
+#[test]
 fn run_history_is_bounded_scoped_and_keeps_earlier_identity() {
     let world = LifecycleWorld::new();
     let query = |before: Option<String>, limit| devcoordinator2_api::params::TestHistory {

@@ -24,6 +24,7 @@ use devcoordinator2_executor_protocol::{
     CheckPlan, CheckReport, ExecutionPlan, ExecutionReport, LeafStatus, ProofKind, RunStatus,
     Schema2, ValidationTier,
 };
+use rusqlite::OptionalExtension;
 use time::{format_description::FormatItem, macros::format_description};
 
 use crate::access::Caller;
@@ -647,7 +648,7 @@ impl TestLifecycle {
                 "Run history limit must be between 1 and 50.",
             ));
         }
-        let (worktree, _) = self.resolve(&params.path, caller)?;
+        let worktree = self.resolve_history_worktree(&params.path, caller)?;
         let mut records = self
             .inner
             .store
@@ -1014,6 +1015,43 @@ impl TestLifecycle {
                 ("DATABASE_URL".into(), url),
             ]),
         })
+    }
+
+    fn resolve_history_worktree(
+        &self,
+        path: &str,
+        caller: &Caller,
+    ) -> Result<PathBuf, ProtocolError> {
+        if !Path::new(path).is_absolute() {
+            return Err(ProtocolError::new(
+                ErrorCode::ParamsInvalid,
+                "path must be absolute",
+            ));
+        }
+        if caller.identity.is_none() {
+            return self.resolve(path, caller).map(|(worktree, _)| worktree);
+        }
+        let requested = path.to_owned();
+        self.inner
+            .database
+            .call(move |connection| {
+                connection
+                    .query_row(
+                        "SELECT worktree_path FROM worktrees WHERE worktree_path=?1",
+                        [&requested],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .optional()
+                    .map_err(DatabaseError::from)
+            })
+            .map_err(database_error)?
+            .map(PathBuf::from)
+            .ok_or_else(|| {
+                ProtocolError::new(
+                    ErrorCode::RepositoryNotFound,
+                    "No registered worktree matches this request.",
+                )
+            })
     }
 
     fn resolve(&self, path: &str, caller: &Caller) -> Result<(PathBuf, String), ProtocolError> {
