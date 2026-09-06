@@ -41,11 +41,17 @@ The universal cross-repository policy is `reference/universal/AGENTS.md`.
 
 ## Authoritative project context
 
-- Read `security-assumptions.md`, relevant requirements and decisions, and
-  every applicable file under `UserIssueLedgers/` before consequential work.
+- Read `security-assumptions.md`, relevant requirements, and applicable
+  recorded decisions, user feedback, and durable corrections before
+  consequential work. Use `devcoordinator2 plan overview`, `task history`,
+  and `decision tail`/`search`; include relevant resolved feedback and older
+  standing corrections rather than relying only on active tasks.
 - DevCoordinator2's database is the only completion ledger and decision
-  history. Use `devcoordinator2 plan`, `task`, and `decision`; never create a
-  Markdown completion ledger.
+  history. Keep unfinished feedback in its task ledger and confirmed
+  repeatable corrections in aspect-tagged decision records, linked to the
+  relevant feedback and preserved after fixes. Use `devcoordinator2 plan`,
+  `task`, and `decision`; never create or update Markdown ledger mirrors.
+  Historical files are reference material, not a fallback authority.
 - Use the installed Coordinator only for other repositories' governed runtime
   work and for ledger/decision operations. Never use it to test, install,
   deploy, roll back, or validate DevCoordinator2 itself.
