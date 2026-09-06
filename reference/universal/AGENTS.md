@@ -373,6 +373,88 @@
 
 ## 9. Verify UI journeys and put requested content first
 
+### Build around user journeys
+
+- Organize the interface around what users need to accomplish, not around
+  database entities, API endpoints, services, implementation modules, or
+  the order in which features were developed.
+- For the affected work, identify the user's starting situation, intended
+  outcome, necessary steps, meaningful decisions, and recovery or
+  cancellation paths. Reuse established journeys rather than inventing a
+  separate discovery exercise for routine changes.
+- Derive navigation, destinations, content groups, controls, and feedback
+  from those journeys. A technical component or data structure does not,
+  by itself, justify a page, tab, section, form, or visible concept.
+- Each destination must have a clear user purpose. Users should understand
+  what they can accomplish there, what requires their attention, and what
+  to do next without knowing how the application is implemented.
+- Present technical concepts only when they are genuinely part of the
+  user's task. Distinguish domain information users need from internal
+  machinery they should not have to understand.
+
+### Keep development commentary out of the product
+
+- Do not turn implementation notes, agent instructions, design guidelines,
+  QA observations, development progress, or explanations of engineering
+  choices into ordinary product UI.
+- Keep those materials in their appropriate documentation, development
+  tools, or progress reports. They belong in a product screen only when
+  reviewing that material is itself an explicitly intended user task.
+- Do not describe how a feature was built when the user needs to use it.
+  Communicate the available action, relevant result, or necessary next
+  step instead.
+- Labels, grouping, sensible defaults, direct controls, and observable
+  behavior should carry the experience. Do not compensate for confusing
+  design with explanatory paragraphs.
+
+### Require a concrete purpose for UI text
+
+Before adding status text, helper text, descriptions, explanations, banners,
+or instructional copy, apply this internal design check:
+
+1. Who needs this information at this point in the journey?
+2. What action, decision, result, or error does it help them understand?
+3. Can someone understand it without knowing the application's internals
+   or development history?
+4. Is the information already clear from the label, layout, current state,
+   or nearby content?
+5. Would a clearer label, better default, simpler interaction, or improved
+   placement remove the need for the explanation?
+
+- If the text has no concrete user-facing purpose, omit it. Do not merely
+  rewrite unnecessary technical commentary in simpler language.
+- Prefer one concise heading or label; add supporting copy only when
+  requested or necessary to prevent misunderstanding or error.
+- Do not add copy to fill space, restate headings, narrate obvious controls,
+  advertise implementation completeness, or explain internal architecture.
+- Show status when it affects the user's understanding or next action:
+  meaningful progress, a blocking condition, a relevant result, or a
+  failure with a useful recovery step. Avoid redundant persistent status
+  messages when the interface already makes the state clear.
+- Keep necessary guidance concise, specific, and beside the action or
+  object it supports. Reveal advanced explanations when needed rather
+  than making every user read them.
+- This is an agent-owned design check, not a requirement to ask the user
+  to approve each piece of copy.
+
+### Minimize surfaces and handoffs
+
+- Use the fewest coherent destinations, modes, dialogs, tabs, and steps
+  needed to complete the agreed journeys comfortably.
+- Prefer actions and details in the user's existing context. Do not create
+  another page merely because another entity, endpoint, or implementation
+  component exists.
+- Every additional surface must serve a distinct user purpose and provide
+  a clear advantage over extending an existing journey in place.
+- Avoid duplicate dashboards, overview pages, detail pages, settings panels,
+  and status sections that make users visit several places for one task.
+- Minimize user effort, not URL count alone. Do not collapse distinct tasks
+  into an overloaded screen or hide essential actions merely to reduce
+  the number of pages.
+- Review the completed journey for unnecessary navigation, repeated entry,
+  context loss, competing actions, duplicated information, and copy that
+  exists only to explain the design.
+
 ### Interaction completion
 
 Before reporting UI complete, finish one evidence pass over only the agreed
@@ -422,8 +504,6 @@ geometry checks support evidence but do not replace interaction verification.
   and activation, preview, editing, selection, and destruction distinct.
   Destructive actions name an explicit target and state.
 - Show a simple normal first input before inferred or advanced fields.
-  Prefer one concise heading or label; add supporting copy only when
-  requested or necessary to prevent misunderstanding or error.
 - Do not expose private values, internal identifiers, serialized payloads,
   or implementation invariants as normal UI content. Use validated,
   purpose-built controls for editable concepts.
