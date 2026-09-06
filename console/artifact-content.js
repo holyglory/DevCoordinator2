@@ -126,6 +126,8 @@ window.DevCoordinatorArtifactContent = (() => {
   }
 
   function renderChildren(children, parent, depth = 0) {
+    const priority = (node) => /^(title block|summary|result summary|outcome|status|title|name|test name|message)$/i.test(node.name) ? 0 : 1;
+    children = [...children].sort((left, right) => priority(left) - priority(right));
     let fields;
     const counts = new Map();
     for (const child of children) counts.set(child.name, (counts.get(child.name) || 0) + 1);
@@ -172,7 +174,8 @@ window.DevCoordinatorArtifactContent = (() => {
       };
       summary.addEventListener('click', () => { if (!group.open) reveal(); });
       group.addEventListener('toggle', () => { if (group.open) reveal(); });
-      group.open = depth === 0 && !child.array && child.children.some((entry) => entry.value != null);
+      const measurements = child.children.length <= 4 && child.children.every((entry) => entry.kind === 'number' && /\((mm|nm|ms|bytes)\)$/.test(entry.name));
+      group.open = !child.array && ((depth === 0 && child.children.some((entry) => entry.value != null)) || (depth < 2 && measurements));
       if (group.open) reveal();
       parent.append(group);
     }

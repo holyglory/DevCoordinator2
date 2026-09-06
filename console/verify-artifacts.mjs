@@ -102,6 +102,7 @@ export async function verifyTestArtifacts({ page, daemon, check, baseUrl, output
   const readable = await dialog.locator('.artifact-content').innerText();
   verify('XML evidence shows data without markup or generated identifiers', !/<schematic-data|<value>|0305cfd9|dddddddd/.test(readable));
   verify('XML dimensions retain exact values with readable units', /Offset \(mm\)\s+123\.456789/.test(readable) && /Distance \(mm\)\s+2\.5/.test(readable));
+  verify('meaningful document details precede technical metadata', /Title block/.test(await dialog.locator('.artifact-data > .artifact-data-group > summary').first().innerText()));
   verify('XML evidence keeps meaningful values', /Power supply/.test(readable) && /Fixture engineering/.test(readable) && /A\.1/.test(readable));
   verify('evidence labels omit generated identifiers', !/0305cfd9/.test(await dialog.locator('.artifact-navigation').innerText()));
   verify('structured data values have syntax highlighting', await dialog.locator('.artifact-content .log-token').count() > 0);
