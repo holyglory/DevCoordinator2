@@ -440,13 +440,24 @@ not contradict them.
   Capacity in a focused dialog showing learned/effective capacity, cap,
   active/waiting work, pause state, and last-adjustment evidence. Saving or
   clearing the cap acts immediately. While a run remains active, the collection
-  refreshes without moving focus or closing dialogs; evidence is labelled
+  refreshes without moving focus or closing dialogs; formal journey evidence is labelled
   pending, available with an image count, invalid, unavailable, or not produced
   from current retained state instead of exposing one unconditional action.
   Every authorized administrator action
   acts without a second confirmation dialog; destructive controls name their
   target and effect, and deployment removal has separate keep-data and
   delete-data actions.
+
+- **REQ-CONSOLE-05** (2026-09-06, in progress): Tests exposes declared retained
+  files independently of formal journey screenshots. Administrators can inspect
+  native screenshots and text reports, page collections, and download the exact
+  original file through the bounded, identity-verified artifact reader. Run
+  history preserves each earlier test's actual identity and time when newer
+  results have no files. Missing or expired files remain explicitly unavailable;
+  selecting another run never reuses the previous run's files or test label.
+  Wide and narrow, light and dark journeys cover preview, download, cancellation,
+  permission failure, changed evidence, and exact retry. Completion requires
+  verification with real retained files on the shared Console.
 
 ## Public access (REQ-ACCESS, P5)
 

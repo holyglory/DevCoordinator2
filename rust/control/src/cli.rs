@@ -341,6 +341,14 @@ enum TestCommand {
     Start(TestStartArgs),
     Retry(TestRetryArgs),
     Status(PathArg),
+    History {
+        #[command(flatten)]
+        path: PathArg,
+        #[arg(long)]
+        before: Option<String>,
+        #[arg(long, default_value_t = 20)]
+        limit: u16,
+    },
     Log {
         #[command(subcommand)]
         command: TestLogCommand,
@@ -1259,6 +1267,16 @@ impl TestCommand {
                 remote("test.retry", Value::Object(params))
             }
             Self::Status(path) => remote("test.status", path_params(&path)?),
+            Self::History {
+                path,
+                before,
+                limit,
+            } => {
+                let mut params = object(path_params(&path)?);
+                insert_option(&mut params, "before", before);
+                params.insert("limit".to_owned(), json!(limit));
+                remote("test.history", Value::Object(params))
+            }
             Self::Log { command } => command.into_invocation(),
             Self::Evidence { command } => command.into_invocation(),
             Self::Artifact { command } => command.into_invocation(),
@@ -2228,6 +2246,18 @@ mod tests {
                 "test.retry",
             ),
             (&["test", "status", "/tmp/repo"], "test.status"),
+            (
+                &[
+                    "test",
+                    "history",
+                    "/tmp/repo",
+                    "--limit",
+                    "5",
+                    "--before",
+                    "t20260101T000000Z-abc123",
+                ],
+                "test.history",
+            ),
             (&["test", "log", "catalog", "/tmp/repo"], "test.log.catalog"),
             (
                 &[

@@ -19,6 +19,7 @@ import { createEdge } from '../edge/devcoordinator2-edge.mjs';
 import { createSessionManager } from '../edge/lib/session.mjs';
 import { canonicalJson } from '../edge/lib/routes-store.mjs';
 import { revealTestRows, revealTestSettings, verifyTestsDesign } from './verify-tests-design.mjs';
+import { artifactResponse, verifyTestArtifacts } from './verify-artifacts.mjs';
 
 const BASE = 'example.test';
 const HOST = process.env.CONSOLE_VERIFY_HOST || `console.${BASE}`;
@@ -359,6 +360,7 @@ const fixtures = (scenario) => {
 
 const SCENARIOS = {
   populated: { identity: 'owner@example.test', admin: true },
+  artifactFiles: { identity: 'owner@example.test', admin: true, artifactFiles: true, targetedOnly: true },
   empty: { identity: 'owner@example.test', admin: true, empty: true },
   error: { identity: 'owner@example.test', admin: true, error: true },
   loading: { identity: 'owner@example.test', admin: true, delayMs: 4000 },
@@ -394,7 +396,7 @@ const destinationHref = (view) => {
   return '#/admin';
 };
 const PROJECT_DETAIL_VIEWS = new Set([`#/plan/${REPO}`, `#/progress/${REPO}`, `#/usage/${REPO}`, `#/decisions/${REPO}`]);
-const ADMIN_ONLY = ['health.summary', 'health.containers', 'health.container_remove', 'user.list', 'user.invite', 'user.remove', 'grant.set', 'grant.remove', 'test.list', 'test.start', 'test.stop', 'test.log.catalog', 'test.log.tail', 'test.log.search', 'test.log.range', 'test.log.failure_context', 'test.log.retention.get', 'test.log.retention.set', 'test.evidence.get', 'test.evidence.image', 'test.evidence.feedback.create', 'test.evidence.feedback.reply', 'test.evidence.feedback.edit', 'test.evidence.feedback.state', 'test.evidence.feedback.delete', 'test.capacity.get', 'test.capacity.set', 'deployment.apply', 'deployment.rollback', 'deployment.remove', 'deployment.set_domain', 'task.create', 'task.update', 'release.create', 'release.update', 'release.request', 'release.deliver', 'decision.record', 'decision.summarize'];
+const ADMIN_ONLY = ['health.summary', 'health.containers', 'health.container_remove', 'user.list', 'user.invite', 'user.remove', 'grant.set', 'grant.remove', 'test.list', 'test.start', 'test.stop', 'test.history', 'test.artifact.catalog', 'test.artifact.file', 'test.log.catalog', 'test.log.tail', 'test.log.search', 'test.log.range', 'test.log.failure_context', 'test.log.retention.get', 'test.log.retention.set', 'test.evidence.get', 'test.evidence.image', 'test.evidence.feedback.create', 'test.evidence.feedback.reply', 'test.evidence.feedback.edit', 'test.evidence.feedback.state', 'test.evidence.feedback.delete', 'test.capacity.get', 'test.capacity.set', 'deployment.apply', 'deployment.rollback', 'deployment.remove', 'deployment.set_domain', 'task.create', 'task.update', 'release.create', 'release.update', 'release.request', 'release.deliver', 'decision.record', 'decision.summarize'];
 const OPERATOR_ONLY = ['usage.repositories', 'usage.repository', 'progress.repositories', 'progress.repository'];
 
 async function startFakeDaemon(dir) {
@@ -591,6 +593,8 @@ async function startFakeDaemon(dir) {
         matches: [{ line_start: 41000, line_end: 41000, byte_start: 8200000, byte_end: 8200024, text: 'pending state persisted' }],
         next_cursor: null, response_truncated: false,
       } });
+      const artifacts = artifactResponse(cmd, req.params, scenario);
+      if (artifacts) return reply(artifacts);
       if (cmd === 'test.evidence.get') return reply({ ok: true, data: evidenceResult() });
       if (cmd === 'test.evidence.image') {
         const start = req.params.offset || 0;
@@ -805,7 +809,7 @@ async function main() {
   check('administrator controls have no native or data-driven confirmation path',
     !/window\.confirm|data-confirm|data-delete-data/.test(appSource));
 
-  if (process.env.CONSOLE_VERIFY_TESTS_DESIGN_ONLY) {
+  if (process.env.CONSOLE_VERIFY_TESTS_DESIGN_ONLY || process.env.CONSOLE_VERIFY_ARTIFACTS_ONLY) {
     try {
       for (const viewport of [{ width: 1280, height: 900 }, { width: 390, height: 844 }]) {
         for (const theme of ['light', 'dark']) {
@@ -814,7 +818,7 @@ async function main() {
           await context.addCookies([{ name: 'dc2_session', value: cookie.split(';')[0].split('=')[1], domain: '.' + BASE, path: '/' }]);
           const page = await context.newPage();
           page.setDefaultTimeout(8000);
-          try { await verifyTestsDesign({ page, daemon, check, scenario: SCENARIOS.populated, baseUrl: `http://${HOST}:${port}/`, output: OUT, theme, viewport }); }
+          try { await (process.env.CONSOLE_VERIFY_ARTIFACTS_ONLY ? verifyTestArtifacts : verifyTestsDesign)({ page, daemon, check, scenario: SCENARIOS.populated, baseUrl: `http://${HOST}:${port}/`, output: OUT, theme, viewport }); }
           catch (error) { check(`Tests design ${theme} ${viewport.width}`, false, error.message); }
           await context.close();
         }
@@ -1381,7 +1385,7 @@ async function main() {
   const runningRow = page.locator('[data-test-run-id="t20260101T000000Z-abc123"]');
   const visualRow = page.locator(`[data-test-run-id="${TEST_RUN}"]`);
   check('tests: evidence availability is truthful before opening a run',
-    /Evidence pending/.test(await runningRow.innerText())
+    /Journey screenshots pending/.test(await runningRow.innerText())
     && /Evidence · 8 images/.test(await visualRow.innerText())
     && await runningRow.locator('a[href^="#/tests/"]').count() === 0
     && await visualRow.locator(`a[href="#/tests/${TEST_RUN}"]`).count() === 1);
@@ -1410,7 +1414,7 @@ async function main() {
   daemon.setScenario({ ...SCENARIOS.populated, testFinished: true, targetedOnly: true });
   await page.waitForFunction(() => {
     const row = document.querySelector('[data-test-run-id="t20260101T000000Z-abc123"]');
-    return row && /passed/.test(row.textContent) && /Evidence not produced/.test(row.textContent);
+    return row && /passed/.test(row.textContent) && /No journey screenshots/.test(row.textContent);
   });
   check('tests: live refresh replaces stale running state and stop action without closing active work',
     await page.locator('dialog#test-capacity-dialog[open]').count() === 1
@@ -2936,6 +2940,19 @@ async function main() {
     && desktopBoundary.headerHeight <= 64 && desktopBoundary.overflow <= 0,
     JSON.stringify(desktopBoundary));
   await navContext.close();
+
+  for (const viewport of [{ width: 1280, height: 900 }, { width: 390, height: 844 }]) {
+    for (const theme of ['light', 'dark']) {
+      const context = await browser.newContext({ viewport, reducedMotion: 'reduce', colorScheme: theme });
+      const { cookie } = sessions.issue({ sub: 'sub', email: 'owner@example.test' });
+      await context.addCookies([{ name: 'dc2_session', value: cookie.split(';')[0].split('=')[1], domain: '.' + BASE, path: '/' }]);
+      const page = await context.newPage();
+      page.setDefaultTimeout(8000);
+      try { await verifyTestArtifacts({ page, daemon, check, baseUrl: `http://${HOST}:${port}/`, output: OUT, theme, viewport }); }
+      catch (error) { check(`Retained files ${theme} ${viewport.width}`, false, error.message); }
+      await context.close();
+    }
+  }
 
   await browser.close();
   await edge.close();

@@ -7,6 +7,7 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use devcoordinator2_api::ErrorCode;
 use devcoordinator2_api::params::{RetryTest, StartTest, ValidationTier as ApiValidationTier};
 use devcoordinator2_api::results::{ProofKind as ApiProofKind, StopTest, TestStarted, TestStatus};
 use devcoordinator2_control::access::Caller;
@@ -653,6 +654,137 @@ command=["true"]
             thread::sleep(Duration::from_millis(20));
         }
     }
+}
+
+#[test]
+fn run_history_is_bounded_scoped_and_keeps_earlier_identity() {
+    let world = LifecycleWorld::new();
+    let query = |before: Option<String>, limit| devcoordinator2_api::params::TestHistory {
+        path: world.worktree.to_string_lossy().into_owned(),
+        before,
+        limit,
+    };
+    assert!(
+        world
+            .lifecycle
+            .history(query(None, 20), &world.caller)
+            .unwrap()
+            .runs
+            .is_empty()
+    );
+    assert_eq!(
+        world
+            .lifecycle
+            .history(query(None, 0), &world.caller)
+            .unwrap_err()
+            .code,
+        ErrorCode::ParamsInvalid
+    );
+    assert_eq!(
+        world
+            .lifecycle
+            .history(query(None, 51), &world.caller)
+            .unwrap_err()
+            .code,
+        ErrorCode::ParamsInvalid
+    );
+    let (finished, completion) = std::sync::mpsc::channel();
+    world
+        .lifecycle
+        .set_event_sink(Arc::new(move |event: TestLifecycleEvent| {
+            if event.kind == "test.finished" {
+                let _ = finished.send(());
+            }
+        }));
+    let started = world.start();
+    let running = world
+        .lifecycle
+        .history(query(None, 1), &world.caller)
+        .unwrap();
+    assert_eq!(running.runs[0].run_id, started.run_id);
+    assert_eq!(running.runs[0].status, TestStatus::Running);
+    world.systemd.finish(&started.unit);
+    completion.recv_timeout(Duration::from_secs(10)).unwrap();
+    let current = world.wait_status(TestStatus::Passed);
+    for (run_id, timestamp, name) in [
+        (
+            "t20260101T000000Z-abc123",
+            "2026-01-01T00:00:00Z",
+            "native-editor",
+        ),
+        (
+            "t20251231T000000Z-abc122",
+            "2025-12-31T00:00:00Z",
+            "managed-planner",
+        ),
+    ] {
+        let mut earlier = current.clone();
+        earlier.run_id = run_id.to_owned();
+        earlier.started_at = timestamp.to_owned();
+        earlier.test = name.to_owned();
+        devcoordinator2_control::test_state::TestRunStore
+            .record_history(
+                &world.worktree,
+                &earlier,
+                world.caller.uid,
+                world.caller.gid,
+            )
+            .unwrap();
+    }
+    let first = world
+        .lifecycle
+        .history(query(None, 1), &world.caller)
+        .unwrap();
+    assert_eq!(first.runs.len(), 1);
+    assert_eq!(first.runs[0].run_id, current.run_id);
+    let second = world
+        .lifecycle
+        .history(query(first.next_before, 1), &world.caller)
+        .unwrap();
+    assert_eq!(second.runs[0].test, "native-editor");
+    assert_eq!(second.runs[0].started_at, "2026-01-01T00:00:00Z");
+    let third = world
+        .lifecycle
+        .history(query(second.next_before, 1), &world.caller)
+        .unwrap();
+    assert_eq!(third.runs[0].test, "managed-planner");
+    assert!(third.next_before.is_none());
+    let all = world
+        .lifecycle
+        .history(query(None, 50), &world.caller)
+        .unwrap();
+    assert_eq!(all.runs.len(), 3);
+    let serialized = serde_json::to_string(&all).unwrap();
+    assert!(!serialized.contains(world.worktree.to_str().unwrap()));
+    assert!(!serialized.contains("stdout"));
+    assert!(!serialized.contains("checks"));
+    assert_eq!(
+        world
+            .lifecycle
+            .history(
+                query(Some("t20250101T000000Z-ffff00".into()), 1),
+                &world.caller
+            )
+            .unwrap_err()
+            .code,
+        ErrorCode::ParamsInvalid
+    );
+    let other = LifecycleWorld::new();
+    assert!(
+        other
+            .lifecycle
+            .history(
+                devcoordinator2_api::params::TestHistory {
+                    path: other.worktree.to_string_lossy().into_owned(),
+                    before: None,
+                    limit: 20,
+                },
+                &other.caller
+            )
+            .unwrap()
+            .runs
+            .is_empty()
+    );
 }
 
 #[test]

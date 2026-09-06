@@ -636,6 +636,75 @@ impl TestLifecycle {
         Ok(summary)
     }
 
+    pub fn history(
+        &self,
+        params: devcoordinator2_api::params::TestHistory,
+        caller: &Caller,
+    ) -> Result<devcoordinator2_api::results::TestHistory, ProtocolError> {
+        if !(1..=50).contains(&params.limit) {
+            return Err(ProtocolError::new(
+                ErrorCode::ParamsInvalid,
+                "Run history limit must be between 1 and 50.",
+            ));
+        }
+        let (worktree, _) = self.resolve(&params.path, caller)?;
+        let mut records = self
+            .inner
+            .store
+            .read_history(&worktree)
+            .map_err(state_error)?;
+        if let Some(current) = self
+            .inner
+            .store
+            .read_current_summary(&worktree)
+            .map_err(state_error)?
+        {
+            records.retain(|record| record.run_id != current.run_id);
+            records.push(crate::test_state::TestHistoryEntry {
+                run_id: current.run_id,
+                test: current.test,
+                status: current.status,
+                started_at: current.started_at,
+                finished_at: current.finished_at,
+                duration_seconds: current.duration_seconds,
+                exit_code: current.exit_code,
+            });
+        }
+        records.sort_by(|left, right| {
+            right
+                .started_at
+                .cmp(&left.started_at)
+                .then_with(|| right.run_id.cmp(&left.run_id))
+        });
+        let start = match params.before {
+            Some(before) => records
+                .iter()
+                .position(|record| record.run_id == before)
+                .map(|position| position + 1)
+                .ok_or_else(|| {
+                    ProtocolError::new(
+                        ErrorCode::ParamsInvalid,
+                        "Run history changed. Reload its newest page.",
+                    )
+                })?,
+            None => 0,
+        };
+        let end = (start + usize::from(params.limit)).min(records.len());
+        let next_before = (end < records.len()).then(|| records[end - 1].run_id.clone());
+        let runs = records[start..end]
+            .iter()
+            .map(|record| devcoordinator2_api::results::TestHistoryRun {
+                run_id: record.run_id.clone(),
+                test: record.test.clone(),
+                status: record.status.clone(),
+                started_at: record.started_at.clone(),
+                finished_at: record.finished_at.clone(),
+                duration_seconds: record.duration_seconds,
+            })
+            .collect();
+        Ok(devcoordinator2_api::results::TestHistory { runs, next_before })
+    }
+
     pub fn current_summary_ref(
         &self,
         path: &str,

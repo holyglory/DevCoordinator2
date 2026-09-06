@@ -1990,15 +1990,15 @@ function testEvidenceAction(run) {
     return `<a class="btn btn-small" ${control} href="#/tests/${encodeURIComponent(run.run_id)}">${esc(label)}</a>`;
   }
   if (Number(evidence.issue_count) > 0) {
-    return `<a class="btn btn-small" ${control} href="#/tests/${encodeURIComponent(run.run_id)}">Evidence invalid</a>`;
+    return `<a class="btn btn-small" ${control} href="#/tests/${encodeURIComponent(run.run_id)}">Journey screenshots invalid</a>`;
   }
   if (run.status === 'running') {
-    return '<span class="badge warn" title="No visual journey bundle has been published yet.">Evidence pending</span>';
+    return '<span class="badge warn" title="No visual journey bundle has been published yet.">Journey screenshots pending</span>';
   }
   if (evidence.error_code) {
-    return '<span class="badge" title="The retained evidence could not be read.">Evidence unavailable</span>';
+    return '<span class="badge" title="The retained evidence could not be read.">Journey screenshots unavailable</span>';
   }
-  return '<span class="badge" title="This test run did not publish a visual journey bundle.">Evidence not produced</span>';
+  return '<span class="badge" title="This test run did not publish a visual journey bundle.">No journey screenshots</span>';
 }
 
 function testRunRow(run) {
@@ -2010,7 +2010,7 @@ function testRunRow(run) {
   return `<details class="test-result" data-test-run-id="${esc(run.run_id)}" data-disclosure="${key('row')}">
     <summary class="test-result-summary" data-test-row-control="${key('row')}"><span class="test-status-icon ${run.status === 'failed' ? 'bad' : ''}"><span class="ti ti-${statusIcon}" aria-hidden="true"></span></span><span class="test-result-name"><strong>${esc(run.display_name)}</strong><span class="muted">${esc(run.test)}</span></span>${badge(run.status)}<span class="test-result-duration">${duration}</span><span class="ti ti-chevron-down" aria-hidden="true"></span></summary>
     <div class="test-result-body"><div class="test-latest"><strong>Latest run</strong><div>${badge(run.status)}</div><time class="muted" datetime="${esc(run.started_at)}" title="${esc(run.started_at)}">${ago(run.started_at)}</time></div>
-      <div class="test-result-actions"><button class="btn" data-test-logs data-test-row-control="${key('logs')}" data-run-id="${esc(run.run_id)}"><span class="ti ti-file-text" aria-hidden="true"></span>Open logs</button>${testEvidenceAction(run)}
+      <div class="test-result-actions"><button class="btn" data-test-logs data-test-row-control="${key('logs')}" data-run-id="${esc(run.run_id)}"><span class="ti ti-file-text" aria-hidden="true"></span>Open logs</button>${testEvidenceAction(run)}<button class="btn btn-small" type="button" data-test-artifacts data-test-row-control="${key('files')}" data-run-id="${esc(run.run_id)}">${window.DevCoordinatorArtifacts.bundles(run).length ? `Files · ${window.DevCoordinatorArtifacts.bundles(run).reduce((count, bundle) => count + bundle.files, 0)}` : 'Evidence files'}</button>
       ${earlier ? `<details class="test-evidence-popover" data-disclosure="${key('evidence')}"><summary class="btn" data-test-row-control="${key('evidence')}"><span class="ti ti-photo" aria-hidden="true"></span>${esc(earlier.visual_evidence.image_count)} earlier screenshots</summary><div class="test-evidence-card"><strong>Earlier run</strong><time datetime="${esc(earlier.started_at)}">${esc(new Date(earlier.started_at).toLocaleString())}</time><span class="muted">${esc(earlier.test)}</span><p>These screenshots do not verify the latest run.</p><a class="btn" href="#/tests/${encodeURIComponent(earlier.run_id)}">Open screenshots</a></div></details>` : ''}</div>
       <div class="test-secondary"><details class="test-detail" data-disclosure="${key('checks')}"><summary data-test-row-control="${key('checks')}">Check results${checks.length ? ` · ${checks.length}` : ''}</summary><div>${checks.length ? checks.map((check) => `<div class="test-check"><span>${esc(check.name)}</span>${badge(check.status)}<span class="muted">${durationMs(check.duration_seconds == null ? null : check.duration_seconds * 1000)}</span></div>`).join('') : '<p class="muted">No individual check results were recorded.</p>'}</div></details>
       <details class="test-detail" data-disclosure="${key('technical')}"><summary data-test-row-control="${key('technical')}">Technical details</summary><dl class="test-technical"><dt>Worktree</dt><dd class="mono">${esc(run.worktree_path)}</dd><dt>Validation</dt><dd>${esc(testTierLabel(run.requested_tier))} · ${run.readiness_eligible ? 'Readiness proof' : 'Diagnostic only'}</dd><dt>Exit code</dt><dd>${run.exit_code ?? '—'}</dd><dt>Output / errors</dt><dd>${bytes(run.stdout_bytes_observed)} / ${bytes(run.stderr_bytes_observed)}</dd></dl></details>
@@ -2043,6 +2043,10 @@ function openTestRunDialog(runs, opener, selectedPath = '') {
 
 function bindTestRunRows(root, runs, retention) {
   bind(root);
+  root.querySelectorAll('[data-test-artifacts]').forEach((button) => button.addEventListener('click', () => {
+    const run = runs.find((row) => row.run_id === button.dataset.runId);
+    if (run) window.DevCoordinatorArtifacts.open(run, button, { api, esc, bytes, signal: viewAbort.signal });
+  }));
   root.querySelectorAll('[data-test-start]').forEach((button) => button.addEventListener('click', () => {
     openTestRunDialog(runs, button, button.dataset.path);
   }));

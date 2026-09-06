@@ -155,8 +155,21 @@ the earlier caching policy, so a normal refresh can load the redesigned code.
    focused dialog showing learned/effective capacity, the optional maximum,
    active/waiting leaves, admission pause state, and the last adjustment's
    measured evidence. Saving or clearing the host-wide maximum acts directly.
-   Visual evidence is labelled **pending** while a run is active and has not
-   published a bundle, **not produced** after a terminal nonvisual run, or with
+   **Files** opens declared retained files from the exact selected run and
+   check, including native screenshots and nonvisual reports. **Run** also lists
+   earlier runs from the bounded `test.history` record; choosing
+   one discovers its own check catalogue and file collections, never inheriting the latest test
+   name, status or file list. A newer managed or nonvisual run therefore does not
+   hide still-retained native screenshots. The focused viewer
+   pages the file catalogue with its manifest identity, previews raster images
+   and escaped text, and downloads the selected original file through verified
+   bounded chunks. Text previews stop at 1 MiB; files above the 32 MiB browser
+   limit remain available through the retained-file command line tools.
+   Closing or changing selection discards stale reads and releases image data;
+   expired, denied, changed and unavailable files retain an exact retry.
+   Formal journey screenshots are separate from these files and from logs:
+   they are labelled **pending** while a run is active and has not published a
+   bundle, **No journey screenshots** after a terminal nonvisual run, or with
    its retained image count when available; only available or invalid evidence
    is an action. The latest retained earlier visual run is separately available
    through an **earlier screenshots** disclosure with its actual count and date.

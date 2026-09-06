@@ -9465,6 +9465,162 @@
         "routes": [
           {
             "dispatch": "protocol",
+            "route": "test history"
+          }
+        ]
+      },
+      "description": "List bounded run history without logs or file contents.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "before": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "limit": {
+            "default": 20,
+            "format": "uint16",
+            "maximum": 50,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "path": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "title": "TestHistory",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "before": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "limit": {
+                "default": 20,
+                "format": "uint16",
+                "maximum": 50,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "path": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "path"
+            ],
+            "title": "TestHistory",
+            "type": "object"
+          },
+          "name": "test_history",
+          "transform": "identity"
+        }
+      ],
+      "name": "test.history",
+      "outputSchema": {
+        "$defs": {
+          "TestHistoryRun": {
+            "additionalProperties": false,
+            "properties": {
+              "duration_seconds": {
+                "format": "double",
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "finished_at": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "run_id": {
+                "type": "string"
+              },
+              "started_at": {
+                "type": "string"
+              },
+              "status": {
+                "$ref": "#/$defs/TestStatus"
+              },
+              "test": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "run_id",
+              "test",
+              "status",
+              "started_at"
+            ],
+            "type": "object"
+          },
+          "TestStatus": {
+            "enum": [
+              "running",
+              "passed",
+              "failed",
+              "timed-out",
+              "cancelled",
+              "interrupted",
+              "superseded"
+            ],
+            "type": "string"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "next_before": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "runs": {
+            "items": {
+              "$ref": "#/$defs/TestHistoryRun"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "runs"
+        ],
+        "title": "TestHistory",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "repository"
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
             "route": "test list"
           }
         ]
@@ -9840,6 +9996,30 @@
               "json"
             ],
             "type": "string"
+          },
+          "EarlierVisualEvidence": {
+            "additionalProperties": false,
+            "properties": {
+              "run_id": {
+                "type": "string"
+              },
+              "started_at": {
+                "type": "string"
+              },
+              "test": {
+                "type": "string"
+              },
+              "visual_evidence": {
+                "$ref": "#/$defs/VisualEvidenceSummary"
+              }
+            },
+            "required": [
+              "run_id",
+              "test",
+              "started_at",
+              "visual_evidence"
+            ],
+            "type": "object"
           },
           "ExecutionCapacity": {
             "additionalProperties": false,
@@ -10235,6 +10415,16 @@
                 "type": [
                   "number",
                   "null"
+                ]
+              },
+              "earlier_visual_evidence": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/EarlierVisualEvidence"
+                  },
+                  {
+                    "type": "null"
+                  }
                 ]
               },
               "execution_capacity": {
@@ -15968,6 +16158,2615 @@
         "routes": [
           {
             "dispatch": "protocol",
+            "route": "glossary list"
+          }
+        ]
+      },
+      "description": "Browse shared or effective project terminology; never application messages.",
+      "inputSchema": {
+        "$defs": {
+          "Status": {
+            "enum": [
+              "draft",
+              "approved",
+              "deprecated"
+            ],
+            "type": "string"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "expected_revision": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "language": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "limit": {
+            "format": "uint",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "offset": {
+            "format": "uint",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "origin": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "path": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "query": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "repository_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "revision": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "status": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/Status"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "title": "List",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$defs": {
+              "Status": {
+                "enum": [
+                  "draft",
+                  "approved",
+                  "deprecated"
+                ],
+                "type": "string"
+              }
+            },
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "expected_revision": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "language": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "limit": {
+                "format": "uint",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "offset": {
+                "format": "uint",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "origin": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "path": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "query": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "repository_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "revision": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "status": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Status"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "title": "List",
+            "type": "object"
+          },
+          "name": "glossary_list",
+          "transform": "identity"
+        }
+      ],
+      "name": "glossary.list",
+      "outputSchema": {
+        "$defs": {
+          "Concept": {
+            "additionalProperties": false,
+            "properties": {
+              "context": {
+                "default": "",
+                "type": "string"
+              },
+              "definition": {
+                "type": "string"
+              },
+              "languages": {
+                "additionalProperties": {
+                  "$ref": "#/$defs/LanguageTerm"
+                },
+                "default": {},
+                "type": "object"
+              },
+              "name": {
+                "type": "string"
+              },
+              "related": {
+                "default": [],
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "rule": {
+                "$ref": "#/$defs/Rule",
+                "default": "default"
+              },
+              "specialization_reason": {
+                "default": "",
+                "type": "string"
+              },
+              "status": {
+                "$ref": "#/$defs/Status",
+                "default": "draft"
+              }
+            },
+            "required": [
+              "name",
+              "definition"
+            ],
+            "type": "object"
+          },
+          "EffectiveGuideline": {
+            "properties": {
+              "guideline": {
+                "$ref": "#/$defs/Guideline"
+              },
+              "origin": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "guideline",
+              "origin"
+            ],
+            "type": "object"
+          },
+          "Entry": {
+            "properties": {
+              "concept": {
+                "$ref": "#/$defs/Concept"
+              },
+              "concept_id": {
+                "type": "string"
+              },
+              "inherited_from": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "origin": {
+                "type": "string"
+              },
+              "shared_concept": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Concept"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "concept_id",
+              "concept",
+              "origin"
+            ],
+            "type": "object"
+          },
+          "Guideline": {
+            "additionalProperties": false,
+            "properties": {
+              "key": {
+                "type": "string"
+              },
+              "rule": {
+                "$ref": "#/$defs/Rule",
+                "default": "default"
+              },
+              "specialization_reason": {
+                "default": "",
+                "type": "string"
+              },
+              "text": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "key",
+              "text"
+            ],
+            "type": "object"
+          },
+          "LanguageTerm": {
+            "additionalProperties": false,
+            "properties": {
+              "allowed": {
+                "default": [],
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "deprecated": {
+                "default": [],
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "examples": {
+                "default": [],
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "preferred": {
+                "type": "string"
+              },
+              "reviewed": {
+                "default": false,
+                "type": "boolean"
+              },
+              "usage": {
+                "default": "",
+                "type": "string"
+              }
+            },
+            "required": [
+              "preferred"
+            ],
+            "type": "object"
+          },
+          "Profile": {
+            "properties": {
+              "adoption_needed": {
+                "type": "boolean"
+              },
+              "available_languages": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "baseline_revision": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "display_name": {
+                "type": "string"
+              },
+              "guidelines": {
+                "items": {
+                  "$ref": "#/$defs/EffectiveGuideline"
+                },
+                "type": "array"
+              },
+              "languages": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "latest_shared_revision": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "local_guidelines": {
+                "items": {
+                  "$ref": "#/$defs/Guideline"
+                },
+                "type": "array"
+              },
+              "repository_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "revision": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "display_name",
+              "revision",
+              "baseline_revision",
+              "latest_shared_revision",
+              "adoption_needed",
+              "languages",
+              "available_languages",
+              "local_guidelines",
+              "guidelines"
+            ],
+            "type": "object"
+          },
+          "Rule": {
+            "enum": [
+              "mandatory",
+              "default",
+              "guideline"
+            ],
+            "type": "string"
+          },
+          "Status": {
+            "enum": [
+              "draft",
+              "approved",
+              "deprecated"
+            ],
+            "type": "string"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "entries": {
+            "items": {
+              "$ref": "#/$defs/Entry"
+            },
+            "type": "array"
+          },
+          "next_offset": {
+            "format": "uint",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "profile": {
+            "$ref": "#/$defs/Profile"
+          },
+          "total": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "profile",
+          "entries",
+          "total"
+        ],
+        "title": "Page",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "viewer",
+        "scope": "repository"
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "glossary resolve"
+          }
+        ]
+      },
+      "description": "Read the effective glossary before UI work, with pinned shared revision and provenance. Follow the project's own localization mechanism; paginate all needed concepts.",
+      "inputSchema": {
+        "$defs": {
+          "Status": {
+            "enum": [
+              "draft",
+              "approved",
+              "deprecated"
+            ],
+            "type": "string"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "expected_revision": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "language": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "limit": {
+            "format": "uint",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "offset": {
+            "format": "uint",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "origin": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "path": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "query": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "repository_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "revision": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "status": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/Status"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "title": "List",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$defs": {
+              "Status": {
+                "enum": [
+                  "draft",
+                  "approved",
+                  "deprecated"
+                ],
+                "type": "string"
+              }
+            },
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "expected_revision": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "language": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "limit": {
+                "format": "uint",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "offset": {
+                "format": "uint",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "origin": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "path": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "query": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "repository_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "revision": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "status": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Status"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "title": "List",
+            "type": "object"
+          },
+          "name": "glossary_resolve",
+          "transform": "identity"
+        }
+      ],
+      "name": "glossary.resolve",
+      "outputSchema": {
+        "$defs": {
+          "Concept": {
+            "additionalProperties": false,
+            "properties": {
+              "context": {
+                "default": "",
+                "type": "string"
+              },
+              "definition": {
+                "type": "string"
+              },
+              "languages": {
+                "additionalProperties": {
+                  "$ref": "#/$defs/LanguageTerm"
+                },
+                "default": {},
+                "type": "object"
+              },
+              "name": {
+                "type": "string"
+              },
+              "related": {
+                "default": [],
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "rule": {
+                "$ref": "#/$defs/Rule",
+                "default": "default"
+              },
+              "specialization_reason": {
+                "default": "",
+                "type": "string"
+              },
+              "status": {
+                "$ref": "#/$defs/Status",
+                "default": "draft"
+              }
+            },
+            "required": [
+              "name",
+              "definition"
+            ],
+            "type": "object"
+          },
+          "EffectiveGuideline": {
+            "properties": {
+              "guideline": {
+                "$ref": "#/$defs/Guideline"
+              },
+              "origin": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "guideline",
+              "origin"
+            ],
+            "type": "object"
+          },
+          "Entry": {
+            "properties": {
+              "concept": {
+                "$ref": "#/$defs/Concept"
+              },
+              "concept_id": {
+                "type": "string"
+              },
+              "inherited_from": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "origin": {
+                "type": "string"
+              },
+              "shared_concept": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Concept"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "concept_id",
+              "concept",
+              "origin"
+            ],
+            "type": "object"
+          },
+          "Guideline": {
+            "additionalProperties": false,
+            "properties": {
+              "key": {
+                "type": "string"
+              },
+              "rule": {
+                "$ref": "#/$defs/Rule",
+                "default": "default"
+              },
+              "specialization_reason": {
+                "default": "",
+                "type": "string"
+              },
+              "text": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "key",
+              "text"
+            ],
+            "type": "object"
+          },
+          "LanguageTerm": {
+            "additionalProperties": false,
+            "properties": {
+              "allowed": {
+                "default": [],
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "deprecated": {
+                "default": [],
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "examples": {
+                "default": [],
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "preferred": {
+                "type": "string"
+              },
+              "reviewed": {
+                "default": false,
+                "type": "boolean"
+              },
+              "usage": {
+                "default": "",
+                "type": "string"
+              }
+            },
+            "required": [
+              "preferred"
+            ],
+            "type": "object"
+          },
+          "Profile": {
+            "properties": {
+              "adoption_needed": {
+                "type": "boolean"
+              },
+              "available_languages": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "baseline_revision": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "display_name": {
+                "type": "string"
+              },
+              "guidelines": {
+                "items": {
+                  "$ref": "#/$defs/EffectiveGuideline"
+                },
+                "type": "array"
+              },
+              "languages": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "latest_shared_revision": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "local_guidelines": {
+                "items": {
+                  "$ref": "#/$defs/Guideline"
+                },
+                "type": "array"
+              },
+              "repository_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "revision": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "display_name",
+              "revision",
+              "baseline_revision",
+              "latest_shared_revision",
+              "adoption_needed",
+              "languages",
+              "available_languages",
+              "local_guidelines",
+              "guidelines"
+            ],
+            "type": "object"
+          },
+          "Rule": {
+            "enum": [
+              "mandatory",
+              "default",
+              "guideline"
+            ],
+            "type": "string"
+          },
+          "Status": {
+            "enum": [
+              "draft",
+              "approved",
+              "deprecated"
+            ],
+            "type": "string"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "entries": {
+            "items": {
+              "$ref": "#/$defs/Entry"
+            },
+            "type": "array"
+          },
+          "next_offset": {
+            "format": "uint",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "profile": {
+            "$ref": "#/$defs/Profile"
+          },
+          "total": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "profile",
+          "entries",
+          "total"
+        ],
+        "title": "Page",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "viewer",
+        "scope": "repository"
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "glossary get"
+          }
+        ]
+      },
+      "description": "Read one multilingual concept, optionally at a historical scope revision.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "concept_id": {
+            "type": "string"
+          },
+          "path": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "repository_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "revision": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "concept_id"
+        ],
+        "title": "Get",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "concept_id": {
+                "type": "string"
+              },
+              "path": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "repository_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "revision": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "concept_id"
+            ],
+            "title": "Get",
+            "type": "object"
+          },
+          "name": "glossary_get",
+          "transform": "identity"
+        }
+      ],
+      "name": "glossary.get",
+      "outputSchema": {
+        "$defs": {
+          "Concept": {
+            "additionalProperties": false,
+            "properties": {
+              "context": {
+                "default": "",
+                "type": "string"
+              },
+              "definition": {
+                "type": "string"
+              },
+              "languages": {
+                "additionalProperties": {
+                  "$ref": "#/$defs/LanguageTerm"
+                },
+                "default": {},
+                "type": "object"
+              },
+              "name": {
+                "type": "string"
+              },
+              "related": {
+                "default": [],
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "rule": {
+                "$ref": "#/$defs/Rule",
+                "default": "default"
+              },
+              "specialization_reason": {
+                "default": "",
+                "type": "string"
+              },
+              "status": {
+                "$ref": "#/$defs/Status",
+                "default": "draft"
+              }
+            },
+            "required": [
+              "name",
+              "definition"
+            ],
+            "type": "object"
+          },
+          "EffectiveGuideline": {
+            "properties": {
+              "guideline": {
+                "$ref": "#/$defs/Guideline"
+              },
+              "origin": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "guideline",
+              "origin"
+            ],
+            "type": "object"
+          },
+          "Entry": {
+            "properties": {
+              "concept": {
+                "$ref": "#/$defs/Concept"
+              },
+              "concept_id": {
+                "type": "string"
+              },
+              "inherited_from": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "origin": {
+                "type": "string"
+              },
+              "shared_concept": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Concept"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "concept_id",
+              "concept",
+              "origin"
+            ],
+            "type": "object"
+          },
+          "Guideline": {
+            "additionalProperties": false,
+            "properties": {
+              "key": {
+                "type": "string"
+              },
+              "rule": {
+                "$ref": "#/$defs/Rule",
+                "default": "default"
+              },
+              "specialization_reason": {
+                "default": "",
+                "type": "string"
+              },
+              "text": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "key",
+              "text"
+            ],
+            "type": "object"
+          },
+          "LanguageTerm": {
+            "additionalProperties": false,
+            "properties": {
+              "allowed": {
+                "default": [],
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "deprecated": {
+                "default": [],
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "examples": {
+                "default": [],
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "preferred": {
+                "type": "string"
+              },
+              "reviewed": {
+                "default": false,
+                "type": "boolean"
+              },
+              "usage": {
+                "default": "",
+                "type": "string"
+              }
+            },
+            "required": [
+              "preferred"
+            ],
+            "type": "object"
+          },
+          "Profile": {
+            "properties": {
+              "adoption_needed": {
+                "type": "boolean"
+              },
+              "available_languages": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "baseline_revision": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "display_name": {
+                "type": "string"
+              },
+              "guidelines": {
+                "items": {
+                  "$ref": "#/$defs/EffectiveGuideline"
+                },
+                "type": "array"
+              },
+              "languages": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "latest_shared_revision": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "local_guidelines": {
+                "items": {
+                  "$ref": "#/$defs/Guideline"
+                },
+                "type": "array"
+              },
+              "repository_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "revision": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "display_name",
+              "revision",
+              "baseline_revision",
+              "latest_shared_revision",
+              "adoption_needed",
+              "languages",
+              "available_languages",
+              "local_guidelines",
+              "guidelines"
+            ],
+            "type": "object"
+          },
+          "Rule": {
+            "enum": [
+              "mandatory",
+              "default",
+              "guideline"
+            ],
+            "type": "string"
+          },
+          "Status": {
+            "enum": [
+              "draft",
+              "approved",
+              "deprecated"
+            ],
+            "type": "string"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "entry": {
+            "$ref": "#/$defs/Entry"
+          },
+          "profile": {
+            "$ref": "#/$defs/Profile"
+          }
+        },
+        "required": [
+          "profile",
+          "entry"
+        ],
+        "title": "Detail",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "viewer",
+        "scope": "repository"
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "glossary save"
+          }
+        ]
+      },
+      "description": "Create or revise a concept using an exact expected scope revision. Mandatory inherited concepts cannot be overridden.",
+      "inputSchema": {
+        "$defs": {
+          "Concept": {
+            "additionalProperties": false,
+            "properties": {
+              "context": {
+                "default": "",
+                "type": "string"
+              },
+              "definition": {
+                "type": "string"
+              },
+              "languages": {
+                "additionalProperties": {
+                  "$ref": "#/$defs/LanguageTerm"
+                },
+                "default": {},
+                "type": "object"
+              },
+              "name": {
+                "type": "string"
+              },
+              "related": {
+                "default": [],
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "rule": {
+                "$ref": "#/$defs/Rule",
+                "default": "default"
+              },
+              "specialization_reason": {
+                "default": "",
+                "type": "string"
+              },
+              "status": {
+                "$ref": "#/$defs/Status",
+                "default": "draft"
+              }
+            },
+            "required": [
+              "name",
+              "definition"
+            ],
+            "type": "object"
+          },
+          "LanguageTerm": {
+            "additionalProperties": false,
+            "properties": {
+              "allowed": {
+                "default": [],
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "deprecated": {
+                "default": [],
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "examples": {
+                "default": [],
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "preferred": {
+                "type": "string"
+              },
+              "reviewed": {
+                "default": false,
+                "type": "boolean"
+              },
+              "usage": {
+                "default": "",
+                "type": "string"
+              }
+            },
+            "required": [
+              "preferred"
+            ],
+            "type": "object"
+          },
+          "Rule": {
+            "enum": [
+              "mandatory",
+              "default",
+              "guideline"
+            ],
+            "type": "string"
+          },
+          "Status": {
+            "enum": [
+              "draft",
+              "approved",
+              "deprecated"
+            ],
+            "type": "string"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "concept": {
+            "$ref": "#/$defs/Concept"
+          },
+          "concept_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "expected_revision": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "path": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "repository_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "expected_revision",
+          "concept"
+        ],
+        "title": "Save",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$defs": {
+              "Concept": {
+                "additionalProperties": false,
+                "properties": {
+                  "context": {
+                    "default": "",
+                    "type": "string"
+                  },
+                  "definition": {
+                    "type": "string"
+                  },
+                  "languages": {
+                    "additionalProperties": {
+                      "$ref": "#/$defs/LanguageTerm"
+                    },
+                    "default": {},
+                    "type": "object"
+                  },
+                  "name": {
+                    "type": "string"
+                  },
+                  "related": {
+                    "default": [],
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  "rule": {
+                    "$ref": "#/$defs/Rule",
+                    "default": "default"
+                  },
+                  "specialization_reason": {
+                    "default": "",
+                    "type": "string"
+                  },
+                  "status": {
+                    "$ref": "#/$defs/Status",
+                    "default": "draft"
+                  }
+                },
+                "required": [
+                  "name",
+                  "definition"
+                ],
+                "type": "object"
+              },
+              "LanguageTerm": {
+                "additionalProperties": false,
+                "properties": {
+                  "allowed": {
+                    "default": [],
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  "deprecated": {
+                    "default": [],
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  "examples": {
+                    "default": [],
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  "preferred": {
+                    "type": "string"
+                  },
+                  "reviewed": {
+                    "default": false,
+                    "type": "boolean"
+                  },
+                  "usage": {
+                    "default": "",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "preferred"
+                ],
+                "type": "object"
+              },
+              "Rule": {
+                "enum": [
+                  "mandatory",
+                  "default",
+                  "guideline"
+                ],
+                "type": "string"
+              },
+              "Status": {
+                "enum": [
+                  "draft",
+                  "approved",
+                  "deprecated"
+                ],
+                "type": "string"
+              }
+            },
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "concept": {
+                "$ref": "#/$defs/Concept"
+              },
+              "concept_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "expected_revision": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "path": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "repository_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "expected_revision",
+              "concept"
+            ],
+            "title": "Save",
+            "type": "object"
+          },
+          "name": "glossary_save",
+          "transform": "identity"
+        }
+      ],
+      "name": "glossary.save",
+      "outputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "concept_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "revision": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "revision"
+        ],
+        "title": "Mutation",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "reversible",
+        "idempotent": false,
+        "role": "administrator",
+        "scope": "repository"
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "glossary configure"
+          }
+        ]
+      },
+      "description": "Revise glossary languages and guidance or explicitly adopt a shared revision; this does not change localization files.",
+      "inputSchema": {
+        "$defs": {
+          "Guideline": {
+            "additionalProperties": false,
+            "properties": {
+              "key": {
+                "type": "string"
+              },
+              "rule": {
+                "$ref": "#/$defs/Rule",
+                "default": "default"
+              },
+              "specialization_reason": {
+                "default": "",
+                "type": "string"
+              },
+              "text": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "key",
+              "text"
+            ],
+            "type": "object"
+          },
+          "Rule": {
+            "enum": [
+              "mandatory",
+              "default",
+              "guideline"
+            ],
+            "type": "string"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "baseline_revision": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "expected_revision": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "guidelines": {
+            "items": {
+              "$ref": "#/$defs/Guideline"
+            },
+            "type": "array"
+          },
+          "languages": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "path": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "repository_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "expected_revision",
+          "languages",
+          "guidelines"
+        ],
+        "title": "Configure",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$defs": {
+              "Guideline": {
+                "additionalProperties": false,
+                "properties": {
+                  "key": {
+                    "type": "string"
+                  },
+                  "rule": {
+                    "$ref": "#/$defs/Rule",
+                    "default": "default"
+                  },
+                  "specialization_reason": {
+                    "default": "",
+                    "type": "string"
+                  },
+                  "text": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "key",
+                  "text"
+                ],
+                "type": "object"
+              },
+              "Rule": {
+                "enum": [
+                  "mandatory",
+                  "default",
+                  "guideline"
+                ],
+                "type": "string"
+              }
+            },
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "baseline_revision": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "expected_revision": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "guidelines": {
+                "items": {
+                  "$ref": "#/$defs/Guideline"
+                },
+                "type": "array"
+              },
+              "languages": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "path": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "repository_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "expected_revision",
+              "languages",
+              "guidelines"
+            ],
+            "title": "Configure",
+            "type": "object"
+          },
+          "name": "glossary_configure",
+          "transform": "identity"
+        }
+      ],
+      "name": "glossary.configure",
+      "outputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "concept_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "revision": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "revision"
+        ],
+        "title": "Mutation",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "reversible",
+        "idempotent": false,
+        "role": "administrator",
+        "scope": "repository"
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "glossary inherit"
+          }
+        ]
+      },
+      "description": "Remove a project specialization and return to its pinned shared concept, preserving history.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "concept_id": {
+            "type": "string"
+          },
+          "expected_revision": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "path": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "repository_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "expected_revision",
+          "concept_id"
+        ],
+        "title": "Inherit",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "concept_id": {
+                "type": "string"
+              },
+              "expected_revision": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "path": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "repository_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "expected_revision",
+              "concept_id"
+            ],
+            "title": "Inherit",
+            "type": "object"
+          },
+          "name": "glossary_inherit",
+          "transform": "identity"
+        }
+      ],
+      "name": "glossary.inherit",
+      "outputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "concept_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "revision": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "revision"
+        ],
+        "title": "Mutation",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "reversible",
+        "idempotent": false,
+        "role": "administrator",
+        "scope": "repository"
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "glossary history"
+          }
+        ]
+      },
+      "description": "Read bounded permanent glossary revision history.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "before_revision": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "concept_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "limit": {
+            "format": "uint",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "path": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "repository_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "title": "History",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "before_revision": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "concept_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "limit": {
+                "format": "uint",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "path": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "repository_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "title": "History",
+            "type": "object"
+          },
+          "name": "glossary_history",
+          "transform": "identity"
+        }
+      ],
+      "name": "glossary.history",
+      "outputSchema": {
+        "$defs": {
+          "Revision": {
+            "properties": {
+              "actor": {
+                "type": "string"
+              },
+              "concept_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "created_at": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string"
+              },
+              "revision": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "summary": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "revision",
+              "kind",
+              "summary",
+              "actor",
+              "created_at"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "next_before_revision": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "revisions": {
+            "items": {
+              "$ref": "#/$defs/Revision"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "revisions"
+        ],
+        "title": "HistoryPage",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "viewer",
+        "scope": "repository"
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "glossary check"
+          }
+        ]
+      },
+      "description": "Check explicitly identified concept usages against approved localized terms. This is not a general prose or translation-quality detector.",
+      "inputSchema": {
+        "$defs": {
+          "Usage": {
+            "additionalProperties": false,
+            "properties": {
+              "concept_id": {
+                "type": "string"
+              },
+              "language": {
+                "type": "string"
+              },
+              "term": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "concept_id",
+              "language",
+              "term"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "expected_revision": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "path": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "repository_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "usages": {
+            "items": {
+              "$ref": "#/$defs/Usage"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "usages"
+        ],
+        "title": "Check",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$defs": {
+              "Usage": {
+                "additionalProperties": false,
+                "properties": {
+                  "concept_id": {
+                    "type": "string"
+                  },
+                  "language": {
+                    "type": "string"
+                  },
+                  "term": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "concept_id",
+                  "language",
+                  "term"
+                ],
+                "type": "object"
+              }
+            },
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "expected_revision": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "path": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "repository_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "usages": {
+                "items": {
+                  "$ref": "#/$defs/Usage"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "usages"
+            ],
+            "title": "Check",
+            "type": "object"
+          },
+          "name": "glossary_check",
+          "transform": "identity"
+        }
+      ],
+      "name": "glossary.check",
+      "outputSchema": {
+        "$defs": {
+          "CheckFinding": {
+            "properties": {
+              "code": {
+                "type": "string"
+              },
+              "index": {
+                "format": "uint",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "preferred": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "index",
+              "code"
+            ],
+            "type": "object"
+          },
+          "EffectiveGuideline": {
+            "properties": {
+              "guideline": {
+                "$ref": "#/$defs/Guideline"
+              },
+              "origin": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "guideline",
+              "origin"
+            ],
+            "type": "object"
+          },
+          "Guideline": {
+            "additionalProperties": false,
+            "properties": {
+              "key": {
+                "type": "string"
+              },
+              "rule": {
+                "$ref": "#/$defs/Rule",
+                "default": "default"
+              },
+              "specialization_reason": {
+                "default": "",
+                "type": "string"
+              },
+              "text": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "key",
+              "text"
+            ],
+            "type": "object"
+          },
+          "Profile": {
+            "properties": {
+              "adoption_needed": {
+                "type": "boolean"
+              },
+              "available_languages": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "baseline_revision": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "display_name": {
+                "type": "string"
+              },
+              "guidelines": {
+                "items": {
+                  "$ref": "#/$defs/EffectiveGuideline"
+                },
+                "type": "array"
+              },
+              "languages": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "latest_shared_revision": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "local_guidelines": {
+                "items": {
+                  "$ref": "#/$defs/Guideline"
+                },
+                "type": "array"
+              },
+              "repository_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "revision": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "display_name",
+              "revision",
+              "baseline_revision",
+              "latest_shared_revision",
+              "adoption_needed",
+              "languages",
+              "available_languages",
+              "local_guidelines",
+              "guidelines"
+            ],
+            "type": "object"
+          },
+          "Rule": {
+            "enum": [
+              "mandatory",
+              "default",
+              "guideline"
+            ],
+            "type": "string"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "findings": {
+            "items": {
+              "$ref": "#/$defs/CheckFinding"
+            },
+            "type": "array"
+          },
+          "profile": {
+            "$ref": "#/$defs/Profile"
+          },
+          "valid": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "profile",
+          "valid",
+          "findings"
+        ],
+        "title": "CheckResult",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "viewer",
+        "scope": "repository"
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "glossary impact"
+          }
+        ]
+      },
+      "description": "Inspect which projects have adopted shared glossary revisions.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "limit": {
+            "format": "uint",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "offset": {
+            "format": "uint",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "title": "ImpactRequest",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "limit": {
+                "format": "uint",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "offset": {
+                "format": "uint",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              }
+            },
+            "title": "ImpactRequest",
+            "type": "object"
+          },
+          "name": "glossary_impact",
+          "transform": "identity"
+        }
+      ],
+      "name": "glossary.impact",
+      "outputSchema": {
+        "$defs": {
+          "ProjectImpact": {
+            "properties": {
+              "baseline_revision": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "configured": {
+                "type": "boolean"
+              },
+              "display_name": {
+                "type": "string"
+              },
+              "repository_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "repository_id",
+              "display_name",
+              "baseline_revision",
+              "configured"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "next_offset": {
+            "format": "uint",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "projects": {
+            "items": {
+              "$ref": "#/$defs/ProjectImpact"
+            },
+            "type": "array"
+          },
+          "shared_revision": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "total": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "shared_revision",
+          "projects",
+          "total"
+        ],
+        "title": "Impact",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "server"
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
             "route": "plan overview"
           }
         ]
@@ -19401,6 +22200,10 @@
           "range": {
             "$ref": "#/$defs/UsageRange",
             "default": "24h"
+          },
+          "wait_for_refresh": {
+            "default": false,
+            "type": "boolean"
           }
         },
         "title": "UsageRepositories",
@@ -19464,6 +22267,16 @@
               },
               "has_gaps": {
                 "type": "boolean"
+              },
+              "snapshot": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/UsageSnapshot"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
               },
               "state": {
                 "$ref": "#/$defs/CoverageState"
@@ -19564,6 +22377,30 @@
               "execution_wall_ms"
             ],
             "type": "object"
+          },
+          "UsageSnapshot": {
+            "additionalProperties": false,
+            "properties": {
+              "refresh_failed": {
+                "type": "boolean"
+              },
+              "refreshing": {
+                "type": "boolean"
+              },
+              "updated_at_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "refreshing",
+              "refresh_failed"
+            ],
+            "type": "object"
           }
         },
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -19625,6 +22462,10 @@
           },
           "repository_id": {
             "type": "string"
+          },
+          "wait_for_refresh": {
+            "default": false,
+            "type": "boolean"
           }
         },
         "required": [
@@ -19816,6 +22657,16 @@
               "has_gaps": {
                 "type": "boolean"
               },
+              "snapshot": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/UsageSnapshot"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
               "state": {
                 "$ref": "#/$defs/CoverageState"
               },
@@ -19924,6 +22775,30 @@
               "bucket_end_ms",
               "coverage",
               "phases"
+            ],
+            "type": "object"
+          },
+          "UsageSnapshot": {
+            "additionalProperties": false,
+            "properties": {
+              "refresh_failed": {
+                "type": "boolean"
+              },
+              "refreshing": {
+                "type": "boolean"
+              },
+              "updated_at_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "refreshing",
+              "refresh_failed"
             ],
             "type": "object"
           },
@@ -20257,6 +23132,10 @@
           },
           "repository_id": {
             "type": "string"
+          },
+          "wait_for_refresh": {
+            "default": false,
+            "type": "boolean"
           }
         },
         "required": [
@@ -20960,6 +23839,16 @@
               "has_gaps": {
                 "type": "boolean"
               },
+              "snapshot": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/UsageSnapshot"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
               "state": {
                 "$ref": "#/$defs/CoverageState"
               },
@@ -20979,6 +23868,30 @@
               "available_collectors",
               "contributing_collectors",
               "unavailable_reasons"
+            ],
+            "type": "object"
+          },
+          "UsageSnapshot": {
+            "additionalProperties": false,
+            "properties": {
+              "refresh_failed": {
+                "type": "boolean"
+              },
+              "refreshing": {
+                "type": "boolean"
+              },
+              "updated_at_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "refreshing",
+              "refresh_failed"
             ],
             "type": "object"
           }

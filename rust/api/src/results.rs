@@ -504,6 +504,24 @@ pub struct TestList {
 
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct TestHistoryRun {
+    pub run_id: String,
+    pub test: String,
+    pub status: TestStatus,
+    pub started_at: String,
+    pub finished_at: Option<String>,
+    pub duration_seconds: Option<f64>,
+}
+
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TestHistory {
+    pub runs: Vec<TestHistoryRun>,
+    pub next_before: Option<String>,
+}
+
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct StructuredEvidenceSummary {
     pub available: bool,
     pub formats: Vec<String>,

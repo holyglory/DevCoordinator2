@@ -75,6 +75,7 @@ pub const FOUNDATION_OPERATIONS: &[&str] = &[
     "test.start",
     "test.retry",
     "test.status",
+    "test.history",
     "test.stop",
     "test.list",
     "test.evidence.get",
@@ -631,6 +632,7 @@ impl ControlPlane {
                 let params: params::StopTest = decode(params)?;
                 encode(self.tests.stop(&params.path, params.reason, caller)?)
             }
+            "test.history" => encode(self.tests.history(decode(params)?, caller)?),
             "test.list" => {
                 let _: params::Empty = decode(params)?;
                 let mut result = self.tests.list_current()?;

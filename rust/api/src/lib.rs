@@ -866,6 +866,15 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         results::StopTest
     ),
     operation!(
+        "test.history",
+        "List bounded run history without logs or file contents.",
+        READ_REPOSITORY_ADMIN,
+        Protocol["test history"],
+        ["test_history"],
+        params::TestHistory,
+        results::TestHistory
+    ),
+    operation!(
         "test.list",
         "List current governed runs.",
         READ_SERVER_ADMIN,
@@ -1644,9 +1653,9 @@ mod tests {
         for tool in mcp_tools() {
             assert!(tools.insert(tool.name), "duplicate MCP tool");
         }
-        assert_eq!(OPERATIONS.len(), 85);
-        assert_eq!(tools.len(), 63);
-        assert_eq!(cli_routes.len(), 74);
+        assert_eq!(OPERATIONS.len(), 86);
+        assert_eq!(tools.len(), 64);
+        assert_eq!(cli_routes.len(), 75);
     }
 
     #[test]

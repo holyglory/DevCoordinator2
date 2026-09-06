@@ -212,6 +212,21 @@ pub struct PathOnly {
     pub path: String,
 }
 
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TestHistory {
+    pub path: String,
+    #[serde(default)]
+    pub before: Option<String>,
+    #[serde(default = "default_test_history_limit")]
+    #[schemars(range(min = 1, max = 50))]
+    pub limit: u16,
+}
+
+fn default_test_history_limit() -> u16 {
+    20
+}
+
 #[derive(Clone, Debug, Default, JsonSchema, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RepositoryList {
