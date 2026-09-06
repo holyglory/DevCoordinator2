@@ -8,7 +8,7 @@
 - Treat action-oriented expressions such as “can you…,” “I want to…,”
   “help me…,” and similar wording as instructions to perform the work,
   not merely questions about capability. Do not stop at acknowledgement,
-  a proposed plan, or an offer to continue.
+  a proposed plan, or an offer to continue. 
 - When the user intends new work or repair, persist through the necessary
   implementation, integration, and verification until the intended outcome
   is fulfilled. Do not settle for a partial or “helpful enough” result to
