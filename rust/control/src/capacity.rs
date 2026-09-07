@@ -849,17 +849,19 @@ impl State {
 
     fn finish_epoch(&mut self, now: f64, minimum: f64) -> Option<Adjustment> {
         let started = self.epoch_started?;
-        if !self.active.is_empty()
+        let busy = !self.active.is_empty()
             || self.waiting() > 0
             || self
                 .epoch_runs
                 .iter()
-                .any(|run| self.registered_runs.contains_key(run))
-        {
+                .any(|run| self.registered_runs.contains_key(run));
+        let longest_run = self.run_durations.iter().copied().fold(0.0, f64::max);
+        // A continuous backlog must not prevent learning from completed long
+        // runs. Short completions retain the current observation window.
+        if busy && longest_run < minimum {
             return None;
         }
         let duration = (now - started).max(0.0);
-        let longest_run = self.run_durations.iter().copied().fold(0.0, f64::max);
         let cpu_values = self
             .samples
             .iter()
@@ -910,10 +912,21 @@ impl State {
                 duration: Some(duration),
             }
         });
-        self.epoch_started = None;
-        self.epoch_runs.clear();
+        if busy {
+            self.epoch_started = Some(now);
+            self.epoch_runs
+                .retain(|run| self.registered_runs.contains_key(run));
+            // Do not credit the same elapsed time in a later learning period.
+            // Keep live ownership and queues; only reset their observation age.
+            for started in self.run_started.values_mut() {
+                *started = now;
+            }
+        } else {
+            self.epoch_started = None;
+            self.epoch_runs.clear();
+            self.run_started.clear();
+        }
         self.samples.clear();
-        self.run_started.clear();
         self.run_durations.clear();
         self.pending_decrease = false;
         self.cpu_pressure_streak = 0;
@@ -1291,6 +1304,101 @@ mod tests {
             Arc::new(ManualMonotonic::new()),
         );
         assert_eq!(restarted.snapshot().expect("restart").learned_capacity, 10);
+    }
+
+    #[test]
+    fn completed_underused_run_can_grow_with_another_run_queued() {
+        let temporary = tempdir().expect("tempdir");
+        let database = Database::open(temporary.path().join("authority.sqlite3")).expect("db");
+        let monotonic = Arc::new(ManualMonotonic::new());
+        let broker = make_broker(
+            database,
+            temporary.path().join("capacity.sock"),
+            monotonic.clone(),
+        );
+        broker
+            .register_run("run-finished", 1000)
+            .expect("first run");
+        broker
+            .register_run("run-still-queued", 1000)
+            .expect("second run");
+        for index in 0..9 {
+            broker
+                .enqueue("run-finished", &format!("leaf-{index}"), 1000)
+                .expect("first leaf");
+        }
+        let pending = broker
+            .enqueue("run-still-queued", "waiting-leaf", 1000)
+            .expect("queued leaf");
+        for _ in 0..4 {
+            broker.record_sample(Some(40.0), Some(40.0));
+        }
+        monotonic.advance(601);
+        broker
+            .unregister_run("run-finished")
+            .expect("finish eligible run");
+        let snapshot = broker.snapshot().expect("snapshot");
+        assert_eq!(
+            snapshot.learned_capacity, 10,
+            "queued unrelated work must not prevent upward learning"
+        );
+        assert_eq!(
+            snapshot.active, 1,
+            "the unrelated run remains admitted, not cancelled"
+        );
+        assert!(matches!(
+            broker.take_outcome(pending).expect("pending outcome"),
+            Some(PendingOutcome::Granted(_))
+        ));
+        broker
+            .unregister_run("run-still-queued")
+            .expect("cleanup second run");
+        assert_eq!(
+            broker
+                .snapshot()
+                .expect("no double credit")
+                .learned_capacity,
+            10
+        );
+    }
+
+    #[test]
+    fn backlog_learning_keeps_duration_sample_pressure_and_cap_guards() {
+        for (seconds, cpu, memory, cap) in [
+            (30, Some(40.0), Some(40.0), None),
+            (601, None, Some(40.0), None),
+            (601, Some(40.0), None, None),
+            (601, Some(90.0), Some(40.0), None),
+            (601, Some(40.0), Some(40.0), Some(8)),
+        ] {
+            let temporary = tempdir().expect("tempdir");
+            let database = Database::open(temporary.path().join("authority.sqlite3")).expect("db");
+            let monotonic = Arc::new(ManualMonotonic::new());
+            let broker = make_broker(
+                database,
+                temporary.path().join("capacity.sock"),
+                monotonic.clone(),
+            );
+            broker.set_cap(cap, "test").expect("cap");
+            broker.register_run("run-first", 1000).expect("first run");
+            broker.register_run("run-other", 1000).expect("other run");
+            for index in 0..8 {
+                broker
+                    .enqueue("run-first", &format!("leaf-{index}"), 1000)
+                    .expect("first leaf");
+            }
+            broker
+                .enqueue("run-other", "waiting", 1000)
+                .expect("other leaf");
+            for _ in 0..4 {
+                broker.record_sample(cpu, memory);
+            }
+            monotonic.advance(seconds);
+            broker.unregister_run("run-first").expect("finish first");
+            assert_eq!(broker.snapshot().expect("guarded").learned_capacity, 8);
+            assert_eq!(broker.snapshot().expect("other survives").active, 1);
+            broker.unregister_run("run-other").expect("cleanup");
+        }
     }
 
     #[tokio::test]
