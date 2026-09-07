@@ -10585,6 +10585,16 @@
               "repository_id": {
                 "type": "string"
               },
+              "repository_source": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/TestRepositorySource"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
               "requested_tier": {
                 "$ref": "#/$defs/ValidationTier"
               },
@@ -10669,6 +10679,22 @@
               "readiness_eligible",
               "check_report_ref",
               "log_catalog_ref"
+            ],
+            "type": "object"
+          },
+          "TestRepositorySource": {
+            "additionalProperties": false,
+            "properties": {
+              "key": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "key",
+              "name"
             ],
             "type": "object"
           },
