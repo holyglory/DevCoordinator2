@@ -679,6 +679,11 @@ macro_rules! deployment_params {
 }
 
 deployment_params!(DeploymentReference {});
+deployment_params!(SetComposeEnvAuthorization {
+    pub file: String,
+    pub authorized: bool,
+    pub expected_revision: String,
+});
 deployment_params!(DeploymentControl {
     #[serde(default)]
     pub component: Option<String>,

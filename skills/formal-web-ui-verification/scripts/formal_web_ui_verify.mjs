@@ -3007,8 +3007,7 @@ function pageVerifier() {
   while (modalFocus?.shadowRoot?.activeElement) modalFocus = modalFocus.shadowRoot.activeElement;
   const nativeModals = allElements.filter((element) => element.matches('dialog:modal'));
   const activeModal = nativeModals.findLast((modal) => modalContains(modal, modalFocus)) || nativeModals.at(-1);
-  const visible = (el) => {
-    if (activeModal && !modalContains(activeModal, el) && !modalContains(el, activeModal)) return false;
+  const rendered = (el) => {
     const style = cs(el);
     if (style.display === "none" || style.visibility === "hidden" || style.visibility === "collapse") return false;
     if (effectiveOpacity(el) <= 0.01) return false;
@@ -3018,6 +3017,23 @@ function pageVerifier() {
     if (typeof el.checkVisibility === "function" && !el.checkVisibility()) return false;
     const rect = nowRect(el);
     return rect.width > 1 && rect.height > 1;
+  };
+  const customModal = activeModal ? null : allElements.findLast((element) =>
+    element.matches('[role="dialog"][aria-modal="true"], [role="alertdialog"][aria-modal="true"]') &&
+    rendered(element) && modalContains(element, modalFocus)
+  );
+  const visible = (el) => {
+    if (activeModal && !modalContains(activeModal, el) && !modalContains(el, activeModal)) return false;
+    if (customModal && !modalContains(customModal, el) && !modalContains(el, customModal)) {
+      let inert = false;
+      let hidden = false;
+      for (let ancestor = el; ancestor; ancestor = composedParent(ancestor)) {
+        inert ||= ancestor.hasAttribute("inert");
+        hidden ||= ancestor.getAttribute("aria-hidden") === "true";
+      }
+      if (inert && hidden) return false;
+    }
+    return rendered(el);
   };
   const hasVisibleElementChild = (el) => Array.from(el.children).some((child) => visible(child));
   const hasDirectText = (el) => {
@@ -4162,12 +4178,16 @@ function pageVerifier() {
     return metrics;
   }
   function blended(color, background) {
-    const a = Number.isFinite(color.a) ? color.a : 1;
+    const foregroundAlpha = Number.isFinite(color.a) ? color.a : 1;
+    const backgroundAlpha = Number.isFinite(background.a) ? background.a : 1;
+    const remainingAlpha = backgroundAlpha * (1 - foregroundAlpha);
+    const alpha = foregroundAlpha + remainingAlpha;
+    if (alpha === 0) return { r: 0, g: 0, b: 0, a: 0 };
     return {
-      r: color.r * a + background.r * (1 - a),
-      g: color.g * a + background.g * (1 - a),
-      b: color.b * a + background.b * (1 - a),
-      a: 1,
+      r: (color.r * foregroundAlpha + background.r * remainingAlpha) / alpha,
+      g: (color.g * foregroundAlpha + background.g * remainingAlpha) / alpha,
+      b: (color.b * foregroundAlpha + background.b * remainingAlpha) / alpha,
+      a: alpha,
     };
   }
   function luminance(color) {
@@ -6645,7 +6665,7 @@ async function main() {
   process.exit(exitCode);
 }
 
-export { executePlan, isLocalServerUrl, performanceThresholdStatus };
+export { executePlan, isLocalServerUrl, performanceThresholdStatus, writeJourneyEvidenceArtifact };
 
 let isEntrypoint = false;
 if (process.argv[1]) {

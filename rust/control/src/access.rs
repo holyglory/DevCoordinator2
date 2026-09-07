@@ -1823,6 +1823,28 @@ mod tests {
             .authorize("bug.list", &serde_json::json!({}), &viewer)
             .expect("admitted self operation");
 
+        for (operation, params) in [
+            ("config.get", serde_json::json!({})),
+            (
+                "config.env.set",
+                serde_json::json!({"deployment_id":"d1","file":".env","authorized":true,"expected_revision":"revision"}),
+            ),
+            (
+                "config.reload",
+                serde_json::json!({"expected_revision":"revision"}),
+            ),
+            (
+                "deployment.preflight",
+                serde_json::json!({"deployment_id":"d1"}),
+            ),
+        ] {
+            assert_permission_denied(world.access.authorize(operation, &params, &viewer));
+            world
+                .access
+                .authorize(operation, &params, &local())
+                .expect("existing local administrator");
+        }
+
         let authorization = world
             .access
             .authorize(

@@ -367,6 +367,11 @@ Critical findings by default:
   position; only off-screen elements are scrolled into view first and their
   findings are tagged `measuredAfterScroll`. A near-transparent occluder is
   downgraded to a warning.
+- An active focused custom modal (`role=dialog|alertdialog`, `aria-modal=true`)
+  excludes only outside subtrees that are both `inert` and `aria-hidden=true`.
+  Modal contents remain fully checked; an unfocused or mislabeled modal and
+  `aria-hidden` alone never suppress genuine occlusion. Native modal behavior
+  remains unchanged, including dialogs in shadow roots.
 - Text/controls partially cut by an unreachable edge: before the document
   origin (`offcanvas-cut`), fixed-position content cut by the viewport
   (`fixed-offscreen-cut`), or interactive controls beyond the horizontal
@@ -378,9 +383,12 @@ Critical findings by default:
   normal text and 3:1 for large text (`insufficient-text-contrast`), plus text
   with effectively invisible foreground/background contrast against a
   genuine solid background (`invisible-text`). When the effective background is
-  a gradient, image, or translucent stack, contrast is not computed against
-  white; the element is recorded in `metrics.unmeasurableContrast` and reported
-  only as a warning.
+  a gradient, image, or unresolved translucent stack, contrast is not computed
+  against white; the element is recorded in `metrics.unmeasurableContrast`
+  and reported only as a warning. Solid translucent layers over a known opaque
+  background use source-over compositing with accumulated alpha; readable
+  dark/light surfaces and genuinely insufficient contrast have rendered
+  regression fixtures (`formal-ui self-test --phase rendering`).
 - A large opposite-brightness surface that contradicts a declared light or dark
   target (`declared-theme-contradiction`). Mixed themes and selector-specific
   reasoned exceptions retain measurements without this failure.

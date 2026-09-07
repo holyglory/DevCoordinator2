@@ -1917,7 +1917,7 @@ fn property<'a>(values: &'a [(String, String)], name: &str) -> Option<&'a str> {
         .map(|(_, value)| value.as_str())
 }
 
-fn default_executor_path() -> PathBuf {
+pub(crate) fn default_executor_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
         .join("target/release/devcoordinator2-executor")

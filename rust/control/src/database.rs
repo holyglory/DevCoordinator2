@@ -328,15 +328,15 @@ mod tests {
         connection
             .execute_batch(
                 "CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);\n\
-                 INSERT INTO meta VALUES('schema_version','18');",
+                 INSERT INTO meta VALUES('schema_version','19');",
             )
             .expect("fixture schema");
         drop(connection);
         assert!(matches!(
             Database::open(path),
             Err(DatabaseError::SchemaTooNew {
-                found: 18,
-                supported: 17
+                found: 19,
+                supported: 18
             })
         ));
     }

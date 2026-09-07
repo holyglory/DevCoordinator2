@@ -20,9 +20,9 @@ use devcoordinator2_api::params::{
 };
 use devcoordinator2_api::results::{
     AvailableScreenshot, EarlierVisualEvidence, EvidenceAction, EvidenceBundle, EvidenceCell,
-    EvidenceCoverage, EvidenceFinding, EvidenceGet, EvidenceIssue, EvidenceReview,
-    EvidenceScreenshots, EvidenceViewport, Feedback, FeedbackComment, FeedbackCreated,
-    FeedbackMutation, ImageChunk, Screenshot, TestList, UnavailableScreenshot,
+    EvidenceCoverage, EvidenceFinding, EvidenceGet, EvidenceIssue, EvidenceRequiredCoverage,
+    EvidenceReview, EvidenceScreenshots, EvidenceViewport, Feedback, FeedbackComment,
+    FeedbackCreated, FeedbackMutation, ImageChunk, Screenshot, TestList, UnavailableScreenshot,
     VisualEvidenceSummary,
 };
 use devcoordinator2_api::{ErrorCode, ProtocolError};
@@ -661,6 +661,7 @@ struct ManifestCoverage {
     planned_pages: u32,
     failed: bool,
     readiness_eligible: bool,
+    required_coverage: Option<EvidenceRequiredCoverage>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -763,6 +764,7 @@ fn sanitize_manifest(
     bounded_required(&manifest.run_id, 128)?;
     bounded_required(&manifest.generated_at, 64)?;
     bounded_required(&manifest.browser, 256)?;
+    validate_required_coverage(&manifest.coverage)?;
     let manifest_sha = sha256_hex(raw);
     let mut seen_cells = HashSet::new();
     let mut cells = Vec::with_capacity(manifest.cells.len());
@@ -826,6 +828,7 @@ fn sanitize_manifest(
                 planned_pages: manifest.coverage.planned_pages,
                 failed: manifest.coverage.failed,
                 readiness_eligible: manifest.coverage.readiness_eligible,
+                required_coverage: manifest.coverage.required_coverage,
             },
             cells,
         },
@@ -849,15 +852,43 @@ fn validate_manifest_shape(raw: &[u8]) -> Result<(), ReadError> {
             "cells",
         ],
     )?;
-    exact_keys(
+    allowed_keys(
         value.get("coverage").ok_or(ReadError::Unsafe)?,
         &[
             "checkedPages",
             "plannedPages",
             "failed",
             "readinessEligible",
+            "requiredCoverage",
         ],
     )?;
+    if let Some(required) = value
+        .pointer("/coverage/requiredCoverage")
+        .filter(|value| !value.is_null())
+    {
+        exact_keys(
+            required,
+            &["declaredCount", "satisfiedCount", "failed", "entries"],
+        )?;
+        for entry in required
+            .get("entries")
+            .and_then(serde_json::Value::as_array)
+            .ok_or(ReadError::Unsafe)?
+        {
+            allowed_keys(
+                entry,
+                &[
+                    "target",
+                    "state",
+                    "viewport",
+                    "width",
+                    "status",
+                    "matchingCellIds",
+                    "reason",
+                ],
+            )?;
+        }
+    }
     let cells = value
         .get("cells")
         .and_then(serde_json::Value::as_array)
@@ -949,6 +980,57 @@ fn allowed_keys(value: &serde_json::Value, expected: &[&str]) -> Result<(), Read
         .any(|key| !expected.iter().any(|expected| key == expected))
     {
         return Err(ReadError::Unsafe);
+    }
+    Ok(())
+}
+
+fn validate_required_coverage(coverage: &ManifestCoverage) -> Result<(), ReadError> {
+    let Some(required) = &coverage.required_coverage else {
+        return Ok(());
+    };
+    let satisfied = required
+        .entries
+        .iter()
+        .filter(|entry| entry.status == "satisfied")
+        .count();
+    if required.entries.len() > MAX_CELLS
+        || required.declared_count as usize != required.entries.len()
+        || required.satisfied_count as usize != satisfied
+        || required.failed != (satisfied != required.entries.len())
+        || (required.failed && !coverage.failed)
+    {
+        return Err(ReadError::Unsafe);
+    }
+    let mut seen = HashSet::new();
+    for entry in &required.entries {
+        bounded_required(&entry.target, 512)?;
+        bounded_required(&entry.state, 128)?;
+        bounded_required(&entry.viewport, 128)?;
+        bounded_optional(Some(&entry.reason), 2048)?;
+        if let Some(width) = entry.width {
+            positive(width, 32_768)?;
+        }
+        if !seen.insert((&entry.target, &entry.state, &entry.viewport, entry.width))
+            || entry.matching_cell_ids.len() > MAX_CELLS
+        {
+            return Err(ReadError::Unsafe);
+        }
+        let mut matching = HashSet::new();
+        for cell_id in &entry.matching_cell_ids {
+            bounded_required(cell_id, 128)?;
+            if !matching.insert(cell_id) {
+                return Err(ReadError::Unsafe);
+            }
+        }
+        let valid = match entry.status.as_str() {
+            "satisfied" => entry.matching_cell_ids.len() == 1 && entry.reason.is_empty(),
+            "missing" => entry.matching_cell_ids.is_empty() && !entry.reason.is_empty(),
+            "ambiguous" => entry.matching_cell_ids.len() > 1 && !entry.reason.is_empty(),
+            _ => false,
+        };
+        if !valid {
+            return Err(ReadError::Unsafe);
+        }
     }
     Ok(())
 }
@@ -2605,6 +2687,74 @@ mod tests {
     }
 
     #[test]
+    fn actual_verifier_producer_output_is_readable_and_images_remain_retrievable() {
+        let world = world();
+        let producer = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../skills/formal-web-ui-verification/scripts/formal_web_ui_verify.mjs");
+        let source = r#"
+import fs from 'node:fs';
+import path from 'node:path';
+import {pathToFileURL} from 'node:url';
+const [producer,manifestPath]=process.argv.slice(2);
+const {writeJourneyEvidenceArtifact}=await import(pathToFileURL(producer));
+const original=JSON.parse(fs.readFileSync(manifestPath,'utf8'));
+const pages=original.cells.map(cell=>({...cell,
+  target:{name:cell.targetName,primaryJourney:cell.primaryJourney,stateName:cell.stateName},
+  execution:{planIndex:cell.planIndex},review:{reviewCellKey:cell.reviewCellKey},
+  status:cell.httpStatus,sourceBinding:{status:cell.sourceBindingStatus},actionTimings:cell.actions,
+  screenshots:Object.fromEntries(Object.entries(cell.screenshots).map(([kind,image])=>[kind,image?{...image,path:path.join(path.dirname(manifestPath),image.path)}:null]))
+}));
+const coverage={...original.coverage,requiredCoverage:{declaredCount:1,satisfiedCount:1,failed:false,entries:[{target:'Sign in',state:'invalid-password',viewport:'desktop',status:'satisfied',matchingCellIds:['cell-1'],reason:''}]}};
+writeJourneyEvidenceArtifact({...original,pages,coverage,plan:{plannedPageCount:pages.length}},manifestPath);
+"#;
+        let result = Command::new("node")
+            .args(["--input-type=module", "-e", source, "fixture-driver"])
+            .arg(producer)
+            .arg(world.evidence.join(MANIFEST_NAME))
+            .env("DEVCOORDINATOR_RUN_ID", RUN_ID)
+            .env("DEVCOORDINATOR_CHECK_NAME", "formal-ui")
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "{}: {} {}",
+            result.status,
+            String::from_utf8_lossy(&result.stdout),
+            String::from_utf8_lossy(&result.stderr)
+        );
+        let metadata = evidence(&world);
+        assert_eq!(metadata.status, "available", "{metadata:?}");
+        assert_eq!(metadata.image_count, 1);
+        let image = world
+            .service
+            .image(
+                EvidenceImage {
+                    path: world.repo.display().to_string(),
+                    run_id: RUN_ID.to_owned(),
+                    image_id: image_id(&metadata),
+                    offset: 0,
+                    max_bytes: MAX_IMAGE_CHUNK_BYTES,
+                },
+                &caller("owner@example.test"),
+            )
+            .unwrap();
+        assert_eq!(
+            BASE64.decode(image.base64).unwrap(),
+            BASE64.decode(PNG_BASE64).unwrap()
+        );
+        assert_eq!(image.next_offset, None);
+        assert_eq!(
+            metadata.bundles[0]
+                .coverage
+                .required_coverage
+                .as_ref()
+                .unwrap()
+                .satisfied_count,
+            1
+        );
+    }
+
+    #[test]
     fn metadata_is_path_free_and_image_chunks_revalidate_integrity() {
         let world = world();
         let result = evidence(&world);
@@ -2681,6 +2831,86 @@ mod tests {
             })
             .unwrap();
         assert_eq!(tasks, 0);
+    }
+
+    #[test]
+    fn required_coverage_preserves_partial_and_failed_proofs_but_rejects_unsafe_fields() {
+        let world = world();
+        let required = serde_json::json!({"declaredCount":1,"satisfiedCount":1,"failed":false,"entries":[{
+            "target":"Sign in","state":"base","viewport":"desktop","width":1280,"status":"satisfied",
+            "matchingCellIds":["unselected-plan-cell"],"reason":""
+        }]});
+        let mut manifest = world.manifest.clone();
+        manifest["coverage"]["requiredCoverage"] = serde_json::Value::Null;
+        write_manifest(&world.evidence, &manifest);
+        assert_eq!(evidence(&world).status, "available");
+        manifest["coverage"]["requiredCoverage"] = required;
+        manifest["coverage"]["readinessEligible"] = false.into();
+        write_manifest(&world.evidence, &manifest);
+        assert_eq!(evidence(&world).status, "available");
+        for pointer in [
+            "/coverage/requiredCoverage",
+            "/coverage/requiredCoverage/entries/0",
+        ] {
+            let mut unsafe_manifest = manifest.clone();
+            unsafe_manifest
+                .pointer_mut(pointer)
+                .unwrap()
+                .as_object_mut()
+                .unwrap()
+                .insert("private_path".into(), "/private/value".into());
+            write_manifest(&world.evidence, &unsafe_manifest);
+            assert_eq!(evidence(&world).status, "unavailable");
+        }
+        for (pointer, value) in [
+            (
+                "/coverage/requiredCoverage/declaredCount",
+                serde_json::json!(2),
+            ),
+            (
+                "/coverage/requiredCoverage/satisfiedCount",
+                serde_json::json!(0),
+            ),
+            ("/coverage/requiredCoverage/failed", serde_json::json!(true)),
+            (
+                "/coverage/requiredCoverage/entries/0/matchingCellIds",
+                serde_json::json!(["duplicate", "duplicate"]),
+            ),
+            (
+                "/coverage/requiredCoverage/entries/0/status",
+                serde_json::json!("invented"),
+            ),
+            (
+                "/coverage/requiredCoverage/entries/0/width",
+                serde_json::json!(0),
+            ),
+        ] {
+            let mut invalid = manifest.clone();
+            *invalid.pointer_mut(pointer).unwrap() = value;
+            write_manifest(&world.evidence, &invalid);
+            assert_eq!(evidence(&world).status, "unavailable", "{pointer}");
+        }
+        manifest["coverage"]["failed"] = true.into();
+        manifest["coverage"]["requiredCoverage"]["failed"] = true.into();
+        manifest["coverage"]["requiredCoverage"]["satisfiedCount"] = 0.into();
+        manifest["coverage"]["requiredCoverage"]["entries"][0]["status"] = "missing".into();
+        manifest["coverage"]["requiredCoverage"]["entries"][0]["matchingCellIds"] =
+            serde_json::json!([]);
+        manifest["coverage"]["requiredCoverage"]["entries"][0]["reason"] =
+            "required cell missing".into();
+        write_manifest(&world.evidence, &manifest);
+        let result = evidence(&world);
+        assert_eq!(result.status, "available");
+        assert!(result.bundles[0].coverage.failed);
+        assert!(
+            result.bundles[0]
+                .coverage
+                .required_coverage
+                .as_ref()
+                .unwrap()
+                .failed
+        );
+        assert!(!result.bundles[0].coverage.readiness_eligible);
     }
 
     #[test]

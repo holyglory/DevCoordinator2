@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use thiserror::Error;
 
+pub mod configuration;
 pub mod glossary;
 pub mod params;
 pub mod results;
@@ -79,6 +80,10 @@ pub enum ErrorCode {
     RepositoryArchived,
     RepositoryArchiveBlocked,
     RepositoryConfigInvalid,
+    AuthorizationRequired,
+    ConfigurationConflict,
+    ConfigurationInvalid,
+    ConfigurationRestartRequired,
     WorktreeBusy,
     TestNotFound,
     TestLogUnavailable,
@@ -439,6 +444,8 @@ const READ_PUBLIC: OperationPolicy =
     OperationPolicy::new(Scope::Public, Role::Anonymous, Effect::Read, true);
 const READ_SERVER_ADMIN: OperationPolicy =
     OperationPolicy::new(Scope::Server, Role::Administrator, Effect::Read, true);
+const READ_DEPLOYMENT_ADMIN: OperationPolicy =
+    OperationPolicy::new(Scope::Deployment, Role::Administrator, Effect::Read, true);
 const APPEND_SERVER_ADMIN: OperationPolicy =
     OperationPolicy::new(Scope::Server, Role::Administrator, Effect::Append, false);
 const IDEMPOTENT_APPEND_SERVER_ADMIN: OperationPolicy =
@@ -919,6 +926,42 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         output_schema: schema_for::<results::Capacity>,
         validate_params: validate_params::<params::SetCapacity>,
     },
+    operation!(
+        "config.get",
+        "Inspect live configuration revisions and bounded change history without exposing private settings.",
+        READ_SERVER_ADMIN,
+        Protocol["config show"],
+        ["config_get"],
+        EmptyParams,
+        configuration::Snapshot
+    ),
+    operation!(
+        "config.env.set",
+        "Grant or revoke one declared repository environment-file authorization and activate it without restart.",
+        REVERSIBLE_SERVER_ADMIN,
+        Protocol["config authorize", "config revoke"],
+        ["config_env_set"],
+        params::SetComposeEnvAuthorization,
+        configuration::Snapshot
+    ),
+    operation!(
+        "config.reload",
+        "Validate and activate reloadable private settings, retaining the last working state on failure.",
+        REVERSIBLE_SERVER_ADMIN,
+        Protocol["config reload"],
+        ["config_reload"],
+        configuration::Revision,
+        configuration::Snapshot
+    ),
+    operation!(
+        "deployment.preflight",
+        "Check declared deployment prerequisites without registering or changing runtime resources.",
+        READ_DEPLOYMENT_ADMIN,
+        Protocol["deployment preflight"],
+        ["deployment_preflight"],
+        params::DeploymentReference,
+        results::DeploymentPreflight
+    ),
     operation!(
         "deployment.list",
         "List visible deployments.",
@@ -1653,9 +1696,9 @@ mod tests {
         for tool in mcp_tools() {
             assert!(tools.insert(tool.name), "duplicate MCP tool");
         }
-        assert_eq!(OPERATIONS.len(), 86);
-        assert_eq!(tools.len(), 64);
-        assert_eq!(cli_routes.len(), 75);
+        assert_eq!(OPERATIONS.len(), 90);
+        assert_eq!(tools.len(), 68);
+        assert_eq!(cli_routes.len(), 80);
     }
 
     #[test]

@@ -50,6 +50,10 @@ const TIMESTAMP_FORMAT: &[FormatItem<'static>] =
 /// service is ported; they never report synthetic success.
 pub const FOUNDATION_OPERATIONS: &[&str] = &[
     "ping",
+    "config.get",
+    "config.env.set",
+    "config.reload",
+    "deployment.preflight",
     "user.whoami",
     "user.accept_invitation",
     "user.list",
@@ -422,6 +426,35 @@ impl ControlPlane {
                     source_commit: SOURCE_COMMIT.to_owned(),
                     socket: self.config.socket_path.display().to_string(),
                 })
+            }
+            "config.get" => {
+                let _: EmptyParams = decode(params)?;
+                encode(self.deployments.configuration().get()?)
+            }
+            "config.reload" => {
+                let params: devcoordinator2_api::configuration::Revision = decode(params)?;
+                let actor = caller
+                    .identity
+                    .clone()
+                    .unwrap_or_else(|| format!("uid:{}", caller.uid));
+                encode(
+                    self.deployments
+                        .configuration()
+                        .reload(&params.expected_revision, &actor)?,
+                )
+            }
+            "config.env.set" => encode(
+                self.deployments
+                    .set_compose_authorization(decode(params)?, caller)?,
+            ),
+            "deployment.preflight" => {
+                let params: params::DeploymentReference = decode(params)?;
+                encode(self.deployments.preflight(
+                    params.path.as_deref(),
+                    params.name.as_deref(),
+                    params.deployment_id.as_deref(),
+                    caller,
+                )?)
             }
             "user.whoami" => {
                 let _: params::Empty = decode(params)?;

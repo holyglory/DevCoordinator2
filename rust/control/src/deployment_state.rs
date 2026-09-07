@@ -1317,6 +1317,7 @@ impl DeploymentStore {
                     unchanged: None,
                     rolled_back_from: None,
                     rolled_back_to: None,
+                    readiness: None,
                 }))
             })
             .map_err(database_error)

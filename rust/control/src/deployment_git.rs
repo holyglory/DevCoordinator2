@@ -24,6 +24,7 @@ const ERROR_CAP: usize = 2 * 1024;
 pub struct GitSnapshot {
     pub commit: Option<String>,
     pub dirty: bool,
+    pub source_digest: String,
 }
 
 #[derive(Debug, Error)]
@@ -104,6 +105,16 @@ impl DeploymentGit for GitCli {
         Ok(GitSnapshot {
             commit,
             dirty: !status.status.success() || status.stdout_truncated || !status.stdout.is_empty(),
+            source_digest: crate::test_command::TestCommand::source_digest(
+                &crate::test_command::HostTestCommand,
+                &crate::test_lifecycle::default_executor_path(),
+                worktree,
+                caller_uid,
+                caller_gid,
+            )
+            .map_err(|_| {
+                DeploymentGitError::Command("cannot establish the deployment source digest".into())
+            })?,
         })
     }
 

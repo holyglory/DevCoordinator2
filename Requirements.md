@@ -309,7 +309,19 @@ not contradict them.
   updates in place; real missing, failed, or restricted states remain explicit,
   and no fact borrows another repository's data.
 
+- **REQ-DEPLOY-11** (2026-09-07): Before runtime changes, preflight identifies
+  every missing exact environment-file authorization without changing it.
+  Existing administrators can update/reload the preconfigured policy without
+  restart, preserve other entries and private ownership/mode, detect stale
+  revisions, retain last-good state after invalid input, and inspect value-free
+  durable receipts. Other instance settings remain restart-required.
+- **REQ-DEPLOY-12** (2026-09-07): Running stored components alone cannot prove
+  application readiness. Missing declared components yield degraded status;
+  explicit source freshness includes successive dirty edits. New source and
+  migrations require apply; restart preserves finite-service execution receipts.
+
 ## Accountability and health (REQ-HEALTH, P3/P4)
+
 
 - **REQ-HEALTH-01** (P3/P4, done): Every managed process/container reports repository,
   deployment/test, component, physical caller UID, and descriptive creating

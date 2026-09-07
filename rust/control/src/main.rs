@@ -257,6 +257,13 @@ fn run_offline_bug(action: OfflineBugAction, format: OutputFormat) -> ExitCode {
 }
 
 async fn run_daemon(config: &Config) -> ExitCode {
+    let endpoint = match daemon::DaemonEndpoint::bind(&config.socket_path).await {
+        Ok(endpoint) => endpoint,
+        Err(error) => {
+            eprintln!("daemon endpoint failed: {error}");
+            return ExitCode::from(1);
+        }
+    };
     let database = match Database::open(config.database_path()) {
         Ok(database) => database,
         Err(error) => {
@@ -318,7 +325,6 @@ async fn run_daemon(config: &Config) -> ExitCode {
             ),
             dedupe_key: None,
         });
-    let daemon_socket = config.socket_path.clone();
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let signal_shutdown = shutdown_tx.clone();
     let signal = tokio::spawn(async move {
@@ -330,7 +336,8 @@ async fn run_daemon(config: &Config) -> ExitCode {
     services.spawn(async move {
         (
             "daemon",
-            daemon::serve_with_app(&daemon_socket, &mut daemon_shutdown, app)
+            endpoint
+                .serve(&mut daemon_shutdown, app)
                 .await
                 .map_err(|error| error.to_string()),
         )
@@ -433,4 +440,47 @@ fn local_error(
     );
     let _ = devcoordinator2_control::cli::render_response(&response, format, None);
     ExitCode::from(exit)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn duplicate_start_is_rejected_before_opening_or_recovering_state() {
+        let temporary = tempfile::tempdir().unwrap();
+        let config = Config {
+            socket_path: temporary.path().join("daemon.sock"),
+            state_dir: temporary.path().join("unopened-state"),
+            unit_prefix: "isolated-duplicate-test".to_owned(),
+            slice_name: "isolated-duplicate-test.slice".to_owned(),
+            client_group: "isolated-duplicate-test".to_owned(),
+            port_range: (29000, 29100),
+            base_domain: "example.test".to_owned(),
+            edge_uid: None,
+            admin_emails: Vec::new(),
+            telegram_token_file: None,
+            telegram_api: "http://127.0.0.1:1".to_owned(),
+            bugs_dir: temporary.path().join("unopened-bugs"),
+            compose_env_allowlist_file: None,
+            compose_env_authorizations: Default::default(),
+            codex_usage_sources_file: None,
+            codex_usage_sources: Vec::new(),
+        };
+        let endpoint = daemon::DaemonEndpoint::bind(&config.socket_path)
+            .await
+            .unwrap();
+        let result = tokio::time::timeout(Duration::from_secs(1), run_daemon(&config))
+            .await
+            .expect("duplicate startup must stop before initialization");
+        assert_eq!(result, ExitCode::from(1));
+        assert!(!config.state_dir.exists());
+        assert!(!config.bugs_dir.exists());
+        assert!(
+            tokio::net::UnixStream::connect(&config.socket_path)
+                .await
+                .is_ok()
+        );
+        drop(endpoint);
+    }
 }

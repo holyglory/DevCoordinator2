@@ -3852,6 +3852,9 @@ fn validate_skill_contract(root: &Path) -> Result<(), String> {
         "secondary-workflow-precedes-primary",
         "insufficient-text-contrast",
         "declared-theme-contradiction",
+        "source-over compositing",
+        "inert",
+        "aria-hidden=true",
     ];
     let missing = required
         .iter()
@@ -3920,6 +3923,7 @@ pub fn run(options: &SelfTestOptions) -> Result<Value, String> {
     if ![
         "all",
         "static",
+        "rendering",
         "state",
         "transport",
         "performance",
@@ -3934,14 +3938,19 @@ pub fn run(options: &SelfTestOptions) -> Result<Value, String> {
     .contains(&options.phase.as_str())
     {
         return Err(
-            "formal UI self-test phase must be all, static, state, transport, performance, auth, scheduler, review, compatibility, output, tls, or discovery"
+            "formal UI self-test phase must be all, static, rendering, state, transport, performance, auth, scheduler, review, compatibility, output, tls, or discovery"
                 .to_owned(),
         );
     }
     let root = source_root();
     validate_skill_contract(&root)?;
     let pages = load_pages(&root)?;
-    let matrix = load_matrix(&root)?;
+    let mut matrix = load_matrix(&root)?;
+    if options.phase == "rendering" {
+        matrix.cases.retain(|case| {
+            case.name.starts_with("translucent-") || case.name.starts_with("custom-modal-")
+        });
+    }
     for case in &matrix.cases {
         if !pages.contains_key(&case.path) {
             return Err(format!(
@@ -3955,6 +3964,7 @@ pub fn run(options: &SelfTestOptions) -> Result<Value, String> {
         let needs_static_server = [
             "all",
             "static",
+            "rendering",
             "state",
             "transport",
             "scheduler",
@@ -3979,7 +3989,7 @@ pub fn run(options: &SelfTestOptions) -> Result<Value, String> {
         let mut tls_cases = 0usize;
         let mut discovery_cases = 0usize;
         let mut failures = Vec::new();
-        if ["all", "static"].contains(&options.phase.as_str()) {
+        if ["all", "static", "rendering"].contains(&options.phase.as_str()) {
             let server = server.as_ref().unwrap();
             let result = (|| {
                 let config = build_matrix_config(&root, server, &matrix);

@@ -745,6 +745,33 @@ pub struct EvidenceCoverage {
     pub planned_pages: u32,
     pub failed: bool,
     pub readiness_eligible: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub required_coverage: Option<EvidenceRequiredCoverage>,
+}
+
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EvidenceRequiredCoverage {
+    #[serde(alias = "declaredCount")]
+    pub declared_count: u32,
+    #[serde(alias = "satisfiedCount")]
+    pub satisfied_count: u32,
+    pub failed: bool,
+    pub entries: Vec<EvidenceCoverageEntry>,
+}
+
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EvidenceCoverageEntry {
+    pub target: String,
+    pub state: String,
+    pub viewport: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub width: Option<u32>,
+    pub status: String,
+    #[serde(alias = "matchingCellIds")]
+    pub matching_cell_ids: Vec<String>,
+    pub reason: String,
 }
 
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
@@ -1024,6 +1051,34 @@ pub struct Component {
 
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct DeploymentPreflight {
+    pub repository_id: String,
+    pub name: String,
+    pub ready: bool,
+    pub blockers: Vec<DeploymentBlocker>,
+}
+
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DeploymentBlocker {
+    pub component: String,
+    pub code: crate::ErrorCode,
+    pub file: Option<String>,
+    pub message: String,
+}
+
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DeploymentReadiness {
+    pub ready: bool,
+    pub expected_components: Vec<String>,
+    pub missing_components: Vec<String>,
+    pub pending_apply: Option<bool>,
+    pub blockers: Vec<DeploymentBlocker>,
+}
+
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DeploymentStatus {
     pub deployment_id: String,
     pub repository_id: String,
@@ -1048,6 +1103,8 @@ pub struct DeploymentStatus {
     pub unchanged: Option<bool>,
     pub rolled_back_from: Option<u32>,
     pub rolled_back_to: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub readiness: Option<DeploymentReadiness>,
 }
 
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]

@@ -166,11 +166,6 @@ impl Config {
     pub fn deploy_unit_prefix(&self) -> String {
         format!("{}-deploy", self.unit_prefix.replace("-test", ""))
     }
-
-    pub fn compose_env_authorized(&self, repository_id: &str, relative_path: &str) -> bool {
-        self.compose_env_authorizations
-            .contains(&(repository_id.to_owned(), relative_path.to_owned()))
-    }
 }
 
 fn optional_path(value: &str) -> Option<PathBuf> {
@@ -251,7 +246,9 @@ struct ComposeAuthorization {
     path: String,
 }
 
-fn read_compose_policy(path: Option<&Path>) -> Result<HashSet<(String, String)>, ConfigError> {
+pub(crate) fn read_compose_policy(
+    path: Option<&Path>,
+) -> Result<HashSet<(String, String)>, ConfigError> {
     let Some(path) = path else {
         return Ok(HashSet::new());
     };
@@ -283,7 +280,7 @@ fn read_compose_policy(path: Option<&Path>) -> Result<HashSet<(String, String)>,
     Ok(result)
 }
 
-fn valid_relative_path(value: &str) -> bool {
+pub(crate) fn valid_relative_path(value: &str) -> bool {
     if value.is_empty() || value.len() > 512 || value.contains(['\\', '\0']) {
         return false;
     }
@@ -292,7 +289,7 @@ fn valid_relative_path(value: &str) -> bool {
         && path
             .components()
             .all(|component| matches!(component, Component::Normal(_)))
-        && path.to_string_lossy() == value
+        && path.components().collect::<PathBuf>().to_string_lossy() == value
 }
 
 #[derive(Deserialize)]

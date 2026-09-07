@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use std::ffi::CString;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
-use std::net::TcpStream;
+use std::net::{Ipv4Addr, TcpStream};
 use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
 use std::os::unix::net::UnixStream;
@@ -44,6 +44,8 @@ enum RootCommand {
         report: PathBuf,
         #[arg(long)]
         case: Vec<String>,
+        #[arg(long, value_parser = parse_compose_subnet)]
+        compose_subnet: Option<Ipv4Addr>,
     },
     Request {
         #[arg(long)]
@@ -59,6 +61,7 @@ struct Harness {
     work_root: PathBuf,
     caller_uid: u32,
     caller_gid: u32,
+    compose_subnet: Option<Ipv4Addr>,
 }
 
 struct World {
@@ -144,6 +147,11 @@ impl World {
         )?;
         let socket = base.join("daemon.sock");
         let state = base.join("state");
+        for (directory, mode) in [(&state, 0o751), (&state.join("deployments"), 0o755)] {
+            fs::create_dir(directory).map_err(|error| error.to_string())?;
+            fs::set_permissions(directory, fs::Permissions::from_mode(mode))
+                .map_err(|error| error.to_string())?;
+        }
         let unit_prefix = format!(
             "devcoordinator2-rustint-{}-{}-test",
             std::process::id(),
@@ -228,7 +236,15 @@ impl World {
             {
                 fs::set_permissions(&self.socket, fs::Permissions::from_mode(0o666))
                     .map_err(|error| error.to_string())?;
-                return Ok(());
+                if request_over_socket_with_timeout(
+                    &self.socket,
+                    &request("ping", json!({}), "other", None),
+                    Duration::from_millis(100),
+                )
+                .is_ok_and(|response| data(&response).is_ok())
+                {
+                    return Ok(());
+                }
             }
             if let Some(status) = self
                 .daemon
@@ -546,9 +562,17 @@ fn bounded_json(value: &Value) -> String {
 }
 
 fn request_over_socket(socket: &Path, request: &Value) -> Result<Value, String> {
+    request_over_socket_with_timeout(socket, request, Duration::from_secs(900))
+}
+
+fn request_over_socket_with_timeout(
+    socket: &Path,
+    request: &Value,
+    timeout: Duration,
+) -> Result<Value, String> {
     let mut stream = UnixStream::connect(socket).map_err(|error| error.to_string())?;
     stream
-        .set_read_timeout(Some(Duration::from_secs(900)))
+        .set_read_timeout(Some(timeout))
         .map_err(|error| error.to_string())?;
     stream
         .set_write_timeout(Some(Duration::from_secs(10)))
@@ -1304,9 +1328,30 @@ const FAILED_COMPOSE_ROUTE_YAML: &str = r#"services:
     ports: ["127.0.0.1:${PORT:?Coordinator must lease PORT}:5432"]
 "#;
 
+fn parse_compose_subnet(value: &str) -> Result<Ipv4Addr, String> {
+    let address = value
+        .strip_suffix("/24")
+        .and_then(|value| value.parse::<Ipv4Addr>().ok())
+        .filter(|address| address.is_private() && address.octets()[3] == 0)
+        .ok_or_else(|| "Compose subnet must be a canonical private IPv4 /24 network".to_owned())?;
+    Ok(address)
+}
+
+fn compose_fixture(content: &str, subnet: Option<Ipv4Addr>) -> String {
+    match subnet {
+        Some(address) => format!(
+            "{content}\nnetworks:\n  default:\n    ipam:\n      config:\n        - subnet: {address}/24\n"
+        ),
+        None => content.to_owned(),
+    }
+}
+
 fn setup_compose(world: &World, route: &str, commit_message: &str) -> Result<(), String> {
     world.write_config(COMPOSE_TOML)?;
-    world.write_owned("compose.yml", COMPOSE_YAML)?;
+    world.write_owned(
+        "compose.yml",
+        compose_fixture(COMPOSE_YAML, world.harness.compose_subnet),
+    )?;
     world.write_owned("compose.route.yml", route)?;
     world.write_owned(".gitignore", "compose.env\n")?;
     world.write_owned("compose.env", "FIXTURE_LABEL=ready\n")?;
@@ -2804,9 +2849,12 @@ fn case_native_compose_finite_service_receipt_and_start_semantics(
     )?)?;
     world.write_owned(
         "compose.yml",
-        COMPOSE_YAML.replace(
-            "command: [\"while :; do sleep 60; done\"]",
-            "command: [\"exit 29\"]",
+        compose_fixture(
+            &COMPOSE_YAML.replace(
+                "command: [\"while :; do sleep 60; done\"]",
+                "command: [\"exit 29\"]",
+            ),
+            world.harness.compose_subnet,
         ),
     )?;
     world.write_owned("marker.txt", "v3\n")?;
@@ -2909,7 +2957,10 @@ fn case_unchanged_apply_rechecks_already_bad_published_compose_route(
     world: &mut World,
 ) -> Result<(), String> {
     world.write_config(UPGRADE_COMPOSE_TOML)?;
-    world.write_owned("upgrade-compose.yml", UPGRADE_COMPOSE_YAML)?;
+    world.write_owned(
+        "upgrade-compose.yml",
+        compose_fixture(UPGRADE_COMPOSE_YAML, world.harness.compose_subnet),
+    )?;
     world.write_owned("upgrade-route.yml", UPGRADE_COMPOSE_ROUTE_YAML)?;
     world.git(&["add", "."])?;
     world.git(&["commit", "-qm", "reachable compose fixture"])?;
@@ -3013,7 +3064,10 @@ fn case_failed_first_compose_candidate_remains_managed_and_removable(
     world: &mut World,
 ) -> Result<(), String> {
     world.write_config(FAILED_COMPOSE_TOML)?;
-    world.write_owned("failed-compose.yml", FAILED_COMPOSE_YAML)?;
+    world.write_owned(
+        "failed-compose.yml",
+        compose_fixture(FAILED_COMPOSE_YAML, world.harness.compose_subnet),
+    )?;
     world.write_owned("failed-compose.route.yml", FAILED_COMPOSE_ROUTE_YAML)?;
     world.git(&["add", "."])?;
     world.git(&["commit", "-qm", "failed compose fixture"])?;
@@ -3794,8 +3848,109 @@ fn case_event_wait_replays_planning_and_groups_heartbeats(world: &mut World) -> 
     Ok(())
 }
 
+fn case_live_configuration_and_socket_recovery(world: &mut World) -> Result<(), String> {
+    world.write_owned("compose.yml", "services: {}\n")?;
+    world.write_owned(".gitignore", "live.env\n")?;
+    world.write_owned("live.env", "FIXTURE=private-fixture-value\n")?;
+    world.write_config("schema=2\n[deployment.web]\nsource=\"worktree\"\ncomponents=[\"stack\"]\n[deployment.web.component.stack]\ntype=\"compose\"\nfiles=[\"compose.yml\"]\nservices=[\"worker\"]\nenv_file=\"live.env\"\n")?;
+    let daemon_id = world.daemon.as_ref().ok_or("daemon missing")?.id();
+    let initial = world.call("config.get", json!({}))?;
+    let initial = data(&initial)?.clone();
+    let preflight = world.call(
+        "deployment.preflight",
+        json!({"path":world.repo,"name":"web"}),
+    )?;
+    ensure!(
+        data(&preflight)?["blockers"][0]["code"] == "authorization_required",
+        "preflight must explain missing authorization"
+    );
+    let applied = world.call("deployment.apply", json!({"path":world.repo,"name":"web"}))?;
+    ensure!(
+        error_code(&applied) == Some("authorization_required"),
+        "apply must stop at preflight"
+    );
+    let updated = world.call("config.env.set", json!({"path":world.repo,"name":"web","file":"live.env","authorized":true,"expected_revision":initial["active_revision"]}))?;
+    let updated = data(&updated)?.clone();
+    ensure!(
+        updated["authorization_count"] == 2,
+        "live update lost the existing unrelated authorization"
+    );
+    let preflight = world.call(
+        "deployment.preflight",
+        json!({"path":world.repo,"name":"web"}),
+    )?;
+    ensure!(
+        data(&preflight)?["ready"] == true,
+        "active preflight did not see the new grant"
+    );
+    let stale = world.call("config.env.set", json!({"path":world.repo,"name":"web","file":"live.env","authorized":false,"expected_revision":initial["active_revision"]}))?;
+    ensure!(
+        error_code(&stale) == Some("configuration_conflict"),
+        "stale update was not rejected"
+    );
+    let policy = world.base.join("compose-env-allowlist.json");
+    let original = fs::read(&policy).map_err(|error| error.to_string())?;
+    let metadata = fs::metadata(&policy).map_err(|error| error.to_string())?;
+    ensure!(
+        metadata.uid() == 0 && metadata.mode() & 0o077 == 0,
+        "policy ownership/mode changed"
+    );
+    fs::write(&policy, b"invalid-private-fixture-value").map_err(|error| error.to_string())?;
+    let invalid = world.call(
+        "config.reload",
+        json!({"expected_revision":updated["active_revision"]}),
+    )?;
+    ensure!(
+        error_code(&invalid) == Some("configuration_invalid"),
+        "invalid reload was not rejected"
+    );
+    let retained = world.call("config.get", json!({}))?;
+    ensure!(
+        data(&retained)?["active_revision"] == updated["active_revision"],
+        "invalid reload changed the active revision"
+    );
+    ensure!(
+        !retained.to_string().contains("private-fixture-value"),
+        "configuration result exposed fixture contents"
+    );
+    fs::write(&policy, original).map_err(|error| error.to_string())?;
+    fs::remove_file(&world.socket).map_err(|error| error.to_string())?;
+    wait_for_value("recovered endpoint", Duration::from_secs(5), || {
+        Ok(world
+            .call("ping", json!({}))
+            .ok()
+            .filter(|response| error_code(response).is_none()))
+    })?;
+    ensure!(
+        world.daemon.as_ref().ok_or("daemon missing")?.id() == daemon_id,
+        "recovery restarted the daemon"
+    );
+    let revoked = world.call("config.env.set", json!({"path":world.repo,"name":"web","file":"live.env","authorized":false,"expected_revision":updated["active_revision"]}))?;
+    ensure!(
+        data(&revoked)?["authorization_count"] == 1,
+        "revocation changed unrelated authorization"
+    );
+    let preflight = world.call(
+        "deployment.preflight",
+        json!({"path":world.repo,"name":"web"}),
+    )?;
+    ensure!(
+        data(&preflight)?["ready"] == false,
+        "revocation was not active immediately"
+    );
+    ensure!(
+        world.deployment_units()?.is_empty(),
+        "preflight changed runtime resources"
+    );
+    Ok(())
+}
+
 fn cases() -> Vec<Case> {
     vec![
+        (
+            "live_configuration_and_socket_recovery",
+            case_live_configuration_and_socket_recovery,
+        ),
         (
             "pass_uid_and_catalogued_output",
             case_pass_uid_and_catalogued_output,
@@ -3958,6 +4113,7 @@ fn run_suite(
     work_root: PathBuf,
     report: PathBuf,
     selected: Vec<String>,
+    compose_subnet: Option<Ipv4Addr>,
 ) -> Result<AcceptanceReport, String> {
     validate_run_inputs(&daemon, &fixture, &work_root, &report)?;
     let (caller_uid, caller_gid) = caller_identity()?;
@@ -3968,6 +4124,7 @@ fn run_suite(
         work_root,
         caller_uid,
         caller_gid,
+        compose_subnet,
     };
     let selected = selected
         .into_iter()
@@ -4069,7 +4226,16 @@ fn main() -> ExitCode {
             work_root,
             report,
             case,
-        } => run_suite(daemon, fixture, work_root, report.clone(), case).map(|result| {
+            compose_subnet,
+        } => run_suite(
+            daemon,
+            fixture,
+            work_root,
+            report.clone(),
+            case,
+            compose_subnet,
+        )
+        .map(|result| {
             println!(
                 "{}",
                 json!({
@@ -4090,6 +4256,58 @@ fn main() -> ExitCode {
         Err(error) => {
             eprintln!("{error}");
             ExitCode::from(2)
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_bound_socket_alone_does_not_prove_daemon_readiness() {
+        let temporary = tempfile::tempdir().unwrap();
+        let socket = temporary.path().join("not-ready.sock");
+        let _listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        assert!(
+            request_over_socket_with_timeout(
+                &socket,
+                &request("ping", json!({}), "other", None),
+                Duration::from_millis(20),
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn compose_subnet_is_explicit_private_and_network_aligned() {
+        for value in ["10.231.73.0/24", "172.16.252.0/24", "192.168.241.0/24"] {
+            let address = parse_compose_subnet(value).unwrap();
+            assert_eq!(format!("{address}/24"), value);
+        }
+        for value in [
+            "10.231.73.1/24",
+            "172.16.0.0/16",
+            "127.0.0.0/24",
+            "169.254.1.0/24",
+            "8.8.8.0/24",
+            "::1/24",
+            "10.231.73.0/24\nservices: {}",
+            "10.231.73.0",
+        ] {
+            assert!(parse_compose_subnet(value).is_err(), "accepted {value}");
+        }
+    }
+
+    #[test]
+    fn compose_subnet_changes_only_the_fixture_network() {
+        assert_eq!(compose_fixture(COMPOSE_YAML, None), COMPOSE_YAML);
+        let subnet = parse_compose_subnet("172.16.252.0/24").unwrap();
+        for content in [COMPOSE_YAML, UPGRADE_COMPOSE_YAML, FAILED_COMPOSE_YAML] {
+            let fixture = compose_fixture(content, Some(subnet));
+            assert!(fixture.starts_with(content));
+            assert!(fixture.ends_with("        - subnet: 172.16.252.0/24\n"));
+            assert_eq!(fixture.matches("\nnetworks:").count(), 1);
         }
     }
 }

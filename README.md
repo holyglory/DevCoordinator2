@@ -118,9 +118,15 @@ sudo -n env DEVCOORDINATOR2_ROOT_ACCEPTANCE=1 \
 ```
 
 The harness owns a unique socket, database, port range, systemd unit prefix,
-Docker label namespace, and marker-bound filesystem root. It runs all 29
+Docker label namespace, and marker-bound filesystem root. It runs all 30
 preserved real-system scenarios with all-settled behavior and never targets the
 live service, socket, containers, or data.
+
+If Docker's default address pools are exhausted, `--compose-subnet` accepts an
+explicit private IPv4 `/24` network for the isolated Compose fixtures. Verify
+that the selected subnet overlaps neither host routes nor existing Docker
+networks before running. This does not change Docker's global pools or reuse
+shared networks; each sequential scenario retains its owned-network cleanup.
 
 ## Imported source provenance
 

@@ -26,8 +26,19 @@ devcoordinator2 health --help
 - Use `test artifact catalog|file|materialize` for declared hash-bound evidence
   trees. Catalogue first; materialization writes only a new caller-owned local
   destination and rechecks every file/tree hash.
-- Use `deployment list|apply|status|start|stop|restart|rollback|logs|remove`
+- Use `deployment list|preflight|apply|status|start|stop|restart|rollback|logs|remove`
   for declared permanent or preview deployments.
+- Use `config show|authorize|revoke|reload` for exact, already-reviewed Compose
+  environment-file grants in the existing private policy. Carry the current
+  `active_revision`; never broaden a grant or retry a refused host approval
+  through another route. Preflight lists prerequisites without granting them
+  or changing runtime resources. Unconfigured policy locations and unrelated
+  instance settings remain restart-required.
+- Treat running components and current-source readiness separately. Inspect
+  `readiness.pending_apply` and `missing_components`; unknown freshness is not
+  readiness. Apply changed source to rerun finite setup. Ordinary restart only
+  controls existing services and never proves a new migration ran; compare
+  actual receipt generation/execution time, not its later observation time.
 - Use `health summary|repositories|containers` for host and ownership
   observation. Treat `unmanaged` as unknown; never infer ownership from a
   name, image, port, or path.

@@ -2665,14 +2665,16 @@ const POLICY_CONTRACTS: &[(&str, usize, &[&str])] = &[
             "exact name and role",
             "current authoritative sources",
             "facts, inferences, and unknowns",
-            "inventory `userissueledgers/` before planning or implementation",
-            "ui for ui work",
-            "coding-style for code changes",
-            "automation for automation",
-            "every affected business-logic perspective",
-            "cross-cutting work reads all ledgers",
+            "before planning or implementation, query the configured coordinator's",
+            "authoritative planning and decision history",
+            "applicable user feedback and confirmed corrections",
+            "affected scope, behavior, and known references",
+            "repository-wide work covers every affected perspective",
+            "relevant resolved feedback and older standing corrections",
+            "not only open tasks or the recent decision tail",
+            "supersession history with bounded reads",
             "negative acceptance criteria",
-            "ids, required behavior, and verification into delegated work",
+            "stable record references, required behavior, and verification into delegated work",
         ],
     ),
     (
@@ -3078,7 +3080,11 @@ const POLICY_CONTRACTS: &[(&str, usize, &[&str])] = &[
             "finish its useful diagnostic cycle",
             "nearest durable prevention layer",
             "before the product fix",
-            "reuse its id",
+            "locate the relevant feedback, unfinished outcome, and standing correction",
+            "coordinator's planning and decision tools",
+            "reuse existing outcome tasks",
+            "append or supersede the durable correction",
+            "preserve its record references",
             "immediate mitigation prevents harm or data loss",
             "preserve evidence and mitigate first",
             "batch the guardrail and implementation changes",
@@ -3087,31 +3093,39 @@ const POLICY_CONTRACTS: &[(&str, usize, &[&str])] = &[
             "generalized repeatable lessons in policy",
             "narrow guarantees",
             "one-off narratives out of policy",
-            "project-root `userissueledgers/`",
-            "confirmed user-indicated agent mistakes",
-            "durable corrections",
-            "prior absence is valid",
-            "narrowly scoped ledgers, never one mixed catch-all",
-            "business logic",
-            "# user issue ledger: <scope>",
-            "one compact table",
-            "`id`",
-            "`applies to`",
-            "`mistake pattern`",
-            "`required behavior`",
-            "`prevention and verification`",
-            "uil-<scope>-nnn",
-            "relative path owns the scope, title, and namespace",
-            "businesslogic/pricing.md",
-            "uil-business-logic-pricing-001",
-            "narrowest owner and merge duplicates",
-            "do not add changed intent, new scope, external failures",
-            "raw conversation",
-            "incident narration",
-            "rows persist after fixes",
-            "explicit retraction or a recorded decision",
-            "preserved in version control",
-            "separate from completion work, decision history, and incident history",
+            "unresolved user feedback in the authoritative task ledger",
+            "confirmed, repeatable correction through `decision_record`",
+            "linked to the relevant feedback or outcome task",
+            "completed task does not retire its standing correction",
+            "feedback alone is not proof of an agent mistake",
+            "explicit applicability",
+            "confirmed mistake pattern, required behavior, prevention and verification",
+            "references to its supporting feedback or evidence",
+            "implementation detail in `technical_note`",
+            "supported decision aspects",
+            "ui, automation, coding-style, math, data, security, operations, testing, documentation",
+            "each affected business perspective",
+            "do not invent tool fields or maintain parallel file ledgers",
+            "service record ids and stable refs",
+            "preserve legacy correction ids as provenance",
+            "search them before creating a duplicate",
+            "file paths no longer own correction identities",
+            "append-only record or `supersedes`",
+            "do not classify changed intent, new scope, external failures",
+            "unconfirmed agent-found concerns as confirmed mistakes",
+            "raw conversation and incident narration out of durable corrections",
+            "corrections remain discoverable after fixes",
+            "explicit recorded decision and preserved history",
+            "not task closure or deletion of the earlier record",
+            "legacy file-based ledgers are historical reference material",
+            "not another writable authority or an offline fallback",
+            "do not create or update them",
+            "delete historical files merely because authority moved",
+            "claim their contents were migrated without checking the authoritative records",
+            "durable prevention in decision history",
+            "unfinished outcomes in the task ledger",
+            "execution or incident evidence in its governed history",
+            "without treating one as a substitute for another",
         ],
     ),
     (
@@ -3562,6 +3576,45 @@ fn literal_policy_contradictions(text: &str) -> Vec<String> {
     violations
 }
 
+const CENTRAL_CORRECTION_CONTRADICTIONS: &[(&str, &str)] = &[
+    (
+        "maintain project-local markdown correction ledgers",
+        "correction history must have one service-owned authority",
+    ),
+    (
+        "fall back to local correction files when the database is unavailable",
+        "database unavailability must not create a writable correction mirror",
+    ),
+    (
+        "retire standing corrections when their tasks are completed",
+        "task completion must not retire standing corrections",
+    ),
+    (
+        "treat all user feedback as confirmed agent mistakes",
+        "feedback requires diagnosis before classification as an agent mistake",
+    ),
+    (
+        "delete historical ledgers because authority moved",
+        "moving authority must preserve historical evidence",
+    ),
+    (
+        "claim historical corrections were migrated without checking the authoritative records",
+        "historical migration claims require authoritative evidence",
+    ),
+    (
+        "read only open tasks or the recent decision tail",
+        "relevant resolved feedback and older standing corrections remain applicable",
+    ),
+    (
+        "file paths own correction identities",
+        "correction identities belong to service records and stable references",
+    ),
+    (
+        "delegated agents may skip applicable standing corrections",
+        "delegated work must inherit applicable standing corrections",
+    ),
+];
+
 fn additional_policy_contradictions(text: &str) -> Vec<String> {
     const RULES: &[(&str, &str)] = &[
         (
@@ -3715,7 +3768,7 @@ fn additional_policy_contradictions(text: &str) -> Vec<String> {
     ];
     let clauses = policy_clauses(text);
     let mut violations = Vec::new();
-    for (needle, label) in RULES {
+    for (needle, label) in RULES.iter().chain(CENTRAL_CORRECTION_CONTRADICTIONS) {
         if clauses
             .iter()
             .any(|clause| positive_literal_match(clause, needle))
@@ -5270,6 +5323,35 @@ mod tests {
                 let changed = body.replace(term, "removed policy concept");
                 assert_policy_violation(&replace_policy_section(&policy, heading, &changed), label);
             }
+        }
+    }
+
+    #[test]
+    fn app_wide_policy_central_corrections_preserve_authority_and_history() {
+        let policy =
+            fs::read_to_string(repository_root().join("reference/universal/AGENTS.md")).unwrap();
+        assert!(find_app_wide_policy_violations(&policy).is_empty());
+        for (instruction, label) in CENTRAL_CORRECTION_CONTRADICTIONS {
+            assert_policy_violation(&format!("{policy}\n{instruction}.\n"), label);
+            let negated = format!("{policy}\nNever {instruction}.\n");
+            assert!(
+                find_app_wide_policy_violations(&negated).is_empty(),
+                "negation is not a conflicting instruction: {instruction}"
+            );
+        }
+        for instruction in [
+            "Read a historical Markdown ledger as evidence, then search its legacy IDs in the authoritative decision history before recording a new correction.",
+            "Complete the repaired outcome task, retaining the linked standing correction and its applicability in decision history.",
+            "When the service is unavailable, continue independent source repairs without claiming the affected completion outcome or writing a local mirror.",
+            "A changed user request is new intent rather than a confirmed agent mistake; record the changed outcome in its appropriate task.",
+            "Supersede an earlier correction through an explicit recorded decision that retains its stable reference and history.",
+            "Investigate every affected perspective and pass applicable resolved feedback and older standing corrections to delegated work.",
+        ] {
+            let actual = find_app_wide_policy_violations(&format!("{policy}\n{instruction}\n"));
+            assert!(
+                actual.is_empty(),
+                "false positive for {instruction}: {actual:?}"
+            );
         }
     }
 

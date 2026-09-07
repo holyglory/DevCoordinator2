@@ -737,7 +737,7 @@ fn open_child_directory(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn atomic_write(
+pub(crate) fn atomic_write(
     directory: &File,
     target: &str,
     payload: &[u8],

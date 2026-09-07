@@ -77,6 +77,43 @@ common-root identity, proves the existing file is ignored and safe, merges the
 private allowlist atomically, and adds the instance-file pointer without
 removing prior authorizations.
 
+### Scoped live changes
+
+With the policy location already configured, trusted local callers and existing
+server administrators can update one declared repository/file authorization
+without restarting the daemon or reinstalling the instance:
+
+```sh
+devcoordinator2 config show
+devcoordinator2 deployment preflight /path/to/repository --name web
+devcoordinator2 config authorize /path/to/repository --name web --file deploy/dev.env --expected-revision REVISION
+devcoordinator2 config revoke /path/to/repository --name web --file deploy/dev.env --expected-revision REVISION
+devcoordinator2 config reload --expected-revision REVISION
+```
+
+Use the current `active_revision` from `config show`. Authorize/revoke preserve
+every other entry and the file's owner and mode, atomically publish the private
+policy, then activate it. Authorization still requires explicit approval of the
+exact repository/file; preflight does not grant it. Revocation does not stop
+already-running services, but subsequent Compose file use must pass the gate.
+
+Reload validates the complete policy at its existing location. Invalid input
+leaves the active configuration unchanged; external edits and concurrent stale
+updates return `configuration_conflict` rather than silently overwriting changes.
+Show returns counts, active/stored revision fingerprints, reload state, and the
+latest 20 value-free change receipts; the complete receipt history stays in the
+authority database. Neither values nor private policy paths are returned.
+
+The policy location and all other instance settings still require the reviewed
+installation/restart workflow. An unconfigured policy location returns
+`configuration_restart_required`; live changes never create another policy
+location, rewrite the instance file, or bypass a refused host approval.
+
+The daemon holds an exclusive lifetime lease beside its Unix socket before
+opening the database or recovering jobs. Duplicate startup preserves a live
+listener. Missing owned sockets are recovered through directory events without
+cancelling accepted operations; foreign replacement sockets/files are preserved.
+
 ## Codex usage sources
 
 The source policy is a root-owned mode-0600 regular non-symlink file. Each

@@ -292,7 +292,7 @@ every `compose.files`/`compose.env_file` path stays inside the repository;
 explicit `services` list and never overlap; at least one long-running service
 remains. A changed apply removes/recreates the finite service containers,
 requires successful completion, and retains bounded generation receipts.
-Unchanged convergence and ordinary start do not rerun finite services. An
+Unchanged convergence and ordinary start/restart do not rerun finite services. An
 independent service is addressed as `<component>/<service>` and exact-container
 start/stop/restart never follows dependencies or touches unrelated services.
 `env_file` remains inert unless private instance configuration separately
@@ -301,6 +301,15 @@ the file must remain ignored, regular, and non-symlink on every use. Its values
 never enter repository configuration, Coordinator metadata, results, logs, or
 argv. Because ignored files are deliberately absent from immutable checkout
 generations, this exception is available only to worktree deployments.
+
+Use `deployment preflight` to inspect all missing environment authorizations
+before apply touches runtime resources. Use `config authorize` only after the
+exact grant is approved; it can activate an existing policy without a daemon
+restart. After source or migration changes, use apply rather than restart.
+Explicit status distinguishes the running components from current-source
+readiness through `pending_apply` and `missing_components`. Completion receipts
+retain the actual finite-service generation and execution timestamps; their
+later observation time is not a new execution.
 `shared_from` is exclusive with `image`/`database`/`user`.
 
 ## Reserved (later phases)

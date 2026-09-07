@@ -67,6 +67,7 @@ impl NetworkProbe for HostNetworkProbe {
 #[derive(Clone)]
 pub struct Deployments {
     config: Arc<Config>,
+    configuration: crate::runtime_configuration::RuntimeConfiguration,
     database: Database,
     registry: Registry,
     store: DeploymentStore,
@@ -99,6 +100,18 @@ struct DeploymentTarget {
     caller_gid: u32,
     client: String,
     session: Option<String>,
+}
+
+fn deployment_fingerprint(
+    target: &DeploymentTarget,
+    snapshot: &crate::deployment_git::GitSnapshot,
+) -> String {
+    DeploymentStore::fingerprint(&serde_json::json!({
+        "spec": target.specification.canonical(&target.source),
+        "commit": snapshot.commit,
+        "dirty": snapshot.dirty,
+        "source_digest": snapshot.source_digest,
+    }))
 }
 
 #[derive(Clone)]
@@ -194,6 +207,10 @@ impl Deployments {
             config.base_domain.clone(),
         );
         Self {
+            configuration: crate::runtime_configuration::RuntimeConfiguration::new(
+                &config,
+                database.clone(),
+            ),
             config: Arc::new(config),
             store: DeploymentStore::with_clock(database.clone(), Arc::clone(&clock)),
             database,
@@ -213,6 +230,118 @@ impl Deployments {
 
     pub fn store(&self) -> &DeploymentStore {
         &self.store
+    }
+
+    pub fn configuration(&self) -> &crate::runtime_configuration::RuntimeConfiguration {
+        &self.configuration
+    }
+
+    pub fn set_compose_authorization(
+        &self,
+        params: devcoordinator2_api::params::SetComposeEnvAuthorization,
+        caller: &Caller,
+    ) -> Result<devcoordinator2_api::configuration::Snapshot, ProtocolError> {
+        let target = self.resolve_target_readonly(
+            params.path.as_deref(),
+            params.name.as_deref(),
+            params.deployment_id.as_deref(),
+            caller,
+        )?;
+        if params.authorized {
+            if target.source != "worktree"
+                || !target.specification.components.iter().any(|component| {
+                    component.compose_env_file.as_deref() == Some(params.file.as_str())
+                })
+            {
+                return Err(ProtocolError::new(
+                    ErrorCode::ParamsInvalid,
+                    "the environment file must be declared by this worktree deployment",
+                ));
+            }
+            self.validate_compose_environment(&target, &params.file)?;
+        }
+        let actor = caller
+            .identity
+            .clone()
+            .unwrap_or_else(|| format!("uid:{}", caller.uid));
+        self.configuration.update(
+            &target.repository_id,
+            &params.file,
+            params.authorized,
+            &params.expected_revision,
+            &actor,
+        )
+    }
+
+    pub fn preflight(
+        &self,
+        path: Option<&str>,
+        name: Option<&str>,
+        deployment_id: Option<&str>,
+        caller: &Caller,
+    ) -> Result<devcoordinator2_api::results::DeploymentPreflight, ProtocolError> {
+        let target = self.resolve_target_readonly(path, name, deployment_id, caller)?;
+        Ok(self.prerequisites(&target))
+    }
+
+    fn prerequisites(
+        &self,
+        target: &DeploymentTarget,
+    ) -> devcoordinator2_api::results::DeploymentPreflight {
+        let mut blockers = Vec::new();
+        for component in &target.specification.components {
+            let Some(file) = component.compose_env_file.as_deref() else {
+                continue;
+            };
+            let error = if !self.configuration.authorized(&target.repository_id, file) {
+                Some(ProtocolError::new(
+                    ErrorCode::AuthorizationRequired,
+                    "an administrator must authorize this exact repository environment file using config authorize",
+                ))
+            } else {
+                self.validate_compose_environment(target, file).err()
+            };
+            if let Some(error) = error {
+                blockers.push(devcoordinator2_api::results::DeploymentBlocker {
+                    component: component.name.clone(),
+                    code: error.code,
+                    file: Some(file.to_owned()),
+                    message: error.message,
+                });
+            }
+        }
+        devcoordinator2_api::results::DeploymentPreflight {
+            repository_id: target.repository_id.clone(),
+            name: target.specification.name.clone(),
+            ready: blockers.is_empty(),
+            blockers,
+        }
+    }
+
+    fn validate_compose_environment(
+        &self,
+        target: &DeploymentTarget,
+        file: &str,
+    ) -> Result<(), ProtocolError> {
+        self.files
+            .validate_repository_file(&target.worktree, file)
+            .map_err(|_| {
+                ProtocolError::new(
+                    ErrorCode::RepositoryConfigInvalid,
+                    "declared environment file is unavailable or unsafe",
+                )
+            })?;
+        if !self
+            .git
+            .is_ignored(&target.worktree, file, target.caller_uid, target.caller_gid)
+            .map_err(git_apply_error)?
+        {
+            return Err(ProtocolError::new(
+                ErrorCode::RepositoryConfigInvalid,
+                "declared environment file must remain Git-ignored",
+            ));
+        }
+        Ok(())
     }
 
     pub fn config(&self) -> &Config {
@@ -286,7 +415,62 @@ impl Deployments {
                 .ok_or_else(|| not_found(deployment_id));
         }
         let resolved = self.resolve(path, name, deployment_id, caller)?;
-        self.managed_status(&resolved)
+        let mut status = self.managed_status(&resolved)?;
+        match self.resolve_target_readonly(path, name, deployment_id, caller) {
+            Ok(target) => self.refresh_readiness(&target, &mut status)?,
+            Err(error) => {
+                if let Some(readiness) = &mut status.readiness {
+                    readiness
+                        .blockers
+                        .push(devcoordinator2_api::results::DeploymentBlocker {
+                        component: String::new(),
+                        code: error.code,
+                        file: None,
+                        message:
+                            "current deployment source is unavailable; readiness cannot be verified"
+                                .into(),
+                    });
+                }
+            }
+        }
+        Ok(status)
+    }
+
+    fn refresh_readiness(
+        &self,
+        target: &DeploymentTarget,
+        status: &mut DeploymentStatus,
+    ) -> Result<(), ProtocolError> {
+        let Some(readiness) = &mut status.readiness else {
+            return Ok(());
+        };
+        readiness
+            .blockers
+            .extend(self.prerequisites(target).blockers);
+        match self
+            .git
+            .snapshot(&target.worktree, target.caller_uid, target.caller_gid)
+        {
+            Ok(snapshot) => {
+                let fingerprint = deployment_fingerprint(target, &snapshot);
+                let applied = self.store.get(&target.deployment_id)?;
+                readiness.pending_apply = applied.map(|row| row.spec_fingerprint != fingerprint);
+            }
+            Err(_) => readiness
+                .blockers
+                .push(devcoordinator2_api::results::DeploymentBlocker {
+                    component: String::new(),
+                    code: ErrorCode::DeploymentApplyFailed,
+                    file: None,
+                    message: "current source could not be compared with the applied generation"
+                        .into(),
+                }),
+        }
+        readiness.ready = status.state == "running"
+            && readiness.missing_components.is_empty()
+            && readiness.pending_apply == Some(false)
+            && readiness.blockers.is_empty();
+        Ok(())
     }
 
     pub fn set_domain(&self, params: SetDomain) -> Result<DomainChanged, ProtocolError> {
@@ -347,11 +531,13 @@ impl Deployments {
             .git
             .snapshot(&target.worktree, target.caller_uid, target.caller_gid)
             .map_err(git_apply_error)?;
-        let fingerprint = DeploymentStore::fingerprint(&serde_json::json!({
-            "spec": target.specification.canonical(&target.source),
-            "commit": snapshot.commit,
-            "dirty": snapshot.dirty,
-        }));
+        let prerequisites = self.prerequisites(&target);
+        if !prerequisites.ready {
+            let code = prerequisites.blockers[0].code;
+            return Err(ProtocolError::new(code, "deployment prerequisites are not satisfied; no runtime resources were changed")
+                .with_detail(serde_json::json!({"blockers":prerequisites.blockers.iter().take(3).collect::<Vec<_>>(),"additional_blockers":prerequisites.blockers.len().saturating_sub(3),"inspect":"deployment preflight"}).to_string()));
+        }
+        let fingerprint = deployment_fingerprint(&target, &snapshot);
         let domain = DeploymentStore::effective_domain(
             target.row.as_ref(),
             &target.specification,
@@ -381,6 +567,7 @@ impl Deployments {
             let route_healthy = self.validate_or_withdraw_route(&target.deployment_id)?;
             if status.state == "running" && (!route_expected || route_healthy) {
                 status.unchanged = Some(true);
+                self.refresh_readiness(&target, &mut status)?;
                 return Ok(status);
             }
         }
@@ -463,7 +650,7 @@ impl Deployments {
             self.restore_after_preparation_failure(&target, &old_components, &desired)?;
             return Err(error);
         }
-        self.converge(
+        let mut status = self.converge(
             &target,
             &old_components,
             generation,
@@ -471,7 +658,9 @@ impl Deployments {
             domain.as_deref(),
             None,
             desired,
-        )
+        )?;
+        self.refresh_readiness(&target, &mut status)?;
+        Ok(status)
     }
 
     pub fn rollback(
@@ -2536,11 +2725,11 @@ impl Deployments {
         let mut env_files = Vec::new();
         if let Some(relative) = &component.compose_env_file {
             if !self
-                .config
-                .compose_env_authorized(&target.repository_id, relative)
+                .configuration
+                .authorized(&target.repository_id, relative)
             {
                 return Err(ProtocolError::new(
-                    ErrorCode::RepositoryConfigInvalid,
+                    ErrorCode::AuthorizationRequired,
                     format!(
                         "Compose env_file {relative:?} is not authorized by private instance configuration"
                     ),
@@ -2997,6 +3186,21 @@ impl Deployments {
         deployment_id: Option<&str>,
         caller: &Caller,
     ) -> Result<DeploymentTarget, ProtocolError> {
+        let target = self.resolve_target_readonly(path, name, deployment_id, caller)?;
+        if deployment_id.is_none() {
+            self.registry
+                .register(&target.worktree, caller.uid, caller.gid)?;
+        }
+        Ok(target)
+    }
+
+    fn resolve_target_readonly(
+        &self,
+        path: Option<&str>,
+        name: Option<&str>,
+        deployment_id: Option<&str>,
+        caller: &Caller,
+    ) -> Result<DeploymentTarget, ProtocolError> {
         if let Some(deployment_id) = deployment_id {
             let row = self
                 .store
@@ -3051,10 +3255,21 @@ impl Deployments {
                 "name or deployment_id is required",
             )
         })?;
-        let registered = self
-            .registry
-            .register(Path::new(path), caller.uid, caller.gid)?;
-        let worktree = PathBuf::from(&registered.worktree_path);
+        let resolved =
+            crate::repository::resolve_worktree(Path::new(path), Some((caller.uid, caller.gid)))?;
+        let repository_id = crate::ids::repository_id(&resolved.repository_root).map_err(|_| {
+            ProtocolError::new(
+                ErrorCode::RepositoryNotFound,
+                "cannot resolve repository identity",
+            )
+        })?;
+        let worktree_id = crate::ids::worktree_id(&resolved.worktree_root).map_err(|_| {
+            ProtocolError::new(
+                ErrorCode::RepositoryNotFound,
+                "cannot resolve worktree identity",
+            )
+        })?;
+        let worktree = resolved.worktree_root;
         let (name, explicit_source) = selected
             .split_once('@')
             .map_or((selected, None), |(name, source)| (name, Some(source)));
@@ -3078,12 +3293,12 @@ impl Deployments {
                 format!("deployment {name:?} does not enable source {source:?}"),
             ));
         }
-        let deployment_id = DeploymentStore::deployment_id(&registered.worktree_id, name, &source);
+        let deployment_id = DeploymentStore::deployment_id(&worktree_id, name, &source);
         Ok(DeploymentTarget {
             row: self.store.get(&deployment_id)?,
             deployment_id,
-            repository_id: registered.repository_id,
-            worktree_id: registered.worktree_id,
+            repository_id,
+            worktree_id,
             worktree,
             specification,
             source,
@@ -3122,8 +3337,21 @@ impl Deployments {
             .iter()
             .filter(|component| component.owned)
             .collect::<Vec<_>>();
+        let expected_components = resolved
+            .specification
+            .components
+            .iter()
+            .map(|component| component.name.clone())
+            .collect::<Vec<_>>();
+        let missing_components = expected_components
+            .iter()
+            .filter(|name| !components.iter().any(|component| &component.name == *name))
+            .cloned()
+            .collect::<Vec<_>>();
         let mut state = if row.state == "applying" {
             "applying"
+        } else if !missing_components.is_empty() {
+            "degraded"
         } else if !owned.is_empty() && owned.iter().all(|component| component.state == "running") {
             "running"
         } else if owned.iter().all(|component| component.state == "stopped") {
@@ -3196,6 +3424,13 @@ impl Deployments {
             unchanged: None,
             rolled_back_from: None,
             rolled_back_to: None,
+            readiness: Some(devcoordinator2_api::results::DeploymentReadiness {
+                ready: false,
+                expected_components,
+                missing_components,
+                pending_apply: None,
+                blockers: Vec::new(),
+            }),
         })
     }
 
@@ -4345,6 +4580,7 @@ mod tests {
             Ok(crate::deployment_git::GitSnapshot {
                 commit: Some("a".repeat(40)),
                 dirty: false,
+                source_digest: "a".repeat(64),
             })
         }
 
@@ -4391,6 +4627,7 @@ mod tests {
                 snapshot: Mutex::new(crate::deployment_git::GitSnapshot {
                     commit: Some("a".repeat(40)),
                     dirty: false,
+                    source_digest: "a".repeat(64),
                 }),
                 actions: Mutex::new(Vec::new()),
             }
@@ -5533,5 +5770,232 @@ database="app"
                 .iter()
                 .any(|action| action.contains("volume-remove:"))
         );
+    }
+
+    #[test]
+    fn preflight_and_live_authorization_gate_all_runtime_changes_and_report_source_readiness() {
+        use std::os::unix::fs::PermissionsExt;
+        let world = World::new();
+        let worktree = world._temporary.path().join("prerequisite-repository");
+        std::fs::create_dir(&worktree).unwrap();
+        assert!(
+            std::process::Command::new("git")
+                .args(["init", "--quiet"])
+                .current_dir(&worktree)
+                .status()
+                .unwrap()
+                .success()
+        );
+        std::fs::write(worktree.join("compose.yml"), "services: {}\n").unwrap();
+        std::fs::write(worktree.join(".gitignore"), ".worker.env\n.web.env\n").unwrap();
+        for file in [".worker.env", ".web.env"] {
+            std::fs::write(worktree.join(file), "FIXTURE=private-fixture-marker\n").unwrap();
+        }
+        let specification = r#"
+schema=2
+[deployment.web]
+source="worktree"
+components=["cache","worker","web"]
+[deployment.web.component.cache]
+type="docker"
+image="cache:1"
+[deployment.web.component.worker]
+type="compose"
+files=["compose.yml"]
+services=["bootstrap","worker"]
+finite_services=["bootstrap"]
+independent_services=["worker"]
+env_file=".worker.env"
+[deployment.web.component.web]
+type="compose"
+files=["compose.yml"]
+services=["web"]
+env_file=".web.env"
+"#;
+        std::fs::write(worktree.join(".devcoordinator.toml"), specification).unwrap();
+        let policy = world._temporary.path().join("compose-policy.json");
+        std::fs::write(&policy, r#"{"schema":1,"authorizations":[]}"#).unwrap();
+        std::fs::set_permissions(&policy, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let mut config = world.deployments.config().clone();
+        config.compose_env_allowlist_file = Some(policy.clone());
+        let docker = Arc::new(MutationDocker::new());
+        let git = Arc::new(CheckoutGit::new());
+        let deployments = Deployments::with_runtime_adapters(
+            config.clone(),
+            world.database.clone(),
+            Registry::new(world.database.clone()),
+            docker.clone(),
+            Arc::new(FakeSystemd),
+            Arc::new(ReadyNetwork),
+            git.clone(),
+            Arc::new(FixtureHealth),
+            DeploymentFiles::new(config.deployments_dir(), config.secrets_dir()),
+            Arc::new(FixturePorts),
+            Arc::new(HostClock),
+        );
+        let caller = Caller {
+            uid: rustix::process::getuid().as_raw(),
+            gid: rustix::process::getgid().as_raw(),
+            ..World::caller()
+        };
+        let path = worktree.to_str().unwrap();
+        let repository_count = || {
+            world
+                .database
+                .call(|connection| {
+                    Ok(
+                        connection.query_row("SELECT count(*) FROM repositories", [], |row| {
+                            row.get::<_, i64>(0)
+                        })?,
+                    )
+                })
+                .unwrap()
+        };
+        let before = repository_count();
+        let preflight = deployments
+            .preflight(Some(path), Some("web"), None, &caller)
+            .unwrap();
+        assert!(!preflight.ready);
+        assert_eq!(preflight.blockers.len(), 2);
+        assert!(
+            preflight
+                .blockers
+                .iter()
+                .all(|blocker| blocker.code == ErrorCode::AuthorizationRequired)
+        );
+        assert_eq!(repository_count(), before);
+        let initial = deployments.configuration().get().unwrap();
+        assert_eq!(
+            deployments
+                .apply(Some(path), Some("web"), None, &caller)
+                .unwrap_err()
+                .code,
+            ErrorCode::AuthorizationRequired
+        );
+        assert!(docker.actions.lock().unwrap().is_empty());
+        assert_eq!(
+            deployments.configuration().get().unwrap().active_revision,
+            initial.active_revision
+        );
+        assert_eq!(
+            world
+                .database
+                .call(|connection| Ok(connection.query_row(
+                    "SELECT count(*) FROM deployments",
+                    [],
+                    |row| row.get::<_, i64>(0)
+                )?))
+                .unwrap(),
+            0
+        );
+        let mut revision = initial.active_revision;
+        for (index, file) in [".worker.env", ".web.env"].into_iter().enumerate() {
+            let updated = deployments
+                .set_compose_authorization(
+                    devcoordinator2_api::params::SetComposeEnvAuthorization {
+                        path: Some(path.into()),
+                        name: Some("web".into()),
+                        deployment_id: None,
+                        file: file.into(),
+                        authorized: true,
+                        expected_revision: revision,
+                    },
+                    &caller,
+                )
+                .unwrap();
+            revision = updated.active_revision;
+            assert_eq!(
+                deployments
+                    .preflight(Some(path), Some("web"), None, &caller)
+                    .unwrap()
+                    .blockers
+                    .len(),
+                1 - index
+            );
+        }
+        let applied = deployments
+            .apply(Some(path), Some("web"), None, &caller)
+            .unwrap();
+        assert!(applied.readiness.as_ref().unwrap().ready);
+        let receipt = applied
+            .components
+            .iter()
+            .find(|component| component.name == "worker")
+            .unwrap()
+            .completed_services
+            .clone()
+            .unwrap();
+        assert_eq!(receipt[0].generation, 1);
+        let compose_up_count = || {
+            docker
+                .actions
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|action| action.starts_with("compose-up:"))
+                .count()
+        };
+        let up_count = compose_up_count();
+        {
+            let mut source = git.snapshot.lock().unwrap();
+            source.dirty = true;
+            source.source_digest = "b".repeat(64);
+        }
+        let restarted = deployments
+            .control(
+                "restart",
+                None,
+                None,
+                Some(&applied.deployment_id),
+                Some("worker/worker"),
+                &caller,
+            )
+            .unwrap();
+        assert_eq!(compose_up_count(), up_count);
+        assert_eq!(
+            restarted
+                .components
+                .iter()
+                .find(|component| component.name == "worker")
+                .unwrap()
+                .completed_services
+                .as_ref()
+                .unwrap(),
+            &receipt
+        );
+        let status = deployments
+            .status(None, None, Some(&applied.deployment_id), &caller)
+            .unwrap();
+        assert_eq!(status.state, "running");
+        assert_eq!(status.readiness.as_ref().unwrap().pending_apply, Some(true));
+        assert!(!status.readiness.as_ref().unwrap().ready);
+        let updated = deployments
+            .apply(None, None, Some(&applied.deployment_id), &caller)
+            .unwrap();
+        assert!(updated.readiness.as_ref().unwrap().ready);
+        assert_eq!(updated.current_generation, Some(2));
+        git.snapshot.lock().unwrap().source_digest = "c".repeat(64);
+        assert_eq!(
+            deployments
+                .status(None, None, Some(&applied.deployment_id), &caller)
+                .unwrap()
+                .readiness
+                .unwrap()
+                .pending_apply,
+            Some(true)
+        );
+        let expanded = specification.replace(
+            "\"cache\",\"worker\",\"web\"",
+            "\"cache\",\"worker\",\"web\",\"missing\"",
+        ) + "\n[deployment.web.component.missing]\ntype=\"docker\"\nimage=\"fixture:1\"\n";
+        std::fs::write(worktree.join(".devcoordinator.toml"), expanded).unwrap();
+        let partial = deployments
+            .status(None, None, Some(&applied.deployment_id), &caller)
+            .unwrap();
+        assert_eq!(partial.state, "degraded");
+        assert_eq!(partial.readiness.unwrap().missing_components, ["missing"]);
+        let encoded = serde_json::to_string(&deployments.configuration().get().unwrap()).unwrap();
+        assert!(!encoded.contains("private-fixture-marker"));
+        assert!(!encoded.contains(policy.to_str().unwrap()));
     }
 }

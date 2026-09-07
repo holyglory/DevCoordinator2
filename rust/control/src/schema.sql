@@ -245,6 +245,16 @@ CREATE TABLE IF NOT EXISTS tasks (
 CREATE INDEX IF NOT EXISTS tasks_repository_status ON tasks(repository_id, status);
 CREATE INDEX IF NOT EXISTS tasks_release ON tasks(release_id);
 CREATE INDEX IF NOT EXISTS tasks_parent ON tasks(parent_task_id);
+CREATE TABLE IF NOT EXISTS runtime_configuration_events (
+  sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+  action TEXT NOT NULL,
+  outcome TEXT NOT NULL CHECK(outcome IN ('prepared','activated','failed')),
+  previous_revision TEXT NOT NULL,
+  revision TEXT NOT NULL,
+  actor TEXT NOT NULL,
+  at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS plan_events (
   event_id INTEGER PRIMARY KEY AUTOINCREMENT,
   repository_id TEXT NOT NULL REFERENCES repositories(repository_id),

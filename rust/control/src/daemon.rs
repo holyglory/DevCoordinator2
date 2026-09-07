@@ -4,16 +4,13 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
-#[cfg(unix)]
-use std::os::unix::fs::FileTypeExt;
-
 use devcoordinator2_api::{
     EmptyParams, ErrorCode, MAX_REQUEST_BYTES, PingData, ProtocolError, RequestEnvelope,
     ResponseEnvelope, encode_response, parse_request,
 };
 use serde_json::Value;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{UnixListener, UnixStream};
+use tokio::net::UnixStream;
 use tokio::sync::watch;
 use tokio::task::JoinSet;
 use tokio::time::timeout;
@@ -186,63 +183,91 @@ pub async fn serve(socket_path: &Path, mut shutdown: watch::Receiver<bool>) -> s
     serve_with_app(socket_path, &mut shutdown, app).await
 }
 
+pub struct DaemonEndpoint {
+    endpoint: crate::socket_endpoint::SocketEndpoint,
+    changes: crate::socket_endpoint::SocketEvents,
+    path: std::path::PathBuf,
+}
+
+impl DaemonEndpoint {
+    pub async fn bind(socket_path: &Path) -> std::io::Result<Self> {
+        let parent = socket_path.parent().unwrap_or_else(|| Path::new("."));
+        tokio::fs::create_dir_all(parent).await?;
+        let changes = crate::socket_endpoint::SocketEvents::new(parent)?;
+        let endpoint = crate::socket_endpoint::SocketEndpoint::bind(socket_path).await?;
+        set_socket_mode(socket_path)?;
+        Ok(Self {
+            endpoint,
+            changes,
+            path: socket_path.to_owned(),
+        })
+    }
+
+    pub async fn serve(
+        self,
+        shutdown: &mut watch::Receiver<bool>,
+        app: Arc<App>,
+    ) -> std::io::Result<()> {
+        let Self {
+            mut endpoint,
+            mut changes,
+            path,
+        } = self;
+        info!(socket = %path.display(), "serving protocol 2");
+        let mut connections = JoinSet::new();
+        while !*shutdown.borrow() {
+            tokio::select! {
+                changed = shutdown.changed() => {
+                    if changed.is_err() || *shutdown.borrow() {
+                        break;
+                    }
+                }
+                changed = changes.changed() => {
+                    changed?;
+                    match endpoint.recover_missing() {
+                        Ok(true) => {
+                            set_socket_mode(&path)?;
+                            info!("restored missing control endpoint without restarting application work");
+                        }
+                        Ok(false) => {}
+                        Err(error) => error!(%error, "control endpoint recovery refused"),
+                    }
+                }
+                accepted = endpoint.listener.accept() => {
+                    let (stream, _) = accepted?;
+                    let app = Arc::clone(&app);
+                    connections.spawn(async move {
+                        if let Err(error) = serve_connection(stream, app).await {
+                            error!(%error, "connection failed");
+                        }
+                    });
+                }
+                completed = connections.join_next(), if !connections.is_empty() => {
+                    if let Some(Err(error)) = completed {
+                        error!(%error, "connection task failed");
+                    }
+                }
+            }
+        }
+        drop(endpoint);
+        while let Some(completed) = connections.join_next().await {
+            if let Err(error) = completed {
+                error!(%error, "connection task failed during shutdown");
+            }
+        }
+        Ok(())
+    }
+}
+
 pub async fn serve_with_app(
     socket_path: &Path,
     shutdown: &mut watch::Receiver<bool>,
     app: Arc<App>,
 ) -> std::io::Result<()> {
-    if let Some(parent) = socket_path.parent() {
-        tokio::fs::create_dir_all(parent).await?;
-    }
-    match tokio::fs::symlink_metadata(socket_path).await {
-        Ok(metadata) if metadata.file_type().is_socket() => {
-            tokio::fs::remove_file(socket_path).await?
-        }
-        Ok(_) => {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::AlreadyExists,
-                format!("refusing to replace non-socket {}", socket_path.display()),
-            ));
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => return Err(error),
-    }
-    let listener = UnixListener::bind(socket_path)?;
-    set_socket_mode(socket_path)?;
-    info!(socket = %socket_path.display(), "serving protocol 2");
-    let mut connections = JoinSet::new();
-
-    loop {
-        tokio::select! {
-            changed = shutdown.changed() => {
-                if changed.is_err() || *shutdown.borrow() {
-                    break;
-                }
-            }
-            accepted = listener.accept() => {
-                let (stream, _) = accepted?;
-                let app = Arc::clone(&app);
-                connections.spawn(async move {
-                    if let Err(error) = serve_connection(stream, app).await {
-                        error!(%error, "connection failed");
-                    }
-                });
-            }
-            completed = connections.join_next(), if !connections.is_empty() => {
-                if let Some(Err(error)) = completed {
-                    error!(%error, "connection task failed");
-                }
-            }
-        }
-    }
-    drop(listener);
-    let _ = tokio::fs::remove_file(socket_path).await;
-    while let Some(completed) = connections.join_next().await {
-        if let Err(error) = completed {
-            error!(%error, "connection task failed during shutdown");
-        }
-    }
-    Ok(())
+    DaemonEndpoint::bind(socket_path)
+        .await?
+        .serve(shutdown, app)
+        .await
 }
 
 async fn serve_connection(mut stream: UnixStream, app: Arc<App>) -> std::io::Result<()> {
@@ -438,6 +463,39 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn duplicate_daemon_start_preserves_the_active_endpoint() {
+        let temporary = tempdir().expect("tempdir");
+        let socket = temporary.path().join("daemon.sock");
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let server_socket = socket.clone();
+        let server = tokio::spawn(async move { serve(&server_socket, shutdown_rx).await });
+        timeout(Duration::from_secs(2), async {
+            while !socket.exists() {
+                assert!(!server.is_finished());
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("first endpoint readiness");
+        let (_duplicate_tx, duplicate_rx) = watch::channel(false);
+        let duplicate = timeout(Duration::from_secs(1), serve(&socket, duplicate_rx)).await;
+        let response = crate::client::call(
+            &socket,
+            "ping",
+            serde_json::json!({}),
+            ClientContext::default(),
+        )
+        .await;
+        shutdown_tx.send(true).expect("shutdown");
+        server.await.expect("server task").expect("server shutdown");
+        let error = duplicate
+            .expect("duplicate must be rejected promptly")
+            .expect_err("duplicate is refused");
+        assert_eq!(error.kind(), std::io::ErrorKind::AddrInUse);
+        assert!(matches!(response, Ok(ResponseEnvelope::Success { .. })));
+    }
+
+    #[tokio::test]
     async fn ping_crosses_real_unix_socket() {
         let temporary = tempdir().expect("tempdir");
         let socket = temporary.path().join("daemon.sock");
@@ -478,6 +536,73 @@ mod tests {
         ));
         shutdown_tx.send(true).expect("shutdown");
         server.await.expect("server task").expect("server result");
+    }
+
+    #[tokio::test]
+    async fn endpoint_loss_recovers_without_cancelling_an_accepted_operation() {
+        use std::os::unix::fs::PermissionsExt;
+        let temporary = tempdir().expect("tempdir");
+        let socket = temporary.path().join("daemon.sock");
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (dropped_tx, mut dropped_rx) = tokio::sync::oneshot::channel();
+        let app = Arc::new(App::with_executor(
+            None,
+            Arc::new(WaitingExecutor {
+                started: Arc::new(Mutex::new(Some(started_tx))),
+                dropped: Arc::new(Mutex::new(Some(dropped_tx))),
+            }),
+        ));
+        let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
+        let server_socket = socket.clone();
+        let server =
+            tokio::spawn(
+                async move { serve_with_app(&server_socket, &mut shutdown_rx, app).await },
+            );
+        timeout(Duration::from_secs(2), async {
+            while !socket.exists() {
+                assert!(!server.is_finished());
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("socket readiness");
+        let mut stream = UnixStream::connect(&socket).await.unwrap();
+        stream.write_all(b"{\"protocol\":2,\"id\":\"wait\",\"operation\":\"event.wait\",\"params\":{\"filters\":[{\"filter_id\":\"retained\",\"categories\":[\"health\"]}]},\"client\":{}}\n").await.unwrap();
+        timeout(Duration::from_secs(2), started_rx)
+            .await
+            .unwrap()
+            .unwrap();
+        let mut changes = crate::socket_endpoint::SocketEvents::new(temporary.path()).unwrap();
+        std::fs::remove_file(&socket).expect("remove only the isolated fixture socket");
+        timeout(Duration::from_secs(2), async {
+            while !socket.exists() {
+                changes.changed().await.expect("directory change");
+            }
+        })
+        .await
+        .expect("endpoint recovery");
+        let replacement_connection = UnixStream::connect(&socket)
+            .await
+            .expect("recovered listener");
+        assert_eq!(
+            std::fs::metadata(&socket).unwrap().permissions().mode() & 0o777,
+            0o666
+        );
+        assert!(matches!(
+            dropped_rx.try_recv(),
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+        ));
+        assert!(!server.is_finished());
+        drop(replacement_connection);
+        stream.shutdown().await.unwrap();
+        drop(stream);
+        timeout(Duration::from_secs(2), dropped_rx)
+            .await
+            .unwrap()
+            .unwrap();
+        shutdown_tx.send(true).unwrap();
+        server.await.unwrap().unwrap();
+        assert!(!socket.exists());
     }
 
     #[tokio::test]

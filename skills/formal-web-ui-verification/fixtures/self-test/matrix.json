@@ -1,6 +1,13 @@
 {
   "schema_version": 1,
   "cases": [
+    {"name":"translucent-dark-readable","path":"translucent-dark-readable.html","critical":false,"forbidden_rules":["insufficient-text-contrast","invisible-text"],"target":{"theme":"dark"}},
+    {"name":"translucent-light-readable","path":"translucent-light-readable.html","critical":false,"forbidden_rules":["insufficient-text-contrast","invisible-text"],"target":{"theme":"light"}},
+    {"name":"translucent-dark-unreadable","path":"translucent-dark-unreadable.html","critical":true,"critical_rules":["insufficient-text-contrast"],"target":{"theme":"dark"}},
+    {"name":"custom-modal-inert-background","path":"custom-modal-inert-background.html","critical":false,"forbidden_rules":["occluded","partially-occluded","clipped-by-ancestor"]},
+    {"name":"custom-modal-interior-occlusion","path":"custom-modal-interior-occlusion.html","critical":true,"critical_rules":["occluded"]},
+    {"name":"custom-modal-hidden-only","path":"custom-modal-hidden-only.html","critical":true,"critical_rules":["occluded"]},
+    {"name":"custom-modal-unfocused","path":"custom-modal-unfocused.html","critical":true,"critical_rules":["occluded"]},
     {"name":"modal-scroll-reachable","path":"modal-scroll-reachable.html","critical":false,"forbidden_rules":["fixed-offscreen-cut","fixed-offscreen-hidden","occluded"],"target":{"regions":[{"selector":"dialog","role":"primary-content","journey":"fixture-primary"}]}},
     {"name":"modal-scroll-locked","path":"modal-scroll-locked.html","critical":true,"critical_rules":["clipped-by-ancestor"],"target":{"regions":[{"selector":"dialog","role":"primary-content","journey":"fixture-primary"}]}},
     {"name":"modal-active-occlusion","path":"modal-active-occlusion.html","critical":true,"critical_rules":["occluded"],"target":{"regions":[{"selector":"dialog","role":"primary-content","journey":"fixture-primary"}]}},

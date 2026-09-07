@@ -5213,6 +5213,16 @@
               },
               "readiness_eligible": {
                 "type": "boolean"
+              },
+              "required_coverage": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/EvidenceRequiredCoverage"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
               }
             },
             "required": [
@@ -5220,6 +5230,49 @@
               "planned_pages",
               "failed",
               "readiness_eligible"
+            ],
+            "type": "object"
+          },
+          "EvidenceCoverageEntry": {
+            "additionalProperties": false,
+            "properties": {
+              "matching_cell_ids": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "reason": {
+                "type": "string"
+              },
+              "state": {
+                "type": "string"
+              },
+              "status": {
+                "type": "string"
+              },
+              "target": {
+                "type": "string"
+              },
+              "viewport": {
+                "type": "string"
+              },
+              "width": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "target",
+              "state",
+              "viewport",
+              "status",
+              "matching_cell_ids",
+              "reason"
             ],
             "type": "object"
           },
@@ -5260,6 +5313,37 @@
               "phase",
               "case",
               "code"
+            ],
+            "type": "object"
+          },
+          "EvidenceRequiredCoverage": {
+            "additionalProperties": false,
+            "properties": {
+              "declared_count": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "entries": {
+                "items": {
+                  "$ref": "#/$defs/EvidenceCoverageEntry"
+                },
+                "type": "array"
+              },
+              "failed": {
+                "type": "boolean"
+              },
+              "satisfied_count": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "declared_count",
+              "satisfied_count",
+              "failed",
+              "entries"
             ],
             "type": "object"
           },
@@ -11060,6 +11144,695 @@
         "routes": [
           {
             "dispatch": "protocol",
+            "route": "config show"
+          }
+        ]
+      },
+      "description": "Inspect live configuration revisions and bounded change history without exposing private settings.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "title": "EmptyParams",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "title": "EmptyParams",
+            "type": "object"
+          },
+          "name": "config_get",
+          "transform": "identity"
+        }
+      ],
+      "name": "config.get",
+      "outputSchema": {
+        "$defs": {
+          "Change": {
+            "additionalProperties": false,
+            "properties": {
+              "action": {
+                "type": "string"
+              },
+              "at": {
+                "type": "string"
+              },
+              "outcome": {
+                "type": "string"
+              },
+              "previous_revision": {
+                "type": "string"
+              },
+              "revision": {
+                "type": "string"
+              },
+              "sequence": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "sequence",
+              "action",
+              "outcome",
+              "previous_revision",
+              "revision",
+              "at"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "active_revision": {
+            "type": "string"
+          },
+          "authorization_count": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "configured": {
+            "type": "boolean"
+          },
+          "history": {
+            "items": {
+              "$ref": "#/$defs/Change"
+            },
+            "type": "array"
+          },
+          "pending_reload": {
+            "type": "boolean"
+          },
+          "reloadable_settings": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "restart_required_settings": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "stored_revision": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "validation_error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "configured",
+          "active_revision",
+          "pending_reload",
+          "authorization_count",
+          "reloadable_settings",
+          "restart_required_settings",
+          "history"
+        ],
+        "title": "Snapshot",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "server"
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "config authorize"
+          },
+          {
+            "dispatch": "protocol",
+            "route": "config revoke"
+          }
+        ]
+      },
+      "description": "Grant or revoke one declared repository environment-file authorization and activate it without restart.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "authorized": {
+            "type": "boolean"
+          },
+          "deployment_id": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "expected_revision": {
+            "type": "string"
+          },
+          "file": {
+            "type": "string"
+          },
+          "name": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "path": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "file",
+          "authorized",
+          "expected_revision"
+        ],
+        "title": "SetComposeEnvAuthorization",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "authorized": {
+                "type": "boolean"
+              },
+              "deployment_id": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "expected_revision": {
+                "type": "string"
+              },
+              "file": {
+                "type": "string"
+              },
+              "name": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "path": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "file",
+              "authorized",
+              "expected_revision"
+            ],
+            "title": "SetComposeEnvAuthorization",
+            "type": "object"
+          },
+          "name": "config_env_set",
+          "transform": "identity"
+        }
+      ],
+      "name": "config.env.set",
+      "outputSchema": {
+        "$defs": {
+          "Change": {
+            "additionalProperties": false,
+            "properties": {
+              "action": {
+                "type": "string"
+              },
+              "at": {
+                "type": "string"
+              },
+              "outcome": {
+                "type": "string"
+              },
+              "previous_revision": {
+                "type": "string"
+              },
+              "revision": {
+                "type": "string"
+              },
+              "sequence": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "sequence",
+              "action",
+              "outcome",
+              "previous_revision",
+              "revision",
+              "at"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "active_revision": {
+            "type": "string"
+          },
+          "authorization_count": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "configured": {
+            "type": "boolean"
+          },
+          "history": {
+            "items": {
+              "$ref": "#/$defs/Change"
+            },
+            "type": "array"
+          },
+          "pending_reload": {
+            "type": "boolean"
+          },
+          "reloadable_settings": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "restart_required_settings": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "stored_revision": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "validation_error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "configured",
+          "active_revision",
+          "pending_reload",
+          "authorization_count",
+          "reloadable_settings",
+          "restart_required_settings",
+          "history"
+        ],
+        "title": "Snapshot",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "reversible",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "server"
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "config reload"
+          }
+        ]
+      },
+      "description": "Validate and activate reloadable private settings, retaining the last working state on failure.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "expected_revision": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "expected_revision"
+        ],
+        "title": "Revision",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "expected_revision": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "expected_revision"
+            ],
+            "title": "Revision",
+            "type": "object"
+          },
+          "name": "config_reload",
+          "transform": "identity"
+        }
+      ],
+      "name": "config.reload",
+      "outputSchema": {
+        "$defs": {
+          "Change": {
+            "additionalProperties": false,
+            "properties": {
+              "action": {
+                "type": "string"
+              },
+              "at": {
+                "type": "string"
+              },
+              "outcome": {
+                "type": "string"
+              },
+              "previous_revision": {
+                "type": "string"
+              },
+              "revision": {
+                "type": "string"
+              },
+              "sequence": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "sequence",
+              "action",
+              "outcome",
+              "previous_revision",
+              "revision",
+              "at"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "active_revision": {
+            "type": "string"
+          },
+          "authorization_count": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "configured": {
+            "type": "boolean"
+          },
+          "history": {
+            "items": {
+              "$ref": "#/$defs/Change"
+            },
+            "type": "array"
+          },
+          "pending_reload": {
+            "type": "boolean"
+          },
+          "reloadable_settings": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "restart_required_settings": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "stored_revision": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "validation_error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "configured",
+          "active_revision",
+          "pending_reload",
+          "authorization_count",
+          "reloadable_settings",
+          "restart_required_settings",
+          "history"
+        ],
+        "title": "Snapshot",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "reversible",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "server"
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "deployment preflight"
+          }
+        ]
+      },
+      "description": "Check declared deployment prerequisites without registering or changing runtime resources.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "deployment_id": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "path": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "title": "DeploymentReference",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "deployment_id": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "name": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "path": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "title": "DeploymentReference",
+            "type": "object"
+          },
+          "name": "deployment_preflight",
+          "transform": "identity"
+        }
+      ],
+      "name": "deployment.preflight",
+      "outputSchema": {
+        "$defs": {
+          "DeploymentBlocker": {
+            "additionalProperties": false,
+            "properties": {
+              "code": {
+                "$ref": "#/$defs/ErrorCode"
+              },
+              "component": {
+                "type": "string"
+              },
+              "file": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "message": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "component",
+              "code",
+              "message"
+            ],
+            "type": "object"
+          },
+          "ErrorCode": {
+            "enum": [
+              "protocol_invalid",
+              "protocol_unsupported",
+              "request_too_large",
+              "operation_unknown",
+              "params_invalid",
+              "repository_not_found",
+              "repository_archived",
+              "repository_archive_blocked",
+              "repository_config_invalid",
+              "authorization_required",
+              "configuration_conflict",
+              "configuration_invalid",
+              "configuration_restart_required",
+              "worktree_busy",
+              "test_not_found",
+              "test_log_unavailable",
+              "log_not_found",
+              "log_expired",
+              "cursor_stale",
+              "structured_evidence_invalid",
+              "test_evidence_expired",
+              "test_evidence_not_found",
+              "test_evidence_tampered",
+              "test_artifact_expired",
+              "test_artifact_not_found",
+              "test_artifact_tampered",
+              "test_start_failed",
+              "tests_draining",
+              "unit_stop_failed",
+              "deployment_not_found",
+              "busy",
+              "deployment_apply_failed",
+              "deployment_action_failed",
+              "observed_only",
+              "rollback_unavailable",
+              "permission_denied",
+              "user_not_found",
+              "task_not_found",
+              "release_not_found",
+              "decision_not_found",
+              "glossary_not_found",
+              "glossary_conflict",
+              "internal_error",
+              "daemon_unavailable"
+            ],
+            "type": "string"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "blockers": {
+            "items": {
+              "$ref": "#/$defs/DeploymentBlocker"
+            },
+            "type": "array"
+          },
+          "name": {
+            "type": "string"
+          },
+          "ready": {
+            "type": "boolean"
+          },
+          "repository_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "repository_id",
+          "name",
+          "ready",
+          "blockers"
+        ],
+        "title": "DeploymentPreflight",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "deployment"
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
             "route": "deployment list"
           }
         ]
@@ -11516,11 +12289,125 @@
             ],
             "type": "object"
           },
+          "DeploymentBlocker": {
+            "additionalProperties": false,
+            "properties": {
+              "code": {
+                "$ref": "#/$defs/ErrorCode"
+              },
+              "component": {
+                "type": "string"
+              },
+              "file": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "message": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "component",
+              "code",
+              "message"
+            ],
+            "type": "object"
+          },
+          "DeploymentReadiness": {
+            "additionalProperties": false,
+            "properties": {
+              "blockers": {
+                "items": {
+                  "$ref": "#/$defs/DeploymentBlocker"
+                },
+                "type": "array"
+              },
+              "expected_components": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "missing_components": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "pending_apply": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              },
+              "ready": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "ready",
+              "expected_components",
+              "missing_components",
+              "blockers"
+            ],
+            "type": "object"
+          },
           "DeploymentSource": {
             "enum": [
               "worktree",
               "checkout",
               "observed"
+            ],
+            "type": "string"
+          },
+          "ErrorCode": {
+            "enum": [
+              "protocol_invalid",
+              "protocol_unsupported",
+              "request_too_large",
+              "operation_unknown",
+              "params_invalid",
+              "repository_not_found",
+              "repository_archived",
+              "repository_archive_blocked",
+              "repository_config_invalid",
+              "authorization_required",
+              "configuration_conflict",
+              "configuration_invalid",
+              "configuration_restart_required",
+              "worktree_busy",
+              "test_not_found",
+              "test_log_unavailable",
+              "log_not_found",
+              "log_expired",
+              "cursor_stale",
+              "structured_evidence_invalid",
+              "test_evidence_expired",
+              "test_evidence_not_found",
+              "test_evidence_tampered",
+              "test_artifact_expired",
+              "test_artifact_not_found",
+              "test_artifact_tampered",
+              "test_start_failed",
+              "tests_draining",
+              "unit_stop_failed",
+              "deployment_not_found",
+              "busy",
+              "deployment_apply_failed",
+              "deployment_action_failed",
+              "observed_only",
+              "rollback_unavailable",
+              "permission_denied",
+              "user_not_found",
+              "task_not_found",
+              "release_not_found",
+              "decision_not_found",
+              "glossary_not_found",
+              "glossary_conflict",
+              "internal_error",
+              "daemon_unavailable"
             ],
             "type": "string"
           }
@@ -11597,6 +12484,16 @@
           },
           "public": {
             "type": "boolean"
+          },
+          "readiness": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/DeploymentReadiness"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "repository_id": {
             "type": "string"
@@ -12106,11 +13003,125 @@
             ],
             "type": "object"
           },
+          "DeploymentBlocker": {
+            "additionalProperties": false,
+            "properties": {
+              "code": {
+                "$ref": "#/$defs/ErrorCode"
+              },
+              "component": {
+                "type": "string"
+              },
+              "file": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "message": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "component",
+              "code",
+              "message"
+            ],
+            "type": "object"
+          },
+          "DeploymentReadiness": {
+            "additionalProperties": false,
+            "properties": {
+              "blockers": {
+                "items": {
+                  "$ref": "#/$defs/DeploymentBlocker"
+                },
+                "type": "array"
+              },
+              "expected_components": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "missing_components": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "pending_apply": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              },
+              "ready": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "ready",
+              "expected_components",
+              "missing_components",
+              "blockers"
+            ],
+            "type": "object"
+          },
           "DeploymentSource": {
             "enum": [
               "worktree",
               "checkout",
               "observed"
+            ],
+            "type": "string"
+          },
+          "ErrorCode": {
+            "enum": [
+              "protocol_invalid",
+              "protocol_unsupported",
+              "request_too_large",
+              "operation_unknown",
+              "params_invalid",
+              "repository_not_found",
+              "repository_archived",
+              "repository_archive_blocked",
+              "repository_config_invalid",
+              "authorization_required",
+              "configuration_conflict",
+              "configuration_invalid",
+              "configuration_restart_required",
+              "worktree_busy",
+              "test_not_found",
+              "test_log_unavailable",
+              "log_not_found",
+              "log_expired",
+              "cursor_stale",
+              "structured_evidence_invalid",
+              "test_evidence_expired",
+              "test_evidence_not_found",
+              "test_evidence_tampered",
+              "test_artifact_expired",
+              "test_artifact_not_found",
+              "test_artifact_tampered",
+              "test_start_failed",
+              "tests_draining",
+              "unit_stop_failed",
+              "deployment_not_found",
+              "busy",
+              "deployment_apply_failed",
+              "deployment_action_failed",
+              "observed_only",
+              "rollback_unavailable",
+              "permission_denied",
+              "user_not_found",
+              "task_not_found",
+              "release_not_found",
+              "decision_not_found",
+              "glossary_not_found",
+              "glossary_conflict",
+              "internal_error",
+              "daemon_unavailable"
             ],
             "type": "string"
           }
@@ -12187,6 +13198,16 @@
           },
           "public": {
             "type": "boolean"
+          },
+          "readiness": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/DeploymentReadiness"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "repository_id": {
             "type": "string"
@@ -12538,11 +13559,125 @@
             ],
             "type": "object"
           },
+          "DeploymentBlocker": {
+            "additionalProperties": false,
+            "properties": {
+              "code": {
+                "$ref": "#/$defs/ErrorCode"
+              },
+              "component": {
+                "type": "string"
+              },
+              "file": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "message": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "component",
+              "code",
+              "message"
+            ],
+            "type": "object"
+          },
+          "DeploymentReadiness": {
+            "additionalProperties": false,
+            "properties": {
+              "blockers": {
+                "items": {
+                  "$ref": "#/$defs/DeploymentBlocker"
+                },
+                "type": "array"
+              },
+              "expected_components": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "missing_components": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "pending_apply": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              },
+              "ready": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "ready",
+              "expected_components",
+              "missing_components",
+              "blockers"
+            ],
+            "type": "object"
+          },
           "DeploymentSource": {
             "enum": [
               "worktree",
               "checkout",
               "observed"
+            ],
+            "type": "string"
+          },
+          "ErrorCode": {
+            "enum": [
+              "protocol_invalid",
+              "protocol_unsupported",
+              "request_too_large",
+              "operation_unknown",
+              "params_invalid",
+              "repository_not_found",
+              "repository_archived",
+              "repository_archive_blocked",
+              "repository_config_invalid",
+              "authorization_required",
+              "configuration_conflict",
+              "configuration_invalid",
+              "configuration_restart_required",
+              "worktree_busy",
+              "test_not_found",
+              "test_log_unavailable",
+              "log_not_found",
+              "log_expired",
+              "cursor_stale",
+              "structured_evidence_invalid",
+              "test_evidence_expired",
+              "test_evidence_not_found",
+              "test_evidence_tampered",
+              "test_artifact_expired",
+              "test_artifact_not_found",
+              "test_artifact_tampered",
+              "test_start_failed",
+              "tests_draining",
+              "unit_stop_failed",
+              "deployment_not_found",
+              "busy",
+              "deployment_apply_failed",
+              "deployment_action_failed",
+              "observed_only",
+              "rollback_unavailable",
+              "permission_denied",
+              "user_not_found",
+              "task_not_found",
+              "release_not_found",
+              "decision_not_found",
+              "glossary_not_found",
+              "glossary_conflict",
+              "internal_error",
+              "daemon_unavailable"
             ],
             "type": "string"
           }
@@ -12619,6 +13754,16 @@
           },
           "public": {
             "type": "boolean"
+          },
+          "readiness": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/DeploymentReadiness"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "repository_id": {
             "type": "string"
@@ -12984,11 +14129,125 @@
             ],
             "type": "object"
           },
+          "DeploymentBlocker": {
+            "additionalProperties": false,
+            "properties": {
+              "code": {
+                "$ref": "#/$defs/ErrorCode"
+              },
+              "component": {
+                "type": "string"
+              },
+              "file": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "message": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "component",
+              "code",
+              "message"
+            ],
+            "type": "object"
+          },
+          "DeploymentReadiness": {
+            "additionalProperties": false,
+            "properties": {
+              "blockers": {
+                "items": {
+                  "$ref": "#/$defs/DeploymentBlocker"
+                },
+                "type": "array"
+              },
+              "expected_components": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "missing_components": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "pending_apply": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              },
+              "ready": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "ready",
+              "expected_components",
+              "missing_components",
+              "blockers"
+            ],
+            "type": "object"
+          },
           "DeploymentSource": {
             "enum": [
               "worktree",
               "checkout",
               "observed"
+            ],
+            "type": "string"
+          },
+          "ErrorCode": {
+            "enum": [
+              "protocol_invalid",
+              "protocol_unsupported",
+              "request_too_large",
+              "operation_unknown",
+              "params_invalid",
+              "repository_not_found",
+              "repository_archived",
+              "repository_archive_blocked",
+              "repository_config_invalid",
+              "authorization_required",
+              "configuration_conflict",
+              "configuration_invalid",
+              "configuration_restart_required",
+              "worktree_busy",
+              "test_not_found",
+              "test_log_unavailable",
+              "log_not_found",
+              "log_expired",
+              "cursor_stale",
+              "structured_evidence_invalid",
+              "test_evidence_expired",
+              "test_evidence_not_found",
+              "test_evidence_tampered",
+              "test_artifact_expired",
+              "test_artifact_not_found",
+              "test_artifact_tampered",
+              "test_start_failed",
+              "tests_draining",
+              "unit_stop_failed",
+              "deployment_not_found",
+              "busy",
+              "deployment_apply_failed",
+              "deployment_action_failed",
+              "observed_only",
+              "rollback_unavailable",
+              "permission_denied",
+              "user_not_found",
+              "task_not_found",
+              "release_not_found",
+              "decision_not_found",
+              "glossary_not_found",
+              "glossary_conflict",
+              "internal_error",
+              "daemon_unavailable"
             ],
             "type": "string"
           }
@@ -13065,6 +14324,16 @@
           },
           "public": {
             "type": "boolean"
+          },
+          "readiness": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/DeploymentReadiness"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "repository_id": {
             "type": "string"
@@ -13430,11 +14699,125 @@
             ],
             "type": "object"
           },
+          "DeploymentBlocker": {
+            "additionalProperties": false,
+            "properties": {
+              "code": {
+                "$ref": "#/$defs/ErrorCode"
+              },
+              "component": {
+                "type": "string"
+              },
+              "file": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "message": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "component",
+              "code",
+              "message"
+            ],
+            "type": "object"
+          },
+          "DeploymentReadiness": {
+            "additionalProperties": false,
+            "properties": {
+              "blockers": {
+                "items": {
+                  "$ref": "#/$defs/DeploymentBlocker"
+                },
+                "type": "array"
+              },
+              "expected_components": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "missing_components": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "pending_apply": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              },
+              "ready": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "ready",
+              "expected_components",
+              "missing_components",
+              "blockers"
+            ],
+            "type": "object"
+          },
           "DeploymentSource": {
             "enum": [
               "worktree",
               "checkout",
               "observed"
+            ],
+            "type": "string"
+          },
+          "ErrorCode": {
+            "enum": [
+              "protocol_invalid",
+              "protocol_unsupported",
+              "request_too_large",
+              "operation_unknown",
+              "params_invalid",
+              "repository_not_found",
+              "repository_archived",
+              "repository_archive_blocked",
+              "repository_config_invalid",
+              "authorization_required",
+              "configuration_conflict",
+              "configuration_invalid",
+              "configuration_restart_required",
+              "worktree_busy",
+              "test_not_found",
+              "test_log_unavailable",
+              "log_not_found",
+              "log_expired",
+              "cursor_stale",
+              "structured_evidence_invalid",
+              "test_evidence_expired",
+              "test_evidence_not_found",
+              "test_evidence_tampered",
+              "test_artifact_expired",
+              "test_artifact_not_found",
+              "test_artifact_tampered",
+              "test_start_failed",
+              "tests_draining",
+              "unit_stop_failed",
+              "deployment_not_found",
+              "busy",
+              "deployment_apply_failed",
+              "deployment_action_failed",
+              "observed_only",
+              "rollback_unavailable",
+              "permission_denied",
+              "user_not_found",
+              "task_not_found",
+              "release_not_found",
+              "decision_not_found",
+              "glossary_not_found",
+              "glossary_conflict",
+              "internal_error",
+              "daemon_unavailable"
             ],
             "type": "string"
           }
@@ -13511,6 +14894,16 @@
           },
           "public": {
             "type": "boolean"
+          },
+          "readiness": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/DeploymentReadiness"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "repository_id": {
             "type": "string"
@@ -13876,11 +15269,125 @@
             ],
             "type": "object"
           },
+          "DeploymentBlocker": {
+            "additionalProperties": false,
+            "properties": {
+              "code": {
+                "$ref": "#/$defs/ErrorCode"
+              },
+              "component": {
+                "type": "string"
+              },
+              "file": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "message": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "component",
+              "code",
+              "message"
+            ],
+            "type": "object"
+          },
+          "DeploymentReadiness": {
+            "additionalProperties": false,
+            "properties": {
+              "blockers": {
+                "items": {
+                  "$ref": "#/$defs/DeploymentBlocker"
+                },
+                "type": "array"
+              },
+              "expected_components": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "missing_components": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "pending_apply": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              },
+              "ready": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "ready",
+              "expected_components",
+              "missing_components",
+              "blockers"
+            ],
+            "type": "object"
+          },
           "DeploymentSource": {
             "enum": [
               "worktree",
               "checkout",
               "observed"
+            ],
+            "type": "string"
+          },
+          "ErrorCode": {
+            "enum": [
+              "protocol_invalid",
+              "protocol_unsupported",
+              "request_too_large",
+              "operation_unknown",
+              "params_invalid",
+              "repository_not_found",
+              "repository_archived",
+              "repository_archive_blocked",
+              "repository_config_invalid",
+              "authorization_required",
+              "configuration_conflict",
+              "configuration_invalid",
+              "configuration_restart_required",
+              "worktree_busy",
+              "test_not_found",
+              "test_log_unavailable",
+              "log_not_found",
+              "log_expired",
+              "cursor_stale",
+              "structured_evidence_invalid",
+              "test_evidence_expired",
+              "test_evidence_not_found",
+              "test_evidence_tampered",
+              "test_artifact_expired",
+              "test_artifact_not_found",
+              "test_artifact_tampered",
+              "test_start_failed",
+              "tests_draining",
+              "unit_stop_failed",
+              "deployment_not_found",
+              "busy",
+              "deployment_apply_failed",
+              "deployment_action_failed",
+              "observed_only",
+              "rollback_unavailable",
+              "permission_denied",
+              "user_not_found",
+              "task_not_found",
+              "release_not_found",
+              "decision_not_found",
+              "glossary_not_found",
+              "glossary_conflict",
+              "internal_error",
+              "daemon_unavailable"
             ],
             "type": "string"
           }
@@ -13957,6 +15464,16 @@
           },
           "public": {
             "type": "boolean"
+          },
+          "readiness": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/DeploymentReadiness"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "repository_id": {
             "type": "string"

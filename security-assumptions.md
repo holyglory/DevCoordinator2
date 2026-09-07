@@ -62,6 +62,13 @@ untracked `instance/` directory and in the installed instance configuration
   escape, unrelated-account access, or production secrets, and must be
   re-reviewed when the repository trust boundary changes
   (DC2-2026-08-28-COMPOSE-REPOSITORY-ENV).
+- Existing trusted local callers and server administrators may grant/revoke
+  one declared repository/file pair and reload the preconfigured policy live
+  (DC2-2026-09-07-SCOPED-CONFIGURATION). This retains exact-target authorization,
+  ignored-file/nofollow checks, ownership/mode, stale-revision detection, and
+  value-free permanent receipts. Invalid reload retains the last good policy.
+  Policy location and other instance settings are not live-editable. No
+  previously refused repository grant is implied by installing this capability.
 - Runaway processes, containers, storage growth, stale work, malformed
   input, path escape, and lost replies are credible operational failures and
   are handled as such, not as security incidents.

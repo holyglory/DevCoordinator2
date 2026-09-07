@@ -15,6 +15,10 @@ use thiserror::Error;
 mod glossary_cli;
 use glossary_cli::GlossaryCommand;
 
+#[path = "cli_configuration.rs"]
+mod configuration_cli;
+use configuration_cli::ConfigCommand;
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, ValueEnum)]
 pub enum OutputFormat {
     #[default]
@@ -95,6 +99,7 @@ impl Cli {
             Command::Release { command } => command.into_invocation(),
             Command::Decision { command } => command.into_invocation(),
             Command::Glossary { command } => command.into_invocation(),
+            Command::Config { command } => command.into_invocation(),
         }
     }
 }
@@ -180,6 +185,10 @@ enum Command {
     Daemon,
     Mcp,
     Ping,
+    Config {
+        #[command(subcommand)]
+        command: ConfigCommand,
+    },
     Glossary {
         #[command(subcommand)]
         command: GlossaryCommand,
@@ -667,6 +676,7 @@ enum DeploymentCommand {
         path: Option<PathBuf>,
     },
     Apply(DeploymentReferenceArgs),
+    Preflight(DeploymentReferenceArgs),
     Status(DeploymentReferenceArgs),
     Rollback(DeploymentReferenceArgs),
     Start(DeploymentControlArgs),
@@ -1602,6 +1612,10 @@ impl DeploymentCommand {
                 }
             }
             Self::Apply(args) => remote("deployment.apply", Value::Object(args.selector.params()?)),
+            Self::Preflight(args) => remote(
+                "deployment.preflight",
+                Value::Object(args.selector.params()?),
+            ),
             Self::Status(args) => {
                 remote("deployment.status", Value::Object(args.selector.params()?))
             }
@@ -2188,6 +2202,42 @@ mod tests {
         std::fs::write(&usages_file, "[]").unwrap();
         let cases: &[(&[&str], &str)] = &[
             (&["ping"], "ping"),
+            (&["config", "show"], "config.get"),
+            (
+                &[
+                    "config",
+                    "authorize",
+                    "/tmp/repo",
+                    "--name",
+                    "web",
+                    "--file",
+                    ".env",
+                    "--expected-revision",
+                    "revision",
+                ],
+                "config.env.set",
+            ),
+            (
+                &[
+                    "config",
+                    "revoke",
+                    "--deployment-id",
+                    "d1",
+                    "--file",
+                    ".env",
+                    "--expected-revision",
+                    "revision",
+                ],
+                "config.env.set",
+            ),
+            (
+                &["config", "reload", "--expected-revision", "revision"],
+                "config.reload",
+            ),
+            (
+                &["deployment", "preflight", "/tmp/repo", "--name", "web"],
+                "deployment.preflight",
+            ),
             (&["glossary", "list"], "glossary.list"),
             (&["glossary", "resolve"], "glossary.resolve"),
             (&["glossary", "get", "g1111111111111111"], "glossary.get"),

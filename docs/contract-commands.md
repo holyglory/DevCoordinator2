@@ -294,6 +294,25 @@ Args: `path`.
 Result: one repository object as above plus, when present, the current test
 summary reference (`summary_path`, `status`).
 
+## config.*
+
+Existing server administrators and trusted local callers can use:
+
+- `config.get {}` (CLI `config show`, MCP `config_get`) returns the configured
+  policy's active/stored revisions, reload state, entry count, supported live
+  and restart-required settings, validation state, and bounded value-free history.
+- `config.env.set {path?, name?, deployment_id?, file, authorized,
+  expected_revision}` (CLI `config authorize|revoke`, MCP `config_env_set`)
+  changes one exact declared repository/file pair and activates it atomically.
+  A grant validates the ignored regular non-symlink file; revoke can remove an
+  obsolete entry without requiring the file to remain present.
+- `config.reload {expected_revision}` validates and activates the already
+  configured policy. Errors include `configuration_conflict`,
+  `configuration_invalid`, and `configuration_restart_required`.
+
+No operation reads environment values into a result, changes the policy
+location, grants broader access, or restarts services.
+
 ## deployment.* (Phase 3, implemented)
 
 Reference args on every command except `list`: `path` (required) plus
@@ -302,8 +321,14 @@ Reference args on every command except `list`: `path` (required) plus
 - `deployment.list {path?}` → `{deployments: [...], declared: [...]}` — all
   applied deployments; with `path`, also the declared-but-not-applied
   `name`/`source`/`deployment_id` triples of that repository.
-- `deployment.apply` → status (below) after: validate, fingerprint (spec +
-  commit + dirty flag), reserve ports/domain transactionally, prepare the
+- `deployment.preflight` → `{repository_id, name, ready, blockers:
+  [{component, code, file, message}]}`. Deployment administrators can inspect
+  every declared environment-file prerequisite without registration, port
+  reservation, or runtime changes. `authorization_required` names the exact
+  missing grant; preflight never supplies it automatically.
+- `deployment.apply` → status (below) after: validate all environment-file
+  prerequisites, fingerprint (spec + commit + dirty flag + source digest),
+  reserve ports/domain transactionally, prepare the
   candidate (checkout worktree + optional build), start components in
   declared order (blue/green for generation-scoped components, in-place for
   stable data-owning ones), prove health, publish the route atomically,
@@ -324,6 +349,15 @@ Reference args on every command except `list`: `path` (required) plus
   (`finite|running`), state, desired_state, containers, independent}],
   completed_services?: [{service, generation, container_id, image_id,
   exit_code, started_at, finished_at, recorded_at}]}], log_dir}`.
+  Managed status also returns `readiness: {ready, expected_components,
+  missing_components, pending_apply, blockers}`. Missing declared components
+  make aggregate state `degraded`. Explicit status/apply compare current source
+  with the applied generation, including successive dirty edits; a running
+  component is not proof that current code or a new migration has run. A null
+  `pending_apply` means source freshness was not established (including control
+  responses), never a readiness success. Lists report runtime state only;
+  use explicit status for source freshness. Observed-only
+  deployments have no managed-source readiness claim.
 - `deployment.start | stop | restart {component?}` → status. Whole
   deployment in declared/reverse order, or one component whose declaration
   permits independent control. A declared independent Compose service is
