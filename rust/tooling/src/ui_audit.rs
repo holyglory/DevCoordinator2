@@ -19,6 +19,52 @@ pub const ARTIFACT_OWNER: &str = "ui-implementation-audit";
 pub const ARTIFACT_MARKER: &str = ".ui-implementation-audit-artifacts.json";
 pub const INAPPLICABLE_EXIT: u8 = 3;
 
+pub(crate) const UX_CRITERIA: &[&str] = &[
+    "journey-first",
+    "step-necessity",
+    "surface-purpose",
+    "copy-purpose",
+    "product-language",
+    "project-guidelines",
+    "context-inheritance",
+    "contextual-actions",
+    "compact-choices",
+    "progressive-disclosure",
+    "overlay-behavior",
+    "generated-results",
+    "contextual-help",
+];
+
+pub(crate) const CONTEXT_CRITERIA: &[&str] = &[
+    "context-inheritance",
+    "contextual-actions",
+    "compact-choices",
+    "progressive-disclosure",
+    "overlay-behavior",
+    "generated-results",
+    "contextual-help",
+];
+
+pub(crate) const INTERACTION_SCENARIOS: &[&str] = &[
+    "completion",
+    "cancellation",
+    "validation-error",
+    "recovery",
+    "persistence",
+    "loading",
+    "empty",
+    "long-content",
+];
+
+pub(crate) const UPDATE_SCENARIOS: &[&str] = &[
+    "update-startup",
+    "update-periodic",
+    "update-download",
+    "update-ready",
+    "update-restart",
+    "update-recovery",
+];
+
 const MOCKUP_TOKENS: &[&str] = &[
     "comp",
     "design",
@@ -607,10 +653,11 @@ For ranged units, inspect the assigned range manually plus nearby imports/types/
 
 ## Review Rules
 
-- Inventory every required visible label, control, field, menu, route link, toast, banner, empty/loading/error state, layout container, and visual/test evidence.
+- Inventory every visible label, control, field, menu, route link, toast, banner, empty/loading/error state, layout container, and visual/test evidence, including additions not justified by requirements. Include conditional supporting copy and all separate pages, tabs, modes, and dialogs so the visual worker can reconcile its surface and copy inventory.
 - Record source wiring references for handlers, state, navigation, API/persistence, permissions, validation, and missing state branches when the UI promises behavior. A path/symbol reference proves only that the source anchor exists; runtime or test evidence is required to prove the observable outcome.
 - Compare implementation to mockup/journey evidence: hierarchy, density, spacing, imagery, typography intent, copy, responsiveness, required decision information, feature behavior, and test evidence.
 - Flag source order, layout rules, or default state that plausibly elevate low-relevance settings, rare/admin controls, debug detail, or secondary metadata above journey-critical content. Leave rendered conclusions to the visual worker and formal evidence.
+- Flag implementation commentary, redundant explanations, repeated entry, and separate surfaces justified only by data structures. Record relevant product requirements, effective UI guidelines, and glossary sources; matching a mockup does not excuse unnecessary user effort. Do not classify necessary guidance or genuinely user-facing technical tasks as leakage.
 - Flag missing UI elements, unwired handlers, missing data/persistence paths, missing states, missing accessibility paths, and missing safe visual states or fixture paths when source implies heavy or production-only operations.
 
 ## Required Report File
@@ -752,7 +799,31 @@ For native captures, add `screenshot` or `native-snapshot` records to `visual_ev
 
 For platform `web`, formal browser evidence is required. For `native`, formal web evidence is not applicable and native screenshots/snapshots are required. For `hybrid`, provide both. Run deterministic checks before manual image review. Read `review-queue.json`: open only each queued cell's initial-viewport and full-page images, never carried unchanged images. Record decisions and finalize them with `devcoordinator2-tooling formal-ui review`.
 
-Define the journey decision model and required UI element set. Every rendered viewport must support the primary journey decision unless it is primarily a data-entry form. Run the interaction checklist: badge-detail, row-hit-target, navigation-cursor, transient-disclosure, disclosure-scrollbar, icon-meaning, stable-expansion-width, hover-copy, status-summary, and message-metadata.
+Derive the complete journey inventory from user requirements before mapping existing screens; include requested but missing journeys, give each a stable Journey ID, and record requirement evidence and unresolved assumptions. Reconcile it against every source worker's surface and conditional-copy inventory. Do not infer completeness merely from the screens that exist. Every rendered viewport must support the current user task, including data-entry forms.
+
+Observe each journey from its real starting situation through its completed outcome, including applicable cancellation and recovery. In Observed path enumerate the actual actions, decisions, navigation, waits, repeated entry, and backtracking; assess each step's necessity in the step-necessity review. Distinguish actual execution from an inferred or unavailable path. A screenshot or source anchor alone does not prove saving, processing, or completion. Do not claim measured efficiency gains without measurement.
+
+For each Journey ID assess every required criterion: {ux_criteria}. Use the effective universal and project UI guidelines, relevant glossary, and confirmed product requirements; name the applicable source in Guideline source. The criteria mean: journey-first checks user outcomes rather than implementation structure; step-necessity challenges avoidable effort and compares a simpler valid path; surface-purpose justifies each separate destination or mode; copy-purpose asks whether each status/helper/explanation belongs at that point; product-language excludes development commentary unless reviewing it is the user's actual task; project-guidelines checks relevant project-specific expectations and vocabulary. Do not treat mockup fidelity as an exemption from these checks.
+
+List exact surface names separated by semicolons in each flow row. Provide a surface-purpose row for every surface and copy-purpose rows for every supporting-text item on that surface, including conditional text. If none exists, provide an evidenced NOT_APPLICABLE row for that surface. Other criteria may use Surface=all. Keep each item separate so omissions and proposed removals are reviewable. User benefit explains the user's action, decision, understanding, or error prevention, not the implementation. Consider clearer labels, defaults, placement, or simpler behavior before adding copy. Preserve necessary guidance, domain terminology, and justified separate tasks; do not impose click quotas or collapse everything into one screen.
+
+Use PASS, GAP, or BLOCKED for flow results; guideline rows may also use justified NOT_APPLICABLE, except journey-first, step-necessity, and surface-purpose. Every row needs an observation, reason, and registered evidence:<id>, or an exact blocker when evidence cannot be obtained. GAP/BLOCKED rows must reference complete findings by Finding ID; PASS/NOT_APPLICABLE rows use Finding=none. Add a unique `- Finding ID: UX-001` after `- Priority` in referenced finding blocks. Link multiple IDs with semicolons. A flow cannot PASS while one of its guideline assessments remains GAP/BLOCKED. Missing evidence is not a pass. These are reviewer-owned judgments, not questions to ask the user for every item; the verifier checks coverage and consistency, not subjective correctness.
+
+For every surface assess the concrete control criteria individually: inherit known project/parent values and show infrequently changed context as clickable text rather than permanent full-size selectors; keep actions beside their object, including useful empty-state actions; use direct one-click icon-and-label choices for small option sets; reveal optional fields on demand without losing values or focus; make dropdowns overlay content rather than stretch forms; keep live generated results consistent with changed inputs and saved values, including pending and error states; put detailed explanations and examples behind small contextual help buttons without hiding essential guidance. Name every affected control in Item. PASS requires observed runtime behavior; use evidenced, reasoned NOT_APPLICABLE rows where no such control exists. A blanket Surface=all or unnamed passing item cannot cover these criteria. Reconcile with the source inventory; preserve useful help and legitimate selectors instead of imposing click quotas.
+
+Derive the UI Configuration Contract from supported product configurations and requirement sources before selecting rendered evidence. Record exact platform/theme/viewport/input combinations and applicable Journey IDs, separated by semicolons; do not derive scope from the screenshots available. Platform is web, desktop:<target>, or native:<target>. Desktop app configurations name their Update journey; other configurations use none. Every journey must appear in at least one configuration. If support is unknown, use an explicitly unknown configuration and BLOCKED interactions/build review with a finding, not an invented supported configuration.
+
+For each declared journey/configuration pair, record completion, cancellation, validation-error, recovery, persistence, loading, empty, and long-content. Scenarios that genuinely do not apply need a reasoned NOT_APPLICABLE row; completion cannot be waived. Exercise that configuration's input method, actual viewport, and supported theme rather than assuming another cell proves it. Desktop Update journeys additionally require update-startup, update-periodic, update-download, update-ready, update-restart, and update-recovery, using an isolated test installation. Verify background checks/downloads, readiness, user-triggered restart with unsaved-work handling, and failure recovery. PASS requires trace, video, or ordered journey evidence; screenshots and aggregate formal reports do not establish interaction completion. Name the exact evidence segment/cell and expected observable result.
+
+Use desktop:<target> for installed desktop applications; native:<target> is for other native targets. Desktop update checks/downloads must not interrupt ongoing work; a small caption-area Update button appears only after download and installs/restarts on user activation. Native/desktop execution requires a trace or video record with platform metadata exactly matching the declared target, such as desktop:linux-x64. Imported browser journey evidence cannot substitute for native execution.
+
+Rendered Build Review binds every configuration to the actual URL or native package/launch target, expected source/build snapshot, and observed snapshot. A stale or inaccessible target cannot PASS. Preserve unknown identity as BLOCKED. Do not place development identifiers in normal product UI merely to expose them to an audit; use existing build/deployment evidence.
+
+Design Decision Review concerns the current supplied design target and available options only. Do not check whether mockups existed before implementation, compare creation dates, reconstruct historical mockups, or fail solely because historical mockups are absent. Applicability is alternatives, approved-design, routine-fix, or unavailable. For alternatives, review three named materially different options, the selected one, concrete layout/hierarchy/interaction distinctions, and the recorded user selection or explicit autonomous authority. Approved designs and routine fixes do not need three new proposals. Unavailable design material is a reasoned NOT_APPLICABLE design review, not fabricated fidelity proof; the rest of the UX audit continues. Reference confirmed Coordinator decisions without introducing new approval rounds. Reuse one design review across its named journeys.
+
+Bind policy, requirement, glossary, and design references to their effective revision or immutable Coordinator ref, retaining bounded exports as audit evidence when necessary. Existing manifest hashes bind repository inputs. Never count a registered record's existence as proof of the reviewer's semantic judgment. Preserve the four new tables in final synthesis with their exact configuration, snapshot, and evidence bindings. Do not turn this audit into a delivery watchdog or resource-accounting workflow, or require a full audit before preliminary delivery.
+
+Run the interaction checklist: badge-detail, row-hit-target, navigation-cursor, transient-disclosure, disclosure-scrollbar, icon-meaning, stable-expansion-width, hover-copy, status-summary, and message-metadata.
 
 ## Mockup And Asset Evidence
 
@@ -777,8 +848,32 @@ List evidence used or `None.`
 Name the safe render/capture path and viewport plan, or the concrete blocker.
 
 ## Journey Decision Model
-| Surface | Primary user goal | Primary decision | Required facts | Warning/flag conditions | Frequent actions | Secondary/rare actions | Unconfirmed assumptions |
+| Journey ID | Requirement evidence | Surface | Primary user goal | Primary decision | Required facts | Warning/flag conditions | Frequent actions | Secondary/rare actions | Unconfirmed assumptions |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+
+## Journey Flow Review
+| Journey ID | Starting situation | Intended outcome | Observed path | Surfaces | Outcome evidence | Unnecessary effort | Simpler alternative | Result | Reason | Evidence | Finding |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+
+## UX Guideline Review
+| Journey ID | Criterion | Guideline source | Surface | Item | User benefit | Observation | Result | Reason | Evidence | Finding |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+
+## UI Configuration Contract
+| Config ID | Platform | Theme | Viewport | Input mode | Journey IDs | Update journey | Requirement source |
 | --- | --- | --- | --- | --- | --- | --- | --- |
+
+## Interaction Coverage
+| Journey ID | Config ID | Scenario | Target | Expected result | Observation | Result | Reason | Evidence | Finding |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+
+## Rendered Build Review
+| Config ID | Target | Expected snapshot | Observed snapshot | Result | Reason | Evidence | Finding |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+
+## Design Decision Review
+| Review ID | Journey IDs | Applicability | Design target | Options | Selection | Authority | Distinctions | Result | Reason | Evidence | Finding |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 
 ## Rendered Journey Usability
 | Platform | Viewport | Decision supported | Visible decision-driving content | Visible secondary/detail content | Detail access pattern | Readability/contrast evidence | Layout quality result | Evidence |
@@ -794,7 +889,7 @@ For relevant rows, include every exact checklist label above in `Detail access p
 For web/hybrid, cite imported `formal-web-verifier`, `journey-evidence`, `review-queue`, and `manual-review` evidence ids. For native, write exactly `Formal Web UI verification not applicable to declared native platform.`
 
 ## Findings
-Start with `Interaction checklist: badge-detail=<pass/gap/blocked/not-applicable>; row-hit-target=<...>; navigation-cursor=<...>; transient-disclosure=<...>; disclosure-scrollbar=<...>; icon-meaning=<...>; stable-expansion-width=<...>; hover-copy=<...>; status-summary=<...>; message-metadata=<...>.` Then use `No findings.` or complete finding blocks.
+Use exactly `No findings.` when there are no gaps; otherwise provide complete finding blocks, including Finding ID for every referenced UX finding. Put all interaction checklist labels and their pass/gap/blocked/not-applicable outcomes in the rendered usability or comparison rows, not before the no-findings sentinel.
 
 ## Open Questions
 List visual blockers, missing mockups, unclear routes, or `None.`
@@ -808,6 +903,7 @@ List visual blockers, missing mockups, unclear routes, or `None.`
         evidence = options.out.join("visual_evidence.json").display(),
         assets = compact_assets(assets, None),
         requirements = compact_requirements(requirements),
+        ux_criteria = UX_CRITERIA.join(", "),
     ))
 }
 
@@ -975,7 +1071,7 @@ fn render_index(options: &BuildOptions, manifest: &Value) -> String {
         } else {
             rows
         },
-    )
+    ) + "\n## Journey and UX completion\n\nPreserve the complete Journey Decision Model, Journey Flow Review, UX Guideline Review, UI Configuration Contract, Interaction Coverage, Rendered Build Review, and Design Decision Review tables in final-report.md. Keep exact journey/configuration identities, targets, snapshots, and evidence bindings; retain GAP/BLOCKED results and include linked Finding ID blocks in the Implementation Plan. Review each surface, supporting-copy item, and contextual control, including conditional states. A matching mockup does not exempt avoidable user effort, and absent historical mockups do not prove a process failure. Verifier success proves complete audit artifacts, not product readiness.\n"
 }
 
 pub fn collect_and_assess_gate(
@@ -1780,9 +1876,38 @@ mod tests {
             "open only each queued cell",
             "initial-viewport and full-page",
             "## Journey Decision Model",
+            "## Journey Flow Review",
+            "## UX Guideline Review",
+            "## UI Configuration Contract",
+            "## Interaction Coverage",
+            "## Rendered Build Review",
+            "## Design Decision Review",
             "## Rendered Journey Usability",
+            "Do not check whether mockups existed before implementation",
+            "Approved designs and routine fixes do not need three new proposals",
+            "do not derive scope from the screenshots available",
+            "Imported browser journey evidence cannot substitute for native execution",
+            "clickable text rather than permanent full-size selectors",
+            "dropdowns overlay content rather than stretch forms",
+            "small caption-area Update button appears only after download",
         ] {
             assert!(visual.contains(token), "{token}");
+        }
+        for criterion in UX_CRITERIA {
+            assert!(visual.contains(criterion), "{criterion}");
+        }
+        for scenario in INTERACTION_SCENARIOS.iter().chain(UPDATE_SCENARIOS) {
+            assert!(visual.contains(scenario), "{scenario}");
+        }
+        let index = std::fs::read_to_string(fixture.out.join("audit_index.md")).unwrap();
+        for section in [
+            "UI Configuration Contract",
+            "Interaction Coverage",
+            "Rendered Build Review",
+            "Design Decision Review",
+            "absent historical mockups do not prove a process failure",
+        ] {
+            assert!(index.contains(section), "{section}");
         }
     }
 

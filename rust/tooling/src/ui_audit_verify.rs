@@ -49,6 +49,12 @@ const VISUAL_SECTIONS: &[&str] = &[
     "mockup and asset inventory",
     "visual tooling",
     "journey decision model",
+    "journey flow review",
+    "ux guideline review",
+    "ui configuration contract",
+    "interaction coverage",
+    "rendered build review",
+    "design decision review",
     "rendered journey usability",
     "visual comparison checks",
     "formal evidence",
@@ -59,6 +65,12 @@ const FINAL_SECTIONS: &[&str] = &[
     "coverage",
     "mockup and requirement inputs",
     "journey decision model",
+    "journey flow review",
+    "ux guideline review",
+    "ui configuration contract",
+    "interaction coverage",
+    "rendered build review",
+    "design decision review",
     "rendered journey usability findings",
     "visual audit findings",
     "source implementation findings",
@@ -77,6 +89,8 @@ const REQUIRED_FINDING_FIELDS: &[&str] = &[
     "Suggested implementation direction",
 ];
 const JOURNEY_DECISION_COLUMNS: &[&str] = &[
+    "journey id",
+    "requirement evidence",
     "surface",
     "primary user goal",
     "primary decision",
@@ -85,6 +99,79 @@ const JOURNEY_DECISION_COLUMNS: &[&str] = &[
     "frequent actions",
     "secondary/rare actions",
     "unconfirmed assumptions",
+];
+const JOURNEY_FLOW_COLUMNS: &[&str] = &[
+    "journey id",
+    "starting situation",
+    "intended outcome",
+    "observed path",
+    "surfaces",
+    "outcome evidence",
+    "unnecessary effort",
+    "simpler alternative",
+    "result",
+    "reason",
+    "evidence",
+    "finding",
+];
+const UX_REVIEW_COLUMNS: &[&str] = &[
+    "journey id",
+    "criterion",
+    "guideline source",
+    "surface",
+    "item",
+    "user benefit",
+    "observation",
+    "result",
+    "reason",
+    "evidence",
+    "finding",
+];
+const CONFIG_COLUMNS: &[&str] = &[
+    "config id",
+    "platform",
+    "theme",
+    "viewport",
+    "input mode",
+    "journey ids",
+    "update journey",
+    "requirement source",
+];
+const INTERACTION_COLUMNS: &[&str] = &[
+    "journey id",
+    "config id",
+    "scenario",
+    "target",
+    "expected result",
+    "observation",
+    "result",
+    "reason",
+    "evidence",
+    "finding",
+];
+const BUILD_COLUMNS: &[&str] = &[
+    "config id",
+    "target",
+    "expected snapshot",
+    "observed snapshot",
+    "result",
+    "reason",
+    "evidence",
+    "finding",
+];
+const DESIGN_COLUMNS: &[&str] = &[
+    "review id",
+    "journey ids",
+    "applicability",
+    "design target",
+    "options",
+    "selection",
+    "authority",
+    "distinctions",
+    "result",
+    "reason",
+    "evidence",
+    "finding",
 ];
 const RENDERED_USABILITY_COLUMNS: &[&str] = &[
     "platform",
@@ -574,14 +661,15 @@ fn validate_findings(
 }
 
 fn visual_danger(text: &str) -> bool {
-    Regex::new(
-        r"(?i)\b(?:overloaded?|crowded|cramped|unreadable|invisible|low[- ]contrast|clipped|cropped|truncated|overflow|unscannable|ambiguous hierarchy|oversized|excessive detail|debug detail|raw status|overexposed|over-prescribed|overprescribed|duplicate summaries?|duplicate severity|vague labels?|unclear labels?|source-model leakage|data-model leakage|dominates|dominating|buried|below the fold|nested cards?|nested blocks?|nested containers?|nested frames?|card[- ]in[- ]card|border stacks?|background stacks?|visual noise|noisy surfaces?|misaligned|misalignment|random placement|weak grid|poor grid|grid drift|inconsistent gutters?|unstable expander|unstable expansion|unstable disclosure|jumps? horizontally|width changes?|different widths?|meaningless icons?|unclear icons?|unintuitive icons?|decorative clutter|avatar clutter|unnecessary avatars?|tiny icon[- ]only target|instruction noise|helper text|low[- ]importance)\b",
+    let danger = Regex::new(
+        r"(?i)\b(?:overloaded?|crowded|cramped|unreadable|invisible|low[- ]contrast|clipped|cropped|truncated|overflow|unscannable|ambiguous hierarchy|oversized|excessive detail|debug detail|raw status|overexposed|over-prescribed|overprescribed|duplicate summaries?|duplicate severity|vague labels?|unclear labels?|source-model leakage|data-model leakage|dominates|dominating|buried|below the fold|nested cards?|nested blocks?|nested containers?|nested frames?|card[- ]in[- ]card|border stacks?|background stacks?|visual noise|noisy surfaces?|misaligned|misalignment|random placement|weak grid|poor grid|grid drift|inconsistent gutters?|unstable expander|unstable expansion|unstable disclosure|jumps? horizontally|width changes?|different widths?|meaningless icons?|unclear icons?|unintuitive icons?|decorative clutter|avatar clutter|unnecessary avatars?|tiny icon[- ]only target|instruction noise|(?:redundant|unnecessary|excessive|misleading|verbose|duplicated) (?:helper text|instructions?|explanations?)|low[- ]importance)\b|(?:row [^.\n;]*not clickable|navigation [^.\n;]*no pointer|popover [^.\n;]*never closes|badge [^.\n;]*no detail|hover [^.\n;]*missing|scrollbar [^.\n;]*overlaps|copy button [^.\n;]*always visible|status [^.\n;]*twice|decision-critical [^.\n;]*hidden)",
     )
-    .expect("visual danger regex")
-    .is_match(text)
-        || Regex::new(r"(?i)(?:row .*not clickable|navigation .*no pointer|popover .*never closes|badge .*no detail|hover .*missing|scrollbar .*overlaps|copy button .*always visible|status .*twice|decision-critical .*hidden)")
-            .expect("visual interaction danger regex")
-            .is_match(text)
+    .expect("visual danger regex");
+    let negation = Regex::new(r"(?i)\b(?:no(?: signs? of)?|not|without(?: any)?)\s+$")
+        .expect("visual danger negation regex");
+    danger
+        .find_iter(text)
+        .any(|matched| !negation.is_match(&text[..matched.start()]))
 }
 
 fn evidence_text(value: &str, first_viewport: bool) -> bool {
@@ -708,6 +796,7 @@ fn verify_journey_model(path: &Path, body: &str) -> Vec<Value> {
         ];
     }
     let mut issues = Vec::new();
+    let mut journeys = BTreeSet::new();
     for (offset, row) in rows.iter().enumerate() {
         let missing = missing_columns(row, JOURNEY_DECISION_COLUMNS);
         if !missing.is_empty() {
@@ -717,6 +806,643 @@ fn verify_journey_model(path: &Path, body: &str) -> Vec<Value> {
         for field in JOURNEY_DECISION_COLUMNS {
             if row.get(*field).is_none_or(|value| value.trim().is_empty()) {
                 issues.push(json!({"path":issue_path(path),"section":"Journey Decision Model","row":offset+1,"field":field,"reason":"empty"}));
+            }
+        }
+        if let Some(journey) = row.get("journey id")
+            && !journeys.insert(journey.trim().to_owned())
+        {
+            issues.push(json!({"path":issue_path(path),"section":"Journey Decision Model","journey":journey,"reason":"duplicate Journey ID"}));
+        }
+    }
+    issues
+}
+
+fn ux_cell<'a>(row: &'a BTreeMap<String, String>, column: &str) -> &'a str {
+    row.get(column).map_or("", |value| value.trim())
+}
+
+fn ux_rows(
+    path: &Path,
+    bodies: &BTreeMap<String, String>,
+    section: &str,
+    columns: &[&str],
+    issues: &mut Vec<Value>,
+) -> Vec<BTreeMap<String, String>> {
+    let rows = parse_markdown_table_dicts(bodies.get(section).map_or("", String::as_str));
+    if rows.is_empty() {
+        issues.push(json!({"path":issue_path(path),"section":section,"reason":"missing required UX review table"}));
+    }
+    rows.into_iter()
+        .enumerate()
+        .filter_map(|(index, row)| {
+            let missing = columns
+                .iter()
+                .filter(|column| ux_cell(&row, column).is_empty())
+                .copied()
+                .collect::<Vec<_>>();
+            if missing.is_empty() {
+                Some(row)
+            } else {
+                issues.push(json!({"path":issue_path(path),"section":section,"row":index+1,"missing_or_empty_columns":missing}));
+                None
+            }
+        })
+        .collect()
+}
+
+fn verify_ux_row(
+    path: &Path,
+    section: &str,
+    row: &BTreeMap<String, String>,
+    records: &crate::audit_evidence::EvidenceRecords,
+    finding_ids: &BTreeSet<String>,
+    allow_not_applicable: bool,
+) -> Vec<Value> {
+    let mut issues = Vec::new();
+    let result = ux_cell(row, "result");
+    let journey = ux_cell(row, "journey id");
+    if ["none", "n/a", "not applicable", "-", "todo"]
+        .contains(&ux_cell(row, "reason").to_ascii_lowercase().as_str())
+    {
+        issues.push(json!({"path":issue_path(path),"section":section,"journey":journey,"reason":"a concrete assessment rationale is required"}));
+    }
+    if !["PASS", "GAP", "BLOCKED", "NOT_APPLICABLE"].contains(&result)
+        || (!allow_not_applicable && result == "NOT_APPLICABLE")
+    {
+        issues.push(json!({"path":issue_path(path),"section":section,"journey":journey,"reason":"invalid UX review result","actual":result}));
+    }
+    let references = split_files(ux_cell(row, "finding"));
+    if ["GAP", "BLOCKED"].contains(&result) {
+        if references.is_empty()
+            || references
+                .iter()
+                .any(|reference| !finding_ids.contains(reference))
+        {
+            issues.push(json!({"path":issue_path(path),"section":section,"journey":journey,"reason":"GAP/BLOCKED requires an existing complete Finding ID","actual":references}));
+        }
+    } else if !references.is_empty() {
+        issues.push(json!({"path":issue_path(path),"section":section,"journey":journey,"reason":"PASS/NOT_APPLICABLE requires Finding=none"}));
+    }
+    let evidence = ux_cell(row, "evidence");
+    for detail in crate::audit_evidence::validate_references(evidence, records, None) {
+        issues.push(
+            json!({"path":issue_path(path),"section":section,"journey":journey,"detail":detail}),
+        );
+    }
+    let has_observation = crate::audit_evidence::evidence_references(evidence)
+        .iter()
+        .filter_map(|reference| records.get(reference))
+        .filter_map(|record| record.get("kind").and_then(Value::as_str))
+        .any(|kind| !["review-queue", "manual-review"].contains(&kind));
+    if result != "BLOCKED" && !has_observation {
+        issues.push(json!({"path":issue_path(path),"section":section,"journey":journey,"reason":"UX judgment requires registered observation evidence, not only a review decision"}));
+    }
+    issues
+}
+
+fn verify_ux_reviews(
+    path: &Path,
+    bodies: &BTreeMap<String, String>,
+    findings: &str,
+    records: &crate::audit_evidence::EvidenceRecords,
+    platform_scope: &str,
+) -> Vec<Value> {
+    let mut issues = Vec::new();
+    let journeys = parse_markdown_table_dicts(
+        bodies
+            .get("journey decision model")
+            .map_or("", String::as_str),
+    )
+    .iter()
+    .map(|row| ux_cell(row, "journey id").to_owned())
+    .filter(|journey| !journey.is_empty())
+    .collect::<BTreeSet<_>>();
+    let mut finding_ids = BTreeSet::new();
+    for finding in finding_blocks(findings) {
+        let Some(identifier) = finding.get("Finding ID") else {
+            continue;
+        };
+        if identifier.trim().is_empty()
+            || !finding_ids.insert(identifier.trim().to_owned())
+            || REQUIRED_FINDING_FIELDS
+                .iter()
+                .any(|field| ux_cell(&finding, field).is_empty())
+        {
+            issues.push(json!({"path":issue_path(path),"section":"UX findings","reason":"referenced findings require unique nonempty IDs and complete finding fields","finding_id":identifier}));
+        }
+    }
+    let flows = ux_rows(
+        path,
+        bodies,
+        "journey flow review",
+        JOURNEY_FLOW_COLUMNS,
+        &mut issues,
+    );
+    let reviews = ux_rows(
+        path,
+        bodies,
+        "ux guideline review",
+        UX_REVIEW_COLUMNS,
+        &mut issues,
+    );
+    let mut flow_by_journey = BTreeMap::new();
+    let mut surfaces = BTreeMap::new();
+    for row in &flows {
+        let journey = ux_cell(row, "journey id");
+        if flow_by_journey.insert(journey.to_owned(), row).is_some() {
+            issues.push(json!({"path":issue_path(path),"section":"journey flow review","journey":journey,"reason":"duplicate journey flow"}));
+        }
+        let names = ux_cell(row, "surfaces")
+            .split(';')
+            .map(str::trim)
+            .filter(|surface| !surface.is_empty())
+            .map(str::to_owned)
+            .collect::<BTreeSet<_>>();
+        if names.is_empty() || names.contains("all") {
+            issues.push(json!({"path":issue_path(path),"section":"journey flow review","journey":journey,"reason":"name the actual surfaces, not an empty list or all"}));
+        }
+        surfaces.insert(journey.to_owned(), names);
+        issues.extend(verify_ux_row(
+            path,
+            "journey flow review",
+            row,
+            records,
+            &finding_ids,
+            false,
+        ));
+        let outcome = ux_cell(row, "outcome evidence");
+        for detail in crate::audit_evidence::validate_references(outcome, records, None) {
+            issues.push(json!({"path":issue_path(path),"section":"journey flow review","journey":journey,"detail":detail}));
+        }
+        let outcome_proof = crate::audit_evidence::evidence_references(outcome)
+            .iter()
+            .filter_map(|reference| records.get(reference))
+            .filter_map(|record| record.get("kind").and_then(Value::as_str))
+            .any(|kind| {
+                ["trace", "video", "formal-web-verifier", "journey-evidence"].contains(&kind)
+            });
+        if ux_cell(row, "result") == "PASS" && !outcome_proof {
+            issues.push(json!({"path":issue_path(path),"section":"journey flow review","journey":journey,"reason":"PASS requires runtime outcome evidence; screenshots and source anchors alone are insufficient"}));
+        }
+    }
+    if flow_by_journey.keys().cloned().collect::<BTreeSet<_>>() != journeys {
+        issues.push(json!({"path":issue_path(path),"section":"journey flow review","reason":"flow coverage must exactly match the journey decision model"}));
+    }
+    let mut coverage = BTreeSet::new();
+    let mut item_keys = BTreeSet::new();
+    let mut surface_coverage = BTreeSet::new();
+    for row in &reviews {
+        let journey = ux_cell(row, "journey id");
+        let criterion = ux_cell(row, "criterion");
+        let surface = ux_cell(row, "surface");
+        let item = ux_cell(row, "item");
+        if !journeys.contains(journey) || !crate::ui_audit::UX_CRITERIA.contains(&criterion) {
+            issues.push(json!({"path":issue_path(path),"section":"ux guideline review","journey":journey,"criterion":criterion,"reason":"unknown journey or criterion"}));
+        }
+        if !item_keys.insert((journey, criterion, surface, item)) {
+            issues.push(json!({"path":issue_path(path),"section":"ux guideline review","journey":journey,"criterion":criterion,"item":item,"reason":"duplicate assessment"}));
+        }
+        let contextual = crate::ui_audit::CONTEXT_CRITERIA.contains(&criterion);
+        let needs_surface = ["surface-purpose", "copy-purpose"].contains(&criterion) || contextual;
+        if (needs_surface || surface != "all")
+            && !surfaces
+                .get(journey)
+                .is_some_and(|names| names.contains(surface))
+        {
+            issues.push(json!({"path":issue_path(path),"section":"ux guideline review","journey":journey,"surface":surface,"reason":"assessment must name a declared journey surface"}));
+        }
+        coverage.insert((journey, criterion));
+        surface_coverage.insert((journey, criterion, surface));
+        let allow_not_applicable =
+            !["journey-first", "step-necessity", "surface-purpose"].contains(&criterion);
+        issues.extend(verify_ux_row(
+            path,
+            "ux guideline review",
+            row,
+            records,
+            &finding_ids,
+            allow_not_applicable,
+        ));
+        if contextual
+            && ux_cell(row, "result") == "PASS"
+            && (!concrete_ux_value(item) || !runtime_observation(ux_cell(row, "evidence"), records))
+        {
+            issues.push(json!({"path":issue_path(path),"section":"ux guideline review","journey":journey,"criterion":criterion,"reason":"passing contextual controls require a named item and runtime observation"}));
+        }
+        if ["GAP", "BLOCKED"].contains(&ux_cell(row, "result"))
+            && flow_by_journey
+                .get(journey)
+                .is_some_and(|flow| ux_cell(flow, "result") == "PASS")
+        {
+            issues.push(json!({"path":issue_path(path),"section":"journey flow review","journey":journey,"reason":"flow cannot PASS with a GAP/BLOCKED guideline assessment"}));
+        }
+    }
+    for journey in &journeys {
+        for criterion in crate::ui_audit::UX_CRITERIA {
+            if !coverage.contains(&(journey.as_str(), *criterion)) {
+                issues.push(json!({"path":issue_path(path),"section":"ux guideline review","journey":journey,"criterion":criterion,"reason":"missing required guideline assessment"}));
+            }
+        }
+        if let Some(names) = surfaces.get(journey) {
+            for surface in names {
+                for criterion in ["surface-purpose", "copy-purpose"]
+                    .into_iter()
+                    .chain(crate::ui_audit::CONTEXT_CRITERIA.iter().copied())
+                {
+                    if !surface_coverage.contains(&(journey.as_str(), criterion, surface.as_str()))
+                    {
+                        issues.push(json!({"path":issue_path(path),"section":"ux guideline review","journey":journey,"surface":surface,"criterion":criterion,"reason":"each surface requires purpose, supporting-copy, and contextual-control review"}));
+                    }
+                }
+            }
+        }
+    }
+    issues.extend(verify_configuration_reviews(
+        path,
+        bodies,
+        records,
+        &finding_ids,
+        &journeys,
+        platform_scope,
+    ));
+    issues
+}
+
+fn concrete_ux_value(value: &str) -> bool {
+    ![
+        "",
+        "none",
+        "all",
+        "unknown",
+        "n/a",
+        "not applicable",
+        "-",
+        "todo",
+    ]
+    .contains(&value.trim().to_ascii_lowercase().as_str())
+}
+
+fn ux_names(value: &str) -> BTreeSet<String> {
+    value
+        .split(';')
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
+
+fn runtime_observation(evidence: &str, records: &crate::audit_evidence::EvidenceRecords) -> bool {
+    crate::audit_evidence::evidence_references(evidence)
+        .iter()
+        .filter_map(|reference| records.get(reference))
+        .filter_map(|record| record.get("kind").and_then(Value::as_str))
+        .any(|kind| ["trace", "video", "journey-evidence"].contains(&kind))
+}
+
+fn platform_observation(
+    evidence: &str,
+    records: &crate::audit_evidence::EvidenceRecords,
+    platform: &str,
+) -> bool {
+    if platform == "web" {
+        return runtime_observation(evidence, records);
+    }
+    crate::audit_evidence::evidence_references(evidence)
+        .iter()
+        .filter_map(|reference| records.get(reference))
+        .any(|record| {
+            record
+                .get("kind")
+                .and_then(Value::as_str)
+                .is_some_and(|kind| ["trace", "video"].contains(&kind))
+                && record.get("platform").and_then(Value::as_str) == Some(platform)
+        })
+}
+
+fn verify_configuration_reviews(
+    path: &Path,
+    bodies: &BTreeMap<String, String>,
+    records: &crate::audit_evidence::EvidenceRecords,
+    finding_ids: &BTreeSet<String>,
+    journeys: &BTreeSet<String>,
+    platform_scope: &str,
+) -> Vec<Value> {
+    let mut issues = Vec::new();
+    let configurations = ux_rows(
+        path,
+        bodies,
+        "ui configuration contract",
+        CONFIG_COLUMNS,
+        &mut issues,
+    );
+    let interactions = ux_rows(
+        path,
+        bodies,
+        "interaction coverage",
+        INTERACTION_COLUMNS,
+        &mut issues,
+    );
+    let builds = ux_rows(
+        path,
+        bodies,
+        "rendered build review",
+        BUILD_COLUMNS,
+        &mut issues,
+    );
+    let designs = ux_rows(
+        path,
+        bodies,
+        "design decision review",
+        DESIGN_COLUMNS,
+        &mut issues,
+    );
+    let mut configuration_ids = BTreeSet::new();
+    let mut configuration_keys = BTreeSet::new();
+    let mut unknown_configurations = BTreeSet::new();
+    let mut declared_journeys = BTreeSet::new();
+    let mut expected_interactions = BTreeSet::new();
+    for row in &configurations {
+        let identifier = ux_cell(row, "config id");
+        let platform = ux_cell(row, "platform");
+        let members = ux_names(ux_cell(row, "journey ids"));
+        let update = ux_cell(row, "update journey");
+        let platform_known = platform == "web"
+            || ["desktop:", "native:"]
+                .iter()
+                .any(|prefix| platform.strip_prefix(prefix).is_some_and(concrete_ux_value));
+        let key =
+            ["platform", "theme", "viewport", "input mode"].map(|column| ux_cell(row, column));
+        if !configuration_ids.insert(identifier)
+            || !configuration_keys.insert(key)
+            || !concrete_ux_value(identifier)
+            || members.is_empty()
+            || !members.is_subset(journeys)
+            || (!platform_known && platform != "unknown")
+            || !["pointer", "keyboard", "touch", "unknown"].contains(&ux_cell(row, "input mode"))
+            || (platform.starts_with("desktop:") && !members.contains(update))
+            || (!platform.starts_with("desktop:") && update != "none")
+            || (platform_scope == "web" && !["web", "unknown"].contains(&platform))
+            || (platform_scope == "native" && platform == "web")
+        {
+            issues.push(json!({"path":issue_path(path),"section":"ui configuration contract","config":identifier,"reason":"invalid or duplicate configuration, journey membership, input mode, or desktop update journey"}));
+        }
+        if key.iter().any(|value| !concrete_ux_value(value)) {
+            unknown_configurations.insert(identifier);
+        }
+        declared_journeys.extend(members.iter().cloned());
+        for journey in members {
+            for scenario in crate::ui_audit::INTERACTION_SCENARIOS
+                .iter()
+                .copied()
+                .chain(
+                    crate::ui_audit::UPDATE_SCENARIOS
+                        .iter()
+                        .copied()
+                        .filter(|_| journey == update),
+                )
+            {
+                expected_interactions.insert((
+                    identifier.to_owned(),
+                    journey.clone(),
+                    scenario.to_owned(),
+                ));
+            }
+        }
+    }
+    if &declared_journeys != journeys {
+        issues.push(json!({"path":issue_path(path),"section":"ui configuration contract","reason":"every journey requires an explicit supported configuration"}));
+    }
+    let mut actual_interactions = BTreeSet::new();
+    let mut unavailable_journeys = BTreeSet::new();
+    for row in &interactions {
+        let configuration = ux_cell(row, "config id");
+        let journey = ux_cell(row, "journey id");
+        let scenario = ux_cell(row, "scenario");
+        let platform = configurations
+            .iter()
+            .find(|config| ux_cell(config, "config id") == configuration)
+            .map_or("unknown", |config| ux_cell(config, "platform"));
+        let key = (
+            configuration.to_owned(),
+            journey.to_owned(),
+            scenario.to_owned(),
+        );
+        if !expected_interactions.contains(&key) || !actual_interactions.insert(key) {
+            issues.push(json!({"path":issue_path(path),"section":"interaction coverage","config":configuration,"journey":journey,"scenario":scenario,"reason":"unexpected or duplicate interaction cell"}));
+        }
+        let allow_not_applicable =
+            scenario != "completion" && !crate::ui_audit::UPDATE_SCENARIOS.contains(&scenario);
+        issues.extend(verify_ux_row(
+            path,
+            "interaction coverage",
+            row,
+            records,
+            finding_ids,
+            allow_not_applicable,
+        ));
+        if ux_cell(row, "result") == "PASS"
+            && (!platform_observation(ux_cell(row, "evidence"), records, platform)
+                || !concrete_ux_value(ux_cell(row, "target")))
+        {
+            issues.push(json!({"path":issue_path(path),"section":"interaction coverage","config":configuration,"journey":journey,"scenario":scenario,"reason":"passing interactions require a concrete target and platform-bound runtime observation, not screenshots, browser-only native proof, or aggregate reports"}));
+        }
+        if unknown_configurations.contains(configuration) && ux_cell(row, "result") != "BLOCKED" {
+            issues.push(json!({"path":issue_path(path),"section":"interaction coverage","config":configuration,"reason":"unknown supported configurations must remain BLOCKED"}));
+        }
+        if ["GAP", "BLOCKED"].contains(&ux_cell(row, "result")) {
+            unavailable_journeys.insert(journey.to_owned());
+        }
+    }
+    for (configuration, journey, scenario) in expected_interactions.difference(&actual_interactions)
+    {
+        issues.push(json!({"path":issue_path(path),"section":"interaction coverage","config":configuration,"journey":journey,"scenario":scenario,"reason":"missing required interaction cell"}));
+    }
+    let mut build_ids = BTreeSet::new();
+    for row in &builds {
+        let identifier = ux_cell(row, "config id");
+        let platform = configurations
+            .iter()
+            .find(|config| ux_cell(config, "config id") == identifier)
+            .map_or("unknown", |config| ux_cell(config, "platform"));
+        if !configuration_ids.contains(identifier) || !build_ids.insert(identifier) {
+            issues.push(json!({"path":issue_path(path),"section":"rendered build review","config":identifier,"reason":"unexpected or duplicate build review"}));
+        }
+        issues.extend(verify_ux_row(
+            path,
+            "rendered build review",
+            row,
+            records,
+            finding_ids,
+            false,
+        ));
+        if ux_cell(row, "result") == "PASS"
+            && (!concrete_ux_value(ux_cell(row, "target"))
+                || !concrete_ux_value(ux_cell(row, "expected snapshot"))
+                || ux_cell(row, "expected snapshot") != ux_cell(row, "observed snapshot")
+                || !platform_observation(ux_cell(row, "evidence"), records, platform))
+        {
+            issues.push(json!({"path":issue_path(path),"section":"rendered build review","config":identifier,"reason":"passing build review requires an accessible target, matching snapshots, and runtime observation"}));
+        }
+        if unknown_configurations.contains(identifier) && ux_cell(row, "result") != "BLOCKED" {
+            issues.push(json!({"path":issue_path(path),"section":"rendered build review","config":identifier,"reason":"unknown build configuration must remain BLOCKED"}));
+        }
+        if ["GAP", "BLOCKED"].contains(&ux_cell(row, "result")) {
+            for configuration in configurations
+                .iter()
+                .filter(|configuration| ux_cell(configuration, "config id") == identifier)
+            {
+                unavailable_journeys.extend(ux_names(ux_cell(configuration, "journey ids")));
+            }
+        }
+    }
+    if build_ids != configuration_ids {
+        issues.push(json!({"path":issue_path(path),"section":"rendered build review","reason":"every configuration requires a build identity review"}));
+    }
+    let mut design_ids = BTreeSet::new();
+    let mut design_journeys = BTreeSet::new();
+    for row in &designs {
+        let identifier = ux_cell(row, "review id");
+        let applicability = ux_cell(row, "applicability");
+        let members = ux_names(ux_cell(row, "journey ids"));
+        if !design_ids.insert(identifier)
+            || !concrete_ux_value(identifier)
+            || members.is_empty()
+            || !members.is_subset(journeys)
+            || ![
+                "alternatives",
+                "approved-design",
+                "routine-fix",
+                "unavailable",
+            ]
+            .contains(&applicability)
+        {
+            issues.push(json!({"path":issue_path(path),"section":"design decision review","review":identifier,"reason":"invalid design applicability, identity, or journey references"}));
+        }
+        design_journeys.extend(members.iter().cloned());
+        let unavailable = applicability == "unavailable";
+        issues.extend(verify_ux_row(
+            path,
+            "design decision review",
+            row,
+            records,
+            finding_ids,
+            unavailable,
+        ));
+        if unavailable && ux_cell(row, "result") != "NOT_APPLICABLE" {
+            issues.push(json!({"path":issue_path(path),"section":"design decision review","review":identifier,"reason":"unavailable mockups do not prove fidelity or historical noncompliance; use reasoned NOT_APPLICABLE"}));
+        }
+        if !unavailable && ux_cell(row, "result") == "PASS" {
+            let options = ux_names(ux_cell(row, "options"));
+            if !concrete_ux_value(ux_cell(row, "design target"))
+                || !concrete_ux_value(ux_cell(row, "authority"))
+                || (applicability == "alternatives"
+                    && (options.len() != 3
+                        || options.iter().any(|option| !concrete_ux_value(option))
+                        || !options.contains(ux_cell(row, "selection"))
+                        || !concrete_ux_value(ux_cell(row, "distinctions"))))
+            {
+                issues.push(json!({"path":issue_path(path),"section":"design decision review","review":identifier,"reason":"passing design review requires a current target and authority; supplied alternatives require three named options, material distinctions, and a selected option"}));
+            }
+        }
+        if ["GAP", "BLOCKED"].contains(&ux_cell(row, "result")) {
+            unavailable_journeys.extend(members);
+        }
+    }
+    if &design_journeys != journeys {
+        issues.push(json!({"path":issue_path(path),"section":"design decision review","reason":"every journey requires a current design applicability review"}));
+    }
+    for row in
+        parse_markdown_table_dicts(bodies.get("journey flow review").map_or("", String::as_str))
+    {
+        if ux_cell(&row, "result") == "PASS"
+            && unavailable_journeys.contains(ux_cell(&row, "journey id"))
+        {
+            issues.push(json!({"path":issue_path(path),"section":"journey flow review","journey":ux_cell(&row,"journey id"),"reason":"flow cannot PASS with GAP/BLOCKED interaction, build, or design coverage"}));
+        }
+    }
+    issues
+}
+
+fn verify_ux_synthesis(
+    path: &Path,
+    final_bodies: &BTreeMap<String, String>,
+    worker_bodies: &BTreeMap<String, String>,
+) -> Vec<Value> {
+    let mut issues = Vec::new();
+    for (section, columns) in [
+        ("journey decision model", &["journey id"][..]),
+        ("journey flow review", &["journey id"][..]),
+        (
+            "ux guideline review",
+            &["journey id", "criterion", "surface", "item"][..],
+        ),
+        ("ui configuration contract", CONFIG_COLUMNS),
+        (
+            "interaction coverage",
+            &[
+                "journey id",
+                "config id",
+                "scenario",
+                "target",
+                "expected result",
+                "observation",
+                "evidence",
+                "finding",
+            ][..],
+        ),
+        (
+            "rendered build review",
+            &[
+                "config id",
+                "target",
+                "expected snapshot",
+                "observed snapshot",
+                "evidence",
+                "finding",
+            ][..],
+        ),
+        (
+            "design decision review",
+            &[
+                "review id",
+                "journey ids",
+                "applicability",
+                "design target",
+                "options",
+                "selection",
+                "authority",
+                "distinctions",
+                "evidence",
+                "finding",
+            ][..],
+        ),
+    ] {
+        let indexed = |bodies: &BTreeMap<String, String>| {
+            parse_markdown_table_dicts(bodies.get(section).map_or("", String::as_str))
+                .iter()
+                .map(|row| {
+                    (
+                        columns
+                            .iter()
+                            .map(|column| ux_cell(row, column).to_owned())
+                            .collect::<Vec<_>>(),
+                        ux_cell(row, "result").to_owned(),
+                    )
+                })
+                .collect::<BTreeMap<_, _>>()
+        };
+        let expected = indexed(worker_bodies);
+        let actual = indexed(final_bodies);
+        if expected.keys().collect::<BTreeSet<_>>() != actual.keys().collect::<BTreeSet<_>>() {
+            issues.push(json!({"path":issue_path(path),"section":section,"reason":"final report must preserve the visual worker's journey and assessment coverage"}));
+        }
+        for (key, result) in expected {
+            if ["GAP", "BLOCKED"].contains(&result.as_str())
+                && actual
+                    .get(&key)
+                    .is_some_and(|value| ["PASS", "NOT_APPLICABLE"].contains(&value.as_str()))
+            {
+                issues.push(json!({"path":issue_path(path),"section":section,"assessment":key,"reason":"final synthesis cannot silently clear a GAP/BLOCKED UX assessment"}));
             }
         }
     }
@@ -1164,6 +1890,13 @@ fn verify_aux_report(
     for issue in evidence_issues {
         extend_evidence_issue(&mut issues, path, issue);
     }
+    issues.extend(verify_ux_reviews(
+        path,
+        &bodies,
+        findings,
+        &records,
+        &context.platform,
+    ));
     let formal_body = bodies.get("formal evidence").map_or("", String::as_str);
     let formal_refs = crate::audit_evidence::evidence_references(formal_body);
     let formal_kinds = formal_refs
@@ -1288,7 +2021,7 @@ fn verify_aux_report(
     issues
 }
 
-fn verify_final_report(context: &VerifyContext) -> Vec<Value> {
+fn verify_final_report(context: &VerifyContext, visual_report: Option<&PathBuf>) -> Vec<Value> {
     let path = context.root.join("final-report.md");
     let text = match read_text(&path, &context.root, "final-report.md") {
         Ok(text) => text,
@@ -1338,6 +2071,42 @@ fn verify_final_report(context: &VerifyContext) -> Vec<Value> {
     );
     for issue in evidence_issues {
         extend_evidence_issue(&mut issues, &path, issue);
+    }
+    issues.extend(verify_journey_model(
+        &path,
+        bodies
+            .get("journey decision model")
+            .map_or("", String::as_str),
+    ));
+    issues.extend(verify_ux_reviews(
+        &path,
+        &bodies,
+        &text,
+        &records,
+        &context.platform,
+    ));
+    if !finding_blocks(&text).is_empty() {
+        let all_files = context
+            .source_hashes
+            .keys()
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        issues.extend(validate_findings(
+            &text,
+            &all_files,
+            &path,
+            "UX finding synthesis",
+            true,
+        ));
+    }
+    if let Some(visual_report) = visual_report
+        && let Ok(worker_text) = read_text(visual_report, &context.root, "visual comparison report")
+    {
+        issues.extend(verify_ux_synthesis(
+            &path,
+            &bodies,
+            &section_bodies(&worker_text),
+        ));
     }
     let mut required = BTreeSet::new();
     if web_required {
@@ -1676,7 +2445,8 @@ pub fn verify(
     let mut ledger = verify_execution_ledger(&context);
     let mut missing_reports = Vec::new();
     let mut report_issues = Vec::new();
-    let mut final_report = verify_final_report(&context);
+    let mut final_report =
+        verify_final_report(&context, reports_by_name.get("visual_comparison_audit.md"));
     let mut hashes = if skip_current_hash_check {
         Vec::new()
     } else {
@@ -1955,6 +2725,91 @@ mod tests {
         .unwrap();
     }
 
+    fn replace_section(report: &str, heading: &str, body: &str) -> String {
+        let marker = format!("## {heading}\n");
+        let start = report.find(&marker).unwrap() + marker.len();
+        let end = report[start..]
+            .find("\n## ")
+            .map_or(report.len(), |offset| start + offset);
+        format!("{}{}\n{}", &report[..start], body, &report[end..])
+    }
+
+    fn ux_fixture() -> String {
+        let mut review = String::from(
+            "| Journey ID | Requirement evidence | Surface | Primary user goal | Primary decision | Required facts | Warning/flag conditions | Frequent actions | Secondary/rare actions | Unconfirmed assumptions |\n\
+             | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n\
+             | review-incidents | docs/journeys.md | dashboard | review incidents | choose an incident | summary and severity | urgent status | resolve | archive detail | none |\n\n\
+             ## Journey Flow Review\n\
+             | Journey ID | Starting situation | Intended outcome | Observed path | Surfaces | Outcome evidence | Unnecessary effort | Simpler alternative | Result | Reason | Evidence | Finding |\n\
+             | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n\
+             | review-incidents | owner has an open incident | choose the urgent incident | 1. Open dashboard; 2. Read severity and choose incident | dashboard | evidence:formal-journey-evidence | None observed in the selection path | Keep severity beside each incident | PASS | The owner can decide in the existing collection | evidence:formal-desktop-cell-viewport | none |\n\n\
+             ## UX Guideline Review\n\
+             | Journey ID | Criterion | Guideline source | Surface | Item | User benefit | Observation | Result | Reason | Evidence | Finding |\n\
+             | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n",
+        );
+        for criterion in crate::ui_audit::UX_CRITERIA {
+            let contextual = crate::ui_audit::CONTEXT_CRITERIA.contains(criterion);
+            let surface = if ["surface-purpose", "copy-purpose"].contains(criterion) || contextual {
+                "dashboard"
+            } else {
+                "all"
+            };
+            let (item, observation, result, reason) = if *criterion == "copy-purpose" {
+                (
+                    "none",
+                    "No supporting copy exists in the declared states",
+                    "NOT_APPLICABLE",
+                    "The labels already identify the actions; source and rendered inventory contain no helper text",
+                )
+            } else {
+                (
+                    "incident review",
+                    "Summary and severity are visible beside the action",
+                    "PASS",
+                    "Users can make the required decision without leaving the collection",
+                )
+            };
+            let evidence = if contextual {
+                "evidence:formal-journey-evidence"
+            } else {
+                "evidence:formal-desktop-cell-viewport"
+            };
+            review.push_str(&format!("| review-incidents | {criterion} | universal UI guidelines and docs/journeys.md | {surface} | {item} | Choose which incident needs attention | {observation} | {result} | {reason} | {evidence} | none |\n"));
+        }
+        review.push_str(&configuration_fixture());
+        review
+    }
+
+    fn configuration_fixture() -> String {
+        let mut report = String::from(
+            "\n## UI Configuration Contract\n\
+             | Config ID | Platform | Theme | Viewport | Input mode | Journey IDs | Update journey | Requirement source |\n\
+             | --- | --- | --- | --- | --- | --- | --- | --- |\n\
+             | wide-light | web | light | desktop | keyboard | review-incidents | none | docs/journeys.md at audit source |\n\
+             | narrow-light | web | light | mobile | touch | review-incidents | none | docs/journeys.md at audit source |\n\
+             \n## Interaction Coverage\n\
+             | Journey ID | Config ID | Scenario | Target | Expected result | Observation | Result | Reason | Evidence | Finding |\n\
+             | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n",
+        );
+        for configuration in ["wide-light", "narrow-light"] {
+            for scenario in crate::ui_audit::INTERACTION_SCENARIOS {
+                report.push_str(&format!("| review-incidents | {configuration} | {scenario} | /dashboard | Resolve an incident in context | The recorded journey demonstrates {scenario} | PASS | The expected state and input behavior were observed | evidence:formal-journey-evidence | none |\n"));
+            }
+        }
+        report.push_str(
+            "\n## Rendered Build Review\n\
+             | Config ID | Target | Expected snapshot | Observed snapshot | Result | Reason | Evidence | Finding |\n\
+             | --- | --- | --- | --- | --- | --- | --- | --- |\n\
+             | wide-light | https://preview.invalid/dashboard | build-42 | build-42 | PASS | The reachable app identifies the audited build | evidence:formal-journey-evidence | none |\n\
+             | narrow-light | https://preview.invalid/dashboard | build-42 | build-42 | PASS | The reachable app identifies the audited build | evidence:formal-journey-evidence | none |\n\
+             \n## Design Decision Review\n\
+             | Review ID | Journey IDs | Applicability | Design target | Options | Selection | Authority | Distinctions | Result | Reason | Evidence | Finding |\n\
+             | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n\
+             | current-design | review-incidents | approved-design | current dashboard | none | current dashboard | confirmed selection decision | existing approved layout | PASS | Rendered structure follows the selected direction | evidence:formal-desktop-cell-viewport | none |\n",
+        );
+        report
+    }
+
     fn write_visual_and_final(fixture: &Fixture) {
         let visual = format!(
             "## Run ID\n{run}\n\n## Worker\nvisual_comparison_audit\n\n## Mockup And Asset Inventory\nThe dashboard mockup and journey were reviewed.\n\n## Visual Tooling\nPlaywright formal evidence covers desktop and mobile.\n\n## Journey Decision Model\n| Surface | Primary user goal | Primary decision | Required facts | Warning/flag conditions | Frequent actions | Secondary/rare actions | Unconfirmed assumptions |\n| --- | --- | --- | --- | --- | --- | --- | --- |\n| dashboard | review incidents | choose an incident | summary and severity | urgent status | resolve | archive detail | none |\n\n## Rendered Journey Usability\n| Platform | Viewport | Decision supported | Visible decision-driving content | Visible secondary/detail content | Detail access pattern | Readability/contrast evidence | Layout quality result | Evidence |\n| --- | --- | --- | --- | --- | --- | --- | --- | --- |\n| web | desktop | choose an incident | summary and action | archive | {checks} | screenshot evidence:formal-desktop-cell-viewport | PASS | browser viewport screenshot evidence:formal-desktop-cell-viewport |\n| web | mobile | choose an incident | summary and action | archive | secondary after primary | screenshot evidence:formal-mobile-cell-viewport | PASS | browser viewport screenshot evidence:formal-mobile-cell-viewport |\n\n## Visual Comparison Checks\n| Platform | Journey | Viewport | Route/Screen | Mockup/Requirement | Implementation Screenshot/Tool Evidence | Differences | Result |\n| --- | --- | --- | --- | --- | --- | --- | --- |\n| web | Dashboard review | desktop | /dashboard | dashboard mockup | playwright screenshot evidence:formal-desktop-cell-viewport | No material mismatch | MATCHED |\n| web | Dashboard review | mobile | /dashboard | dashboard journey | playwright screenshot evidence:formal-mobile-cell-viewport | No material mismatch | MATCHED |\n\n## Formal Evidence\nImported evidence:formal-web, evidence:formal-journey-evidence, evidence:formal-review-queue, and evidence:formal-manual-review; no critical findings.\n\n## Findings\nNo findings.\n\n## Open Questions\nNone.\n",
@@ -1963,14 +2818,17 @@ mod tests {
         );
         write(
             &fixture.out.join("reports/visual_comparison_audit.md"),
-            visual,
+            replace_section(&visual, "Journey Decision Model", &ux_fixture()),
         );
         let final_report = format!(
             "## Coverage\nRun {run} audited the declared web UI platform.\n\n## Mockup And Requirement Inputs\nThe manifest-bound mockup and journey were reviewed.\n\n## Journey Decision Model\nThe primary decision is selecting an incident.\n\n## Rendered Journey Usability Findings\nDesktop and mobile evidence:formal-desktop-cell-viewport and evidence:formal-mobile-cell-viewport support the decision.\n\n## Visual Audit Findings\nEvidence: evidence:formal-web, evidence:formal-journey-evidence, evidence:formal-review-queue, and evidence:formal-manual-review.\n\n## Source Implementation Findings\nMissing wiring is recorded without claiming source-only outcome proof.\n\n## Journey And Responsive Findings\nDesktop and mobile constraints were reviewed.\n\n## Accessibility And Interaction Findings\n{checks} Evidence: evidence:formal-desktop-cell-viewport.\n\n## Implementation Plan\nImplement the reported missing wiring.\n\n## Verification Plan\nUse runtime interaction evidence and focused tests.\n",
             run = fixture.manifest["run_id"].as_str().unwrap(),
             checks = CHECKLIST,
         );
-        write(&fixture.out.join("final-report.md"), final_report);
+        write(
+            &fixture.out.join("final-report.md"),
+            replace_section(&final_report, "Journey Decision Model", &ux_fixture()),
+        );
     }
 
     fn complete_fixture() -> Fixture {
@@ -1991,6 +2849,695 @@ mod tests {
             false,
         )
         .unwrap();
+        assert_eq!(result["ok"], true, "{result:#}");
+    }
+
+    #[test]
+    fn ux_regression_screen_only_reports_are_incomplete() {
+        let fixture = complete_fixture();
+        let path = fixture.out.join("reports/visual_comparison_audit.md");
+        let original = std::fs::read_to_string(&path).unwrap();
+        let mut omit = false;
+        let report = original
+            .lines()
+            .filter(|line| {
+                if line.starts_with("## ") {
+                    omit = matches!(*line, "## Journey Flow Review" | "## UX Guideline Review");
+                }
+                !omit
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        write(&path, report);
+        let result = verify(
+            &fixture.out.join("manifest.json"),
+            &[fixture.out.join("reports")],
+            false,
+        )
+        .unwrap();
+        assert_eq!(result["ok"], false, "{result:#}");
+        assert!(result.to_string().contains("journey flow review"));
+    }
+
+    #[test]
+    fn ux_regression_necessary_copy_and_absent_defects_are_not_dangers() {
+        for observation in [
+            "No helper text is displayed.",
+            "Required helper text prevents entering the wrong account number.",
+            "No duplicate summaries appear.",
+            "The panel is not crowded.",
+        ] {
+            assert!(!visual_danger(observation), "{observation}");
+        }
+        for observation in [
+            "Unnecessary helper text repeats every label.",
+            "The panel is crowded.",
+            "No clipping occurs, but the controls are crowded.",
+        ] {
+            assert!(visual_danger(observation), "{observation}");
+        }
+    }
+
+    fn verify_fixture(fixture: &Fixture) -> Value {
+        verify(
+            &fixture.out.join("manifest.json"),
+            &[fixture.out.join("reports")],
+            false,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn contextual_regression_missing_configuration_contract_is_not_complete() {
+        let fixture = complete_fixture();
+        for path in [
+            fixture.out.join("reports/visual_comparison_audit.md"),
+            fixture.out.join("final-report.md"),
+        ] {
+            let mut report = std::fs::read_to_string(&path).unwrap();
+            for section in [
+                "UI Configuration Contract",
+                "Interaction Coverage",
+                "Rendered Build Review",
+                "Design Decision Review",
+            ] {
+                if report.contains(&format!("## {section}\n")) {
+                    report = replace_section(&report, section, "Not supplied.");
+                }
+            }
+            write(&path, report);
+        }
+        let result = verify_fixture(&fixture);
+        assert_eq!(
+            result["ok"], false,
+            "a screenshot-complete audit omitted the required configurations: {result:#}"
+        );
+    }
+
+    #[test]
+    fn contextual_regression_guidelines_are_individually_required() {
+        for criterion in [
+            "context-inheritance",
+            "contextual-actions",
+            "compact-choices",
+            "progressive-disclosure",
+            "overlay-behavior",
+            "generated-results",
+            "contextual-help",
+        ] {
+            assert!(
+                crate::ui_audit::UX_CRITERIA.contains(&criterion),
+                "missing concrete guideline: {criterion}"
+            );
+        }
+    }
+
+    #[test]
+    fn contextual_controls_require_named_items_and_runtime_but_allow_reasoned_exceptions() {
+        let fixture = complete_fixture();
+        let path = fixture.out.join("reports/visual_comparison_audit.md");
+        let original = std::fs::read_to_string(&path).unwrap();
+        for criterion in crate::ui_audit::CONTEXT_CRITERIA {
+            let row = original
+                .lines()
+                .find(|line| line.starts_with(&format!("| review-incidents | {criterion} |")))
+                .unwrap();
+            for changed in [
+                String::new(),
+                row.replace("| dashboard |", "| all |"),
+                row.replace("| incident review |", "| none |"),
+                row.replace(
+                    "evidence:formal-journey-evidence",
+                    "evidence:formal-desktop-cell-viewport",
+                ),
+            ] {
+                write(&path, original.replace(row, &changed));
+                assert_eq!(
+                    verify_fixture(&fixture)["ok"],
+                    false,
+                    "{criterion}: {changed}"
+                );
+            }
+        }
+        for path in [path, fixture.out.join("final-report.md")] {
+            let original = std::fs::read_to_string(&path).unwrap();
+            let baseline = if path.ends_with("visual_comparison_audit.md") {
+                std::fs::read_to_string(fixture.out.join("final-report.md")).unwrap()
+            } else {
+                original.clone()
+            };
+            let baseline_rows = section_bodies(&baseline)["ux guideline review"].clone();
+            let mut rows = baseline_rows.clone();
+            for row in baseline_rows
+                .lines()
+                .filter(|row| row.starts_with("| review-incidents |"))
+            {
+                if crate::ui_audit::CONTEXT_CRITERIA
+                    .iter()
+                    .any(|criterion| row.contains(&format!("| {criterion} |")))
+                {
+                    let changed = row.replace("| incident review |", "| none |")
+                        .replace("| PASS |", "| NOT_APPLICABLE |")
+                        .replace("Summary and severity are visible beside the action", "No such control is present in the source and rendered inventory")
+                        .replace("Users can make the required decision without leaving the collection", "This read-only view has no editable or generated value; necessary labels remain visible");
+                    rows = rows.replace(row, &changed);
+                }
+            }
+            write(
+                &path,
+                replace_section(&original, "UX Guideline Review", &rows),
+            );
+        }
+        let result = verify_fixture(&fixture);
+        assert_eq!(
+            result["ok"], true,
+            "legitimate non-applicability must not force new controls: {result:#}"
+        );
+    }
+
+    #[test]
+    fn configuration_reviews_reject_missing_cells_stale_builds_and_screenshot_proof() {
+        let fixture = complete_fixture();
+        let path = fixture.out.join("reports/visual_comparison_audit.md");
+        let original = std::fs::read_to_string(&path).unwrap();
+        for scenario in crate::ui_audit::INTERACTION_SCENARIOS {
+            let prefix = format!("| review-incidents | narrow-light | {scenario} |");
+            let report = original
+                .lines()
+                .filter(|line| !line.starts_with(&prefix))
+                .collect::<Vec<_>>()
+                .join("\n");
+            write(&path, report);
+            let result = verify_fixture(&fixture);
+            assert_eq!(result["ok"], false, "{scenario}: {result:#}");
+            assert!(
+                result
+                    .to_string()
+                    .contains("missing required interaction cell")
+            );
+        }
+        let persistence = original
+            .lines()
+            .find(|line| line.starts_with("| review-incidents | narrow-light | persistence |"))
+            .unwrap();
+        let builds = section_bodies(&original)["rendered build review"].clone();
+        for (report, expected) in [
+            (
+                original.replace(
+                    "| wide-light | web | light |",
+                    "| wide-light | web | unknown |",
+                ),
+                "must remain BLOCKED",
+            ),
+            (
+                original.replace(
+                    persistence,
+                    &persistence.replace(
+                        "evidence:formal-journey-evidence",
+                        "evidence:formal-desktop-cell-viewport",
+                    ),
+                ),
+                "platform-bound runtime observation",
+            ),
+            (
+                original.replace(persistence, &format!("{persistence}\n{persistence}")),
+                "duplicate interaction cell",
+            ),
+            (
+                replace_section(
+                    &original,
+                    "Rendered Build Review",
+                    &builds.replace("| build-42 | build-42 |", "| build-42 | build-41 |"),
+                ),
+                "matching snapshots",
+            ),
+            (
+                replace_section(
+                    &original,
+                    "Rendered Build Review",
+                    &builds.replace(
+                        "evidence:formal-journey-evidence",
+                        "evidence:formal-desktop-cell-viewport",
+                    ),
+                ),
+                "runtime observation",
+            ),
+        ] {
+            write(&path, report);
+            let result = verify_fixture(&fixture);
+            assert_eq!(result["ok"], false, "{expected}: {result:#}");
+            assert!(result.to_string().contains(expected), "{result:#}");
+        }
+        let contract = section_bodies(&original)["ui configuration contract"].clone();
+        let dark = "| wide-dark | web | dark | desktop | keyboard | review-incidents | none | docs/journeys.md at audit source |\n";
+        write(
+            &path,
+            replace_section(
+                &original,
+                "UI Configuration Contract",
+                &format!("{contract}\n{dark}"),
+            ),
+        );
+        let result = verify_fixture(&fixture);
+        assert_eq!(result["ok"], false, "{result:#}");
+        assert!(result.to_string().contains("wide-dark"));
+        assert!(
+            result
+                .to_string()
+                .contains("missing required interaction cell")
+        );
+    }
+
+    #[test]
+    fn configuration_synthesis_preserves_snapshot_evidence_and_supported_combinations() {
+        let fixture = complete_fixture();
+        let path = fixture.out.join("final-report.md");
+        let original = std::fs::read_to_string(&path).unwrap();
+        for report in [
+            original.replace("| build-42 | build-42 |", "| build-43 | build-43 |"),
+            original
+                .lines()
+                .filter(|line| {
+                    !line.starts_with("| narrow-light |")
+                        && !line.starts_with("| review-incidents | narrow-light |")
+                })
+                .collect::<Vec<_>>()
+                .join("\n"),
+            original.replace("| desktop | keyboard |", "| desktop | pointer |"),
+        ] {
+            write(&path, report);
+            let result = verify_fixture(&fixture);
+            assert_eq!(result["ok"], false, "{result:#}");
+            assert!(
+                result.to_string().contains("preserve the visual worker"),
+                "{result:#}"
+            );
+        }
+    }
+
+    #[test]
+    fn configuration_review_accepts_honest_blockers_and_optional_scenarios() {
+        let records = BTreeMap::from([
+            (
+                "formal-journey-evidence".to_owned(),
+                json!({"kind":"journey-evidence"}),
+            ),
+            (
+                "formal-desktop-cell-viewport".to_owned(),
+                json!({"kind":"screenshot"}),
+            ),
+        ]);
+        let journeys = BTreeSet::from(["review-incidents".to_owned()]);
+        let findings = BTreeSet::from(["UI-SUPPORT".to_owned()]);
+        let mut blocked = section_bodies(&ux_fixture().replace("| light |", "| unknown |"));
+        for section in ["interaction coverage", "rendered build review"] {
+            let body = blocked[section]
+                .replace("| PASS |", "| BLOCKED |")
+                .replace(
+                    "evidence:formal-journey-evidence | none |",
+                    "none | UI-SUPPORT |",
+                )
+                .replace(
+                    "The expected state and input behavior were observed",
+                    "Supported themes are unconfirmed; execution cannot be attributed",
+                )
+                .replace(
+                    "The reachable app identifies the audited build",
+                    "The supported configuration is unknown; build identity cannot be confirmed",
+                );
+            blocked.insert(section.to_owned(), body);
+        }
+        blocked.insert(
+            "journey flow review".to_owned(),
+            blocked["journey flow review"].replace("| PASS |", "| BLOCKED |"),
+        );
+        let issues = verify_configuration_reviews(
+            Path::new("review.md"),
+            &blocked,
+            &records,
+            &findings,
+            &journeys,
+            "web",
+        );
+        assert!(
+            issues.is_empty(),
+            "honest blocked coverage is a valid audit, not a product pass: {issues:#?}"
+        );
+
+        let issues = verify_configuration_reviews(
+            Path::new("review.md"),
+            &blocked,
+            &records,
+            &BTreeSet::new(),
+            &journeys,
+            "web",
+        );
+        assert!(
+            issues
+                .iter()
+                .any(|issue| issue.to_string().contains("existing complete Finding ID"))
+        );
+        blocked.insert(
+            "journey flow review".to_owned(),
+            blocked["journey flow review"].replace("| BLOCKED |", "| PASS |"),
+        );
+        let issues = verify_configuration_reviews(
+            Path::new("review.md"),
+            &blocked,
+            &records,
+            &findings,
+            &journeys,
+            "web",
+        );
+        assert!(
+            issues
+                .iter()
+                .any(|issue| issue.to_string().contains("flow cannot PASS"))
+        );
+
+        let baseline = section_bodies(&ux_fixture());
+        for scenario in crate::ui_audit::INTERACTION_SCENARIOS {
+            let mut optional = baseline.clone();
+            let prefix = format!("| review-incidents | narrow-light | {scenario} |");
+            let row = baseline["interaction coverage"]
+                .lines()
+                .find(|row| row.starts_with(&prefix))
+                .unwrap();
+            let replacement = row.replace("| PASS |", "| NOT_APPLICABLE |").replace(
+                "The expected state and input behavior were observed",
+                "This read-only selection journey has no applicable editable or asynchronous state",
+            );
+            optional.insert(
+                "interaction coverage".to_owned(),
+                baseline["interaction coverage"].replace(row, &replacement),
+            );
+            let issues = verify_configuration_reviews(
+                Path::new("review.md"),
+                &optional,
+                &records,
+                &BTreeSet::new(),
+                &journeys,
+                "web",
+            );
+            assert_eq!(
+                issues.is_empty(),
+                *scenario != "completion",
+                "{scenario}: {issues:#?}"
+            );
+        }
+    }
+
+    #[test]
+    fn design_review_accepts_current_approvals_routine_fixes_and_missing_historical_mockups() {
+        let fixture = complete_fixture();
+        let visual_path = fixture.out.join("reports/visual_comparison_audit.md");
+        let final_path = fixture.out.join("final-report.md");
+        let original_visual = std::fs::read_to_string(&visual_path).unwrap();
+        let original_final = std::fs::read_to_string(&final_path).unwrap();
+        let designs = section_bodies(&original_visual)["design decision review"].clone();
+        let alternatives = designs.replace("| approved-design |", "| alternatives |")
+            .replace("| none | current dashboard |", "| list; split; board | split |")
+            .replace("existing approved layout", "List prioritizes scan order; split keeps editing beside results; board groups work by state")
+            .replace("confirmed selection decision", "explicit user authorization to select the strongest option");
+        for review in [
+            designs.clone(),
+            designs.replace("| approved-design |", "| routine-fix |"),
+            designs.replace("| approved-design |", "| unavailable |")
+                .replace("| PASS |", "| NOT_APPLICABLE |")
+                .replace("Rendered structure follows the selected direction", "No mockup was supplied; requirements and runtime evidence still establish the product audit"),
+            alternatives.clone(),
+        ] {
+            write(&visual_path, replace_section(&original_visual, "Design Decision Review", &review));
+            write(&final_path, replace_section(&original_final, "Design Decision Review", &review));
+            let result = verify_fixture(&fixture);
+            assert_eq!(result["ok"], true, "no dates or historical mockups are required: {result:#}");
+        }
+        for invalid in [
+            alternatives.replace("list; split; board", "list; split"),
+            alternatives.replace("| split | explicit", "| absent-option | explicit"),
+            alternatives.replace("explicit user authorization to select the strongest option", "none"),
+            alternatives.replace("List prioritizes scan order; split keeps editing beside results; board groups work by state", "none"),
+        ] {
+            write(&visual_path, replace_section(&original_visual, "Design Decision Review", &invalid));
+            assert_eq!(verify_fixture(&fixture)["ok"], false);
+        }
+    }
+
+    #[test]
+    fn desktop_updates_require_every_scenario_and_native_runtime_evidence() {
+        let report = ux_fixture()
+            .replace("| web |", "| desktop:linux-x64 |")
+            .replace(
+                "| review-incidents | none | docs/journeys.md",
+                "| review-incidents | review-incidents | docs/journeys.md",
+            );
+        let mut bodies = section_bodies(&report);
+        let records = BTreeMap::from([
+            (
+                "formal-journey-evidence".to_owned(),
+                json!({"kind":"journey-evidence"}),
+            ),
+            (
+                "formal-desktop-cell-viewport".to_owned(),
+                json!({"kind":"screenshot"}),
+            ),
+            (
+                "native-trace".to_owned(),
+                json!({"kind":"trace","platform":"desktop:linux-x64"}),
+            ),
+        ]);
+        let journeys = BTreeSet::from(["review-incidents".to_owned()]);
+        let issues = verify_configuration_reviews(
+            Path::new("review.md"),
+            &bodies,
+            &records,
+            &BTreeSet::new(),
+            &journeys,
+            "native",
+        );
+        assert!(
+            issues
+                .iter()
+                .any(|issue| issue["scenario"] == "update-startup")
+        );
+        assert!(issues.iter().any(|issue| {
+            issue
+                .to_string()
+                .contains("platform-bound runtime observation")
+        }));
+        for config in ["wide-light", "narrow-light"] {
+            for scenario in crate::ui_audit::UPDATE_SCENARIOS {
+                bodies.get_mut("interaction coverage").unwrap().push_str(&format!("\n| review-incidents | {config} | {scenario} | isolated desktop app | Update safely | The expected update state is observed | PASS | Trace shows background progress and user control without lost work | evidence:native-trace | none |\n"));
+            }
+        }
+        for section in ["interaction coverage", "rendered build review"] {
+            let replacement = bodies[section]
+                .replace("evidence:formal-journey-evidence", "evidence:native-trace");
+            bodies.insert(section.to_owned(), replacement);
+        }
+        let issues = verify_configuration_reviews(
+            Path::new("review.md"),
+            &bodies,
+            &records,
+            &BTreeSet::new(),
+            &journeys,
+            "native",
+        );
+        assert!(issues.is_empty(), "{issues:#?}");
+        let mut wrong_platform = records.clone();
+        wrong_platform.get_mut("native-trace").unwrap()["platform"] = json!("desktop:windows-x64");
+        let issues = verify_configuration_reviews(
+            Path::new("review.md"),
+            &bodies,
+            &wrong_platform,
+            &BTreeSet::new(),
+            &journeys,
+            "native",
+        );
+        assert!(issues.iter().any(|issue| {
+            issue
+                .to_string()
+                .contains("platform-bound runtime observation")
+        }));
+        for scenario in crate::ui_audit::UPDATE_SCENARIOS {
+            let mut missing = bodies.clone();
+            missing.insert(
+                "interaction coverage".to_owned(),
+                bodies["interaction coverage"]
+                    .lines()
+                    .filter(|line| {
+                        !line.starts_with(&format!(
+                            "| review-incidents | narrow-light | {scenario} |"
+                        ))
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            );
+            let issues = verify_configuration_reviews(
+                Path::new("review.md"),
+                &missing,
+                &records,
+                &BTreeSet::new(),
+                &journeys,
+                "native",
+            );
+            assert!(
+                issues.iter().any(|issue| issue["scenario"] == *scenario),
+                "{scenario}: {issues:#?}"
+            );
+            let mut waived = bodies.clone();
+            let prefix = format!("| review-incidents | narrow-light | {scenario} |");
+            let row = bodies["interaction coverage"]
+                .lines()
+                .find(|row| row.starts_with(&prefix))
+                .unwrap();
+            waived.insert(
+                "interaction coverage".to_owned(),
+                bodies["interaction coverage"]
+                    .replace(row, &row.replace("| PASS |", "| NOT_APPLICABLE |")),
+            );
+            let issues = verify_configuration_reviews(
+                Path::new("review.md"),
+                &waived,
+                &records,
+                &BTreeSet::new(),
+                &journeys,
+                "native",
+            );
+            assert!(
+                issues
+                    .iter()
+                    .any(|issue| issue.to_string().contains("invalid UX review result")),
+                "{scenario}: {issues:#?}"
+            );
+        }
+    }
+
+    #[test]
+    fn ux_review_rejects_missing_criteria_surfaces_and_outcome_proof() {
+        let fixture = complete_fixture();
+        let path = fixture.out.join("reports/visual_comparison_audit.md");
+        let original = std::fs::read_to_string(&path).unwrap();
+        let mutations = [
+            (original.lines().filter(|line| !line.starts_with("| review-incidents | step-necessity |")).collect::<Vec<_>>().join("\n"), "missing required guideline assessment"),
+            (original.replace("| dashboard | evidence:formal-journey-evidence |", "| dashboard; details | evidence:formal-journey-evidence |"), "each surface requires purpose, supporting-copy, and contextual-control review"),
+            (original.replace("| dashboard | evidence:formal-journey-evidence |", "| dashboard | evidence:formal-desktop-cell-viewport |"), "PASS requires runtime outcome evidence"),
+            (original.replace("| review-incidents | copy-purpose |", "| invented-journey | copy-purpose |"), "unknown journey or criterion"),
+            (original.replace("| evidence:formal-desktop-cell-viewport | none |", "| evidence:invented-evidence | none |"), "unknown visual evidence ids"),
+            (original.replace("| PASS | The owner can decide in the existing collection |", "| NOT_APPLICABLE | The owner can decide in the existing collection |"), "invalid UX review result"),
+            (original.replace("| review-incidents | step-necessity |", "| review-incidents | optional-polish |"), "unknown journey or criterion"),
+            (original.replace("The labels already identify the actions; source and rendered inventory contain no helper text", "none"), "concrete assessment rationale"),
+            (original.replace("| evidence:formal-desktop-cell-viewport | none |", "| evidence:formal-manual-review | none |"), "registered observation evidence"),
+            (original.replace("| None observed in the selection path |", "|  |"), "missing_or_empty_columns"),
+        ];
+        for (report, expected) in mutations {
+            write(&path, report);
+            let result = verify_fixture(&fixture);
+            assert_eq!(result["ok"], false, "{expected}: {result:#}");
+            assert!(
+                result.to_string().contains(expected),
+                "{expected}: {result:#}"
+            );
+        }
+    }
+
+    fn ux_gap_report(report: &str, blocked: bool) -> String {
+        let status = if blocked { "BLOCKED" } else { "GAP" };
+        let mut result = report.to_owned();
+        for line in report
+            .lines()
+            .filter(|line| line.starts_with("| review-incidents |"))
+        {
+            if line.contains("| step-necessity |")
+                || line.contains("| owner has an open incident |")
+            {
+                let changed = line
+                    .replace("| PASS |", &format!("| {status} |"))
+                    .replace("None observed in the selection path", "The owner must enter the incident number again")
+                    .replace("2. Read severity and choose incident", "2. Read severity; 3. Re-enter the incident number on a separate form; 4. Choose incident")
+                    .replace("Summary and severity are visible beside the action", "The mockup-matching flow requires repeated entry before selection")
+                    .replace("Users can make the required decision without leaving the collection", "The extra entry step adds no user benefit and should be removed")
+                    .trim_end_matches(" none |")
+                    .to_owned() + " UX-001 |";
+                result = result.replace(line, &changed);
+            }
+        }
+        let finding = "- Priority: P2\n- Finding ID: UX-001\n- Files: src/App.tsx\n- Mockup/requirement evidence: docs/journeys.md; the mockup also contains this detour\n- Interface evidence: evidence:formal-desktop-cell-viewport and evidence:formal-journey-evidence\n- Expected behavior/standard: users choose an incident without repeating information\n- Gap: the rendered journey requires repeated entry before selection\n- Suggested implementation direction: retain the selection in context and remove the repeated entry\n";
+        if result.contains("## Findings\n") {
+            replace_section(&result, "Findings", finding)
+        } else {
+            replace_section(&result, "Implementation Plan", finding)
+        }
+    }
+
+    #[test]
+    fn ux_review_keeps_honest_gaps_and_blockers_but_rejects_unlinked_findings() {
+        let fixture = complete_fixture();
+        let visual_path = fixture.out.join("reports/visual_comparison_audit.md");
+        let final_path = fixture.out.join("final-report.md");
+        let visual = std::fs::read_to_string(&visual_path).unwrap();
+        let final_report = std::fs::read_to_string(&final_path).unwrap();
+        for blocked in [false, true] {
+            let reviewed = ux_gap_report(&visual, blocked);
+            write(&visual_path, &reviewed);
+            write(&final_path, ux_gap_report(&final_report, blocked));
+            let result = verify_fixture(&fixture);
+            assert_eq!(result["ok"], true, "{result:#}");
+            write(&visual_path, reviewed.replace("- Finding ID: UX-001\n", ""));
+            let result = verify_fixture(&fixture);
+            assert_eq!(result["ok"], false, "{result:#}");
+            assert!(result.to_string().contains("existing complete Finding ID"));
+        }
+    }
+
+    #[test]
+    fn ux_review_rejects_final_synthesis_that_drops_or_clears_assessments() {
+        let fixture = complete_fixture();
+        let visual_path = fixture.out.join("reports/visual_comparison_audit.md");
+        let final_path = fixture.out.join("final-report.md");
+        let visual = std::fs::read_to_string(&visual_path).unwrap();
+        let final_report = std::fs::read_to_string(&final_path).unwrap();
+        write(&visual_path, ux_gap_report(&visual, false));
+        let result = verify_fixture(&fixture);
+        assert_eq!(result["ok"], false, "{result:#}");
+        assert!(result.to_string().contains("cannot silently clear"));
+        write(&visual_path, &visual);
+        let shortened = final_report
+            .lines()
+            .filter(|line| !line.starts_with("| review-incidents | copy-purpose |"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        write(&final_path, shortened);
+        let result = verify_fixture(&fixture);
+        assert_eq!(result["ok"], false, "{result:#}");
+        assert!(result.to_string().contains("preserve the visual worker"));
+    }
+
+    #[test]
+    fn ux_review_accepts_necessary_guidance_and_justified_separate_surfaces() {
+        let fixture = complete_fixture();
+        for path in [
+            fixture.out.join("reports/visual_comparison_audit.md"),
+            fixture.out.join("final-report.md"),
+        ] {
+            let original = std::fs::read_to_string(&path).unwrap();
+            let mut report = original.replace(
+                "| dashboard | evidence:formal-journey-evidence |",
+                "| dashboard; confirmation | evidence:formal-journey-evidence |",
+            );
+            let extra = "| review-incidents | surface-purpose | confirmed deletion requirement | confirmation | final review | Review the exact irreversible target | Target and consequence are shown | PASS | The additional surface serves the explicitly requested final decision | evidence:formal-desktop-cell-viewport | none |\n\
+                         | review-incidents | copy-purpose | confirmed deletion requirement | confirmation | consequence explanation | Avoid deleting the wrong incident | Necessary helper text names the target and consequence | PASS | The text prevents a concrete user error rather than narrating implementation | evidence:formal-desktop-cell-viewport | none |\n";
+            let mut extra = extra.to_owned();
+            for criterion in crate::ui_audit::CONTEXT_CRITERIA {
+                extra.push_str(&format!("| review-incidents | {criterion} | confirmed deletion requirement | confirmation | none | Keep final review focused | No such control exists in this confirmation | NOT_APPLICABLE | Source and rendered inventory contain only the target and confirmation actions | evidence:formal-desktop-cell-viewport | none |\n"));
+            }
+            report = report.replace(
+                "\n## UI Configuration Contract",
+                &format!("\n{extra}\n## UI Configuration Contract"),
+            );
+            write(&path, report);
+        }
+        let result = verify_fixture(&fixture);
         assert_eq!(result["ok"], true, "{result:#}");
     }
 

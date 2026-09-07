@@ -47,6 +47,32 @@ Use this skill when you want to audit:
   fit.
 - Rendered journey usability: visible content must help the user make the
   current journey decision, not merely avoid overflow or resemble the mockup.
+- Complete user paths: starting context, observable outcome, actual steps,
+  unnecessary effort, repeated entry, navigation, cancellation, and recovery.
+- Explicit assessments of journey-first design, step necessity, each surface's
+  purpose, each supporting-text item's purpose, product language, and applicable
+  project guidelines. A matching mockup does not excuse avoidable user effort.
+- Evidence-backed `Journey Flow Review` and `UX Guideline Review` tables with
+  stable journey/finding IDs. Final synthesis cannot omit assessments or silently
+  clear gaps. The verifier checks coverage and consistency, not subjective taste.
+- Per-control assessments of inherited context, nearby actions, icon-and-label
+  choices, optional fields, overlay menus, live generated results, and contextual
+  help. Passing controls require runtime evidence; legitimate exceptions need
+  concrete reasons rather than disappearing from coverage.
+- A requirement-derived `UI Configuration Contract` and `Interaction Coverage`
+  table covering supported themes, viewports and inputs, including completion,
+  cancellation, validation, recovery, persistence and relevant content states.
+  The reviewer establishes the supported inventory; the verifier rejects missing
+  declared cells, screenshot-only interaction proof, and unsupported omissions.
+- `Rendered Build Review` binds every configuration to an accessible target and
+  matching source/build snapshot. `Design Decision Review` assesses supplied
+  alternatives and current selection without auditing when mockups were created
+  or requiring retrospective mockups for approved designs or routine fixes.
+- Conditional desktop update journeys verify checks, background downloads,
+  ready-state controls, user-triggered restart, unsaved work and recovery in an
+  isolated installation. Native execution uses platform-bound traces/videos,
+  not imported browser evidence. Delivery watchdogs and resource accounting
+  remain outside this UI audit.
 - Journey-aware formal verification: primary content owns the initial viewport,
   activated work continues visibly and with focus, text/theme colors are
   measurable, and palette risks remain explicit visual-review evidence.
@@ -192,13 +218,17 @@ A run is complete only after:
    pairs, and manual-review evidence; native and hybrid audits bind native
    snapshots.
 4. `execution_ledger.json` records completed lead, worker, and fallback status.
-5. `final-report.md` contains the required non-empty synthesis and interaction
-   checklist.
+5. `final-report.md` preserves the complete journey model, flow reviews,
+   per-journey guideline assessments, per-surface purpose/copy/control coverage,
+   configuration and interaction cells, build/design reviews, linked findings,
+   and the interaction checklist. It cannot silently clear worker gaps or change
+   source/build and evidence bindings during synthesis.
 6. `devcoordinator2-tooling audit ui-implementation verify` returns `ok: true`.
 
 The verifier checks structure, hashes, report coverage, current source drift,
 scope warnings, visual comparison evidence shape, first-viewport journey
-coverage, and ledger completion. It cannot prove the semantic truth of each
+coverage, UX assessment coverage and evidence, finding links, final-synthesis
+consistency, and ledger completion. It cannot prove the semantic truth of each
 visual judgment; the lead agent remains responsible for reviewing screenshot
 evidence before final synthesis. That review happens only after automatic tests
 and only for queue entries selected by changed declared UI inputs/intent or new
