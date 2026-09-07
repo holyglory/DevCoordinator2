@@ -3067,8 +3067,11 @@ const POLICY_CONTRACTS: &[(&str, usize, &[&str])] = &[
             "wide and narrow layouts",
             "loading, empty, error, populated, and long-content states",
             "functional defect",
-            "visual exploration only for new directions or redesigns",
-            "approval state and exact response request",
+            "new interface or substantial redesign",
+            "routine fixes do not require three new proposals",
+            "options, selection or approval state",
+            "exact outstanding response request",
+            "when no follow-up can appear",
         ],
     ),
     (
