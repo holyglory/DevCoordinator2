@@ -1354,10 +1354,7 @@ fn open_database_read_only(path: &Path) -> Result<Connection, String> {
         .pragma_update(None, "query_only", true)
         .map_err(|error| format!("cannot protect Coordinator database read: {error}"))?;
     let schema = database_schema_from(&connection)?;
-    if !SUPPORTED_DATABASE_SCHEMAS
-        .iter()
-        .any(|supported| schema == supported.to_string())
-    {
+    if !supported_database_schema(&schema) {
         return Err(format!(
             "cutover requires database schema {}, found {schema}",
             SUPPORTED_DATABASE_SCHEMAS
@@ -1368,6 +1365,12 @@ fn open_database_read_only(path: &Path) -> Result<Connection, String> {
         ));
     }
     Ok(connection)
+}
+
+fn supported_database_schema(schema: &str) -> bool {
+    SUPPORTED_DATABASE_SCHEMAS
+        .iter()
+        .any(|supported| schema == supported.to_string())
 }
 
 fn database_schema(path: &Path) -> Result<String, String> {
@@ -1427,7 +1430,7 @@ fn database_integrity(path: &Path) -> Result<bool, String> {
         [],
         |row| row.get::<_, String>(0),
     ) {
-        Ok(schema) => Ok(schema == "15"),
+        Ok(schema) => Ok(supported_database_schema(&schema)),
         Err(error) if sqlite_corruption(&error) => Ok(false),
         Err(error) => Err(format!("cannot confirm database schema: {error}")),
     }
@@ -2167,6 +2170,10 @@ mod tests {
     fn bootstrap_preserves_imported_database_on_success_and_failure() {
         for fail_ping in [false, true] {
             let mut world = host_world();
+            Connection::open(&world.config.database_path)
+                .unwrap()
+                .execute("UPDATE meta SET value='16' WHERE key='schema_version'", [])
+                .unwrap();
             world.config.canary = true;
             std::fs::remove_file(world.config.runtime_dir.join(ACTIVITY_FILE)).unwrap();
             for path in [
@@ -2325,6 +2332,7 @@ mod tests {
 
             let receipt = activate(&mut host).unwrap();
             assert_eq!(receipt.status, "activated");
+            assert!(database_integrity(&world.config.database_path).unwrap());
             assert_eq!(
                 database_schema(&world.config.database_path).unwrap(),
                 schema.to_string()
@@ -2341,6 +2349,7 @@ mod tests {
                     )
                     .unwrap();
                 assert!(open_database_read_only(&world.config.database_path).is_err());
+                assert!(!database_integrity(&world.config.database_path).unwrap());
             }
         }
     }

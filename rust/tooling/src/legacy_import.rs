@@ -6,6 +6,7 @@ use std::io::{Read, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
+use devcoordinator2_api::DATABASE_SCHEMA_VERSION;
 use regex::Regex;
 use rusqlite::{Connection, OpenFlags, OptionalExtension};
 use rustix::fs::{Mode, OFlags, open as unix_open};
@@ -1075,22 +1076,34 @@ fn open_database(path: &Path) -> Result<Connection, String> {
             |row| row.get::<_, String>(0),
         )
         .ok();
-    if version
-        .as_deref()
-        .is_some_and(|version| !matches!(version, "15" | "16"))
-    {
-        return Err(format!(
-            "legacy import target must use database schema 15 or 16, found {}",
-            version.unwrap_or_default()
-        ));
+    match version {
+        Some(version) => {
+            let parsed = version.parse::<u32>().ok();
+            if !parsed.is_some_and(|value| [15, 16, 17, DATABASE_SCHEMA_VERSION].contains(&value)) {
+                return Err(format!(
+                    "legacy import target must use a supported database schema (15, 16, 17, {DATABASE_SCHEMA_VERSION}), found {version}"
+                ));
+            }
+        }
+        None => {
+            let tables: u32 = connection.query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'",
+                [], |row| row.get(0),
+            ).map_err(sql_error)?;
+            if tables != 0 {
+                return Err(
+                    "legacy import target has existing tables without a schema version".into(),
+                );
+            }
+            connection.execute_batch(SCHEMA).map_err(sql_error)?;
+            connection
+                .execute(
+                    "INSERT INTO meta(key,value) VALUES('schema_version',?1)",
+                    [DATABASE_SCHEMA_VERSION.to_string()],
+                )
+                .map_err(sql_error)?;
+        }
     }
-    connection.execute_batch(SCHEMA).map_err(sql_error)?;
-    connection
-        .execute(
-            "INSERT OR REPLACE INTO meta(key,value) VALUES('schema_version','16')",
-            [],
-        )
-        .map_err(sql_error)?;
     Ok(connection)
 }
 
@@ -1443,6 +1456,64 @@ mod tests {
             "evidence":{"repository_root":repository,"port":3003,"listener_observed":true,
                 "observed_at":"2026-09-07T00:00:00Z","pid":1234}
         }]})
+    }
+
+    #[test]
+    fn native_import_preserves_supported_schema_and_rejects_future() {
+        let temporary = tempfile::tempdir().unwrap();
+        let repository = temporary.path().join("repo");
+        std::fs::create_dir(&repository).unwrap();
+        for version in [15, 16, 17, DATABASE_SCHEMA_VERSION] {
+            let path = temporary.path().join(format!("schema-{version}.sqlite3"));
+            let connection = registered_database(&path, &repository);
+            connection
+                .execute(
+                    "UPDATE meta SET value=?1 WHERE key='schema_version'",
+                    [version.to_string()],
+                )
+                .unwrap();
+            let before: String = connection.query_row("SELECT group_concat(sql, ';') FROM (SELECT sql FROM sqlite_master ORDER BY name)", [], |row| row.get(0)).unwrap();
+            drop(connection);
+            for _ in 0..2 {
+                let mut connection = open_database(&path).unwrap();
+                let plan = plan_native_routes(
+                    &fixture_export(&repository),
+                    &native_fixture(&repository),
+                    &connection,
+                )
+                .unwrap();
+                import_native_routes(&mut connection, &plan, "t").unwrap();
+                let actual: String = connection
+                    .query_row(
+                        "SELECT value FROM meta WHERE key='schema_version'",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .unwrap();
+                assert_eq!(actual, version.to_string());
+                let after: String = connection.query_row("SELECT group_concat(sql, ';') FROM (SELECT sql FROM sqlite_master ORDER BY name)", [], |row| row.get(0)).unwrap();
+                assert_eq!(before, after);
+            }
+        }
+        let path = temporary.path().join("future.sqlite3");
+        let connection = open_database(&path).unwrap();
+        connection
+            .execute(
+                "UPDATE meta SET value=?1 WHERE key='schema_version'",
+                [(DATABASE_SCHEMA_VERSION + 1).to_string()],
+            )
+            .unwrap();
+        drop(connection);
+        assert!(open_database(&path).is_err());
+        let connection = Connection::open(&path).unwrap();
+        let version: String = connection
+            .query_row(
+                "SELECT value FROM meta WHERE key='schema_version'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(version, (DATABASE_SCHEMA_VERSION + 1).to_string());
     }
 
     #[test]
