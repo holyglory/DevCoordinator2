@@ -276,29 +276,120 @@
 
 ## 6. Deliver preliminary results continuously
 
+### Resolve project delivery deadlines
+
 - Throughout implementation, expose the earliest meaningful, runnable
   increment on an authorized non-production surface: a test server,
   application build, executable, or other appropriate inspectable result.
   Do not wait for feature completion or broad validation.
+- For every project with long-running tasks or goals, resolve the delivery
+  interval and overdue hard-stop threshold from applicable project
+  instructions and user-confirmed Coordinator decisions. Project-specific
+  values take precedence. Resolve each setting independently: when absent,
+  the delivery interval defaults to 24 hours and the hard-stop threshold
+  defaults to 36 hours. These are fallback defaults, not fixed mandates.
+- Both intervals must be positive, and the hard-stop threshold must not be
+  shorter than the delivery interval. Resolve conflicting or incompatible
+  declarations with the user rather than silently choosing a more permissive
+  value. Never extend an interval merely to avoid an overdue stop.
+- Deliver the first qualifying result within the effective delivery interval
+  measured from the start of work, including discovery and setup. Thereafter,
+  measure each deadline from the last qualifying delivery. Use elapsed UTC
+  time, not accumulated agent working hours. Short tasks still finish under
+  their normal acceptance criteria; do not prolong them to reach a checkpoint.
+- Preserve the work-start time, effective intervals, delivery evidence,
+  deadlines, and report references through supported authoritative Coordinator
+  records. Read delivery times from actual delivery evidence, not the time a
+  status message was posted. Do not invent tool fields or local ledger copies.
+- Starting a new session, changing agents, creating subtasks, or handing off
+  work does not reset a project deadline. Check the shared deadlines before
+  starting or resuming implementation and before each new work batch. When
+  the user changes an interval, retain actual timestamps and apply the newly
+  agreed interval; do not fabricate a new start or delivery event.
+- An explicit user pause does not require continued execution. Keep the
+  existing preview available unless the user asks otherwise, and check its
+  actual age on resumption. Work already beyond its effective hard-stop
+  threshold resumes with delivery recovery, not further implementation.
+- Use available scheduling and event mechanisms to observe deadlines during
+  work, without adding a competing scheduler or agent status-polling loop.
+  Record actual operation identities; an instruction or promised schedule is
+  not proof of a running watchdog. Report missing required capabilities
+  explicitly instead of claiming unattended enforcement exists.
+
+### Keep web applications available
+
+- Deploy web-application increments through the configured DevCoordinator
+  service at least once per effective delivery interval. Publish a stable URL
+  that the user can actually access, and verify the advertised behavior there.
+- Keep the intermediate server continuously available for inspection while
+  development continues. Preserve the last working version while preparing
+  its replacement; restore a failed preview promptly. Do not tear it down
+  merely because an agent or task ends. Retire or replace it only through an
+  agreed change that preserves the user's intended access.
+- When public-domain assignment is available, use a domain agreed with the
+  user. Reuse an existing agreement instead of requesting it for every update.
+  While a new domain decision is pending, provide an already authorized,
+  accessible URL rather than withholding the preliminary result. A public
+  hostname does not by itself authorize anonymous access or removal of controls.
+
+### Deliver usable desktop builds and updates
+
+- Build usable packages for every agreed platform and architecture at least
+  once per effective delivery interval. Publish verified downloads through a
+  DevCoordinator-hosted web server, under the agreed public domain when
+  available. Identify the source snapshot and version for each package.
+- Track qualifying delivery separately for every required target. A successful
+  build for one platform does not reset another platform's deadline. Surface
+  missing build or distribution prerequisites early; never silently drop a
+  platform, substitute an unsupported package, or claim an unavailable build.
+- Automatic updating must work in the first qualifying desktop delivery.
+  Check for updates on startup and periodically while running: every hour by
+  default unless another interval is agreed for the project. Download an
+  available update in the background without interrupting ordinary use.
+- Once the update is downloaded and passes the project's established update
+  verification, show a small `Update` button in the window caption. Activating
+  it installs the update and restarts the application. Do not restart without
+  that action or discard unsaved work. A failed check, download, or installation
+  must leave the current version usable or recover it through the reviewed
+  update mechanism.
+- Verify the actual download and update path, including compatibility with
+  the agreed access controls. An updater stub, fake ready state, inaccessible
+  feed, or unexercised update button does not satisfy the delivery requirement.
+  Keep existing credential, artifact-verification, and trust controls intact.
+
+### Publish without pausing independent work
+
 - Refresh the available result promptly as coherent, runnable increments
   become available. Preliminary delivery is a continuing development
-  activity, not a one-time preview or final handoff.
+  activity, not a one-time preview or final handoff. The delivery interval is
+  a maximum gap, not a reason to delay an earlier useful result.
 - Keep implementation, focused testing, packaging, publication, and broader
   validation moving concurrently wherever independent. Publication and
-  user inspection must not gate unrelated work. Serialize only genuine
+  user inspection must not gate unrelated work unless the project's overdue
+  stop applies. Build and publish an identified, stable source snapshot while
+  the development checkout continues evolving. Serialize only genuine
   dependencies, conflicting mutations, or safety constraints.
 - Before exposing an update, run the narrowest relevant checks needed to
   establish that the increment is safely runnable and its advertised
   behavior works. UI increments include the affected rendered interactions.
+  Do not make complete release validation a prerequisite for preliminary
+  delivery; frozen validation continues to prove only its own candidate.
 - Keep the user able to inspect and guide the work throughout development.
   Incorporate feedback promptly within the agreed scope. Do not wait for
   acknowledgement unless a material decision genuinely requires it.
-- Maintain exact access or launch instructions. Briefly announce meaningful
-  changes, what the user can try, and important limitations. Label results
+- Report every qualifying delivery with the actual URL or download links,
+  version, what the user can try against the agreed requirements, and important
+  limitations. Maintain exact access or launch instructions. Label results
   preliminary; they are not final readiness or final visual approval.
 - Reuse established surfaces and delivery mechanisms. Respect declared
   shared environments and coordinate actual source, resource, or server
   conflicts rather than creating unnecessary per-agent environments.
+- For work that is neither a web nor desktop application, provide an
+  appropriate concrete, inspectable intermediate deliverable on the same
+  project cadence rather than imposing irrelevant application packaging.
+- Honor the coordinator's documented non-self-hosting restriction when
+  working on the coordinator itself. Use that repository's reviewed workflow
+  without relaxing the delivery deadlines or evidence requirements.
 - Standing permission covers in-scope local browser automation and the
   configured development coordinator's local runtime work without separate
   chat authorization. Preserve the tools' documented controls.
@@ -307,6 +398,31 @@
   outside the agreed work, or bypassing host/tool approval controls.
 - Preliminary delivery does not reduce the final agreed result. Incomplete
   scope remains explicit and tracked; exposed behavior must remain truthful.
+
+### Stop overdue implementation until delivery is restored
+
+- A queued or failed build, compilation without accessible downloads, an
+  inaccessible deployment, a status report, or reposted stale artifacts is not
+  a qualifying delivery. Do not reset a deadline until the result is available
+  to the user and its advertised behavior has been verified.
+- On missing the effective delivery interval, report the overdue result,
+  cause, and recovery action promptly. The later hard-stop threshold is not
+  permission to treat the delivery interval as optional.
+- At or beyond the effective hard-stop threshold without a qualifying
+  delivery, block further implementation throughout the affected project,
+  including every delegated agent. For the first delivery, measure from work
+  start; afterward, measure from the last qualifying delivery for each required
+  surface or target. Do not conceal an overdue target behind another's success.
+- Allow only delivery recovery, necessary diagnosis and repairs, supporting
+  builds and checks, reporting, and preservation of existing results. Do not
+  start unrelated implementation or optimization under the label of recovery.
+  Safe finite runs already in progress may finish preserving their evidence;
+  independent projects may continue.
+- Record the exact recovery condition through the existing Coordinator
+  records and communicate it to all affected agents. Resume implementation
+  only when the missing delivery obligations are verified as restored or the
+  user explicitly changes the applicable obligation. Merely queuing a retry,
+  acknowledging the delay, or posting a report does not clear the stop.
 
 ## 7. Validate at stable checkpoints without disrupting progress
 
@@ -398,6 +514,37 @@
 - Present technical concepts only when they are genuinely part of the
   user's task. Distinguish domain information users need from internal
   machinery they should not have to understand.
+
+### Design alternatives and contextual interfaces
+
+- Generate exactly three materially different visual options before
+  implementing a new interface or substantial redesign. Change layout,
+  information hierarchy, or interaction, not merely colors. Ground all three
+  in the user's journey and the existing design system.
+- Normally, present all three and recommend one, then obtain the user's
+  selection before implementing. If the user explicitly asks the agent to
+  choose the best option or proceed autonomously, select the strongest of the
+  three, briefly explain the choice, and implement without another approval
+  round. Preserve previously approved designs; routine fixes do not require
+  three new proposals.
+- Persist the options, selection or approval state, and exact outstanding
+  response request, if any. Include that state with the visual artifacts when
+  no follow-up can appear. Do not invent a pending approval when the user has
+  authorized autonomous selection or reopen an already approved design.
+- Minimize effort and preserve context. Inherit known project, parent, and
+  other values. Show infrequently changed context as clickable text rather
+  than permanent full-size selectors. Keep actions beside the object they
+  affect, including useful actions in empty states.
+- Prefer direct, compact controls. Use one-click choices with recognizable
+  icons and labels for small option sets. Reveal optional fields on demand.
+  Dropdowns must overlay content rather than stretch forms.
+- Show meaningful results, not explanatory clutter. Provide live previews
+  when choices generate a part number or other output. Put detailed
+  explanations and examples behind small contextual help buttons.
+- Verify the chosen design through actual use. Check creation, cancellation,
+  errors, persistence, keyboard/touch interaction, and responsive layouts in
+  every supported theme. Screenshots alone do not establish that the interface
+  works.
 
 ### Keep development commentary out of the product
 
@@ -519,9 +666,6 @@ geometry checks support evidence but do not replace interaction verification.
   list, immediate visibility and focus, saving, and the new item in context.
   Hidden, clipped, overlapping, inaccessible, misleading, or displaced
   primary content is a functional defect.
-- Use visual exploration only for new directions or redesigns. Persist its
-  approval state and exact response request, embedding both when no
-  follow-up can appear.
 
 ## 10. Preserve lessons from confirmed agent mistakes
 
@@ -634,3 +778,64 @@ geometry checks support evidence but do not replace interaction verification.
 - Distinguish facts, inferences, assumptions, and genuine blockers.
   Do not claim fixed, ready, complete, or done while the intended outcome,
   required verification, or request-related completion work remains open.
+
+## 13. Review outcomes and resource use every 24 hours
+
+- For each project with continuing work, complete a review after the first
+  24 elapsed hours and every subsequent 24 hours while work remains active.
+  This review cadence is separate from the project's delivery watchdog
+  intervals; overriding those intervals does not silently change the review
+  cadence. Complete an overdue review before starting another implementation
+  batch. A review does not reset a delivery deadline.
+- Preserve review boundaries across sessions and agents. State the actual UTC
+  reporting interval, cover work not yet reported, and identify any inactive
+  or unobserved periods rather than dropping them or inventing continuous work.
+  Coordinate one project review across its tasks and participating agents.
+- Start with results against the original specification and approved changes:
+  what users can actually do, the URL or downloads to inspect it, which agreed
+  journeys have observable evidence, what remains missing, and any divergence.
+  Explain missing progress directly. Activity lists, infrastructure work,
+  screenshots, or scaffolding do not substitute for promised working behavior.
+- Report resources for each individual task using its stable identity and
+  understandable intended outcome: measured tokens, active agent time,
+  elapsed time, and waiting time where available. Include delegated work,
+  retries, rework, testing, and delivery effort within the reporting interval.
+  Explain what that effort achieved, not merely which tools were invoked.
+- Obtain figures from the available authoritative usage and execution tools.
+  Preserve their coverage and provenance. Do not double-count parent and
+  descendant totals, overlapping wall-clock intervals, or token categories
+  that the source identifies as components of another total. Distinguish
+  concurrent agent effort from elapsed time and measured tokens from estimates.
+- Publish measured totals and explicit missing or unattributed figures when
+  precise task attribution is unavailable. Do not fabricate allocations or
+  omit the review. Measurement gaps alone do not block further development;
+  explain their effect on the assessment and improve accounting through
+  supported, authorized means.
+- Assess whether the resources produced useful progress toward the agreed
+  outcome. Examine repeated discovery or context loading, duplicated work,
+  excessive broad validation, avoidable rebuilds, serial waits, handoff costs,
+  and rework caused by misunderstood requirements. Identify evidenced causes,
+  not generic optimization suggestions or unsupported claims of optimality.
+- Choose concrete process improvements that reduce token use or delivery time
+  without shrinking the agreed result or weakening required verification.
+  Apply authorized improvements that do not require Coordinator changes,
+  continue useful work, and compare their observed effects in the next review.
+  When the current process is appropriate, explain the evidence instead of
+  inventing changes merely to fill the report.
+- If a necessary, evidence-backed optimization requires changing DevCoordinator,
+  stop further implementation by all agents on the affected project and report
+  the concrete limitation, proposed change, expected benefit, and smallest
+  user decision. Do not modify the coordinator or introduce a competing local
+  controller without authorization. Honor authorization already given for the
+  exact change; otherwise wait for user direction before dependent work resumes.
+- Optional infrastructure ideas and measurement gaps alone do not trigger this
+  stop. While a required Coordinator decision is outstanding, preserve running
+  results and evidence, finish useful bounded diagnosis and reporting, and let
+  independent projects continue. Do not use the review to start an unrelated
+  infrastructure project.
+- Deliver the review to the user in understandable task-oriented language,
+  with the next intended user-visible result and its deadline. Retain compact
+  report and evidence references through the supported authoritative records;
+  put consequential optimization decisions in decision history. Do not create
+  a new completion task for every scheduled review or copy verbose run logs into
+  task history. Keep verification criteria separate from execution receipts.
