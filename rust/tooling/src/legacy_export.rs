@@ -201,11 +201,26 @@ pub fn export_authority(path: &Path) -> Result<Value, String> {
     }
 
     let mut docker_resources = Vec::new();
-    let mut statement = connection
-        .prepare(
-            "SELECT docker_resource_id,full_container_id,current_name,image,repo_id FROM docker_resources WHERE repo_id IS NOT NULL",
+    let inline_docker_owner: bool = connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('docker_resources') WHERE name='repo_id')",
+            [],
+            |row| row.get(0),
         )
         .map_err(sql_error)?;
+    let docker_query = if inline_docker_owner {
+        "SELECT docker_resource_id,full_container_id,current_name,image,repo_id FROM docker_resources WHERE repo_id IS NOT NULL"
+    } else {
+        "SELECT d.docker_resource_id,d.full_container_id,d.current_name,d.image,c.repo_id
+         FROM docker_resources d JOIN (
+           SELECT docker_resource_id,MIN(repo_id) AS repo_id FROM docker_ownership_claims
+           WHERE conflict_state != 'retired'
+           GROUP BY docker_resource_id
+           HAVING COUNT(DISTINCT repo_id)=1
+             AND SUM(CASE WHEN conflict_state != 'clear' OR repo_id IS NULL THEN 1 ELSE 0 END)=0
+         ) c ON c.docker_resource_id=d.docker_resource_id"
+    };
+    let mut statement = connection.prepare(docker_query).map_err(sql_error)?;
     let rows = statement
         .query_map([], |row| {
             Ok((
@@ -251,7 +266,7 @@ pub fn export_authority(path: &Path) -> Result<Value, String> {
     for row in statement
         .query_map([], |row| {
             Ok((
-                row.get::<_, String>(0)?,
+                row.get::<_, Option<String>>(0)?,
                 row.get::<_, String>(1)?,
                 row.get::<_, String>(2)?,
             ))
@@ -260,7 +275,7 @@ pub fn export_authority(path: &Path) -> Result<Value, String> {
     {
         let (repository_id, database, engine) = row.map_err(sql_error)?;
         database_bindings.push(json!({
-            "root": by_id.get(&repository_id).map(|repository| repository.root.clone()),
+            "root": repository_id.as_ref().and_then(|id| by_id.get(id)).map(|repository| repository.root.clone()),
             "database": database,
             "engine": engine,
         }));
@@ -709,6 +724,7 @@ mod tests {
                  INSERT INTO port_assignments VALUES('L1','web',3000,'active');
                  INSERT INTO server_definitions VALUES('s1','L1','web','web','.','http://x','/log');
                  INSERT INTO server_command_arguments VALUES('s1',0,'node');
+                 INSERT INTO docker_resources VALUES('docker1','container1','app','image','L1');
                  INSERT INTO server_environment VALUES('s1','API_TOKEN','never-export-this');",
             )
             .unwrap();
@@ -722,6 +738,62 @@ mod tests {
             projected["server_definitions"][0]["environment_looks_secret"],
             json!(["API_TOKEN"])
         );
+        assert!(!projected.to_string().contains("never-export-this"));
+        assert_eq!(projected["docker_resources"][0]["root"], json!("/repo"));
+    }
+
+    #[test]
+    fn authority_export_uses_clear_normalized_claims_without_guessing_ownership() {
+        let temporary = tempfile::tempdir().unwrap();
+        let path = temporary.path().join("legacy.sqlite3");
+        let connection = Connection::open(&path).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE repositories(repo_id TEXT,canonical_root TEXT,display_name TEXT,state TEXT);
+                 CREATE TABLE repository_installations(repo_id TEXT,status TEXT);
+                 CREATE TABLE port_assignments(repo_id TEXT,server_name TEXT,port INTEGER,status TEXT);
+                 CREATE TABLE server_definitions(server_definition_id TEXT,repo_id TEXT,name TEXT,role TEXT,cwd TEXT,health_url_template TEXT,log_path TEXT);
+                 CREATE TABLE server_command_arguments(server_definition_id TEXT,ordinal INTEGER,argument TEXT);
+                 CREATE TABLE server_environment(server_definition_id TEXT,name TEXT,value TEXT);
+                 CREATE TABLE docker_resources(docker_resource_id TEXT,engine_id TEXT,full_container_id TEXT,current_name TEXT,image TEXT,created_at TEXT,updated_at TEXT);
+                 CREATE TABLE docker_ownership_claims(claim_id TEXT,docker_resource_id TEXT,source_resource_id TEXT,repo_id TEXT,source_id TEXT,provenance TEXT,priority INTEGER,conflict_state TEXT,created_at TEXT,updated_at TEXT);
+                 CREATE TABLE docker_labels(docker_resource_id TEXT,name TEXT,value TEXT);
+                 CREATE TABLE database_bindings(database_binding_id TEXT,repo_id TEXT,database_name TEXT,engine_kind TEXT);
+                 INSERT INTO repositories VALUES('L1','/repo','repo','active'),('L2','/other','other','active');
+                 INSERT INTO docker_resources(docker_resource_id,full_container_id,current_name,image) VALUES
+                   ('d1','container1','app','image'),('d2','container2','retired','image'),
+                   ('d3','container3','conflict','image'),('d4','container4','unclaimed','image'),
+                   ('d5','container5','ambiguous','image'),('d6','container6','clear','image'),
+                   ('d7','container7','unknown','image');
+                 INSERT INTO docker_ownership_claims(docker_resource_id,repo_id,conflict_state) VALUES
+                   ('d1','L1','clear'),('d1','L1','clear'),('d2','L1','retired'),
+                   ('d3','L1','clear'),('d3','L2','conflicting'),
+                   ('d5','L1','clear'),('d5','L2','clear'),
+                   ('d6','L1','clear'),('d6','L2','retired'),('d7',NULL,'clear');
+                 INSERT INTO docker_labels VALUES('d1','com.docker.compose.project','project'),
+                   ('d1','com.docker.compose.service','web'),('d1','private.token','never-export-this');
+                 INSERT INTO database_bindings VALUES('b1',NULL,'unassigned','postgres'),('b2','L1','assigned','postgres');",
+            )
+            .unwrap();
+        drop(connection);
+        let projected = export_authority(&path).unwrap();
+        let resources = projected["docker_resources"].as_array().unwrap();
+        assert_eq!(resources.len(), 2);
+        assert!(resources.iter().all(|resource| resource["root"] == "/repo"));
+        let app = resources
+            .iter()
+            .find(|resource| resource["name"] == "app")
+            .unwrap();
+        assert_eq!(app["compose_project"], "project");
+        assert_eq!(app["compose_service"], "web");
+        let clear = resources
+            .iter()
+            .find(|resource| resource["name"] == "clear")
+            .unwrap();
+        assert!(clear["compose_project"].is_null());
+        assert!(clear["compose_service"].is_null());
+        assert!(projected["database_bindings"][0]["root"].is_null());
+        assert_eq!(projected["database_bindings"][1]["root"], "/repo");
         assert!(!projected.to_string().contains("never-export-this"));
     }
 }

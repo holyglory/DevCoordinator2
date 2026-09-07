@@ -390,6 +390,8 @@ enum InstallCommand {
         #[arg(long)]
         canary: bool,
         #[arg(long)]
+        bootstrap: bool,
+        #[arg(long)]
         yes: bool,
     },
     Recover {
@@ -434,6 +436,8 @@ struct LegacyImportArgs {
     live_containers: Option<PathBuf>,
     #[arg(long)]
     current_route_map: Option<PathBuf>,
+    #[arg(long)]
+    native_routes: Option<PathBuf>,
     #[arg(long)]
     routes_path: Option<PathBuf>,
     #[arg(long)]
@@ -2047,6 +2051,7 @@ fn run_install(command: InstallCommand) -> ExitCode {
             candidate_manifest,
             transaction_dir,
             canary,
+            bootstrap,
             yes,
         } => {
             if !yes {
@@ -2083,16 +2088,24 @@ fn run_install(command: InstallCommand) -> ExitCode {
                         .find(|binary| binary.name == "devcoordinator2")
                         .map(|binary| PathBuf::from(&binary.path))
                         .ok_or_else(|| "candidate manifest has no control binary".to_owned())?;
-                    let validated = install::validate_registered_repository_configs(
-                        &config.database_path,
-                        &control_binary,
-                        &HostRunner,
-                    )?;
+                    let validated = if bootstrap && !config.database_path.exists() {
+                        Vec::new()
+                    } else {
+                        install::validate_registered_repository_configs(
+                            &config.database_path,
+                            &control_binary,
+                            &HostRunner,
+                        )?
+                    };
                     let mut host = devcoordinator2_tooling::cutover::HostCutover::new(
                         config,
                         std::sync::Arc::new(HostRunner),
                     )?;
-                    let receipt = devcoordinator2_tooling::cutover::activate(&mut host)?;
+                    let receipt = if bootstrap {
+                        host.bootstrap()?
+                    } else {
+                        devcoordinator2_tooling::cutover::activate(&mut host)?
+                    };
                     Ok(serde_json::json!({
                         "cutover": receipt,
                         "validated_repository_configs": validated,
@@ -2244,6 +2257,7 @@ fn run_legacy(command: LegacyCommand) -> ExitCode {
                 bugs_dir: args.bugs_dir,
                 live_containers: args.live_containers,
                 current_route_map: args.current_route_map,
+                native_routes: args.native_routes,
                 routes_path: args.routes_path,
                 base_domain: args.base_domain,
                 prune_missing_install_fixtures: args.prune_missing_install_fixtures,

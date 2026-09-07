@@ -30,6 +30,31 @@ untracked `instance/` directory and in the installed instance configuration
 
 ## Runtime trust boundary
 
+### Existing upstream credential migration
+
+- On 2026-09-07 the owner explicitly authorized replacing the legacy
+  coordinator while preserving the existing domain, subdomains, email-based
+  grants, and the Sentinel application's online access, with at most one hour
+  of outage. This includes carrying its existing upstream credential into the
+  new edge, not making the application public or broadening any grant.
+- The optional upstream Authorization map is private instance configuration
+  read only by the edge server. Its values stay outside source, public route
+  documents, ordinary results, and logs under the existing credential boundary.
+  An exact route-label mapping applies only after authentication and grant
+  checks, equally to HTTP and WebSocket traffic. Public and other route labels
+  never inherit that credential.
+- Review the mapping when a route label is reassigned, the existing upstream
+  credential changes, or the owner requests a different access boundary. This
+  migration does not establish additional installation or hosting assumptions.
+- Preserving the owner's existing online domains includes retaining their
+  existing certificate renewal path. The optional ACME webroot exposes only
+  public challenge tokens on HTTP, for existing certificate hostnames, without
+  changing application grants or exposing private certificate/key files.
+  Its filesystem boundary excludes traversal and symlink escapes. This is
+  renewal continuity, not authority to add domains or broaden application access.
+
+### Established runtime assumptions
+
 - One owner controls all trusted local Unix accounts and coding agents.
   Local accounts are attribution and execution identities, not mutually
   distrusting tenants.

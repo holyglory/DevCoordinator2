@@ -50,14 +50,18 @@ authenticated routes only), and a static file server for the Console.
 | Variable | Meaning |
 |---|---|
 | `EDGE_BASE_DOMAIN` | base public domain (required) |
+| `EDGE_BASE_REDIRECT=1` | optional 301 redirect from the exact base domain to the console origin, preserving path/query; off by default |
 | `EDGE_CONSOLE_HOST` | default `console.<base>` |
 | `EDGE_HTTP_PORT` / `EDGE_HTTPS_PORT` | listeners (80/443; http-only canary default 8080) |
 | `EDGE_HTTP_ONLY=1` | plain HTTP listener only, insecure cookies — canary/tests |
+| `EDGE_LISTEN_HOST` | optional listener bind address; set `127.0.0.1` for a private local canary; omitted preserves the production listener default |
 | `EDGE_TLS_CERT` / `EDGE_TLS_KEY` | PEM paths (systemd credentials) |
 | `EDGE_SESSION_SECRET_FILE` | ≥ 16 bytes |
 | `EDGE_OIDC_ISSUER` | default Google; any spec-compliant issuer |
 | `EDGE_OIDC_CLIENT_ID_FILE` / `EDGE_OIDC_CLIENT_SECRET_FILE` | credentials |
 | `EDGE_ROUTES_FILE` | daemon route document (default instance state dir) |
+| `EDGE_UPSTREAM_AUTH_FILE` | optional private JSON file mapping route labels to upstream Authorization headers |
+| `EDGE_ACME_WEBROOT` | optional existing certificate-renewal webroot; HTTP serves only its `.well-known/acme-challenge/<token>` files |
 | `EDGE_STATE_DIR` | last-known-good copy |
 | `EDGE_DAEMON_SOCKET` | daemon socket (world-connectable since DC2-2026-08-24-OPEN-LOCAL-ACCESS; no group membership needed) |
 | `EDGE_CONSOLE_DIR` | Console static assets (`console/` in the release) |
@@ -65,9 +69,43 @@ authenticated routes only), and a static file server for the Console.
 Daemon side: `DEVCOORDINATOR2_EDGE_UID` (the edge service uid) and
 `DEVCOORDINATOR2_ADMIN_EMAILS` (bootstrap administrators).
 
+For an authenticated application that already requires an upstream credential,
+set `EDGE_UPSTREAM_AUTH_FILE` to a private instance file or systemd credential
+readable by the edge service, outside the repository. Its shape is
+`{"schema":1,"routes":{"app":"<existing upstream Authorization value>"}}`.
+Use the existing private credential storage permissions; never put these values
+in the public route document, source, or ordinary logs. The file is read at edge
+startup; restart the edge after a change. An unreadable or invalid configured
+file prevents startup with a content-free error. Omitting it preserves current
+behavior.
+
+After normal session and deployment-grant checks, the edge replaces the caller's
+Authorization header with the value for that exact authenticated route label,
+for both HTTP and WebSocket requests. Unmapped protected routes receive no
+Authorization header; public routes never receive a configured private value
+and retain their existing caller-header behavior. Remove the mapping before
+reassigning a route label to a different application. These boundaries preserve
+existing access and upstream authentication during migration, as recorded in
+`security-assumptions.md` under “Existing upstream credential migration”.
+
+## Existing certificate renewal
+
+When retaining an existing ACME HTTP-01 renewal setup, set `EDGE_ACME_WEBROOT`
+to its existing webroot and grant the edge read/traverse access to the challenge
+directory. The edge does not request certificates, change renewal configuration,
+or expose any other webroot file. GET and HEAD challenge requests on HTTP are
+handled before the normal HTTPS redirect, only for hostnames covered by the
+loaded certificate, including covered names without a current deployment route.
+In HTTP-only canaries, the base domain, console host, and current route hosts are
+accepted instead. Other hosts, invalid tokens, non-GET/HEAD methods, missing
+files, and symlink escapes receive empty 404 responses. Ordinary paths keep
+their existing behavior. The setting is optional and read at startup; newly
+added certificate names must already be covered before this renewal-only
+handler serves their challenges.
+
 ## Tests
 
-`node --test edge/test` runs the edge against a fixture OIDC issuer, a fake
+`node --test edge/test/*.test.mjs` runs the edge against a fixture OIDC issuer, a fake
 daemon socket, and real upstreams. The Rust control tests in
 `rust/control/src/access.rs` and `rust/control/src/daemon.rs` prove identity
 trust, roles, invitation admission, revocation, and non-edge spoof rejection at

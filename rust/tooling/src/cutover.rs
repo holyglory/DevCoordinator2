@@ -297,6 +297,8 @@ impl Default for HostCutoverConfig {
 #[serde(deny_unknown_fields)]
 pub struct InstallationSnapshot {
     pub schema: u8,
+    #[serde(default)]
+    pub bootstrap: bool,
     pub status: String,
     pub transaction_dir: String,
     pub entries: Vec<SnapshotEntry>,
@@ -339,6 +341,135 @@ pub struct HostCutover {
 }
 
 impl HostCutover {
+    pub fn bootstrap(&mut self) -> Result<CutoverReceipt, String> {
+        if !self.config.canary {
+            return Err("first installation requires --canary".to_owned());
+        }
+        for path in self.snapshot_targets().into_iter().chain([
+            self.config.socket_path.as_path(),
+            self.config
+                .runtime_dir
+                .join("daemon.pre-cutover.sock")
+                .as_path(),
+        ]) {
+            match path.symlink_metadata() {
+                Ok(_) => {
+                    return Err(format!(
+                        "bootstrap requires absent installation target: {}",
+                        path.display()
+                    ));
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(format!("cannot inspect bootstrap target: {error}")),
+            }
+        }
+        for unit in [&self.config.daemon_unit, &self.config.edge_unit] {
+            let output = self.runner.run(&CommandRequest {
+                program: self.config.systemctl.clone(),
+                args: ["show", "--property=LoadState", "--value", unit]
+                    .into_iter()
+                    .map(OsString::from)
+                    .collect(),
+                environment: Default::default(),
+                clear_environment: true,
+            })?;
+            if output.stdout.trim() != "not-found" {
+                return Err(format!("bootstrap requires an uninstalled unit: {unit}"));
+            }
+        }
+        let drain = self.close_admission()?;
+        let outcome = self.bootstrap_drained();
+        let reopen = self.reopen_admission(drain);
+        match outcome {
+            Ok(receipt) => reopen.map(|()| receipt),
+            Err(error) => Err(combine(error, "reopen admission", reopen)),
+        }
+    }
+
+    fn bootstrap_drained(&mut self) -> Result<CutoverReceipt, String> {
+        let mut lock_name = self
+            .config
+            .socket_path
+            .file_name()
+            .ok_or("socket filename is missing")?
+            .to_os_string();
+        lock_name.push(".lock");
+        let endpoint_lock = File::from(
+            unix_fs::open(
+                self.config.socket_path.with_file_name(lock_name),
+                OFlags::RDWR | OFlags::CREATE | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+                Mode::from_raw_mode(0o600),
+            )
+            .map_err(|error| format!("cannot open bootstrap endpoint lease: {error}"))?,
+        );
+        unix_fs::flock(&endpoint_lock, FlockOperation::NonBlockingLockExclusive)
+            .map_err(|error| format!("bootstrap requires no live daemon: {error}"))?;
+        if self.config.socket_path.symlink_metadata().is_ok() {
+            return Err("daemon socket appeared during bootstrap preparation".to_owned());
+        }
+        if read_json_file(&self.config.runtime_dir.join(ACTIVITY_FILE))?.is_some()
+            && read_activity_count(&self.config.runtime_dir)? != 0
+        {
+            return Err(
+                "bootstrap blocked by existing test activity; recover prior tests first".to_owned(),
+            );
+        }
+        let backup = if self
+            .config
+            .database_path
+            .try_exists()
+            .map_err(|error| error.to_string())?
+        {
+            if !database_integrity(&self.config.database_path)? {
+                return Err("bootstrap database failed integrity verification".to_owned());
+            }
+            if self.deployment_is_applying()? {
+                return Err("bootstrap blocked while a deployment is applying".to_owned());
+            }
+            self.backup_database()?
+        } else {
+            install::ensure_owned_directory(
+                &self.config.transaction_dir,
+                0o700,
+                self.expected_owner,
+            )?;
+            String::new()
+        };
+        let mut snapshot = self.capture_installation()?;
+        snapshot.bootstrap = true;
+        write_snapshot(&snapshot, "prepared", self.expected_owner)?;
+        let activation = (|| {
+            self.install_rust()?;
+            drop(endpoint_lock);
+            self.start_rust()?;
+            let checks = self.verify_live()?;
+            self.commit_activation(&snapshot)?;
+            Ok(checks)
+        })();
+        match activation {
+            Ok(checks) => Ok(CutoverReceipt {
+                status: "bootstrapped".to_owned(),
+                backup,
+                database_restored: false,
+                checks,
+            }),
+            Err(error) => {
+                let cleanup = cleanup_bootstrap_units(
+                    self.runner.as_ref(),
+                    &self.config.systemctl,
+                    &[&self.config.edge_unit, &self.config.daemon_unit],
+                );
+                if cleanup.is_err() {
+                    return Err(combine(error, "stop new services", cleanup));
+                }
+                self.restore_installation(&snapshot)?;
+                Err(format!(
+                    "bootstrap failed: {error}; new installation removed; database and private backup preserved"
+                ))
+            }
+        }
+    }
+
     pub fn new(config: HostCutoverConfig, runner: Arc<dyn CommandRunner>) -> Result<Self, String> {
         Self::new_owned(config, runner, (0, 0))
     }
@@ -478,6 +609,7 @@ impl CutoverAdapter for HostCutover {
             .collect::<Result<Vec<_>, _>>()?;
         let snapshot = InstallationSnapshot {
             schema: 1,
+            bootstrap: false,
             status: "prepared".to_owned(),
             transaction_dir: path_text(&self.config.transaction_dir)?,
             entries,
@@ -692,6 +824,24 @@ pub fn recover_host(
     expected_owner: (u32, u32),
 ) -> Result<RecoveryReceipt, String> {
     let snapshot = read_snapshot(&config.transaction_dir, expected_owner.0)?;
+    if snapshot.bootstrap {
+        cleanup_bootstrap_units(
+            runner,
+            &config.systemctl,
+            &[&config.edge_unit, &config.daemon_unit],
+        )?;
+        for entry in snapshot.entries.iter().rev() {
+            restore_entry(entry)?;
+        }
+        run_systemctl(runner, &config.systemctl, &["daemon-reload"])?;
+        clear_stale_drain(&config.runtime_dir)?;
+        write_snapshot(&snapshot, "recovered", expected_owner)?;
+        return Ok(RecoveryReceipt {
+            status: "recovered".to_owned(),
+            database_restored: false,
+            snapshot: path_text(&config.transaction_dir.join("installation-snapshot.json"))?,
+        });
+    }
     run_systemctl_all(
         runner,
         &config.systemctl,
@@ -765,6 +915,34 @@ fn read_snapshot(
         return Err("installation snapshot identity does not match its transaction".to_owned());
     }
     Ok(snapshot)
+}
+
+fn cleanup_bootstrap_units(
+    runner: &dyn CommandRunner,
+    systemctl: &Path,
+    units: &[&str],
+) -> Result<(), String> {
+    for action in ["stop", "disable"] {
+        for unit in units {
+            let state = runner.run(&CommandRequest {
+                program: systemctl.to_owned(),
+                args: ["show", "--property=LoadState", "--value", unit]
+                    .into_iter()
+                    .map(OsString::from)
+                    .collect(),
+                environment: Default::default(),
+                clear_environment: true,
+            })?;
+            if !state.stdout_truncated && state.stdout.trim() == "not-found" {
+                continue;
+            }
+            if !state.success || state.stdout_truncated || state.stdout.trim().is_empty() {
+                return Err(format!("cannot verify bootstrap unit state: {unit}"));
+            }
+            run_systemctl(runner, systemctl, &[action, unit])?;
+        }
+    }
+    Ok(())
 }
 
 fn run_systemctl(
@@ -1176,10 +1354,7 @@ fn open_database_read_only(path: &Path) -> Result<Connection, String> {
         .pragma_update(None, "query_only", true)
         .map_err(|error| format!("cannot protect Coordinator database read: {error}"))?;
     let schema = database_schema_from(&connection)?;
-    if !SUPPORTED_DATABASE_SCHEMAS
-        .iter()
-        .any(|supported| schema == supported.to_string())
-    {
+    if !supported_database_schema(&schema) {
         return Err(format!(
             "cutover requires database schema {}, found {schema}",
             SUPPORTED_DATABASE_SCHEMAS
@@ -1190,6 +1365,12 @@ fn open_database_read_only(path: &Path) -> Result<Connection, String> {
         ));
     }
     Ok(connection)
+}
+
+fn supported_database_schema(schema: &str) -> bool {
+    SUPPORTED_DATABASE_SCHEMAS
+        .iter()
+        .any(|supported| schema == supported.to_string())
 }
 
 fn database_schema(path: &Path) -> Result<String, String> {
@@ -1249,7 +1430,7 @@ fn database_integrity(path: &Path) -> Result<bool, String> {
         [],
         |row| row.get::<_, String>(0),
     ) {
-        Ok(schema) => Ok(schema == "15"),
+        Ok(schema) => Ok(supported_database_schema(&schema)),
         Err(error) if sqlite_corruption(&error) => Ok(false),
         Err(error) => Err(format!("cannot confirm database schema: {error}")),
     }
@@ -1664,6 +1845,9 @@ mod tests {
     struct HostFake {
         commit: String,
         fail_ping: bool,
+        fail_reload: AtomicUsize,
+        fail_stop: bool,
+        loaded_units: bool,
         retryable_ping_failures: AtomicUsize,
         requests: Mutex<Vec<CommandRequest>>,
     }
@@ -1671,6 +1855,37 @@ mod tests {
     impl CommandRunner for HostFake {
         fn run(&self, request: &CommandRequest) -> Result<crate::install::CommandOutput, String> {
             self.requests.lock().unwrap().push(request.clone());
+            if request.args.first() == Some(&OsString::from("show")) {
+                return Ok(crate::install::CommandOutput {
+                    success: true,
+                    stdout: if self.loaded_units {
+                        "loaded\n"
+                    } else {
+                        "not-found\n"
+                    }
+                    .to_owned(),
+                    stderr: String::new(),
+                    stdout_truncated: false,
+                    stderr_truncated: false,
+                });
+            }
+            if (request.args == [OsString::from("daemon-reload")]
+                && self
+                    .fail_reload
+                    .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |remaining| {
+                        remaining.checked_sub(1)
+                    })
+                    .is_ok())
+                || (request.args.first() == Some(&OsString::from("stop")) && self.fail_stop)
+            {
+                return Ok(crate::install::CommandOutput {
+                    success: false,
+                    stdout: String::new(),
+                    stderr: "injected systemctl failure".to_owned(),
+                    stdout_truncated: false,
+                    stderr_truncated: false,
+                });
+            }
             if request.args == [OsString::from("--source-commit")] {
                 return Ok(crate::install::CommandOutput {
                     success: true,
@@ -1851,6 +2066,214 @@ mod tests {
     }
 
     #[test]
+    fn bootstrap_cleanup_does_not_ignore_real_stop_failure() {
+        let runner = HostFake {
+            loaded_units: true,
+            fail_stop: true,
+            ..Default::default()
+        };
+        assert!(
+            cleanup_bootstrap_units(&runner, Path::new("/fake/systemctl"), &["test.service"])
+                .is_err()
+        );
+        assert!(
+            !runner
+                .requests
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|request| request.args.first() == Some(&OsString::from("disable")))
+        );
+    }
+
+    #[test]
+    fn bootstrap_partial_install_failure_cleans_unloaded_units_and_can_recover() {
+        let mut world = host_world();
+        world.config.canary = true;
+        for path in [
+            &world.config.daemon_unit_path,
+            &world.config.edge_unit_path,
+            &world.config.cli_link,
+            &world.config.tooling_link,
+            &world.config.installed_manifest,
+            &world.config.socket_path,
+        ] {
+            std::fs::remove_file(path).unwrap();
+        }
+        let original = std::fs::read(&world.config.database_path).unwrap();
+        let runner = Arc::new(HostFake {
+            commit: world.commit.clone(),
+            fail_reload: AtomicUsize::new(1),
+            fail_stop: true,
+            ..Default::default()
+        });
+        let mut host =
+            HostCutover::new_owned(world.config.clone(), runner.clone(), world.expected_owner)
+                .unwrap();
+        assert!(
+            host.bootstrap()
+                .unwrap_err()
+                .contains("new installation removed")
+        );
+        for path in [
+            &world.config.daemon_unit_path,
+            &world.config.edge_unit_path,
+            &world.config.cli_link,
+            &world.config.tooling_link,
+            &world.config.installed_manifest,
+        ] {
+            assert!(!path.exists());
+        }
+        let recovery = RecoveryConfig {
+            transaction_dir: world.config.transaction_dir.clone(),
+            runtime_dir: world.config.runtime_dir.clone(),
+            socket_path: world.config.socket_path.clone(),
+            database_path: world.config.database_path.clone(),
+            systemctl: world.config.systemctl.clone(),
+            daemon_unit: world.config.daemon_unit.clone(),
+            edge_unit: world.config.edge_unit.clone(),
+        };
+        recover_host(&recovery, runner.as_ref(), world.expected_owner).unwrap();
+        assert_eq!(
+            std::fs::read(&world.config.database_path).unwrap(),
+            original
+        );
+        assert!(
+            world
+                .config
+                .transaction_dir
+                .join("authority-before.sqlite3")
+                .is_file()
+        );
+    }
+
+    #[test]
+    fn bootstrap_requires_absent_installation_and_canary() {
+        let world = host_world();
+        let runner = Arc::new(HostFake {
+            commit: world.commit.clone(),
+            ..Default::default()
+        });
+        let mut host =
+            HostCutover::new_owned(world.config.clone(), runner, world.expected_owner).unwrap();
+        assert!(host.bootstrap().unwrap_err().contains("--canary"));
+        host.config.canary = true;
+        assert!(
+            host.bootstrap()
+                .unwrap_err()
+                .contains("absent installation target")
+        );
+        assert!(!world.config.transaction_dir.exists());
+    }
+
+    #[test]
+    fn bootstrap_preserves_imported_database_on_success_and_failure() {
+        for fail_ping in [false, true] {
+            let mut world = host_world();
+            Connection::open(&world.config.database_path)
+                .unwrap()
+                .execute("UPDATE meta SET value='16' WHERE key='schema_version'", [])
+                .unwrap();
+            world.config.canary = true;
+            std::fs::remove_file(world.config.runtime_dir.join(ACTIVITY_FILE)).unwrap();
+            for path in [
+                &world.config.daemon_unit_path,
+                &world.config.edge_unit_path,
+                &world.config.cli_link,
+                &world.config.tooling_link,
+                &world.config.installed_manifest,
+                &world.config.socket_path,
+            ] {
+                std::fs::remove_file(path).unwrap();
+            }
+            let original = std::fs::read(&world.config.database_path).unwrap();
+            let runner = Arc::new(HostFake {
+                commit: world.commit.clone(),
+                fail_ping,
+                ..Default::default()
+            });
+            let mut host =
+                HostCutover::new_owned(world.config.clone(), runner.clone(), world.expected_owner)
+                    .unwrap();
+            let result = host.bootstrap();
+            assert_eq!(result.is_err(), fail_ping);
+            assert!(!world.config.runtime_dir.join(ACTIVITY_FILE).exists());
+            assert_eq!(
+                std::fs::read(&world.config.database_path).unwrap(),
+                original
+            );
+            assert!(
+                world
+                    .config
+                    .transaction_dir
+                    .join("authority-before.sqlite3")
+                    .exists()
+            );
+            let snapshot =
+                read_snapshot(&world.config.transaction_dir, world.expected_owner.0).unwrap();
+            assert!(snapshot.bootstrap);
+            assert_eq!(
+                snapshot.status,
+                if fail_ping {
+                    "rolled_back"
+                } else {
+                    "committed"
+                }
+            );
+            assert_eq!(world.config.daemon_unit_path.exists(), !fail_ping);
+            if !fail_ping {
+                let recovery = RecoveryConfig {
+                    transaction_dir: world.config.transaction_dir.clone(),
+                    runtime_dir: world.config.runtime_dir.clone(),
+                    socket_path: world.config.socket_path.clone(),
+                    database_path: world.config.database_path.clone(),
+                    systemctl: world.config.systemctl.clone(),
+                    daemon_unit: world.config.daemon_unit.clone(),
+                    edge_unit: world.config.edge_unit.clone(),
+                };
+                recover_host(&recovery, runner.as_ref(), world.expected_owner).unwrap();
+                assert!(!world.config.daemon_unit_path.exists());
+                assert_eq!(
+                    std::fs::read(&world.config.database_path).unwrap(),
+                    original
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn bootstrap_rejects_existing_active_or_invalid_test_receipt() {
+        for receipt in [
+            r#"{"schema":1,"active":[{"run":"existing"}]}"#,
+            r#"{"schema":2,"active":[]}"#,
+        ] {
+            let mut world = host_world();
+            world.config.canary = true;
+            for path in [
+                &world.config.daemon_unit_path,
+                &world.config.edge_unit_path,
+                &world.config.cli_link,
+                &world.config.tooling_link,
+                &world.config.installed_manifest,
+                &world.config.socket_path,
+            ] {
+                std::fs::remove_file(path).unwrap();
+            }
+            std::fs::write(world.config.runtime_dir.join(ACTIVITY_FILE), receipt).unwrap();
+            let runner = Arc::new(HostFake {
+                commit: world.commit.clone(),
+                ..Default::default()
+            });
+            let mut host =
+                HostCutover::new_owned(world.config.clone(), runner, world.expected_owner).unwrap();
+            assert!(host.bootstrap().is_err());
+            assert!(!world.config.transaction_dir.exists());
+            assert!(!world.config.daemon_unit_path.exists());
+            assert!(!world.config.runtime_dir.join(DRAIN_FILE).exists());
+        }
+    }
+
+    #[test]
     fn concrete_host_adapter_installs_verified_files_and_commits_snapshot() {
         let world = host_world();
         let runner = Arc::new(HostFake {
@@ -1909,6 +2332,7 @@ mod tests {
 
             let receipt = activate(&mut host).unwrap();
             assert_eq!(receipt.status, "activated");
+            assert!(database_integrity(&world.config.database_path).unwrap());
             assert_eq!(
                 database_schema(&world.config.database_path).unwrap(),
                 schema.to_string()
@@ -1925,6 +2349,7 @@ mod tests {
                     )
                     .unwrap();
                 assert!(open_database_read_only(&world.config.database_path).is_err());
+                assert!(!database_integrity(&world.config.database_path).unwrap());
             }
         }
     }

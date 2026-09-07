@@ -6,6 +6,7 @@ use std::io::{Read, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
+use devcoordinator2_api::DATABASE_SCHEMA_VERSION;
 use regex::Regex;
 use rusqlite::{Connection, OpenFlags, OptionalExtension};
 use rustix::fs::{Mode, OFlags, open as unix_open};
@@ -15,6 +16,7 @@ use sha2::{Digest, Sha256};
 
 const SCHEMA: &str = include_str!("../../control/src/schema.sql");
 const OBSERVATION_SOURCE: &str = "legacy-current-import";
+const NATIVE_OBSERVATION_SOURCE: &str = "legacy-native-route-import";
 const MAX_INPUT_BYTES: u64 = 32 * 1024 * 1024;
 const REPOSITORY_NAMESPACE: &[u8] = b"devcoordinator2.repository\0";
 const OBSERVED_NAMESPACE: &[u8] = b"devcoordinator2.observed-deployment\0";
@@ -26,6 +28,7 @@ pub struct ImportOptions {
     pub bugs_dir: PathBuf,
     pub live_containers: Option<PathBuf>,
     pub current_route_map: Option<PathBuf>,
+    pub native_routes: Option<PathBuf>,
     pub routes_path: Option<PathBuf>,
     pub base_domain: Option<String>,
     pub prune_missing_install_fixtures: bool,
@@ -77,9 +80,177 @@ pub struct ObservedRoute {
     pub evidence: Value,
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NativeRoutesDocument {
+    schema: u32,
+    routes: Vec<NativeRoute>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NativeRoute {
+    domain: String,
+    repository_root: String,
+    name: String,
+    component: String,
+    port: u16,
+    public: bool,
+    state: String,
+    evidence: NativeEvidence,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct NativeEvidence {
+    repository_root: String,
+    port: u16,
+    listener_observed: bool,
+    observed_at: String,
+    pid: Option<u32>,
+}
+
+fn plan_native_routes(
+    export: &Value,
+    document: &Value,
+    connection: &Connection,
+) -> Result<CurrentPlan, String> {
+    let document: NativeRoutesDocument = serde_json::from_value(document.clone())
+        .map_err(|error| format!("invalid native routes document: {error}"))?;
+    if document.schema != 1 {
+        return Err("native routes schema must be 1".into());
+    }
+    let registered = query_registered(connection)?;
+    let labels = Regex::new(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$").expect("constant regex");
+    let mut plan = CurrentPlan {
+        deployments: Vec::new(),
+        containers: Vec::new(),
+        routes: Vec::new(),
+        skipped: Vec::new(),
+    };
+    let mut domains = HashSet::new();
+    for route in document.routes {
+        if !labels.is_match(&route.domain)
+            || !labels.is_match(&route.component)
+            || route.name.trim().is_empty()
+            || route.port == 0
+            || !domains.insert(route.domain.clone())
+        {
+            return Err("native route has invalid or duplicate identity".into());
+        }
+        let repository_id = registered
+            .get(&route.repository_root)
+            .ok_or("native route repository is not registered")?
+            .clone();
+        let matches = array_or_empty(object_or_empty(export.get("routes")).get("routes"))
+            .into_iter()
+            .filter(|legacy| {
+                legacy.get("slug").and_then(Value::as_str) == Some(route.domain.as_str())
+            })
+            .collect::<Vec<_>>();
+        if matches.len() != 1
+            || matches[0].get("upstream_port").and_then(Value::as_u64)
+                != Some(u64::from(route.port))
+        {
+            return Err("native route does not match one exact exported route and port".into());
+        }
+        let auth = matches[0]
+            .get("auth")
+            .and_then(Value::as_str)
+            .ok_or("native route legacy authentication is missing")?;
+        if !matches!(auth, "public" | "google" | "authenticated")
+            || route.public != (auth == "public")
+        {
+            return Err("native route must preserve legacy authentication".into());
+        }
+        let evidence = &route.evidence;
+        if evidence.repository_root != route.repository_root
+            || evidence.port != route.port
+            || evidence.observed_at.trim().is_empty()
+            || !matches!(route.state.as_str(), "running" | "stopped")
+            || evidence.listener_observed != (route.state == "running")
+            || (route.state == "running" && evidence.pid.is_none_or(|pid| pid == 0))
+            || (route.state == "stopped" && evidence.pid.is_some())
+        {
+            return Err("native route state requires matching reviewed listener evidence".into());
+        }
+        let authority_roots =
+            array_or_empty(object_or_empty(export.get("authority")).get("port_assignments"))
+                .into_iter()
+                .filter(|assignment| {
+                    assignment.get("port").and_then(Value::as_u64) == Some(u64::from(route.port))
+                })
+                .filter_map(|assignment| assignment.get("root").and_then(Value::as_str))
+                .collect::<HashSet<_>>();
+        if !authority_roots.is_empty()
+            && (authority_roots.len() != 1
+                || !authority_roots.contains(route.repository_root.as_str()))
+        {
+            return Err("native route conflicts with exported port ownership".into());
+        }
+        let project = format!("native-route-{}", route.domain);
+        let deployment_id = observed_deployment_id(&repository_id, &project);
+        let conflict: bool = connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM domain_routes WHERE domain=?1 UNION ALL SELECT 1 FROM observed_routes WHERE domain=?1 AND observed_deployment_id != ?2 UNION ALL SELECT 1 FROM observed_deployments WHERE observed_deployment_id=?2 AND source != ?3)",
+            rusqlite::params![route.domain, deployment_id, NATIVE_OBSERVATION_SOURCE], |row| row.get(0)).map_err(sql_error)?;
+        if conflict {
+            return Err("native route conflicts with an existing deployment route".into());
+        }
+        let evidence = serde_json::to_value(route.evidence).map_err(|error| error.to_string())?;
+        plan.deployments.push(ObservedDeployment {
+            deployment_id: deployment_id.clone(),
+            repository_id,
+            name: route.name,
+            native_project: project,
+            state: route.state,
+            health: "unknown".into(),
+            evidence: evidence.clone(),
+        });
+        plan.routes.push(ObservedRoute {
+            domain: route.domain,
+            deployment_id,
+            component: route.component,
+            port: route.port,
+            public: route.public,
+            evidence,
+        });
+    }
+    Ok(plan)
+}
+
+fn import_native_routes(
+    connection: &mut Connection,
+    plan: &CurrentPlan,
+    now: &str,
+) -> Result<(), String> {
+    let transaction = connection.transaction().map_err(sql_error)?;
+    for (deployment, route) in plan.deployments.iter().zip(&plan.routes) {
+        let conflict: bool = transaction.query_row(
+            "SELECT EXISTS(SELECT 1 FROM domain_routes WHERE domain=?1 UNION ALL SELECT 1 FROM observed_routes WHERE domain=?1 AND observed_deployment_id != ?2)",
+            rusqlite::params![route.domain, deployment.deployment_id], |row| row.get(0)).map_err(sql_error)?;
+        if conflict {
+            return Err("native route conflicts with an existing deployment route".into());
+        }
+        transaction.execute(
+            "INSERT INTO observed_deployments(observed_deployment_id,repository_id,name,native_project,state,health,source,evidence_json,observed_at,imported_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?9) ON CONFLICT(observed_deployment_id) DO UPDATE SET name=excluded.name,state=excluded.state,health=excluded.health,evidence_json=excluded.evidence_json,observed_at=excluded.observed_at",
+            rusqlite::params![deployment.deployment_id,deployment.repository_id,deployment.name,deployment.native_project,deployment.state,deployment.health,NATIVE_OBSERVATION_SOURCE,canonical_string(&deployment.evidence)?,now]).map_err(sql_error)?;
+        transaction.execute(
+            "INSERT INTO observed_routes(domain,observed_deployment_id,component,port,public,evidence_json,observed_at) VALUES(?1,?2,?3,?4,?5,?6,?7) ON CONFLICT(domain) DO UPDATE SET component=excluded.component,port=excluded.port,public=excluded.public,evidence_json=excluded.evidence_json,observed_at=excluded.observed_at",
+            rusqlite::params![route.domain,route.deployment_id,route.component,route.port,i64::from(route.public),canonical_string(&route.evidence)?,now]).map_err(sql_error)?;
+    }
+    transaction.commit().map_err(sql_error)
+}
+
 pub fn run(options: &ImportOptions, now: &str) -> Result<Value, String> {
     let export = read_json(&options.export)?;
     let mut connection = open_database(&options.state_dir.join("authority.sqlite3"))?;
+    let native = options
+        .native_routes
+        .as_deref()
+        .map(read_json)
+        .transpose()?
+        .map(|document| plan_native_routes(&export, &document, &connection))
+        .transpose()?;
     let mut report = import_state(
         &export,
         &mut connection,
@@ -111,6 +282,20 @@ pub fn run(options: &ImportOptions, now: &str) -> Result<Value, String> {
             }
         }
         report["current_observed"] = current_report;
+    }
+    if let Some(native) = native {
+        if !options.dry_run {
+            import_native_routes(&mut connection, &native, now)?;
+            if let Some(path) = &options.routes_path {
+                let domain = options
+                    .base_domain
+                    .as_deref()
+                    .ok_or("--base-domain is required with --routes-path")?;
+                publish_routes(&mut connection, path, domain, now)?;
+            }
+        }
+        report["native_routes"] =
+            serde_json::to_value(native).map_err(|error| error.to_string())?;
     }
 
     let candidates = if options.prune_missing_install_fixtures {
@@ -624,13 +809,16 @@ fn replace_current(
 ) -> Result<Value, String> {
     let transaction = connection.transaction().map_err(sql_error)?;
     transaction
-        .execute("DELETE FROM observed_routes", [])
+        .execute("DELETE FROM observed_routes WHERE observed_deployment_id IN (SELECT observed_deployment_id FROM observed_deployments WHERE source != ?1)", [NATIVE_OBSERVATION_SOURCE])
         .map_err(sql_error)?;
     transaction
-        .execute("DELETE FROM observed_containers", [])
+        .execute("DELETE FROM observed_containers WHERE observed_deployment_id IN (SELECT observed_deployment_id FROM observed_deployments WHERE source != ?1)", [NATIVE_OBSERVATION_SOURCE])
         .map_err(sql_error)?;
     transaction
-        .execute("DELETE FROM observed_deployments", [])
+        .execute(
+            "DELETE FROM observed_deployments WHERE source != ?1",
+            [NATIVE_OBSERVATION_SOURCE],
+        )
         .map_err(sql_error)?;
     for deployment in &current.deployments {
         transaction
@@ -888,22 +1076,34 @@ fn open_database(path: &Path) -> Result<Connection, String> {
             |row| row.get::<_, String>(0),
         )
         .ok();
-    if version
-        .as_deref()
-        .is_some_and(|version| !matches!(version, "15" | "16"))
-    {
-        return Err(format!(
-            "legacy import target must use database schema 15 or 16, found {}",
-            version.unwrap_or_default()
-        ));
+    match version {
+        Some(version) => {
+            let parsed = version.parse::<u32>().ok();
+            if !parsed.is_some_and(|value| [15, 16, 17, DATABASE_SCHEMA_VERSION].contains(&value)) {
+                return Err(format!(
+                    "legacy import target must use a supported database schema (15, 16, 17, {DATABASE_SCHEMA_VERSION}), found {version}"
+                ));
+            }
+        }
+        None => {
+            let tables: u32 = connection.query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'",
+                [], |row| row.get(0),
+            ).map_err(sql_error)?;
+            if tables != 0 {
+                return Err(
+                    "legacy import target has existing tables without a schema version".into(),
+                );
+            }
+            connection.execute_batch(SCHEMA).map_err(sql_error)?;
+            connection
+                .execute(
+                    "INSERT INTO meta(key,value) VALUES('schema_version',?1)",
+                    [DATABASE_SCHEMA_VERSION.to_string()],
+                )
+                .map_err(sql_error)?;
+        }
     }
-    connection.execute_batch(SCHEMA).map_err(sql_error)?;
-    connection
-        .execute(
-            "INSERT OR REPLACE INTO meta(key,value) VALUES('schema_version','16')",
-            [],
-        )
-        .map_err(sql_error)?;
     Ok(connection)
 }
 
@@ -1249,6 +1449,174 @@ mod tests {
         })
     }
 
+    fn native_fixture(repository: &Path) -> Value {
+        json!({"schema":1,"routes":[{
+            "domain":"news","repository_root":repository,"name":"News","component":"web",
+            "port":3003,"public":false,"state":"running",
+            "evidence":{"repository_root":repository,"port":3003,"listener_observed":true,
+                "observed_at":"2026-09-07T00:00:00Z","pid":1234}
+        }]})
+    }
+
+    #[test]
+    fn native_import_preserves_supported_schema_and_rejects_future() {
+        let temporary = tempfile::tempdir().unwrap();
+        let repository = temporary.path().join("repo");
+        std::fs::create_dir(&repository).unwrap();
+        for version in [15, 16, 17, DATABASE_SCHEMA_VERSION] {
+            let path = temporary.path().join(format!("schema-{version}.sqlite3"));
+            let connection = registered_database(&path, &repository);
+            connection
+                .execute(
+                    "UPDATE meta SET value=?1 WHERE key='schema_version'",
+                    [version.to_string()],
+                )
+                .unwrap();
+            let before: String = connection.query_row("SELECT group_concat(sql, ';') FROM (SELECT sql FROM sqlite_master ORDER BY name)", [], |row| row.get(0)).unwrap();
+            drop(connection);
+            for _ in 0..2 {
+                let mut connection = open_database(&path).unwrap();
+                let plan = plan_native_routes(
+                    &fixture_export(&repository),
+                    &native_fixture(&repository),
+                    &connection,
+                )
+                .unwrap();
+                import_native_routes(&mut connection, &plan, "t").unwrap();
+                let actual: String = connection
+                    .query_row(
+                        "SELECT value FROM meta WHERE key='schema_version'",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .unwrap();
+                assert_eq!(actual, version.to_string());
+                let after: String = connection.query_row("SELECT group_concat(sql, ';') FROM (SELECT sql FROM sqlite_master ORDER BY name)", [], |row| row.get(0)).unwrap();
+                assert_eq!(before, after);
+            }
+        }
+        let path = temporary.path().join("future.sqlite3");
+        let connection = open_database(&path).unwrap();
+        connection
+            .execute(
+                "UPDATE meta SET value=?1 WHERE key='schema_version'",
+                [(DATABASE_SCHEMA_VERSION + 1).to_string()],
+            )
+            .unwrap();
+        drop(connection);
+        assert!(open_database(&path).is_err());
+        let connection = Connection::open(&path).unwrap();
+        let version: String = connection
+            .query_row(
+                "SELECT value FROM meta WHERE key='schema_version'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(version, (DATABASE_SCHEMA_VERSION + 1).to_string());
+    }
+
+    #[test]
+    fn native_routes_preserve_identity_auth_and_truthful_state() {
+        let temporary = tempfile::tempdir().unwrap();
+        let repository = temporary.path().join("repo");
+        std::fs::create_dir(&repository).unwrap();
+        let connection =
+            registered_database(&temporary.path().join("authority.sqlite3"), &repository);
+        let export = fixture_export(&repository);
+        let document = native_fixture(&repository);
+        let current = plan_native_routes(&export, &document, &connection).unwrap();
+        assert_eq!(current.deployments[0].state, "running");
+        assert!(current.containers.is_empty());
+        assert!(!current.routes[0].public);
+        let mut stopped = document.clone();
+        stopped["routes"][0]["state"] = json!("stopped");
+        stopped["routes"][0]["evidence"]["listener_observed"] = json!(false);
+        stopped["routes"][0]["evidence"]["pid"] = Value::Null;
+        assert_eq!(
+            plan_native_routes(&export, &stopped, &connection)
+                .unwrap()
+                .deployments[0]
+                .state,
+            "stopped"
+        );
+        for (key, value) in [
+            ("public", json!(true)),
+            ("port", json!(3004)),
+            ("domain", json!("other")),
+            ("repository_root", json!("/missing")),
+            ("state", json!("stopped")),
+        ] {
+            let mut invalid = document.clone();
+            invalid["routes"][0][key] = value;
+            assert!(
+                plan_native_routes(&export, &invalid, &connection).is_err(),
+                "accepted {key}"
+            );
+        }
+        let mut invalid = document.clone();
+        invalid["routes"][0]["evidence"]["repository_root"] = json!("/other");
+        assert!(plan_native_routes(&export, &invalid, &connection).is_err());
+        let mut invalid_export = export.clone();
+        invalid_export["authority"]["port_assignments"][0]["root"] = json!("/other");
+        assert!(plan_native_routes(&invalid_export, &document, &connection).is_err());
+    }
+
+    #[test]
+    fn native_routes_are_idempotent_and_survive_docker_reimport() {
+        let temporary = tempfile::tempdir().unwrap();
+        let repository = temporary.path().join("repo");
+        std::fs::create_dir(&repository).unwrap();
+        let mut connection =
+            registered_database(&temporary.path().join("authority.sqlite3"), &repository);
+        let plan = plan_native_routes(
+            &fixture_export(&repository),
+            &native_fixture(&repository),
+            &connection,
+        )
+        .unwrap();
+        import_native_routes(&mut connection, &plan, "t1").unwrap();
+        import_native_routes(&mut connection, &plan, "t2").unwrap();
+        replace_current(
+            &mut connection,
+            &CurrentPlan {
+                deployments: Vec::new(),
+                containers: Vec::new(),
+                routes: Vec::new(),
+                skipped: Vec::new(),
+            },
+            "t3",
+        )
+        .unwrap();
+        assert_eq!(
+            connection
+                .query_row("SELECT COUNT(*) FROM observed_routes", [], |row| row
+                    .get::<_, u32>(0))
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            connection
+                .query_row("SELECT COUNT(*) FROM observed_containers", [], |row| row
+                    .get::<_, u32>(0))
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            connection
+                .query_row("SELECT observed_at FROM observed_deployments", [], |row| {
+                    row.get::<_, String>(0)
+                })
+                .unwrap(),
+            "t2"
+        );
+        let path = temporary.path().join("routes.json");
+        publish_routes(&mut connection, &path, "example.test", "t4").unwrap();
+        let published = read_json(&path).unwrap();
+        assert_eq!(published["routes"][0]["label"], "news");
+        assert_eq!(published["routes"][0]["auth"], "authenticated");
+    }
+
     fn registered_database(path: &Path, repository: &Path) -> Connection {
         let connection = open_database(path).unwrap();
         let repository_id = repository_id(repository).unwrap();
@@ -1347,6 +1715,7 @@ mod tests {
             bugs_dir: temporary.path().join("bugs"),
             live_containers: Some(live_path),
             current_route_map: Some(route_path),
+            native_routes: None,
             routes_path: Some(temporary.path().join("routes.json")),
             base_domain: Some("example.test".to_owned()),
             prune_missing_install_fixtures: true,

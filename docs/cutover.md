@@ -26,6 +26,30 @@ accounts, legacy unit names, paths) are instance data kept in the untracked
   deployment declaration plan; without `--dry-run` it imports
   administrators, Telegram chat links/subscriptions, and open bugs.
 
+## First installation beside a legacy coordinator
+
+After the verified build and configuration, use `install activate --bootstrap
+--canary --yes --transaction-dir <new-private-directory>` for an instance
+without installed v2 units, links, manifest, or daemon socket. This explicit
+mode checks the daemon endpoint lease and preserves/backs up a prepared import
+database; an absent database is initialized by the daemon. It never fences or
+stops the separately named legacy coordinator. Failure removes only the new
+installation assets and retains the database and recovery evidence.
+
+The canary must be verified before public cutover. Existing `edge.env` values
+are preserved by configure: deliberately replace the canary HTTP-only/port
+settings with production settings before ordinary activation. Preserve the
+existing certificate renewal webroot and credential loading paths as well.
+
+`legacy import --native-routes <private-schema-1-document>` can preserve exact
+exported route labels/ports for already-running listeners and stopped routes.
+Every route requires its registered repository root, unchanged public/authenticated
+boundary, and reviewed listener evidence. These are observed routes, not a
+claim of container ownership or lifecycle management. Import is idempotent.
+Existing admitted email identities must be migrated through the local user and
+grant operations with their exact grants, not promoted to administrators or
+left as expiring invitations. Approved historical requests are not pending work.
+
 ## Pre-cutover proofs (handover §20)
 
 1. **Public authentication/grant boundary** — register the console
