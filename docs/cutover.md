@@ -73,6 +73,9 @@ accounts, legacy unit names, paths) are instance data kept in the untracked
    to `origin/main`, then fetched and fast-forwarded into the clean
    `/home/DevCoordinator2` checkout. A later `install build`, `verify`, and
    reviewed `activate --yes` cycle repeats the same provenance and drain gates.
+   The daemon and installer share the current database schema version, so an
+   update remains installable after an earlier migration. Explicit legacy
+   versions remain supported; unknown future versions are still refused.
 10. **Docker authoritative mode** (owner decision DC2-…-DOCKER-MODE): remove
     agent accounts from the `docker` group, restart their sessions, verify
     `devcoordinator2 health containers` attributions; the observational

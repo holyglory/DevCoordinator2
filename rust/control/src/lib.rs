@@ -47,7 +47,7 @@ pub mod test_logs;
 pub mod test_state;
 pub mod usage;
 
-pub const DATABASE_SCHEMA_VERSION: u32 = 18;
+pub use devcoordinator2_api::DATABASE_SCHEMA_VERSION;
 pub const SOURCE_COMMIT: &str = match option_env!("DEVCOORDINATOR2_SOURCE_COMMIT") {
     Some(value) => value,
     None => "development",

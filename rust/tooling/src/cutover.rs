@@ -16,6 +16,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
+use devcoordinator2_api::DATABASE_SCHEMA_VERSION;
 use rusqlite::{Connection, OpenFlags};
 use rustix::fs::{self as unix_fs, FlockOperation, Mode, OFlags};
 use serde::{Deserialize, Serialize};
@@ -31,7 +32,7 @@ const ACTIVITY_FILE: &str = "test-activity.json";
 const LOCK_FILE: &str = "test-admission.lock";
 const MAX_STATE_BYTES: u64 = 2 * 1024 * 1024;
 const MAX_SNAPSHOT_BYTES: u64 = 1024 * 1024;
-const SUPPORTED_DATABASE_SCHEMAS: &[&str] = &["15", "16", "17"];
+const SUPPORTED_DATABASE_SCHEMAS: &[u32] = &[15, 16, 17, DATABASE_SCHEMA_VERSION];
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1170,10 +1171,17 @@ fn open_database_read_only(path: &Path) -> Result<Connection, String> {
         .pragma_update(None, "query_only", true)
         .map_err(|error| format!("cannot protect Coordinator database read: {error}"))?;
     let schema = database_schema_from(&connection)?;
-    if !SUPPORTED_DATABASE_SCHEMAS.contains(&schema.as_str()) {
+    if !SUPPORTED_DATABASE_SCHEMAS
+        .iter()
+        .any(|supported| schema == supported.to_string())
+    {
         return Err(format!(
             "cutover requires database schema {}, found {schema}",
-            SUPPORTED_DATABASE_SCHEMAS.join(", ")
+            SUPPORTED_DATABASE_SCHEMAS
+                .iter()
+                .map(u32::to_string)
+                .collect::<Vec<_>>()
+                .join(", ")
         ));
     }
     Ok(connection)
@@ -1828,26 +1836,43 @@ mod tests {
     }
 
     #[test]
-    fn concrete_host_adapter_activates_glossary_schema_and_rejects_unknown_schema() {
-        let world = host_world();
-        let connection = Connection::open(&world.config.database_path).unwrap();
-        connection
-            .execute("UPDATE meta SET value='17' WHERE key='schema_version'", [])
-            .unwrap();
-        let runner = Arc::new(HostFake {
-            commit: world.commit.clone(),
-            ..HostFake::default()
-        });
-        let mut host =
-            HostCutover::new_owned(world.config.clone(), runner, world.expected_owner).unwrap();
+    fn concrete_host_adapter_activates_supported_schemas_and_rejects_unknown_schemas() {
+        for schema in [15, 16, 17, DATABASE_SCHEMA_VERSION] {
+            let world = host_world();
+            let connection = Connection::open(&world.config.database_path).unwrap();
+            connection
+                .execute(
+                    "UPDATE meta SET value=?1 WHERE key='schema_version'",
+                    [schema.to_string()],
+                )
+                .unwrap();
+            let runner = Arc::new(HostFake {
+                commit: world.commit.clone(),
+                ..HostFake::default()
+            });
+            let mut host =
+                HostCutover::new_owned(world.config.clone(), runner, world.expected_owner).unwrap();
 
-        let receipt = activate(&mut host).unwrap();
-        assert_eq!(receipt.status, "activated");
-        assert_eq!(database_schema(&world.config.database_path).unwrap(), "17");
-        connection
-            .execute("UPDATE meta SET value='18' WHERE key='schema_version'", [])
-            .unwrap();
-        assert!(open_database_read_only(&world.config.database_path).is_err());
+            let receipt = activate(&mut host).unwrap();
+            assert_eq!(receipt.status, "activated");
+            assert_eq!(
+                database_schema(&world.config.database_path).unwrap(),
+                schema.to_string()
+            );
+            for unsupported in [
+                "14".to_owned(),
+                (DATABASE_SCHEMA_VERSION + 1).to_string(),
+                "invalid".to_owned(),
+            ] {
+                connection
+                    .execute(
+                        "UPDATE meta SET value=?1 WHERE key='schema_version'",
+                        [unsupported],
+                    )
+                    .unwrap();
+                assert!(open_database_read_only(&world.config.database_path).is_err());
+            }
+        }
     }
 
     #[test]
