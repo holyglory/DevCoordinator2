@@ -11,7 +11,7 @@ window.DevCoordinatorArtifacts = (() => {
     return (run.checks || []).flatMap((check) => (check.retained_artifacts || []).map((artifact) => ({ ...artifact, check: check.name })));
   }
 
-  function open(run, opener, { api, esc, bytes, signal, highlight }) {
+  function open(run, opener, { api, esc, bytes, signal, highlight, initialFile }) {
     document.getElementById('test-artifacts-dialog')?.dispatchEvent(new Event('cancel', { cancelable: true }));
     let choices = bundles(run);
     let activeRun = { ...run };
@@ -190,7 +190,12 @@ window.DevCoordinatorArtifacts = (() => {
           pageState.append(more);
         }
         if (!entries.length) pageState.textContent = 'No retained files in this collection.';
-        if (!selection && entries.length) await selectFile(entries[0], false);
+        if (!selection && initialFile) {
+          const requested = entries.find((entry) => entry.path === initialFile.path);
+          if (requested) { initialFile = null; await selectFile(requested, false); }
+          else if (nextOffset != null) await loadPage(nextOffset, version);
+          else { initialFile = null; fileState.textContent = 'The selected file is no longer available.'; }
+        } else if (!selection && entries.length) await selectFile(entries[0], false);
       } catch (error) {
         if (closed || version !== collectionVersion) return;
         errorState(pageState, error, () => loadPage(offset, version));
@@ -315,9 +320,49 @@ window.DevCoordinatorArtifacts = (() => {
     dialog.addEventListener('cancel', (event) => { event.preventDefault(); close(); });
     signal?.addEventListener('abort', close, { once: true });
     dialog.showModal();
+    if (initialFile) {
+      const index = choices.findIndex((choice) => choice.check === initialFile.check && choice.name === initialFile.artifact);
+      if (index >= 0) query('.artifact-bundle select').value = String(index);
+    }
     loadCollection();
     loadHistory();
   }
 
-  return { bundles, open };
+  async function previews(run, { api, signal, urls }) {
+    const images = [];
+    for (const collection of bundles(run)) {
+      let offset = 0;
+      let manifest;
+      do {
+        if (signal.aborted) throw new Error('Screenshot loading cancelled.');
+        const catalog = await api('test.artifact.catalog', { path: run.worktree_path, run_id: run.run_id, check: collection.check, artifact: collection.name, offset, limit: 100, ...(manifest ? { manifest_sha256: manifest } : {}) });
+        if (catalog.run_id !== run.run_id || catalog.check !== collection.check || catalog.artifact?.name !== collection.name || catalog.artifact.sha256 !== collection.sha256 || (manifest && catalog.manifest_sha256 !== manifest) || catalog.entries.length > 100 || (catalog.next_offset != null && catalog.next_offset !== offset + catalog.entries.length)) throw new Error('The retained file catalogue changed.');
+        manifest = catalog.manifest_sha256;
+        for (const entry of catalog.entries) {
+          const mime = imageTypes[entry.path.split('.').pop().toLowerCase()];
+          if (!mime || entry.size > FILE_BYTES) continue;
+          const parts = [];
+          let position = 0;
+          do {
+            if (signal.aborted) throw new Error('Screenshot loading cancelled.');
+            const chunk = await api('test.artifact.file', { path: run.worktree_path, run_id: run.run_id, check: collection.check, artifact: collection.name, manifest_sha256: manifest, file: entry.path, offset: position, max_bytes: CHUNK_BYTES });
+            const block = Uint8Array.from(atob(chunk.base64), (character) => character.charCodeAt(0));
+            const end = position + block.length;
+            if (chunk.run_id !== run.run_id || chunk.check !== collection.check || chunk.artifact !== collection.name || chunk.file !== entry.path || chunk.sha256 !== entry.sha256 || chunk.total_bytes !== entry.size || chunk.offset !== position || chunk.bytes !== block.length || !block.length || end > entry.size || chunk.next_offset !== (end < entry.size ? end : null)) throw new Error('The retained image changed.');
+            parts.push(block); position = end;
+          } while (position < entry.size);
+          if (signal.aborted) throw new Error('Screenshot loading cancelled.');
+          const url = URL.createObjectURL(new Blob(parts, { type: mime }));
+          urls.add(url);
+          images.push({ native: true, url, label: window.DevCoordinatorArtifactContent.describe(entry.path).title, path: entry.path, check: collection.check, artifact: collection.name });
+          if (images.length === 4) return { run, images, count: images.length };
+        }
+        if (catalog.next_offset != null && catalog.next_offset <= offset) throw new Error('The retained file catalogue was incomplete.');
+        offset = catalog.next_offset;
+      } while (offset != null && offset < 4096);
+    }
+    return { run, images, count: images.length };
+  }
+
+  return { bundles, open, previews };
 })();

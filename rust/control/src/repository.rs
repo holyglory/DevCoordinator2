@@ -566,6 +566,96 @@ pub fn resolve_worktree(
 }
 
 fn run_git(probe: &Path, run_as: Option<(u32, u32)>) -> io::Result<GitOutput> {
+    run_git_arguments(
+        probe,
+        run_as,
+        &[
+            "rev-parse",
+            "--path-format=absolute",
+            "--show-toplevel",
+            "--git-common-dir",
+        ],
+        GIT_TIMEOUT,
+    )
+}
+
+pub(crate) fn test_repository_source(
+    probe: &Path,
+    run_as: (u32, u32),
+) -> Option<devcoordinator2_api::results::TestRepositorySource> {
+    let output = run_git_arguments(
+        probe,
+        Some(run_as),
+        &[
+            "config",
+            "--local",
+            "--no-includes",
+            "--get",
+            "remote.origin.url",
+        ],
+        Duration::from_secs(1),
+    )
+    .ok()?;
+    if !output.status.success() || output.stdout.len() > 2048 {
+        return None;
+    }
+    repository_source_from_remote(std::str::from_utf8(&output.stdout).ok()?.trim())
+}
+
+fn repository_source_from_remote(
+    remote: &str,
+) -> Option<devcoordinator2_api::results::TestRepositorySource> {
+    use sha2::{Digest, Sha256};
+
+    let address = if remote.contains("://") {
+        remote.to_owned()
+    } else {
+        let (authority, path) = remote.split_once(':')?;
+        if authority.contains('/') || !authority.contains('@') {
+            return None;
+        }
+        format!("ssh://{authority}/{path}")
+    };
+    let parsed = reqwest::Url::parse(&address).ok()?;
+    if !matches!(parsed.scheme(), "https" | "http" | "ssh" | "git")
+        || parsed.query().is_some()
+        || parsed.fragment().is_some()
+    {
+        return None;
+    }
+    let host = parsed.host_str()?.to_ascii_lowercase();
+    let repository = parsed.path().trim_matches('/');
+    let repository = repository.strip_suffix(".git").unwrap_or(repository);
+    if repository.len() > 512
+        || repository.split('/').any(|part| {
+            part.is_empty()
+                || matches!(part, "." | "..")
+                || part.len() > 128
+                || !part.chars().all(|character| {
+                    character.is_alphanumeric() || matches!(character, '-' | '_' | '.')
+                })
+        })
+    {
+        return None;
+    }
+    let name = repository.rsplit('/').next()?.to_owned();
+    let port = parsed
+        .port()
+        .filter(|port| !(parsed.scheme() == "ssh" && *port == 22));
+    let authority = port.map_or(host.clone(), |port| format!("{host}:{port}"));
+    let key = Sha256::digest(format!("{authority}/{repository}").as_bytes())
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    Some(devcoordinator2_api::results::TestRepositorySource { key, name })
+}
+
+fn run_git_arguments(
+    probe: &Path,
+    run_as: Option<(u32, u32)>,
+    arguments: &[&str],
+    timeout: Duration,
+) -> io::Result<GitOutput> {
     let git = trusted_executable("git")?;
     let drop_identity = run_as.filter(|(uid, _)| effective_uid() == 0 && *uid != 0);
     let mut command = if let Some((uid, gid)) = drop_identity {
@@ -599,14 +689,11 @@ fn run_git(probe: &Path, run_as: Option<(u32, u32)>) -> io::Result<GitOutput> {
     command
         .arg("-C")
         .arg(probe)
-        .arg("rev-parse")
-        .arg("--path-format=absolute")
-        .arg("--show-toplevel")
-        .arg("--git-common-dir")
+        .args(arguments)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    run_command_with_timeout(command, GIT_TIMEOUT)
+    run_command_with_timeout(command, timeout)
 }
 
 struct GitOutput {
@@ -987,6 +1074,61 @@ mod tests {
     use super::*;
     use std::os::unix::process::ExitStatusExt;
     use tempfile::{TempDir, tempdir};
+
+    #[test]
+    fn test_repository_source_groups_origins_without_exposing_credentials() {
+        let expected =
+            repository_source_from_remote("https://github.com/owner/project.git").unwrap();
+        assert_eq!(expected.name, "project");
+        for remote in [
+            "git@github.com:owner/project.git",
+            "ssh://git@github.com:22/owner/project",
+            "https://user:private-token@github.com/owner/project.git",
+        ] {
+            assert_eq!(repository_source_from_remote(remote).unwrap(), expected);
+        }
+        for remote in [
+            "https://git.example/owner/project.git",
+            "https://github.com/another/project.git",
+            "https://github.com/owner/Project.git",
+        ] {
+            assert_ne!(
+                repository_source_from_remote(remote).unwrap().key,
+                expected.key
+            );
+        }
+        for remote in [
+            "",
+            "/private/project",
+            "file:///private/project",
+            "https://github.com/owner/project?token=private",
+            "https://github.com/owner/project#private",
+            "https://github.com/owner/%70roject",
+        ] {
+            assert!(repository_source_from_remote(remote).is_none());
+        }
+    }
+
+    #[test]
+    fn test_repository_source_reads_the_declared_origin_of_a_checkout() {
+        let fixture = RepositoryFixture::new();
+        assert!(test_repository_source(&fixture.root, identity()).is_none());
+        git(
+            &fixture.root,
+            &[
+                OsStr::new("remote"),
+                OsStr::new("add"),
+                OsStr::new("origin"),
+                OsStr::new("https://github.com/owner/actual-repository.git"),
+            ],
+        );
+        let source = test_repository_source(&fixture.root, identity()).unwrap();
+        assert_eq!(source.name, "actual-repository");
+        assert_ne!(
+            source.name,
+            fixture.root.file_name().unwrap().to_str().unwrap()
+        );
+    }
 
     struct RepositoryFixture {
         _temporary: TempDir,

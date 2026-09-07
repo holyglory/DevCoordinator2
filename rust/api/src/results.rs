@@ -468,11 +468,20 @@ pub struct TestListRow {
     pub worktree_path: String,
     pub repository_id: String,
     pub display_name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repository_source: Option<TestRepositorySource>,
     pub visual_evidence: VisualEvidenceSummary,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub earlier_visual_evidence: Option<EarlierVisualEvidence>,
     #[serde(flatten)]
     pub summary: TestSummary,
+}
+
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TestRepositorySource {
+    pub key: String,
+    pub name: String,
 }
 
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]

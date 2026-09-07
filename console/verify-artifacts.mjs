@@ -90,6 +90,14 @@ export async function verifyTestArtifacts({ page, daemon, check, baseUrl, output
   verify('retained files are discoverable without a formal web bundle', await page.locator('[data-test-artifacts]').count() === 1);
   if (!await page.locator('[data-test-artifacts]').count()) return;
   verify('absence of a formal bundle is not absence of evidence', !/Evidence not produced|Evidence pending/.test(await page.locator('main').innerText()));
+  await page.locator('.test-thumbnail').first().waitFor();
+  verify('native screenshots also have compact inline thumbnails', (await page.locator('.test-thumbnail img').first().boundingBox()).width <= 112);
+  await page.locator('.test-thumbnail').first().click();
+  await page.locator('.test-image-preview[open]').waitFor();
+  await page.getByRole('button', { name: 'Open file', exact: true }).click();
+  await page.locator('#test-artifacts-dialog img').waitFor();
+  verify('native thumbnail opens its exact retained file', await page.locator('[data-artifact-file="capture.png"][aria-current=true]').count() === 1);
+  await page.keyboard.press('Escape');
   await page.locator('[data-test-artifacts]').click();
   const dialog = page.locator('#test-artifacts-dialog');
   await dialog.locator('img').waitFor();
@@ -168,7 +176,7 @@ export async function verifyTestArtifacts({ page, daemon, check, baseUrl, output
   }
   daemon.setScenario({ artifactFiles: true, artifactCurrentEmpty: true });
   await page.reload();
-  await page.locator('.test-result-summary').click();
+  await page.locator('.test-detail>summary').click();
   await page.locator('[data-test-artifacts]').click();
   await dialog.getByLabel('Run', { exact: true }).selectOption(EARLIER_RUN);
   await dialog.locator('img').waitFor();
