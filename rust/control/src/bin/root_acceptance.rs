@@ -3277,8 +3277,14 @@ build = true
         json!({"path": world.repo, "name": "build-failure@worktree"}),
     )?;
     ensure!(
-        data(&status)?["state"] == "failed",
+        data(&status)?["state"] != "running" && data(&status)?["readiness"]["ready"] == false,
         "failed build reported a ready deployment"
+    );
+    ensure!(
+        component(data(&status)?, "worker")?["last_error"]
+            .as_str()
+            .is_some_and(|error| error.contains("inspect deployment logs with component build")),
+        "failed build lost its current diagnostic pointer"
     );
     data(&world.call(
         "deployment.remove",
