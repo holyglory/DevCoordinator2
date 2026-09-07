@@ -109,6 +109,13 @@ installation/restart workflow. An unconfigured policy location returns
 `configuration_restart_required`; live changes never create another policy
 location, rewrite the instance file, or bypass a refused host approval.
 
+The installed service retains `ProtectSystem=full` and permits writes to its
+existing `/etc/devcoordinator2` directory. Atomic publication needs permission
+to create and rename a private temporary file in the policy's parent directory;
+making only the policy file writable is insufficient. The rest of `/etc` stays
+read-only. Upgrade older service units through the reviewed installer; do not
+disable filesystem protection or move credentials to bypass a publication error.
+
 The daemon holds an exclusive lifetime lease beside its Unix socket before
 opening the database or recovering jobs. Duplicate startup preserves a live
 listener. Missing owned sockets are recovered through directory events without

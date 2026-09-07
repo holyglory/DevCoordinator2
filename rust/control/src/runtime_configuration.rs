@@ -140,7 +140,7 @@ impl RuntimeConfiguration {
             .map_err(|_| {
                 ProtocolError::new(
                     ErrorCode::ConfigurationInvalid,
-                    "cannot publish the private Compose policy",
+                    "cannot publish the private Compose policy; verify service write access to the configured policy directory",
                 )
             })
         })();

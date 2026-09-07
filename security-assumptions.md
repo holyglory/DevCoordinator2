@@ -69,6 +69,10 @@ untracked `instance/` directory and in the installed instance configuration
   value-free permanent receipts. Invalid reload retains the last good policy.
   Policy location and other instance settings are not live-editable. No
   previously refused repository grant is implied by installing this capability.
+  The service may write its existing `/etc/devcoordinator2` directory to
+  atomically replace that policy; `ProtectSystem=full` keeps the rest of `/etc`
+  read-only (DC2-2026-09-07-POLICY-WRITE-SANDBOX). This does not add grants or
+  change the policy location, owner, mode, or permitted callers.
 - Runaway processes, containers, storage growth, stale work, malformed
   input, path escape, and lost replies are credible operational failures and
   are handled as such, not as security incidents.

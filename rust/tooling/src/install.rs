@@ -1951,6 +1951,29 @@ mod tests {
     }
 
     #[test]
+    fn rendered_daemon_keeps_policy_write_exception_narrow() {
+        let temporary = tempfile::tempdir().unwrap();
+        let source = temporary.path();
+        std::fs::create_dir(source.join("deploy")).unwrap();
+        std::fs::write(
+            source.join("deploy/devcoordinator2.service"),
+            include_str!("../../../deploy/devcoordinator2.service"),
+        )
+        .unwrap();
+        let rendered = render_daemon_unit(source).unwrap();
+        assert!(rendered.lines().any(|line| line == "ProtectSystem=full"));
+        assert!(rendered.lines().any(|line| line == "NoNewPrivileges=yes"));
+        let paths = rendered
+            .lines()
+            .filter_map(|line| line.strip_prefix("ReadWritePaths="))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            paths,
+            ["/home /var/lib/devcoordinator2 /run/devcoordinator2 /etc/devcoordinator2"]
+        );
+    }
+
+    #[test]
     fn build_runs_as_checkout_owner_and_verifies_every_binary_commit() {
         let temporary = tempfile::tempdir().unwrap();
         let source = temporary.path();

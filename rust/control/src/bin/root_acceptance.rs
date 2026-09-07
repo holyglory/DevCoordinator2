@@ -1,7 +1,7 @@
 //! Linux-only, test-only real-system acceptance for the Rust control plane.
 
 use std::collections::BTreeMap;
-use std::ffi::CString;
+use std::ffi::{CString, OsString};
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::net::{Ipv4Addr, TcpStream};
@@ -70,6 +70,8 @@ struct World {
     repo: PathBuf,
     socket: PathBuf,
     state: PathBuf,
+    policy: PathBuf,
+    sandboxed: bool,
     unit_prefix: String,
     daemon: Option<Child>,
     cleanup_volumes: Vec<String>,
@@ -163,6 +165,8 @@ impl World {
             repo,
             socket,
             state,
+            policy: allowlist,
+            sandboxed: false,
             unit_prefix,
             daemon: None,
             cleanup_volumes: Vec::new(),
@@ -207,13 +211,7 @@ impl World {
             .env("DEVCOORDINATOR2_CLIENT_GROUP", "")
             .env("DEVCOORDINATOR2_INSTANCE_ENV", "/nonexistent")
             .env("DEVCOORDINATOR2_PORT_RANGE", "46000-49999")
-            .env(
-                "DEVCOORDINATOR2_COMPOSE_ENV_ALLOWLIST_FILE",
-                self.base.join("compose-env-allowlist.json"),
-            )
-            .stdin(Stdio::null())
-            .stdout(Stdio::from(log))
-            .stderr(Stdio::from(stderr));
+            .env("DEVCOORDINATOR2_COMPOSE_ENV_ALLOWLIST_FILE", &self.policy);
         if let Some(uid) = edge_uid {
             command.env("DEVCOORDINATOR2_EDGE_UID", uid.to_string());
         }
@@ -223,7 +221,13 @@ impl World {
         if let Some(domain) = base_domain {
             command.env("DEVCOORDINATOR2_BASE_DOMAIN", domain);
         }
+        if self.sandboxed {
+            command = self.sandbox_command(&command)?;
+        }
         let child = command
+            .stdin(Stdio::null())
+            .stdout(Stdio::from(log))
+            .stderr(Stdio::from(stderr))
             .spawn()
             .map_err(|error| format!("cannot start isolated daemon: {error}"))?;
         self.daemon = Some(child);
@@ -268,10 +272,68 @@ impl World {
         }
     }
 
+    fn sandbox_command(&self, daemon: &Command) -> Result<Command, String> {
+        let mut command = Command::new("/usr/bin/systemd-run");
+        command.args(["--quiet", "--pipe", "--wait", "--collect", "--unit"]);
+        command.arg(self.sandbox_unit_name());
+        let template = include_str!("../../../../deploy/devcoordinator2.service");
+        for line in template.lines() {
+            let Some((key, value)) = line.split_once('=') else {
+                continue;
+            };
+            if ["NoNewPrivileges", "ProtectSystem", "ProtectHome"].contains(&key) {
+                command.arg(format!("--property={line}"));
+            } else if key == "ReadWritePaths" {
+                let mut mapped = Vec::new();
+                for path in value.split_whitespace() {
+                    let target = match path {
+                        "/home" => self.repo.as_path(),
+                        "/var/lib/devcoordinator2" => self.state.as_path(),
+                        "/run/devcoordinator2" => {
+                            self.socket.parent().ok_or("socket parent missing")?
+                        }
+                        "/etc/devcoordinator2" => {
+                            self.policy.parent().ok_or("policy parent missing")?
+                        }
+                        _ => return Err(format!("unmapped service write path: {path}")),
+                    };
+                    mapped.push(target.to_string_lossy().into_owned());
+                }
+                command.arg(format!("--property=ReadWritePaths={}", mapped.join(" ")));
+            }
+        }
+        command.arg(format!(
+            "--property=ReadOnlyPaths={}",
+            self.base.join("sandbox-etc").display()
+        ));
+        for (key, value) in daemon.get_envs() {
+            if let Some(value) = value {
+                let mut assignment = OsString::from(key);
+                assignment.push("=");
+                assignment.push(value);
+                command.arg("--setenv").arg(assignment);
+            }
+        }
+        command.arg(daemon.get_program()).args(daemon.get_args());
+        Ok(command)
+    }
+
+    fn sandbox_unit_name(&self) -> String {
+        format!(
+            "{}-daemon.service",
+            self.unit_prefix.trim_end_matches("-test")
+        )
+    }
+
     fn stop_daemon(&mut self, hard: bool) -> Result<(), String> {
         let Some(mut child) = self.daemon.take() else {
             return Ok(());
         };
+        if self.sandboxed {
+            run_status_allow_absent("/usr/bin/systemctl", &["stop", &self.sandbox_unit_name()])?;
+            child.wait().map_err(|error| error.to_string())?;
+            return Ok(());
+        }
         let signal = if hard { libc::SIGKILL } else { libc::SIGTERM };
         // SAFETY: the PID belongs to the exact child owned by this World.
         if unsafe { libc::kill(child.id() as i32, signal) } != 0 {
@@ -3888,7 +3950,7 @@ fn case_live_configuration_and_socket_recovery(world: &mut World) -> Result<(), 
         error_code(&stale) == Some("configuration_conflict"),
         "stale update was not rejected"
     );
-    let policy = world.base.join("compose-env-allowlist.json");
+    let policy = world.policy.clone();
     let original = fs::read(&policy).map_err(|error| error.to_string())?;
     let metadata = fs::metadata(&policy).map_err(|error| error.to_string())?;
     ensure!(
@@ -3945,8 +4007,77 @@ fn case_live_configuration_and_socket_recovery(world: &mut World) -> Result<(), 
     Ok(())
 }
 
+fn case_live_configuration_in_service_sandbox(world: &mut World) -> Result<(), String> {
+    world.stop_daemon(false)?;
+    let protected = world.base.join("sandbox-etc");
+    let directory = protected.join("devcoordinator2");
+    fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
+    let policy = directory.join("compose-env-allowlist.json");
+    fs::rename(&world.policy, &policy).map_err(|error| error.to_string())?;
+    world.policy = policy;
+    let runtime = world.base.join("run");
+    fs::create_dir(&runtime).map_err(|error| error.to_string())?;
+    fs::set_permissions(&runtime, fs::Permissions::from_mode(0o755))
+        .map_err(|error| error.to_string())?;
+    world.socket = runtime.join("daemon.sock");
+    world.sandboxed = true;
+    world.start_daemon(None, None, None)?;
+    let unit = world.sandbox_unit_name();
+    ensure!(
+        systemctl_property(&unit, "ProtectSystem")?.trim() == "ProtectSystem=full",
+        "service filesystem protection changed"
+    );
+    let pid = systemctl_property(&unit, "MainPID")?;
+    let pid = pid
+        .trim()
+        .strip_prefix("MainPID=")
+        .ok_or("sandbox daemon PID missing")?;
+    ensure!(
+        pid.parse::<u32>().is_ok_and(|pid| pid > 1),
+        "sandbox daemon PID missing"
+    );
+    let guard = protected.join("unrelated-policy");
+    fs::write(&guard, b"unchanged").map_err(|error| error.to_string())?;
+    let mount = Command::new("/usr/bin/nsenter")
+        .args([
+            "--target",
+            pid,
+            "--mount",
+            "--",
+            "/usr/bin/findmnt",
+            "--noheadings",
+            "--output",
+            "VFS-OPTIONS",
+            "--target",
+        ])
+        .arg(&guard)
+        .output()
+        .map_err(|error| error.to_string())?;
+    ensure!(
+        mount.status.success(),
+        "cannot inspect fixture's protected mount"
+    );
+    ensure!(
+        String::from_utf8_lossy(&mount.stdout)
+            .trim()
+            .split(',')
+            .any(|option| option == "ro"),
+        "unrelated configuration became writable"
+    );
+    case_live_configuration_and_socket_recovery(world)?;
+    ensure!(
+        fs::read(&guard).map_err(|error| error.to_string())? == b"unchanged",
+        "unrelated configuration changed"
+    );
+    Ok(())
+}
+
 fn cases() -> Vec<Case> {
     vec![
+        (
+            "live_configuration_in_service_sandbox",
+            case_live_configuration_in_service_sandbox,
+        ),
         (
             "live_configuration_and_socket_recovery",
             case_live_configuration_and_socket_recovery,
