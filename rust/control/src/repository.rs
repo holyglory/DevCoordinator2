@@ -583,23 +583,84 @@ pub(crate) fn test_repository_source(
     probe: &Path,
     run_as: (u32, u32),
 ) -> Option<devcoordinator2_api::results::TestRepositorySource> {
-    let output = run_git_arguments(
-        probe,
-        Some(run_as),
-        &[
-            "config",
-            "--local",
-            "--no-includes",
-            "--get",
-            "remote.origin.url",
-        ],
-        Duration::from_secs(1),
-    )
-    .ok()?;
-    if !output.status.success() || output.stdout.len() > 2048 {
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let mut checkout = probe.canonicalize().ok()?;
+    let mut visited = std::collections::HashSet::new();
+    for depth in 0..8 {
+        if !visited.insert(checkout.clone()) {
+            return None;
+        }
+        if depth > 0 {
+            let output = run_git_arguments(
+                &checkout,
+                Some(run_as),
+                &["rev-parse", "--show-toplevel"],
+                deadline.checked_duration_since(Instant::now())?,
+            )
+            .ok()?;
+            let root = if output.status.success() {
+                output
+            } else {
+                run_git_arguments(
+                    &checkout,
+                    Some(run_as),
+                    &["rev-parse", "--absolute-git-dir"],
+                    deadline.checked_duration_since(Instant::now())?,
+                )
+                .ok()?
+            };
+            if !root.status.success()
+                || root.stdout.len() > 4096
+                || Path::new(std::str::from_utf8(&root.stdout).ok()?.trim())
+                    .canonicalize()
+                    .ok()?
+                    != checkout
+            {
+                return None;
+            }
+        }
+        let output = run_git_arguments(
+            &checkout,
+            Some(run_as),
+            &[
+                "config",
+                "--local",
+                "--no-includes",
+                "--get",
+                "remote.origin.url",
+            ],
+            deadline.checked_duration_since(Instant::now())?,
+        )
+        .ok()?;
+        if !output.status.success() || output.stdout.len() > 2048 {
+            return None;
+        }
+        let remote = std::str::from_utf8(&output.stdout).ok()?.trim();
+        if let Some(source) = repository_source_from_remote(remote) {
+            return Some(source);
+        }
+        checkout = local_repository_origin(remote, &checkout)?
+            .canonicalize()
+            .ok()?;
+    }
+    None
+}
+
+fn local_repository_origin(remote: &str, checkout: &Path) -> Option<PathBuf> {
+    if remote.starts_with("file://") {
+        let parsed = reqwest::Url::parse(remote).ok()?;
+        if parsed.query().is_some()
+            || parsed.fragment().is_some()
+            || !matches!(parsed.host_str(), None | Some("localhost"))
+        {
+            return None;
+        }
+        return parsed.to_file_path().ok();
+    }
+    if remote.is_empty() || remote.contains(':') || remote.contains('\n') {
         return None;
     }
-    repository_source_from_remote(std::str::from_utf8(&output.stdout).ok()?.trim())
+    Some(checkout.join(remote))
 }
 
 fn repository_source_from_remote(
@@ -1128,6 +1189,133 @@ mod tests {
             source.name,
             fixture.root.file_name().unwrap().to_str().unwrap()
         );
+    }
+
+    #[test]
+    fn test_repository_source_follows_local_clones_and_linked_worktrees() {
+        let fixture = RepositoryFixture::new();
+        git(
+            &fixture.root,
+            &[
+                OsStr::new("remote"),
+                OsStr::new("add"),
+                OsStr::new("origin"),
+                OsStr::new("https://github.com/owner/hdlripper.git"),
+            ],
+        );
+        let linked = fixture
+            .root
+            .parent()
+            .unwrap()
+            .join("hdlripper-windows-0.1.4");
+        git(
+            &fixture.root,
+            &[
+                OsStr::new("worktree"),
+                OsStr::new("add"),
+                OsStr::new("--detach"),
+                linked.as_os_str(),
+            ],
+        );
+        let expected = test_repository_source(&fixture.root, identity());
+        assert!(expected.is_some());
+        for root in [&fixture.root, &linked] {
+            let workspace = root.join(".local/daily/workspace");
+            std::fs::create_dir_all(workspace.parent().unwrap()).unwrap();
+            git(
+                root,
+                &[
+                    OsStr::new("clone"),
+                    OsStr::new("--quiet"),
+                    root.as_os_str(),
+                    workspace.as_os_str(),
+                ],
+            );
+            assert_eq!(test_repository_source(&workspace, identity()), expected);
+            git(
+                &workspace,
+                &[
+                    OsStr::new("remote"),
+                    OsStr::new("set-url"),
+                    OsStr::new("origin"),
+                    OsStr::new("../../.."),
+                ],
+            );
+            assert_eq!(test_repository_source(&workspace, identity()), expected);
+            let file_url = reqwest::Url::from_directory_path(root).unwrap().to_string();
+            git(
+                &workspace,
+                &[
+                    OsStr::new("remote"),
+                    OsStr::new("set-url"),
+                    OsStr::new("origin"),
+                    OsStr::new(&file_url),
+                ],
+            );
+            assert_eq!(test_repository_source(&workspace, identity()), expected);
+        }
+    }
+
+    #[test]
+    fn test_repository_source_rejects_cycles_missing_paths_and_parent_inference() {
+        let fixture = RepositoryFixture::new();
+        let nested = fixture.root.join("workspace");
+        create_repository(&nested);
+        git(
+            &fixture.root,
+            &[
+                OsStr::new("remote"),
+                OsStr::new("add"),
+                OsStr::new("origin"),
+                OsStr::new("https://github.com/owner/hdlripper.git"),
+            ],
+        );
+        assert!(test_repository_source(&nested, identity()).is_none());
+        for remote in [
+            ".",
+            "../missing",
+            "file://other-host/private/repo",
+            "https://github.com/owner/repo?token=private",
+        ] {
+            git(
+                &nested,
+                &[
+                    OsStr::new("config"),
+                    OsStr::new("remote.origin.url"),
+                    OsStr::new(remote),
+                ],
+            );
+            assert!(test_repository_source(&nested, identity()).is_none());
+        }
+        let ordinary = fixture.root.join("ordinary-subdirectory");
+        std::fs::create_dir(&ordinary).unwrap();
+        git(
+            &nested,
+            &[
+                OsStr::new("config"),
+                OsStr::new("remote.origin.url"),
+                ordinary.as_os_str(),
+            ],
+        );
+        assert!(test_repository_source(&nested, identity()).is_none());
+        git(
+            &nested,
+            &[
+                OsStr::new("config"),
+                OsStr::new("remote.origin.url"),
+                fixture.root.as_os_str(),
+            ],
+        );
+        git(
+            &fixture.root,
+            &[
+                OsStr::new("remote"),
+                OsStr::new("set-url"),
+                OsStr::new("origin"),
+                nested.as_os_str(),
+            ],
+        );
+        assert!(test_repository_source(&nested, identity()).is_none());
     }
 
     struct RepositoryFixture {

@@ -110,6 +110,7 @@ function normalizedProjects(projects) {
 }
 
 function projectPicker(projects, currentId, hrefFor, pickerId) {
+  if (workspace.active) return '';
   const options = normalizedProjects(projects);
   const current = options.find((project) => project.repository_id === currentId)
     || { repository_id: currentId, display_name: 'Current project' };
@@ -241,7 +242,7 @@ async function api(operation, params = {}, abortable = true) {
   if (!body.ok) throw new ApiError(body.error?.code || 'error', body.error?.message || 'request failed');
   return body.data;
 }
-async function history(kind, id, metric, rangeKey) {
+async function metricHistory(kind, id, metric, rangeKey) {
   const r = RANGES[rangeKey] || RANGES['24h'];
   return api('health.history', { subject_kind: kind, subject_id: id, metric, minutes: r.minutes, points: r.points });
 }
@@ -254,7 +255,7 @@ function stateBlock(kind, text) {
   return `<div class="notice muted">${esc(text)}</div>`;
 }
 function currentDestinationHeading() {
-  const [, view, arg] = (location.hash || '#/deployments').slice(1).split('/');
+  const [, view, arg] = (location.hash || '#/plan').split('?')[0].slice(1).split('/');
   const destinations = {
     deployments: ['Deployments', '#/deployments'], plan: ['Plan', '#/plan'],
     progress: ['Progress', '#/progress'], usage: ['Codex Usage', '#/usage'],
@@ -322,9 +323,10 @@ function setupTopNavigation() {
   const desktop = window.matchMedia('(min-width: 1241px)');
   desktop.addEventListener('change', (event) => { if (event.matches) setOpen(false, false); });
 }
-function lifecycleButtons(id, component, cls = 'btn btn-small', state = null) {
+function lifecycleButtons(id, component, cls = 'btn btn-small', deploymentState = null) {
   const args = component ? { deployment_id: id, component } : { deployment_id: id };
-  const blocked = state === 'applying' ? ' disabled aria-disabled="true" title="Apply in progress; refresh status before another lifecycle action"' : '';
+  const canOperate = state.who?.administrator || ['operator', 'administrator'].includes(state.who?.grants?.[id]);
+  const blocked = !canOperate ? ' disabled aria-disabled="true" title="Operator access required"' : deploymentState === 'applying' ? ' disabled aria-disabled="true" title="Apply in progress; refresh status before another lifecycle action"' : '';
   return ['start', 'stop', 'restart'].map((a) => `<button class="${cls}" data-cmd="deployment.${a}" data-args='${esc(JSON.stringify(args))}'${blocked}>${a}</button>`).join('');
 }
 
@@ -625,6 +627,14 @@ function bindDeploymentCollapsibles(root) {
 
 const viewDeployments = guard(async () => {
   main.innerHTML = `<section class="deployments-dashboard">${pageHeading('Deployments', '#/deployments')}${skeleton(8)}</section>`;
+  if (workspace.active) {
+    const result = await api('deployment.list', {});
+    const deployments = result.deployments.filter(workspace.matches);
+    main.innerHTML = `<section class="deployments-dashboard">${pageHeading('Deployments', '#/deployments')}${deployments.length ? `<div class="deployment-records">${deployments.map((deployment) => deploymentRecord(deployment, state.who?.administrator)).join('')}</div>` : stateBlock('empty', 'No deployments have been applied for this repository.')}</section>`;
+    bind(main);
+    bindDomainButtons(main, deployments);
+    return;
+  }
   const [deploymentResult, planResult, progressResult, usageResult, testsResult, healthResult] = await Promise.all([
     api('deployment.list', {}),
     optionalDashboardRead('plan.overview', {}),
@@ -758,8 +768,8 @@ const viewDeployment = guard(async (id) => {
       .filter(Boolean);
     const usage = await Promise.all(subjects.map(async (s) => {
       const [cpu, mem] = await Promise.all([
-        history(s.kind, s.sid, 'cpu_percent', state.usageRange),
-        history(s.kind, s.sid, 'memory_bytes', state.usageRange)]);
+        metricHistory(s.kind, s.sid, 'cpu_percent', state.usageRange),
+        metricHistory(s.kind, s.sid, 'memory_bytes', state.usageRange)]);
       return `<div class="chartpair"><h3>${esc(s.name)}</h3>${chart(cpu.points, pct, 'CPU')}${chart(mem.points, bytes, 'Memory')}</div>`;
     }));
     $('#usage').innerHTML = usage.length ? usage.join('') : '<p class="muted">No measured components.</p>';
@@ -1972,7 +1982,7 @@ function restoreTestSettingsFocus(id) {
   const button = document.getElementById(id);
   const settings = button?.closest('details');
   if (settings) settings.open = false;
-  (settings?.querySelector('summary') || button)?.focus();
+  (button?.closest('#nav') ? document.getElementById('nav-toggle') : settings?.querySelector('summary') || button)?.focus();
 }
 
 function bindTestPopovers() {
@@ -1989,17 +1999,26 @@ function bindTestPopovers() {
   }, { signal: viewAbort.signal });
 }
 
-const viewTests = guard(async (runId = null) => {
+const viewTests = guard(async (runId = null, settings = null) => {
   if (runId) return viewTestEvidence(runId);
   main.innerHTML = `${pageHeading('Tests', '#/tests')}${skeleton()}`;
   const [{ runs }, capacity, retention] = await Promise.all([api('test.list', {}), api('test.capacity.get', {}), api('test.log.retention.get', {})]);
-  return window.DevCoordinatorTests.render({
+  await window.DevCoordinatorTests.render({
     main, runs, capacity, retention, api, esc, badge, durationMs, bytes, signal: viewAbort.signal,
+    repository: workspace.active ? { name: workspace.current()?.name, ids: workspace.current()?.records.map((record) => record.repository_id) || [] } : null,
     openLogs: (run, opener) => openTestLogsDialog(run, retention, opener),
     openFiles: (run, opener, initialFile) => window.DevCoordinatorArtifacts.open(run, opener, { api, esc, bytes, signal: viewAbort.signal, highlight: highlightLogText, initialFile }),
     openCapacity: openTestCapacityDialog, openRetention: openTestLogRetentionDialog,
     bindSettings: bindTestPopovers,
   });
+  if (settings === 'capacity') openTestCapacityDialog(capacity, $('#nav-toggle'));
+  if (settings === 'retention') openTestLogRetentionDialog(retention, $('#nav-toggle'));
+  if (settings) {
+    const [pathname, queryString] = location.hash.split('?');
+    const query = new URLSearchParams(queryString);
+    query.delete('settings');
+    window.history.replaceState(null, '', `${pathname}${query.size ? `?${query}` : ''}`);
+  }
 });
 
 // --- Health --------------------------------------------------------------
@@ -2087,9 +2106,9 @@ const viewHealth = guard(async (sub) => {
   if (summary) {
     try {
       const [cpu, mem, sto] = await Promise.all([
-        history('host', 'host', 'cpu_percent', state.healthRange),
-        history('host', 'host', 'memory_used', state.healthRange),
-        history('host', 'host', 'storage_bytes', state.healthRange)]);
+        metricHistory('host', 'host', 'cpu_percent', state.healthRange),
+        metricHistory('host', 'host', 'memory_used', state.healthRange),
+        metricHistory('host', 'host', 'storage_bytes', state.healthRange)]);
       $('#host-history').innerHTML = chart(cpu.points, pct, 'Host CPU') + chart(mem.points, bytes, 'Host memory used') + chart(sto.points, bytes, 'Storage used');
     } catch (e) { const el = $('#host-history'); if (el) el.innerHTML = stateBlock('error', e.message); }
   }
@@ -2928,7 +2947,7 @@ const viewPlan = guard(async (repoId) => {
       : '';
     return `<div class="grow grel"${droppable ? ` data-drop-release="${release ? esc(release.release_id) : ''}"` : ''}>
       <div class="glabel">
-        <div class="plan-release-copy"><strong>${release ? esc(release.name) : 'Not scheduled yet'}</strong><span class="plan-release-meta">${release ? planBadge(release.status) : ''}${release?.kind === 'preview' && release.status !== 'requested' ? ` ${badge('preview')}` : ''}<span class="muted">${esc(progress)}</span></span></div>
+        <div class="plan-release-copy"><strong title="${release ? esc(release.name) : 'Not scheduled yet'}">${release ? esc(release.name) : 'Not scheduled yet'}</strong><span class="plan-release-meta">${release ? planBadge(release.status) : ''}${release?.kind === 'preview' && release.status !== 'requested' ? ` ${badge('preview')}` : ''}<span class="muted" title="${esc(progress)}">${esc(progress)}</span></span></div>
       </div>
       <div class="gtrack">${releaseBar}${where}</div>
     </div>`;
@@ -2964,7 +2983,7 @@ const viewPlan = guard(async (repoId) => {
     const bar = `${sizedBar}${unsizedBar}`;
     return `<div class="grow gtask${row.hidden ? ' ghidden' : ''}${selected ? ' selected' : ''}" data-task-row="${esc(task.task_id)}">
       <div class="glabel" style="--task-depth:${row.depth}">${drag}${collapse}<button type="button" class="plan-task-select" data-select-task="${esc(task.task_id)}" aria-pressed="${selected}">
-        <span class="plan-task-title">${esc(task.title)}</span><span class="plan-task-meta"><span>${esc(metaLoc)}</span>${planBadge(task.status)}${task.kind === 'user_feedback' ? ` ${badge('your request')}` : ''}</span>
+        <span class="plan-task-title">${esc(task.title)}</span><span class="plan-task-meta" title="${esc(`${metaLoc} · ${PLAN_WORDS[task.status] || task.status}`)}"><span title="${esc(metaLoc)}">${esc(metaLoc)}</span>${planBadge(task.status)}${task.kind === 'user_feedback' ? ` ${badge('your request')}` : ''}</span>
       </button>${admin ? planElaborationButton(task, 'plan-elaborate-row') : (task.elaboration_needed ? planElaborationMark(task) : '')}</div>
       <div class="gtrack">${bar}</div>
     </div>`;
@@ -3592,12 +3611,11 @@ const viewDecisions = guard(async (repoId) => {
     return `<div class="decision">${head}${paragraphs(d.body)}</div>`;
   };
   const story = !searching && !state.decisionBefore
-    ? `<div class="story"><h2>The story so far</h2>${result.summary ? paragraphs(result.summary.body) : '<p class="muted">No summary yet.</p>'}${result.summary_due ? '<p class="muted">The agent will refresh this summary soon.</p>' : ''}</div>` : '';
+    ? `<details class="story"><summary>The story so far</summary>${result.summary ? paragraphs(result.summary.body) : '<p class="muted">No summary yet.</p>'}</details>` : '';
   const emptyText = searching ? 'Nothing found for that search.'
     : state.decisionAspect !== 'all' ? `No ${state.decisionAspect.replace('_', ' ')} decisions yet.`
       : 'No decisions yet. The agent records its choices here as it works.';
   main.innerHTML = `<div class="repository-context"><h1>${destinationLink('Decisions', '#/decisions')}</h1><span class="context-slash" aria-hidden="true">/</span>${projectPicker(projects, repoId, (id) => `#/decisions/${id}`, 'decisions')}</div>
-    <p class="muted">Recorded choices in plain language. <a href="#/plan/${esc(repoId)}">Plan →</a></p>
     ${story}
     <form class="inline" id="decision-search"><label class="f">search every decision<input name="q" value="${esc(state.decisionQuery)}" placeholder="e.g. why exports are files"></label><button class="btn" type="submit">Search</button>${searching || state.decisionBefore ? '<button class="btn" type="button" id="decisions-latest">Show latest</button>' : ''}</form>
     <div class="segwrap">${seg(ASPECTS, state.decisionAspect, 'decision-aspect', (o) => o.replace('_', ' '))}</div>
@@ -3619,13 +3637,22 @@ const viewDecisions = guard(async (repoId) => {
 });
 
 // --- Router ----------------------------------------------------------------
+const workspace = window.DevCoordinatorWorkspace.create({ api, esc, identity: () => state.who });
 async function render() {
   closeGlossaryDialog?.();
   closeActiveProjectPicker?.(false);
   viewAbort?.abort();
   viewAbort = new AbortController();
-  const hash = location.hash || '#/deployments';
-  const [, view, arg] = hash.slice(1).split('/');
+  const signal = viewAbort.signal;
+  let route;
+  try { route = await workspace.resolve(signal); }
+  catch (error) {
+    if (signal.aborted || error.code === 'stale' || error.code === 'unauthenticated') return;
+    main.innerHTML = currentDestinationHeading() + stateBlock(error.code === 'permission_denied' ? 'denied' : 'error', error.message);
+    return;
+  }
+  if (!route || signal.aborted) return;
+  const { view, arg } = route;
   main.classList.toggle('plan-page', view === 'plan' && !!arg);
   main.classList.toggle('glossary-page', view === 'glossary');
   main.classList.toggle('usage-page', view === 'usage' && !!arg);
@@ -3643,17 +3670,21 @@ async function render() {
   }
   document.querySelectorAll('#nav a').forEach((a) => a.classList.toggle('active', a.dataset.view === view));
   setBanner('');
+  if (route.empty) {
+    main.innerHTML = currentDestinationHeading() + stateBlock('empty', 'No repositories visible to you.');
+    return;
+  }
   if (view === 'deployments') return arg ? viewDeployment(arg) : viewDeployments();
   if (view === 'plan') return arg ? viewPlan(arg) : viewPlanPicker('plan');
   if (view === 'progress') return arg ? viewProgress(arg) : viewProgressRepositories();
   if (view === 'usage') return arg ? viewCodexUsage(arg) : viewCodexUsageRepositories();
   if (view === 'decisions') return arg ? viewDecisions(arg) : viewPlanPicker('decisions');
   if (view === 'glossary') return viewGlossary();
-  if (view === 'tests') return viewTests(arg || null);
+  if (view === 'tests') return viewTests(arg || null, route.settings);
   if (view === 'health') return viewHealth(arg);
   if (view === 'bugs') return viewBugs();
   if (view === 'admin') return viewAdmin();
-  location.hash = '#/deployments';
+  location.hash = '#/plan';
   return undefined;
 }
 window.render = render;
@@ -3669,10 +3700,6 @@ setupTopNavigation();
     state.who = await api('user.whoami', {});
     $('#who-email').textContent = state.who.identity || 'local';
     $('#nav-admin').hidden = !state.who.administrator;
-    const usageAllowed = state.who.administrator || Object.values(state.who.grants || {})
-      .some((role) => role === 'operator' || role === 'administrator');
-    $('#nav-usage').hidden = !usageAllowed;
-    $('#nav-progress').hidden = !usageAllowed;
   } catch (e) { if (e.code !== 'unauthenticated') setBanner(`Cannot reach the coordinator: ${e.message}`); }
   render();
 })();

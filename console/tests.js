@@ -15,7 +15,7 @@ window.DevCoordinatorTests = (() => {
     return [...groups.values()].sort((left, right) => timestamp(right.runs[0]) - timestamp(left.runs[0]) || left.name.localeCompare(right.name));
   }
 
-  async function render({ main, runs: initialRuns, capacity, retention, api, esc, badge, durationMs, bytes, signal, openLogs, openFiles, openCapacity, openRetention, bindSettings }) {
+  async function render({ main, runs: initialRuns, capacity, retention, api, esc, badge, durationMs, bytes, signal, openLogs, openFiles, openCapacity, openRetention, bindSettings, repository = null }) {
     let runs = initialRuns;
     let groups = groupRuns(runs);
     let selected;
@@ -27,7 +27,7 @@ window.DevCoordinatorTests = (() => {
     let refreshTimer;
     let refreshPromise;
     let previewDialog;
-    const current = () => groups.find((group) => group.key === selected);
+    const current = () => repository ? { name: repository.name, runs: runs.filter((run) => repository.ids.includes(run.repository_id)).sort((left, right) => timestamp(right) - timestamp(left) || left.run_id.localeCompare(right.run_id)) } : groups.find((group) => group.key === selected);
     const query = (selector) => main.querySelector(selector);
     const readable = (name) => {
       const label = String(name || 'Test').replace(/[-_]+/g, ' ').replace(/\bmacos\b/gi, 'macOS').replace(/\bui\b/g, 'UI');
@@ -85,39 +85,100 @@ window.DevCoordinatorTests = (() => {
       return url;
     }
 
-    function preview(run, image, opener) {
+    async function ensureImage(result, image) {
+      if (image.url) return image.url;
+      if (!image.loading) image.loading = (image.load ? image.load() : imageUrl(result.run, image)).then((url) => { image.url = url; return url; }).catch((error) => { image.loading = null; throw error; });
+      return image.loading;
+    }
+
+    function preview(result, initialIndex, opener) {
       previewDialog?.dispatchEvent(new Event('cancel', { cancelable: true }));
+      const { run, images } = result;
+      let index = initialIndex;
+      let generation = 0;
       const dialog = document.createElement('dialog');
       previewDialog = dialog;
       dialog.className = 'test-image-preview';
-      dialog.setAttribute('aria-label', image.label);
+      dialog.setAttribute('aria-label', 'Screenshot gallery');
       const rowId = opener.closest('[data-test-run-id]')?.dataset.testRunId;
       const thumbnailIndex = [...opener.parentElement.querySelectorAll('.test-thumbnail')].indexOf(opener);
-      dialog.innerHTML = `<div class="dialog-head"><span>${esc(image.label)}</span><button type="button" class="dialog-close" aria-label="Close screenshot preview"><span class="ti ti-x" aria-hidden="true"></span></button></div><img src="${esc(image.url)}" alt="${esc(image.label)}"><footer>${image.native ? '<button type="button" class="test-text-action" data-open-file>Open file</button>' : `<a class="btn" href="${viewerUrl(run, image)}">Open in viewer / comment</a>`}</footer>`;
-      dialog.querySelector('img').setAttribute('data-ui-continuation-anchor', '');
+      dialog.innerHTML = `<div class="dialog-head"><div><span data-gallery-title></span><small data-gallery-count aria-live="polite"></small>${run.earlier ? `<small class="test-preview-provenance">Earlier run · ${esc(time(run))}</small>` : ''}</div><button type="button" class="dialog-close" aria-label="Close screenshot preview"><span class="ti ti-x" aria-hidden="true"></span></button></div><div class="test-gallery-stage"><button type="button" class="test-gallery-arrow" data-gallery-previous aria-label="Previous screenshot"${images.length === 1 ? ' disabled' : ''}><span class="ti ti-chevron-left" aria-hidden="true"></span></button><div class="test-gallery-image"><img data-gallery-image data-ui-continuation-anchor alt=""><div class="test-gallery-message" role="status"></div></div><button type="button" class="test-gallery-arrow" data-gallery-next aria-label="Next screenshot"${images.length === 1 ? ' disabled' : ''}><span class="ti ti-chevron-right" aria-hidden="true"></span></button></div><nav class="test-gallery-thumbnails" aria-label="Screenshots">${images.map((image, position) => `<button type="button" data-gallery-index="${position}" aria-label="Screenshot ${position + 1}: ${esc(image.label)}" aria-pressed="false"><img alt="" width="96" height="64"><span>${esc(image.label)}</span></button>`).join('')}</nav><footer data-gallery-footer></footer>`;
+      const rail = dialog.querySelector('.test-gallery-thumbnails');
+      const thumbnails = [...rail.querySelectorAll('button')];
+      const railObserver = new IntersectionObserver((entries) => {
+        for (const entry of entries) if (entry.isIntersecting) {
+          railObserver.unobserve(entry.target);
+          const image = images[Number(entry.target.dataset.galleryIndex)];
+          ensureImage(result, image).then((url) => { if (dialog.isConnected) entry.target.querySelector('img').src = url; }).catch(() => {});
+        }
+      }, { root: rail, rootMargin: '100px' });
       const close = () => {
+        generation += 1;
+        railObserver.disconnect();
         dialog.close(); dialog.remove(); if (previewDialog === dialog) previewDialog = null;
-        const restored = opener.isConnected ? opener : query(`[data-test-run-id="${CSS.escape(rowId || '')}"]`)?.querySelectorAll('.test-thumbnail')[thumbnailIndex];
+        const restored = opener.isConnected ? opener : thumbnailIndex < 0 ? query(`[data-test-run-id="${CSS.escape(rowId || '')}"] .test-preview-more`) : query(`[data-test-run-id="${CSS.escape(rowId || '')}"]`)?.querySelectorAll('.test-thumbnail')[thumbnailIndex];
         restored?.focus({ preventScroll: true });
+      };
+      const show = async (position) => {
+        index = (position + images.length) % images.length;
+        const requested = ++generation;
+        const image = images[index];
+        const display = dialog.querySelector('[data-gallery-image]');
+        const message = dialog.querySelector('.test-gallery-message');
+        dialog.querySelector('[data-gallery-title]').textContent = image.label;
+        dialog.querySelector('[data-gallery-count]').textContent = `${index + 1} of ${images.length}`;
+        display.alt = image.label;
+        display.hidden = !image.url;
+        if (image.url) display.src = image.url;
+        message.textContent = image.url ? '' : 'Loading screenshot…';
+        thumbnails.forEach((button, position) => button.setAttribute('aria-pressed', String(position === index)));
+        thumbnails[index].scrollIntoView({ block: 'nearest', inline: 'nearest' });
+        const footer = dialog.querySelector('[data-gallery-footer]');
+        footer.innerHTML = image.native ? '<button type="button" class="btn" data-open-file>Open file</button>' : `<a class="btn" href="${viewerUrl(run, image)}">Open in viewer / comment</a>`;
+        footer.querySelector('[data-open-file]')?.addEventListener('click', () => { close(); openFiles(run, opener, image); });
+        try {
+          const url = await ensureImage(result, image);
+          if (requested !== generation || !dialog.isConnected || signal.aborted) return;
+          display.src = url;
+          await display.decode();
+          if (requested !== generation || !dialog.isConnected || signal.aborted) return;
+          display.hidden = false;
+          thumbnails[index].querySelector('img').src = url;
+          message.textContent = '';
+        } catch (error) {
+          if (requested !== generation || !dialog.isConnected || signal.aborted) return;
+          display.hidden = true;
+          message.innerHTML = `<span>${esc(error.message)}</span><button type="button" class="btn btn-small">Retry screenshot</button>`;
+          message.querySelector('button').addEventListener('click', () => { image.url = null; image.loading = null; show(index); });
+        }
       };
       dialog.addEventListener('cancel', (event) => { event.preventDefault(); close(); });
       dialog.querySelector('.dialog-close').addEventListener('click', close);
-      dialog.querySelector('[data-open-file]')?.addEventListener('click', () => { close(); openFiles(run, opener, image); });
+      dialog.querySelector('[data-gallery-previous]').addEventListener('click', () => show(index - 1));
+      dialog.querySelector('[data-gallery-next]').addEventListener('click', () => show(index + 1));
+      thumbnails.forEach((button, position) => button.addEventListener('click', () => show(position)));
+      dialog.addEventListener('keydown', (event) => {
+        const position = { ArrowLeft: index - 1, ArrowRight: index + 1, Home: 0, End: images.length - 1 }[event.key];
+        if (position == null || event.altKey || event.ctrlKey || event.metaKey) return;
+        event.preventDefault(); show(position);
+        if (rail.contains(event.target)) thumbnails[index].focus({ preventScroll: true });
+      });
       document.body.appendChild(dialog);
       dialog.showModal();
+      thumbnails.forEach((button) => railObserver.observe(button));
+      show(index);
     }
 
     async function loadImages(run) {
       const visual = evidenceRun(run);
       if (!visual) return window.DevCoordinatorArtifacts.previews(run, { api, signal, urls });
       const data = await api('test.evidence.get', { path: visual.worktree_path, run_id: visual.run_id });
-      const candidates = (data.bundles || []).flatMap((bundle) => (bundle.cells || []).flatMap((cell) => {
-        const screenshot = cell.screenshots?.viewport?.status === 'available' ? cell.screenshots.viewport : cell.screenshots?.full_page;
-        return screenshot?.status === 'available' ? [{ ...screenshot, label: `${readable(cell.state_name)} · ${cell.viewport?.name || 'Screenshot'}` }] : [];
-      }));
+      const candidates = [...new Map((data.bundles || []).flatMap((bundle) => (bundle.cells || []).flatMap((cell) => ['viewport', 'full_page'].flatMap((kind) => {
+        const screenshot = cell.screenshots?.[kind];
+        return screenshot?.status === 'available' ? [{ ...screenshot, label: `${readable(cell.state_name)} · ${cell.viewport?.name || 'Screenshot'}${kind === 'full_page' ? ' · full page' : ''}` }] : [];
+      }))).map((image) => [image.image_id, image])).values()];
       if (!candidates.length && data.issues?.length) throw new Error('Screenshots could not be read.');
-      const images = await Promise.all(candidates.slice(0, 4).map(async (image) => ({ ...image, url: await imageUrl(visual, image) })));
-      return { run: visual, images, count: visual.visual_evidence?.image_count || candidates.length };
+      return { run: visual, images: candidates, count: candidates.length };
     }
 
     async function populatePreviews(host, run) {
@@ -125,27 +186,30 @@ window.DevCoordinatorTests = (() => {
       if (!cache.has(key)) cache.set(key, loadImages(run).catch((error) => { cache.delete(key); throw error; }));
       try {
         const result = await cache.get(key);
-        await Promise.all(result.images.map(async (image) => {
+        const preferred = result.images.filter((image) => image.kind !== 'full-page');
+        const initialImages = [...preferred, ...result.images.filter((image) => !preferred.includes(image))].slice(0, 4);
+        await Promise.all(initialImages.map(async (image) => {
           const probe = new Image();
-          probe.src = image.url;
+          probe.src = await ensureImage(result, image);
           try { await probe.decode(); } catch { throw new Error('Screenshot could not be previewed.'); }
         }));
         if (signal.aborted || !host.isConnected) return;
         host.replaceChildren();
         if (!result.images.length) { host.hidden = true; return; }
-        for (const image of result.images) {
+        for (const image of initialImages) {
           const button = document.createElement('button');
           button.type = 'button'; button.className = 'test-thumbnail';
           button.setAttribute('aria-label', `Preview ${image.label}`);
           button.innerHTML = `<img src="${esc(image.url)}" alt="${esc(image.label)}" width="112" height="76"><span>${esc(image.label)}</span>`;
-          button.addEventListener('click', () => preview(result.run, image, button));
+          button.addEventListener('click', () => preview(result, result.images.indexOf(image), button));
           host.append(button);
         }
-        if (result.count > result.images.length && !result.images[0]?.native) {
-          const more = document.createElement('a');
-          more.className = 'test-preview-more'; more.href = viewerUrl(result.run);
-          more.textContent = `+${result.count - result.images.length}`;
-          more.setAttribute('aria-label', `Open all ${result.count} screenshots in viewer`);
+        if (result.count > initialImages.length) {
+          const more = document.createElement('button');
+          more.type = 'button'; more.className = 'test-preview-more';
+          more.textContent = `+${result.count - initialImages.length}`;
+          more.setAttribute('aria-label', `Browse all ${result.count} screenshots`);
+          more.addEventListener('click', () => preview(result, result.images.findIndex((image) => !initialImages.includes(image)), more));
           host.append(more);
         }
         if (result.run.earlier) {
@@ -174,7 +238,7 @@ window.DevCoordinatorTests = (() => {
       const scroll = { top: scrollY, left: scrollX };
       const group = current();
       collection.setAttribute('aria-label', group ? `${group.name} test results` : 'Test results');
-      collection.innerHTML = group ? `<div class="test-results">${group.runs.map(row).join('')}</div>` : '<p class="muted">No test runs yet.</p>';
+      collection.innerHTML = group?.runs.length ? `<div class="test-results">${group.runs.map(row).join('')}</div>` : '<p class="muted">No test runs yet.</p>';
       if (form) { collection.prepend(form); focusedField?.focus({ preventScroll: true }); }
       query('#test-run-open').disabled = !group?.runs.some((run) => !activeStates.has(run.status));
       for (const article of collection.querySelectorAll('.test-result')) {
@@ -199,6 +263,7 @@ window.DevCoordinatorTests = (() => {
 
     function paintNavigation() {
       const navigation = query('.test-repository-list');
+      if (!navigation) return;
       const names = groups.map((group) => group.name);
       navigation.innerHTML = groups.map((group) => `<button type="button" class="test-repository" data-repository-key="${esc(group.key)}" aria-pressed="${group.key === selected}">${esc(group.name)}${names.filter((name) => name === group.name).length > 1 ? `<small>${esc(group.runs[0].display_name === group.name ? group.runs[0].worktree_path : group.runs[0].display_name)}</small>` : ''}</button>`).join('');
       for (const button of navigation.querySelectorAll('button')) button.addEventListener('click', () => {
@@ -260,11 +325,11 @@ window.DevCoordinatorTests = (() => {
       return refreshPromise;
     }
 
-    main.innerHTML = `<section class="tests-workspace"><aside class="tests-sidebar"><header><h1><a href="#/tests" class="destination-link">Tests</a></h1><details class="test-settings"><summary class="test-settings-toggle" aria-label="Test settings"><span class="ti ti-settings" aria-hidden="true"></span></summary><div class="test-settings-menu"><button class="btn" type="button" id="test-log-retention-open">Log retention</button><button class="btn" type="button" id="test-capacity-open">Capacity</button></div></details></header><nav class="test-repository-list" aria-label="Repositories"></nav><button class="btn" type="button" id="test-run-open">Run tests</button><span id="test-live-status" role="status"></span></aside><section id="test-runs-collection" tabindex="-1"></section></section>`;
+    main.innerHTML = repository ? `<section class="tests-workspace"><header class="workspace-tests-heading"><h1>Tests</h1><button class="btn" type="button" id="test-run-open">Run tests</button></header><span id="test-live-status" role="status"></span><section id="test-runs-collection" tabindex="-1"></section></section>` : `<section class="tests-workspace"><aside class="tests-sidebar"><header><h1><a href="#/tests" class="destination-link">Tests</a></h1><details class="test-settings"><summary class="test-settings-toggle" aria-label="Test settings"><span class="ti ti-settings" aria-hidden="true"></span></summary><div class="test-settings-menu"><button class="btn" type="button" id="test-log-retention-open">Log retention</button><button class="btn" type="button" id="test-capacity-open">Capacity</button></div></details></header><nav class="test-repository-list" aria-label="Repositories"></nav><button class="btn" type="button" id="test-run-open">Run tests</button><span id="test-live-status" role="status"></span></aside><section id="test-runs-collection" tabindex="-1"></section></section>`;
     paintNavigation(); paintRows(); bindSettings();
     query('#test-run-open').addEventListener('click', (event) => runForm(event.currentTarget));
-    query('#test-capacity-open').addEventListener('click', (event) => openCapacity(capacity, event.currentTarget));
-    query('#test-log-retention-open').addEventListener('click', (event) => openRetention(retention, event.currentTarget));
+    query('#test-capacity-open')?.addEventListener('click', (event) => openCapacity(capacity, event.currentTarget));
+    query('#test-log-retention-open')?.addEventListener('click', (event) => openRetention(retention, event.currentTarget));
     signal.addEventListener('abort', () => {
       clearTimeout(refreshTimer); observer?.disconnect();
       previewDialog?.dispatchEvent(new Event('cancel', { cancelable: true }));

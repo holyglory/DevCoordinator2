@@ -84,7 +84,7 @@ export async function verifyTestArtifacts({ page, daemon, check, baseUrl, output
   const errors = [];
   page.on('pageerror', (error) => errors.push(error.message));
   daemon.setScenario({ artifactFiles: true });
-  await page.goto(`${baseUrl}#/tests`);
+  await page.goto(`${baseUrl}#/tests?repository=native-repository`);
   await page.waitForSelector('.test-result-summary');
   await page.locator('.test-result-summary').click();
   verify('retained files are discoverable without a formal web bundle', await page.locator('[data-test-artifacts]').count() === 1);

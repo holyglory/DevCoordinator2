@@ -316,10 +316,15 @@ async function main() {
     assert.equal(await page.locator('.glossary-card').count(), 1);
   }, page);
 
-  await check('Project picker and guidance removal save real project state', async () => {
-    await go(); await page.locator('[data-project-picker-toggle]').click();
-    await page.locator(`[role=menuitem][href="${`#/glossary/${project}`}" ]`).click();
+  await check('Shared repository navigation and guidance removal save real project state', async () => {
+    await go(); await page.locator('#nav-toggle').click();
+    await page.locator('#nav a[href="#/plan"]').click();
+    await page.locator(`#repository-list a[href="#/plan/${project}"]`).click();
+    await page.locator(`#workspace-aspects a[href="#/glossary/${project}"]`).click();
     await page.locator('#glossary-adopt').waitFor();
+    assert.equal(new URL(page.url()).hash, `#/glossary/${project}`);
+    assert.equal(await page.locator('[data-project-picker]').count(), 0);
+    await page.locator('main h1 a').click();
     assert.equal(new URL(page.url()).hash, `#/glossary/${project}`);
     await page.getByRole('button', { name: 'Guidance and languages', exact: true }).click();
     await page.getByRole('button', { name: 'Add guideline', exact: true }).click();
