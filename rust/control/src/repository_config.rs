@@ -725,6 +725,14 @@ fn validate_checks(
             name,
             tier,
             role,
+            phase: devcoordinator2_executor_protocol::CheckPhase::Check,
+            resources: Vec::new(),
+            consumes: Vec::new(),
+            cacheable: false,
+            cache_inputs: Vec::new(),
+            fingerprint: String::new(),
+            expect_failure: false,
+            qualification_of: None,
             after,
             requires,
             invalidates,
@@ -973,7 +981,11 @@ fn validate_cases(label: &str, value: &Value) -> Result<Vec<CaseSpec>, Repositor
                 "{item_label}.args exceeds 65536 UTF-8 bytes"
             )));
         }
-        cases.push(CaseSpec { id, args });
+        cases.push(CaseSpec {
+            id,
+            args,
+            postgres: None,
+        });
     }
     Ok(cases)
 }

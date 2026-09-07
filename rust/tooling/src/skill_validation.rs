@@ -350,6 +350,14 @@ fn direct_check(
         name: name.to_owned(),
         tier,
         role,
+        phase: devcoordinator2_executor_protocol::CheckPhase::Check,
+        resources: Vec::new(),
+        consumes: Vec::new(),
+        cacheable: false,
+        cache_inputs: Vec::new(),
+        fingerprint: String::new(),
+        expect_failure: false,
+        qualification_of: None,
         after: edges.after,
         requires: edges.requires,
         invalidates: edges.invalidates,
@@ -687,6 +695,9 @@ pub fn build_validation_plan(
         source_digest: source_digest.to_owned(),
         config_digest,
         reused: BTreeMap::new(),
+        case_selection: BTreeMap::new(),
+        postgres_databases: BTreeMap::new(),
+        reused_qualifications: Default::default(),
         checks,
     };
     plan.validate().map_err(|error| error.to_string())?;
@@ -941,6 +952,9 @@ pub fn self_test(executor: &Path, leaf: &Path) -> Result<Value, String> {
             source_digest: source_digest(executor, &repo)?,
             config_digest: "b".repeat(64),
             reused: BTreeMap::new(),
+            case_selection: BTreeMap::new(),
+            postgres_databases: BTreeMap::new(),
+            reused_qualifications: Default::default(),
             checks: vec![gate, expensive, independent_check],
         };
         plan.validate().map_err(|error| error.to_string())?;

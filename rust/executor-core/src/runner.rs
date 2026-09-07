@@ -879,12 +879,11 @@ fn ready_checks_with_available_resources<'a>(
         let Some(check) = checks.iter().find(|check| check.plan.name == name) else {
             continue;
         };
-        if check
-            .plan
-            .resources
-            .iter()
-            .any(|candidate| claimed.iter().any(|active| resources_conflict(candidate, active)))
-        {
+        if check.plan.resources.iter().any(|candidate| {
+            claimed
+                .iter()
+                .any(|active| resources_conflict(candidate, active))
+        }) {
             continue;
         }
         claimed.extend(check.plan.resources.iter().cloned());

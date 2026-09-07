@@ -577,7 +577,10 @@ impl ExecutionPlan {
             }
             validate_case_selection(cases)?;
             if let Some(declared) = &self.checks[*index].cases {
-                let declared = declared.iter().map(|case| case.id.as_str()).collect::<BTreeSet<_>>();
+                let declared = declared
+                    .iter()
+                    .map(|case| case.id.as_str())
+                    .collect::<BTreeSet<_>>();
                 if cases.iter().any(|case| !declared.contains(case.as_str())) {
                     return Err(ContractError::new(format!(
                         "case selection {name:?} names an undeclared static case"
@@ -685,7 +688,9 @@ impl ExecutionPlan {
                     )));
                 };
                 if !check.requires.contains(&consumed.check)
-                    || !self.checks[*producer_index].produces.contains(&consumed.path)
+                    || !self.checks[*producer_index]
+                        .produces
+                        .contains(&consumed.path)
                 {
                     return Err(ContractError::new(format!(
                         "check {:?} consumed artifact {:?} is not a required producer output",

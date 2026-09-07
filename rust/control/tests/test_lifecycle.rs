@@ -338,6 +338,10 @@ impl FixtureSystemd {
                 name: check.name.clone(),
                 tier: check.tier,
                 role: check.role,
+                phase: check.phase,
+                fingerprint: check.fingerprint.clone(),
+                cache_inputs: Vec::new(),
+                consumed_artifacts: Vec::new(),
                 status: leaf,
                 started_at: Some("2026-09-04T00:00:00Z".into()),
                 finished_at: Some("2026-09-04T00:00:01Z".into()),
@@ -378,6 +382,7 @@ impl FixtureSystemd {
             capacity: CapacityReport::default(),
             counts,
             checks,
+            phase_durations: Vec::new(),
             failure_index: Vec::new(),
             failure_index_truncated: false,
         };

@@ -180,6 +180,9 @@ async fn hundreds_of_discovered_cases_finish_with_complete_queryable_logs() {
         source_digest: source_digest(&repository.root).expect("source digest"),
         config_digest: "c".repeat(64),
         reused: BTreeMap::new(),
+        case_selection: BTreeMap::new(),
+        postgres_databases: BTreeMap::new(),
+        reused_qualifications: Default::default(),
         checks: vec![check],
     };
     let report = Executor::new(
