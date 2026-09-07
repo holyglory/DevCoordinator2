@@ -18,6 +18,15 @@ pub async fn call(
 ) -> Result<ResponseEnvelope, ProtocolError> {
     let operation = operation.into();
     let blocking_wait = operation == "event.wait";
+    let deployment_action = matches!(
+        operation.as_str(),
+        "deployment.apply"
+            | "deployment.rollback"
+            | "deployment.start"
+            | "deployment.stop"
+            | "deployment.restart"
+            | "deployment.remove"
+    );
     let mut stream = timeout(Duration::from_secs(5), UnixStream::connect(socket_path))
         .await
         .map_err(|_| {
@@ -66,7 +75,7 @@ pub async fn call(
     let mut response = Vec::new();
     let mut limited = (&mut stream).take((MAX_RESPONSE_BYTES + 1) as u64);
     let read = limited.read_to_end(&mut response);
-    if blocking_wait {
+    if blocking_wait || deployment_action {
         read.await.map_err(transport_error)?;
     } else {
         timeout(Duration::from_secs(10), read)
@@ -105,4 +114,45 @@ fn request_id() -> String {
         .chars()
         .take(24)
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::io::{AsyncBufReadExt, BufReader};
+    use tokio::net::UnixListener;
+
+    #[tokio::test]
+    async fn deployment_waits_for_the_result_beyond_the_ordinary_deadline() {
+        let temporary = tempfile::tempdir().unwrap();
+        let socket = temporary.path().join("daemon.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut stream = BufReader::new(stream);
+            let mut encoded = String::new();
+            stream.read_line(&mut encoded).await.unwrap();
+            let request: RequestEnvelope = serde_json::from_str(&encoded).unwrap();
+            let mut finished = Vec::new();
+            stream.read_to_end(&mut finished).await.unwrap();
+            tokio::time::sleep(Duration::from_secs(11)).await;
+            let response =
+                ResponseEnvelope::success(request.id, serde_json::json!({"finished": true}))
+                    .unwrap();
+            stream
+                .get_mut()
+                .write_all(&serde_json::to_vec(&response).unwrap())
+                .await
+                .unwrap();
+        });
+        let result = call(
+            &socket,
+            "deployment.apply",
+            serde_json::json!({}),
+            ClientContext::default(),
+        )
+        .await;
+        server.await.unwrap();
+        assert!(result.unwrap().is_ok());
+    }
 }

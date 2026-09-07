@@ -7,10 +7,12 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::{OsStr, OsString};
 use std::fmt;
-use std::io::{self, Read};
+use std::fs::File;
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStderr, ChildStdout, Command, ExitStatus, Stdio};
 use std::sync::mpsc::{self, RecvTimeoutError};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -220,6 +222,7 @@ pub struct DockerInvocation {
     cwd: Option<PathBuf>,
     environment: BTreeMap<OsString, OsString>,
     timeout: Duration,
+    output_log: Option<Arc<Mutex<File>>>,
 }
 
 impl DockerInvocation {
@@ -234,11 +237,17 @@ impl DockerInvocation {
             cwd: None,
             environment: BTreeMap::new(),
             timeout,
+            output_log: None,
         })
     }
 
     pub fn with_cwd(mut self, cwd: PathBuf) -> Self {
         self.cwd = Some(cwd);
+        self
+    }
+
+    pub fn with_output_log(mut self, output_log: Option<Arc<Mutex<File>>>) -> Self {
+        self.output_log = output_log;
         self
     }
 
@@ -283,7 +292,10 @@ struct CapturedStream {
     truncated: bool,
 }
 
-fn capture_stream(mut source: impl Read) -> io::Result<CapturedStream> {
+fn capture_stream(
+    mut source: impl Read,
+    output_log: Option<Arc<Mutex<File>>>,
+) -> io::Result<CapturedStream> {
     let mut retained = Vec::new();
     let mut truncated = false;
     let mut chunk = [0_u8; 8 * 1024];
@@ -291,6 +303,11 @@ fn capture_stream(mut source: impl Read) -> io::Result<CapturedStream> {
         let read = source.read(&mut chunk)?;
         if read == 0 {
             break;
+        }
+        if let Some(log) = &output_log {
+            log.lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .write_all(&chunk[..read])?;
         }
         retained.extend_from_slice(&chunk[..read]);
         if retained.len() > MAX_CAPTURE_BYTES {
@@ -355,8 +372,10 @@ fn execute_process(
         operation: "capture docker stderr",
         source: io::Error::other("stderr pipe was not created"),
     })?;
-    let stdout_reader = thread::spawn(move || capture_stream(stdout));
-    let stderr_reader = thread::spawn(move || capture_stream(stderr));
+    let stdout_log = invocation.output_log.clone();
+    let stderr_log = invocation.output_log;
+    let stdout_reader = thread::spawn(move || capture_stream(stdout, stdout_log));
+    let stderr_reader = thread::spawn(move || capture_stream(stderr, stderr_log));
     let pid = child.id();
     let (sender, receiver) = mpsc::sync_channel(1);
     let waiter = thread::spawn(move || {
@@ -1209,6 +1228,16 @@ pub trait DockerControl: Send + Sync {
         arguments: &[String],
         timeout: Duration,
     ) -> Result<DockerOutput, DockerError> {
+        self.compose_invoke_logged(context, arguments, timeout, None)
+    }
+
+    fn compose_invoke_logged(
+        &self,
+        context: &ComposeContext,
+        arguments: &[String],
+        timeout: Duration,
+        output_log: Option<Arc<Mutex<File>>>,
+    ) -> Result<DockerOutput, DockerError> {
         context.validate()?;
         let mut argv = vec![
             "compose".into(),
@@ -1224,7 +1253,11 @@ pub trait DockerControl: Send + Sync {
             argv.push(file.as_os_str().to_owned());
         }
         argv.extend(arguments.iter().map(OsString::from));
-        self.invoke(DockerInvocation::new(argv, timeout)?.with_cwd(context.cwd.clone()))
+        self.invoke(
+            DockerInvocation::new(argv, timeout)?
+                .with_cwd(context.cwd.clone())
+                .with_output_log(output_log),
+        )
     }
 
     fn compose_config_services(
@@ -1268,6 +1301,7 @@ pub trait DockerControl: Send + Sync {
         services: &[String],
         finite_services: &[String],
         build: bool,
+        output_log: Option<Arc<Mutex<File>>>,
     ) -> Result<(), DockerError> {
         validate_services(services)?;
         validate_services(finite_services)?;
@@ -1302,7 +1336,8 @@ pub trait DockerControl: Send + Sync {
             up.push("--build".into());
         }
         up.extend(services.iter().cloned());
-        let output = self.compose_invoke(context, &up, Duration::from_secs(1_800))?;
+        let output =
+            self.compose_invoke_logged(context, &up, Duration::from_secs(1_800), output_log)?;
         if output.success() {
             Ok(())
         } else {
@@ -2108,6 +2143,46 @@ mod tests {
     }
 
     #[test]
+    fn private_output_log_preserves_complete_stream_beyond_the_capture_cap() {
+        let temporary = tempfile::tempdir().unwrap();
+        let path = temporary.path().join("private.log");
+        let log = Arc::new(Mutex::new(File::create(&path).unwrap()));
+        let text = format!(
+            "first diagnostic\n{}\nlast diagnostic",
+            "progress\n".repeat(MAX_CAPTURE_BYTES)
+        );
+        let captured = capture_stream(
+            std::io::Cursor::new(text.as_bytes()),
+            Some(Arc::clone(&log)),
+        )
+        .unwrap();
+        assert!(captured.truncated);
+        assert_eq!(captured.bytes.len(), MAX_CAPTURE_BYTES);
+        assert_eq!(std::fs::read_to_string(path).unwrap(), text);
+    }
+
+    #[test]
+    fn process_output_log_keeps_stdout_and_stderr_without_exposing_it_in_metadata() {
+        let temporary = tempfile::tempdir().unwrap();
+        let path = temporary.path().join("private.log");
+        let log = Arc::new(Mutex::new(File::create(&path).unwrap()));
+        let invocation = DockerInvocation::new(
+            vec![
+                "-c".into(),
+                "printf 'fixture stdout\\n'; printf 'fixture stderr\\n' >&2; exit 23".into(),
+            ],
+            Duration::from_secs(5),
+        )
+        .unwrap()
+        .with_output_log(Some(log));
+        let output = execute_process(Path::new("/bin/sh"), invocation).unwrap();
+        assert_eq!(output.exit_code, 23);
+        let retained = std::fs::read_to_string(path).unwrap();
+        assert!(retained.contains("fixture stdout"));
+        assert!(retained.contains("fixture stderr"));
+    }
+
+    #[test]
     fn postgres_readiness_scanner_counts_exact_events_without_retaining_logs() {
         let (sender, receiver) = mpsc::channel();
         scan_postgres_ready(
@@ -2385,6 +2460,7 @@ mod tests {
             &["db".into(), "bootstrap".into(), "api".into()],
             &["bootstrap".into()],
             true,
+            None,
         )
         .expect("compose up");
         let state = fake

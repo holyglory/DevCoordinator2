@@ -838,12 +838,18 @@ geometry checks support evidence but do not replace interaction verification.
   continue useful work, and compare their observed effects in the next review.
   When the current process is appropriate, explain the evidence instead of
   inventing changes merely to fill the report.
-- If a necessary, evidence-backed optimization requires changing DevCoordinator,
-  stop further implementation by all agents on the affected project and report
-  the concrete limitation, proposed change, expected benefit, and smallest
-  user decision. Do not modify the coordinator or introduce a competing local
-  controller without authorization. Honor authorization already given for the
-  exact change; otherwise wait for user direction before dependent work resumes.
+- If a necessary, evidence-backed improvement requires changing DevCoordinator,
+  apply the owner's recorded standing authority as well as task-specific
+  authorization. Trusted local agents covered by standing development and
+  dependency-repair authority may diagnose, repair, verify, and install the
+  necessary fix without another conversational approval. A repository boundary,
+  bug report, or repeated failed check does not revoke that authority. Preserve
+  the original outcome, use the Coordinator's canonical-source and reviewed
+  non-self-hosting workflow, and verify the affected surface. Continue independent
+  authorized work; never introduce a competing controller or bypass mandatory
+  host/tool controls. Only when the required change falls outside confirmed
+  authority, stop dependent work and report the concrete limitation, proposed
+  change, expected benefit, and smallest necessary user decision.
 - Optional infrastructure ideas and measurement gaps alone do not trigger this
   stop. While a required Coordinator decision is outstanding, preserve running
   results and evidence, finish useful bounded diagnosis and reporting, and let

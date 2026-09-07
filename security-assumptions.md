@@ -1,6 +1,6 @@
 # Security Assumptions
 
-Last reviewed: 2026-09-07 (trusted local development configuration authority)
+Last reviewed: 2026-09-07 (trusted local development and dependency-repair authority)
 
 Installation-specific values (the concrete accounts, groups, domain, and
 owner identity) are deliberately not in this file. They live in the
@@ -33,6 +33,17 @@ untracked `instance/` directory and in the installed instance configuration
 - One owner controls all trusted local Unix accounts and coding agents.
   Local accounts are attribution and execution identities, not mutually
   distrusting tenants.
+- Trusted local agents have standing owner authority to manage development
+  configuration and diagnose, repair, verify, and install necessary
+  DevCoordinator fixes that block already-approved non-production development.
+  They do not need another conversational authorization for each defect or
+  because its fix belongs to the Coordinator repository. Use canonical source,
+  linked worktrees, direct self-validation, and the reviewed installer; preserve
+  active work and verify the original affected surface. This authority does not
+  extend to unrelated infrastructure, production changes, new public access,
+  secret disclosure, or destructive persistent-data operations. Mandatory host
+  and tool approvals remain binding. Re-review when ownership, environment, or
+  these boundaries change (DC2-2026-09-07-TRUSTED-AGENT-REPAIR-AUTHORITY).
 - Public Console users and Internet clients are untrusted until
   authenticated at the edge and granted access to specific deployments.
 - The owner explicitly confirms that an authenticated Console administrator

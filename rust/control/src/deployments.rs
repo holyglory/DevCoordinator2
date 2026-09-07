@@ -1843,6 +1843,7 @@ impl Deployments {
     ) -> Result<DeploymentStatus, ProtocolError> {
         let port_map = self.allocate_ports(target, generation)?;
         let mut started = Vec::new();
+        let mut failed_component = None;
         let convergence = (|| {
             for component in &target.specification.components {
                 let binding = match self.bring_up(
@@ -1855,6 +1856,7 @@ impl Deployments {
                 ) {
                     Ok(binding) => binding,
                     Err(error) => {
+                        failed_component = Some(component.name.clone());
                         if DeploymentStore::is_owned(component)
                             && component.kind == ComponentKind::Compose
                         {
@@ -1966,6 +1968,22 @@ impl Deployments {
                 old_components,
                 &desired,
             )?;
+            if let Some(name) = failed_component
+                && self
+                    .store
+                    .components(&target.deployment_id)?
+                    .iter()
+                    .any(|component| component.name == name)
+            {
+                self.store.set_component_runtime(
+                    &target.deployment_id,
+                    &name,
+                    ComponentRuntimePatch {
+                        last_error: Some(Some(truncate(&error.message, 512))),
+                        ..Default::default()
+                    },
+                )?;
+            }
             let _ = self.validate_or_withdraw_route(&target.deployment_id);
             let had_generation = target
                 .row
@@ -2449,19 +2467,44 @@ impl Deployments {
                 let project = compose_project(&target.deployment_id, &component.name);
                 let context =
                     self.compose_context(target, component, generation_path, generation)?;
-                self.docker
-                    .compose_up(
-                        &context,
-                        &component.services,
-                        &component.finite_services,
-                        component.compose_build,
+                let mut log = self
+                    .files
+                    .open_log_append(
+                        &target.deployment_id,
+                        "build",
+                        target.caller_uid,
+                        target.caller_gid,
                     )
-                    .map_err(|error| {
-                        apply_runtime_error(
-                            &format!("component {} failed to start", component.name),
-                            error,
-                        )
+                    .map_err(file_apply_error)?;
+                writeln!(
+                    log,
+                    "\nGeneration {generation}: Compose component {}",
+                    component.name
+                )
+                .map_err(|error| apply_runtime_error("cannot record Compose build", error))?;
+                let log = Arc::new(Mutex::new(log));
+                let result = self.docker.compose_up(
+                    &context,
+                    &component.services,
+                    &component.finite_services,
+                    component.compose_build,
+                    Some(Arc::clone(&log)),
+                );
+                let mut writer = log
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if let Err(error) = &result {
+                    writeln!(writer, "{error}").map_err(|error| {
+                        apply_runtime_error("cannot record Compose failure", error)
                     })?;
+                }
+                writer.sync_all().map_err(|error| {
+                    apply_runtime_error("cannot synchronize Compose build log", error)
+                })?;
+                result.map_err(|error| ProtocolError::new(
+                    ErrorCode::DeploymentApplyFailed,
+                    format!("compose component {} failed ({:?}); inspect deployment logs with component build", component.name, error.kind()),
+                ))?;
                 Ok(("compose".into(), project))
             }
             ComponentKind::External => Ok(("none".into(), String::new())),
@@ -4228,6 +4271,7 @@ mod tests {
         actions: Mutex<Vec<String>>,
         next: AtomicU64,
         fail_create: std::sync::atomic::AtomicBool,
+        fail_compose: std::sync::atomic::AtomicBool,
     }
 
     impl MutationDocker {
@@ -4237,6 +4281,7 @@ mod tests {
                 actions: Mutex::new(Vec::new()),
                 next: AtomicU64::new(1),
                 fail_create: std::sync::atomic::AtomicBool::new(false),
+                fail_compose: std::sync::atomic::AtomicBool::new(false),
             }
         }
 
@@ -4404,11 +4449,18 @@ mod tests {
             _services: &[String],
             _finite_services: &[String],
             _build: bool,
+            _output_log: Option<Arc<Mutex<std::fs::File>>>,
         ) -> Result<(), DockerError> {
             self.actions
                 .lock()
                 .unwrap()
                 .push(format!("compose-up:{}", context.project));
+            if self.fail_compose.load(Ordering::SeqCst) {
+                return Err(DockerError::Command(format!(
+                    "{}\nfixture-current-compose-failure",
+                    "fixture build progress\n".repeat(400)
+                )));
+            }
             Ok(())
         }
 
@@ -5641,6 +5693,61 @@ route=true
             )
             .unwrap();
         assert!(logs.tail.contains("compose log"));
+        deployments
+            .store
+            .set_component_runtime(
+                &applied.deployment_id,
+                "stack",
+                ComponentRuntimePatch {
+                    last_error: Some(Some("obsolete env-file denial".into())),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        deployments
+            .store
+            .patch_deployment_runtime(
+                &applied.deployment_id,
+                DeploymentRuntimePatch {
+                    state: Some("degraded".into()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        docker.fail_compose.store(true, Ordering::SeqCst);
+        let failure = deployments
+            .apply(None, None, Some(&applied.deployment_id), &caller)
+            .unwrap_err();
+        assert!(!failure.message.contains("fixture-current-compose-failure"));
+        let logs = deployments
+            .logs(
+                None,
+                None,
+                Some(&applied.deployment_id),
+                "build",
+                500,
+                &caller,
+            )
+            .unwrap();
+        assert!(logs.tail.contains("fixture-current-compose-failure"));
+        assert!(logs.tail.contains("fixture build progress"));
+        let restored = deployments
+            .store
+            .components(&applied.deployment_id)
+            .unwrap();
+        assert_eq!(restored[0].generation, stack.generation);
+        assert_eq!(restored[0].state, "running");
+        assert_ne!(
+            restored[0].last_error.as_deref(),
+            Some("obsolete env-file denial")
+        );
+        assert!(
+            restored[0]
+                .last_error
+                .as_deref()
+                .unwrap()
+                .contains("failed")
+        );
         deployments
             .remove(None, None, Some(&applied.deployment_id), true, &caller)
             .unwrap();

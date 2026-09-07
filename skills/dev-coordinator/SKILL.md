@@ -75,6 +75,18 @@ DevCoordinator confirmation or chat approval. Preserve server authorization,
 exact-target validation, permanent history, and any approval mechanism owned by
 the host or calling tool.
 
+Apply recorded standing owner authority for trusted local development and
+Coordinator dependency repairs. Where applicable, diagnose and fix a Coordinator
+defect blocking approved work without requesting another conversational
+authorization. Record the defect, preserve the dependent project's scope, and
+follow the Coordinator repository's canonical-source and non-self-hosting repair
+workflow. Verify the original API or deployment diagnostic surface before calling
+the blocker resolved. A defect report or repeated failed check is not itself an
+authorization denial; continue independent work while repairing the dependency.
+Do not extend this authority to other owners, production, unrelated changes,
+public exposure, secret disclosure, or destructive persistent-data operations.
+Mandatory host/tool controls remain binding, including during recovery.
+
 Keep secrets out of argv, ordinary environment metadata, structured results,
 and Coordinator-generated logs. Governed commands must not print credentials
 or upstream secrets: their byte-complete stdout and stderr are retained as

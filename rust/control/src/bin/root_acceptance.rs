@@ -3228,6 +3228,65 @@ fn case_failed_first_compose_candidate_remains_managed_and_removable(
     Ok(())
 }
 
+fn case_long_failed_compose_build_retains_private_diagnostics(
+    world: &mut World,
+) -> Result<(), String> {
+    world.write_config(
+        r#"schema = 2
+[deployment.build-failure]
+source = "worktree"
+components = ["worker"]
+[deployment.build-failure.component.worker]
+type = "compose"
+files = ["compose.yml"]
+services = ["worker"]
+build = true
+"#,
+    )?;
+    world.write_owned("compose.yml", "services:\n  worker:\n    build: .\n")?;
+    world.write_owned("Dockerfile", "FROM postgres:16-alpine\nRUN echo first-build-diagnostic; line=0; while [ \"$line\" -lt 600 ]; do echo fixture-build-progress; line=$((line+1)); done; sleep 11; echo last-build-diagnostic >&2; exit 23\n")?;
+    world.git(&["add", "."])?;
+    world.git(&["commit", "-qm", "long build failure fixture"])?;
+    let failed = world.call(
+        "deployment.apply",
+        json!({"path": world.repo, "name": "build-failure@worktree"}),
+    )?;
+    ensure!(
+        error_code(&failed) == Some("deployment_apply_failed"),
+        "long failed build lost its deployment result"
+    );
+    let ordinary = failed.to_string();
+    ensure!(
+        !ordinary.contains("first-build-diagnostic") && !ordinary.contains("last-build-diagnostic"),
+        "private build output escaped into ordinary metadata"
+    );
+    let logs = world.call("deployment.logs", json!({"path": world.repo, "name": "build-failure@worktree", "component": "build", "tail_lines": 1000}))?;
+    let tail = data(&logs)?["tail"]
+        .as_str()
+        .ok_or("build log tail missing")?;
+    ensure!(
+        tail.lines()
+            .any(|line| line.ends_with(" first-build-diagnostic"))
+            && tail
+                .lines()
+                .any(|line| line.ends_with(" last-build-diagnostic")),
+        "complete failed-build diagnostics were not retained"
+    );
+    let status = world.call(
+        "deployment.status",
+        json!({"path": world.repo, "name": "build-failure@worktree"}),
+    )?;
+    ensure!(
+        data(&status)?["state"] == "failed",
+        "failed build reported a ready deployment"
+    );
+    data(&world.call(
+        "deployment.remove",
+        json!({"path": world.repo, "name": "build-failure@worktree", "delete_data": true}),
+    )?)?;
+    Ok(())
+}
+
 fn case_edge_identity_trust_roles_and_revocation(world: &mut World) -> Result<(), String> {
     let nobody = CString::new("nobody").expect("static account");
     // SAFETY: the returned passwd record is checked and copied immediately.
@@ -4215,6 +4274,10 @@ fn cases() -> Vec<Case> {
         (
             "edge_identity_trust_roles_and_revocation",
             case_edge_identity_trust_roles_and_revocation,
+        ),
+        (
+            "long_failed_compose_build_retains_private_diagnostics",
+            case_long_failed_compose_build_retains_private_diagnostics,
         ),
         (
             "health_views_measure_real_workloads",

@@ -205,6 +205,27 @@ impl DeploymentFiles {
         owner_uid: u32,
         owner_gid: u32,
     ) -> Result<File, DeploymentFileError> {
+        self.open_log_file(deployment_id, component, owner_uid, owner_gid, false)
+    }
+
+    pub fn open_log_append(
+        &self,
+        deployment_id: &str,
+        component: &str,
+        owner_uid: u32,
+        owner_gid: u32,
+    ) -> Result<File, DeploymentFileError> {
+        self.open_log_file(deployment_id, component, owner_uid, owner_gid, true)
+    }
+
+    fn open_log_file(
+        &self,
+        deployment_id: &str,
+        component: &str,
+        owner_uid: u32,
+        owner_gid: u32,
+        append: bool,
+    ) -> Result<File, DeploymentFileError> {
         self.ensure_layout(deployment_id, owner_uid, owner_gid)?;
         validate_component_or_build(component)?;
         let deployment = self
@@ -216,7 +237,15 @@ impl DeploymentFiles {
         let descriptor = unix_fs::openat(
             &logs,
             name.as_str(),
-            OFlags::WRONLY | OFlags::CREATE | OFlags::TRUNC | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+            OFlags::WRONLY
+                | OFlags::CREATE
+                | OFlags::CLOEXEC
+                | OFlags::NOFOLLOW
+                | if append {
+                    OFlags::APPEND
+                } else {
+                    OFlags::TRUNC
+                },
             Mode::from_raw_mode(0o600),
         )
         .map_err(|error| io_error("open deployment log writer", error))?;
