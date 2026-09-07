@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::os::unix::fs::{PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
@@ -12,10 +12,10 @@ use sha2::{Digest, Sha256};
 use devcoordinator2_executor_core::{
     Cancellation, Executor, LocalPermitProvider, RunLogMetadata, artifact_receipts,
     protocol::{
-        CaseSpec, CheckPlan, CheckRole, CompletionMode, DiagnosticOrigin, DiagnosticReportFormat,
-        DiagnosticReportSource, ErrorCategory, ExecutionPlan, FailureIndexEntry, FailureMode,
-        LeafStatus, LogPhase, LogStream, ProofKind, RetainedArtifactSpec, RunStatus, Schema2,
-        TerminationReason, ValidationTier,
+        CaseSpec, CheckPhase, CheckPlan, CheckRole, CompletionMode, DiagnosticOrigin,
+        DiagnosticReportFormat, DiagnosticReportSource, ErrorCategory, ExecutionPlan,
+        FailureIndexEntry, FailureMode, LeafStatus, LogPhase, LogStream, ProofKind,
+        RetainedArtifactSpec, RunStatus, Schema2, TerminationReason, ValidationTier,
     },
     source_digest,
 };
@@ -72,6 +72,8 @@ fn direct(name: &str, command: Vec<String>) -> CheckPlan {
         name: name.into(),
         tier: ValidationTier::Development,
         role: CheckRole::Work,
+        phase: CheckPhase::Check,
+        resources: Vec::new(),
         after: Vec::new(),
         requires: Vec::new(),
         invalidates: Vec::new(),
@@ -81,6 +83,12 @@ fn direct(name: &str, command: Vec<String>) -> CheckPlan {
         completion: CompletionMode::Process,
         on_failure: FailureMode::Continue,
         produces: Vec::new(),
+        consumes: Vec::new(),
+        cacheable: false,
+        cache_inputs: Vec::new(),
+        fingerprint: String::new(),
+        expect_failure: false,
+        qualification_of: None,
         retained_artifacts: Vec::new(),
         diagnostic_sources: Vec::new(),
         command: Some(command),
@@ -135,6 +143,9 @@ fn plan(repository: &Repository, run_id: &str, checks: Vec<CheckPlan>) -> Execut
         source_digest: source_digest(&repository.root).expect("source digest"),
         config_digest: "c".repeat(64),
         reused: BTreeMap::new(),
+        reused_qualifications: BTreeSet::new(),
+        case_selection: BTreeMap::new(),
+        postgres_databases: BTreeMap::new(),
         checks,
     }
 }
@@ -350,10 +361,12 @@ async fn static_fanout_is_all_settled_and_case_reports_are_sorted() {
         CaseSpec {
             id: "z-pass".into(),
             args: vec!["good".into()],
+            postgres: None,
         },
         CaseSpec {
             id: "a-fail".into(),
             args: vec!["bad".into()],
+            postgres: None,
         },
     ]);
     let report = execute(plan(&repository, "run-fanout", vec![fanout])).await;

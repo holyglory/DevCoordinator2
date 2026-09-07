@@ -9,7 +9,8 @@ use devcoordinator2_executor_protocol::{
     CompletionMode, DiagnosticExit, DiagnosticOrigin, DiagnosticReportSource, ErrorCategory,
     ExecutionPlan, ExecutionReport, FailureIndexEntry, FailureMode, LeafStatus, LogPhase, LogRef,
     LogStream, LogStreamSummary, MAX_DIAGNOSTIC_EVENTS, MAX_MANIFEST_BYTES, MAX_REASON_BYTES,
-    RetainedArtifactReceipt, RunStatus, Schema2, TerminationReason,
+    PhaseDuration, ResourceAccess, ResourceClaim, RetainedArtifactReceipt, RunStatus, Schema2,
+    TerminationReason,
 };
 use rustix::process::Signal;
 use tokio::task::JoinSet;
@@ -243,7 +244,11 @@ impl Executor {
             }
 
             if abort.is_none() {
-                let ready = ready_checks(&checks, &invalidators);
+                let ready = ready_checks_with_available_resources(
+                    &checks,
+                    &invalidators,
+                    service_pgids.keys().map(String::as_str),
+                );
                 for name in ready {
                     let index = check_index(&checks, &name)?;
                     let runtime = &mut checks[index];
@@ -423,6 +428,8 @@ struct CheckOutcome {
     exit_code: Option<i32>,
     reason: Option<String>,
     artifacts: Vec<ArtifactReceipt>,
+    cache_inputs: Vec<ArtifactReceipt>,
+    consumed_artifacts: Vec<ArtifactReceipt>,
     retained_artifacts: Vec<RetainedArtifactReceipt>,
     streams: Vec<LogStreamSummary>,
     case_count: u32,
@@ -589,6 +596,7 @@ fn initialize_checks(
             )));
         }
         let reused = plan.reused.get(&check.name);
+        let reused_qualification = plan.reused_qualifications.contains(&check.name);
         if let Some(receipts) = reused
             && !receipts_match(root, receipts)?
         {
@@ -597,7 +605,7 @@ fn initialize_checks(
                 check.name
             )));
         }
-        let status = if reused.is_some() {
+        let status = if reused.is_some() || reused_qualification {
             LeafStatus::Reused
         } else {
             LeafStatus::Pending
@@ -608,10 +616,16 @@ fn initialize_checks(
                 name: check.name.clone(),
                 tier: check.tier,
                 role: check.role,
+                phase: check.phase,
+                fingerprint: check.fingerprint.clone(),
+                cache_inputs: artifact_receipts(root, &check.cache_inputs)?,
+                consumed_artifacts: Vec::new(),
                 status,
-                started_at: reused.map(|_| started_at.to_owned()),
-                finished_at: reused.map(|_| started_at.to_owned()),
-                duration_seconds: reused.map(|_| 0.0),
+                started_at: (reused.is_some() || reused_qualification)
+                    .then(|| started_at.to_owned()),
+                finished_at: (reused.is_some() || reused_qualification)
+                    .then(|| started_at.to_owned()),
+                duration_seconds: (reused.is_some() || reused_qualification).then_some(0.0),
                 exit: DiagnosticExit::default(),
                 artifacts: reused.cloned().unwrap_or_default(),
                 retained_artifacts: Vec::new(),
@@ -621,7 +635,7 @@ fn initialize_checks(
                 cases_truncated: false,
             },
             failures: Vec::new(),
-            started_epoch_ms: reused.map(|_| epoch_ms()),
+            started_epoch_ms: (reused.is_some() || reused_qualification).then(epoch_ms),
         });
     }
     Ok(result)
@@ -846,6 +860,45 @@ fn ready_checks(
         .collect()
 }
 
+fn ready_checks_with_available_resources<'a>(
+    checks: &[CheckRuntime],
+    invalidators: &BTreeMap<String, Vec<String>>,
+    live_services: impl Iterator<Item = &'a str>,
+) -> Vec<String> {
+    let services = live_services.collect::<BTreeSet<_>>();
+    let mut claimed = checks
+        .iter()
+        .filter(|check| {
+            check.report.status == LeafStatus::Running
+                || services.contains(check.plan.name.as_str())
+        })
+        .flat_map(|check| check.plan.resources.iter().cloned())
+        .collect::<Vec<_>>();
+    let mut admitted = Vec::new();
+    for name in ready_checks(checks, invalidators) {
+        let Some(check) = checks.iter().find(|check| check.plan.name == name) else {
+            continue;
+        };
+        if check
+            .plan
+            .resources
+            .iter()
+            .any(|candidate| claimed.iter().any(|active| resources_conflict(candidate, active)))
+        {
+            continue;
+        }
+        claimed.extend(check.plan.resources.iter().cloned());
+        admitted.push(name);
+    }
+    admitted
+}
+
+fn resources_conflict(left: &ResourceClaim, right: &ResourceClaim) -> bool {
+    left.kind == right.kind
+        && left.id == right.id
+        && !(left.access == ResourceAccess::Shared && right.access == ResourceAccess::Shared)
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn execute_check(
     plan: Arc<ExecutionPlan>,
@@ -860,6 +913,21 @@ async fn execute_check(
 ) -> CheckOutcome {
     let started = Instant::now();
     let started_epoch_ms = epoch_ms();
+    let cache_inputs = artifact_receipts(&root, &check.cache_inputs);
+    let consumed_artifacts = artifact_receipts(
+        &root,
+        &check
+            .consumes
+            .iter()
+            .map(|consumed| consumed.path.clone())
+            .collect::<Vec<_>>(),
+    );
+    let (cache_inputs, consumed_artifacts) = match (cache_inputs, consumed_artifacts) {
+        (Ok(cache_inputs), Ok(consumed_artifacts)) => (cache_inputs, consumed_artifacts),
+        (Err(error), _) | (_, Err(error)) => {
+            return artifact_input_failure(&plan, &check, error.to_string(), started.elapsed());
+        }
+    };
     if let Some(command) = &check.command {
         let selector = LeafSelector::check(check.name.clone()).expect("validated check selector");
         let request = process_request(
@@ -946,9 +1014,16 @@ async fn execute_check(
         } else {
             Vec::new()
         };
-        direct_outcome(process, artifacts, retained_artifacts, started.elapsed())
+        direct_outcome(
+            process,
+            artifacts,
+            retained_artifacts,
+            cache_inputs,
+            consumed_artifacts,
+            started.elapsed(),
+        )
     } else {
-        execute_fanout(
+        let mut outcome = execute_fanout(
             &plan,
             &check,
             &root,
@@ -961,7 +1036,43 @@ async fn execute_check(
             started,
             started_epoch_ms,
         )
-        .await
+        .await;
+        outcome.cache_inputs = cache_inputs;
+        outcome.consumed_artifacts = consumed_artifacts;
+        outcome
+    }
+}
+
+fn artifact_input_failure(
+    plan: &ExecutionPlan,
+    check: &CheckPlan,
+    reason: String,
+    duration: Duration,
+) -> CheckOutcome {
+    CheckOutcome {
+        status: LeafStatus::Failed,
+        exit_code: None,
+        reason: Some(bounded_reason(&reason)),
+        artifacts: Vec::new(),
+        cache_inputs: Vec::new(),
+        consumed_artifacts: Vec::new(),
+        retained_artifacts: Vec::new(),
+        streams: Vec::new(),
+        case_count: 0,
+        cases: Vec::new(),
+        cases_truncated: false,
+        failures: vec![failure_entry(
+            &plan.run_id,
+            Some(&check.name),
+            None,
+            LeafStatus::Failed,
+            None,
+            None,
+            ErrorCategory::Artifact,
+            None,
+        )],
+        service: None,
+        duration_seconds: seconds(duration),
     }
 }
 
@@ -969,6 +1080,8 @@ fn direct_outcome(
     mut process: ProcessResult,
     artifacts: Vec<ArtifactReceipt>,
     retained_artifacts: Vec<RetainedArtifactReceipt>,
+    cache_inputs: Vec<ArtifactReceipt>,
+    consumed_artifacts: Vec<ArtifactReceipt>,
     duration: Duration,
 ) -> CheckOutcome {
     let status: LeafStatus = process.status.into();
@@ -978,6 +1091,8 @@ fn direct_outcome(
         exit_code: process.exit_code,
         reason: process.reason.take().map(|value| bounded_reason(&value)),
         artifacts,
+        cache_inputs,
+        consumed_artifacts,
         retained_artifacts,
         streams: process.streams,
         case_count: 0,
@@ -1134,6 +1249,39 @@ async fn execute_fanout(
         }
     };
     cases.sort_by(|left, right| left.id.cmp(&right.id));
+    if let Some(selected) = plan.case_selection.get(&check.name) {
+        let available = cases
+            .iter()
+            .map(|case| case.id.as_str())
+            .collect::<BTreeSet<_>>();
+        if selected
+            .iter()
+            .any(|case| !available.contains(case.as_str()))
+        {
+            return case_selection_failure(
+                plan,
+                check,
+                streams,
+                started.elapsed(),
+                "selected case was not reported by discovery",
+            );
+        }
+        let selected = selected.iter().map(String::as_str).collect::<BTreeSet<_>>();
+        cases.retain(|case| selected.contains(case.id.as_str()));
+    }
+    if cases.iter().any(|case| {
+        case.postgres
+            .as_ref()
+            .is_some_and(|branch| !plan.postgres_databases.contains_key(branch))
+    }) {
+        return case_selection_failure(
+            plan,
+            check,
+            streams,
+            started.elapsed(),
+            "case references an unavailable PostgreSQL branch",
+        );
+    }
     let case_command = check.case_command.clone().unwrap_or_default();
     let mut tasks = JoinSet::<CaseOutcome>::new();
     for case in cases {
@@ -1285,6 +1433,8 @@ async fn execute_fanout(
         exit_code: None,
         reason: final_reason.map(|value| bounded_reason(&value)),
         artifacts,
+        cache_inputs: Vec::new(),
+        consumed_artifacts: Vec::new(),
         retained_artifacts: Vec::new(),
         streams,
         case_count,
@@ -1321,7 +1471,7 @@ async fn run_case(
     let leaf = format!("{}/case/{}", check.name, case.id);
     let selector =
         LeafSelector::case(check.name.clone(), case.id.clone()).expect("validated case selector");
-    let request = process_request(
+    let mut request = process_request(
         plan,
         check,
         root,
@@ -1334,6 +1484,13 @@ async fn run_case(
         CompletionMode::Process,
         false,
     );
+    if let Some(branch) = &case.postgres {
+        let database = &plan.postgres_databases[branch];
+        request.env.insert("PGDATABASE".into(), database.clone());
+        if let Some(url) = request.env.get_mut("DATABASE_URL") {
+            *url = database_url_with_database(url, database);
+        }
+    }
     let mut process = run_process(request, permits, cancellation).await;
     observe_capacity(&capacity, process.capacity);
     finalize_leaf_evidence(
@@ -1355,6 +1512,21 @@ async fn run_case(
         },
         failures: process.diagnostics,
     }
+}
+
+fn database_url_with_database(url: &str, database: &str) -> String {
+    let (base, suffix) = url
+        .split_once('?')
+        .map_or((url, ""), |(base, query)| (base, query));
+    let Some(slash) = base.rfind('/') else {
+        return url.to_owned();
+    };
+    let mut replaced = format!("{}{database}", &base[..=slash]);
+    if !suffix.is_empty() {
+        replaced.push('?');
+        replaced.push_str(suffix);
+    }
+    replaced
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1455,6 +1627,20 @@ fn finalize_leaf_evidence(
             ErrorCategory::StructuredEvidenceInvalid,
             Some(selector.phase),
         ));
+    }
+    if check.expect_failure && !invalid && !process.log_storage_failed {
+        match process.status {
+            ProcessStatus::Failed => {
+                process.status = ProcessStatus::Passed;
+                process.reason = None;
+                process.diagnostics.clear();
+            }
+            ProcessStatus::Passed => {
+                process.status = ProcessStatus::Failed;
+                process.reason = Some("known failing fixture was not detected".into());
+            }
+            ProcessStatus::TimedOut | ProcessStatus::Cancelled | ProcessStatus::Unsafe => {}
+        }
     }
     let status: LeafStatus = process.status.into();
     if !status.is_success()
@@ -1731,12 +1917,48 @@ fn fanout_setup_failure(
         exit_code,
         reason: Some(bounded_reason(&reason)),
         artifacts: Vec::new(),
+        cache_inputs: Vec::new(),
+        consumed_artifacts: Vec::new(),
         retained_artifacts: Vec::new(),
         streams,
         case_count: 0,
         cases: Vec::new(),
         cases_truncated: false,
         failures: std::mem::take(&mut process.diagnostics),
+        service: None,
+        duration_seconds: seconds(duration),
+    }
+}
+
+fn case_selection_failure(
+    plan: &ExecutionPlan,
+    check: &CheckPlan,
+    streams: Vec<LogStreamSummary>,
+    duration: Duration,
+    reason: &str,
+) -> CheckOutcome {
+    CheckOutcome {
+        status: LeafStatus::Failed,
+        exit_code: None,
+        reason: Some(reason.into()),
+        artifacts: Vec::new(),
+        cache_inputs: Vec::new(),
+        consumed_artifacts: Vec::new(),
+        retained_artifacts: Vec::new(),
+        streams,
+        case_count: 0,
+        cases: Vec::new(),
+        cases_truncated: false,
+        failures: vec![failure_entry(
+            &plan.run_id,
+            Some(&check.name),
+            None,
+            LeafStatus::Failed,
+            None,
+            None,
+            ErrorCategory::Dependency,
+            None,
+        )],
         service: None,
         duration_seconds: seconds(duration),
     }
@@ -1773,6 +1995,8 @@ fn discovery_postprocess_failure(
         exit_code: process.exit_code,
         reason: Some(bounded_reason(&reason)),
         artifacts: Vec::new(),
+        cache_inputs: Vec::new(),
+        consumed_artifacts: Vec::new(),
         retained_artifacts: Vec::new(),
         streams,
         case_count: 0,
@@ -1796,6 +2020,8 @@ fn apply_outcome(
     runtime.report.exit = diagnostic_exit(outcome.exit_code);
     let _ = outcome.reason;
     runtime.report.artifacts = outcome.artifacts;
+    runtime.report.cache_inputs = outcome.cache_inputs;
+    runtime.report.consumed_artifacts = outcome.consumed_artifacts;
     runtime.report.retained_artifacts = outcome.retained_artifacts;
     runtime.report.streams = outcome.streams;
     runtime.report.case_count = outcome.case_count;
@@ -1989,6 +2215,20 @@ fn write_report(
         let key = status_key(check.report.status).to_owned();
         *counts.entry(key).or_insert(0) += 1;
     }
+    let mut phases = BTreeMap::<_, (f64, u32)>::new();
+    for check in checks {
+        let entry = phases.entry(check.report.phase).or_default();
+        entry.0 += check.report.duration_seconds.unwrap_or(0.0);
+        entry.1 = entry.1.saturating_add(1);
+    }
+    let phase_durations = phases
+        .into_iter()
+        .map(|(phase, (duration_seconds, checks))| PhaseDuration {
+            phase,
+            duration_seconds,
+            checks,
+        })
+        .collect();
     let report = ExecutionReport {
         schema: Schema2,
         run_id: plan.run_id.clone(),
@@ -2011,6 +2251,7 @@ fn write_report(
             .clone(),
         counts,
         checks: checks.iter().map(|check| check.report.clone()).collect(),
+        phase_durations,
         failure_index: failures,
         failure_index_truncated,
     };

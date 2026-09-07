@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -14,9 +14,9 @@ use devcoordinator2_executor_core::{
         LogQuerySelector, execute_log_query, prune_logs,
     },
     protocol::{
-        CaseSpec, CheckPlan, CheckRole, CompletionMode, DiagnosticOrigin, DiagnosticReportFormat,
-        DiagnosticReportSource, ErrorCategory, ExecutionPlan, FailureMode, LeafStatus, LogPhase,
-        LogStream, ProofKind, RunStatus, Schema2, ValidationTier,
+        CaseSpec, CheckPhase, CheckPlan, CheckRole, CompletionMode, DiagnosticOrigin,
+        DiagnosticReportFormat, DiagnosticReportSource, ErrorCategory, ExecutionPlan, FailureMode,
+        LeafStatus, LogPhase, LogStream, ProofKind, RunStatus, Schema2, ValidationTier,
     },
     source_digest,
 };
@@ -85,6 +85,8 @@ fn direct(name: &str, command: Vec<String>) -> CheckPlan {
         name: name.into(),
         tier: ValidationTier::Development,
         role: CheckRole::Work,
+        phase: CheckPhase::Check,
+        resources: Vec::new(),
         after: Vec::new(),
         requires: Vec::new(),
         invalidates: Vec::new(),
@@ -94,6 +96,12 @@ fn direct(name: &str, command: Vec<String>) -> CheckPlan {
         completion: CompletionMode::Process,
         on_failure: FailureMode::Continue,
         produces: Vec::new(),
+        consumes: Vec::new(),
+        cacheable: false,
+        cache_inputs: Vec::new(),
+        fingerprint: String::new(),
+        expect_failure: false,
+        qualification_of: None,
         retained_artifacts: Vec::new(),
         diagnostic_sources: Vec::new(),
         command: Some(command),
@@ -180,6 +188,7 @@ async fn executor_logs_remain_complete_queryable_and_catalogue_safe() {
     structured.cases = Some(vec![CaseSpec {
         id: "case-alpha".into(),
         args: Vec::new(),
+        postgres: None,
     }]);
     structured.diagnostic_sources = vec![DiagnosticReportSource {
         format: DiagnosticReportFormat::Junit,
@@ -201,6 +210,9 @@ async fn executor_logs_remain_complete_queryable_and_catalogue_safe() {
         source_digest: source_digest(&repository.root).expect("source digest"),
         config_digest: "c".repeat(64),
         reused: BTreeMap::new(),
+        reused_qualifications: BTreeSet::new(),
+        case_selection: BTreeMap::new(),
+        postgres_databases: BTreeMap::new(),
         checks: vec![preflight, never_started, noisy, structured],
     };
     plan.validate().expect("strict schema-2 plan");
