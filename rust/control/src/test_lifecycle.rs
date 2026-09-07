@@ -371,7 +371,7 @@ impl TestLifecycle {
             .admission
             .start_guard_for(&registered.worktree_id)
             .map_err(admission_error)?;
-        self.supersede_prior(&registered.worktree_id)?;
+        let superseded_run_id = self.supersede_prior(&registered.worktree_id)?;
         let run_id = self.run_id()?;
         let prepared = self
             .inner
@@ -588,6 +588,7 @@ impl TestLifecycle {
                     requested_tier: api_tier(requested_tier),
                     readiness_eligible: proof == ProofKind::Complete
                         && requested_tier == ValidationTier::Release,
+                    superseded_run_id,
                     unit,
                     summary_ref: "summary.json".into(),
                 };
@@ -1515,7 +1516,8 @@ impl TestLifecycle {
         Ok(())
     }
 
-    fn supersede_prior(&self, worktree_id: &str) -> Result<(), ProtocolError> {
+    fn supersede_prior(&self, worktree_id: &str) -> Result<Option<String>, ProtocolError> {
+        let mut superseded_run_id = None;
         let previous = self
             .inner
             .runs
@@ -1529,6 +1531,7 @@ impl TestLifecycle {
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
                 if state.final_status.is_none() {
+                    superseded_run_id = Some(previous.run_id.clone());
                     state.stop = Some(RequestedStop {
                         status: TestStatus::Superseded,
                         detail: None,
@@ -1571,7 +1574,7 @@ impl TestLifecycle {
         if let Ok(containers) = self.inner.docker.list_ids_by_labels(&labels) {
             self.remove_containers(&containers);
         }
-        Ok(())
+        Ok(superseded_run_id)
     }
 
     fn stop_unit(&self, unit: &str) -> Result<(), ProtocolError> {

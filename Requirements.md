@@ -14,7 +14,9 @@ not contradict them.
   a newer start supersedes the older run (latest-start-wins), kills the
   previous exact test workload (whole cgroup, TERM then KILL), proves the
   prior cgroup is empty, and removes exactly the prior repository-local test
-  directory before launch.
+  directory before launch. A replacing start returns `superseded_run_id` naming
+  the prior active run; starting after a completed run does not claim cancellation.
+  Concurrent independent checks for one worktree share one schema-2 graph.
 - **REQ-TEST-03** (P1, in scope): Repository commands run as the physical
   non-root caller (all four UIDs), never as root or the daemon identity.
 - **REQ-TEST-04** (P1, in scope): Timeout (`RuntimeMaxSec`) and cancellation
@@ -178,7 +180,7 @@ not contradict them.
   task. Replies, author edits, resolve/reopen, and explicit author deletion are
   persistent; resolving/reopening/dropping the annotation updates the linked
   Plan task, and the original task/event history is never erased.
-- **REQ-TEST-26** (2026-09-03, done): A successful direct process check may
+- **REQ-TEST-26** (2026-09-03, amended 2026-09-05): A settled direct process check may
   declare up to eight required non-secret evidence directories, each with a
   caller-selected byte ceiling no greater than 1 GiB and no more than 4,096
   regular files; the combined declared ceiling is at most 2 GiB. The executor
@@ -192,6 +194,9 @@ not contradict them.
   file chunk; the CLI can reconstruct selected trees only in a new caller-owned
   destination and revalidates every file and tree hash. No operation exposes a
   private source/storage path or writes a caller-selected server-side export.
+  Ordinary failed checks retain diagnostics after confirmed cleanup without
+  changing their verdict or supplying reusable build receipts; cancelled,
+  timed-out, unsafe, and unstarted processes do not publish artifact snapshots.
 - **REQ-TEST-27** (2026-09-03, done; amended 2026-09-03): Opening a retained
   test stream in the Console immediately renders its newest bounded text. The
   ordinary reading journey never asks for a paging control or line/byte
@@ -400,7 +405,9 @@ not contradict them.
   Discrete completions render as bars and their running total as a separate
   thin line with an explicit legend; no filled area implies another measure.
   The line paints behind bars and haloed value labels so it cannot hide a
-  daily number at an intersection.
+  daily number at an intersection. Each lane reserves a protected label area
+  before the plotted buckets; a first-bucket maximum and its compact value
+  label cannot intersect the lane title or supporting label.
 - **REQ-PROGRESS-02** (2026-08-30, done): Terminal test summaries are copied
   into a symlink-safe, repository-local metadata history bounded to the latest
   1,000 runs. It contains no output, caller identity, private path, or command;
@@ -577,6 +584,15 @@ not contradict them.
   the canonical live checkout. No vendored harness tree, synchronization tool,
   standalone skill package, fallback import, or standalone-package validation
   remains.
+
+- **REQ-REL-09** (2026-09-05): The daemon owns its local endpoint before
+  opening persistent state or recovering work. Duplicate startup never removes
+  an active endpoint or mutates the running instance. Losing the owned socket
+  pathname restores reachability without restarting application work or
+  cancelling accepted operations. Recovery and shutdown never remove a
+  replacement socket, regular file, or symlink; local caller access remains
+  unchanged. Linux watches directory events; other supported Unix platforms
+  use one software-owned watcher at no more than 100 ms intervals.
 
 ## Phase 1 acceptance checklist (executed in this delivery)
 

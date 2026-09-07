@@ -235,7 +235,7 @@ export async function createEdge(config, { log = console } = {}) {
     if (host === config.consoleHost) return handleConsole(req, res, url);
     const doc = store.current();
     const route = doc.routes.find((r) => r.domain === host);
-    if (!route) return writePage(res, pages.renderNotFound({ slug: host }));
+    if (!route) return writePage(res, pages.renderNotFound({ host }));
     const identity = identityOf(req);
     const decision = authorize(doc, route, identity?.email || null);
     if (!decision.allowed) {

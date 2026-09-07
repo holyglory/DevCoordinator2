@@ -312,6 +312,12 @@ pub struct RunLogLease {
     _lease: File,
 }
 
+impl Drop for RunLogLease {
+    fn drop(&mut self) {
+        let _ = unix_fs::flock(&self._lease, FlockOperation::Unlock);
+    }
+}
+
 impl RunLogLease {
     /// Acquire a lease on the prevalidated, existing run `log_dir`.
     pub fn acquire(log_dir: &Path, run_id: &str) -> Result<Self, LogStoreError> {
@@ -1015,6 +1021,28 @@ mod tests {
         let run_dir = root.join("runs").join(run);
         fs::create_dir_all(&run_dir).expect("run directory");
         RunLogLease::acquire(&run_dir, run).expect("lease")
+    }
+
+    #[test]
+    fn released_lease_is_not_kept_active_by_an_inherited_descriptor() {
+        let root = temporary("inherited-lease");
+        let run = run_id(20);
+        let lease = acquire(&root, &run);
+        let inherited = lease._lease.try_clone().expect("inherited descriptor");
+        let run_dir = root.join("runs").join(&run);
+        assert!(matches!(
+            RunLogLease::acquire(&run_dir, &run),
+            Err(LogStoreError::LeaseContended)
+        ));
+        drop(lease);
+        let replacement = RunLogLease::acquire(&run_dir, &run).expect("released lease");
+        drop(inherited);
+        assert!(matches!(
+            RunLogLease::acquire(&run_dir, &run),
+            Err(LogStoreError::LeaseContended)
+        ));
+        drop(replacement);
+        fs::remove_dir_all(root).expect("cleanup");
     }
 
     #[test]

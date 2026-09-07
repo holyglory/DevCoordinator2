@@ -96,6 +96,16 @@ fn run() -> Result<i32, String> {
         "manifest" => {
             let kind = argument(2, "manifest kind")?;
             let payload: Option<Vec<u8>> = match kind.as_str() {
+                "431-cases" => Some(
+                    serde_json::to_vec(&json!({
+                        "schema": 2,
+                        "cases": (0..431).map(|index| json!({
+                            "id": format!("case-{index:04}"),
+                            "args": [if index < 6 { "bad" } else { "good" }],
+                        })).collect::<Vec<_>>()
+                    }))
+                    .map_err(|error| error.to_string())?,
+                ),
                 "oversized" => Some(vec![b'x'; 2 * 1024 * 1024 + 1]),
                 "one-noise" => {
                     print!("ordinary discovery noise");
@@ -341,14 +351,18 @@ fn run() -> Result<i32, String> {
                 .map_err(|error| error.to_string())?;
             Ok(0)
         }
-        "write-artifact-tree" => {
+        "write-artifact-tree" | "write-failed-artifact-tree" => {
             let root = PathBuf::from("browser-evidence");
             fs::create_dir_all(root.join("nested")).map_err(|error| error.to_string())?;
             fs::write(root.join("result.json"), "{\"ok\":true}\n")
                 .map_err(|error| error.to_string())?;
             fs::write(root.join("nested/capture.png"), b"png")
                 .map_err(|error| error.to_string())?;
-            Ok(0)
+            Ok(if action == "write-failed-artifact-tree" {
+                7
+            } else {
+                0
+            })
         }
         "print" => {
             println!("{}", argument(2, "text")?);

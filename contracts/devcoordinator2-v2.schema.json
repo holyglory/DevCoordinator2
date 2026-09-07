@@ -1514,6 +1514,12 @@
           "summary_ref": {
             "type": "string"
           },
+          "superseded_run_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "test": {
             "type": "string"
           },
@@ -1696,6 +1702,12 @@
           },
           "summary_ref": {
             "type": "string"
+          },
+          "superseded_run_id": {
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "test": {
             "type": "string"

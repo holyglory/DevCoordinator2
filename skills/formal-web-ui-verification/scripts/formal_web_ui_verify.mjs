@@ -3136,6 +3136,66 @@ function pageVerifier() {
     candidates.push(el);
   }
 
+  const svgRectsIntersect = (first, second) => {
+    const width = Math.min(first.right, second.right) - Math.max(first.left, second.left);
+    const height = Math.min(first.bottom, second.bottom) - Math.max(first.top, second.top);
+    return width > 1 && height > 1 ? { width: round(width), height: round(height) } : null;
+  };
+  const svgPaintVisible = (paint, opacity) => {
+    if (!paint || paint === "none" || Number(opacity || 1) <= 0.01) return false;
+    const color = parseCssColor(paint);
+    return !color || color.a > 0.01;
+  };
+  const renderedSvgText = (el) => {
+    const style = cs(el);
+    return effectiveOpacity(el) > 0.01 && (
+      svgPaintVisible(style.fill, style.fillOpacity)
+      || svgPaintVisible(style.stroke, style.strokeOpacity)
+    );
+  };
+  const paintedSvgShape = (el) => {
+    if (!el.matches("rect,path,circle,ellipse,polygon")) return false;
+    const style = cs(el);
+    return effectiveOpacity(el) > 0.01 && svgPaintVisible(style.fill, style.fillOpacity);
+  };
+  for (const protectedText of deepQueryAll("text[data-ui-verify-svg-overlap]")) {
+    if (!protectedText.ownerSVGElement || isIgnored(protectedText)
+        || overlapReason(protectedText) || !visible(protectedText)
+        || !renderedSvgText(protectedText)) continue;
+    const protectedRect = nowRect(protectedText);
+    if (protectedRect.width <= 1 || protectedRect.height <= 1) continue;
+    const collisions = [];
+    for (const peer of protectedText.ownerSVGElement.querySelectorAll(
+      "text,rect,path,circle,ellipse,polygon",
+    )) {
+      if (peer.ownerSVGElement !== protectedText.ownerSVGElement
+          || peer === protectedText || protectedText.contains(peer) || peer.contains(protectedText)
+          || isIgnored(peer) || overlapReason(peer) || !visible(peer)) continue;
+      const kind = peer.localName === "text"
+        ? (renderedSvgText(peer) ? "text" : "")
+        : (paintedSvgShape(peer) ? "filled-shape" : "");
+      if (!kind) continue;
+      const peerRect = nowRect(peer);
+      if (peerRect.width <= 1 || peerRect.height <= 1) continue;
+      const intersection = svgRectsIntersect(protectedRect, peerRect);
+      if (!intersection) continue;
+      collisions.push({
+        selector: selectorPath(peer),
+        kind,
+        rect: rectObj(peerRect),
+        intersection,
+      });
+      if (collisions.length >= 8) break;
+    }
+    if (collisions.length) {
+      add("critical", "svg-internal-overlap", protectedText,
+        "Protected SVG text intersects another rendered SVG label or filled shape.", {
+          redactText: true,
+          evidence: { protectedRect: rectObj(protectedRect), collisions },
+        });
+    }
+  }
+
   const px = (value) => {
     const parsed = Number.parseFloat(value);
     return Number.isFinite(parsed) ? parsed : 0;

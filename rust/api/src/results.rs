@@ -294,6 +294,8 @@ pub struct TestStarted {
     pub origin_run_id: Option<String>,
     pub requested_tier: crate::params::ValidationTier,
     pub readiness_eligible: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub superseded_run_id: Option<String>,
     pub unit: String,
     pub summary_ref: String,
 }

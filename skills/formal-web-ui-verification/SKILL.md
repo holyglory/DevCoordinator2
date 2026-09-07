@@ -78,6 +78,13 @@ This deterministic verification layer is not a replacement for human visual
 judgment. Use it before reporting changed web UI as done, and include its
 critical findings in the implementation or audit result.
 
+Complex SVG internals remain excluded from ordinary overlap sampling because
+charts, maps, icons, and artwork legitimately layer many elements. Important
+SVG text can opt into deterministic internal collision protection with
+`data-ui-verify-svg-overlap="reason"`. A protected text element must not
+intersect another rendered SVG text element or painted filled shape in the same
+SVG unless either side carries an explicit `data-ui-allow-overlap` allowance.
+
 ## Quick Start
 
 Resolve the skill directory from the loaded skill path and run the self-test
@@ -374,6 +381,11 @@ Critical findings by default:
   Modal contents remain fully checked; an unfocused or mislabeled modal and
   `aria-hidden` alone never suppress genuine occlusion. Native modal behavior
   remains unchanged, including dialogs in shadow roots.
+- A `text[data-ui-verify-svg-overlap]` element intersecting another rendered
+  SVG text element or painted filled shape in the same SVG
+  (`svg-internal-overlap`). This opt-in rule is critical, emits bounded
+  rectangle and selector evidence without retaining the protected text, and
+  honors `data-ui-verify-ignore` and `data-ui-allow-overlap` on either side.
 - Text/controls partially cut by an unreachable edge: before the document
   origin (`offcanvas-cut`), fixed-position content cut by the viewport
   (`fixed-offscreen-cut`), or interactive controls beyond the horizontal
@@ -467,6 +479,9 @@ with the component:
 <figure data-ui-theme-exception="intentional document preview">...</figure>
 <div data-ui-allow-overlap="intentional floating toolbar">...</div>
 <div data-ui-verify-ignore="third-party map internals">...</div>
+<svg>
+  <text data-ui-verify-svg-overlap="chart heading must stay outside the plot">Revenue</text>
+</svg>
 ```
 
 Use a config file when allowances are route-specific:
@@ -561,6 +576,10 @@ exception remains an `allowed-overlap` warning.
   browser-context isolation.
 - Do not treat screenshots alone as formal evidence for clipped text, overlap,
   off-canvas controls, or invisible text when this verifier can run.
+- Do not claim protected SVG labels are collision-free while an applicable
+  `svg-internal-overlap` finding remains unresolved. Unmarked SVG internals
+  remain outside this deterministic contract and require product-specific
+  assertions or visual review.
 - Do not claim visual completion while `review.pendingCount` is nonzero, a
   current/manual or carried review decision is `gap`/`blocked`, or the supplied
   prior manifest/removed-cell disposition fails validation. Review only queued
