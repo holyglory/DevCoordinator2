@@ -1514,6 +1514,12 @@
           "summary_ref": {
             "type": "string"
           },
+          "superseded_run_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "test": {
             "type": "string"
           },
@@ -1696,6 +1702,12 @@
           },
           "summary_ref": {
             "type": "string"
+          },
+          "superseded_run_id": {
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "test": {
             "type": "string"
@@ -9841,6 +9853,30 @@
             ],
             "type": "string"
           },
+          "EarlierVisualEvidence": {
+            "additionalProperties": false,
+            "properties": {
+              "run_id": {
+                "type": "string"
+              },
+              "started_at": {
+                "type": "string"
+              },
+              "test": {
+                "type": "string"
+              },
+              "visual_evidence": {
+                "$ref": "#/$defs/VisualEvidenceSummary"
+              }
+            },
+            "required": [
+              "run_id",
+              "test",
+              "started_at",
+              "visual_evidence"
+            ],
+            "type": "object"
+          },
           "ExecutionCapacity": {
             "additionalProperties": false,
             "properties": {
@@ -10235,6 +10271,16 @@
                 "type": [
                   "number",
                   "null"
+                ]
+              },
+              "earlier_visual_evidence": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/EarlierVisualEvidence"
+                  },
+                  {
+                    "type": "null"
+                  }
                 ]
               },
               "execution_capacity": {
@@ -19401,6 +19447,10 @@
           "range": {
             "$ref": "#/$defs/UsageRange",
             "default": "24h"
+          },
+          "wait_for_refresh": {
+            "default": false,
+            "type": "boolean"
           }
         },
         "title": "UsageRepositories",
@@ -19464,6 +19514,16 @@
               },
               "has_gaps": {
                 "type": "boolean"
+              },
+              "snapshot": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/UsageSnapshot"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
               },
               "state": {
                 "$ref": "#/$defs/CoverageState"
@@ -19564,6 +19624,30 @@
               "execution_wall_ms"
             ],
             "type": "object"
+          },
+          "UsageSnapshot": {
+            "additionalProperties": false,
+            "properties": {
+              "refresh_failed": {
+                "type": "boolean"
+              },
+              "refreshing": {
+                "type": "boolean"
+              },
+              "updated_at_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "refreshing",
+              "refresh_failed"
+            ],
+            "type": "object"
           }
         },
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -19625,6 +19709,10 @@
           },
           "repository_id": {
             "type": "string"
+          },
+          "wait_for_refresh": {
+            "default": false,
+            "type": "boolean"
           }
         },
         "required": [
@@ -19816,6 +19904,16 @@
               "has_gaps": {
                 "type": "boolean"
               },
+              "snapshot": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/UsageSnapshot"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
               "state": {
                 "$ref": "#/$defs/CoverageState"
               },
@@ -19924,6 +20022,30 @@
               "bucket_end_ms",
               "coverage",
               "phases"
+            ],
+            "type": "object"
+          },
+          "UsageSnapshot": {
+            "additionalProperties": false,
+            "properties": {
+              "refresh_failed": {
+                "type": "boolean"
+              },
+              "refreshing": {
+                "type": "boolean"
+              },
+              "updated_at_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "refreshing",
+              "refresh_failed"
             ],
             "type": "object"
           },
@@ -20257,6 +20379,10 @@
           },
           "repository_id": {
             "type": "string"
+          },
+          "wait_for_refresh": {
+            "default": false,
+            "type": "boolean"
           }
         },
         "required": [
@@ -20960,6 +21086,16 @@
               "has_gaps": {
                 "type": "boolean"
               },
+              "snapshot": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/UsageSnapshot"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
               "state": {
                 "$ref": "#/$defs/CoverageState"
               },
@@ -20979,6 +21115,30 @@
               "available_collectors",
               "contributing_collectors",
               "unavailable_reasons"
+            ],
+            "type": "object"
+          },
+          "UsageSnapshot": {
+            "additionalProperties": false,
+            "properties": {
+              "refresh_failed": {
+                "type": "boolean"
+              },
+              "refreshing": {
+                "type": "boolean"
+              },
+              "updated_at_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "refreshing",
+              "refresh_failed"
             ],
             "type": "object"
           }

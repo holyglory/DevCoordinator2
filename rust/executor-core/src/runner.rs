@@ -886,7 +886,13 @@ async fn execute_check(
             &mut process,
             started_epoch_ms,
         );
-        let retained_artifacts = if process.status == ProcessStatus::Passed {
+        let retained_artifacts = if matches!(
+            process.status,
+            ProcessStatus::Passed | ProcessStatus::Failed
+        ) && process.process_started
+            && process.exit_code.is_some()
+            && process.service.is_none()
+        {
             let evidence_dir = leaf_log_directory(&log_dir, &selector).join("evidence");
             match retain_artifact_trees(
                 &root,

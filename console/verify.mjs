@@ -19,6 +19,7 @@ import { createEdge } from '../edge/devcoordinator2-edge.mjs';
 import { createSessionManager } from '../edge/lib/session.mjs';
 import { canonicalJson } from '../edge/lib/routes-store.mjs';
 import { revealTestRows, revealTestSettings, verifyTestsDesign } from './verify-tests-design.mjs';
+import { verifyProgressCharts } from './verify-progress-charts.mjs';
 
 const BASE = 'example.test';
 const HOST = process.env.CONSOLE_VERIFY_HOST || `console.${BASE}`;
@@ -45,22 +46,22 @@ const ONE_PIXEL_PNG = Buffer.from(
 const progressFixture = (scenario, period = 'day') => {
   const spec = { hour: [3600000, 24], day: [86400000, 7], week: [604800000, 8] }[period];
   const [bucketMs, count] = spec;
-  const referenceState = !!scenario.progressReference && period === 'day';
+  const referenceState = !!scenario.progressReference;
   const evidenceMissing = scenario.empty || referenceState;
   const alignedEnd = referenceState ? Date.UTC(2026, 8, 1) : Date.UTC(2026, 7, 31);
-  const referenceTasks = [0, 0, 6, 3, 4, 6, 5];
-  const referenceTasksAdded = [0, 2, 1, 0, 5, 0, 5];
-  const referenceLines = [125, 0, 1500, 0, 3500, 200, 2200];
-  const referenceLinesAdded = [125, 900, 250, 0, 1600, 0, 400];
+  const referenceTasks = [20, 0, 6, 3, 4, 6, 5];
+  const referenceTasksAdded = [20, 2, 1, 0, 5, 0, 5];
+  const referenceLines = [5500, 0, 1500, 0, 3500, 200, 2200];
+  const referenceLinesAdded = [5500, 900, 250, 0, 1600, 0, 400];
   const partialTokens = [null, 120000, null, 0, 210000, 170000, 0];
   const series = Array.from({ length: count }, (_, index) => ({
     bucket_start_ms: alignedEnd - (count - index) * bucketMs,
     bucket_end_ms: alignedEnd - (count - index - 1) * bucketMs,
-    tasks_completed: scenario.empty ? 0 : referenceState ? referenceTasks[index] : [1, 0, 2, 1, 0, 2, 1, 1][index % 8],
-    tasks_created: scenario.empty ? 0 : referenceState ? referenceTasksAdded[index] : [0, 1, 0, 0, 2, 0, 0, 1][index % 8],
+    tasks_completed: scenario.empty ? 0 : referenceState ? referenceTasks[index % referenceTasks.length] : [1, 0, 2, 1, 0, 2, 1, 1][index % 8],
+    tasks_created: scenario.empty ? 0 : referenceState ? referenceTasksAdded[index % referenceTasksAdded.length] : [0, 1, 0, 0, 2, 0, 0, 1][index % 8],
     tasks_reopened: scenario.empty ? 0 : (index === count - 2 ? 1 : 0),
-    planned_lines_completed: scenario.empty ? 0 : referenceState ? referenceLines[index] : [80, 0, 140, 95, 0, 220, 110, 75][index % 8],
-    planned_lines_added: scenario.empty ? 0 : referenceState ? referenceLinesAdded[index] : [0, 40, 0, 0, 120, 0, 0, 30][index % 8],
+    planned_lines_completed: scenario.empty ? 0 : referenceState ? referenceLines[index % referenceLines.length] : [80, 0, 140, 95, 0, 220, 110, 75][index % 8],
+    planned_lines_added: scenario.empty ? 0 : referenceState ? referenceLinesAdded[index % referenceLinesAdded.length] : [0, 40, 0, 0, 120, 0, 0, 30][index % 8],
     scope_lines_changed: scenario.empty ? 0 : [0, 40, 0, -20, 120, 0, 0, 30][index % 8],
     test_runs: evidenceMissing ? 0 : [3, 2, 4, 3, 5, 2, 4, 3][index % 8],
     tests_passed: evidenceMissing ? 0 : [3, 2, 3, 3, 4, 2, 4, 2][index % 8],
@@ -804,6 +805,27 @@ async function main() {
   const appSource = await fs.readFile(new URL('./app.js', import.meta.url), 'utf8');
   check('administrator controls have no native or data-driven confirmation path',
     !/window\.confirm|data-confirm|data-delete-data/.test(appSource));
+
+  if (process.env.CONSOLE_VERIFY_PROGRESS_ONLY) {
+    try {
+      const context = await browser.newContext({ viewport: VIEWPORTS.wide });
+      const { cookie } = sessions.issue({ sub: 'sub', email: 'owner@example.test' });
+      await context.addCookies([{ name: 'dc2_session', value: cookie.split(';')[0].split('=')[1], domain: '.' + BASE, path: '/' }]);
+      const page = await context.newPage();
+      page.setDefaultTimeout(8000);
+      try {
+        await verifyProgressCharts({ page, daemon, check, scenario: SCENARIOS.progressReference,
+          baseUrl: `http://${HOST}:${port}/`, output: OUT,
+          settle: (period) => waitForSettledCall(daemon, page,
+            (call) => call.operation === 'progress.repository' && call.params.period === period) });
+      } catch (error) { check('Progress chart verification', false, error.message); }
+      await context.close();
+      await fs.writeFile(path.join(OUT, 'report.json'), JSON.stringify(report, null, 2));
+      console.log(JSON.stringify({ checks: report.checks.length, failures: report.failures, report: path.join(OUT, 'report.json') }));
+      process.exitCode = report.failures.length ? 1 : 0;
+    } finally { await browser.close(); await edge.close(); await daemon.close(); }
+    return;
+  }
 
   if (process.env.CONSOLE_VERIFY_TESTS_DESIGN_ONLY) {
     try {
@@ -2325,6 +2347,10 @@ async function main() {
     )));
   }));
   check('progress: equal completed and incoming values have equal bar lengths', equalValueScale);
+  await verifyProgressCharts({ page, daemon, check, scenario: SCENARIOS.progressReference,
+    baseUrl: `http://${HOST}:${port}/`, output: OUT,
+    settle: (period) => waitForSettledCall(daemon, page,
+      (call) => call.operation === 'progress.repository' && call.params.period === period) });
   check('progress: entirely missing test and token evidence has no zero-valued chart',
     await page.locator('.progress-evidence-chart').count() === 0
     && await page.locator('.progress-evidence-lane > strong').allTextContents().then((values) => values.every((value) => value.trim() === '—'))

@@ -102,7 +102,7 @@ fn valid_check(value: &str) -> bool {
 mod tests {
     use super::*;
     use std::io::Read;
-    use std::os::fd::{AsRawFd, FromRawFd};
+    use std::os::fd::AsRawFd;
 
     #[test]
     fn writes_one_schema_two_line_without_closing_the_inherited_descriptor() {
@@ -130,17 +130,12 @@ mod tests {
     }
 
     #[test]
-    fn invalid_identity_and_closed_descriptor_fail_truthfully() {
+    fn invalid_identity_and_closed_channel_fail_truthfully() {
         assert!(emit_to_fd(-1, "run", "check", TestEventStatus::Failed).is_err());
         assert!(emit_to_fd(1, "../run", "check", TestEventStatus::Failed).is_err());
         assert!(emit_to_fd(1, "run", "Bad Check", TestEventStatus::Unsafe).is_err());
-        // SAFETY: duplicating stdout does not alias Rust-owned memory.
-        let duplicated = unsafe { libc::dup(1) };
-        assert!(duplicated >= 0, "dup stdout");
-        // SAFETY: the successful duplicate is newly owned by this test.
-        let closed = unsafe { std::os::fd::OwnedFd::from_raw_fd(duplicated) };
-        let raw = closed.as_raw_fd();
-        drop(closed);
-        assert!(emit_to_fd(raw, "run", "check", TestEventStatus::Failed).is_err());
+        let (reader, writer) = rustix::pipe::pipe().expect("pipe");
+        drop(reader);
+        assert!(emit_to_fd(writer.as_raw_fd(), "run", "check", TestEventStatus::Failed).is_err());
     }
 }

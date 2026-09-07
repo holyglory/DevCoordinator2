@@ -1,6 +1,15 @@
 {
   "schema_version": 1,
   "cases": [
+    {"name":"svg-overlap-bad","path":"svg-overlap-bad.html","critical":true,"svg_collision_kinds":["text","filled-shape"],"forbidden_text":["Protected chart heading"],"critical_rules":["svg-internal-overlap"]},
+    {"name":"svg-overlap-text","path":"svg-overlap-text.html","critical":true,"forbidden_text":["Protected chart heading"],"critical_rules":["svg-internal-overlap"]},
+    {"name":"svg-overlap-shape","path":"svg-overlap-shape.html","critical":true,"forbidden_text":["Protected chart heading"],"critical_rules":["svg-internal-overlap"]},
+    {"name":"svg-overlap-clean","path":"svg-overlap-clean.html","critical":false,"forbidden_text":["Protected chart heading"],"forbidden_rules":["svg-internal-overlap"]},
+    {"name":"svg-overlap-unmarked","path":"svg-overlap-unmarked.html","critical":false,"forbidden_text":["Protected chart heading"],"forbidden_rules":["svg-internal-overlap"]},
+    {"name":"svg-overlap-allowed","path":"svg-overlap-allowed.html","critical":false,"forbidden_text":["Protected chart heading"],"forbidden_rules":["svg-internal-overlap"]},
+    {"name":"svg-overlap-ignored","path":"svg-overlap-ignored.html","critical":false,"forbidden_text":["Protected chart heading"],"forbidden_rules":["svg-internal-overlap"]},
+    {"name":"svg-overlap-unpainted","path":"svg-overlap-unpainted.html","critical":false,"forbidden_text":["Protected chart heading"],"forbidden_rules":["svg-internal-overlap"]},
+    {"name":"svg-overlap-transparent","path":"svg-overlap-transparent.html","critical":false,"forbidden_text":["Protected chart heading"],"forbidden_rules":["svg-internal-overlap"]},
     {"name":"clean","path":"clean.html","critical":false},
     {"name":"clipped-button","path":"clipped-button.html","critical":true,"critical_rules":["clipped-x"]},
     {"name":"clipped-text","path":"clipped-text.html","critical":true,"critical_rules":["clipped-y"]},

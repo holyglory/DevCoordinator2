@@ -1074,6 +1074,39 @@ mod tests {
     }
 
     #[test]
+    fn failed_run_keeps_verified_artifacts_and_failed_catalogue_status() {
+        let world = World::new();
+        let run_path = world
+            .repository
+            .join(".devcoordinator/test/logs/runs")
+            .join(RUN_ID)
+            .join("run.json");
+        let mut run: RunLogMetadata =
+            serde_json::from_slice(&fs::read(&run_path).expect("fixture run"))
+                .expect("run metadata");
+        run.status = RunStatus::Failed;
+        fs::write(
+            &run_path,
+            serde_json::to_vec(&run).expect("failed metadata"),
+        )
+        .expect("failed run");
+        let catalog = world
+            .service
+            .catalog(world.catalog_params(None), &world.caller)
+            .expect("failed run catalogue");
+        assert_eq!(catalog.run_status, "failed");
+        assert!(catalog.run_complete);
+        assert_eq!(catalog.artifacts, vec![world.artifact.summary()]);
+        let mut params = world.catalog_params(Some("production"));
+        params.manifest_sha256 = Some(catalog.manifest_sha256);
+        let files = world
+            .service
+            .catalog(params, &world.caller)
+            .expect("verified diagnostic files");
+        assert_eq!(files.entries.len(), world.files.len());
+    }
+
+    #[test]
     fn catalog_pages_verified_receipts_without_private_paths() {
         let world = World::new();
         let root = world

@@ -698,7 +698,12 @@ fn lifecycle_completes_cancels_supersedes_lists_and_retries() {
 
     let superseded = world.start();
     let successor = world.start();
+    assert_eq!(superseded.superseded_run_id, None);
     assert_ne!(superseded.run_id, successor.run_id);
+    assert_eq!(
+        successor.superseded_run_id.as_deref(),
+        Some(superseded.run_id.as_str())
+    );
     assert!(world.systemd.stops.load(Ordering::SeqCst) >= 2);
     world.systemd.finish(&successor.unit);
     world.wait_status(TestStatus::Passed);

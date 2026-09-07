@@ -85,6 +85,13 @@ cleanup. A check/case `timeout_seconds` is a failure ceiling that produces
 `timed_out`, never timer-based success. The test-level systemd deadline remains
 the outer containment watchdog.
 
+Compose independent checks for one worktree inside one schema-2 graph and
+start that graph once. Separate concurrent `test start` calls for the same
+worktree invoke latest-start-wins, not parallel execution. When a start returns
+`superseded_run_id`, report that exact prior run as cancelled by replacement;
+never describe the replaced run as still running. Independent journeys belong
+in separate checks of that one graph, with only real dependencies between them.
+
 Submit every dependency-ready leaf immediately. DevCoordinator's host-wide
 adaptive scheduler owns capacity admission; repositories must not encode host
 capacity as fake dependency chains or add their own fixed worker budget. Use

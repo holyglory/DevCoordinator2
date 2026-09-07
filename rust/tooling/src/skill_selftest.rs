@@ -51,6 +51,11 @@ fn require_tokens(text: &str, tokens: &[&str], label: &str) -> Result<(), String
 }
 
 const WORKFLOW_TERMS: &[&str] = &[
+    "Compose independent checks for one worktree inside one schema-2 graph",
+    "start that graph once",
+    "latest-start-wins, not parallel execution",
+    "`superseded_run_id`",
+    "never describe the replaced run as still running",
     "After diagnosis establishes a durable missing or regressed outcome",
     "check whether it is already represented",
     "Execution attempts stay in governed run history",

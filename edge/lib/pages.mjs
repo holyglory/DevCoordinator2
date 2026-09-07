@@ -179,8 +179,7 @@ ${retry}<a class="btn btn-ghost" href="/">Return to the requested resource</a>`;
     return { status, html: page({ title, body }) };
   }
 
-  function renderNotFound({ slug = '' } = {}) {
-    const host = slug ? `${slug}.${domain}` : '';
+  function renderNotFound({ host = '' } = {}) {
     const lead = host
       ? `<p>There is no route configured for <code>${escapeHtml(host)}</code>.</p>`
       : '<p>This page does not exist.</p>';

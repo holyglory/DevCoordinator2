@@ -45,6 +45,8 @@ struct MatrixCase {
     #[serde(default)]
     minimum_rule_counts: BTreeMap<String, usize>,
     #[serde(default)]
+    svg_collision_kinds: Vec<String>,
+    #[serde(default)]
     forbidden_text: Vec<String>,
     #[serde(default)]
     scrollbars: Vec<ScrollbarExpectation>,
@@ -804,6 +806,30 @@ fn validate_matrix_report(report: &Value, matrix: &Matrix) -> Result<(), String>
             if rules.iter().any(|(actual, _)| actual == rule) {
                 return Err(format!(
                     "matrix case {} unexpectedly produced {rule}",
+                    case.name
+                ));
+            }
+        }
+        for expected_kind in &case.svg_collision_kinds {
+            let found = page
+                .get("findings")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter(|finding| finding["rule"] == "svg-internal-overlap")
+                .flat_map(|finding| {
+                    finding
+                        .pointer("/evidence/collisions")
+                        .and_then(Value::as_array)
+                        .into_iter()
+                        .flatten()
+                })
+                .any(|collision| {
+                    collision.get("kind").and_then(Value::as_str) == Some(expected_kind)
+                });
+            if !found {
+                return Err(format!(
+                    "matrix case {} lacks SVG collision kind {expected_kind}",
                     case.name
                 ));
             }
@@ -3622,6 +3648,8 @@ fn validate_skill_contract(root: &Path) -> Result<(), String> {
         "human-only",
         "bounded",
         "control-text-clipped",
+        "data-ui-verify-svg-overlap",
+        "svg-internal-overlap",
         "data-ui-verify-min-content-inset",
         "breakpointProfile",
         "maxPageCount",

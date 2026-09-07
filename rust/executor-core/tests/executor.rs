@@ -843,6 +843,41 @@ async fn successful_direct_check_snapshots_declared_retained_artifact_tree() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn failed_direct_check_retains_diagnostics_without_reusable_build_receipts() {
+    let repository = Repository::new("failed-retained-artifact-tree");
+    fs::write(repository.root.join(".gitignore"), b"browser-evidence/\n")
+        .expect("ignore generated evidence");
+    run_git(&repository.root, &["add", ".gitignore"]);
+    let mut check = direct("browser", fixture(&["write-failed-artifact-tree"]));
+    check.produces = vec!["browser-evidence/result.json".into()];
+    check.retained_artifacts = vec![RetainedArtifactSpec {
+        name: "diagnostics".into(),
+        path: "browser-evidence".into(),
+        max_bytes: 1024,
+    }];
+    let report = execute(plan(
+        &repository,
+        "run-failed-retained-artifact-tree",
+        vec![check],
+    ))
+    .await;
+    assert_eq!(report.status, RunStatus::Failed);
+    assert_eq!(report.checks[0].status, LeafStatus::Failed);
+    assert_eq!(report.checks[0].exit.code, Some(7));
+    assert!(report.checks[0].artifacts.is_empty());
+    assert_eq!(report.checks[0].retained_artifacts.len(), 1);
+    assert_eq!(report.checks[0].retained_artifacts[0].files, 2);
+    let retained = repository
+        .logs("run-failed-retained-artifact-tree")
+        .join("checks/browser/check/evidence/retained/diagnostics");
+    assert_eq!(
+        fs::read(retained.join("nested/capture.png")).expect("capture"),
+        b"png"
+    );
+    assert_eq!(failure(&report, Some("browser"), None).exit.code, Some(7));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn direct_discovery_and_case_logs_use_distinct_stable_leaves() {
     let repository = Repository::new("phase-layout");
     let mut fanout = dynamic_fanout("cases", "one-discovery");

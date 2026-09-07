@@ -121,7 +121,7 @@ pub fn receipts_match(
     Ok(artifact_receipts(worktree_root, &paths)? == receipts)
 }
 
-/// Snapshot declared evidence directories into one successful check's retained leaf.
+/// Snapshot declared evidence directories into one settled check's retained leaf.
 ///
 /// Source traversal and file opens are descriptor-relative and never follow links. The
 /// destination is a new private directory beneath the executor-owned evidence leaf.

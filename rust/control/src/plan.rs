@@ -2249,6 +2249,79 @@ mod tests {
     }
 
     #[test]
+    fn no_domain_delivery_accepts_one_implicit_route_without_using_unrelated_ports() {
+        let (_temporary, database, service) = world();
+        seed(
+            &database,
+            serde_json::json!({
+                "components": [{"name":"web","type":"process","wants_port":true,"route":false}]
+            })
+            .to_string(),
+        );
+        let delivered = service
+            .deliver_release(
+                ReleaseDeliver {
+                    release_id: "v1111111111111111".into(),
+                    deployment_id: "d1111111111111111".into(),
+                    note: None,
+                },
+                "uid:1000",
+                "2026-09-05T12:00:00Z",
+            )
+            .expect("implicit route");
+        assert_eq!(delivered.port, Some(24002));
+        assert_eq!(delivered.url, None);
+    }
+
+    #[test]
+    fn no_domain_delivery_with_missing_routed_port_preserves_release_and_history() {
+        let (_temporary, database, service) = world();
+        seed(
+            &database,
+            serde_json::json!({
+                "components": [
+                    {"name":"api","type":"process","wants_port":true,"route":false},
+                    {"name":"web","type":"process","wants_port":true,"route":true}
+                ]
+            })
+            .to_string(),
+        );
+        database
+            .transaction(|transaction| {
+                transaction.execute("DELETE FROM port_assignments WHERE component='web'", [])?;
+                Ok(())
+            })
+            .expect("remove only fixture route port");
+        assert!(
+            service
+                .deliver_release(
+                    ReleaseDeliver {
+                        release_id: "v1111111111111111".into(),
+                        deployment_id: "d1111111111111111".into(),
+                        note: None,
+                    },
+                    "uid:1000",
+                    "2026-09-05T12:00:00Z"
+                )
+                .is_err()
+        );
+        let state: (String, i64) = database
+            .call(|connection| {
+                Ok((
+                    connection.query_row(
+                        "SELECT status FROM releases WHERE release_id='v1111111111111111'",
+                        [],
+                        |row| row.get(0),
+                    )?,
+                    connection
+                        .query_row("SELECT count(*) FROM plan_events", [], |row| row.get(0))?,
+                ))
+            })
+            .expect("unchanged fixture state");
+        assert_eq!(state, ("planned".into(), 0));
+    }
+
+    #[test]
     fn ambiguous_route_does_not_mutate_the_release_or_history() {
         let (_temporary, database, service) = world();
         seed(

@@ -87,7 +87,10 @@ Result (only after the process exists):
 Errors: `repository_not_found`, `repository_config_invalid`,
 `worktree_busy`, `tests_draining`, `unit_stop_failed`, `test_start_failed`.
 Never `queued`.
-Latest-start-wins: a concurrent earlier run ends `superseded`.
+Latest-start-wins: a concurrent earlier run ends `superseded`. A replacing
+start includes `superseded_run_id` with that exact active run; the field is
+absent when no active run was replaced. Compose independent same-worktree
+checks inside one schema-2 graph rather than starting competing named tests.
 
 Every dependency-ready leaf enters host-wide adaptive admission immediately.
 `after` requires terminal completion; `requires` requires success. Failed

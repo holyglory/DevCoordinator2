@@ -148,6 +148,104 @@ fn check_status(
         .status
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn hundreds_of_discovered_cases_finish_with_complete_queryable_logs() {
+    let repository = Repository::new();
+    fs::create_dir_all(repository.current()).expect("create run directory");
+    fs::create_dir_all(repository.logs()).expect("create log directory");
+    let mut check = direct("python-tests", fixture(&["exit", "0"]));
+    check.command = None;
+    check.discover = Some(fixture(&["manifest", "431-cases"]));
+    check.case_command = Some(fixture(&["case-status"]));
+    let plan = ExecutionPlan {
+        schema: Schema2,
+        run_id: RUN_ID.into(),
+        test: "fanout-reproduction".into(),
+        worktree_root: repository.root.display().to_string(),
+        current_dir: repository.current().display().to_string(),
+        log_dir: repository.logs().display().to_string(),
+        requested_tier: ValidationTier::Development,
+        readiness_eligible: false,
+        proof: ProofKind::Complete,
+        selection: Vec::new(),
+        origin_run_id: None,
+        source_digest: source_digest(&repository.root).expect("source digest"),
+        config_digest: "c".repeat(64),
+        reused: BTreeMap::new(),
+        checks: vec![check],
+    };
+    let report = Executor::new(
+        plan,
+        Arc::new(LocalPermitProvider::new(64).expect("fixture capacity")),
+        Cancellation::default(),
+    )
+    .expect("executor")
+    .run()
+    .await
+    .expect("run");
+    assert_eq!(report.status, RunStatus::Failed);
+    assert_eq!(report.checks[0].status, LeafStatus::Failed);
+    assert_eq!(report.checks[0].case_count, 431);
+    assert_eq!(
+        report.checks[0]
+            .cases
+            .iter()
+            .filter(|case| case.status == LeafStatus::Failed)
+            .count(),
+        6
+    );
+    assert!(report.checks[0].cases_truncated);
+    assert!(!report.failure_index_truncated);
+    for index in 0..431 {
+        let path = repository.logs().join(format!(
+            "checks/python-tests/cases/case-{index:04}/leaf.json"
+        ));
+        let metadata: serde_json::Value =
+            serde_json::from_slice(&fs::read(path).expect("case metadata"))
+                .expect("valid metadata");
+        assert_eq!(
+            metadata["status"],
+            if index < 6 { "failed" } else { "passed" }
+        );
+        assert_eq!(metadata["complete"], true);
+    }
+    let mut cursor = None;
+    let mut rows = 0;
+    loop {
+        let result = execute_log_query(
+            &repository.root,
+            query(
+                LogQueryOperation::Catalog,
+                Some("python-tests"),
+                None,
+                None,
+                None,
+                LogQueryOptions {
+                    cursor,
+                    limit: Some(100),
+                    ..LogQueryOptions::default()
+                },
+            ),
+        )
+        .expect("catalogue remains available");
+        let LogQueryResult::Catalog(catalogue) = result else {
+            panic!("catalogue result");
+        };
+        assert!(
+            catalogue
+                .entries
+                .iter()
+                .all(|entry| entry.complete && !entry.truncated)
+        );
+        rows += catalogue.entries.len();
+        cursor = catalogue.next_cursor;
+        if cursor.is_none() {
+            break;
+        }
+    }
+    assert_eq!(rows, 864);
+}
+
 // UIL-TESTING-LOGS-001: exercise one real plan from execution through every
 // progressive-disclosure query, including a pre-start leaf with no streams.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

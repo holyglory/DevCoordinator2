@@ -58,12 +58,15 @@ formal Web UI verifier writes the bundle there automatically. Log catalogue
 metadata remains content-free and ignores the evidence payload, while the same
 leaf retention decision removes the logs and visual bundle together.
 
-A direct successful process check may also declare bounded
+A direct process check that passed or ordinarily failed after confirmed
+cleanup may also declare bounded
 `retained_artifacts`. The executor snapshots those repository-relative trees
 into `evidence/retained/`, rejects links and special files, and writes a
 run/source/config/proof-bound manifest with sorted file and tree hashes. The
 administrator-only artifact catalogue/file operations verify and disclose this
-evidence progressively; they never expose its storage path.
+evidence progressively; they never expose its storage path. Failed checks
+remain failed and never supply reusable build receipts. Unstarted, unsafe,
+cancelled, and timed-out processes do not publish these snapshots.
 
 Every stream file is created mode 0600 without following symlinks. The writer
 retains every byte, updates SHA-256 and exact LF-defined line counts, records

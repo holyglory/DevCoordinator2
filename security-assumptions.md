@@ -160,14 +160,17 @@ untracked `instance/` directory and in the installed instance configuration
 
 ## Generic retained test evidence
 
-- A successful direct process check may declare a bounded set of required,
+- A direct process check that passed or ordinarily failed after confirmed
+  cleanup may declare a bounded set of required,
   non-secret repository-relative evidence directories. The non-root executor
   snapshots only regular files without following links into the same private
   run leaf as its logs; empty, changed, oversized, special-file, overlapping,
   `.git`, and `.devcoordinator` sources fail the check. The manifest binds the
   copy to run, test, check, initial source digest, configuration digest, proof
   kind, and requested validation tier
-  (DC2-2026-09-03-RETAINED-EVIDENCE-TREES).
+  (DC2-2026-09-03-RETAINED-EVIDENCE-TREES). Failed-check diagnostic retention
+  preserves those controls and never turns failure into passing build evidence
+  (DC2-2026-09-05-FAILED-CHECK-EVIDENCE).
 - These trees inherit the governed-log retention and disclosure boundary. A
   trusted local caller or authenticated Console administrator may list bounded
   path-free metadata and request one exact verified file chunk. Repository
@@ -223,6 +226,12 @@ untracked `instance/` directory and in the installed instance configuration
   The socket is mode 0666: every local account is a full caller by owner
   decision (DC2-2026-08-24-OPEN-LOCAL-ACCESS); the client group remains
   only as the repository-access mechanism.
+- Endpoint ownership uses a cooperative daemon lease acquired before state
+  initialization, not a new caller authorization gate. A missing owned socket
+  is rebound without restarting work, and cleanup preserves foreign replacement
+  paths (DC2-2026-09-05-SOCKET-OWNERSHIP). The reviewed same-owner writers and
+  open local access assumptions remain unchanged; this does not claim isolation
+  from a malicious local account replacing the lease itself.
 - No local per-repository or per-agent permissions are consulted. Any
   trusted local account may invoke any local command.
 - The public edge authenticates users and enforces per-deployment grants.

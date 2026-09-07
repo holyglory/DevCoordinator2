@@ -33,6 +33,7 @@ pub mod progress;
 pub mod repository;
 pub mod repository_config;
 pub mod routes;
+mod socket_endpoint;
 pub mod systemd;
 pub mod telegram;
 pub mod test_admission;

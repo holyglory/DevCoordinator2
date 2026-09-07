@@ -108,6 +108,8 @@ test('public route proxies without sign-in; authenticated route demands sign-in'
   assert.match(closed.headers.location, /^\/auth\/login/);
   const missing = await get('/', { host: `nope.${BASE}` });
   assert.equal(missing.status, 404);
+  assert.ok(missing.body.includes(`<code>nope.${BASE}</code>`));
+  assert.ok(!missing.body.includes(`nope.${BASE}.${BASE}`));
 });
 
 test('sign-in admits the invited identity via the daemon and enforces grants per request', async () => {
