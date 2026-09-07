@@ -3873,7 +3873,13 @@ function pageVerifier() {
     }
     return box;
   };
+  const restoreDocumentScroll = () => {
+    if (window.scrollX !== originalScroll.x || window.scrollY !== originalScroll.y) {
+      window.scrollTo({ left: originalScroll.x, top: originalScroll.y, behavior: "instant" });
+    }
+  };
   for (const el of occlusionCandidates) {
+    restoreDocumentScroll();
     if (!el.isConnected || !visible(el)) continue;
     let measuredAfterScroll = false;
     if (!inViewport(nowRect(el))) {
@@ -3954,7 +3960,7 @@ function pageVerifier() {
       }
     }
   }
-  window.scrollTo(originalScroll.x, originalScroll.y);
+  restoreDocumentScroll();
 
   function parseCssColor(value) {
     const raw = String(value || "").trim();

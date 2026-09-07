@@ -363,6 +363,8 @@ Critical findings by default:
   warning because closed accordions/tabs/slides are often intentional.
 - Unrelated overlap/occlusion of meaningful text or controls: fully covered
   (`occluded`) or covered on ≥60% of sampled points (`partially-occluded`).
+  Every candidate starts from the verification state's original document
+  position so a probe's scroll cannot move a later measurement.
   Elements already in the viewport are checked at their natural on-screen
   position; only off-screen elements are scrolled into view first and their
   findings are tagged `measuredAfterScroll`. A near-transparent occluder is

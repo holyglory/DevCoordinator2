@@ -931,6 +931,62 @@ fn run_state_and_wait_phase(
 ) -> Result<usize, String> {
     let base = server.base_url();
     let mut scenarios = 0usize;
+    let popup_clean = run_verifier(
+        root,
+        &contracted_config(
+            root,
+            json!({
+                "targets":[{"url":format!("{base}/popup-scroll-probe-clean.html"),"regions":[{"selector":"#page-heading","role":"primary-content","journey":"fixture-primary"}]}],
+                "viewports":[{"name":"reported-narrow","width":390,"height":921}],
+                "scroll":false
+            }),
+        ),
+        &work.join("popup-scroll-probe-clean"),
+        &[0],
+        timeout,
+        &[],
+    )?;
+    no_critical(&popup_clean)?;
+    if has_rule(&popup_clean, "occluded", None)
+        || has_rule(&popup_clean, "partially-occluded", None)
+    {
+        return Err(
+            "an unobstructed heading was blamed for scroll state left by an earlier popup option"
+                .to_owned(),
+        );
+    }
+    scenarios += 1;
+
+    let popup_covered = run_verifier(
+        root,
+        &contracted_config(
+            root,
+            json!({
+                "targets":[{"url":format!("{base}/popup-scroll-probe-covered.html"),"regions":[{"selector":"#page-heading","role":"primary-content","journey":"fixture-primary"}]}],
+                "viewports":[{"name":"reported-narrow","width":390,"height":921}],
+                "scroll":false
+            }),
+        ),
+        &work.join("popup-scroll-probe-covered"),
+        &[1],
+        timeout,
+        &[],
+    )?;
+    if !popup_covered
+        .get("findings")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .any(|finding| {
+            finding.get("rule") == Some(&json!("occluded"))
+                && finding.get("severity") == Some(&json!("critical"))
+                && finding.get("selector") == Some(&json!("#page-heading"))
+        })
+    {
+        return Err("a genuinely covered heading did not retain its critical occlusion".to_owned());
+    }
+    scenarios += 1;
+
     let dialog_cases = [
         ("modal-scroll-reachable", None),
         ("modal-scroll-locked", Some("clipped-by-ancestor")),
