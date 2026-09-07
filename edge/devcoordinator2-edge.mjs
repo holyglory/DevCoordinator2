@@ -70,6 +70,7 @@ export function loadConfig(e = process.env) {
   const httpOnly = e.EDGE_HTTP_ONLY === '1';
   return {
     baseDomain,
+    baseRedirect: e.EDGE_BASE_REDIRECT === '1',
     consoleHost: (e.EDGE_CONSOLE_HOST || `console.${baseDomain}`).toLowerCase(),
     httpPort: Number(e.EDGE_HTTP_PORT || (httpOnly ? 8080 : 80)),
     httpsPort: Number(e.EDGE_HTTPS_PORT || 443),
@@ -260,6 +261,11 @@ export async function createEdge(config, { log = console } = {}) {
   async function handleRequest(req, res) {
     const host = hostOf(req);
     const url = new URL(req.url || '/', `${scheme}://${host || config.consoleHost}`);
+    if (config.baseRedirect && host === config.baseDomain) {
+      res.writeHead(301, { location: `${consoleOrigin}${url.pathname}${url.search}`,
+        'cache-control': 'no-store', 'content-length': '0' });
+      return res.end();
+    }
     if (url.pathname.startsWith('/auth/')) return handleAuth(req, res, url, host);
     if (host === config.consoleHost) return handleConsole(req, res, url);
     const doc = store.current();

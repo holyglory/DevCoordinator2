@@ -378,7 +378,7 @@ impl HostCutover {
             }
         }
         let drain = self.close_admission()?;
-        let outcome = self.bootstrap_drained(&drain);
+        let outcome = self.bootstrap_drained();
         let reopen = self.reopen_admission(drain);
         match outcome {
             Ok(receipt) => reopen.map(|()| receipt),
@@ -386,7 +386,7 @@ impl HostCutover {
         }
     }
 
-    fn bootstrap_drained(&mut self, drain: &HostDrain) -> Result<CutoverReceipt, String> {
+    fn bootstrap_drained(&mut self) -> Result<CutoverReceipt, String> {
         let mut lock_name = self
             .config
             .socket_path
@@ -407,7 +407,13 @@ impl HostCutover {
         if self.config.socket_path.symlink_metadata().is_ok() {
             return Err("daemon socket appeared during bootstrap preparation".to_owned());
         }
-        self.wait_for_quiescence(drain)?;
+        if read_json_file(&self.config.runtime_dir.join(ACTIVITY_FILE))?.is_some()
+            && read_activity_count(&self.config.runtime_dir)? != 0
+        {
+            return Err(
+                "bootstrap blocked by existing test activity; recover prior tests first".to_owned(),
+            );
+        }
         let backup = if self
             .config
             .database_path
@@ -2162,6 +2168,7 @@ mod tests {
         for fail_ping in [false, true] {
             let mut world = host_world();
             world.config.canary = true;
+            std::fs::remove_file(world.config.runtime_dir.join(ACTIVITY_FILE)).unwrap();
             for path in [
                 &world.config.daemon_unit_path,
                 &world.config.edge_unit_path,
@@ -2183,6 +2190,7 @@ mod tests {
                     .unwrap();
             let result = host.bootstrap();
             assert_eq!(result.is_err(), fail_ping);
+            assert!(!world.config.runtime_dir.join(ACTIVITY_FILE).exists());
             assert_eq!(
                 std::fs::read(&world.config.database_path).unwrap(),
                 original
@@ -2223,6 +2231,38 @@ mod tests {
                     original
                 );
             }
+        }
+    }
+
+    #[test]
+    fn bootstrap_rejects_existing_active_or_invalid_test_receipt() {
+        for receipt in [
+            r#"{"schema":1,"active":[{"run":"existing"}]}"#,
+            r#"{"schema":2,"active":[]}"#,
+        ] {
+            let mut world = host_world();
+            world.config.canary = true;
+            for path in [
+                &world.config.daemon_unit_path,
+                &world.config.edge_unit_path,
+                &world.config.cli_link,
+                &world.config.tooling_link,
+                &world.config.installed_manifest,
+                &world.config.socket_path,
+            ] {
+                std::fs::remove_file(path).unwrap();
+            }
+            std::fs::write(world.config.runtime_dir.join(ACTIVITY_FILE), receipt).unwrap();
+            let runner = Arc::new(HostFake {
+                commit: world.commit.clone(),
+                ..Default::default()
+            });
+            let mut host =
+                HostCutover::new_owned(world.config.clone(), runner, world.expected_owner).unwrap();
+            assert!(host.bootstrap().is_err());
+            assert!(!world.config.transaction_dir.exists());
+            assert!(!world.config.daemon_unit_path.exists());
+            assert!(!world.config.runtime_dir.join(DRAIN_FILE).exists());
         }
     }
 

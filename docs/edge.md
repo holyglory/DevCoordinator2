@@ -50,6 +50,7 @@ authenticated routes only), and a static file server for the Console.
 | Variable | Meaning |
 |---|---|
 | `EDGE_BASE_DOMAIN` | base public domain (required) |
+| `EDGE_BASE_REDIRECT=1` | optional 301 redirect from the exact base domain to the console origin, preserving path/query; off by default |
 | `EDGE_CONSOLE_HOST` | default `console.<base>` |
 | `EDGE_HTTP_PORT` / `EDGE_HTTPS_PORT` | listeners (80/443; http-only canary default 8080) |
 | `EDGE_HTTP_ONLY=1` | plain HTTP listener only, insecure cookies — canary/tests |
