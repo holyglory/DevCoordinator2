@@ -49,6 +49,7 @@ pub trait CutoverAdapter {
 
     fn close_admission(&mut self) -> Result<Self::Drain, String>;
     fn wait_for_quiescence(&mut self, drain: &Self::Drain) -> Result<(), String>;
+    fn wait_for_connections(&mut self) -> Result<(), String>;
     fn deployment_is_applying(&mut self) -> Result<bool, String>;
     fn backup_database(&mut self) -> Result<String, String>;
     fn capture_installation(&mut self) -> Result<Self::InstallationSnapshot, String>;
@@ -88,8 +89,9 @@ fn activate_drained<A: CutoverAdapter>(
     adapter: &mut A,
     drain: &A::Drain,
 ) -> Result<CutoverReceipt, String> {
+    adapter.wait_for_quiescence(drain)?;
     adapter.fence_legacy_socket()?;
-    if let Err(error) = adapter.wait_for_quiescence(drain) {
+    if let Err(error) = adapter.wait_for_connections() {
         return Err(combine(
             error,
             "restore legacy socket",
@@ -430,7 +432,10 @@ impl CutoverAdapter for HostCutover {
     }
 
     fn wait_for_quiescence(&mut self, _drain: &Self::Drain) -> Result<(), String> {
-        wait_for_zero_activity(&self.config.runtime_dir)?;
+        wait_for_zero_activity(&self.config.runtime_dir)
+    }
+
+    fn wait_for_connections(&mut self) -> Result<(), String> {
         wait_for_socket_connections(
             self.runner.as_ref(),
             &self.config.ss,
@@ -1421,6 +1426,9 @@ mod tests {
         fn wait_for_quiescence(&mut self, _: &Self::Drain) -> Result<(), String> {
             self.called("wait_for_quiescence")
         }
+        fn wait_for_connections(&mut self) -> Result<(), String> {
+            self.called("wait_for_connections")
+        }
         fn deployment_is_applying(&mut self) -> Result<bool, String> {
             self.called("deployment_is_applying")?;
             Ok(self.applying)
@@ -1477,6 +1485,50 @@ mod tests {
     }
 
     #[test]
+    fn active_work_drains_before_the_endpoint_is_fenced() {
+        let mut fake = Fake::success();
+        activate(&mut fake).unwrap();
+        let drained = fake
+            .calls
+            .iter()
+            .position(|call| *call == "wait_for_quiescence")
+            .unwrap();
+        let fenced = fake
+            .calls
+            .iter()
+            .position(|call| *call == "fence_legacy_socket")
+            .unwrap();
+        assert!(
+            drained < fenced,
+            "API must stay reachable while accepted work drains"
+        );
+    }
+
+    #[test]
+    fn failed_test_drain_never_hides_the_api() {
+        let mut fake = Fake::success();
+        fake.auxiliary_failures.push_back("wait_for_quiescence");
+        assert!(activate(&mut fake).is_err());
+        assert_eq!(
+            fake.calls,
+            ["close_admission", "wait_for_quiescence", "reopen_admission"]
+        );
+    }
+
+    #[test]
+    fn failed_connection_drain_restores_the_endpoint_before_reopening() {
+        let mut fake = Fake::success();
+        fake.auxiliary_failures.push_back("wait_for_connections");
+        assert!(activate(&mut fake).is_err());
+        assert!(fake.calls.ends_with(&[
+            "wait_for_connections",
+            "restore_legacy_socket",
+            "reopen_admission"
+        ]));
+        assert!(!fake.calls.contains(&"backup_database"));
+    }
+
+    #[test]
     fn successful_cutover_orders_every_safety_gate_before_activation() {
         let mut fake = Fake::success();
         let receipt = activate(&mut fake).unwrap();
@@ -1486,8 +1538,9 @@ mod tests {
             fake.calls,
             [
                 "close_admission",
-                "fence_legacy_socket",
                 "wait_for_quiescence",
+                "fence_legacy_socket",
+                "wait_for_connections",
                 "deployment_is_applying",
                 "backup_database",
                 "capture_installation",
@@ -1514,8 +1567,9 @@ mod tests {
             fake.calls,
             [
                 "close_admission",
-                "fence_legacy_socket",
                 "wait_for_quiescence",
+                "fence_legacy_socket",
+                "wait_for_connections",
                 "deployment_is_applying",
                 "restore_legacy_socket",
                 "reopen_admission"

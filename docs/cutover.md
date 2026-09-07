@@ -61,7 +61,10 @@ accounts, legacy unit names, paths) are instance data kept in the untracked
 9. **Activate once**: configure without `--canary` after installing the TLS
    credentials, build and verify the frozen candidate, then run
    `devcoordinator2-tooling install activate --yes`. The command closes test
-   admission, fences the old socket, waits for accepted work, rejects an
+   admission while keeping the normal API, status, logs, and ledger reachable
+   until accepted tests finish. It then fences the old socket, returns a
+   reconnectable `daemon_unavailable` response to idle `event.wait` observers,
+   waits for finite accepted requests to finish, rejects an
    applying deployment, creates the private SQLite backup and installation
    snapshot, switches the units and direct binary links, and verifies the v2
    daemon and Node edge. If interrupted, run
@@ -73,6 +76,12 @@ accounts, legacy unit names, paths) are instance data kept in the untracked
    to `origin/main`, then fetched and fast-forwarded into the clean
    `/home/DevCoordinator2` checkout. A later `install build`, `verify`, and
    reviewed `activate --yes` cycle repeats the same provenance and drain gates.
+   A running systemd process alone is not API readiness: verify the normal
+   socket and a successful request after activation. Observers retain their
+   last cursor and reconnect after the short activation window; they must not
+   prevent installation indefinitely. Failed draining restores normal access
+   and reopens admission without discarding accepted work
+   (DC2-2026-09-07-REACHABLE-UPGRADE-DRAIN).
    The daemon and installer share the current database schema version, so an
    update remains installable after an earlier migration. Explicit legacy
    versions remain supported; unknown future versions are still refused.

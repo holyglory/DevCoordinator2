@@ -215,6 +215,7 @@ impl DaemonEndpoint {
         } = self;
         info!(socket = %path.display(), "serving protocol 2");
         let mut connections = JoinSet::new();
+        let (observer_interrupt, _) = watch::channel(false);
         while !*shutdown.borrow() {
             tokio::select! {
                 changed = shutdown.changed() => {
@@ -232,12 +233,14 @@ impl DaemonEndpoint {
                         Ok(false) => {}
                         Err(error) => error!(%error, "control endpoint recovery refused"),
                     }
+                    observer_interrupt.send_replace(endpoint.is_fenced());
                 }
                 accepted = endpoint.listener.accept() => {
                     let (stream, _) = accepted?;
                     let app = Arc::clone(&app);
+                    let interruptions = observer_interrupt.subscribe();
                     connections.spawn(async move {
-                        if let Err(error) = serve_connection(stream, app).await {
+                        if let Err(error) = serve_connection(stream, app, interruptions).await {
                             error!(%error, "connection failed");
                         }
                     });
@@ -249,6 +252,7 @@ impl DaemonEndpoint {
                 }
             }
         }
+        observer_interrupt.send_replace(true);
         drop(endpoint);
         while let Some(completed) = connections.join_next().await {
             if let Err(error) = completed {
@@ -270,7 +274,11 @@ pub async fn serve_with_app(
         .await
 }
 
-async fn serve_connection(mut stream: UnixStream, app: Arc<App>) -> std::io::Result<()> {
+async fn serve_connection(
+    mut stream: UnixStream,
+    app: Arc<App>,
+    mut interruptions: watch::Receiver<bool>,
+) -> std::io::Result<()> {
     let credentials = stream.peer_cred()?;
     let peer = PeerCredentials {
         pid: credentials
@@ -306,10 +314,17 @@ async fn serve_connection(mut stream: UnixStream, app: Arc<App>) -> std::io::Res
         match parse_request(&raw) {
             Ok(request) => {
                 let id = request.id.clone();
+                let observer = request.operation == "event.wait";
                 match app.deferred(&request, peer) {
                     Ok(Some(deferred)) => {
                         let mut unexpected = [0_u8; 1];
                         let result = tokio::select! {
+                            _ = interruptions.wait_for(|interrupted| *interrupted), if observer => {
+                                Some(ResponseEnvelope::failure(id.clone(), ProtocolError::new(
+                                    ErrorCode::DaemonUnavailable,
+                                    "coordinator is restarting; reconnect the event wait using its last cursor",
+                                )))
+                            }
                             result = deferred => Some(response_from_result(id.clone(), result)),
                             read = stream.read(&mut unexpected) => match read {
                                 Ok(0) | Err(_) => None,
@@ -603,6 +618,127 @@ mod tests {
         shutdown_tx.send(true).unwrap();
         server.await.unwrap().unwrap();
         assert!(!socket.exists());
+    }
+
+    #[tokio::test]
+    async fn installer_fence_releases_idle_observers() {
+        verify_observer_interruption(false).await;
+    }
+
+    #[tokio::test]
+    async fn shutdown_releases_idle_observers() {
+        verify_observer_interruption(true).await;
+    }
+
+    async fn verify_observer_interruption(shutdown: bool) {
+        let temporary = tempdir().unwrap();
+        let socket = temporary.path().join("daemon.sock");
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (dropped_tx, dropped_rx) = tokio::sync::oneshot::channel();
+        let app = Arc::new(App::with_executor(
+            None,
+            Arc::new(WaitingExecutor {
+                started: Arc::new(Mutex::new(Some(started_tx))),
+                dropped: Arc::new(Mutex::new(Some(dropped_tx))),
+            }),
+        ));
+        let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
+        let endpoint = DaemonEndpoint::bind(&socket).await.unwrap();
+        let server = tokio::spawn(async move { endpoint.serve(&mut shutdown_rx, app).await });
+        let mut stream = UnixStream::connect(&socket).await.unwrap();
+        stream.write_all(b"{\"protocol\":2,\"id\":\"observer\",\"operation\":\"event.wait\",\"params\":{\"filters\":[{\"filter_id\":\"upgrade\",\"categories\":[\"health\"]}]},\"client\":{}}\n").await.unwrap();
+        timeout(Duration::from_secs(2), started_rx)
+            .await
+            .unwrap()
+            .unwrap();
+        if shutdown {
+            shutdown_tx.send(true).unwrap();
+        } else {
+            std::fs::rename(&socket, temporary.path().join("daemon.pre-cutover.sock")).unwrap();
+        }
+        let result = timeout(Duration::from_secs(2), read_frame(&mut stream)).await;
+        if result.is_err() {
+            drop(stream);
+            let _ = shutdown_tx.send(true);
+            let _ = timeout(Duration::from_secs(2), server).await;
+            panic!("idle observer prevented the upgrade boundary");
+        }
+        let response: ResponseEnvelope = serde_json::from_slice(&result.unwrap().unwrap()).unwrap();
+        assert!(
+            matches!(response, ResponseEnvelope::Failure { error, .. } if error.code == ErrorCode::DaemonUnavailable)
+        );
+        timeout(Duration::from_secs(2), dropped_rx)
+            .await
+            .unwrap()
+            .unwrap();
+        if !shutdown {
+            assert!(!socket.exists());
+            std::fs::rename(temporary.path().join("daemon.pre-cutover.sock"), &socket).unwrap();
+            assert!(UnixStream::connect(&socket).await.is_ok());
+            shutdown_tx.send(true).unwrap();
+        }
+        timeout(Duration::from_secs(2), server)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn shutdown_preserves_finite_accepted_requests() {
+        struct FiniteExecutor {
+            started: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+            release: Mutex<std::sync::mpsc::Receiver<()>>,
+        }
+        impl OperationExecutor for FiniteExecutor {
+            fn execute(&self, _: &str, _: Value, _: &Caller) -> Result<Value, ProtocolError> {
+                self.started
+                    .lock()
+                    .unwrap()
+                    .take()
+                    .unwrap()
+                    .send(())
+                    .unwrap();
+                self.release.lock().unwrap().recv().unwrap();
+                Ok(serde_json::json!({"completed": true}))
+            }
+        }
+        let temporary = tempdir().unwrap();
+        let socket = temporary.path().join("daemon.sock");
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let app = Arc::new(App::with_executor(
+            None,
+            Arc::new(FiniteExecutor {
+                started: Mutex::new(Some(started_tx)),
+                release: Mutex::new(release_rx),
+            }),
+        ));
+        let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
+        let endpoint = DaemonEndpoint::bind(&socket).await.unwrap();
+        let server = tokio::spawn(async move { endpoint.serve(&mut shutdown_rx, app).await });
+        let mut stream = UnixStream::connect(&socket).await.unwrap();
+        stream.write_all(b"{\"protocol\":2,\"id\":\"finite\",\"operation\":\"ping\",\"params\":{},\"client\":{}}\n").await.unwrap();
+        timeout(Duration::from_secs(2), started_rx)
+            .await
+            .unwrap()
+            .unwrap();
+        shutdown_tx.send(true).unwrap();
+        assert!(!server.is_finished());
+        release_tx.send(()).unwrap();
+        let response: Value = serde_json::from_slice(
+            &timeout(Duration::from_secs(2), read_frame(&mut stream))
+                .await
+                .unwrap()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(response["data"]["completed"], true);
+        timeout(Duration::from_secs(2), server)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
     }
 
     #[tokio::test]

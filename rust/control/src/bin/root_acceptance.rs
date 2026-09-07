@@ -2248,12 +2248,48 @@ fn case_repository_installer_drain_waits_then_restarts_and_reconnects(
             error_code(&refused) == Some("tests_draining"),
             "installer drain did not close admission"
         );
+        data(&world.call("plan.overview", json!({"path": world.repo}))?)?;
+        let mut observer = UnixStream::connect(&world.socket).map_err(|error| error.to_string())?;
+        observer
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .map_err(|error| error.to_string())?;
+        let mut subscription = serde_json::to_vec(&request(
+            "event.wait",
+            json!({
+                "filters": [{"filter_id": "upgrade-observer", "categories": ["health"]}]
+            }),
+            "other",
+            None,
+        ))
+        .map_err(|error| error.to_string())?;
+        subscription.push(b'\n');
+        observer
+            .write_all(&subscription)
+            .map_err(|error| error.to_string())?;
         release_handle
             .write_all(b"1")
             .map_err(|error| error.to_string())?;
         let completed = world.wait_status(&["passed", "failed"], Duration::from_secs(120))?;
         ensure!(completed["status"] == "passed", "active run did not drain");
+        let fence = world.socket.with_file_name("daemon.pre-cutover.sock");
+        fs::rename(&world.socket, &fence).map_err(|error| error.to_string())?;
+        let mut response = Vec::new();
+        observer
+            .take(256 * 1024)
+            .read_to_end(&mut response)
+            .map_err(|error| error.to_string())?;
+        let response: Value =
+            serde_json::from_slice(&response).map_err(|error| error.to_string())?;
+        ensure!(
+            error_code(&response) == Some("daemon_unavailable"),
+            "idle observer did not receive a reconnectable upgrade response"
+        );
+        ensure!(
+            !world.socket.exists(),
+            "intentional fence was incorrectly recovered"
+        );
         world.stop_daemon(false)?;
+        fs::remove_file(&fence).map_err(|error| error.to_string())?;
         world.start_daemon(None, None, None)?;
         let reconnected = world.call("test.status", json!({"path": world.repo}))?;
         ensure!(

@@ -100,6 +100,16 @@ impl SocketEndpoint {
         })
     }
 
+    pub(crate) fn is_fenced(&self) -> bool {
+        fs::symlink_metadata(&self.path).is_err_and(|error| error.kind() == io::ErrorKind::NotFound)
+            && fs::symlink_metadata(self.path.with_file_name("daemon.pre-cutover.sock")).is_ok_and(
+                |metadata| {
+                    metadata.file_type().is_socket()
+                        && (metadata.dev(), metadata.ino()) == self.identity
+                },
+            )
+    }
+
     pub(crate) fn recover_missing(&mut self) -> io::Result<bool> {
         match fs::symlink_metadata(&self.path) {
             Ok(metadata)
@@ -113,12 +123,7 @@ impl SocketEndpoint {
                 "control endpoint was replaced; refusing to remove another owner",
             )),
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                if fs::symlink_metadata(self.path.with_file_name("daemon.pre-cutover.sock"))
-                    .is_ok_and(|metadata| {
-                        metadata.file_type().is_socket()
-                            && (metadata.dev(), metadata.ino()) == self.identity
-                    })
-                {
+                if self.is_fenced() {
                     return Ok(false);
                 }
                 let listener = UnixListener::bind(&self.path)?;
