@@ -81,6 +81,50 @@ pub enum CheckRole {
     Preflight,
 }
 
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CheckPhase {
+    Setup,
+    Build,
+    Fixture,
+    Case,
+    Cleanup,
+    Qualification,
+    #[default]
+    Check,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ResourceKind {
+    Database,
+    Port,
+    Directory,
+    SourceSnapshot,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ResourceAccess {
+    Shared,
+    Exclusive,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ResourceClaim {
+    pub kind: ResourceKind,
+    pub id: String,
+    pub access: ResourceAccess,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConsumedArtifact {
+    pub check: String,
+    pub path: String,
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CompletionMode {
@@ -336,6 +380,8 @@ pub struct RetainedArtifactReceipt {
 pub struct CaseSpec {
     pub id: String,
     pub args: Vec<String>,
+    #[serde(default)]
+    pub postgres: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -344,6 +390,10 @@ pub struct CheckPlan {
     pub name: String,
     pub tier: ValidationTier,
     pub role: CheckRole,
+    #[serde(default)]
+    pub phase: CheckPhase,
+    #[serde(default)]
+    pub resources: Vec<ResourceClaim>,
     pub after: Vec<String>,
     pub requires: Vec<String>,
     pub invalidates: Vec<String>,
@@ -353,6 +403,18 @@ pub struct CheckPlan {
     pub completion: CompletionMode,
     pub on_failure: FailureMode,
     pub produces: Vec<String>,
+    #[serde(default)]
+    pub consumes: Vec<ConsumedArtifact>,
+    #[serde(default)]
+    pub cacheable: bool,
+    #[serde(default)]
+    pub cache_inputs: Vec<String>,
+    #[serde(default)]
+    pub fingerprint: String,
+    #[serde(default)]
+    pub expect_failure: bool,
+    #[serde(default)]
+    pub qualification_of: Option<String>,
     #[serde(default)]
     pub retained_artifacts: Vec<RetainedArtifactSpec>,
     #[serde(default)]
@@ -386,6 +448,12 @@ pub struct ExecutionPlan {
     pub source_digest: String,
     pub config_digest: String,
     pub reused: BTreeMap<String, Vec<ArtifactReceipt>>,
+    #[serde(default)]
+    pub reused_qualifications: BTreeSet<String>,
+    #[serde(default)]
+    pub case_selection: BTreeMap<String, Vec<String>>,
+    #[serde(default)]
+    pub postgres_databases: BTreeMap<String, String>,
     pub checks: Vec<CheckPlan>,
 }
 
@@ -496,6 +564,47 @@ impl ExecutionPlan {
                 )));
             }
         }
+        for (name, cases) in &self.case_selection {
+            let Some(index) = names.get(name.as_str()) else {
+                return Err(ContractError::new(format!(
+                    "case selection references unknown check {name:?}"
+                )));
+            };
+            if !selected.contains(name.as_str()) || !self.checks[*index].is_fanout() {
+                return Err(ContractError::new(format!(
+                    "case selection {name:?} must name a selected fan-out check"
+                )));
+            }
+            validate_case_selection(cases)?;
+            if let Some(declared) = &self.checks[*index].cases {
+                let declared = declared.iter().map(|case| case.id.as_str()).collect::<BTreeSet<_>>();
+                if cases.iter().any(|case| !declared.contains(case.as_str())) {
+                    return Err(ContractError::new(format!(
+                        "case selection {name:?} names an undeclared static case"
+                    )));
+                }
+            }
+        }
+        for (branch, database) in &self.postgres_databases {
+            validate_name("PostgreSQL branch", branch, 32)?;
+            validate_name("PostgreSQL database", database, 63)?;
+        }
+        for check in &self.checks {
+            if let Some(cases) = &check.cases {
+                for case in cases {
+                    if case
+                        .postgres
+                        .as_ref()
+                        .is_some_and(|branch| !self.postgres_databases.contains_key(branch))
+                    {
+                        return Err(ContractError::new(format!(
+                            "case {:?} references an unknown PostgreSQL branch",
+                            case.id
+                        )));
+                    }
+                }
+            }
+        }
         for (name, receipts) in &self.reused {
             let Some(index) = names.get(name.as_str()) else {
                 return Err(ContractError::new(format!(
@@ -515,6 +624,19 @@ impl ExecutionPlan {
             for receipt in receipts {
                 validate_relative_path("artifact", &receipt.path)?;
                 validate_digest("artifact sha256", &receipt.sha256)?;
+            }
+        }
+        for name in &self.reused_qualifications {
+            let Some(index) = names.get(name.as_str()) else {
+                return Err(ContractError::new(format!(
+                    "qualification reuse references unknown check {name:?}"
+                )));
+            };
+            let check = &self.checks[*index];
+            if check.phase != CheckPhase::Qualification || !check.cacheable {
+                return Err(ContractError::new(format!(
+                    "qualification reuse {name:?} is not a cacheable qualification"
+                )));
             }
         }
 
@@ -555,8 +677,32 @@ impl ExecutionPlan {
                 let dep_index = names[dependency.as_str()];
                 requires_edges.insert((dep_index, index));
             }
+            for consumed in &check.consumes {
+                let Some(producer_index) = names.get(consumed.check.as_str()) else {
+                    return Err(ContractError::new(format!(
+                        "check {:?} consumes from unknown check {:?}",
+                        check.name, consumed.check
+                    )));
+                };
+                if !check.requires.contains(&consumed.check)
+                    || !self.checks[*producer_index].produces.contains(&consumed.path)
+                {
+                    return Err(ContractError::new(format!(
+                        "check {:?} consumed artifact {:?} is not a required producer output",
+                        check.name, consumed.path
+                    )));
+                }
+            }
         }
         for (preflight_index, preflight) in self.checks.iter().enumerate() {
+            if let Some(target) = &preflight.qualification_of
+                && !preflight.invalidates.contains(target)
+            {
+                return Err(ContractError::new(format!(
+                    "qualification {:?} must invalidate its target {target:?}",
+                    preflight.name
+                )));
+            }
             for target in &preflight.invalidates {
                 let Some(target_index) = names.get(target.as_str()) else {
                     return Err(ContractError::new(format!(
@@ -596,6 +742,22 @@ impl ExecutionPlan {
 
 fn validate_check(check: &CheckPlan) -> Result<(), ContractError> {
     validate_name("check", &check.name, 64)?;
+    if check.resources.len() > 32 {
+        return Err(ContractError::new(format!(
+            "check {:?} declares more than 32 resource claims",
+            check.name
+        )));
+    }
+    let mut resources = BTreeSet::new();
+    for resource in &check.resources {
+        validate_identity("resource id", &resource.id, 128)?;
+        if !resources.insert((resource.kind, resource.id.as_str())) {
+            return Err(ContractError::new(format!(
+                "check {:?} repeats a resource claim",
+                check.name
+            )));
+        }
+    }
     if check.cwd != "." {
         validate_relative_path("cwd", &check.cwd)?;
     }
@@ -680,6 +842,65 @@ fn validate_check(check: &CheckPlan) -> Result<(), ContractError> {
     }
     for path in &check.produces {
         validate_relative_path("artifact", path)?;
+    }
+    if check.consumes.len() > 16 {
+        return Err(ContractError::new(format!(
+            "check {:?} consumes more than 16 artifacts",
+            check.name
+        )));
+    }
+    let mut consumes = BTreeSet::new();
+    for consumed in &check.consumes {
+        validate_name("consumed artifact check", &consumed.check, 64)?;
+        validate_relative_path("consumed artifact", &consumed.path)?;
+        if !consumes.insert((consumed.check.as_str(), consumed.path.as_str())) {
+            return Err(ContractError::new(format!(
+                "check {:?} repeats a consumed artifact",
+                check.name
+            )));
+        }
+    }
+    if check.cache_inputs.len() > 32 {
+        return Err(ContractError::new(format!(
+            "check {:?} declares more than 32 cache inputs",
+            check.name
+        )));
+    }
+    let mut cache_inputs = BTreeSet::new();
+    for path in &check.cache_inputs {
+        validate_relative_path("cache input", path)?;
+        if !cache_inputs.insert(path.as_str()) {
+            return Err(ContractError::new(format!(
+                "check {:?} repeats a cache input",
+                check.name
+            )));
+        }
+    }
+    if !check.fingerprint.is_empty() {
+        validate_digest("check fingerprint", &check.fingerprint)?;
+    }
+    if check.cacheable
+        && (check.completion != CompletionMode::Process
+            || check.command.is_none()
+            || check.cache_inputs.is_empty()
+            || (check.produces.is_empty() && check.phase != CheckPhase::Qualification)
+            || check.fingerprint.is_empty())
+    {
+        return Err(ContractError::new(format!(
+            "cacheable check {:?} requires a direct process, cache inputs, fingerprint, and outputs unless it is a qualification",
+            check.name
+        )));
+    }
+    if check.expect_failure != (check.phase == CheckPhase::Qualification)
+        || (check.phase == CheckPhase::Qualification) != check.qualification_of.is_some()
+    {
+        return Err(ContractError::new(format!(
+            "qualification check {:?} must name its target and expect failure",
+            check.name
+        )));
+    }
+    if let Some(target) = &check.qualification_of {
+        validate_name("qualification target", target, 64)?;
     }
     if check.retained_artifacts.len() > MAX_RETAINED_ARTIFACTS {
         return Err(ContractError::new(format!(
@@ -824,6 +1045,25 @@ pub fn validate_cases(cases: &[CaseSpec]) -> Result<(), ContractError> {
                 "case {:?} arguments exceed 64 KiB",
                 case.id
             )));
+        }
+        if let Some(postgres) = &case.postgres {
+            validate_name("PostgreSQL case branch", postgres, 32)?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_case_selection(cases: &[String]) -> Result<(), ContractError> {
+    if cases.is_empty() || cases.len() > MAX_CASES {
+        return Err(ContractError::new(
+            "case selection must contain 1..=4096 case ids",
+        ));
+    }
+    let mut unique = BTreeSet::new();
+    for case in cases {
+        validate_case_id(case)?;
+        if !unique.insert(case.as_str()) {
+            return Err(ContractError::new("case selection contains duplicates"));
         }
     }
     Ok(())
@@ -1115,6 +1355,14 @@ pub struct CheckReport {
     pub name: String,
     pub tier: ValidationTier,
     pub role: CheckRole,
+    #[serde(default)]
+    pub phase: CheckPhase,
+    #[serde(default)]
+    pub fingerprint: String,
+    #[serde(default)]
+    pub cache_inputs: Vec<ArtifactReceipt>,
+    #[serde(default)]
+    pub consumed_artifacts: Vec<ArtifactReceipt>,
     pub status: LeafStatus,
     pub started_at: Option<String>,
     pub finished_at: Option<String>,
@@ -1126,6 +1374,14 @@ pub struct CheckReport {
     pub case_count: u32,
     pub cases: Vec<CaseReport>,
     pub cases_truncated: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PhaseDuration {
+    pub phase: CheckPhase,
+    pub duration_seconds: f64,
+    pub checks: u32,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -1225,6 +1481,8 @@ pub struct ExecutionReport {
     pub capacity: CapacityReport,
     pub counts: BTreeMap<String, u32>,
     pub checks: Vec<CheckReport>,
+    #[serde(default)]
+    pub phase_durations: Vec<PhaseDuration>,
     pub failure_index: Vec<FailureIndexEntry>,
     pub failure_index_truncated: bool,
 }
@@ -1326,6 +1584,34 @@ impl ExecutionReport {
                 "report counts do not match check states",
             ));
         }
+        let mut phase_names = BTreeSet::new();
+        for phase in &self.phase_durations {
+            if !phase.duration_seconds.is_finite()
+                || phase.duration_seconds < 0.0
+                || phase.checks == 0
+                || !phase_names.insert(phase.phase)
+            {
+                return Err(ContractError::new(
+                    "report phase durations are invalid or duplicated",
+                ));
+            }
+            let matching = self
+                .checks
+                .iter()
+                .filter(|check| check.phase == phase.phase)
+                .collect::<Vec<_>>();
+            let total = matching
+                .iter()
+                .filter_map(|check| check.duration_seconds)
+                .sum::<f64>();
+            if usize::try_from(phase.checks).ok() != Some(matching.len())
+                || (total - phase.duration_seconds).abs() > 0.001
+            {
+                return Err(ContractError::new(
+                    "report phase duration does not match its independent checks",
+                ));
+            }
+        }
         if self.failure_index.len() > MAX_FAILURE_INDEX {
             return Err(ContractError::new(format!(
                 "report exceeds {MAX_FAILURE_INDEX} failure entries"
@@ -1359,6 +1645,9 @@ impl ExecutionReport {
 
 fn validate_report_check(run_id: &str, check: &CheckReport) -> Result<(), ContractError> {
     validate_name("report check", &check.name, 64)?;
+    if !check.fingerprint.is_empty() {
+        validate_digest("report check fingerprint", &check.fingerprint)?;
+    }
     if check
         .duration_seconds
         .is_some_and(|value| !value.is_finite() || value < 0.0)
@@ -1368,7 +1657,11 @@ fn validate_report_check(run_id: &str, check: &CheckReport) -> Result<(), Contra
         ));
     }
     check.exit.validate()?;
-    if check.artifacts.len() > 16 || check.retained_artifacts.len() > MAX_RETAINED_ARTIFACTS {
+    if check.artifacts.len() > 16
+        || check.cache_inputs.len() > 32
+        || check.consumed_artifacts.len() > 16
+        || check.retained_artifacts.len() > MAX_RETAINED_ARTIFACTS
+    {
         return Err(ContractError::new("check report exceeds artifact bounds"));
     }
     let mut artifact_paths = BTreeSet::new();
@@ -1377,6 +1670,21 @@ fn validate_report_check(run_id: &str, check: &CheckReport) -> Result<(), Contra
         validate_digest("report artifact sha256", &artifact.sha256)?;
         if !artifact_paths.insert(artifact.path.as_str()) {
             return Err(ContractError::new("check report repeats an artifact"));
+        }
+    }
+    for (label, receipts) in [
+        ("cache input", &check.cache_inputs),
+        ("consumed artifact", &check.consumed_artifacts),
+    ] {
+        let mut paths = BTreeSet::new();
+        for receipt in receipts {
+            validate_relative_path(label, &receipt.path)?;
+            validate_digest(&format!("{label} sha256"), &receipt.sha256)?;
+            if !paths.insert(receipt.path.as_str()) {
+                return Err(ContractError::new(format!(
+                    "check report repeats a {label}"
+                )));
+            }
         }
     }
     let mut retained_names = BTreeSet::new();
@@ -1630,6 +1938,8 @@ mod tests {
             name: name.into(),
             tier,
             role: CheckRole::Work,
+            phase: CheckPhase::Check,
+            resources: Vec::new(),
             after: Vec::new(),
             requires: Vec::new(),
             invalidates: Vec::new(),
@@ -1639,6 +1949,12 @@ mod tests {
             completion: CompletionMode::Process,
             on_failure: FailureMode::Continue,
             produces: Vec::new(),
+            consumes: Vec::new(),
+            cacheable: false,
+            cache_inputs: Vec::new(),
+            fingerprint: String::new(),
+            expect_failure: false,
+            qualification_of: None,
             retained_artifacts: Vec::new(),
             diagnostic_sources: Vec::new(),
             command: Some(vec!["true".into()]),
@@ -1664,6 +1980,9 @@ mod tests {
             source_digest: "a".repeat(64),
             config_digest: "b".repeat(64),
             reused: BTreeMap::new(),
+            reused_qualifications: BTreeSet::new(),
+            case_selection: BTreeMap::new(),
+            postgres_databases: BTreeMap::new(),
             checks,
         }
     }
@@ -1673,6 +1992,10 @@ mod tests {
             name: "unit".into(),
             tier: ValidationTier::Release,
             role: CheckRole::Work,
+            phase: CheckPhase::Check,
+            fingerprint: String::new(),
+            cache_inputs: Vec::new(),
+            consumed_artifacts: Vec::new(),
             status: LeafStatus::Passed,
             started_at: Some("2026-09-04T00:00:00Z".into()),
             finished_at: Some("2026-09-04T00:00:01Z".into()),
@@ -1709,6 +2032,11 @@ mod tests {
             capacity: CapacityReport::default(),
             counts,
             checks: vec![check],
+            phase_durations: vec![PhaseDuration {
+                phase: CheckPhase::Check,
+                duration_seconds: 1.0,
+                checks: 1,
+            }],
             failure_index: Vec::new(),
             failure_index_truncated: false,
         }
@@ -1812,6 +2140,7 @@ mod tests {
         fanout.cases = Some(vec![CaseSpec {
             id: "one".into(),
             args: Vec::new(),
+            postgres: None,
         }]);
         assert!(
             plan(vec![fanout])
@@ -1861,10 +2190,12 @@ mod tests {
                 CaseSpec {
                     id: "same".into(),
                     args: Vec::new(),
+                    postgres: None,
                 },
                 CaseSpec {
                     id: "same".into(),
                     args: Vec::new(),
+                    postgres: None,
                 },
             ],
         };
