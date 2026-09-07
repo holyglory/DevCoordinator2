@@ -5245,6 +5245,12 @@
               "reason": {
                 "type": "string"
               },
+              "requirement_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
               "state": {
                 "type": "string"
               },

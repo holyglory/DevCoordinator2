@@ -6665,7 +6665,7 @@ async function main() {
   process.exit(exitCode);
 }
 
-export { executePlan, isLocalServerUrl, performanceThresholdStatus, writeJourneyEvidenceArtifact };
+export { evaluateRequiredCoverage, executePlan, isLocalServerUrl, normalizeRequiredCoverage, performanceThresholdStatus, writeJourneyEvidenceArtifact };
 
 let isEntrypoint = false;
 if (process.argv[1]) {

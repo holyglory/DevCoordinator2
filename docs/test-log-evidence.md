@@ -54,15 +54,18 @@ small output to the `executor` folder without a size cap.
 
 Formal journey evidence retains `coverage.requiredCoverage` when provided by
 the verifier: declared/satisfied counts, failure verdict, and per-requirement
-target/state/viewport, optional width, match status, matching plan cell IDs,
-and reason. Legacy schema-1 bundles may omit the field or set it to null.
+target/state/viewport, requirement identity, optional width, match status,
+matching plan cell IDs, and reason. Requirement identities are bounded and
+unique when present. Legacy schema-1 bundles may omit the coverage field, set it
+to null, or omit requirement identities.
 The consumer validates exact known fields and internally consistent counts
 and verdicts; unknown/private fields and contradictory proofs remain invalid.
 Development selections may refer to unselected full-plan cells without claiming
 that those cells executed. Reading evidence never upgrades failed or partial
-coverage into readiness. The regression invokes the real producer, reads its
-bundle through the Coordinator, and retrieves the original integrity-checked
-screenshot bytes.
+coverage into readiness. The regression invokes the real requirement
+normalizer, coverage evaluator, and artifact writer rather than constructing
+their output by hand. It reads the bundle through the Coordinator and retrieves
+the original integrity-checked screenshot bytes.
 
 The optional `evidence/` directory belongs to that exact leaf. The executor
 passes its absolute location only through `DEVCOORDINATOR_EVIDENCE_DIR`; the

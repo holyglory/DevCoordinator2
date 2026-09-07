@@ -763,6 +763,12 @@ pub struct EvidenceRequiredCoverage {
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct EvidenceCoverageEntry {
+    #[serde(
+        default,
+        alias = "requirementId",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub requirement_id: Option<String>,
     pub target: String,
     pub state: String,
     pub viewport: String,

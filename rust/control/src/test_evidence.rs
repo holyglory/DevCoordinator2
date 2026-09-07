@@ -878,6 +878,7 @@ fn validate_manifest_shape(raw: &[u8]) -> Result<(), ReadError> {
             allowed_keys(
                 entry,
                 &[
+                    "requirementId",
                     "target",
                     "state",
                     "viewport",
@@ -1002,7 +1003,14 @@ fn validate_required_coverage(coverage: &ManifestCoverage) -> Result<(), ReadErr
         return Err(ReadError::Unsafe);
     }
     let mut seen = HashSet::new();
+    let mut identifiers = HashSet::new();
     for entry in &required.entries {
+        if let Some(identifier) = &entry.requirement_id {
+            bounded_required(identifier, 128)?;
+            if !identifiers.insert(identifier) {
+                return Err(ReadError::Unsafe);
+            }
+        }
         bounded_required(&entry.target, 512)?;
         bounded_required(&entry.state, 128)?;
         bounded_required(&entry.viewport, 128)?;
@@ -2696,15 +2704,16 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {pathToFileURL} from 'node:url';
 const [producer,manifestPath]=process.argv.slice(2);
-const {writeJourneyEvidenceArtifact}=await import(pathToFileURL(producer));
+const {evaluateRequiredCoverage,normalizeRequiredCoverage,writeJourneyEvidenceArtifact}=await import(pathToFileURL(producer));
 const original=JSON.parse(fs.readFileSync(manifestPath,'utf8'));
 const pages=original.cells.map(cell=>({...cell,
-  target:{name:cell.targetName,primaryJourney:cell.primaryJourney,stateName:cell.stateName},
+  target:{name:cell.targetName,baseTargetName:cell.targetName,primaryJourney:cell.primaryJourney,stateName:cell.stateName},
   execution:{planIndex:cell.planIndex},review:{reviewCellKey:cell.reviewCellKey},
   status:cell.httpStatus,sourceBinding:{status:cell.sourceBindingStatus},actionTimings:cell.actions,
   screenshots:Object.fromEntries(Object.entries(cell.screenshots).map(([kind,image])=>[kind,image?{...image,path:path.join(path.dirname(manifestPath),image.path)}:null]))
 }));
-const coverage={...original.coverage,requiredCoverage:{declaredCount:1,satisfiedCount:1,failed:false,entries:[{target:'Sign in',state:'invalid-password',viewport:'desktop',status:'satisfied',matchingCellIds:['cell-1'],reason:''}]}};
+const requirements=normalizeRequiredCoverage(pages.map(cell=>({target:cell.target.baseTargetName,state:cell.target.stateName,viewport:cell.viewport.name})));
+const coverage={...original.coverage,requiredCoverage:evaluateRequiredCoverage(pages,requirements)};
 writeJourneyEvidenceArtifact({...original,pages,coverage,plan:{plannedPageCount:pages.length}},manifestPath);
 "#;
         let result = Command::new("node")
@@ -2725,6 +2734,17 @@ writeJourneyEvidenceArtifact({...original,pages,coverage,plan:{plannedPageCount:
         let metadata = evidence(&world);
         assert_eq!(metadata.status, "available", "{metadata:?}");
         assert_eq!(metadata.image_count, 1);
+        assert_eq!(
+            metadata.bundles[0]
+                .coverage
+                .required_coverage
+                .as_ref()
+                .unwrap()
+                .entries[0]
+                .requirement_id
+                .as_deref(),
+            Some("required-0001")
+        );
         let image = world
             .service
             .image(
@@ -2848,6 +2868,25 @@ writeJourneyEvidenceArtifact({...original,pages,coverage,plan:{plannedPageCount:
         manifest["coverage"]["readinessEligible"] = false.into();
         write_manifest(&world.evidence, &manifest);
         assert_eq!(evidence(&world).status, "available");
+        manifest["coverage"]["requiredCoverage"]["entries"][0]["requirementId"] =
+            "required-0001".into();
+        write_manifest(&world.evidence, &manifest);
+        let metadata = serde_json::to_value(evidence(&world)).unwrap();
+        assert_eq!(
+            metadata["bundles"][0]["coverage"]["required_coverage"]["entries"][0]["requirement_id"],
+            "required-0001"
+        );
+        let mut duplicate = manifest.clone();
+        let mut second = duplicate["coverage"]["requiredCoverage"]["entries"][0].clone();
+        second["target"] = "Different target".into();
+        duplicate["coverage"]["requiredCoverage"]["entries"]
+            .as_array_mut()
+            .unwrap()
+            .push(second);
+        duplicate["coverage"]["requiredCoverage"]["declaredCount"] = 2.into();
+        duplicate["coverage"]["requiredCoverage"]["satisfiedCount"] = 2.into();
+        write_manifest(&world.evidence, &duplicate);
+        assert_eq!(evidence(&world).status, "unavailable");
         for pointer in [
             "/coverage/requiredCoverage",
             "/coverage/requiredCoverage/entries/0",
@@ -2863,6 +2902,14 @@ writeJourneyEvidenceArtifact({...original,pages,coverage,plan:{plannedPageCount:
             assert_eq!(evidence(&world).status, "unavailable");
         }
         for (pointer, value) in [
+            (
+                "/coverage/requiredCoverage/entries/0/requirementId",
+                serde_json::json!(""),
+            ),
+            (
+                "/coverage/requiredCoverage/entries/0/requirementId",
+                serde_json::json!("x".repeat(129)),
+            ),
             (
                 "/coverage/requiredCoverage/declaredCount",
                 serde_json::json!(2),
