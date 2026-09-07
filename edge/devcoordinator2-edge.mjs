@@ -11,6 +11,9 @@
 // credentials. No value here names any installation.
 
 import fs from 'node:fs';
+import fsp from 'node:fs/promises';
+import path from 'node:path';
+import { X509Certificate } from 'node:crypto';
 import http from 'node:http';
 import https from 'node:https';
 import { URL, fileURLToPath } from 'node:url';
@@ -41,6 +44,26 @@ function readSecretFile(file, label) {
   }
 }
 
+function readUpstreamAuthorization(file) {
+  const routes = new Map();
+  if (!file) return routes;
+  try {
+    const document = JSON.parse(fs.readFileSync(file, 'utf8'));
+    if (document?.schema !== 1 || !document.routes || typeof document.routes !== 'object'
+      || Array.isArray(document.routes)) throw new Error();
+    for (const [label, authorization] of Object.entries(document.routes)) {
+      if (!/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(label)
+        || typeof authorization !== 'string' || !authorization.trim()
+        || /[\x00-\x1f\x7f]/.test(authorization)) throw new Error();
+      http.validateHeaderValue('authorization', authorization);
+      routes.set(label, authorization);
+    }
+  } catch {
+    throw new Error('upstream authorization: cannot read or validate private configuration');
+  }
+  return routes;
+}
+
 export function loadConfig(e = process.env) {
   const baseDomain = (e.EDGE_BASE_DOMAIN || '').trim().replace(/\.$/, '');
   if (!baseDomain) throw new Error('EDGE_BASE_DOMAIN is required');
@@ -51,6 +74,7 @@ export function loadConfig(e = process.env) {
     httpPort: Number(e.EDGE_HTTP_PORT || (httpOnly ? 8080 : 80)),
     httpsPort: Number(e.EDGE_HTTPS_PORT || 443),
     httpOnly,
+    listenHost: e.EDGE_LISTEN_HOST || '',
     tlsCert: e.EDGE_TLS_CERT || '',
     tlsKey: e.EDGE_TLS_KEY || '',
     sessionSecret: readSecretFile(e.EDGE_SESSION_SECRET_FILE, 'session secret')
@@ -59,6 +83,8 @@ export function loadConfig(e = process.env) {
     oidcClientId: readSecretFile(e.EDGE_OIDC_CLIENT_ID_FILE, 'oidc client id') || e.EDGE_OIDC_CLIENT_ID || '',
     oidcClientSecret: readSecretFile(e.EDGE_OIDC_CLIENT_SECRET_FILE, 'oidc client secret') || e.EDGE_OIDC_CLIENT_SECRET || '',
     routesFile: e.EDGE_ROUTES_FILE || '/var/lib/devcoordinator2/routes.json',
+    upstreamAuthFile: e.EDGE_UPSTREAM_AUTH_FILE || '',
+    acmeWebroot: e.EDGE_ACME_WEBROOT || '',
     stateDir: e.EDGE_STATE_DIR || '/var/lib/devcoordinator2-edge',
     daemonSocket: e.EDGE_DAEMON_SOCKET || '/run/devcoordinator2/daemon.sock',
     consoleDir: e.EDGE_CONSOLE_DIR || '',
@@ -113,6 +139,9 @@ async function readJsonBody(req, limit = 65536) {
 }
 
 export async function createEdge(config, { log = console } = {}) {
+  const upstreamAuthorization = readUpstreamAuthorization(config.upstreamAuthFile);
+  const acmeRoot = config.acmeWebroot ? fs.realpathSync(config.acmeWebroot) : null;
+  const acmeCertificate = acmeRoot && !config.httpOnly ? new X509Certificate(fs.readFileSync(config.tlsCert)) : null;
   const scheme = config.httpOnly ? 'http' : 'https';
   const store = await createRoutesStore({ file: config.routesFile, stateDir: config.stateDir, log });
   const sessions = createSessionManager({ secret: config.sessionSecret, ttlMs: SESSION_TTL_MS,
@@ -249,6 +278,7 @@ export async function createEdge(config, { log = console } = {}) {
   // and which route it came through; public routes stay attribution-free.
   function target(route, host, identity) {
     return { port: route.port, publicHost: host, slug: route.label, route,
+      upstreamAuthorization: route.auth === 'authenticated' ? upstreamAuthorization.get(route.label) : undefined,
       localAttribution: { routeId: `${route.deployment_id}/${route.component}`, email: identity?.email ?? null } };
   }
 
@@ -265,8 +295,37 @@ export async function createEdge(config, { log = console } = {}) {
   }
 
   const servers = [];
+  async function handleAcme(req, res) {
+    if (!acmeRoot || !req.url?.startsWith('/.well-known/acme-challenge/')) return false;
+    const host = hostOf(req);
+    const allowedHost = host && (acmeCertificate ? acmeCertificate.checkHost(host) :
+      host === config.baseDomain || host === config.consoleHost || store.current().routes.some((route) => route.domain === host));
+    const token = req.url.split('?', 1)[0].slice('/.well-known/acme-challenge/'.length);
+    if (!allowedHost || !/^[A-Za-z0-9_-]{1,256}$/.test(token) || !['GET', 'HEAD'].includes(req.method)) {
+      res.writeHead(404, { 'content-length': '0', 'cache-control': 'no-store' });
+      res.end();
+      return true;
+    }
+    let file;
+    try {
+      const directory = await fsp.realpath(path.join(acmeRoot, '.well-known', 'acme-challenge'));
+      if (!directory.startsWith(acmeRoot + path.sep)) throw new Error();
+      file = await fsp.open(path.join(directory, token), fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+      if (!(await file.stat()).isFile()) throw new Error();
+      const body = await file.readFile();
+      res.writeHead(200, { 'content-type': 'text/plain; charset=utf-8', 'content-length': body.length,
+        'cache-control': 'no-store', 'x-content-type-options': 'nosniff' });
+      res.end(req.method === 'HEAD' ? undefined : body);
+    } catch {
+      res.writeHead(404, { 'content-length': '0', 'cache-control': 'no-store' });
+      res.end();
+    } finally {
+      await file?.close();
+    }
+    return true;
+  }
   if (config.httpOnly) {
-    const server = http.createServer((req, res) => { handleRequest(req, res).catch((e) => { log.error?.('request failed', { error: e.message }); if (!res.headersSent) writeJson(res, 500, { ok: false }); }); });
+    const server = http.createServer((req, res) => { (async () => { if (!await handleAcme(req, res)) await handleRequest(req, res); })().catch((e) => { log.error?.('request failed', { error: e.message }); if (!res.headersSent) writeJson(res, 500, { ok: false }); }); });
     server.on('upgrade', handleUpgrade);
     servers.push({ server, port: config.httpPort });
   } else {
@@ -274,13 +333,13 @@ export async function createEdge(config, { log = console } = {}) {
     const secure = https.createServer(tls, (req, res) => { handleRequest(req, res).catch((e) => { log.error?.('request failed', { error: e.message }); if (!res.headersSent) writeJson(res, 500, { ok: false }); }); });
     secure.on('upgrade', handleUpgrade);
     servers.push({ server: secure, port: config.httpsPort });
-    const plain = http.createServer((req, res) => redirect(res, `https://${hostOf(req) || config.consoleHost}${req.url}`));
+    const plain = http.createServer((req, res) => { (async () => { if (!await handleAcme(req, res)) redirect(res, `https://${hostOf(req) || config.consoleHost}${req.url}`); })().catch(() => { if (!res.headersSent) writeJson(res, 500, { ok: false }); }); });
     servers.push({ server: plain, port: config.httpPort });
   }
 
   async function listen() {
     for (const entry of servers) {
-      await new Promise((resolve, reject) => entry.server.listen(entry.port, (err) => (err ? reject(err) : resolve())));
+      await new Promise((resolve, reject) => entry.server.listen({ port: entry.port, host: config.listenHost || undefined }, (err) => (err ? reject(err) : resolve())));
       entry.bound = entry.server.address().port;
     }
     finalizeOrigin(servers[0].bound);
