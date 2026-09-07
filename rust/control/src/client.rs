@@ -122,7 +122,7 @@ mod tests {
     use tokio::io::{AsyncBufReadExt, BufReader};
     use tokio::net::UnixListener;
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn deployment_waits_for_the_result_beyond_the_ordinary_deadline() {
         let temporary = tempfile::tempdir().unwrap();
         let socket = temporary.path().join("daemon.sock");
@@ -135,7 +135,7 @@ mod tests {
             let request: RequestEnvelope = serde_json::from_str(&encoded).unwrap();
             let mut finished = Vec::new();
             stream.read_to_end(&mut finished).await.unwrap();
-            tokio::time::sleep(Duration::from_secs(11)).await;
+            tokio::time::advance(Duration::from_secs(11)).await;
             let response =
                 ResponseEnvelope::success(request.id, serde_json::json!({"finished": true}))
                     .unwrap();
