@@ -4,6 +4,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::ffi::OsString;
 use std::fs::File;
 use std::io::{self, Read, Write};
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -813,6 +814,7 @@ impl TestLifecycle {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone();
         let mut runs = Vec::new();
+        let mut sources = HashMap::new();
         for (worktree_id, path, repository_id, display_name) in rows {
             let worktree = PathBuf::from(&path);
             let Some(mut summary) = self
@@ -829,11 +831,22 @@ impl TestLifecycle {
                 self.project_live(&mut summary, handle)?;
             }
             summary.capacity = Some(capacity.clone());
+            let repository_source = sources
+                .entry(repository_id.clone())
+                .or_insert_with(|| {
+                    let metadata = worktree.metadata().ok()?;
+                    crate::repository::test_repository_source(
+                        &worktree,
+                        (summary.caller_uid, metadata.gid()),
+                    )
+                })
+                .clone();
             runs.push(TestListRow {
                 worktree_id,
                 worktree_path: path,
                 repository_id,
                 display_name,
+                repository_source,
                 earlier_visual_evidence: None,
                 visual_evidence: devcoordinator2_api::results::VisualEvidenceSummary {
                     status: "unavailable".to_owned(),

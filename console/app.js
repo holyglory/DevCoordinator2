@@ -794,6 +794,7 @@ function testCapacityAdjustment(adjustment) {
 }
 function openTestCapacityDialog(capacity, opener) {
   document.getElementById('test-capacity-dialog')?.remove();
+  if (opener?.closest('details')) opener.closest('details').open = false;
   const dlg = document.createElement('dialog');
   dlg.id = 'test-capacity-dialog';
   dlg.innerHTML = `<div class="dialog-head"><h2>Test capacity</h2><button class="dialog-close" type="button" aria-label="Close capacity settings">×</button></div>
@@ -811,7 +812,7 @@ function openTestCapacityDialog(capacity, opener) {
       <div class="dialog-actions"><button class="btn" type="button" id="test-capacity-cancel">Cancel</button>${capacity.cap == null ? '' : '<button class="btn" type="button" id="test-capacity-clear">Clear maximum</button>'}<button class="btn btn-primary" type="submit">Save maximum</button></div>
     </form>`;
   document.body.appendChild(dlg);
-  const close = () => { dlg.close(); dlg.remove(); if (opener?.isConnected) opener.focus(); };
+  const close = () => { dlg.close(); dlg.remove(); restoreTestSettingsFocus('test-capacity-open'); };
   const saveAndReturn = async () => {
     dlg.close(); dlg.remove(); await render(); restoreTestSettingsFocus('test-capacity-open');
   };
@@ -1166,6 +1167,7 @@ async function openTestLogsDialog(run, retention, opener) {
 
 function openTestLogRetentionDialog(retention, opener) {
   document.getElementById('test-log-retention-dialog')?.remove();
+  if (opener?.closest('details')) opener.closest('details').open = false;
   const dlg = document.createElement('dialog'); dlg.id = 'test-log-retention-dialog';
   const hours = retention.max_age_seconds / 3600;
   dlg.innerHTML = `<div class="dialog-head"><h2>Log retention</h2><button class="dialog-close" type="button" aria-label="Close log retention settings">×</button></div>
@@ -1175,7 +1177,7 @@ function openTestLogRetentionDialog(retention, opener) {
       <div class="dialog-actions"><button class="btn" type="button" data-retention-cancel>Cancel</button><button class="btn btn-primary" type="submit">Save and clean eligible logs</button></div>
     </form>`;
   document.body.appendChild(dlg);
-  const close = () => { dlg.close(); dlg.remove(); if (opener?.isConnected) opener.focus(); };
+  const close = () => { dlg.close(); dlg.remove(); restoreTestSettingsFocus('test-log-retention-open'); };
   $('.dialog-close', dlg).addEventListener('click', close);
   $('[data-retention-cancel]', dlg).addEventListener('click', close);
   dlg.addEventListener('cancel', (event) => { event.preventDefault(); close(); });
@@ -1935,7 +1937,9 @@ function refreshEvidenceSelection() {
   loadEvidenceThumbnails(state.evidenceRun, main); loadMainEvidenceImage(state.evidenceRun, screenshot);
 }
 
-async function viewTestEvidence(runId) {
+async function viewTestEvidence(reference) {
+  const [runId, queryString] = reference.split('?');
+  const requestedImage = new URLSearchParams(queryString || '').get('image');
   main.innerHTML = `${pageHeading('Tests', '#/tests')}${skeleton()}`;
   const { runs } = await api('test.list', {});
   const owner = (runs || []).find((item) => item.run_id === runId || item.earlier_visual_evidence?.run_id === runId);
@@ -1951,6 +1955,12 @@ async function viewTestEvidence(runId) {
   const data = await api('test.evidence.get', { path: run.worktree_path, run_id: run.run_id });
   state.evidenceRunId = runId; state.evidenceRun = run; state.evidenceData = data;
   state.evidenceSteps = evidenceSteps(data);
+  if (requestedImage) {
+    for (const step of state.evidenceSteps) for (const cell of step.variants) {
+      const kind = ['viewport', 'full_page'].find((name) => cell.screenshots?.[name]?.image_id === requestedImage);
+      if (kind) { state.evidenceStepKey = step.key; state.evidenceViewport = cell.viewport?.name; state.evidenceScreenshotKind = kind; }
+    }
+  }
   if (!state.evidenceSteps.length) {
     main.innerHTML = `${pageHeading('Tests', '#/tests', run.display_name)}${stateBlock('empty', data.issues?.length ? 'Visual evidence was invalid and could not be opened.' : 'This run did not publish visual journey evidence.')}`; return;
   }
@@ -1958,13 +1968,11 @@ async function viewTestEvidence(runId) {
   main.innerHTML = evidenceWorkspace(run, data); refreshEvidenceSelection();
 }
 
-const TEST_REFRESH_INTERVAL_MS = 2000;
-
 function restoreTestSettingsFocus(id) {
   const button = document.getElementById(id);
   const settings = button?.closest('details');
-  if (settings) settings.open = true;
-  button?.focus();
+  if (settings) settings.open = false;
+  (settings?.querySelector('summary') || button)?.focus();
 }
 
 function bindTestPopovers() {
@@ -1981,137 +1989,17 @@ function bindTestPopovers() {
   }, { signal: viewAbort.signal });
 }
 
-function testEvidenceAction(run) {
-  const evidence = run.visual_evidence || {};
-  const control = `data-test-row-control="${esc(`${run.run_id}:evidence`)}"`;
-  if (evidence.status === 'available' && Number(evidence.bundle_count) > 0) {
-    const count = Number(evidence.image_count) || 0;
-    const label = count === 1 ? 'Evidence · 1 image' : `Evidence · ${count} images`;
-    return `<a class="btn btn-small" ${control} href="#/tests/${encodeURIComponent(run.run_id)}">${esc(label)}</a>`;
-  }
-  if (Number(evidence.issue_count) > 0) {
-    return `<a class="btn btn-small" ${control} href="#/tests/${encodeURIComponent(run.run_id)}">Journey screenshots invalid</a>`;
-  }
-  if (run.status === 'running') {
-    return '<span class="badge warn" title="No visual journey bundle has been published yet.">Journey screenshots pending</span>';
-  }
-  if (evidence.error_code) {
-    return '<span class="badge" title="The retained evidence could not be read.">Journey screenshots unavailable</span>';
-  }
-  return '<span class="badge" title="This test run did not publish a visual journey bundle.">No journey screenshots</span>';
-}
-
-function testRunRow(run) {
-  const earlier = run.earlier_visual_evidence;
-  const checks = run.checks || [];
-  const key = (name) => esc(`${run.worktree_id || run.worktree_path}:${name}`);
-  const statusIcon = run.status === 'passed' ? 'circle-check' : run.status === 'failed' ? 'circle-x' : 'refresh';
-  const duration = run.duration_seconds == null ? '—' : run.duration_seconds < 60 ? `${Math.round(run.duration_seconds * 10) / 10}s` : durationMs(run.duration_seconds * 1000);
-  return `<details class="test-result" data-test-run-id="${esc(run.run_id)}" data-disclosure="${key('row')}">
-    <summary class="test-result-summary" data-test-row-control="${key('row')}"><span class="test-status-icon ${run.status === 'failed' ? 'bad' : ''}"><span class="ti ti-${statusIcon}" aria-hidden="true"></span></span><span class="test-result-name"><strong>${esc(run.display_name)}</strong><span class="muted">${esc(run.test)}</span></span>${badge(run.status)}<span class="test-result-duration">${duration}</span><span class="ti ti-chevron-down" aria-hidden="true"></span></summary>
-    <div class="test-result-body"><div class="test-latest"><strong>Latest run</strong><div>${badge(run.status)}</div><time class="muted" datetime="${esc(run.started_at)}" title="${esc(run.started_at)}">${ago(run.started_at)}</time></div>
-      <div class="test-result-actions"><button class="btn" data-test-logs data-test-row-control="${key('logs')}" data-run-id="${esc(run.run_id)}"><span class="ti ti-file-text" aria-hidden="true"></span>Open logs</button>${testEvidenceAction(run)}<button class="btn btn-small" type="button" data-test-artifacts data-test-row-control="${key('files')}" data-run-id="${esc(run.run_id)}">${window.DevCoordinatorArtifacts.bundles(run).length ? `Files · ${window.DevCoordinatorArtifacts.bundles(run).reduce((count, bundle) => count + bundle.files, 0)}` : 'Evidence files'}</button>
-      ${earlier ? `<details class="test-evidence-popover" data-disclosure="${key('evidence')}"><summary class="btn" data-test-row-control="${key('evidence')}"><span class="ti ti-photo" aria-hidden="true"></span>${esc(earlier.visual_evidence.image_count)} earlier screenshots</summary><div class="test-evidence-card"><strong>Earlier run</strong><time datetime="${esc(earlier.started_at)}">${esc(new Date(earlier.started_at).toLocaleString())}</time><span class="muted">${esc(earlier.test)}</span><p>These screenshots do not verify the latest run.</p><a class="btn" href="#/tests/${encodeURIComponent(earlier.run_id)}">Open screenshots</a></div></details>` : ''}</div>
-      <div class="test-secondary"><details class="test-detail" data-disclosure="${key('checks')}"><summary data-test-row-control="${key('checks')}">Check results${checks.length ? ` · ${checks.length}` : ''}</summary><div>${checks.length ? checks.map((check) => `<div class="test-check"><span>${esc(check.name)}</span>${badge(check.status)}<span class="muted">${durationMs(check.duration_seconds == null ? null : check.duration_seconds * 1000)}</span></div>`).join('') : '<p class="muted">No individual check results were recorded.</p>'}</div></details>
-      <details class="test-detail" data-disclosure="${key('technical')}"><summary data-test-row-control="${key('technical')}">Technical details</summary><dl class="test-technical"><dt>Worktree</dt><dd class="mono">${esc(run.worktree_path)}</dd><dt>Validation</dt><dd>${esc(testTierLabel(run.requested_tier))} · ${run.readiness_eligible ? 'Readiness proof' : 'Diagnostic only'}</dd><dt>Exit code</dt><dd>${run.exit_code ?? '—'}</dd><dt>Output / errors</dt><dd>${bytes(run.stdout_bytes_observed)} / ${bytes(run.stderr_bytes_observed)}</dd></dl></details>
-      <div class="test-result-footer">${run.status === 'running' ? `<button class="btn btn-danger" data-test-row-control="${key('stop')}" data-cmd="test.stop" data-args='${esc(JSON.stringify({ path: run.worktree_path }))}'>Stop run</button>` : `<button class="btn" data-test-row-control="${key('start')}" type="button" data-test-start data-path="${esc(run.worktree_path)}">Run again</button>`}</div>
-    </div></div></details>`;
-}
-
-function testRunCollection(runs) {
-  return runs.length ? `<div class="tests-tablewrap test-results">${runs.map(testRunRow).join('')}</div>` : stateBlock('empty', 'No test runs yet.');
-}
-
-function openTestRunDialog(runs, opener, selectedPath = '') {
-  document.getElementById('test-run-dialog')?.remove();
-  const dialog = document.createElement('dialog');
-  dialog.id = 'test-run-dialog';
-  dialog.setAttribute('aria-labelledby', 'test-run-dialog-title');
-  const available = runs.filter((run) => run.status !== 'running');
-  dialog.innerHTML = `<div class="dialog-head"><h2 id="test-run-dialog-title">Run tests</h2><button class="dialog-close" aria-label="Close run tests"><span class="ti ti-x" aria-hidden="true"></span></button></div><form class="dialog-form"><label class="f">Repository<select name="path" required>${available.map((run) => `<option value="${esc(run.worktree_path)}"${run.worktree_path === selectedPath ? ' selected' : ''}>${esc(run.display_name)} · ${esc(run.test)}</option>`).join('')}</select></label><label class="f">Validation tier<select name="tier" data-test-tier>${TEST_TIERS.map((tier) => `<option value="${tier}"${tier === 'release' ? ' selected' : ''}>${testTierLabel(tier)}</option>`).join('')}</select></label><div class="dialog-actions"><button class="btn" type="button" data-cancel>Cancel</button><button class="btn btn-primary" type="submit"${available.length ? '' : ' disabled'}>Run tests</button></div></form>`;
-  const close = () => { dialog.close(); dialog.remove(); if (opener?.isConnected) opener.focus(); };
-  dialog.querySelector('.dialog-close').addEventListener('click', close);
-  dialog.querySelector('[data-cancel]').addEventListener('click', close);
-  dialog.addEventListener('cancel', (event) => { event.preventDefault(); close(); });
-  dialog.querySelector('form').addEventListener('submit', (event) => {
-    event.preventDefault();
-    const fields = new FormData(event.currentTarget);
-    act(event.submitter, 'test.start', { path: fields.get('path'), tier: fields.get('tier') }, async () => { close(); await render(); });
-  });
-  document.body.appendChild(dialog); dialog.showModal();
-}
-
-function bindTestRunRows(root, runs, retention) {
-  bind(root);
-  root.querySelectorAll('[data-test-artifacts]').forEach((button) => button.addEventListener('click', () => {
-    const run = runs.find((row) => row.run_id === button.dataset.runId);
-    if (run) window.DevCoordinatorArtifacts.open(run, button, { api, esc, bytes, signal: viewAbort.signal, highlight: highlightLogText });
-  }));
-  root.querySelectorAll('[data-test-start]').forEach((button) => button.addEventListener('click', () => {
-    openTestRunDialog(runs, button, button.dataset.path);
-  }));
-  root.querySelectorAll('[data-test-logs]').forEach((button) => button.addEventListener('click', () => {
-    const run = runs.find((row) => row.run_id === button.dataset.runId);
-    if (run) openTestLogsDialog(run, retention, button);
-  }));
-}
-
-function updateTestRunCollection(root, runs, previousSignature, retention) {
-  const signature = JSON.stringify(runs);
-  if (signature === previousSignature) return signature;
-  const active = root.contains(document.activeElement) ? document.activeElement : null;
-  const focusKey = active?.dataset?.testRowControl || null;
-  const openDisclosures = new Set([...root.querySelectorAll('details[open][data-disclosure]')].map((item) => item.dataset.disclosure));
-  const tierValues = new Map(
-    [...root.querySelectorAll('[data-test-tier]')].map((select) => [select.dataset.path, select.value]),
-  );
-  const scrollX = window.scrollX; const scrollY = window.scrollY;
-  root.innerHTML = testRunCollection(runs);
-  for (const disclosure of root.querySelectorAll('details[data-disclosure]')) disclosure.open = openDisclosures.has(disclosure.dataset.disclosure);
-  for (const select of root.querySelectorAll('[data-test-tier]')) {
-    if (tierValues.has(select.dataset.path)) select.value = tierValues.get(select.dataset.path);
-  }
-  bindTestRunRows(root, runs, retention);
-  if (focusKey) root.querySelector(`[data-test-row-control="${CSS.escape(focusKey)}"]`)?.focus();
-  window.scrollTo(scrollX, scrollY);
-  return signature;
-}
-
 const viewTests = guard(async (runId = null) => {
   if (runId) return viewTestEvidence(runId);
   main.innerHTML = `${pageHeading('Tests', '#/tests')}${skeleton()}`;
   const [{ runs }, capacity, retention] = await Promise.all([api('test.list', {}), api('test.capacity.get', {}), api('test.log.retention.get', {})]);
-  const refreshing = runs.some((run) => run.status === 'running');
-  const heading = `<div class="tests-heading">${pageHeading('Tests', '#/tests')}<div class="actions"><span id="test-live-status" class="muted" aria-live="polite">${refreshing ? 'Live updates on' : 'Up to date'}</span><button class="btn btn-primary" type="button" id="test-run-open"${runs.some((run) => run.status !== 'running') ? '' : ' disabled'}>Run tests</button><details class="test-settings"><summary class="btn" aria-label="Test settings"><span class="ti ti-settings" aria-hidden="true"></span></summary><div class="test-settings-menu"><button class="btn" type="button" id="test-log-retention-open">Log retention · ${esc(Math.round(retention.max_age_seconds / 3600))}h / ${esc(retention.case_depth)}</button><button class="btn" type="button" id="test-capacity-open">Capacity · ${esc(capacity.effective_capacity)}</button></div></details></div></div>`;
-  main.innerHTML = `<section class="tests-page">${heading}<section aria-labelledby="test-runs-heading"><h2 id="test-runs-heading">Latest results <span class="muted" id="test-result-count">${runs.length}</span></h2><div id="test-runs-collection">${testRunCollection(runs)}</div></section><div id="logs"></div></section>`;
-  const collection = $('#test-runs-collection', main);
-  bindTestRunRows(collection, runs, retention);
-  bindTestPopovers();
-  $('#test-run-open', main).addEventListener('click', (event) => openTestRunDialog(currentRuns, event.currentTarget));
-  $('#test-capacity-open', main).addEventListener('click', (event) => openTestCapacityDialog(capacity, event.currentTarget));
-  $('#test-log-retention-open', main).addEventListener('click', (event) => openTestLogRetentionDialog(retention, event.currentTarget));
-  const controller = viewAbort;
-  let currentRuns = runs;
-  let signature = JSON.stringify(runs);
-  const refresh = async () => {
-    if (controller !== viewAbort || controller.signal.aborted || location.hash !== '#/tests') return;
-    try {
-      const next = await api('test.list', {});
-      if (controller !== viewAbort || controller.signal.aborted || location.hash !== '#/tests') return;
-      signature = updateTestRunCollection(collection, next.runs || [], signature, retention);
-      currentRuns = next.runs || [];
-      $('#test-result-count', main).textContent = currentRuns.length;
-      $('#test-run-open', main).disabled = !currentRuns.some((run) => run.status !== 'running');
-      const active = (next.runs || []).some((run) => run.status === 'running');
-      $('#test-live-status', main).textContent = active ? 'Live updates on' : 'Up to date';
-      if (active) setTimeout(refresh, TEST_REFRESH_INTERVAL_MS);
-    } catch (error) {
-      if (error.code === 'stale' || controller !== viewAbort || controller.signal.aborted) return;
-      $('#test-live-status', main).textContent = 'Live update paused; retrying';
-      setTimeout(refresh, TEST_REFRESH_INTERVAL_MS);
-    }
-  };
-  if (refreshing) setTimeout(refresh, TEST_REFRESH_INTERVAL_MS);
+  return window.DevCoordinatorTests.render({
+    main, runs, capacity, retention, api, esc, badge, durationMs, bytes, signal: viewAbort.signal,
+    openLogs: (run, opener) => openTestLogsDialog(run, retention, opener),
+    openFiles: (run, opener, initialFile) => window.DevCoordinatorArtifacts.open(run, opener, { api, esc, bytes, signal: viewAbort.signal, highlight: highlightLogText, initialFile }),
+    openCapacity: openTestCapacityDialog, openRetention: openTestLogRetentionDialog,
+    bindSettings: bindTestPopovers,
+  });
 });
 
 // --- Health --------------------------------------------------------------
@@ -3745,6 +3633,7 @@ async function render() {
   main.classList.toggle('health-page', view === 'health');
   main.classList.toggle('deployments-page', view === 'deployments' && !arg);
   main.classList.toggle('test-evidence-page', view === 'tests' && !!arg);
+  main.classList.toggle('tests-collection-page', view === 'tests' && !arg);
   document.body.classList.toggle('plan-shell', view === 'plan' && !!arg);
   document.body.classList.toggle('evidence-shell', view === 'tests' && !!arg);
   if (!(view === 'tests' && arg) && state.evidenceRunId) {

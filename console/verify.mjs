@@ -18,7 +18,7 @@ import { createRequire } from 'node:module';
 import { createEdge } from '../edge/devcoordinator2-edge.mjs';
 import { createSessionManager } from '../edge/lib/session.mjs';
 import { canonicalJson } from '../edge/lib/routes-store.mjs';
-import { revealTestRows, revealTestSettings, verifyTestsDesign } from './verify-tests-design.mjs';
+import { revealTestRows, revealTestSettings, verifyTestsDesign } from './verify-tests-pane.mjs';
 import { artifactResponse, verifyTestArtifacts } from './verify-artifacts.mjs';
 import { verifyProgressCharts } from './verify-progress-charts.mjs';
 
@@ -536,6 +536,12 @@ async function startFakeDaemon(dir) {
       }
       if (scenario.denied && ADMIN_ONLY.includes(cmd)) return reply({ ok: false, error: { code: 'permission_denied', message: `${cmd} requires administrator`, detail: '' } });
       if (scenario.denied && OPERATOR_ONLY.includes(cmd)) return reply({ ok: false, error: { code: 'permission_denied', message: `${cmd} requires operator`, detail: '' } });
+      if (cmd === 'test.stop') { scenario = { ...scenario, testStopped: true }; return reply({ ok: true, data: { status: 'cancelled' } }); }
+      if (cmd === 'test.list' && scenario.testStopped) {
+        const data = fixtures(scenario)['test.list'];
+        data.runs[0] = { ...data.runs[0], status: 'cancelled', finished_at: new Date().toISOString() };
+        return reply({ ok: true, data });
+      }
       if (cmd === 'deployment.stop' && req.params.component === 'stack/projection-worker') { mutable.serviceStopped = true; return reply({ ok: true, data: { state: 'degraded' } }); }
       if (cmd === 'deployment.start' && req.params.component === 'stack/projection-worker') { mutable.serviceStopped = false; return reply({ ok: true, data: { state: 'running' } }); }
       if (cmd === 'deployment.stop') { mutable.stopped = true; return reply({ ok: true, data: { state: 'stopped' } }); }
@@ -754,7 +760,7 @@ async function main() {
       await captureContext.addCookies([{ name: 'dc2_session', value: cookie.split(';')[0].split('=')[1], domain: `.${BASE}`, path: '/' }]);
       const capturePage = await captureContext.newPage();
       await capturePage.goto(`http://${HOST}:${port}/#/tests`);
-      await capturePage.waitForSelector('.tests-tablewrap');
+      await capturePage.waitForSelector('.test-results');
       await capturePage.evaluate(() => document.querySelector('#toasts')?.replaceChildren());
       daemon.setEvidenceImage(
         await capturePage.screenshot({ type: 'png' }),
@@ -833,7 +839,7 @@ async function main() {
 
   if (process.env.CONSOLE_VERIFY_TESTS_DESIGN_ONLY || process.env.CONSOLE_VERIFY_ARTIFACTS_ONLY) {
     try {
-      for (const viewport of [{ width: 1280, height: 900 }, { width: 390, height: 844 }]) {
+      for (const viewport of [{ width: 1280, height: 900 }, { width: 713, height: 921 }, { width: 390, height: 844 }]) {
         for (const theme of ['light', 'dark']) {
           const context = await browser.newContext({ viewport, reducedMotion: 'reduce', colorScheme: theme });
           const { cookie } = sessions.issue({ sub: 'sub', email: 'owner@example.test' });
@@ -1280,7 +1286,7 @@ async function main() {
   await workersToggle.click();
   await dashboardRepo.locator('[data-deployment-repository-toggle]').click();
   await page.evaluate(() => { location.hash = '#/tests'; });
-  await page.waitForSelector('.tests-tablewrap');
+  await page.waitForSelector('.test-results');
   await page.evaluate(() => { location.hash = '#/deployments'; });
   await page.waitForSelector(`[data-repository-id="${REPO}"]`);
   dashboardRepo = page.locator(`[data-repository-id="${REPO}"]`);
@@ -1370,7 +1376,7 @@ async function main() {
   for (const [href, destination] of repositorySummaryJourneys) {
     await page.locator(`[data-repository-id="${REPO}"] a[href="${href}"]`).click();
     await page.waitForURL((url) => url.hash === href);
-    await page.waitForSelector(`main h1 a[href="${destination}"]`);
+    await page.waitForSelector(destination === '#/tests' ? '.tests-sidebar h1' : `main h1 a[href="${destination}"]`);
     check(`interaction: repository summary continues to ${href}`, true);
     await page.goto(`http://${HOST}:${port}/#/deployments`);
     await page.waitForSelector(`[data-repository-id="${REPO}"]`);
@@ -1406,15 +1412,17 @@ async function main() {
   await revealTestRows(page);
   const runningRow = page.locator('[data-test-run-id="t20260101T000000Z-abc123"]');
   const visualRow = page.locator(`[data-test-run-id="${TEST_RUN}"]`);
+  await page.locator('.test-repository').filter({ hasText: LONG }).click();
+  await visualRow.locator('.test-thumbnail').first().waitFor();
   check('tests: evidence availability is truthful before opening a run',
-    /Journey screenshots pending/.test(await runningRow.innerText())
-    && /Evidence · 8 images/.test(await visualRow.innerText())
-    && await runningRow.locator('a[href^="#/tests/"]').count() === 0
+    await visualRow.locator('.test-thumbnail').count() === 4
     && await visualRow.locator(`a[href="#/tests/${TEST_RUN}"]`).count() === 1);
+  await page.locator('.test-repository').filter({ hasText: 'repo-one' }).click();
+  check('tests: nonvisual runs do not claim to have screenshots', await runningRow.locator('.test-thumbnail, a[href^="#/tests/"]').count() === 0);
   await page.setViewportSize(VIEWPORTS.narrow);
   const narrowTests = await page.evaluate(() => {
-    const collection = document.querySelector('.tests-tablewrap');
-    const evidence = document.querySelector('[data-test-run-id="t20260101T000000Z-abc123"] .test-result-actions>.badge');
+    const collection = document.querySelector('.test-results');
+    const evidence = document.querySelector('[data-test-run-id="t20260101T000000Z-abc123"] .test-result-summary>.badge');
     const rect = evidence?.getBoundingClientRect();
     return {
       documentOverflow: document.documentElement.scrollWidth - innerWidth,
@@ -1436,25 +1444,25 @@ async function main() {
   daemon.setScenario({ ...SCENARIOS.populated, testFinished: true, targetedOnly: true });
   await page.waitForFunction(() => {
     const row = document.querySelector('[data-test-run-id="t20260101T000000Z-abc123"]');
-    return row && /passed/.test(row.textContent) && /No journey screenshots/.test(row.textContent);
+    return row && /passed/.test(row.textContent) && !row.querySelector('.test-thumbnail');
   });
   check('tests: live refresh replaces stale running state and stop action without closing active work',
     await page.locator('dialog#test-capacity-dialog[open]').count() === 1
     && await page.locator('#test-capacity-dialog:focus-within').count() === 1
-    && await runningRow.locator('[data-cmd="test.stop"]').count() === 0
-    && /Up to date/.test(await page.innerText('#test-live-status')));
+    && await runningRow.getByRole('button', { name: 'Stop run', exact: true }).count() === 0
+    && await page.innerText('#test-live-status') === '');
   await page.click('#test-capacity-cancel');
   daemon.setScenario(SCENARIOS.populated);
   await page.goto(`http://${HOST}:${port}/#/health`);
   await page.goto(`http://${HOST}:${port}/#/tests`);
-  await page.waitForSelector('#test-live-status');
+  await page.waitForSelector('#test-live-status', { state: 'attached' });
   daemon.setScenario(SCENARIOS.error);
-  await page.waitForFunction(() => /retrying/.test(document.querySelector('#test-live-status')?.textContent || ''));
+  await page.waitForFunction(() => /Updates paused/.test(document.querySelector('#test-live-status')?.textContent || ''));
   daemon.setScenario({ ...SCENARIOS.populated, testFinished: true, targetedOnly: true });
-  await page.waitForFunction(() => /Up to date/.test(document.querySelector('#test-live-status')?.textContent || ''));
+  await page.waitForFunction(() => /passed/.test(document.querySelector('[data-test-run-id="t20260101T000000Z-abc123"]')?.textContent || '') && document.querySelector('#test-live-status')?.textContent === '');
   check('tests: a failed live read preserves the page and recovers on the next bounded refresh',
     /passed/i.test(await page.innerText('[data-test-run-id="t20260101T000000Z-abc123"]'))
-    && await page.locator('.tests-tablewrap').count() === 1);
+    && await page.locator('.test-results').count() === 1);
   daemon.setScenario(SCENARIOS.populated);
   await page.goto(`http://${HOST}:${port}/#/health`);
   await page.goto(`http://${HOST}:${port}/#/tests`);
@@ -1597,11 +1605,10 @@ async function main() {
     await page.locator('[data-test-run-id="t20260101T000000Z-abc123"] button[data-test-logs]:focus').count() === 1);
   daemon.setScenario(SCENARIOS.populated);
   check('tests: the run collection remains primary and capacity details stay in the action dialog',
-    await page.locator('#test-runs-heading').count() === 1
-    && await page.locator('.tests-tablewrap').count() === 1
+    await page.locator('.tests-sidebar h1').count() === 1
+    && await page.locator('.test-results').count() === 1
     && await page.locator('#test-capacity-dialog').count() === 0
-    && /Diagnostic only/.test(await page.locator('.test-result').first().textContent())
-    && /Readiness proof/.test(await page.locator('.test-result').nth(1).textContent()));
+    && await page.locator('#test-runs-collection > h1, #test-runs-collection > h2').count() === 0);
   await revealTestSettings(page); await page.click('#test-log-retention-open');
   await page.waitForSelector('dialog#test-log-retention-dialog[open]');
   const retentionAge = page.locator('#test-log-retention-form [name=max_age_hours]');
@@ -1617,12 +1624,12 @@ async function main() {
   check('interaction: retention saves both boundaries directly and schedules cleanup', daemon.calls.some((c) => c.operation === 'test.log.retention.set'
     && c.params.max_age_seconds === 7200 && c.params.case_depth === 5),
   JSON.stringify(daemon.calls.filter((c) => c.operation === 'test.log.retention.set').map((c) => c.params)));
-  await page.waitForFunction(() => document.activeElement?.id === 'test-log-retention-open');
-  check('interaction: saving retention returns focus to the Log retention action', await page.locator('#test-log-retention-open:focus').count() === 1);
+  await page.waitForSelector('.test-settings>summary:focus');
+  check('interaction: saving retention returns focus to the settings toggle', await page.locator('.test-settings>summary:focus').count() === 1);
   await revealTestSettings(page); await page.click('#test-log-retention-open');
   await page.waitForSelector('dialog#test-log-retention-dialog[open]');
   await page.click('[data-retention-cancel]');
-  check('interaction: cancelling retention preserves context and returns focus', await page.locator('#test-log-retention-open:focus').count() === 1);
+  check('interaction: cancelling retention preserves context and returns focus', await page.locator('.test-settings>summary:focus').count() === 1);
   await page.setViewportSize(VIEWPORTS.narrow);
   await revealTestRows(page); await page.locator('button[data-test-logs]').first().click();
   await page.waitForSelector('dialog#test-logs-dialog[open] #test-log-read-result pre.log');
@@ -1759,7 +1766,7 @@ async function main() {
     daemon.calls.some((call) => call.operation === 'test.capacity.set' && call.params.cap === 72));
   await revealTestSettings(page); await page.waitForSelector('#test-capacity-open');
   check('interaction: saving capacity returns focus to the Capacity action',
-    await page.locator('#test-capacity-open:focus').count() === 1);
+    await page.locator('.test-settings>summary:focus').count() === 1);
   await revealTestSettings(page); await page.click('#test-capacity-open');
   await page.waitForSelector('dialog#test-capacity-dialog[open]');
   daemon.calls.length = 0;
@@ -1769,17 +1776,18 @@ async function main() {
     daemon.calls.some((call) => call.operation === 'test.capacity.set' && call.params.cap === null));
   await page.waitForSelector('[data-test-start]', { state: 'attached' });
   check('interaction: clearing capacity returns focus to the Capacity action',
-    await page.locator('#test-capacity-open:focus').count() === 1);
+    await page.locator('.test-settings>summary:focus').count() === 1);
   await revealTestRows(page);
-  await page.click('[data-test-start]');
-  await page.waitForSelector('#test-run-dialog[open]');
-  const tierControl = page.locator('#test-run-dialog [data-test-tier]');
-  check('tests: restart offers all three tiers with release as the default',
-    JSON.stringify(await tierControl.locator('option').allTextContents()) === JSON.stringify(['Development', 'Pre-merge', 'Release'])
+  await page.locator('.test-repository').filter({ hasText: LONG }).click();
+  await page.click('#test-run-open');
+  await page.waitForSelector('#test-run-form');
+  const tierControl = page.locator('#test-run-form [name=tier]');
+  check('tests: inline run form offers all three tiers with release as the default',
+    JSON.stringify(await tierControl.locator('option').allTextContents()) === JSON.stringify(['Release', 'Pre-merge', 'Development'])
     && await tierControl.inputValue() === 'release');
   daemon.calls.length = 0;
   await tierControl.selectOption('pre-merge');
-  await page.click('#test-run-dialog button[type=submit]');
+  await page.click('#test-run-form button[type=submit]');
   await waitForSettledCall(daemon, page, 'test.start');
   check('interaction: starting a test sends the selected validation tier',
     daemon.calls.some((call) => call.operation === 'test.start' && call.params.tier === 'pre-merge'));

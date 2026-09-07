@@ -135,12 +135,18 @@ the earlier caching policy, so a normal refresh can load the redesigned code.
    newest-first with aspect badge, optional stable ref, and age; superseded
    decisions collapse and dim; "Show older decisions" pages the permanent
    history.
-5. **Tests** — one **Latest results** collection leads with repository, test,
-   result and rounded duration. Expand a row for logs, current or earlier visual
-   evidence, check results, and technical details. Tier, readiness eligibility,
-   worktree path, exit code and output sizes stay in technical details. While
-   any listed run is active, refresh preserves expanded rows, focus, dialogs
-   and scroll position and stops after navigation. **Open logs** opens a focused catalogue-first dialog and
+5. **Tests** — the left pane holds the heading and repository selection. The
+   selected repository's results appear immediately on the right, newest first,
+   without repeating its name. Matching verified Git origins group independent
+   release clones under the source repository name, while every action retains
+   the exact run and checkout. Repositories without a usable origin keep their
+   registered identity; equal display names alone never merge repositories.
+   Selection persists across reloads. Each result shows its test, status, date,
+   duration, direct actions and small screenshot thumbnails. Check results,
+   validation tier, worktree path, exit code and output sizes stay in **Details**.
+   While any listed run is active, refresh preserves open details, the inline
+   run form, dialogs and scroll position and stops after navigation.
+   **Logs** opens a focused catalogue-first dialog and
    immediately shows the selected stream's newest bounded text. Scrolling to
    the earlier boundary loads one prior page without moving the line being
    read; short pages fill only until they become scrollable. Search and likely
@@ -149,9 +155,10 @@ the earlier caching policy, so a normal refresh can load the redesigned code.
    valid JSON and JSON-lines are pretty-printed, textually labelled, and still
    escaped and labelled untrusted.
    **Test settings** contains **Log retention**, which edits the host age/depth
-   boundaries and re-reads the stored state. **Run tests** and **Run again** open
-   a repository/tier dialog with release selected by default; a running row
-   instead offers **Stop run**. Settings also contains **Capacity**, which opens a
+   boundaries and re-reads the stored state. **Run tests** reveals an inline
+   form for the selected repository with release selected by default.
+   **Run again** directly repeats the exact checkout and recorded tier; a
+   running row instead offers **Stop run**. Settings also contains **Capacity**, which opens a
    focused dialog showing learned/effective capacity, the optional maximum,
    active/waiting leaves, admission pause state, and the last adjustment's
    measured evidence. Saving or clearing the host-wide maximum acts directly.
@@ -172,14 +179,18 @@ the earlier caching policy, so a normal refresh can load the redesigned code.
    limit remain available through the retained-file command line tools.
    Closing or changing selection discards stale reads and releases image data;
    expired, denied, changed and unavailable files retain an exact retry.
-   Formal journey screenshots are separate from these files and from logs:
-   they are labelled **pending** while a run is active and has not published a
-   bundle, **No journey screenshots** after a terminal nonvisual run, or with
-   its retained image count when available; only available or invalid evidence
-   is an action. The latest retained earlier visual run is separately available
-   through an **earlier screenshots** disclosure with its actual count and date.
-   Opening it resolves that exact run in the same worktree, never pretending its
-   screenshots verify the current run. A retained formal UI bundle opens as the
+   Formal journey screenshots and retained native images appear as small
+   thumbnails beside their result without opening another disclosure. A click
+   enlarges the image; the preview opens that exact formal screenshot in the
+   existing viewer/commenter, or the exact native image in the retained-file
+   viewer. A compact remaining count opens the full formal collection. Images
+   load only near the visible results, through bounded, identity-checked reads.
+   Nonvisual runs do not show redundant screenshot-unavailable labels. Read
+   failures remain beside the result with a retry, never a broken-image success.
+   The latest retained earlier formal run can supply previews with its actual
+   date and an explicit **Earlier run** label. Opening it resolves that exact
+   run in the same worktree, never pretending its screenshots verify the current
+   run. A retained formal UI bundle opens as the
    selected three-zone review board: ordered journey states and viewport
    choices on the left, the immutable screenshot and complete annotation
    toolbar as the dominant centre workspace, and capture facts, automatic

@@ -3273,6 +3273,7 @@ writeJourneyEvidenceArtifact({...original,pages,coverage,plan:{plannedPageCount:
                 worktree_path: world.repo.display().to_string(),
                 repository_id: world.repository_id,
                 display_name: "repo".to_owned(),
+                repository_source: None,
                 earlier_visual_evidence: None,
                 visual_evidence: VisualEvidenceSummary {
                     status: "unavailable".to_owned(),
