@@ -1,6 +1,6 @@
 # Security Assumptions
 
-Last reviewed: 2026-09-03 (approved Rust control-plane migration and binary provenance)
+Last reviewed: 2026-09-07 (trusted local development configuration authority)
 
 Installation-specific values (the concrete accounts, groups, domain, and
 owner identity) are deliberately not in this file. They live in the
@@ -51,17 +51,19 @@ untracked `instance/` directory and in the installed instance configuration
 - A repository declaration alone never authorizes an ignored Compose
   interpolation environment file. Private root-owned instance configuration
   must separately allow the deterministic repository identity and exact
-  relative path, after that repository's confirmed assumptions deliberately
-  accept disposable development credentials inside the same-owner checkout
-  boundary. The daemon validates the authorization, ignored-file state, and
-  realpath on every use; it passes only the path to Compose and never copies
+  relative path. The owner gives trusted local agents standing authority to
+  manage declared development environment-file grants within the existing
+  same-owner, non-production checkout boundary, without a separate per-file
+  conversational approval. The daemon validates the authorization, ignored-file
+  state, and realpath on every use; it passes only the path to Compose and never copies
   values into configuration metadata, results, logs, metrics, or argv. This
   policy is loaded only by the root daemon; thin CLI/MCP clients and deployed
   application APIs receive neither its contents nor filesystem authority. This
   narrow exception does not permit committed credentials, symlinks/path
   escape, unrelated-account access, or production secrets, and must be
   re-reviewed when the repository trust boundary changes
-  (DC2-2026-08-28-COMPOSE-REPOSITORY-ENV).
+  (DC2-2026-09-07-TRUSTED-DEVELOPMENT-CONFIG, superseding the per-file owner-review
+  requirement in DC2-2026-08-28-COMPOSE-REPOSITORY-ENV).
 - Existing trusted local callers and server administrators may grant/revoke
   one declared repository/file pair and reload the preconfigured policy live
   (DC2-2026-09-07-SCOPED-CONFIGURATION). This retains exact-target authorization,
@@ -73,6 +75,13 @@ untracked `instance/` directory and in the installed instance configuration
   atomically replace that policy; `ProtectSystem=full` keeps the rest of `/etc`
   read-only (DC2-2026-09-07-POLICY-WRITE-SANDBOX). This does not add grants or
   change the policy location, owner, mode, or permitted callers.
+- Trusted local agents may use those supported configuration operations as
+  part of authorized development without asking the owner again. Exact grants
+  remain auditable configuration, not additional conversational gates. This
+  standing permission does not authorize credential disclosure, unintended
+  public access, production changes, destructive data changes, or bypassing
+  host/tool approval controls. Explicit later restrictions still apply
+  (DC2-2026-09-07-TRUSTED-DEVELOPMENT-CONFIG).
 - Runaway processes, containers, storage growth, stale work, malformed
   input, path escape, and lost replies are credible operational failures and
   are handled as such, not as security incidents.

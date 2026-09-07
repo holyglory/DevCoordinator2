@@ -28,11 +28,16 @@ devcoordinator2 health --help
   destination and rechecks every file/tree hash.
 - Use `deployment list|preflight|apply|status|start|stop|restart|rollback|logs|remove`
   for declared permanent or preview deployments.
-- Use `config show|authorize|revoke|reload` for exact, already-reviewed Compose
-  environment-file grants in the existing private policy. Carry the current
-  `active_revision`; never broaden a grant or retry a refused host approval
-  through another route. Preflight lists prerequisites without granting them
-  or changing runtime resources. Unconfigured policy locations and unrelated
+- Use `config show|authorize|revoke|reload` for exact declared Compose
+  environment-file grants in the existing private policy. Apply recorded
+  standing owner authority for trusted local development configuration: when
+  applicable, resolve a missing grant without another per-file conversational
+  approval. Do not infer this authority for other owners, production, or a
+  project with an explicit conflicting restriction. Carry the current
+  `active_revision`; preserve unrelated grants, secret confidentiality,
+  public-access and destructive-data boundaries. Never bypass a host/tool
+  refusal through another route. Preflight lists prerequisites without granting
+  them or changing runtime resources. Unconfigured policy locations and unrelated
   instance settings remain restart-required.
 - Treat running components and current-source readiness separately. Inspect
   `readiness.pending_apply` and `missing_components`; unknown freshness is not
