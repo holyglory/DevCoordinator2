@@ -1275,6 +1275,7 @@ function activateEvidenceDraft(imageId) {
 }
 
 function revealEvidenceDiscussion() {
+  evidenceLayoutSession?.showDetails();
   $('.evidence-page', main)?.classList.add('inspector-open');
   refreshEvidenceInspector();
   requestAnimationFrame(() => {
@@ -1324,9 +1325,10 @@ function ensureEvidenceComposer() {
     const key = state.evidenceDraftKey;
     state.evidenceSavingKey = key;
     updateEvidenceToolbar();
+    let failure;
     const result = await evidenceMutation(event.submitter, 'test.evidence.feedback.create', {
       image_id: screenshot.image_id, body, marks: cloneEvidenceMarks(state.evidenceDraftMarks),
-    });
+    }, error => { failure = error; });
     state.evidenceSavingKey = null;
     if (result) {
       state.evidenceDrafts.delete(key);
@@ -1338,8 +1340,9 @@ function ensureEvidenceComposer() {
       toast('Feedback task created', 'ok');
     } else if (state.evidenceDraftKey === key) {
       const error = $('#evidence-feedback-error', form);
-      error.textContent = 'Feedback was not saved. Your comment and marks are still here; try again.';
+      error.textContent = `Could not confirm the save: ${failure?.message || 'the request failed'}. Your comment and marks are still here.`;
       error.hidden = false;
+      openEvidenceComposer(undefined, false);
     }
     updateEvidenceToolbar();
   });
@@ -1563,6 +1566,152 @@ async function loadEvidenceThumbnails(run, root = main) {
 }
 
 let evidenceCanvasSession = null;
+let evidenceLayoutSession = null;
+
+function setupEvidenceLayout() {
+  evidenceLayoutSession?.dispose();
+  const page = $('.evidence-page', main);
+  if (!page) return;
+  const controller = new AbortController();
+  const signal = controller.signal;
+  const preferences = {};
+  try { Object.assign(preferences, JSON.parse(localStorage.getItem('dc2-evidence-panels') || '{}')); } catch {}
+  let fullscreen = false;
+  let pendingFullscreen = false;
+  let fullscreenPanels = { journey: false, details: false };
+  let priorScroll;
+  let blockedSiblings = [];
+  let toastLocation;
+  let frame;
+  page.classList.add('evidence-layout');
+  const expanded = (panel) => fullscreen ? fullscreenPanels[panel] : preferences[panel] ?? (panel === 'journey' || page.clientWidth >= 1050);
+  const paint = () => {
+    if (!page.isConnected) return;
+    page.classList.toggle('evidence-layout-narrow', page.clientWidth < 1050);
+    page.classList.toggle('evidence-is-fullscreen', fullscreen);
+    page.style.height = `${fullscreen ? innerHeight : Math.max(520, innerHeight - Math.max(0, page.getBoundingClientRect().top) - 1)}px`;
+    for (const [panel, selector, label] of [['journey', '#evidence-journey', 'journey panel'], ['details', '#evidence-inspector', 'capture details']]) {
+      const visible = expanded(panel);
+      $(selector, page).hidden = !visible;
+      page.style.setProperty(`--evidence-${panel}-width`, visible ? (panel === 'journey' ? '230px' : '280px') : '0px');
+      page.querySelectorAll(`[data-evidence-panel="${panel}"]`).forEach(button => {
+        button.setAttribute('aria-expanded', String(visible));
+        button.setAttribute('aria-label', `${visible ? 'Hide' : 'Show'} ${label}`);
+        button.title = `${visible ? 'Hide' : 'Show'} ${label}`;
+        if (!button.classList.contains('evidence-panel-close')) {
+          const icon = $('.ti', button);
+          icon.classList.toggle('ti-layout-sidebar-left-collapse', visible);
+          icon.classList.toggle('ti-layout-sidebar-left-expand', !visible);
+        }
+      });
+    }
+    page.classList.toggle('inspector-open', expanded('details'));
+    const board = $('.evidence-board', page).getBoundingClientRect();
+    const imageRegion = $('#evidence-scroll', page).getBoundingClientRect();
+    page.style.setProperty('--evidence-details-top', `${Math.max(0, imageRegion.top - board.top) + 4}px`);
+    page.style.setProperty('--evidence-details-bottom', `${Math.max(0, board.bottom - imageRegion.bottom) + 4}px`);
+    const fullButton = $('[data-evidence-fullscreen]', page);
+    const fullLabel = fullscreen ? 'Exit full screen' : 'Full screen';
+    fullButton.setAttribute('aria-label', fullLabel); fullButton.title = fullLabel;
+    fullButton.setAttribute('aria-pressed', String(fullscreen));
+    fullButton.disabled = pendingFullscreen;
+    $('.evidence-fullscreen-label', fullButton).textContent = fullLabel;
+    $('path', fullButton).setAttribute('d', fullscreen ? 'M4 9h5V4m6 0v5h5m0 6h-5v5m-6 0v-5H4' : 'M4 9V4h5m6 0h5v5m0 6v5h-5m-6 0H4v-5');
+    const toolbar = $('.evidence-toolbar', page);
+    toolbar.classList.remove('evidence-toolbar-compact');
+    const needed = [...toolbar.children].reduce((width, element) => width + element.getBoundingClientRect().width + 6, 0) + 20;
+    toolbar.classList.toggle('evidence-toolbar-compact', needed > toolbar.clientWidth);
+    cancelAnimationFrame(frame);
+    frame = requestAnimationFrame(() => {
+      redrawEvidenceCanvas();
+      const composer = $('#evidence-composer', page);
+      if (composer && !composer.hidden) openEvidenceComposer(undefined, false);
+    });
+  };
+  const showPanel = (panel, visible, focus = false) => {
+    if (fullscreen) fullscreenPanels[panel] = visible;
+    else {
+      preferences[panel] = visible;
+      try { localStorage.setItem('dc2-evidence-panels', JSON.stringify(preferences)); } catch {}
+    }
+    paint();
+    if (focus) (visible && panel === 'details' ? $('.evidence-panel-close', page) : $(`[data-evidence-panel="${panel}"]:not(.evidence-panel-close)`, page))?.focus({ preventScroll: true });
+  };
+  const finishFullscreen = () => {
+    fullscreen = false;
+    for (const [element, inert] of blockedSiblings) element.inert = inert;
+    blockedSiblings = [];
+    if (toastLocation) {
+      toastLocation.parent.insertBefore($('#toasts'), toastLocation.next?.parentNode === toastLocation.parent ? toastLocation.next : null);
+      toastLocation = null;
+    }
+    document.body.classList.remove('evidence-fullscreen-mode');
+    paint();
+    if (priorScroll) window.scrollTo(priorScroll.x, priorScroll.y);
+    $('[data-evidence-fullscreen]', page)?.focus({ preventScroll: true });
+  };
+  const toggleFullscreen = async () => {
+    if (pendingFullscreen) return;
+    pendingFullscreen = true;
+    if (fullscreen) {
+      try { if (document.fullscreenElement === page) await document.exitFullscreen(); }
+      finally { finishFullscreen(); pendingFullscreen = false; paint(); }
+      return;
+    }
+    priorScroll = { x: scrollX, y: scrollY };
+    fullscreenPanels = { journey: false, details: false };
+    fullscreen = true;
+    const toasts = $('#toasts');
+    toastLocation = { parent: toasts.parentNode, next: toasts.nextSibling };
+    page.appendChild(toasts);
+    for (let active = page; active.parentElement; active = active.parentElement) {
+      for (const sibling of active.parentElement.children) if (sibling !== active) {
+        blockedSiblings.push([sibling, sibling.inert]); sibling.inert = true;
+      }
+      if (active.parentElement === document.body) break;
+    }
+    document.body.classList.add('evidence-fullscreen-mode');
+    paint();
+    try { if (document.fullscreenEnabled && page.requestFullscreen) await page.requestFullscreen(); } catch {}
+    finally { pendingFullscreen = false; paint(); }
+    $('#evidence-canvas', page)?.focus({ preventScroll: true });
+  };
+  page.addEventListener('click', event => {
+    const panel = event.target.closest('[data-evidence-panel]');
+    if (panel) showPanel(panel.dataset.evidencePanel, !expanded(panel.dataset.evidencePanel), true);
+    if (event.target.closest('[data-evidence-fullscreen]')) void toggleFullscreen();
+  }, { signal });
+  document.addEventListener('fullscreenchange', () => {
+    if (fullscreen && document.fullscreenElement !== page) finishFullscreen();
+  }, { signal });
+  document.addEventListener('keydown', event => {
+    if (event.key === 'Escape' && fullscreen) {
+      event.preventDefault(); event.stopPropagation(); void toggleFullscreen();
+    } else if (event.key === 'Escape' && page.classList.contains('evidence-layout-narrow') && expanded('details') && $('#evidence-inspector', page).contains(document.activeElement)) {
+      event.preventDefault(); showPanel('details', false, true);
+    } else if (event.key === 'Tab' && fullscreen) {
+      const controls = [...page.querySelectorAll('button:not(:disabled),a[href],input,select,textarea,[tabindex="0"]')].filter(element => element.getClientRects().length);
+      const boundary = event.shiftKey ? controls[0] : controls.at(-1);
+      if (document.activeElement === boundary) { event.preventDefault(); (event.shiftKey ? controls.at(-1) : controls[0])?.focus(); }
+    }
+  }, { signal, capture: true });
+  const observer = new ResizeObserver(paint);
+  observer.observe(page);
+  observer.observe($('.evidence-workspace', page));
+  window.addEventListener('resize', paint, { signal });
+  const dispose = () => {
+    if (controller.signal.aborted) return;
+    controller.abort(); observer.disconnect(); cancelAnimationFrame(frame);
+    for (const [element, inert] of blockedSiblings) element.inert = inert;
+    if (toastLocation) toastLocation.parent.insertBefore($('#toasts'), toastLocation.next?.parentNode === toastLocation.parent ? toastLocation.next : null);
+    page.classList.remove('evidence-is-fullscreen');
+    document.body.classList.remove('evidence-fullscreen-mode');
+    if (document.fullscreenElement === page) void document.exitFullscreen().catch(() => {});
+  };
+  viewAbort.signal.addEventListener('abort', dispose, { once: true });
+  evidenceLayoutSession = { showDetails: () => showPanel('details', true), refresh: paint, dispose };
+  paint();
+}
 function cloneEvidenceMarks(marks) { return JSON.parse(JSON.stringify(marks || [])); }
 function clamp01(value) { return Math.max(0, Math.min(1, value)); }
 
@@ -1915,8 +2064,9 @@ function evidenceToolbar() {
   return `<div class="evidence-toolbar" role="toolbar" aria-label="Screenshot annotation tools">
     <div class="evidence-tool-group">${EVIDENCE_TOOLS.map(([tool, icon, label]) => `<button type="button" class="evidence-tool${tool === state.evidenceTool ? ' active' : ''}" data-evidence-tool="${tool}" aria-label="${label}" title="${label}" aria-pressed="${tool === state.evidenceTool}">${planIcon(icon)}<span>${label}</span></button>`).join('')}</div>
     <label class="evidence-color" title="Annotation colour">${planIcon('palette')}<span class="sr-only">Annotation colour</span><select id="evidence-color" aria-label="Annotation colour">${EVIDENCE_COLORS.map(([color, label]) => `<option value="${color}"${color === state.evidenceColor ? ' selected' : ''}>${label}</option>`).join('')}</select><i style="--mark-color:${state.evidenceColor}"></i></label>
-    <div class="evidence-tool-group evidence-history"><button type="button" class="btn btn-small" data-evidence-compose disabled>Edit comment</button><button type="button" class="evidence-tool" data-evidence-undo aria-label="Undo" title="Undo" disabled>${planIcon('arrow-back-up')}</button><button type="button" class="evidence-tool" data-evidence-redo aria-label="Redo" title="Redo" disabled>${planIcon('arrow-forward-up')}</button></div>
+    <div class="evidence-tool-group evidence-history"><button type="button" class="evidence-tool" data-evidence-compose aria-label="Edit comment" title="Edit comment" disabled>${planIcon('message-plus')}<span>Edit comment</span></button><button type="button" class="evidence-tool" data-evidence-undo aria-label="Undo" title="Undo" disabled>${planIcon('arrow-back-up')}</button><button type="button" class="evidence-tool" data-evidence-redo aria-label="Redo" title="Redo" disabled>${planIcon('arrow-forward-up')}</button></div>
     <div class="evidence-tool-group evidence-zoom"><button type="button" class="evidence-tool" data-evidence-zoom-out aria-label="Zoom out" title="Zoom out">${planIcon('zoom-out')}</button><output id="evidence-zoom-value">100%</output><button type="button" class="evidence-tool" data-evidence-zoom-in aria-label="Zoom in" title="Zoom in">${planIcon('zoom-in')}</button><button type="button" class="evidence-tool" data-evidence-fit aria-label="Fit screenshot" title="Fit screenshot">${planIcon('focus-centered')}</button><button type="button" class="evidence-tool" data-evidence-clear aria-label="Clear unsaved marks" title="Clear unsaved marks" disabled>${planIcon('trash')}</button></div>
+    <div class="evidence-tool-group evidence-layout-controls"><button type="button" class="evidence-tool" data-evidence-panel="journey" aria-controls="evidence-journey" aria-label="Hide journey panel" title="Hide journey panel">${planIcon('layout-sidebar-left-collapse')}<span>Journey</span></button><button type="button" class="evidence-tool" data-evidence-panel="details" aria-controls="evidence-inspector" aria-label="Hide capture details" title="Hide capture details">${planIcon('layout-sidebar-left-collapse')}<span>Details</span></button><button type="button" class="evidence-tool" data-evidence-fullscreen aria-label="Full screen" title="Full screen" aria-pressed="false"><svg class="evidence-fullscreen-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9V4h5m6 0h5v5m0 6v5h-5m-6 0H4v-5"/></svg><span class="evidence-fullscreen-label">Full screen</span></button></div>
   </div>`;
 }
 
@@ -1934,7 +2084,7 @@ function evidenceWorkspace(run, data) {
   return `<section class="evidence-page" data-ui-region="test-evidence-primary">
     <header class="evidence-page-head"><div><h1 class="evidence-breadcrumb">${breadcrumb}<strong>${esc(run.test || 'Test run')}</strong></h1><div class="evidence-run-line"><span class="mono">${esc(run.run_id)}</span>${run.isEarlierEvidence ? badge('Earlier visual run') : `${badge(run.status)}<span class="evidence-run-meta">${esc(testTierLabel(run.requested_tier))}</span><span class="evidence-run-meta">${run.readiness_eligible ? 'Release proof' : 'Diagnostic only'}</span>`}<span class="evidence-run-meta">${esc(ago(run.started_at))}</span></div></div><div class="evidence-review-state"><span>Review status</span>${openFeedback ? badge(`${openFeedback} changes requested`, 'warn') : badge('No changes requested', 'ok')}</div></header>
     <div class="evidence-board">
-      <aside class="evidence-rail" aria-label="Journey steps"><div class="evidence-rail-head"><h2>Journey</h2><span>${state.evidenceSteps.length} steps</span></div><div id="evidence-step-list">${renderEvidenceRail()}</div></aside>
+      <aside id="evidence-journey" class="evidence-rail" aria-label="Journey steps"><div class="evidence-rail-head"><h2>Journey</h2><span>${state.evidenceSteps.length} steps</span></div><div id="evidence-step-list">${renderEvidenceRail()}</div></aside>
       <section class="evidence-workspace" data-ui-region="test-evidence-workspace"><header id="evidence-current" class="evidence-current"></header>${evidenceToolbar()}<div id="evidence-scroll" class="evidence-scroll"><div id="evidence-media" class="evidence-media"><img id="evidence-image" alt="Selected user journey screenshot" hidden><canvas id="evidence-canvas" tabindex="0" aria-label="Screenshot annotation canvas"></canvas></div><div id="evidence-image-state" class="evidence-image-state">Loading screenshot…</div></div><section class="evidence-compare" aria-labelledby="evidence-compare-title"><div><h2 id="evidence-compare-title">Viewport comparison</h2><span>Same journey moment</span></div><div id="evidence-variants" class="evidence-variants"></div></section></section>
       <aside id="evidence-inspector" class="evidence-inspector" aria-label="Capture details and feedback"></aside>
     </div>
@@ -1947,7 +2097,7 @@ function replaceEvidenceFeedback(feedback) {
   if (index >= 0) rows[index] = feedback; else rows.push(feedback);
 }
 
-async function evidenceMutation(button, command, args) {
+async function evidenceMutation(button, command, args, onError = error => toast(error.message, 'bad')) {
   const runId = state.evidenceRun.run_id;
   button.disabled = true;
   try {
@@ -1957,13 +2107,14 @@ async function evidenceMutation(button, command, args) {
     if (result.feedback && state.evidenceRun?.run_id === runId) replaceEvidenceFeedback(result.feedback);
     return result;
   } catch (error) {
-    toast(error.message, 'bad'); return null;
+    onError(error); return null;
   } finally { button.disabled = false; }
 }
 
 function bindEvidenceInspector() {
   main.querySelectorAll('[data-evidence-feedback]').forEach((button) => button.addEventListener('click', () => {
     state.evidenceSelectedFeedbackId = button.dataset.evidenceFeedback;
+    evidenceLayoutSession?.showDetails();
     $('.evidence-page', main)?.classList.add('inspector-open');
     refreshEvidenceInspector(); redrawEvidenceCanvas();
   }));
@@ -2027,11 +2178,8 @@ function bindEvidenceInspector() {
 function refreshEvidenceInspector() {
   const inspector = $('#evidence-inspector', main); if (!inspector) return;
   const { step, cell, screenshot } = currentEvidenceSelection();
-  inspector.innerHTML = `<button type="button" class="evidence-mobile-inspector-toggle" data-evidence-inspector-toggle aria-expanded="${$('.evidence-page', main)?.classList.contains('inspector-open') || false}">${planIcon('message-plus')}Feedback and capture details${planIcon('chevron-up')}</button><div class="evidence-inspector-body">${renderEvidenceInspector(state.evidenceRun, step, cell, screenshot)}</div>`;
-  $('[data-evidence-inspector-toggle]', inspector)?.addEventListener('click', (event) => {
-    const page = $('.evidence-page', main); const open = !page.classList.contains('inspector-open');
-    page.classList.toggle('inspector-open', open); event.currentTarget.setAttribute('aria-expanded', String(open));
-  });
+  inspector.innerHTML = `<button type="button" class="evidence-tool evidence-panel-close" data-evidence-panel="details" aria-label="Hide capture details" title="Hide capture details">${planIcon('x')}</button><div class="evidence-inspector-body">${renderEvidenceInspector(state.evidenceRun, step, cell, screenshot)}</div>`;
+  $('h2', inspector)?.setAttribute('id', 'evidence-details-heading');
   bindEvidenceInspector();
 }
 
@@ -2123,6 +2271,7 @@ function refreshEvidenceSelection() {
   if (screenshot?.image_id) {
     const query = new URLSearchParams(location.hash.split('?')[1] || '');
     query.set('image', screenshot.image_id);
+    if (state.evidenceRun.worktree_id) query.set('worktree', state.evidenceRun.worktree_id);
     window.history.replaceState(null, '', `#/tests/${state.evidenceRunId}?${query}`);
   }
   $('#evidence-step-list', main).innerHTML = renderEvidenceRail();
@@ -2144,19 +2293,22 @@ function refreshEvidenceSelection() {
 async function viewTestEvidence(reference) {
   const [runId, queryString] = reference.split('?');
   const requestedImage = new URLSearchParams(queryString || '').get('image');
+  const requestedWorktree = new URLSearchParams(queryString || '').get('worktree');
   main.innerHTML = `${pageHeading('Tests', '#/tests')}${skeleton()}`;
-  const { runs } = await api('test.list', {});
-  const owner = (runs || []).find((item) => item.run_id === runId || item.earlier_visual_evidence?.run_id === runId);
-  const run = owner?.run_id === runId ? owner : owner ? {
+  let retained = workspace.retainedEvidence;
+  const { runs } = retained ? { runs: [] } : await api('test.list', {});
+  const owner = (runs || []).find((item) => (item.run_id === runId || item.earlier_visual_evidence?.run_id === runId) && (!requestedWorktree || item.worktree_id === requestedWorktree));
+  let run = owner?.run_id === runId ? owner : owner ? {
     worktree_id: owner.worktree_id, worktree_path: owner.worktree_path,
     repository_id: owner.repository_id, display_name: owner.display_name,
     ...owner.earlier_visual_evidence, isEarlierEvidence: true,
   } : null;
   if (!run) {
-    main.innerHTML = `${pageHeading('Tests', '#/tests', 'Evidence unavailable')}${stateBlock('empty', 'No visual evidence is available for this run in the current collection.')}`; return;
+    retained ||= await api('test.evidence.lookup', { run_id: runId, image_id: requestedImage || undefined, worktree_id: new URLSearchParams(queryString || '').get('worktree') || undefined });
+    run = { ...retained.context, isEarlierEvidence: true };
   }
   if (state.evidenceRunId !== runId) resetEvidenceImages();
-  const data = await api('test.evidence.get', { path: run.worktree_path, run_id: run.run_id });
+  const data = retained?.evidence || await api('test.evidence.get', { path: run.worktree_path, run_id: run.run_id });
   state.evidenceRunId = runId; state.evidenceRun = run; state.evidenceData = data;
   state.evidenceSteps = evidenceSteps(data);
   if (requestedImage) {
@@ -2174,7 +2326,7 @@ async function viewTestEvidence(reference) {
     main.innerHTML = `${pageHeading('Tests', '#/tests', run.display_name)}${stateBlock('empty', data.issues?.length ? 'Visual evidence was invalid and could not be opened.' : 'This run did not publish visual journey evidence.')}`; return;
   }
   if (!state.evidenceSteps.some((step) => step.key === state.evidenceStepKey)) state.evidenceStepKey = state.evidenceSteps[0].key;
-  main.innerHTML = evidenceWorkspace(run, data); refreshEvidenceSelection();
+  main.innerHTML = evidenceWorkspace(run, data); refreshEvidenceSelection(); setupEvidenceLayout();
 }
 
 function restoreTestSettingsFocus(id) {
@@ -3852,6 +4004,10 @@ async function render() {
   try { route = await workspace.resolve(signal); }
   catch (error) {
     if (signal.aborted || error.code === 'stale' || error.code === 'unauthenticated') return;
+    if (['test_evidence_expired', 'test_evidence_not_found'].includes(error.code)) {
+      main.innerHTML = currentDestinationHeading() + stateBlock('empty', 'No visual evidence is available for this run. It may have expired.');
+      return;
+    }
     main.innerHTML = currentDestinationHeading() + stateBlock(error.code === 'permission_denied' ? 'denied' : 'error', error.message);
     return;
   }

@@ -838,6 +838,15 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         results::FeedbackCreated
     ),
     operation!(
+        "test.evidence.lookup",
+        "Open an exact retained screenshot run without relying on the latest-runs list.",
+        READ_SERVER_ADMIN,
+        Protocol["test evidence lookup"],
+        ["test_evidence_lookup"],
+        params::EvidenceLookup,
+        results::EvidenceLookup
+    ),
+    operation!(
         "test.evidence.feedback.reply",
         "Reply to screenshot-anchored feedback.",
         APPEND_REPOSITORY_ADMIN,
@@ -1706,9 +1715,9 @@ mod tests {
         for tool in mcp_tools() {
             assert!(tools.insert(tool.name), "duplicate MCP tool");
         }
-        assert_eq!(OPERATIONS.len(), 91);
-        assert_eq!(tools.len(), 68);
-        assert_eq!(cli_routes.len(), 80);
+        assert_eq!(OPERATIONS.len(), 92);
+        assert_eq!(tools.len(), 69);
+        assert_eq!(cli_routes.len(), 81);
     }
 
     #[test]

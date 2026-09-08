@@ -485,6 +485,17 @@ pub struct EvidenceReference {
 
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct EvidenceLookup {
+    #[schemars(regex(pattern = r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"))]
+    pub run_id: String,
+    #[schemars(regex(pattern = r"^[0-9a-f]{64}$"))]
+    pub image_id: Option<String>,
+    #[schemars(regex(pattern = r"^w[0-9a-f]{16}$"))]
+    pub worktree_id: Option<String>,
+}
+
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct EvidenceImage {
     #[schemars(length(min = 1))]
     pub path: String,

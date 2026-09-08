@@ -220,10 +220,19 @@ the earlier caching policy, so a normal refresh can load the redesigned code.
    recoloring, deleting, and undoing changes. Cancelled pointer gestures add no
    mark. Switching journey steps or screenshot variants preserves each image's
    unsaved comment and marks for the current page session; they are not saved
-   across a browser reload. Failed saves preserve the draft for retry. Saving a marked
+   across a browser reload. Failed saves preserve the draft for retry. Journey
+   and Details controls independently hide and restore the side panels; normal
+   panel choices persist in the browser. Full screen initially hides both panels
+   and keeps the same interactive canvas, image navigation and comment editor.
+   Panels can be reopened there without changing the normal layout. The exit
+   control or Escape restores that layout without discarding the draft. Browsers
+   without native fullscreen use the full browser viewport. Saving a marked
    suggestion atomically creates a Plan `user_feedback` task; replies, author
    edits, resolve/reopen, and explicitly labelled author deletion remain linked
-   to the exact screenshot. Missing, expired, invalid, tampered, or unauthorized
+   to the exact screenshot. Retained screenshot links remain usable after newer
+   runs replace the recent-results list; links retain their worktree identity and
+   ambiguous copied captures never silently select a different repository.
+   Missing, expired, invalid, tampered, or unauthorized
    evidence is stated honestly and never replaced with a mock image.
 6. **Health** — host condition first as one aligned capacity group (CPU,
    memory, root filesystem, load/swap) beside a separate operational-status

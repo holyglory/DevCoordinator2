@@ -485,6 +485,14 @@ enum RetentionCommand {
 
 #[derive(Debug, Subcommand)]
 enum EvidenceCommand {
+    Lookup {
+        #[arg(long)]
+        run_id: String,
+        #[arg(long)]
+        image_id: Option<String>,
+        #[arg(long)]
+        worktree_id: Option<String>,
+    },
     Show(EvidenceReferenceArgs),
     Image(EvidenceImageArgs),
     Feedback {
@@ -1460,6 +1468,14 @@ impl TestLogCommand {
 impl EvidenceCommand {
     fn into_invocation(self) -> Result<Invocation, CliValidationError> {
         match self {
+            Self::Lookup {
+                run_id,
+                image_id,
+                worktree_id,
+            } => remote(
+                "test.evidence.lookup",
+                json!({"run_id":run_id,"image_id":image_id,"worktree_id":worktree_id}),
+            ),
             Self::Show(args) => remote(
                 "test.evidence.get",
                 json!({"path":args.path.absolute()?,"run_id":args.run_id}),
@@ -2400,6 +2416,10 @@ mod tests {
                     "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 ],
                 "test.evidence.image",
+            ),
+            (
+                &["test", "evidence", "lookup", "--run-id", "trun"],
+                "test.evidence.lookup",
             ),
             (
                 &[

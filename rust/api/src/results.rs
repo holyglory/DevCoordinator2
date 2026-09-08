@@ -875,6 +875,25 @@ pub struct EvidenceGet {
 
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct EvidenceRunContext {
+    pub repository_id: String,
+    pub worktree_id: String,
+    pub worktree_path: String,
+    pub display_name: String,
+    pub run_id: String,
+    pub test: Option<String>,
+    pub started_at: Option<String>,
+}
+
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EvidenceLookup {
+    pub context: EvidenceRunContext,
+    pub evidence: EvidenceGet,
+}
+
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ImageChunk {
     pub image_id: String,
     pub mime: String,

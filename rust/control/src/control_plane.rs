@@ -84,6 +84,7 @@ pub const FOUNDATION_OPERATIONS: &[&str] = &[
     "test.stop",
     "test.list",
     "test.evidence.get",
+    "test.evidence.lookup",
     "test.evidence.image",
     "test.evidence.feedback.create",
     "test.evidence.feedback.reply",
@@ -690,6 +691,7 @@ impl ControlPlane {
                 encode(result)
             }
             "test.evidence.get" => encode(self.test_evidence.get(decode(params)?, caller)?),
+            "test.evidence.lookup" => encode(self.test_evidence.lookup(decode(params)?, caller)?),
             "test.evidence.image" => encode(self.test_evidence.image(decode(params)?, caller)?),
             "test.evidence.feedback.create" => {
                 let params: params::CreateFeedback = decode(params)?;

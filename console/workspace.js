@@ -84,6 +84,7 @@ window.DevCoordinatorWorkspace = (() => {
       sidebarCollapsed = localStorage.getItem('dc2-repository-collapsed') === 'true';
     } catch {}
     let data;
+    let retainedEvidence;
     let groups = [];
     let selectedId = '';
     let currentView = 'plan';
@@ -222,6 +223,7 @@ window.DevCoordinatorWorkspace = (() => {
     }
 
     async function resolve(signal) {
+      retainedEvidence = null;
       const [pathname, queryString = ''] = (location.hash || '#/plan').split('?');
       const [, view = 'plan', argument = ''] = pathname.split('/');
       currentView = view;
@@ -234,8 +236,15 @@ window.DevCoordinatorWorkspace = (() => {
       await load(signal);
       if (signal.aborted) return null;
       const query = new URLSearchParams(queryString);
+      const matchesRun = run => (run.run_id === argument || run.earlier_visual_evidence?.run_id === argument) && (!query.get('worktree') || run.worktree_id === query.get('worktree'));
+      if (view === 'tests' && argument && !data.runs.some(matchesRun)) {
+        retainedEvidence = await api('test.evidence.lookup', { run_id: argument, image_id: query.get('image') || undefined, worktree_id: query.get('worktree') || undefined });
+        if (signal.aborted) return null;
+        data.runs.push({ ...retainedEvidence.context, isEarlierEvidence: true });
+        groups = catalogue(data.repositories, data.runs, data.deployments);
+      }
       let requested = ['plan', 'progress', 'usage', 'decisions', 'glossary'].includes(view) ? argument : query.get('repository');
-      if (view === 'tests' && argument) requested = data.runs.find((run) => run.run_id === argument || run.earlier_visual_evidence?.run_id === argument)?.repository_id || requested;
+      if (view === 'tests' && argument) requested = data.runs.find(matchesRun)?.repository_id || requested;
       if (view === 'deployments' && argument) requested = data.deployments.find((deployment) => deployment.deployment_id === argument)?.repository_id || requested;
       if (['tests', 'deployments'].includes(view) && argument && !requested) {
         active = false; selectedId = ''; paint();
@@ -326,7 +335,7 @@ window.DevCoordinatorWorkspace = (() => {
       data = null;
       try { await window.render(); } finally { refreshButton.disabled = false; }
     });
-    return { resolve, href, current, get active() { return active; }, get repositoryId() { return selectedId; },
+    return { resolve, href, current, get active() { return active; }, get repositoryId() { return selectedId; }, get retainedEvidence() { return retainedEvidence; },
       matches: (row) => current()?.records.some((record) => record.repository_id === row.repository_id) || false };
   }
   return { catalogue, href, create };

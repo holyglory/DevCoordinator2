@@ -24,6 +24,7 @@ import { artifactResponse, verifyTestArtifacts } from './verify-artifacts.mjs';
 import { verifyProgressCharts } from './verify-progress-charts.mjs';
 import { verifyWorkspace } from './verify-workspace.mjs';
 import { verifyAnnotations } from './verify-annotations.mjs';
+import { verifyEvidenceLayout } from './verify-evidence-layout.mjs';
 
 const BASE = 'example.test';
 const HOST = process.env.CONSOLE_VERIFY_HOST || `console.${BASE}`;
@@ -607,6 +608,16 @@ async function startFakeDaemon(dir) {
       } });
       const artifacts = artifactResponse(cmd, req.params, scenario);
       if (artifacts) return reply(artifacts);
+      if (cmd === 'test.evidence.lookup') {
+        if (scenario.identity !== 'owner@example.test') return reply({ ok: false, error: { code: 'permission_denied', message: 'Administrator access is required.' } });
+        const retained = req.params.run_id === 't20251101T000000Z-abcd12';
+        const earlier = scenario.earlierEvidence && req.params.run_id === 't20251231T000000Z-abc111';
+        if (scenario.empty || !retained && !earlier && req.params.run_id !== TEST_RUN || req.params.image_id && !/^[1-8]{64}$/.test(req.params.image_id)) return reply({ ok: false, error: { code: 'test_evidence_expired', message: 'The selected visual evidence is unavailable or has expired.' } });
+        return reply({ ok: true, data: {
+          context: { repository_id: earlier ? REPO : 'r2', worktree_id: earlier ? 'w1' : 'w2', worktree_path: earlier ? '/srv/repos/repo-one' : `/srv/repos/${LONG}`, display_name: earlier ? 'repo-one' : LONG, run_id: req.params.run_id, test: retained ? 'retained-visual-review' : earlier ? 'browser-journeys' : 'ui-release', started_at: '2025-11-01T00:00:00Z' },
+          evidence: { ...evidenceResult(), run_id: req.params.run_id },
+        } });
+      }
       if (cmd === 'test.evidence.get') return reply({ ok: true, data: evidenceResult() });
       if (cmd === 'test.evidence.image') {
         const start = req.params.offset || 0;
@@ -861,16 +872,16 @@ async function main() {
     return;
   }
 
-  if (process.env.CONSOLE_VERIFY_TESTS_DESIGN_ONLY || process.env.CONSOLE_VERIFY_ARTIFACTS_ONLY || process.env.CONSOLE_VERIFY_WORKSPACE_ONLY || process.env.CONSOLE_VERIFY_ANNOTATIONS_ONLY) {
+  if (process.env.CONSOLE_VERIFY_TESTS_DESIGN_ONLY || process.env.CONSOLE_VERIFY_ARTIFACTS_ONLY || process.env.CONSOLE_VERIFY_WORKSPACE_ONLY || process.env.CONSOLE_VERIFY_ANNOTATIONS_ONLY || process.env.CONSOLE_VERIFY_EVIDENCE_LAYOUT_ONLY) {
     try {
-      for (const viewport of [{ width: 1440, height: 900 }, { width: 927, height: 873 }, { width: 390, height: 844 }]) {
+      for (const viewport of [{ width: 1440, height: 900 }, { width: 1239, height: 843 }, { width: 927, height: 873 }, { width: 390, height: 844 }]) {
         for (const theme of ['light', 'dark']) {
           const context = await browser.newContext({ viewport, reducedMotion: 'reduce', colorScheme: theme });
           const { cookie } = sessions.issue({ sub: 'sub', email: 'owner@example.test' });
           await context.addCookies([{ name: 'dc2_session', value: cookie.split(';')[0].split('=')[1], domain: '.' + BASE, path: '/' }]);
           const page = await context.newPage();
           page.setDefaultTimeout(8000);
-          try { await (process.env.CONSOLE_VERIFY_ANNOTATIONS_ONLY ? verifyAnnotations : process.env.CONSOLE_VERIFY_WORKSPACE_ONLY ? verifyWorkspace : process.env.CONSOLE_VERIFY_ARTIFACTS_ONLY ? verifyTestArtifacts : verifyTestsDesign)({ page, daemon, check, scenario: SCENARIOS.populated, baseUrl: `http://${HOST}:${port}/`, output: OUT, theme, viewport }); }
+          try { await (process.env.CONSOLE_VERIFY_EVIDENCE_LAYOUT_ONLY ? verifyEvidenceLayout : process.env.CONSOLE_VERIFY_ANNOTATIONS_ONLY ? verifyAnnotations : process.env.CONSOLE_VERIFY_WORKSPACE_ONLY ? verifyWorkspace : process.env.CONSOLE_VERIFY_ARTIFACTS_ONLY ? verifyTestArtifacts : verifyTestsDesign)({ page, daemon, check, scenario: SCENARIOS.populated, baseUrl: `http://${HOST}:${port}/`, output: OUT, theme, viewport }); }
           catch (error) { check(`Tests design ${theme} ${viewport.width}`, false, error.message); }
           await context.close();
         }
@@ -1807,14 +1818,14 @@ async function main() {
   check('interaction: resolved feedback can be reopened',
     /open/.test(await page.innerText('.evidence-thread-state')));
   await page.setViewportSize(VIEWPORTS.narrow);
-  await page.evaluate(() => document.querySelector('.evidence-page')?.classList.remove('inspector-open'));
-  await page.click('[data-evidence-inspector-toggle]');
+  await page.click('.evidence-panel-close');
+  await page.click('.evidence-layout-controls [data-evidence-panel=details]');
   const narrowEvidence = await page.evaluate(() => ({
     overflow: document.documentElement.scrollWidth - innerWidth,
     inspectorOpen: document.querySelector('.evidence-page')?.classList.contains('inspector-open'),
     canvasWidth: document.querySelector('#evidence-canvas')?.getBoundingClientRect().width,
   }));
-  check('visual evidence: narrow layout keeps the canvas reachable and uses the feedback bottom sheet',
+  check('visual evidence: narrow layout keeps the canvas reachable beside dismissible feedback details',
     narrowEvidence.overflow <= 0 && narrowEvidence.inspectorOpen && narrowEvidence.canvasWidth > 250,
     JSON.stringify(narrowEvidence));
   await page.screenshot({ path: path.join(OUT, 'test-evidence-review-narrow.png'), fullPage: true });
@@ -2651,7 +2662,7 @@ async function main() {
       await context.addCookies([{ name: 'dc2_session', value: cookie.split(';')[0].split('=')[1], domain: '.' + BASE, path: '/' }]);
       const page = await context.newPage();
       page.setDefaultTimeout(8000);
-      for (const verifyJourney of [verifyWorkspace, verifyTestsDesign, verifyTestArtifacts, verifyAnnotations]) {
+      for (const verifyJourney of [verifyWorkspace, verifyTestsDesign, verifyTestArtifacts, verifyEvidenceLayout, verifyAnnotations]) {
         try { await verifyJourney({ page, daemon, check, scenario: SCENARIOS.populated, baseUrl: `http://${HOST}:${port}/`, output: OUT, theme, viewport }); }
         catch (error) { check(`${verifyJourney.name} ${theme} ${viewport.width}`, false, error.message); }
       }

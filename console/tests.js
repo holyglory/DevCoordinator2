@@ -33,7 +33,7 @@ window.DevCoordinatorTests = (() => {
       const label = String(name || 'Test').replace(/[-_]+/g, ' ').replace(/\bmacos\b/gi, 'macOS').replace(/\bui\b/g, 'UI');
       return label.startsWith('macOS') ? label : label.charAt(0).toUpperCase() + label.slice(1);
     };
-    const viewerUrl = (run, image) => `#/tests/${encodeURIComponent(run.run_id)}${image ? `?image=${encodeURIComponent(image.image_id)}` : ''}`;
+    const viewerUrl = (run, image) => `#/tests/${encodeURIComponent(run.run_id)}?${new URLSearchParams({ ...(image ? { image: image.image_id } : {}), ...(run.worktree_id ? { worktree: run.worktree_id } : {}) })}`;
     const duration = (run) => durationMs(run.duration_seconds == null ? null : run.duration_seconds * 1000);
     const time = (run) => Number.isFinite(Date.parse(run.started_at)) ? new Date(run.started_at).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : 'Time unavailable';
     const availableFiles = (run) => window.DevCoordinatorArtifacts.bundles(run);

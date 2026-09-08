@@ -122,6 +122,93 @@ impl TestEvidenceService {
         })
     }
 
+    pub fn lookup(
+        &self,
+        params: devcoordinator2_api::params::EvidenceLookup,
+        caller: &Caller,
+    ) -> Result<devcoordinator2_api::results::EvidenceLookup, ProtocolError> {
+        validate_run_id(&params.run_id)?;
+        if let Some(image_id) = &params.image_id {
+            validate_digest(image_id, "image_id")?;
+        }
+        let worktrees = self.database.call(|connection| {
+            let mut statement = connection.prepare("SELECT w.worktree_id,w.worktree_path,w.repository_id,r.display_name FROM worktrees w JOIN repositories r ON r.repository_id=w.repository_id ORDER BY w.worktree_id")?;
+            Ok(statement.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, String>(3)?)))?.collect::<Result<Vec<_>, _>>()?)
+        }).map_err(database_error)?;
+        let mut found = None;
+        for (worktree_id, worktree_path, repository_id, display_name) in worktrees {
+            if params
+                .worktree_id
+                .as_ref()
+                .is_some_and(|requested| requested != &worktree_id)
+            {
+                continue;
+            }
+            let worktree = Path::new(&worktree_path);
+            let Ok(loaded) = self.load(worktree, &params.run_id) else {
+                continue;
+            };
+            if loaded.images.is_empty()
+                || params
+                    .image_id
+                    .as_ref()
+                    .is_some_and(|image_id| !loaded.images.contains_key(image_id))
+            {
+                continue;
+            }
+            if found.is_some() {
+                return Err(invalid_argument(
+                    "More than one registered worktree contains this screenshot. Open the run from its repository in Tests.",
+                ));
+            }
+            let history = crate::test_state::TestRunStore
+                .read_history(worktree)
+                .unwrap_or_default();
+            let previous = history
+                .into_iter()
+                .find(|entry| entry.run_id == params.run_id);
+            let current = crate::test_state::TestRunStore
+                .read_current_summary(worktree)
+                .ok()
+                .flatten()
+                .filter(|entry| entry.run_id == params.run_id);
+            let context = devcoordinator2_api::results::EvidenceRunContext {
+                repository_id: repository_id.clone(),
+                worktree_id: worktree_id.clone(),
+                worktree_path,
+                display_name,
+                run_id: params.run_id.clone(),
+                test: previous
+                    .as_ref()
+                    .map(|entry| entry.test.clone())
+                    .or_else(|| current.as_ref().map(|entry| entry.test.clone())),
+                started_at: previous
+                    .as_ref()
+                    .map(|entry| entry.started_at.clone())
+                    .or_else(|| current.as_ref().map(|entry| entry.started_at.clone())),
+            };
+            let feedback = self.feedback_for_run(
+                &repository_id,
+                &worktree_id,
+                &params.run_id,
+                &caller.actor(),
+            )?;
+            let evidence = EvidenceGet {
+                repository_id,
+                worktree_id,
+                run_id: params.run_id.clone(),
+                status: availability(&loaded.bundles),
+                image_count: bounded_u32(loaded.images.len()),
+                issues_truncated: loaded.issues.len() >= 64,
+                bundles: loaded.bundles,
+                feedback,
+                issues: loaded.issues,
+            };
+            found = Some(devcoordinator2_api::results::EvidenceLookup { context, evidence });
+        }
+        found.ok_or_else(expired)
+    }
+
     /// Attach bounded evidence availability to lifecycle-owned current runs
     /// without repeating caller Git discovery for every row.
     pub fn enrich_list(&self, list: &mut TestList) {
@@ -2765,6 +2852,43 @@ mod tests {
             .execute("test.evidence.get", reference.clone(), &owner)
             .unwrap();
         assert_eq!(readable["image_count"], 1);
+        let lookup = plane
+            .execute(
+                "test.evidence.lookup",
+                json!({"run_id":RUN_ID,"image_id":image_id(&evidence(&world))}),
+                &owner,
+            )
+            .unwrap();
+        assert_eq!(lookup["context"]["worktree_id"], world.worktree_id);
+        assert_eq!(lookup["context"]["repository_id"], world.repository_id);
+        assert_eq!(lookup["evidence"]["image_count"], 1);
+        assert!(
+            plane
+                .execute(
+                    "test.evidence.lookup",
+                    json!({"run_id":"../invalid"}),
+                    &owner
+                )
+                .is_err()
+        );
+        assert!(
+            plane
+                .execute(
+                    "test.evidence.lookup",
+                    json!({"run_id":RUN_ID,"image_id":"f".repeat(64)}),
+                    &owner
+                )
+                .is_err()
+        );
+        assert!(
+            plane
+                .execute(
+                    "test.evidence.lookup",
+                    json!({"run_id":"unretained-run"}),
+                    &owner
+                )
+                .is_err()
+        );
         let mut create = reference.clone();
         create["image_id"] = json!(image_id(&evidence(&world)));
         create["body"] = json!("Align the visible port and line");
@@ -2783,6 +2907,11 @@ mod tests {
         );
         let mut outsider = owner.clone();
         outsider.identity = Some("uninvited@example.test".into());
+        assert!(
+            plane
+                .execute("test.evidence.lookup", json!({"run_id":RUN_ID}), &outsider)
+                .is_err()
+        );
         assert!(
             plane
                 .execute("test.evidence.feedback.create", create.clone(), &outsider)
@@ -2856,6 +2985,58 @@ mod tests {
                 Ok(())
             })
             .unwrap();
+    }
+
+    #[test]
+    fn retained_lookup_does_not_guess_between_copied_worktrees() {
+        let world = world();
+        let copied = world._temporary.path().join("copied-worktree");
+        let evidence_path = copied
+            .join(".devcoordinator/test/logs/runs")
+            .join(RUN_ID)
+            .join("checks/formal-ui/check/evidence");
+        fs::create_dir_all(evidence_path.join("screenshots")).unwrap();
+        fs::copy(
+            &world.screenshot,
+            evidence_path.join("screenshots/cell-1-desktop-viewport.png"),
+        )
+        .unwrap();
+        write_manifest(&evidence_path, &world.manifest);
+        let repository_id = world.repository_id.clone();
+        world
+            .database
+            .transaction(move |connection| {
+                connection.execute(
+                    "INSERT INTO worktrees VALUES('w2222222222222222',?1,?2,'now','now')",
+                    rusqlite::params![repository_id, copied.display().to_string()],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+        let error = world
+            .service
+            .lookup(
+                devcoordinator2_api::params::EvidenceLookup {
+                    run_id: RUN_ID.into(),
+                    image_id: Some(image_id(&evidence(&world))),
+                    worktree_id: None,
+                },
+                &caller("owner@example.test"),
+            )
+            .unwrap_err();
+        assert!(error.message.contains("More than one registered worktree"));
+        let exact = world
+            .service
+            .lookup(
+                devcoordinator2_api::params::EvidenceLookup {
+                    run_id: RUN_ID.into(),
+                    image_id: Some(image_id(&evidence(&world))),
+                    worktree_id: Some(world.worktree_id.clone()),
+                },
+                &caller("owner@example.test"),
+            )
+            .unwrap();
+        assert_eq!(exact.context.worktree_id, world.worktree_id);
     }
 
     #[test]
