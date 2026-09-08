@@ -536,8 +536,9 @@
   than permanent full-size selectors. Keep actions beside the object they
   affect, including useful actions in empty states.
 - Prefer direct, compact controls. Use one-click choices with recognizable
-  icons and labels for small option sets. Reveal optional fields on demand.
-  Dropdowns must overlay content rather than stretch forms.
+  icons and labels for small option sets; visible labels may collapse under
+  the responsive rules below. Reveal optional fields on demand. Dropdowns
+  must overlay content rather than stretch forms.
 - Show meaningful results, not explanatory clutter. Provide live previews
   when choices generate a part number or other output. Put detailed
   explanations and examples behind small contextual help buttons.
@@ -545,6 +546,35 @@
   errors, persistence, keyboard/touch interaction, and responsive layouts in
   every supported theme. Screenshots alone do not establish that the interface
   works.
+
+### Preserve rows and use vertical space efficiently
+
+- Collapse action labels before wrapping, clipping, or overlap; restore them
+  when space returns. Preserve accessible names and usable touch targets.
+- Keep static page elements, including headers, toolbars, navigation, and
+  action groups, in their existing rows as the page or container narrows.
+  Reduce unnecessary horizontal gaps and collapse secondary visible labels
+  rather than stack these elements merely to retain their text.
+- Keep recognizable icons, programmatic action names, keyboard access, and
+  focus when visible labels collapse. Retain essential wording when an icon
+  alone would be ambiguous; hover-only descriptions are not a substitute for
+  understandable touch interaction. Do not shrink usable targets or make
+  text unreadable to force a fit.
+- Always look for ways to save vertical space. Combine related controls into
+  compact rows, remove redundant headings and status strips, reduce excessive
+  gaps and padding, and reveal optional details on demand. Keep the user's
+  primary content prominent without sacrificing readable grouping, essential
+  guidance, or comfortable interaction.
+- Apply row preservation to static page structure, not as a blanket no-wrap
+  rule for body text, user data, or forms. Reflow a static row only when it
+  still cannot fit after label collapse and spacing reduction while keeping
+  essential meaning and usable controls. Never substitute clipping, overlap,
+  lost actions, or page-wide horizontal scrolling for a usable layout.
+- Verify both shrinking and expanding through the actual label-collapse
+  transitions, including text zoom, long translated labels, and the smallest
+  supported layouts in every supported theme. Labels must return when space
+  permits without losing state or focus; inspect intermediate widths, not
+  only preset desktop and mobile sizes.
 
 ### Keep development commentary out of the product
 
