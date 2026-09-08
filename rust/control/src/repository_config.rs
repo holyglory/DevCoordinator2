@@ -138,6 +138,16 @@ pub struct ComponentSpec {
 }
 
 impl ComponentSpec {
+    pub fn is_finite_workload(&self) -> bool {
+        self.kind == ComponentKind::Compose
+            && !self.services.is_empty()
+            && self.services.len() == self.finite_services.len()
+            && self
+                .services
+                .iter()
+                .all(|service| self.finite_services.contains(service))
+    }
+
     pub fn owns_persistent_data(&self) -> bool {
         (self.kind == ComponentKind::Postgres && self.shared_from.is_none())
             || !self.volumes.is_empty()
@@ -1822,6 +1832,13 @@ fn validate_component(
         ComponentKind::Postgres => validate_postgres_component(body, &label, &mut specification)?,
         ComponentKind::External => validate_external_component(body, &label, &mut specification)?,
     }
+    if specification.is_finite_workload()
+        && (specification.wants_port || specification.route || specification.health.is_some())
+    {
+        return Err(RepositoryConfigError::new(format!(
+            "{label} finite-only workloads cannot expose a port, route or service health probe"
+        )));
+    }
     Ok(specification)
 }
 
@@ -1984,13 +2001,6 @@ fn validate_compose_component(
     {
         return Err(RepositoryConfigError::new(format!(
             "{label} finite_services must be included in explicit services"
-        )));
-    }
-    if !specification.finite_services.is_empty()
-        && specification.finite_services.len() == specification.services.len()
-    {
-        return Err(RepositoryConfigError::new(format!(
-            "{label} finite_services must leave a running service"
         )));
     }
     specification.independent_services = validate_compose_services(
@@ -2511,6 +2521,19 @@ tcp = "127.0.0.1:25"
     }
 
     #[test]
+    fn explicitly_finite_workload_needs_no_running_service() {
+        let temporary = tempdir().expect("tempdir");
+        write(
+            temporary.path(),
+            "schema=2\n[deployment.check]\ncomponents=['probe']\n[deployment.check.component.probe]\ntype='compose'\nservices=['probe']\nfinite_services=['probe']\n",
+        );
+        let spec = load_deployment_spec(temporary.path(), "check").expect("finite workload");
+        assert!(spec.components[0].is_finite_workload());
+        assert!(!spec.components[0].wants_port);
+        assert!(spec.route_component().is_none());
+    }
+
+    #[test]
     fn deployment_rejection_matrix_and_implicit_route_match_existing_contract() {
         let base = "schema=2\n[deployment.d]\ncomponents=['a']\n";
         let cases = [
@@ -2551,8 +2574,8 @@ tcp = "127.0.0.1:25"
                 "ttl_seconds",
             ),
             (
-                "[deployment.d.component.a]\ntype='compose'\nservices=['bootstrap']\nfinite_services=['bootstrap']",
-                "running service",
+                "[deployment.d.component.a]\ntype='compose'\nservices=['bootstrap']\nfinite_services=['bootstrap']\nport=true",
+                "finite-only",
             ),
             (
                 "[deployment.d.component.a]\ntype='compose'\nroute=true",

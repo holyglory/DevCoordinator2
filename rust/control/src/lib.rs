@@ -12,6 +12,7 @@ pub mod config;
 pub mod control_plane;
 pub mod daemon;
 pub mod database;
+mod deployment_cancellation;
 pub mod deployment_files;
 pub mod deployment_git;
 pub mod deployment_health;

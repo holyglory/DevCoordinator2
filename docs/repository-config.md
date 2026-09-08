@@ -267,6 +267,22 @@ type = "external"            # observed only, never owned or controlled
 tcp = "127.0.0.1:25"
 ```
 
+An explicitly all-finite Compose component may list every selected service in
+`finite_services`. It completes with state `completed`, not `running`, only when
+every selected service exits successfully. It cannot lease a service port,
+publish a route, or declare a running-service health probe. Existing mixed
+Compose deployments still require their non-finite services to remain running.
+Unchanged apply and ordinary start preserve completed work instead of rerunning
+it. A changed apply creates a new execution; failures retain diagnostics and do
+not become completion evidence.
+
+For a deployment composed entirely of finite workloads, a whole-deployment stop
+can cancel an active apply. `stopping` means the request is accepted but cleanup
+has not settled; `cancelled` is reported only after the owned candidate cleanup
+succeeds. Cancellation cannot reverse an operation already sealed for commit.
+No agent Docker access or runner privilege relaxation is involved. Explicit
+deployment removal retains the normal exact-target/data-deletion controls.
+
 Environment injected into every component of a deployment:
 `DC2_DEPLOYMENT`, `DC2_COMPONENT`, `DC2_GENERATION`, `PORT` (own leased
 port when `port` is set), `DC2_PORT_<NAME>` for every leased port in the

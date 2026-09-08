@@ -733,11 +733,13 @@ async function startFakeDaemon(dir) {
       const existing = calls.find((call) => settled.has(call) && predicate(call));
       if (existing) return Promise.resolve(existing);
       return new Promise((resolve, reject) => {
-        const waiter = { predicate, resolve: (value) => { clearTimeout(deadline); resolve(value); } };
-        const deadline = setTimeout(() => {
+        const deadline = AbortSignal.timeout(30000);
+        const waiter = { predicate, resolve: (value) => { deadline.removeEventListener('abort', onTimeout); resolve(value); } };
+        const onTimeout = () => {
           settledWaiters.delete(waiter);
           reject(new Error(`Fixture event deadline exceeded: ${String(predicateOrCommand)}; recent operations: ${calls.slice(-8).map(call => call.operation).join(', ')}`));
-        }, 30000);
+        };
+        deadline.addEventListener('abort', onTimeout, { once: true });
         settledWaiters.add(waiter);
       });
     },

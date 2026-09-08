@@ -2774,6 +2774,150 @@ fn case_readiness_allows_process_to_recover_within_restart_policy(
     Ok(())
 }
 
+fn setup_finite_only(world: &World, script: &str) -> Result<(), String> {
+    world.write_config("schema=2\n[deployment.finite]\nsource='worktree'\ncomponents=['probe']\n[deployment.finite.component.probe]\ntype='compose'\nfiles=['finite-compose.yml']\nservices=['probe']\nfinite_services=['probe']\ntimeout_seconds=90\n")?;
+    let content = format!(
+        "services:\n  probe:\n    image: postgres:16-alpine\n    network_mode: none\n    user: '1000:1000'\n    entrypoint: ['/bin/sh','-c']\n    command: {}\n    restart: 'no'\n",
+        json!([script])
+    );
+    world.write_owned(
+        "finite-compose.yml",
+        compose_fixture(&content, world.harness.compose_subnet),
+    )?;
+    world.git(&["add", "."])?;
+    world.git(&["commit", "-qm", "finite fixture"])?;
+    Ok(())
+}
+
+fn case_finite_only_container_completion_failure_cancellation_and_cleanup(
+    world: &mut World,
+) -> Result<(), String> {
+    setup_finite_only(world, "test $$(id -u) -ne 0 && printf 'finite-success\\n'")?;
+    let first = world.call(
+        "deployment.apply",
+        json!({"path":world.repo,"name":"finite"}),
+    )?;
+    let first = data(&first)?.clone();
+    ensure!(
+        first["state"] == "completed",
+        "finite workload did not complete truthfully"
+    );
+    let project = component(&first, "probe")?["binding"]["identity"]
+        .as_str()
+        .ok_or("missing project")?
+        .to_owned();
+    let first_container = compose_service_id(&project, "probe")?;
+    ensure!(
+        component(&first, "probe")?.pointer("/completed_services/0/exit_code") == Some(&json!(0)),
+        "finite exit receipt missing"
+    );
+    let again = world.call(
+        "deployment.apply",
+        json!({"path":world.repo,"name":"finite"}),
+    )?;
+    ensure!(
+        data(&again)?["unchanged"] == true,
+        "unchanged finite apply reran"
+    );
+    ensure!(
+        compose_service_id(&project, "probe")? == first_container,
+        "unchanged finite container replaced"
+    );
+
+    setup_finite_only(world, "printf 'finite-failure\\n'; exit 7")?;
+    let failure = world.call(
+        "deployment.apply",
+        json!({"path":world.repo,"name":"finite"}),
+    )?;
+    ensure!(failure["ok"] == false, "nonzero finite exit accepted");
+    let logs = world.call(
+        "deployment.logs",
+        json!({"path":world.repo,"name":"finite","component":"probe","tail_lines":20}),
+    )?;
+    ensure!(
+        data(&logs)?["tail"]
+            .as_str()
+            .is_some_and(|text| text.contains("finite-failure")),
+        "finite failure logs missing"
+    );
+
+    setup_finite_only(world, "printf 'finite-recovered\\n'")?;
+    ensure!(
+        data(&world.call(
+            "deployment.apply",
+            json!({"path":world.repo,"name":"finite"})
+        )?)?["state"]
+            == "completed",
+        "finite recovery failed"
+    );
+    setup_finite_only(world, "printf 'finite-waiting\\n'; sleep 60")?;
+    let harness = world.harness.clone();
+    let socket = world.socket.clone();
+    let apply_request = request(
+        "deployment.apply",
+        json!({"path":world.repo,"name":"finite"}),
+        "other",
+        None,
+    );
+    let applying = thread::spawn(move || {
+        call_as(
+            &harness.executable,
+            harness.caller_uid,
+            harness.caller_gid,
+            &socket,
+            apply_request,
+        )
+    });
+    let waiting = wait_for_value("finite running", Duration::from_secs(15), || {
+        let status = world.call(
+            "deployment.status",
+            json!({"path":world.repo,"name":"finite"}),
+        )?;
+        let state = data(&status)?;
+        Ok(component(state, "probe")?["services"]
+            .as_array()
+            .is_some_and(|services| {
+                services
+                    .iter()
+                    .any(|service| service["state"] == "starting")
+            })
+            .then(|| state.clone()))
+    });
+    let stopped = world.call(
+        "deployment.stop",
+        json!({"path":world.repo,"name":"finite"}),
+    );
+    let apply_result = applying
+        .join()
+        .map_err(|_| "finite apply worker panicked")??;
+    waiting?;
+    ensure!(
+        data(&stopped?)?["state"] == "cancelled",
+        "finite stop did not settle cancellation"
+    );
+    ensure!(
+        apply_result["ok"] == false,
+        "cancelled apply claimed success"
+    );
+    let logs = world.call(
+        "deployment.logs",
+        json!({"path":world.repo,"name":"finite","component":"probe","tail_lines":20}),
+    )?;
+    ensure!(
+        data(&logs)?["tail"]
+            .as_str()
+            .is_some_and(|text| text.contains("finite-waiting")),
+        "cancelled finite output missing"
+    );
+    data(&world.call(
+        "deployment.remove",
+        json!({"path":world.repo,"name":"finite","delete_data":true}),
+    )?)?;
+    let ids = docker_ids("com.docker.compose.project", &project)?;
+    ensure!(ids.is_empty(), "owned finite containers survived removal");
+    Ok(())
+}
+
 fn case_native_compose_finite_service_receipt_and_start_semantics(
     world: &mut World,
 ) -> Result<(), String> {
@@ -4260,6 +4404,10 @@ fn cases() -> Vec<Case> {
         (
             "readiness_allows_process_to_recover_within_restart_policy",
             case_readiness_allows_process_to_recover_within_restart_policy,
+        ),
+        (
+            "finite_only_container_completion_failure_cancellation_and_cleanup",
+            case_finite_only_container_completion_failure_cancellation_and_cleanup,
         ),
         (
             "native_compose_finite_service_receipt_and_start_semantics",
