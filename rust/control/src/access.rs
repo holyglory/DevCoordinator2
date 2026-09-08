@@ -1612,6 +1612,33 @@ mod tests {
     }
 
     #[test]
+    fn repository_presentation_preserves_administrator_write_authority() {
+        let world = world();
+        let params = serde_json::json!({"repository_id":"r1111111111111111","display_name":"My project","icon":"code"});
+        assert!(
+            world
+                .access
+                .authorize("repository.presentation.update", &params, &local())
+                .is_ok()
+        );
+        for (identity, role) in [
+            ("viewer@example.test", AccessRole::Viewer),
+            ("operator@example.test", AccessRole::Operator),
+            ("deployment-admin@example.test", AccessRole::Administrator),
+        ] {
+            invite_and_accept(&world.access, identity, role, "d1");
+            assert_eq!(
+                world
+                    .access
+                    .authorize("repository.presentation.update", &params, &public(identity))
+                    .unwrap_err()
+                    .code,
+                ErrorCode::PermissionDenied
+            );
+        }
+    }
+
+    #[test]
     fn event_visibility_is_recomputed_from_current_public_grants() {
         let world = world();
         invite_and_accept(

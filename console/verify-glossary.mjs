@@ -100,6 +100,68 @@ async function main() {
   await context.addCookies([cookieFor('owner@example.test')]);
   const page = await context.newPage();
   page.on('pageerror', (error) => pageErrors.push(error.message));
+  if (process.env.CONSOLE_VERIFY_PRESENTATION_ONLY) {
+    await check('Repository appearance saves through the rendered Console into the real database', async () => {
+      await page.goto(`${base}#/plan/${project}`);
+      await page.locator('#repository-presentation').click();
+      await page.locator('#repository-presentation-dialog input[name=display_name]').fill('Fieldwork');
+      await page.locator('#repository-presentation-dialog input[value=plane]').check();
+      await page.locator('#repository-presentation-dialog button[type=submit]').click();
+      await page.waitForFunction(() => document.querySelector('#workspace-heading')?.textContent === 'Fieldwork');
+      const collection = await call('plan.overview');
+      const saved = collection.repositories.find((repository) => repository.repository_id === project);
+      assert.equal(saved.display_name, 'Vocabulary project');
+      assert.equal(saved.presentation.display_name, 'Fieldwork');
+      assert.equal(saved.presentation.icon, 'plane');
+      assert.equal(collection.repositories.find((repository) => repository.repository_id === otherProject).presentation, undefined);
+      await page.reload();
+      await page.waitForFunction(() => document.querySelector('#workspace-heading')?.textContent === 'Fieldwork');
+      assert.equal(await page.locator('.workspace-repository[aria-current]').getAttribute('data-repository-icon'), 'plane');
+    }, page);
+    await check('Repository appearance preserves filtered reads and administrator write permissions', async () => {
+      const collection = await call('plan.overview', {}, 'viewer@example.test');
+      assert.deepEqual(collection.repositories.map((repository) => repository.repository_id), [project]);
+      assert.equal(collection.repositories.find((repository) => repository.repository_id === project).presentation.display_name, 'Fieldwork');
+      const denied = await request('repository.presentation.update', { repository_id: project, display_name: 'Unauthorized', icon: 'code' }, 'viewer@example.test');
+      assert.equal(denied.ok, false); assert.equal(denied.error.code, 'permission_denied');
+      const viewer = await browser.newContext({ viewport: { width: 927, height: 873 } });
+      try {
+        await viewer.addCookies([cookieFor('viewer@example.test')]);
+        const viewerPage = await viewer.newPage();
+        await viewerPage.goto(`${base}#/plan/${project}`);
+        await viewerPage.locator('#workspace-heading').filter({ hasText: 'Fieldwork' }).waitFor();
+        assert.equal(await viewerPage.locator('#repository-presentation').isVisible(), false);
+      } finally { await viewer.close(); }
+    }, page);
+    await check('Repository appearance validation cannot change saved data', async () => {
+      for (const params of [
+        { display_name: '   ', icon: 'code' },
+        { display_name: 'Invalid\nname', icon: 'code' },
+        { display_name: 'Fieldwork', icon: '../private' },
+      ]) {
+        const rejected = await request('repository.presentation.update', { repository_id: project, ...params });
+        assert.equal(rejected.ok, false);
+      }
+      const collection = await call('plan.overview');
+      assert.equal(collection.repositories.find((repository) => repository.repository_id === project).presentation.display_name, 'Fieldwork');
+    }, page);
+    await check('Default appearance is restored through the UI and remains restored after reload', async () => {
+      await page.locator('#repository-presentation').click();
+      await page.locator('[data-presentation-reset]').click();
+      await page.locator('#repository-presentation-dialog button[type=submit]').click();
+      await page.waitForFunction(() => document.querySelector('#workspace-heading')?.textContent === 'Vocabulary project');
+      await page.reload();
+      await page.waitForFunction(() => document.querySelector('#workspace-heading')?.textContent === 'Vocabulary project');
+      const collection = await call('plan.overview');
+      assert.equal(collection.repositories.find((repository) => repository.repository_id === project).presentation, undefined);
+      assert.deepEqual(pageErrors, []);
+    }, page);
+    await fs.writeFile(path.join(out, 'report.json'), JSON.stringify({ checks }, null, 2));
+    const failures = checks.filter((item) => item.status === 'failed');
+    console.log(JSON.stringify({ checks: checks.length, failures, report: path.join(out, 'report.json') }));
+    process.exitCode = failures.length ? 1 : 0;
+    await context.close(); return;
+  }
   const go = async (scope = 'shared', identity = '') => {
     await page.goto(`${base}?journey=${++sequence}#/glossary/${scope}${identity ? `/${identity}` : ''}`);
     await page.locator(identity ? '.glossary-detail' : '#glossary-concepts').waitFor();

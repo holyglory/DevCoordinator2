@@ -236,6 +236,19 @@ pub struct RepositoryList {
 
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct RepositoryPresentationUpdate {
+    #[schemars(regex(pattern = r"^r[0-9a-f]{16}$"))]
+    pub repository_id: String,
+    #[schemars(length(min = 1, max = 80))]
+    pub display_name: Option<String>,
+    #[schemars(regex(
+        pattern = r"^(folder|code|app-window|world|rocket|database|device-desktop|device-mobile|tools|flask|palette|star|plane|book|chart-bar|shield)$"
+    ))]
+    pub icon: Option<String>,
+}
+
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ArchiveRepository {
     #[schemars(regex(pattern = r"^r[0-9a-f]{16}$"))]
     pub repository_id: String,

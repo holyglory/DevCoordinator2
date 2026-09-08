@@ -304,17 +304,26 @@ impl PlanService {
             .database
             .call(|connection| {
                 let mut statement = connection.prepare(
-                    "SELECT repository_id,display_name FROM repositories WHERE archived_at IS NULL ORDER BY display_name,repository_id",
+                    "SELECT r.repository_id,r.display_name,p.display_name,p.icon FROM repositories r \
+                     LEFT JOIN repository_presentation p ON p.repository_id=r.repository_id \
+                     WHERE r.archived_at IS NULL ORDER BY r.display_name,r.repository_id",
                 )?;
                 Ok(statement
                     .query_map([], |row| {
-                        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, Option<String>>(2)?, row.get::<_, Option<String>>(3)?))
                     })?
                     .collect::<Result<Vec<_>, _>>()?)
             })
             .map_err(database_or_domain)?;
         let mut rows = Vec::with_capacity(repositories.len());
-        for (repository_id, display_name) in repositories {
+        for (repository_id, display_name, custom_name, icon) in repositories {
+            let presentation = (custom_name.is_some() || icon.is_some()).then(|| {
+                devcoordinator2_api::results::RepositoryPresentation {
+                    repository_id: repository_id.clone(),
+                    display_name: custom_name,
+                    icon,
+                }
+            });
             let repository_id_for_query = repository_id.clone();
             let (aggregate, current_release, elaboration_request_count, preview_requested) = self
                 .database
@@ -357,6 +366,7 @@ impl PlanService {
             rows.push(PlanRepositoryRow {
                 repository_id,
                 display_name,
+                presentation,
                 open_tasks: aggregate.tasks_total.saturating_sub(aggregate.tasks_done),
                 loc_done: aggregate.loc_done,
                 loc_total: aggregate.loc_total,
@@ -2156,6 +2166,88 @@ mod tests {
         ));
         let service = PlanService::new(database.clone(), evidence);
         (temporary, database, service)
+    }
+
+    #[test]
+    fn repository_presentation_persists_without_renaming_repository_identity() {
+        let (temporary, database, service) = world();
+        seed_repository(&database);
+        let registry = crate::repository::Registry::new(database.clone());
+        let request = devcoordinator2_api::params::RepositoryPresentationUpdate {
+            repository_id: "r1111111111111111".to_owned(),
+            display_name: Some("  My project  ".to_owned()),
+            icon: Some("rocket".to_owned()),
+        };
+        registry.update_presentation(request.clone(), 1000).unwrap();
+        let PlanOverview::Collection(collection) = service.overview(None).unwrap() else {
+            panic!("collection expected")
+        };
+        let row = &collection.repositories[0];
+        assert_eq!(row.display_name, "Fixture repository");
+        assert_eq!(row.repository_id, request.repository_id);
+        assert_eq!(
+            row.presentation.as_ref().unwrap().display_name.as_deref(),
+            Some("My project")
+        );
+        assert_eq!(
+            row.presentation.as_ref().unwrap().icon.as_deref(),
+            Some("rocket")
+        );
+        let reopened = Database::open(temporary.path().join("authority.sqlite3")).unwrap();
+        let persisted: (String, String, String) = reopened.call(|connection| {
+            Ok(connection.query_row("SELECT r.root_path,r.display_name,p.display_name FROM repositories r JOIN repository_presentation p USING(repository_id)", [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?)
+        }).unwrap();
+        assert_eq!(
+            persisted,
+            (
+                "/fixture/repository".into(),
+                "Fixture repository".into(),
+                "My project".into()
+            )
+        );
+        for name in ["", "   ", "bad\nname", &"x".repeat(81)] {
+            let mut invalid = request.clone();
+            invalid.display_name = Some(name.into());
+            assert_eq!(
+                registry
+                    .update_presentation(invalid, 1000)
+                    .unwrap_err()
+                    .code,
+                ErrorCode::ParamsInvalid
+            );
+        }
+        let mut invalid = request.clone();
+        invalid.icon = Some("../private".into());
+        assert_eq!(
+            registry
+                .update_presentation(invalid, 1000)
+                .unwrap_err()
+                .code,
+            ErrorCode::ParamsInvalid
+        );
+        let mut missing = request.clone();
+        missing.repository_id = "r2222222222222222".into();
+        assert_eq!(
+            registry
+                .update_presentation(missing, 1000)
+                .unwrap_err()
+                .code,
+            ErrorCode::RepositoryNotFound
+        );
+        registry
+            .update_presentation(
+                devcoordinator2_api::params::RepositoryPresentationUpdate {
+                    repository_id: request.repository_id,
+                    display_name: None,
+                    icon: None,
+                },
+                1000,
+            )
+            .unwrap();
+        let PlanOverview::Collection(collection) = service.overview(None).unwrap() else {
+            panic!("collection expected")
+        };
+        assert!(collection.repositories[0].presentation.is_none());
     }
 
     fn seed(database: &Database, spec_json: String) {

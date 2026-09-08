@@ -9,13 +9,22 @@ fakes success, and no view carries fixture numbers.
 ## Navigation shell
 
 One shared workspace owns repository selection across the Console. Its left
-sidebar provides search and a checkout disclosure; below 761 px, the same list
+sidebar provides search and a checkout disclosure. Drag its right edge or focus
+the separator and use arrow keys to resize it; Home/End select the limits and
+Enter hides it. The header button restores the list. Width and visibility are
+remembered in this browser. Ordinary names stay on one line, with full names in
+tooltips when a long name needs truncation. Below 761 px, the same list
 opens as a keyboard-accessible drawer without displacing the requested content.
 Repository aspects are ordinary hash links: **Plan & progress**, **Deployments**,
 **Tests**, **Decisions**, and **Glossary**. Plan, Progress, and Usage are views
 within Plan & progress, not independent repository pickers. On phones, aspect
 links wrap so the selected destination remains visible without sideways scrolling.
-Multiline checkout names retain their own row height in long repository lists.
+Multiline checkout paths retain their own row height in long repository lists.
+Administrators can use the pencil beside the selected repository name to choose
+a Console-only name and icon. Save persists these in repository presentation
+metadata; Cancel leaves the saved appearance unchanged, and Use defaults restores
+the original name and folder icon on Save. Repository IDs, Git names, checkout
+paths, record ownership, and access grants do not change.
 Repository selection
 is encoded in the URL and remembered for unscoped legacy links; Back, forward,
 and reload preserve the exact context. Deployment and screenshot deep links
@@ -204,6 +213,14 @@ the earlier caching policy, so a normal refresh can load the redesigned code.
    horizontal step picker and the inspector becomes a focused bottom sheet.
    Select, pin, rectangle, arrow, freehand, highlight, text, colour,
    undo/redo, zoom, fit, pan, and clear are functional. Saving a marked
+   suggestion starts with an immediately focused, nonmodal comment editor after
+   a pin or completed drawing. Another pin click repositions the current unsaved
+   pin, preserving its comment. Text labels have explicit Add and Cancel actions
+   and accept short labels such as “X”. Selecting a draft mark allows moving,
+   recoloring, deleting, and undoing changes. Cancelled pointer gestures add no
+   mark. Switching journey steps or screenshot variants preserves each image's
+   unsaved comment and marks for the current page session; they are not saved
+   across a browser reload. Failed saves preserve the draft for retry. Saving a marked
    suggestion atomically creates a Plan `user_feedback` task; replies, author
    edits, resolve/reopen, and explicitly labelled author deletion remain linked
    to the exact screenshot. Missing, expired, invalid, tampered, or unauthorized

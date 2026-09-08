@@ -13,7 +13,7 @@ pub mod params;
 pub mod results;
 
 pub const PROTOCOL_VERSION: u8 = 2;
-pub const DATABASE_SCHEMA_VERSION: u32 = 18;
+pub const DATABASE_SCHEMA_VERSION: u32 = 19;
 pub const MAX_REQUEST_BYTES: usize = 65_536;
 pub const MAX_RESPONSE_BYTES: usize = 262_144;
 pub const MAX_ERROR_DETAIL_BYTES: usize = 4_096;
@@ -674,6 +674,15 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         [],
         params::PathOnly,
         results::RepositoryStatus
+    ),
+    operation!(
+        "repository.presentation.update",
+        "Choose a repository's Console name and icon without changing its identity.",
+        IDEMPOTENT_REVERSIBLE_REPOSITORY_ADMIN,
+        excluded "Repository appearance is a Console-only administrator workflow.",
+        [],
+        params::RepositoryPresentationUpdate,
+        results::RepositoryPresentation
     ),
     operation!(
         "repository.archive",
@@ -1697,7 +1706,7 @@ mod tests {
         for tool in mcp_tools() {
             assert!(tools.insert(tool.name), "duplicate MCP tool");
         }
-        assert_eq!(OPERATIONS.len(), 90);
+        assert_eq!(OPERATIONS.len(), 91);
         assert_eq!(tools.len(), 68);
         assert_eq!(cli_routes.len(), 80);
     }

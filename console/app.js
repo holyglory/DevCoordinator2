@@ -39,6 +39,12 @@ const state = {
   evidenceColor: '#f59e0b',
   evidenceZoom: 1,
   evidenceDraftMarks: [],
+  evidenceDraftBody: '',
+  evidenceDraftKey: null,
+  evidenceDrafts: new Map(),
+  evidenceSavingKey: null,
+  evidenceComposerDismissed: false,
+  evidencePendingLabel: null,
   evidenceUndo: [],
   evidenceRedo: [],
   evidenceSelectedMarkId: null,
@@ -1225,12 +1231,144 @@ function resetEvidenceImages() {
 }
 
 function resetEvidenceDraft() {
+  state.evidencePendingLabel = null;
+  $('.evidence-label-editor', main)?.remove();
+  state.evidenceComposerDismissed = false;
+  state.evidenceDrafts.delete(state.evidenceDraftKey);
+  state.evidenceDraftBody = '';
   state.evidenceDraftMarks = [];
   state.evidenceUndo = [];
   state.evidenceRedo = [];
   state.evidenceSelectedMarkId = null;
   state.evidenceSelectedFeedbackId = null;
-  state.evidenceZoom = 1;
+}
+
+function evidenceMarkId() {
+  return `mark-${crypto.getRandomValues(new Uint32Array(2)).join('-')}`;
+}
+
+function rememberEvidenceDraft() {
+  if (!state.evidenceDraftKey) return;
+  state.evidenceDrafts.set(state.evidenceDraftKey, {
+    marks: cloneEvidenceMarks(state.evidenceDraftMarks), body: state.evidenceDraftBody,
+    undo: state.evidenceUndo, redo: state.evidenceRedo, zoom: state.evidenceZoom, label: state.evidencePendingLabel,
+  });
+}
+
+function activateEvidenceDraft(imageId) {
+  const key = `${state.evidenceRunId}:${imageId || ''}`;
+  if (state.evidenceDraftKey === key) return;
+  rememberEvidenceDraft();
+  const draft = state.evidenceDrafts.get(key);
+  state.evidenceDraftKey = key;
+  state.evidenceComposerDismissed = false;
+  state.evidenceDraftMarks = cloneEvidenceMarks(draft?.marks || []);
+  state.evidenceDraftBody = draft?.body || '';
+  state.evidencePendingLabel = draft?.label || null;
+  $('.evidence-label-editor', main)?.remove();
+  state.evidenceUndo = draft?.undo || [];
+  state.evidenceRedo = draft?.redo || [];
+  state.evidenceZoom = draft?.zoom || 1;
+  state.evidenceSelectedMarkId = null;
+  state.evidenceSelectedFeedbackId = null;
+  $('#evidence-composer', main)?.remove();
+}
+
+function revealEvidenceDiscussion() {
+  $('.evidence-page', main)?.classList.add('inspector-open');
+  refreshEvidenceInspector();
+  requestAnimationFrame(() => {
+    const discussion = $('.evidence-thread', main);
+    discussion?.scrollIntoView({ block: 'nearest' });
+    $('textarea', discussion || main)?.focus({ preventScroll: true });
+  });
+}
+
+function ensureEvidenceComposer() {
+  let composer = $('#evidence-composer', main);
+  if (composer) return composer;
+  const page = $('.evidence-page', main);
+  if (!page) return null;
+  composer = document.createElement('section');
+  composer.id = 'evidence-composer';
+  composer.className = 'evidence-composer';
+  composer.hidden = true;
+  composer.setAttribute('role', 'dialog');
+  composer.setAttribute('aria-labelledby', 'evidence-compose-title');
+  composer.innerHTML = `<h2 id="evidence-compose-title">New feedback</h2><form id="evidence-feedback-create"><label class="f">Suggestion<textarea name="body" rows="3" minlength="3" maxlength="2000" required placeholder="Describe what should change">${esc(state.evidenceDraftBody)}</textarea></label><p id="evidence-feedback-error" role="alert" hidden></p><div class="actions"><button class="btn" type="button" data-evidence-cancel>Cancel</button><button class="btn btn-primary" type="submit" disabled>Create feedback task</button></div></form>`;
+  $('#evidence-scroll', page).appendChild(composer);
+  composer.addEventListener('keydown', (event) => {
+    if (event.key !== 'Escape') return;
+    event.preventDefault(); state.evidenceComposerDismissed = true; updateEvidenceToolbar();
+    $('#evidence-canvas', main)?.focus({ preventScroll: true });
+  });
+  const form = $('form', composer);
+  const requirement = document.createElement('p');
+  requirement.id = 'evidence-feedback-requirement'; requirement.className = 'muted'; requirement.hidden = true;
+  form.insertBefore(requirement, $('.actions', form));
+  form.addEventListener('input', () => {
+    state.evidenceDraftBody = form.elements.body.value;
+    $('#evidence-feedback-error', form).hidden = true;
+    updateEvidenceToolbar();
+  });
+  $('[data-evidence-cancel]', composer).addEventListener('click', () => {
+    resetEvidenceDraft(); form.elements.body.value = '';
+    updateEvidenceToolbar(); redrawEvidenceCanvas();
+    $('#evidence-canvas', main)?.focus({ preventScroll: true });
+  });
+  form.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const { screenshot } = currentEvidenceSelection();
+    const body = state.evidenceDraftBody.trim();
+    if (!screenshot || body.length < 3 || !state.evidenceDraftMarks.length || state.evidenceSavingKey || state.evidencePendingLabel) return;
+    const key = state.evidenceDraftKey;
+    state.evidenceSavingKey = key;
+    updateEvidenceToolbar();
+    const result = await evidenceMutation(event.submitter, 'test.evidence.feedback.create', {
+      image_id: screenshot.image_id, body, marks: cloneEvidenceMarks(state.evidenceDraftMarks),
+    });
+    state.evidenceSavingKey = null;
+    if (result) {
+      state.evidenceDrafts.delete(key);
+      if (state.evidenceDraftKey === key) {
+        resetEvidenceDraft(); form.elements.body.value = '';
+        state.evidenceSelectedFeedbackId = result.feedback.feedback_id;
+        revealEvidenceDiscussion(); redrawEvidenceCanvas(); updateEvidencePageStatus();
+      }
+      toast('Feedback task created', 'ok');
+    } else if (state.evidenceDraftKey === key) {
+      const error = $('#evidence-feedback-error', form);
+      error.textContent = 'Feedback was not saved. Your comment and marks are still here; try again.';
+      error.hidden = false;
+    }
+    updateEvidenceToolbar();
+  });
+  return composer;
+}
+
+function openEvidenceComposer(point, focus = true) {
+  state.evidenceComposerDismissed = false;
+  const composer = ensureEvidenceComposer();
+  if (!composer) return;
+  composer.hidden = false;
+  const scroll = $('#evidence-scroll', main);
+  const imageArea = scroll.getBoundingClientRect();
+  const width = Math.min(340, window.innerWidth - 24, imageArea.width - 16);
+  composer.style.width = `${width}px`;
+  const canvas = $('#evidence-canvas', main)?.getBoundingClientRect();
+  const anchorX = canvas && point ? canvas.left + point.x * canvas.width : window.innerWidth;
+  const anchorY = canvas && point ? canvas.top + point.y * canvas.height : window.innerHeight;
+  const height = composer.getBoundingClientRect().height;
+  const leftEdge = Math.max(12, imageArea.left + 8);
+  const rightEdge = Math.min(innerWidth - 12, imageArea.right - 8);
+  const topEdge = Math.max(12, imageArea.top + 8);
+  const bottomEdge = Math.min(innerHeight - 12, imageArea.bottom - 8);
+  const left = anchorX + width + 24 < rightEdge ? anchorX + 20 : anchorX - width - 20;
+  const top = anchorY + height + 24 < bottomEdge ? anchorY + 20 : anchorY - height - 20;
+  composer.style.maxHeight = `${Math.max(180, bottomEdge - topEdge)}px`;
+  composer.style.left = `${Math.max(leftEdge, Math.min(rightEdge - width, left)) - imageArea.left + scroll.scrollLeft}px`;
+  composer.style.top = `${Math.max(topEdge, Math.min(bottomEdge - height, top)) - imageArea.top + scroll.scrollTop}px`;
+  if (focus) $('textarea', composer)?.focus({ preventScroll: true });
 }
 
 function evidenceStepLabel(value) {
@@ -1391,7 +1529,7 @@ function renderEvidenceInspector(run, step, cell, screenshot) {
   const automatic = `<section class="evidence-inspector-section"><h2>Automated findings <span>${findings.length}</span></h2>${findings.length ? `<ul class="evidence-findings">${findings.map((finding) => `<li class="${esc(finding.severity)}"><button type="button" data-evidence-finding="${esc(finding.rule)}"><i></i><span><strong>${esc(evidenceFindingLabel(finding.rule))}</strong><small>${esc(finding.severity)}</small></span></button></li>`).join('')}</ul><p class="muted evidence-finding-note" id="evidence-finding-note">Choose a finding to return focus to its capture.</p>` : '<p class="muted">No automatic visual findings for this capture.</p>'}</section>`;
   const threadList = `<section class="evidence-inspector-section evidence-annotations"><h2>Annotations <span>${threads.length}</span></h2>${threads.length ? threads.map((thread, index) => `<button type="button" class="evidence-thread-summary${selected?.feedback_id === thread.feedback_id ? ' active' : ''}" data-evidence-feedback="${esc(thread.feedback_id)}"><i>${index + 1}</i><span><strong>${esc(thread.comments[0]?.body || 'Visual feedback')}</strong><small>${esc(thread.state)} · ${esc(thread.author)}</small></span></button>`).join('') : '<p class="muted">No feedback on this screenshot yet.</p>'}</section>`;
   if (!selected) {
-    return `${capture}${automatic}${threadList}<section class="evidence-inspector-section evidence-compose"><h2>New feedback</h2><form id="evidence-feedback-create"><label class="f">Suggestion<textarea name="body" rows="4" maxlength="2000" placeholder="Describe what should change"></textarea></label><p class="muted" id="evidence-feedback-help">Add at least one mark to the screenshot.</p><button class="btn btn-primary" type="submit" disabled>Create feedback task</button></form></section>`;
+    return `${capture}${automatic}${threadList}`;
   }
   const comments = selected.comments.map((comment) => `<article class="evidence-comment" data-comment="${esc(comment.comment_id)}"><header><strong>${esc(comment.author)}</strong><small>${esc(ago(comment.created_at))}</small></header><p>${esc(comment.body)}</p>${comment.can_edit && !comment.deleted ? `<div class="actions"><button class="btn btn-small" type="button" data-evidence-edit-comment="${esc(comment.comment_id)}">Edit</button></div>` : ''}</article>`).join('');
   const thread = `<section class="evidence-inspector-section evidence-thread"><div class="evidence-thread-head"><h2>Discussion</h2><button class="btn btn-small" type="button" data-evidence-feedback-back>All annotations</button></div><div class="evidence-thread-state">${badge(selected.state, selected.state === 'resolved' ? 'ok' : 'warn')}<a href="#/plan/${esc(state.evidenceData.repository_id)}" data-evidence-open-task="${esc(selected.task_id)}">Open Plan task →</a></div>${comments}<form id="evidence-feedback-reply"><label class="f">Reply<textarea name="body" rows="3" maxlength="2000" required></textarea></label><button class="btn" type="submit">Reply</button></form><div class="evidence-thread-actions"><button class="btn" type="button" data-evidence-state="${selected.state === 'resolved' ? 'open' : 'resolved'}">${selected.state === 'resolved' ? 'Reopen' : 'Resolve'}</button>${selected.can_delete ? '<button class="btn btn-danger" type="button" data-evidence-delete>Delete annotation</button>' : ''}</div></section>`;
@@ -1563,15 +1701,18 @@ function evidenceRedo() {
 }
 
 function updateEvidenceToolbar() {
+  if (!state.evidenceDraftMarks.some((mark) => mark.id === state.evidenceSelectedMarkId)) state.evidenceSelectedMarkId = null;
+  const saving = state.evidenceSavingKey === state.evidenceDraftKey && state.evidenceSavingKey !== null;
   main.querySelectorAll('[data-evidence-tool]').forEach((button) => {
     const active = button.dataset.evidenceTool === state.evidenceTool;
     button.classList.toggle('active', active); button.setAttribute('aria-pressed', String(active));
+    button.disabled = saving;
   });
   const undo = $('[data-evidence-undo]', main); const redo = $('[data-evidence-redo]', main);
   const clear = $('[data-evidence-clear]', main); const zoom = $('#evidence-zoom-value', main);
-  if (undo) undo.disabled = !state.evidenceUndo.length;
-  if (redo) redo.disabled = !state.evidenceRedo.length;
-  if (clear) clear.disabled = !state.evidenceDraftMarks.length;
+  if (undo) undo.disabled = saving || !state.evidenceUndo.length;
+  if (redo) redo.disabled = saving || !state.evidenceRedo.length;
+  if (clear) clear.disabled = saving || !state.evidenceDraftMarks.length;
   if (zoom) zoom.textContent = `${Math.round(state.evidenceZoom * 100)}%`;
   const canvas = $('#evidence-canvas', main);
   if (canvas) {
@@ -1579,11 +1720,22 @@ function updateEvidenceToolbar() {
     canvas.dataset.draftCount = String(state.evidenceDraftMarks.length);
     canvas.dataset.selectedMark = state.evidenceSelectedMarkId || '';
   }
+  const composer = ensureEvidenceComposer();
+  if (composer) composer.hidden = state.evidenceComposerDismissed || !state.evidenceDraftMarks.length && !state.evidenceDraftBody;
+  const editComment = $('[data-evidence-compose]', main);
+  if (editComment) editComment.disabled = saving || !state.evidenceDraftMarks.length && !state.evidenceDraftBody;
   const form = $('#evidence-feedback-create', main);
   if (form) {
-    const body = String(new FormData(form).get('body') || '').trim();
+    const body = state.evidenceDraftBody.trim();
     const submit = $('button[type="submit"]', form);
-    if (submit) submit.disabled = !state.evidenceDraftMarks.length || body.length < 3;
+    if (submit) {
+      submit.disabled = !!state.evidenceSavingKey || !!state.evidencePendingLabel || !state.evidenceDraftMarks.length || body.length < 3;
+      submit.title = state.evidencePendingLabel ? 'Add or cancel the text label before saving.' : !state.evidenceDraftMarks.length ? 'Add a mark to attach this comment.' : '';
+      const requirement = $('#evidence-feedback-requirement', form);
+      requirement.textContent = submit.title; requirement.hidden = !submit.title;
+    }
+    form.elements.body.disabled = saving;
+    $('[data-evidence-cancel]', form).disabled = saving;
   }
 }
 
@@ -1593,24 +1745,40 @@ function setEvidenceZoom(value) {
   updateEvidenceToolbar(); requestAnimationFrame(redrawEvidenceCanvas);
 }
 
-function evidenceTextEntry(point) {
+function evidenceTextEntry(point, focus = true) {
   const media = $('#evidence-media', main); if (!media) return;
-  media.querySelector('.evidence-text-entry')?.remove();
-  const input = document.createElement('input'); input.className = 'evidence-text-entry';
-  input.maxLength = 120; input.placeholder = 'Annotation label';
-  input.style.left = `${point.x * 100}%`; input.style.top = `${point.y * 100}%`;
-  const close = () => input.remove();
-  input.addEventListener('keydown', (event) => {
-    if (event.key === 'Escape') { event.preventDefault(); close(); }
-    if (event.key === 'Enter') {
-      event.preventDefault(); const text = input.value.trim(); if (text.length < 3) return;
-      commitEvidenceMarks([...state.evidenceDraftMarks, {
-        id: `mark-${Date.now().toString(36)}`, type: 'text', color: state.evidenceColor,
-        x: point.x, y: point.y, text,
-      }]); close();
-    }
-  });
-  media.appendChild(input); requestAnimationFrame(() => input.focus());
+  let editor = media.querySelector('.evidence-label-editor');
+  if (!editor) {
+    editor = document.createElement('form'); editor.className = 'evidence-label-editor';
+    editor.innerHTML = '<input class="evidence-text-entry" aria-label="Annotation label" placeholder="Annotation label" maxlength="120" required><div class="actions"><button class="btn btn-small" type="button">Cancel</button><button class="btn btn-primary btn-small" type="submit">Add label</button></div>';
+    const input = $('input', editor);
+    input.value = state.evidencePendingLabel?.text || '';
+    const cancel = () => { state.evidencePendingLabel = null; editor.remove(); updateEvidenceToolbar(); $('#evidence-canvas', main)?.focus({ preventScroll: true }); };
+    $('button[type=button]', editor).addEventListener('click', cancel);
+    editor.addEventListener('keydown', (event) => { if (event.key === 'Escape') { event.preventDefault(); cancel(); } });
+    editor.addEventListener('submit', (event) => {
+      event.preventDefault(); const text = input.value.trim();
+      if (!text) { input.setCustomValidity('Enter a label.'); input.reportValidity(); return; }
+      const position = { x: Number(editor.dataset.x), y: Number(editor.dataset.y) };
+      const id = evidenceMarkId();
+      commitEvidenceMarks([...state.evidenceDraftMarks, { id, type: 'text', color: state.evidenceColor, ...position, text }]);
+      state.evidenceSelectedMarkId = id;
+      state.evidencePendingLabel = null; editor.remove(); updateEvidenceToolbar(); openEvidenceComposer(position);
+    });
+    input.addEventListener('input', () => {
+      input.setCustomValidity('');
+      state.evidencePendingLabel = { point: { x: Number(editor.dataset.x), y: Number(editor.dataset.y) }, text: input.value };
+    });
+    media.appendChild(editor);
+  }
+  editor.dataset.x = String(point.x); editor.dataset.y = String(point.y);
+  state.evidencePendingLabel = { point, text: $('input', editor).value };
+  const visible = $('#evidence-scroll', main).getBoundingClientRect();
+  const bounds = media.getBoundingClientRect();
+  editor.style.left = `${Math.max(0, visible.left - bounds.left, Math.min(point.x * media.clientWidth, visible.right - bounds.left - 250))}px`;
+  editor.style.top = `${Math.max(0, visible.top - bounds.top, Math.min(point.y * media.clientHeight, visible.bottom - bounds.top - 100))}px`;
+  updateEvidenceToolbar();
+  if (focus) $('input', editor)?.focus({ preventScroll: true });
 }
 
 function setupEvidenceCanvas(imageId) {
@@ -1620,24 +1788,35 @@ function setupEvidenceCanvas(imageId) {
   const canvas = priorCanvas.cloneNode(true); priorCanvas.replaceWith(canvas);
   const session = { canvas, image, imageId, drag: null, space: false, observer: new ResizeObserver(redrawEvidenceCanvas) };
   evidenceCanvasSession = session; session.observer.observe(image);
-  const finish = () => {
+  const finish = (event) => {
     const drag = session.drag; if (!drag) return;
     session.drag = null;
+    if (event?.type === 'pointercancel' || event?.key === 'Escape') {
+      if (drag.before) state.evidenceDraftMarks = cloneEvidenceMarks(drag.before);
+      updateEvidenceToolbar(); redrawEvidenceCanvas(); return;
+    }
+    let created = false;
     if (drag.kind === 'draw') {
       const mark = state.evidenceDraftMarks.find((item) => item.id === drag.id);
       const box = mark ? evidenceMarkBounds(mark) : null;
-      if (!mark || ((mark.type === 'rectangle' || mark.type === 'arrow') && box.width < .004 && box.height < .004)
+      if (!mark || (mark.type === 'rectangle' && (box.width < .004 || box.height < .004))
+        || (mark.type === 'arrow' && box.width < .004 && box.height < .004)
         || ((mark.type === 'freehand' || mark.type === 'highlight') && mark.points.length < 2)) {
         state.evidenceDraftMarks = cloneEvidenceMarks(drag.before);
       } else {
         state.evidenceUndo.push(cloneEvidenceMarks(drag.before)); state.evidenceRedo = [];
+        created = true;
       }
     } else if (drag.kind === 'move' || drag.kind === 'resize') {
-      state.evidenceUndo.push(cloneEvidenceMarks(drag.before)); state.evidenceRedo = [];
+      if (JSON.stringify(drag.before) !== JSON.stringify(state.evidenceDraftMarks)) {
+        state.evidenceUndo.push(cloneEvidenceMarks(drag.before)); state.evidenceRedo = [];
+      }
     }
     updateEvidenceToolbar(); redrawEvidenceCanvas();
+    if (created) openEvidenceComposer(drag.start);
   };
   canvas.addEventListener('pointerdown', (event) => {
+    if (event.button !== 0 && event.button !== 1 || state.evidenceSavingKey === state.evidenceDraftKey) return;
     const point = evidencePoint(event, canvas);
     if (session.space || event.button === 1) {
       const scroll = $('#evidence-scroll', main);
@@ -1645,12 +1824,13 @@ function setupEvidenceCanvas(imageId) {
         scrollLeft: scroll.scrollLeft, scrollTop: scroll.scrollTop };
       canvas.setPointerCapture(event.pointerId); event.preventDefault(); return;
     }
-    if (state.evidenceTool === 'text') { evidenceTextEntry(point); return; }
+    if (state.evidenceTool === 'text') { event.preventDefault(); evidenceTextEntry(point); return; }
     if (state.evidenceTool === 'select') {
       const hit = evidenceHitTest(point, imageId);
       if (!hit) { state.evidenceSelectedMarkId = null; redrawEvidenceCanvas(); return; }
       if (!hit.draft) {
-        state.evidenceSelectedFeedbackId = hit.mark.feedbackId; refreshEvidenceInspector(); redrawEvidenceCanvas(); return;
+        state.evidenceSelectedMarkId = null;
+        state.evidenceSelectedFeedbackId = hit.mark.feedbackId; revealEvidenceDiscussion(); redrawEvidenceCanvas(); return;
       }
       state.evidenceSelectedMarkId = hit.mark.id;
       const box = evidenceMarkBounds(hit.mark);
@@ -1659,12 +1839,16 @@ function setupEvidenceCanvas(imageId) {
         && Math.abs(point.y - (box.y + box.height)) < .025;
       session.drag = { kind: resize ? 'resize' : 'move', id: hit.mark.id, start: point, before: cloneEvidenceMarks(state.evidenceDraftMarks) };
     } else if (state.evidenceTool === 'pin') {
-      commitEvidenceMarks([...state.evidenceDraftMarks, {
-        id: `mark-${Date.now().toString(36)}`, type: 'pin', color: state.evidenceColor,
+      const pendingPin = state.evidenceDraftMarks.find((mark) => mark.type === 'pin');
+      const pin = {
+        id: pendingPin?.id || evidenceMarkId(), type: 'pin', color: state.evidenceColor,
         x: point.x, y: point.y,
-      }]);
+      };
+      commitEvidenceMarks(pendingPin ? state.evidenceDraftMarks.map((mark) => mark.id === pin.id ? pin : mark) : [...state.evidenceDraftMarks, pin]);
+      state.evidenceSelectedMarkId = pin.id;
+      event.preventDefault(); openEvidenceComposer(point);
     } else {
-      const id = `mark-${Date.now().toString(36)}`; const before = cloneEvidenceMarks(state.evidenceDraftMarks);
+      const id = evidenceMarkId(); const before = cloneEvidenceMarks(state.evidenceDraftMarks);
       const mark = state.evidenceTool === 'rectangle'
         ? { id, type: 'rectangle', color: state.evidenceColor, x: point.x, y: point.y, width: 0, height: 0 }
         : state.evidenceTool === 'arrow'
@@ -1701,6 +1885,8 @@ function setupEvidenceCanvas(imageId) {
   });
   canvas.addEventListener('pointerup', finish); canvas.addEventListener('pointercancel', finish);
   canvas.addEventListener('keydown', (event) => {
+    if (state.evidenceSavingKey === state.evidenceDraftKey) return;
+    if (event.key === 'Escape' && session.drag) { event.preventDefault(); finish(event); return; }
     if (event.code === 'Space') { event.preventDefault(); session.space = true; canvas.dataset.panning = 'true'; return; }
     if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'z') {
       event.preventDefault(); if (event.shiftKey) evidenceRedo(); else evidenceUndo(); return;
@@ -1711,6 +1897,7 @@ function setupEvidenceCanvas(imageId) {
     if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.key) && state.evidenceSelectedMarkId) {
       event.preventDefault(); const before = cloneEvidenceMarks(state.evidenceDraftMarks);
       const mark = state.evidenceDraftMarks.find((item) => item.id === state.evidenceSelectedMarkId);
+      if (!mark) return;
       const amount = (event.shiftKey ? 10 : 1) / Math.max(canvas.clientWidth, canvas.clientHeight);
       translateEvidenceMark(mark, event.key === 'ArrowLeft' ? -amount : event.key === 'ArrowRight' ? amount : 0,
         event.key === 'ArrowUp' ? -amount : event.key === 'ArrowDown' ? amount : 0);
@@ -1728,7 +1915,7 @@ function evidenceToolbar() {
   return `<div class="evidence-toolbar" role="toolbar" aria-label="Screenshot annotation tools">
     <div class="evidence-tool-group">${EVIDENCE_TOOLS.map(([tool, icon, label]) => `<button type="button" class="evidence-tool${tool === state.evidenceTool ? ' active' : ''}" data-evidence-tool="${tool}" aria-label="${label}" title="${label}" aria-pressed="${tool === state.evidenceTool}">${planIcon(icon)}<span>${label}</span></button>`).join('')}</div>
     <label class="evidence-color" title="Annotation colour">${planIcon('palette')}<span class="sr-only">Annotation colour</span><select id="evidence-color" aria-label="Annotation colour">${EVIDENCE_COLORS.map(([color, label]) => `<option value="${color}"${color === state.evidenceColor ? ' selected' : ''}>${label}</option>`).join('')}</select><i style="--mark-color:${state.evidenceColor}"></i></label>
-    <div class="evidence-tool-group evidence-history"><button type="button" class="evidence-tool" data-evidence-undo aria-label="Undo" title="Undo" disabled>${planIcon('arrow-back-up')}</button><button type="button" class="evidence-tool" data-evidence-redo aria-label="Redo" title="Redo" disabled>${planIcon('arrow-forward-up')}</button></div>
+    <div class="evidence-tool-group evidence-history"><button type="button" class="btn btn-small" data-evidence-compose disabled>Edit comment</button><button type="button" class="evidence-tool" data-evidence-undo aria-label="Undo" title="Undo" disabled>${planIcon('arrow-back-up')}</button><button type="button" class="evidence-tool" data-evidence-redo aria-label="Redo" title="Redo" disabled>${planIcon('arrow-forward-up')}</button></div>
     <div class="evidence-tool-group evidence-zoom"><button type="button" class="evidence-tool" data-evidence-zoom-out aria-label="Zoom out" title="Zoom out">${planIcon('zoom-out')}</button><output id="evidence-zoom-value">100%</output><button type="button" class="evidence-tool" data-evidence-zoom-in aria-label="Zoom in" title="Zoom in">${planIcon('zoom-in')}</button><button type="button" class="evidence-tool" data-evidence-fit aria-label="Fit screenshot" title="Fit screenshot">${planIcon('focus-centered')}</button><button type="button" class="evidence-tool" data-evidence-clear aria-label="Clear unsaved marks" title="Clear unsaved marks" disabled>${planIcon('trash')}</button></div>
   </div>`;
 }
@@ -1743,8 +1930,9 @@ function renderEvidenceCurrent(step, cell) {
 
 function evidenceWorkspace(run, data) {
   const openFeedback = (data.feedback || []).filter((item) => item.state === 'open').length;
+  const breadcrumb = `<a class="destination-link" href="#/tests">Tests</a><span>/</span>${workspace.active ? '' : `<strong>${esc(run.display_name)}</strong><span>/</span>`}`;
   return `<section class="evidence-page" data-ui-region="test-evidence-primary">
-    <header class="evidence-page-head"><div><h1 class="evidence-breadcrumb"><a class="destination-link" href="#/tests">Tests</a><span>/</span><strong>${esc(run.display_name)}</strong><span>/</span><strong>${esc(run.test || 'Test run')}</strong></h1><div class="evidence-run-line"><span class="mono">${esc(run.run_id)}</span>${run.isEarlierEvidence ? badge('Earlier visual run') : `${badge(run.status)}<span class="evidence-run-meta">${esc(testTierLabel(run.requested_tier))}</span><span class="evidence-run-meta">${run.readiness_eligible ? 'Release proof' : 'Diagnostic only'}</span>`}<span class="evidence-run-meta">${esc(ago(run.started_at))}</span></div></div><div class="evidence-review-state"><span>Review status</span>${openFeedback ? badge(`${openFeedback} changes requested`, 'warn') : badge('No changes requested', 'ok')}</div></header>
+    <header class="evidence-page-head"><div><h1 class="evidence-breadcrumb">${breadcrumb}<strong>${esc(run.test || 'Test run')}</strong></h1><div class="evidence-run-line"><span class="mono">${esc(run.run_id)}</span>${run.isEarlierEvidence ? badge('Earlier visual run') : `${badge(run.status)}<span class="evidence-run-meta">${esc(testTierLabel(run.requested_tier))}</span><span class="evidence-run-meta">${run.readiness_eligible ? 'Release proof' : 'Diagnostic only'}</span>`}<span class="evidence-run-meta">${esc(ago(run.started_at))}</span></div></div><div class="evidence-review-state"><span>Review status</span>${openFeedback ? badge(`${openFeedback} changes requested`, 'warn') : badge('No changes requested', 'ok')}</div></header>
     <div class="evidence-board">
       <aside class="evidence-rail" aria-label="Journey steps"><div class="evidence-rail-head"><h2>Journey</h2><span>${state.evidenceSteps.length} steps</span></div><div id="evidence-step-list">${renderEvidenceRail()}</div></aside>
       <section class="evidence-workspace" data-ui-region="test-evidence-workspace"><header id="evidence-current" class="evidence-current"></header>${evidenceToolbar()}<div id="evidence-scroll" class="evidence-scroll"><div id="evidence-media" class="evidence-media"><img id="evidence-image" alt="Selected user journey screenshot" hidden><canvas id="evidence-canvas" tabindex="0" aria-label="Screenshot annotation canvas"></canvas></div><div id="evidence-image-state" class="evidence-image-state">Loading screenshot…</div></div><section class="evidence-compare" aria-labelledby="evidence-compare-title"><div><h2 id="evidence-compare-title">Viewport comparison</h2><span>Same journey moment</span></div><div id="evidence-variants" class="evidence-variants"></div></section></section>
@@ -1760,12 +1948,13 @@ function replaceEvidenceFeedback(feedback) {
 }
 
 async function evidenceMutation(button, command, args) {
+  const runId = state.evidenceRun.run_id;
   button.disabled = true;
   try {
     const result = await api(command, {
       path: state.evidenceRun.worktree_path, run_id: state.evidenceRun.run_id, ...args,
     }, false);
-    if (result.feedback) replaceEvidenceFeedback(result.feedback);
+    if (result.feedback && state.evidenceRun?.run_id === runId) replaceEvidenceFeedback(result.feedback);
     return result;
   } catch (error) {
     toast(error.message, 'bad'); return null;
@@ -1773,21 +1962,6 @@ async function evidenceMutation(button, command, args) {
 }
 
 function bindEvidenceInspector() {
-  const form = $('#evidence-feedback-create', main);
-  form?.addEventListener('input', updateEvidenceToolbar);
-  form?.addEventListener('submit', async (event) => {
-    event.preventDefault(); const button = event.submitter;
-    const { screenshot } = currentEvidenceSelection();
-    const body = String(new FormData(form).get('body') || '').trim();
-    if (!screenshot || body.length < 3 || !state.evidenceDraftMarks.length) return;
-    const result = await evidenceMutation(button, 'test.evidence.feedback.create', {
-      image_id: screenshot.image_id, body, marks: cloneEvidenceMarks(state.evidenceDraftMarks),
-    });
-    if (!result) return;
-    resetEvidenceDraft(); state.evidenceSelectedFeedbackId = result.feedback.feedback_id;
-    refreshEvidenceInspector(); redrawEvidenceCanvas(); updateEvidencePageStatus();
-    toast('Feedback task created', 'ok');
-  });
   main.querySelectorAll('[data-evidence-feedback]').forEach((button) => button.addEventListener('click', () => {
     state.evidenceSelectedFeedbackId = button.dataset.evidenceFeedback;
     $('.evidence-page', main)?.classList.add('inspector-open');
@@ -1872,14 +2046,18 @@ function bindEvidenceToolbar() {
   if (toolbar?.dataset.evidenceBound === 'true') { updateEvidenceToolbar(); return; }
   if (toolbar) toolbar.dataset.evidenceBound = 'true';
   main.querySelectorAll('[data-evidence-tool]').forEach((button) => button.addEventListener('click', () => {
-    state.evidenceTool = button.dataset.evidenceTool; updateEvidenceToolbar();
+    state.evidenceTool = button.dataset.evidenceTool; state.evidenceComposerDismissed = true; updateEvidenceToolbar();
     $('#evidence-canvas', main)?.focus();
   }));
   $('#evidence-color', main)?.addEventListener('change', (event) => {
     state.evidenceColor = event.target.value;
     $('.evidence-color i', main)?.style.setProperty('--mark-color', state.evidenceColor);
+    if (state.evidenceSavingKey === state.evidenceDraftKey) return;
+    if (state.evidenceTool === 'select' && state.evidenceSelectedMarkId) commitEvidenceMarks(state.evidenceDraftMarks.map((mark) =>
+      mark.id === state.evidenceSelectedMarkId ? { ...mark, color: state.evidenceColor } : mark));
   });
   $('[data-evidence-undo]', main)?.addEventListener('click', evidenceUndo);
+  $('[data-evidence-compose]', main)?.addEventListener('click', () => openEvidenceComposer());
   $('[data-evidence-redo]', main)?.addEventListener('click', evidenceRedo);
   $('[data-evidence-clear]', main)?.addEventListener('click', () => {
     if (!state.evidenceDraftMarks.length) return;
@@ -1907,6 +2085,7 @@ async function loadMainEvidenceImage(run, screenshot) {
     if (currentEvidenceSelection().screenshot?.image_id !== requested || !image?.isConnected) return;
     image.src = url; image.hidden = false; await image.decode().catch(() => {});
     status.hidden = true; setupEvidenceCanvas(requested);
+    if (state.evidencePendingLabel) evidenceTextEntry(state.evidencePendingLabel.point, false);
   } catch (error) {
     status.textContent = error.message || 'Screenshot unavailable.'; status.hidden = false;
   }
@@ -1916,34 +2095,49 @@ function bindEvidenceSelection() {
   main.querySelectorAll('[data-evidence-step]').forEach((button) => button.addEventListener('click', () => {
     if (button.dataset.evidenceStep === state.evidenceStepKey) return;
     state.evidenceStepKey = button.dataset.evidenceStep; state.evidenceViewport = null;
-    resetEvidenceDraft(); refreshEvidenceSelection();
+    refreshEvidenceSelection();
   }));
   main.querySelectorAll('[data-evidence-viewport]').forEach((button) => button.addEventListener('click', () => {
     if (button.dataset.evidenceViewport === state.evidenceViewport) return;
     state.evidenceViewport = button.dataset.evidenceViewport;
-    resetEvidenceDraft(); refreshEvidenceSelection();
+    refreshEvidenceSelection();
   }));
   main.querySelectorAll('[data-evidence-kind]').forEach((button) => button.addEventListener('click', () => {
     if (button.disabled || button.dataset.evidenceKind === state.evidenceScreenshotKind) return;
     state.evidenceScreenshotKind = button.dataset.evidenceKind;
-    resetEvidenceDraft(); refreshEvidenceSelection();
+    refreshEvidenceSelection();
   }));
   $('[data-evidence-prev]', main)?.addEventListener('click', () => {
     const index = state.evidenceSteps.findIndex((item) => item.key === state.evidenceStepKey);
-    if (index > 0) { state.evidenceStepKey = state.evidenceSteps[index - 1].key; state.evidenceViewport = null; resetEvidenceDraft(); refreshEvidenceSelection(); }
+    if (index > 0) { state.evidenceStepKey = state.evidenceSteps[index - 1].key; state.evidenceViewport = null; refreshEvidenceSelection(); }
   });
   $('[data-evidence-next]', main)?.addEventListener('click', () => {
     const index = state.evidenceSteps.findIndex((item) => item.key === state.evidenceStepKey);
-    if (index >= 0 && index < state.evidenceSteps.length - 1) { state.evidenceStepKey = state.evidenceSteps[index + 1].key; state.evidenceViewport = null; resetEvidenceDraft(); refreshEvidenceSelection(); }
+    if (index >= 0 && index < state.evidenceSteps.length - 1) { state.evidenceStepKey = state.evidenceSteps[index + 1].key; state.evidenceViewport = null; refreshEvidenceSelection(); }
   });
 }
 
 function refreshEvidenceSelection() {
   const { step, cell, screenshot } = currentEvidenceSelection(); if (!step) return;
+  activateEvidenceDraft(screenshot?.image_id);
+  if (screenshot?.image_id) {
+    const query = new URLSearchParams(location.hash.split('?')[1] || '');
+    query.set('image', screenshot.image_id);
+    window.history.replaceState(null, '', `#/tests/${state.evidenceRunId}?${query}`);
+  }
   $('#evidence-step-list', main).innerHTML = renderEvidenceRail();
   $('#evidence-current', main).innerHTML = renderEvidenceCurrent(step, cell);
   $('#evidence-variants', main).innerHTML = renderEvidenceVariants(step, cell);
   refreshEvidenceInspector(); bindEvidenceSelection(); bindEvidenceToolbar();
+  for (const selector of ['#evidence-step-list', '#evidence-variants']) {
+    const list = $(selector, main); const selected = $('.active', list);
+    if (!selected) continue;
+    const boundary = list.getBoundingClientRect(); const item = selected.getBoundingClientRect();
+    if (item.left < boundary.left) list.scrollLeft -= boundary.left - item.left;
+    else if (item.right > boundary.right) list.scrollLeft += item.right - boundary.right;
+    if (item.top < boundary.top) list.scrollTop -= boundary.top - item.top;
+    else if (item.bottom > boundary.bottom) list.scrollTop += item.bottom - boundary.bottom;
+  }
   loadEvidenceThumbnails(state.evidenceRun, main); loadMainEvidenceImage(state.evidenceRun, screenshot);
 }
 
@@ -1961,14 +2155,19 @@ async function viewTestEvidence(reference) {
   if (!run) {
     main.innerHTML = `${pageHeading('Tests', '#/tests', 'Evidence unavailable')}${stateBlock('empty', 'No visual evidence is available for this run in the current collection.')}`; return;
   }
-  if (state.evidenceRunId !== runId) { resetEvidenceImages(); resetEvidenceDraft(); }
+  if (state.evidenceRunId !== runId) resetEvidenceImages();
   const data = await api('test.evidence.get', { path: run.worktree_path, run_id: run.run_id });
   state.evidenceRunId = runId; state.evidenceRun = run; state.evidenceData = data;
   state.evidenceSteps = evidenceSteps(data);
   if (requestedImage) {
+    let found = false;
     for (const step of state.evidenceSteps) for (const cell of step.variants) {
       const kind = ['viewport', 'full_page'].find((name) => cell.screenshots?.[name]?.image_id === requestedImage);
-      if (kind) { state.evidenceStepKey = step.key; state.evidenceViewport = cell.viewport?.name; state.evidenceScreenshotKind = kind; }
+      if (kind) { found = true; state.evidenceStepKey = step.key; state.evidenceViewport = cell.viewport?.name; state.evidenceScreenshotKind = kind; }
+    }
+    if (!found) {
+      main.innerHTML = `${pageHeading('Tests', '#/tests', run.display_name)}${stateBlock('empty', 'This screenshot is not available for this run.')}`;
+      return;
     }
   }
   if (!state.evidenceSteps.length) {
@@ -3638,6 +3837,11 @@ const viewDecisions = guard(async (repoId) => {
 
 // --- Router ----------------------------------------------------------------
 const workspace = window.DevCoordinatorWorkspace.create({ api, esc, identity: () => state.who });
+window.addEventListener('resize', () => {
+  const composer = $('#evidence-composer', main);
+  if (!composer || composer.hidden) return;
+  openEvidenceComposer(undefined, false);
+});
 async function render() {
   closeGlossaryDialog?.();
   closeActiveProjectPicker?.(false);

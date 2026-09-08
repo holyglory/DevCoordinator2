@@ -64,6 +64,7 @@ pub const FOUNDATION_OPERATIONS: &[&str] = &[
     "repository.register",
     "repository.list",
     "repository.status",
+    "repository.presentation.update",
     "repository.archive",
     "repository.unarchive",
     "deployment.list",
@@ -523,6 +524,22 @@ impl ControlPlane {
                     .registry
                     .repository_status(Path::new(&params.path), Some((caller.uid, caller.gid)))?;
                 result.current_test = self.tests.current_summary_ref(&params.path, caller);
+                encode(result)
+            }
+            "repository.presentation.update" => {
+                let params: params::RepositoryPresentationUpdate = decode(params)?;
+                self.repository_by_id(&params.repository_id, false)?;
+                let result = self.registry.update_presentation(params, caller.uid)?;
+                self.publish_owned(
+                    results::OwnedEvent::Other(results::OtherOwnedEvent {
+                        kind: "repository.presentation.updated".to_owned(),
+                        repository_id: Some(result.repository_id.clone()),
+                        deployment_id: None,
+                        subject_kind: "repository".to_owned(),
+                        subject_id: result.repository_id.clone(),
+                    }),
+                    None,
+                );
                 encode(result)
             }
             "repository.archive" => {

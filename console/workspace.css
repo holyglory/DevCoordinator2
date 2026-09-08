@@ -5,7 +5,12 @@
 .top #nav a { padding: 10px 12px; border-radius: 6px; }
 .top { position: relative; flex-shrink: 0; }
 .repository-workspace { flex: 1; min-width: 0; min-height: 0; }
-.repository-workspace.repository-scoped { display: grid; grid-template-columns: 224px minmax(0, 1fr); align-items: start; }
+.repository-workspace.repository-scoped { display: grid; grid-template-columns: var(--repository-sidebar-width, 280px) minmax(0, 1fr); align-items: start; }
+.repository-workspace.repository-collapsed { grid-template-columns: minmax(0, 1fr); }
+.repository-collapsed .repository-sidebar { display: none; }
+.repository-resize { position: absolute; inset: 0 -5px 0 auto; width: 10px; cursor: col-resize; touch-action: none; z-index: 5; }
+.repository-resize:hover, .repository-resize:focus-visible { background: var(--accent-soft); outline: 2px solid var(--accent); outline-offset: -3px; }
+.repository-resizing, .repository-resizing * { cursor: col-resize !important; user-select: none !important; }
 .repository-sidebar { position: sticky; top: 0; height: calc(100dvh - 65px); min-height: 200px; display: flex; flex-direction: column; gap: 14px; padding: 22px 12px 16px; border-right: 1px solid var(--line); background: var(--bg); }
 .repository-sidebar[hidden], #workspace-context[hidden], #workspace-work-views[hidden], #workspace-record-scope[hidden], #workspace-checkouts[hidden] { display: none; }
 .repository-sidebar-heading { display: flex; gap: 8px; align-items: center; padding: 0 6px; }
@@ -17,14 +22,31 @@
 .repository-search input { width: 100%; min-width: 0; padding: 8px 10px; font-size: 13px; }
 .repository-list { display: flex; flex: 1; overflow-y: auto; flex-direction: column; gap: 4px; min-height: 0; }
 .workspace-repository { display: flex; flex-shrink: 0; gap: 10px; align-items: center; min-height: 44px; padding: 10px 12px; border-radius: 6px; color: var(--fg); font-size: 14px; text-decoration: none; overflow-wrap: anywhere; border-left: 3px solid transparent; }
-.workspace-repository > span { min-width: 0; }
+.workspace-repository > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .workspace-repository svg { flex: 0 0 16px; width: 16px; height: 16px; color: var(--muted); }
 .workspace-repository:hover { background: var(--surface); text-decoration: none; }
 .workspace-repository[aria-current] { background: var(--accent-soft); border-left-color: var(--accent); color: var(--accent); font-weight: 600; }
-.workspace-repository small { display: block; color: var(--muted); font-size: 11px; font-weight: 400; margin-top: 4px; }
+.workspace-repository small { display: block; color: var(--muted); font-size: 11px; font-weight: 400; margin-top: 4px; white-space: normal; }
 .workspace-content { min-width: 0; min-height: 0; }
 .workspace-context { padding: 22px 24px 0; border-bottom: 1px solid var(--line); }
 .workspace-title { display: flex; gap: 10px; align-items: center; min-width: 0; }
+.workspace-title .workspace-icon { flex-shrink: 0; }
+#repository-presentation[hidden] { display: none; }
+#workspace-heading { display: flex; gap: 10px; align-items: center; min-width: 0; }
+#workspace-heading svg { flex-shrink: 0; }
+#workspace-heading > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.repository-presentation-dialog { width: min(440px, calc(100vw - 24px)); max-height: calc(100dvh - 24px); overflow: auto; padding: 20px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); color: var(--fg); box-shadow: var(--shadow); }
+.repository-presentation-dialog h2 { margin: 0 0 18px; font-size: 19px; }
+.repository-presentation-dialog input[name=display_name] { width: 100%; }
+.repository-presentation-dialog fieldset { margin: 16px 0; padding: 0; border: 0; min-width: 0; }
+.repository-presentation-dialog legend { margin-bottom: 10px; }
+.repository-icon-picker { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; }
+.repository-icon-picker label { position: relative; display: flex; flex-direction: column; align-items: center; gap: 5px; padding: 8px 2px; border: 1px solid var(--line); border-radius: 6px; font-size: 11px; cursor: pointer; }
+.repository-icon-picker label:has(:checked) { background: var(--accent-soft); color: var(--accent); border-color: var(--accent); }
+.repository-icon-picker label:has(:focus-visible) { outline: 2px solid var(--accent); outline-offset: 2px; }
+.repository-icon-picker input { position: absolute; inset: 0; margin: 0; opacity: 0; width: 100%; height: 100%; cursor: pointer; }
+.repository-presentation-dialog .actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
+.repository-presentation-dialog .muted { font-size: 12px; }
 #workspace-heading { margin: 0; font-size: 21px; letter-spacing: -.4px; font-weight: 600; overflow-wrap: anywhere; }
 #workspace-record-scope { display: block; margin: 6px 0; font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
 .workspace-aspects { display: flex; gap: 24px; overflow-x: auto; margin-top: 14px; scrollbar-width: thin; }
@@ -94,16 +116,43 @@ body.plan-shell, body.evidence-shell { height: auto; min-height: 100dvh; overflo
 .repository-scoped .plan-workspace { min-height: 560px; height: calc(100dvh - 280px); }
 .repository-scoped .evidence-page { min-height: 650px; height: calc(100dvh - 200px); }
 .repository-scoped .main.test-evidence-page { padding: 0; overflow: visible; }
-@media(max-width: 1100px) { .repository-workspace.repository-scoped { grid-template-columns: 190px minmax(0,1fr); } .workspace-aspects { gap: 18px; } .repository-scoped .main { padding: 18px; } .workspace-context { padding: 18px 18px 0; } }
+body.evidence-shell { overflow: visible; }
+.repository-scoped .evidence-breadcrumb { font-size: 18px; }
+.repository-scoped .evidence-page-head { flex-wrap: wrap; gap: 10px; }
+.repository-scoped .evidence-review-state { flex-direction: row; gap: 8px; align-items: center; }
+.repository-scoped .evidence-toolbar { flex-wrap: wrap; overflow: visible; gap: 6px; }
+.repository-scoped .evidence-toolbar .evidence-tool-group { flex-shrink: 0; }
+.workspace-narrow .progress-context { grid-template-columns: minmax(0, 1fr) auto; align-items: start; }
+.workspace-narrow .progress-identity { grid-column: 1 / -1; }
+.workspace-narrow .progress-window { white-space: normal; }
+.workspace-narrow .progress-actions { grid-column: 1 / -1; justify-content: flex-start; flex-wrap: wrap; white-space: normal; }
+.workspace-narrow .progress-forecast > .progress-forecast-summary { grid-template-columns: minmax(0, 1fr) auto; }
+.workspace-narrow .progress-forecast-summary > strong { grid-column: 1 / -1; }
+.workspace-narrow .progress-forecast-summary > span { white-space: normal; }
+.workspace-narrow .progress-forecast > .progress-forecast-quality, .workspace-narrow .progress-forecast-quality ul { grid-template-columns: minmax(0, 1fr); }
+.evidence-composer { position: absolute; z-index: 20; right: 16px; bottom: 8px; width: min(340px, calc(100% - 24px)); height: fit-content; max-height: calc(100dvh - 88px); overflow: auto; padding: 16px; border: 1px solid var(--accent); border-radius: 10px; background: var(--panel); color: var(--fg); box-shadow: var(--shadow); }
+.evidence-composer[hidden] { display: none; }
+.evidence-composer h2 { margin: 0 0 12px; font-size: 16px; }
+.evidence-composer textarea { width: 100%; resize: vertical; max-height: 28dvh; min-height: 72px; }
+.evidence-composer .actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.evidence-composer .btn { font-size: 12px; }
+.evidence-composer [role=alert] { font-size: 12px; color: var(--bad); }
+.evidence-label-editor { position: absolute; z-index: 10; width: min(240px, 100%); padding: 8px; border: 1px solid var(--accent); border-radius: 8px; background: var(--panel); color: var(--fg); box-shadow: var(--shadow); }
+.evidence-label-editor .evidence-text-entry { position: static; width: 100%; min-width: 0; max-width: none; }
+.evidence-label-editor .actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px; }
+#repository-toggle, #repository-close { display: inline-flex; }
+@media(max-width: 1100px) { .workspace-aspects { gap: 18px; } .repository-scoped .main { padding: 18px; } .workspace-context { padding: 18px 18px 0; } }
 @media(max-width: 760px) {
   .repository-workspace.repository-scoped { display: block; }
   .repository-sidebar { display: none; position: fixed; inset: 0 auto 0 0; top: 0; width: min(320px, calc(100vw - 40px)); height: 100dvh; z-index: 170; box-shadow: var(--shadow); }
   .repository-drawer-open .repository-sidebar { display: flex; }
+  .repository-resize { display: none; }
   #repository-toggle, #repository-close { display: inline-flex; }
   #workspace-heading { font-size: 18px; }
   .workspace-context { padding: 12px 14px 0; }
   .workspace-aspects { flex-wrap: wrap; gap: 0 16px; margin-top: 4px; overflow-x: visible; }
   .workspace-aspects a { font-size: 13px; }
+  .evidence-shell .workspace-aspects a { padding: 8px 0; }
   .workspace-work-views { padding: 10px 14px 0; }
   .repository-scoped .main { padding: 16px 14px; }
   .repository-scoped .evidence-page { height: auto; min-height: 0; }

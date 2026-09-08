@@ -23,6 +23,7 @@ import { chooseRepository, revealTestRows, revealTestSettings, verifyTestsDesign
 import { artifactResponse, verifyTestArtifacts } from './verify-artifacts.mjs';
 import { verifyProgressCharts } from './verify-progress-charts.mjs';
 import { verifyWorkspace } from './verify-workspace.mjs';
+import { verifyAnnotations } from './verify-annotations.mjs';
 
 const BASE = 'example.test';
 const HOST = process.env.CONSOLE_VERIFY_HOST || `console.${BASE}`;
@@ -407,6 +408,7 @@ async function startFakeDaemon(dir) {
   const socketPath = path.join(dir, 'daemon.sock');
   let scenario = SCENARIOS.populated;
   const calls = [];
+  const repositoryPresentations = new Map();
   const settled = new WeakSet();
   const settledWaiters = new Set();
   const receivedWaiters = new Set();
@@ -664,7 +666,16 @@ async function startFakeDaemon(dir) {
         return reply({ ok: true, data: { feedback: structuredClone(feedback) } });
       }
       if (['deployment.restart', 'deployment.apply', 'deployment.rollback', 'deployment.remove', 'bug.report', 'bug.close', 'user.invite', 'user.remove', 'grant.set', 'grant.remove', 'telegram.link', 'telegram.subscribe', 'telegram.unsubscribe', 'test.stop', 'test.start', 'health.container_remove'].includes(cmd)) return reply({ ok: true, data: { state: 'done', status: 'done' } });
-      if (cmd === 'plan.overview' && !req.params.repository_id) return reply({ ok: true, data: fixtures(scenario)['plan.overview-list'] });
+      if (cmd === 'repository.presentation.update') {
+        if (!scenario.admin) return reply({ ok: false, error: { code: 'permission_denied', message: 'Administrator access required' } });
+        repositoryPresentations.set(req.params.repository_id, structuredClone(req.params));
+        return reply({ ok: true, data: req.params });
+      }
+      if (cmd === 'plan.overview' && !req.params.repository_id) {
+        const result = fixtures(scenario)['plan.overview-list'];
+        result.repositories = result.repositories.map((record) => ({ ...record, presentation: repositoryPresentations.get(record.repository_id) || null }));
+        return reply({ ok: true, data: result });
+      }
       if (cmd === 'plan.overview') return reply({ ok: true, data: planOverview() });
       if (cmd === 'progress.repository') return reply({ ok: true, data: progressFixture(scenario, req.params.period || 'day') });
       if (cmd === 'progress.repositories') return reply({ ok: true, data: fixtures(scenario)['progress.repositories'] });
@@ -848,16 +859,16 @@ async function main() {
     return;
   }
 
-  if (process.env.CONSOLE_VERIFY_TESTS_DESIGN_ONLY || process.env.CONSOLE_VERIFY_ARTIFACTS_ONLY || process.env.CONSOLE_VERIFY_WORKSPACE_ONLY) {
+  if (process.env.CONSOLE_VERIFY_TESTS_DESIGN_ONLY || process.env.CONSOLE_VERIFY_ARTIFACTS_ONLY || process.env.CONSOLE_VERIFY_WORKSPACE_ONLY || process.env.CONSOLE_VERIFY_ANNOTATIONS_ONLY) {
     try {
-      for (const viewport of [{ width: 1280, height: 900 }, { width: 713, height: 921 }, { width: 390, height: 844 }]) {
+      for (const viewport of [{ width: 1440, height: 900 }, { width: 927, height: 873 }, { width: 390, height: 844 }]) {
         for (const theme of ['light', 'dark']) {
           const context = await browser.newContext({ viewport, reducedMotion: 'reduce', colorScheme: theme });
           const { cookie } = sessions.issue({ sub: 'sub', email: 'owner@example.test' });
           await context.addCookies([{ name: 'dc2_session', value: cookie.split(';')[0].split('=')[1], domain: '.' + BASE, path: '/' }]);
           const page = await context.newPage();
           page.setDefaultTimeout(8000);
-          try { await (process.env.CONSOLE_VERIFY_WORKSPACE_ONLY ? verifyWorkspace : process.env.CONSOLE_VERIFY_ARTIFACTS_ONLY ? verifyTestArtifacts : verifyTestsDesign)({ page, daemon, check, scenario: SCENARIOS.populated, baseUrl: `http://${HOST}:${port}/`, output: OUT, theme, viewport }); }
+          try { await (process.env.CONSOLE_VERIFY_ANNOTATIONS_ONLY ? verifyAnnotations : process.env.CONSOLE_VERIFY_WORKSPACE_ONLY ? verifyWorkspace : process.env.CONSOLE_VERIFY_ARTIFACTS_ONLY ? verifyTestArtifacts : verifyTestsDesign)({ page, daemon, check, scenario: SCENARIOS.populated, baseUrl: `http://${HOST}:${port}/`, output: OUT, theme, viewport }); }
           catch (error) { check(`Tests design ${theme} ${viewport.width}`, false, error.message); }
           await context.close();
         }
@@ -2376,7 +2387,7 @@ async function main() {
     const target = document.querySelector(`[data-drop-release="${releaseId}"]`);
     if (viewport && sourceRow && target) viewport.scrollTop = Math.max(0, ((sourceRow.offsetTop + target.offsetTop) / 2) - (viewport.clientHeight / 2));
   }, { sourceId: P_C2, releaseId: V_R2 });
-  await pointerDrag(`[data-drag-task="${P_C2}"]`, `[data-drop-release="${V_R2}"]`);
+  await pointerDrag(`[data-drag-task="${P_C2}"]`, `[data-drop-release="${V_R2}"]`, { x: 45 });
   await waitForSettledCall(daemon, page, 'task.update');
   const dragMoveCall = daemon.calls.find((c) => c.operation === 'task.update' && c.params.task_id === P_C2);
   check('interaction: dropping a task on a release header moves it into that release',
@@ -2638,7 +2649,7 @@ async function main() {
       await context.addCookies([{ name: 'dc2_session', value: cookie.split(';')[0].split('=')[1], domain: '.' + BASE, path: '/' }]);
       const page = await context.newPage();
       page.setDefaultTimeout(8000);
-      for (const verifyJourney of [verifyWorkspace, verifyTestsDesign, verifyTestArtifacts]) {
+      for (const verifyJourney of [verifyWorkspace, verifyTestsDesign, verifyTestArtifacts, verifyAnnotations]) {
         try { await verifyJourney({ page, daemon, check, scenario: SCENARIOS.populated, baseUrl: `http://${HOST}:${port}/`, output: OUT, theme, viewport }); }
         catch (error) { check(`${verifyJourney.name} ${theme} ${viewport.width}`, false, error.message); }
       }

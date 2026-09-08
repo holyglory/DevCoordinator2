@@ -328,17 +328,45 @@ mod tests {
         connection
             .execute_batch(
                 "CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);\n\
-                 INSERT INTO meta VALUES('schema_version','19');",
+                 INSERT INTO meta VALUES('schema_version','20');",
             )
             .expect("fixture schema");
         drop(connection);
         assert!(matches!(
             Database::open(path),
             Err(DatabaseError::SchemaTooNew {
-                found: 19,
-                supported: 18
+                found: 20,
+                supported: 19
             })
         ));
+    }
+
+    #[test]
+    fn upgrades_schema_eighteen_with_separate_repository_presentation() {
+        let temporary = tempdir().unwrap();
+        let path = temporary.path().join("authority.sqlite3");
+        let connection = Connection::open(&path).unwrap();
+        connection.execute_batch("CREATE TABLE meta(key TEXT PRIMARY KEY,value TEXT NOT NULL); INSERT INTO meta VALUES('schema_version','18');").unwrap();
+        drop(connection);
+        let database = Database::open(path).unwrap();
+        let columns: Vec<String> = database
+            .call(|connection| {
+                let mut query = connection.prepare("PRAGMA table_info(repository_presentation)")?;
+                Ok(query
+                    .query_map([], |row| row.get(1))?
+                    .collect::<Result<Vec<_>, _>>()?)
+            })
+            .unwrap();
+        assert_eq!(
+            columns,
+            [
+                "repository_id",
+                "display_name",
+                "icon",
+                "updated_at",
+                "updated_by_uid"
+            ]
+        );
     }
 
     #[test]

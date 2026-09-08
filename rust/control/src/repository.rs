@@ -11,7 +11,8 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use devcoordinator2_api::results::{
-    RegisteredRepository, Repository, RepositoryList, RepositoryListRow, RepositoryStatus, Worktree,
+    RegisteredRepository, Repository, RepositoryList, RepositoryListRow, RepositoryPresentation,
+    RepositoryStatus, Worktree,
 };
 use devcoordinator2_api::{ErrorCode, ProtocolError};
 use rusqlite::{Connection, OptionalExtension, Row};
@@ -504,6 +505,83 @@ impl Registry {
             ArchiveOutcome::Repository(repository) => Ok(repository),
             ArchiveOutcome::Blocked(message) => Err(archive_blocked(message)),
         }
+    }
+
+    pub fn update_presentation(
+        &self,
+        params: devcoordinator2_api::params::RepositoryPresentationUpdate,
+        uid: u32,
+    ) -> Result<RepositoryPresentation, ProtocolError> {
+        validate_repository_id(&params.repository_id, "repository_id")?;
+        let display_name = params.display_name.map(|name| name.trim().to_owned());
+        if display_name.as_ref().is_some_and(|name| {
+            name.is_empty() || name.chars().count() > 80 || name.chars().any(char::is_control)
+        }) {
+            return Err(ProtocolError::new(
+                ErrorCode::ParamsInvalid,
+                "Repository name must contain 1 to 80 characters without control characters.",
+            ));
+        }
+        let icons = [
+            "folder",
+            "code",
+            "app-window",
+            "world",
+            "rocket",
+            "database",
+            "device-desktop",
+            "device-mobile",
+            "tools",
+            "flask",
+            "palette",
+            "star",
+            "plane",
+            "book",
+            "chart-bar",
+            "shield",
+        ];
+        if params
+            .icon
+            .as_ref()
+            .is_some_and(|icon| !icons.contains(&icon.as_str()))
+        {
+            return Err(ProtocolError::new(
+                ErrorCode::ParamsInvalid,
+                "Choose a supported repository icon.",
+            ));
+        }
+        let result = RepositoryPresentation {
+            repository_id: params.repository_id,
+            display_name,
+            icon: params.icon,
+        };
+        let saved = result.clone();
+        let found = self.database.call(move |connection| {
+            let transaction = connection.transaction()?;
+            let active: bool = transaction.query_row(
+                "SELECT EXISTS(SELECT 1 FROM repositories WHERE repository_id=?1 AND archived_at IS NULL)",
+                [&saved.repository_id], |row| row.get(0),
+            )?;
+            if !active { return Ok(false); }
+            if saved.display_name.is_none() && saved.icon.is_none() {
+                transaction.execute("DELETE FROM repository_presentation WHERE repository_id=?1", [&saved.repository_id])?;
+            } else {
+                transaction.execute(
+                    "INSERT INTO repository_presentation(repository_id,display_name,icon,updated_at,updated_by_uid) \
+                     VALUES(?1,?2,?3,strftime('%Y-%m-%dT%H:%M:%fZ','now'),?4) \
+                     ON CONFLICT(repository_id) DO UPDATE SET display_name=excluded.display_name,icon=excluded.icon,updated_at=excluded.updated_at,updated_by_uid=excluded.updated_by_uid",
+                    rusqlite::params![saved.repository_id, saved.display_name, saved.icon, uid],
+                )?;
+            }
+            transaction.commit()?;
+            Ok(true)
+        }).map_err(database_error)?;
+        if !found {
+            return Err(repository_not_found(
+                "repository is not registered or is archived",
+            ));
+        }
+        Ok(result)
     }
 
     fn repository(&self, repository_id: &str) -> Result<Option<Repository>, ProtocolError> {

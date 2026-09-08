@@ -2264,7 +2264,7 @@ fn validate_marks(marks: Vec<Mark>) -> Result<Vec<Mark>, ProtocolError> {
                 color: checked_color(color, index)?,
                 x: coordinate(x, "x")?,
                 y: coordinate(y, "y")?,
-                text: comment_text(&text, "text", 120)?,
+                text: bounded_text(&text, "text", 1, 120)?,
             },
             Mark::Rectangle {
                 id,
@@ -2417,11 +2417,20 @@ fn validate_mark_id(value: &str, label: &str) -> Result<(), ProtocolError> {
 }
 
 fn comment_text(value: &str, label: &str, maximum: usize) -> Result<String, ProtocolError> {
+    bounded_text(value, label, 3, maximum)
+}
+
+fn bounded_text(
+    value: &str,
+    label: &str,
+    minimum: usize,
+    maximum: usize,
+) -> Result<String, ProtocolError> {
     let value = value.trim();
     let length = value.chars().count();
-    if length < 3 || length > maximum {
+    if length < minimum || length > maximum {
         return Err(invalid_argument(format!(
-            "'{label}' must be plain text of 3..{maximum} characters"
+            "'{label}' must be plain text of {minimum}..{maximum} characters"
         )));
     }
     Ok(value.to_owned())
@@ -3078,7 +3087,7 @@ writeJourneyEvidenceArtifact({...original,pages,coverage,plan:{plannedPageCount:
                             color: "#f8fafc".to_owned(),
                             x: 0.3,
                             y: 0.3,
-                            text: "Needs more room".to_owned(),
+                            text: "X".to_owned(),
                         },
                     ],
                 },

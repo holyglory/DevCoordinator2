@@ -14,6 +14,13 @@ CREATE TABLE IF NOT EXISTS repositories (
   archive_note TEXT,
   merged_into_repository_id TEXT
 );
+CREATE TABLE IF NOT EXISTS repository_presentation (
+  repository_id TEXT PRIMARY KEY REFERENCES repositories(repository_id),
+  display_name TEXT,
+  icon TEXT,
+  updated_at TEXT NOT NULL,
+  updated_by_uid INTEGER NOT NULL
+);
 CREATE TABLE IF NOT EXISTS worktrees (
   worktree_id TEXT PRIMARY KEY,
   repository_id TEXT NOT NULL REFERENCES repositories(repository_id),

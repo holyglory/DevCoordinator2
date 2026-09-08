@@ -248,6 +248,14 @@ pub struct RepositoryList {
 
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct RepositoryPresentation {
+    pub repository_id: String,
+    pub display_name: Option<String>,
+    pub icon: Option<String>,
+}
+
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RegisteredRepository {
     pub repository_id: String,
     pub worktree_id: String,
@@ -1436,6 +1444,8 @@ pub struct CurrentReleaseSummary {
 pub struct PlanRepositoryRow {
     pub repository_id: String,
     pub display_name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub presentation: Option<RepositoryPresentation>,
     pub open_tasks: u32,
     pub loc_done: u64,
     pub loc_total: u64,
