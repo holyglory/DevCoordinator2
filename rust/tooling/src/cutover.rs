@@ -32,7 +32,7 @@ const ACTIVITY_FILE: &str = "test-activity.json";
 const LOCK_FILE: &str = "test-admission.lock";
 const MAX_STATE_BYTES: u64 = 2 * 1024 * 1024;
 const MAX_SNAPSHOT_BYTES: u64 = 1024 * 1024;
-const SUPPORTED_DATABASE_SCHEMAS: &[u32] = &[15, 16, 17, DATABASE_SCHEMA_VERSION];
+const MINIMUM_SUPPORTED_DATABASE_SCHEMA: u32 = 15;
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1176,17 +1176,11 @@ fn open_database_read_only(path: &Path) -> Result<Connection, String> {
         .pragma_update(None, "query_only", true)
         .map_err(|error| format!("cannot protect Coordinator database read: {error}"))?;
     let schema = database_schema_from(&connection)?;
-    if !SUPPORTED_DATABASE_SCHEMAS
-        .iter()
+    if !(MINIMUM_SUPPORTED_DATABASE_SCHEMA..=DATABASE_SCHEMA_VERSION)
         .any(|supported| schema == supported.to_string())
     {
         return Err(format!(
-            "cutover requires database schema {}, found {schema}",
-            SUPPORTED_DATABASE_SCHEMAS
-                .iter()
-                .map(u32::to_string)
-                .collect::<Vec<_>>()
-                .join(", ")
+            "cutover requires database schema {MINIMUM_SUPPORTED_DATABASE_SCHEMA} through {DATABASE_SCHEMA_VERSION}, found {schema}"
         ));
     }
     Ok(connection)
@@ -1891,7 +1885,7 @@ mod tests {
 
     #[test]
     fn concrete_host_adapter_activates_supported_schemas_and_rejects_unknown_schemas() {
-        for schema in [15, 16, 17, DATABASE_SCHEMA_VERSION] {
+        for schema in 15..=DATABASE_SCHEMA_VERSION {
             let world = host_world();
             let connection = Connection::open(&world.config.database_path).unwrap();
             connection
