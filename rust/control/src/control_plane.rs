@@ -693,13 +693,13 @@ impl ControlPlane {
             "test.evidence.image" => encode(self.test_evidence.image(decode(params)?, caller)?),
             "test.evidence.feedback.create" => {
                 let params: params::CreateFeedback = decode(params)?;
-                let repository = self
-                    .registry
-                    .repository_status(Path::new(&params.path), Some((caller.uid, caller.gid)))?;
+                let repository_id = self
+                    .test_evidence
+                    .repository_id_for(Path::new(&params.path), caller)?;
                 let result = self.test_evidence.create_feedback(params, caller)?;
                 self.publish_feedback(
                     "feedback.created",
-                    &repository.repository_id,
+                    &repository_id,
                     &result.feedback,
                     result
                         .feedback
@@ -709,7 +709,7 @@ impl ControlPlane {
                 );
                 self.publish_planning(
                     "task.created",
-                    &repository.repository_id,
+                    &repository_id,
                     "task",
                     &result.task_id,
                     enum_text(&result.feedback.task_status),
@@ -718,13 +718,13 @@ impl ControlPlane {
             }
             "test.evidence.feedback.reply" => {
                 let params: params::FeedbackReply = decode(params)?;
-                let repository = self
-                    .registry
-                    .repository_status(Path::new(&params.path), Some((caller.uid, caller.gid)))?;
+                let repository_id = self
+                    .test_evidence
+                    .repository_id_for(Path::new(&params.path), caller)?;
                 let result = self.test_evidence.reply(params, caller)?;
                 self.publish_feedback(
                     "feedback.replied",
-                    &repository.repository_id,
+                    &repository_id,
                     &result.feedback,
                     result
                         .feedback
@@ -737,19 +737,19 @@ impl ControlPlane {
             "test.evidence.feedback.edit" => {
                 let params: params::FeedbackEdit = decode(params)?;
                 let comment_id = params.comment_id.clone();
-                let repository = self
-                    .registry
-                    .repository_status(Path::new(&params.path), Some((caller.uid, caller.gid)))?;
+                let repository_id = self
+                    .test_evidence
+                    .repository_id_for(Path::new(&params.path), caller)?;
                 let result = self.test_evidence.edit(params, caller)?;
                 self.publish_feedback(
                     "feedback.edited",
-                    &repository.repository_id,
+                    &repository_id,
                     &result.feedback,
                     Some(comment_id),
                 );
                 self.publish_planning(
                     "task.updated",
-                    &repository.repository_id,
+                    &repository_id,
                     "task",
                     &result.feedback.task_id,
                     enum_text(&result.feedback.task_status),
@@ -758,19 +758,19 @@ impl ControlPlane {
             }
             "test.evidence.feedback.state" => {
                 let params: params::FeedbackStateChange = decode(params)?;
-                let repository = self
-                    .registry
-                    .repository_status(Path::new(&params.path), Some((caller.uid, caller.gid)))?;
+                let repository_id = self
+                    .test_evidence
+                    .repository_id_for(Path::new(&params.path), caller)?;
                 let result = self.test_evidence.set_state(params, caller)?;
                 self.publish_feedback(
                     "feedback.state_changed",
-                    &repository.repository_id,
+                    &repository_id,
                     &result.feedback,
                     None,
                 );
                 self.publish_planning(
                     "task.updated",
-                    &repository.repository_id,
+                    &repository_id,
                     "task",
                     &result.feedback.task_id,
                     enum_text(&result.feedback.task_status),
@@ -779,19 +779,14 @@ impl ControlPlane {
             }
             "test.evidence.feedback.delete" => {
                 let params: params::FeedbackDelete = decode(params)?;
-                let repository = self
-                    .registry
-                    .repository_status(Path::new(&params.path), Some((caller.uid, caller.gid)))?;
+                let repository_id = self
+                    .test_evidence
+                    .repository_id_for(Path::new(&params.path), caller)?;
                 let result = self.test_evidence.delete(params, caller)?;
-                self.publish_feedback(
-                    "feedback.deleted",
-                    &repository.repository_id,
-                    &result.feedback,
-                    None,
-                );
+                self.publish_feedback("feedback.deleted", &repository_id, &result.feedback, None);
                 self.publish_planning(
                     "task.updated",
-                    &repository.repository_id,
+                    &repository_id,
                     "task",
                     &result.feedback.task_id,
                     enum_text(&result.feedback.task_status),

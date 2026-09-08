@@ -260,6 +260,14 @@ impl TestEvidenceService {
         })
     }
 
+    pub(crate) fn repository_id_for(
+        &self,
+        path: &Path,
+        caller: &Caller,
+    ) -> Result<String, ProtocolError> {
+        Ok(self.resolve(path, caller)?.repository_id)
+    }
+
     fn resolve(&self, path: &Path, caller: &Caller) -> Result<ResolvedWorktree, ProtocolError> {
         if !path.is_absolute() {
             return Err(invalid_argument("path must be absolute"));
@@ -2521,6 +2529,7 @@ fn id_error(error: ids::IdError) -> ProtocolError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::daemon::OperationExecutor;
     use devcoordinator2_api::{
         ClientKind,
         params::Point,
@@ -2701,6 +2710,152 @@ mod tests {
             Screenshot::Available(image) => image.image_id.clone(),
             Screenshot::Unavailable(_) => panic!("fixture screenshot is unavailable"),
         }
+    }
+
+    #[test]
+    fn public_dispatcher_preserves_feedback_lifecycle_without_edge_git_access() {
+        let world = world();
+        fs::rename(
+            world.repo.join(".git"),
+            world.repo.join(".git-unavailable-fixture"),
+        )
+        .unwrap();
+        let edge_uid = rustix::process::getuid().as_raw() + 1;
+        let mut owner = caller("owner@example.test");
+        owner.uid = edge_uid;
+        owner.gid = edge_uid;
+        assert!(
+            world
+                .service
+                .registry
+                .repository_status(&world.repo, Some((edge_uid, edge_uid)))
+                .is_err()
+        );
+        world.database.transaction(|connection| {
+            connection.execute("INSERT INTO users(user_id,email,administrator,created_at,created_by) VALUES('u1111111111111111','owner@example.test',1,'now','fixture')", [])?;
+            Ok(())
+        }).unwrap();
+        let root = world._temporary.path();
+        let plane = crate::control_plane::ControlPlane::with_adapters(
+            crate::config::Config {
+                socket_path: root.join("daemon.sock"),
+                state_dir: root.join("state"),
+                unit_prefix: "devcoordinator2-evidence-fixture".into(),
+                slice_name: "unused-fixture.slice".into(),
+                client_group: "unused-fixture".into(),
+                port_range: (40000, 40100),
+                base_domain: "example.test".into(),
+                edge_uid: Some(edge_uid),
+                admin_emails: Vec::new(),
+                telegram_token_file: None,
+                telegram_api: "https://api.telegram.org".into(),
+                bugs_dir: root.join("bugs"),
+                compose_env_allowlist_file: None,
+                compose_env_authorizations: HashSet::new(),
+                codex_usage_sources_file: None,
+                codex_usage_sources: Vec::new(),
+            },
+            world.database.clone(),
+            Arc::new(|_: &crate::access::RouteAccessSection| Ok(())),
+            Arc::new(crate::platform::FixedClock(datetime!(2026-09-08 17:00 UTC))),
+        )
+        .unwrap();
+        let reference = json!({"path":world.repo,"run_id":RUN_ID});
+        let readable = plane
+            .execute("test.evidence.get", reference.clone(), &owner)
+            .unwrap();
+        assert_eq!(readable["image_count"], 1);
+        let mut create = reference.clone();
+        create["image_id"] = json!(image_id(&evidence(&world)));
+        create["body"] = json!("Align the visible port and line");
+        create["marks"] = json!([
+            {"id":"pin-1","type":"pin","color":"#f59e0b","x":0.81,"y":0.24},
+            {"id":"rectangle-1","type":"rectangle","color":"#f59e0b","x":0.76,"y":0.18,"width":0.20,"height":0.24}
+        ]);
+        let mut unregistered = create.clone();
+        unregistered["path"] = json!(world.repo.join("unregistered"));
+        assert_eq!(
+            plane
+                .execute("test.evidence.feedback.create", unregistered, &owner)
+                .unwrap_err()
+                .code,
+            ErrorCode::RepositoryNotFound
+        );
+        let mut outsider = owner.clone();
+        outsider.identity = Some("uninvited@example.test".into());
+        assert!(
+            plane
+                .execute("test.evidence.feedback.create", create.clone(), &outsider)
+                .is_err()
+        );
+        let created = plane
+            .execute("test.evidence.feedback.create", create, &owner)
+            .unwrap();
+        let task_id = created["task_id"].as_str().unwrap();
+        let overview = plane
+            .execute(
+                "plan.overview",
+                json!({"repository_id":world.repository_id}),
+                &owner,
+            )
+            .unwrap();
+        assert!(
+            overview["tasks"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|task| task["task_id"] == task_id)
+        );
+        let readback = plane
+            .execute("test.evidence.get", reference.clone(), &owner)
+            .unwrap();
+        assert_eq!(readback["feedback"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            readback["feedback"][0]["marks"].as_array().unwrap().len(),
+            2
+        );
+        let mut target = reference;
+        target["feedback_id"] = created["feedback_id"].clone();
+        let mut reply = target.clone();
+        reply["body"] = json!("Retain this exact screenshot context");
+        let replied = plane
+            .execute("test.evidence.feedback.reply", reply, &owner)
+            .unwrap();
+        assert_eq!(replied["feedback"]["comments"].as_array().unwrap().len(), 2);
+        let mut edit = target.clone();
+        edit["comment_id"] = created["feedback"]["comments"][0]["comment_id"].clone();
+        edit["body"] = json!("Align the port with the visible line");
+        assert!(
+            plane
+                .execute("test.evidence.feedback.edit", edit, &owner)
+                .is_ok()
+        );
+        for state in ["resolved", "open"] {
+            let mut change = target.clone();
+            change["state"] = json!(state);
+            assert_eq!(
+                plane
+                    .execute("test.evidence.feedback.state", change, &owner)
+                    .unwrap()["feedback"]["state"],
+                state
+            );
+        }
+        let deleted = plane
+            .execute("test.evidence.feedback.delete", target, &owner)
+            .unwrap();
+        assert_eq!(deleted["feedback"]["state"], "deleted");
+        world
+            .database
+            .call(move |connection| {
+                let count: u32 = connection.query_row(
+                    "SELECT COUNT(*) FROM tasks WHERE repository_id=?1 AND kind='user_feedback'",
+                    [&world.repository_id],
+                    |row| row.get(0),
+                )?;
+                assert_eq!(count, 1);
+                Ok(())
+            })
+            .unwrap();
     }
 
     #[test]
