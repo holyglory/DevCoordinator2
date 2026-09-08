@@ -278,6 +278,7 @@ function guard(fn) {
     try { return await fn(...args); } catch (error) {
       if (error.code === 'stale') return null; // another view took over
       if (error.code === 'permission_denied') main.innerHTML = currentDestinationHeading() + stateBlock('denied', error.message);
+      else if (['test_evidence_expired', 'test_evidence_not_found'].includes(error.code)) main.innerHTML = currentDestinationHeading() + stateBlock('empty', 'No visual evidence is available for this run. It may have expired.');
       else if (error.code !== 'unauthenticated') main.innerHTML = currentDestinationHeading() + stateBlock('error', error.message);
       return null;
     }

@@ -609,10 +609,10 @@ async function startFakeDaemon(dir) {
       const artifacts = artifactResponse(cmd, req.params, scenario);
       if (artifacts) return reply(artifacts);
       if (cmd === 'test.evidence.lookup') {
-        if (scenario.identity !== 'owner@example.test') return reply({ ok: false, error: { code: 'permission_denied', message: 'Administrator access is required.' } });
+        if (scenario.identity !== 'owner@example.test') return reply({ ok: false, error: { code: 'permission_denied', message: 'Administrator access is required.', detail: '' } });
         const retained = req.params.run_id === 't20251101T000000Z-abcd12';
         const earlier = scenario.earlierEvidence && req.params.run_id === 't20251231T000000Z-abc111';
-        if (scenario.empty || !retained && !earlier && req.params.run_id !== TEST_RUN || req.params.image_id && !/^[1-8]{64}$/.test(req.params.image_id)) return reply({ ok: false, error: { code: 'test_evidence_expired', message: 'The selected visual evidence is unavailable or has expired.' } });
+        if (scenario.empty || !retained && !earlier && req.params.run_id !== TEST_RUN || req.params.image_id && !/^[1-8]{64}$/.test(req.params.image_id)) return reply({ ok: false, error: { code: 'test_evidence_expired', message: 'The selected visual evidence is unavailable or has expired.', detail: '' } });
         return reply({ ok: true, data: {
           context: { repository_id: earlier ? REPO : 'r2', worktree_id: earlier ? 'w1' : 'w2', worktree_path: earlier ? '/srv/repos/repo-one' : `/srv/repos/${LONG}`, display_name: earlier ? 'repo-one' : LONG, run_id: req.params.run_id, test: retained ? 'retained-visual-review' : earlier ? 'browser-journeys' : 'ui-release', started_at: '2025-11-01T00:00:00Z' },
           evidence: { ...evidenceResult(), run_id: req.params.run_id },

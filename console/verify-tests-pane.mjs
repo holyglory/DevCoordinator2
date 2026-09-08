@@ -48,7 +48,7 @@ export async function verifyTestsDesign({ page, daemon, check, scenario, baseUrl
   daemon.calls.length = 0;
   await page.locator('.test-image-preview a').click();
   await page.waitForSelector('.evidence-workspace');
-  verify('commenter opens the exact earlier run', daemon.calls.some((call) => call.operation === 'test.evidence.get' && call.params.run_id === 't20251231T000000Z-abc111' && call.params.path === '/srv/repos/repo-one'));
+  verify('commenter opens the exact earlier run', daemon.calls.some((call) => call.params.run_id === 't20251231T000000Z-abc111' && (call.operation === 'test.evidence.get' && call.params.path === '/srv/repos/repo-one' || call.operation === 'test.evidence.lookup' && call.params.worktree_id === 'w1')) && page.url().includes('t20251231T000000Z-abc111'));
   verify('commenter selects the clicked screenshot', await page.locator('[data-evidence-viewport][aria-pressed=true]').getAttribute('data-evidence-viewport') === 'mobile');
   await page.goto(`${baseUrl}#/tests`);
   daemon.calls.length = 0;
