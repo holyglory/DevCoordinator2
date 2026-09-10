@@ -29,7 +29,11 @@
         "planning",
         "implementation",
         "operations",
-        "review"
+        "review",
+        "diagnosis",
+        "feedback",
+        "delegation",
+        "delivery"
       ]
     },
     {
