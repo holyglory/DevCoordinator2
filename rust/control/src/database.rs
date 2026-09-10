@@ -325,19 +325,23 @@ mod tests {
         let temporary = tempdir().expect("tempdir");
         let path = temporary.path().join("authority.sqlite3");
         let connection = Connection::open(&path).expect("fixture");
+        let future_version = DATABASE_SCHEMA_VERSION + 1;
         connection
-            .execute_batch(
-                "CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);\n\
-                 INSERT INTO meta VALUES('schema_version','20');",
-            )
+            .execute_batch("CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);")
             .expect("fixture schema");
+        connection
+            .execute(
+                "INSERT INTO meta VALUES('schema_version',?1)",
+                [future_version.to_string()],
+            )
+            .expect("future schema");
         drop(connection);
         assert!(matches!(
             Database::open(path),
             Err(DatabaseError::SchemaTooNew {
-                found: 20,
-                supported: 19
-            })
+                found,
+                supported
+            }) if found == future_version && supported == DATABASE_SCHEMA_VERSION
         ));
     }
 

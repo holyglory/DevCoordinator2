@@ -50,6 +50,8 @@ pub struct PreparedRun {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TestHistoryEntry {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub work: Option<devcoordinator2_api::work_context::WorkAttribution>,
     pub run_id: String,
     pub test: String,
     pub status: TestStatus,
@@ -73,6 +75,8 @@ pub struct RetryCheckEvidence {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RetryEvidence {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub work: Option<devcoordinator2_api::work_context::WorkAttribution>,
     pub run_id: String,
     pub test: String,
     pub proof: ProofKind,
@@ -322,6 +326,7 @@ impl TestRunStore {
         let mut runs = self.read_history(worktree)?;
         runs.retain(|run| run.run_id != summary.run_id);
         runs.push(TestHistoryEntry {
+            work: summary.work.clone(),
             run_id: summary.run_id.clone(),
             test: summary.test.clone(),
             status: summary.status.clone(),
@@ -333,6 +338,7 @@ impl TestRunStore {
         if runs.len() > HISTORY_CAP {
             runs.drain(..runs.len() - HISTORY_CAP);
         }
+        bound_receipt_rows(&mut runs)?;
         atomic_json(
             &test,
             HISTORY_FILE,
@@ -386,6 +392,7 @@ impl TestRunStore {
         &self,
         worktree: &Path,
         report: &ExecutionReport,
+        work: Option<&devcoordinator2_api::work_context::WorkAttribution>,
         uid: u32,
         gid: u32,
     ) -> Result<(), TestStateError> {
@@ -398,6 +405,7 @@ impl TestRunStore {
         let mut runs = self.read_evidence(worktree)?;
         runs.retain(|run| run.run_id != report.run_id);
         runs.push(RetryEvidence {
+            work: work.cloned(),
             run_id: report.run_id.clone(),
             test: report.test.clone(),
             proof: report.proof,
@@ -412,6 +420,7 @@ impl TestRunStore {
         if runs.len() > EVIDENCE_CAP {
             runs.drain(..runs.len() - EVIDENCE_CAP);
         }
+        bound_receipt_rows(&mut runs)?;
         atomic_json(
             &test,
             EVIDENCE_FILE,
@@ -444,6 +453,7 @@ pub fn initial_summary(
     requested_tier: ValidationTier,
 ) -> TestSummary {
     TestSummary {
+        work: None,
         schema_version: 2,
         run_id: run_id.into(),
         test: test.into(),
@@ -683,6 +693,34 @@ fn create_file(
     fchown(&file, uid, gid)?;
     Ok(file)
 }
+
+fn bound_receipt_rows<T: Serialize>(rows: &mut Vec<T>) -> Result<(), TestStateError> {
+    let sizes = rows
+        .iter()
+        .map(|row| serde_json::to_vec(row).map(|bytes| bytes.len() + 1))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| TestStateError::Json(error.to_string()))?;
+    let mut total = sizes.iter().sum::<usize>() + 64;
+    let mut discard = 0;
+    for size in sizes.into_iter().take(rows.len().saturating_sub(1)) {
+        if total <= JSON_LIMIT as usize {
+            break;
+        }
+        total -= size;
+        discard += 1;
+    }
+    if total > JSON_LIMIT as usize {
+        return Err(TestStateError::Invalid(
+            "newest governed-run receipt exceeds the 2 MiB limit".into(),
+        ));
+    }
+    rows.drain(..discard);
+    Ok(())
+}
+
+#[cfg(test)]
+#[path = "work_context_state_tests.rs"]
+mod work_context_tests;
 
 fn atomic_json<T: Serialize + ?Sized>(
     parent: &File,

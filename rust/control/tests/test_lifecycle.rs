@@ -615,6 +615,7 @@ command=["true"]
             gid: rustix::process::getgid().as_raw(),
             client_kind: devcoordinator2_api::ClientKind::Codex,
             client_session: Some("fixture".into()),
+            work: None,
             identity: None,
         };
         assert_ne!(caller.uid, 0, "lifecycle fixture requires non-root caller");
@@ -732,6 +733,107 @@ fn public_run_history_uses_exact_registration_without_edge_git_access() {
             .history(query(&world.worktree), &world.caller)
             .is_err()
     );
+}
+
+#[test]
+fn work_context_survives_governed_run_completion_and_retained_evidence() {
+    use devcoordinator2_api::work_context::{WorkContext, WorkSource};
+    let mut world = LifecycleWorld::new();
+    let context = devcoordinator2_api::ClientContext {
+        session: Some("fixture".into()),
+        work: Some(WorkContext::parse(r#"{"version":1,"native_project_id":"native-clock-not-coordinator-id","thread_id":"fixture","turn_id":"turn-1","operation_id":"operation-1","workstream_id":"implementation","outcome_id":"outcome-1","experiment_ref":"review-1@2"}"#).unwrap()),
+        work_source: Some(WorkSource::Environment),
+        ..Default::default()
+    };
+    world.caller.work = context.work_attribution();
+    let expected = world.caller.work.clone();
+    let (finished, completion) = std::sync::mpsc::channel();
+    world
+        .lifecycle
+        .set_event_sink(Arc::new(move |event: TestLifecycleEvent| {
+            if event.kind == "test.finished" {
+                let _ = finished.send(());
+            }
+        }));
+    let started = world.start();
+    assert_ne!(started.repository_id, "native-clock-not-coordinator-id");
+    assert_eq!(
+        world
+            .lifecycle
+            .status(world.worktree.to_str().unwrap(), &world.caller)
+            .unwrap()
+            .work,
+        expected
+    );
+    world.systemd.finish(&started.unit);
+    completion.recv_timeout(Duration::from_secs(10)).unwrap();
+    assert_eq!(world.wait_status(TestStatus::Passed).work, expected);
+    let history = world
+        .lifecycle
+        .history(
+            devcoordinator2_api::params::TestHistory {
+                path: world.worktree.to_string_lossy().into_owned(),
+                before: None,
+                limit: 1,
+            },
+            &world.caller,
+        )
+        .unwrap();
+    assert_eq!(history.runs[0].work, expected);
+    assert_eq!(
+        TestRunStore.read_history(&world.worktree).unwrap()[0].work,
+        expected
+    );
+    assert_eq!(
+        TestRunStore.read_evidence(&world.worktree).unwrap()[0].work,
+        expected
+    );
+}
+
+#[test]
+fn work_context_history_pages_preserve_whole_contexts_and_advance() {
+    use devcoordinator2_api::work_context::{WorkAttribution, WorkContext, WorkSource};
+    let world = LifecycleWorld::new();
+    let context = WorkContext {
+        version: 1,
+        native_project_id: "n".repeat(256),
+        thread_id: "t".repeat(256),
+        turn_id: Some("u".repeat(256)),
+        operation_id: Some("o".repeat(256)),
+        workstream_id: Some("w".repeat(256)),
+        outcome_id: Some("d".repeat(256)),
+        experiment_ref: Some("e".repeat(256)),
+    };
+    context.validate().unwrap();
+    let work = WorkAttribution {
+        context: Some(context),
+        source: WorkSource::Environment,
+        diagnostic: None,
+    };
+    let directory = world.worktree.join(".devcoordinator/test");
+    std::fs::create_dir_all(&directory).unwrap();
+    let rows = (0..60).map(|index| serde_json::json!({"work":work,"run_id":format!("t20260904T000000Z-{index:06x}"),"test":"all","status":"passed","started_at":"2026-09-04T00:00:00Z","finished_at":"2026-09-04T00:00:01Z","duration_seconds":1.0,"exit_code":0})).collect::<Vec<_>>();
+    std::fs::write(
+        directory.join("history.json"),
+        serde_json::to_vec(&serde_json::json!({"schema":2,"runs":rows})).unwrap(),
+    )
+    .unwrap();
+    let query = |before| devcoordinator2_api::params::TestHistory {
+        path: world.worktree.to_string_lossy().into_owned(),
+        before,
+        limit: 50,
+    };
+    let first = world.lifecycle.history(query(None), &world.caller).unwrap();
+    assert!(first.runs.len() < 50);
+    assert!(first.next_before.is_some());
+    assert!(serde_json::to_vec(&first.runs).unwrap().len() < 12_288);
+    assert_eq!(first.runs[0].work.as_ref(), Some(&work));
+    let next = world
+        .lifecycle
+        .history(query(first.next_before), &world.caller)
+        .unwrap();
+    assert_ne!(first.runs[0].run_id, next.runs[0].run_id);
+    assert_eq!(next.runs[0].work.as_ref(), Some(&work));
 }
 
 #[test]
@@ -1098,6 +1200,7 @@ database="app_test"
         gid: rustix::process::getgid().as_raw(),
         client_kind: devcoordinator2_api::ClientKind::Codex,
         client_session: None,
+        work: None,
         identity: None,
     };
     assert_ne!(caller.uid, 0, "PostgreSQL lifecycle fixture needs non-root");
@@ -1147,7 +1250,7 @@ database="app_test"
 }
 
 #[test]
-fn recovery_skips_unavailable_worktree_and_records_interrupted_summary() {
+fn work_context_recovery_skips_unavailable_worktree_and_records_interrupted_summary() {
     let temporary = tempdir().unwrap();
     let worktree = temporary.path().join("repository");
     std::fs::create_dir(&worktree).unwrap();
@@ -1191,6 +1294,7 @@ fn recovery_skips_unavailable_worktree_and_records_interrupted_summary() {
         gid: rustix::process::getgid().as_raw(),
         client_kind: devcoordinator2_api::ClientKind::Other,
         client_session: None,
+        work: None,
         identity: None,
     };
     let registry = Registry::new(database.clone());
@@ -1224,7 +1328,7 @@ fn recovery_skips_unavailable_worktree_and_records_interrupted_summary() {
             caller.gid,
         )
         .unwrap();
-    let summary = initial_summary(
+    let mut summary = initial_summary(
         run_id,
         "all",
         "2026-09-04T00:00:00Z",
@@ -1235,6 +1339,11 @@ fn recovery_skips_unavailable_worktree_and_records_interrupted_summary() {
         None,
         ValidationTier::Release,
     );
+    summary.work = devcoordinator2_api::ClientContext {
+        work: Some(devcoordinator2_api::work_context::WorkContext::parse(r#"{"version":1,"native_project_id":"native-clock","thread_id":"thread-restore","outcome_id":"outcome-restore"}"#).unwrap()),
+        ..Default::default()
+    }.work_attribution();
+    let expected_work = summary.work.clone();
     store
         .write_summary(&prepared.current, &summary, caller.uid, caller.gid)
         .unwrap();
@@ -1268,10 +1377,15 @@ fn recovery_skips_unavailable_worktree_and_records_interrupted_summary() {
         .status(worktree.to_str().unwrap(), &caller)
         .unwrap();
     assert_eq!(interrupted.status, TestStatus::Interrupted);
+    assert_eq!(interrupted.work, expected_work);
     assert_eq!(
         interrupted.termination_reason,
         Some(devcoordinator2_api::results::RunTerminationReason::Interrupted)
     );
     assert_eq!(store.read_history(&worktree).unwrap().len(), 1);
+    assert_eq!(
+        store.read_history(&worktree).unwrap()[0].work,
+        expected_work
+    );
     assert!(systemd.stops.load(Ordering::SeqCst) >= 1);
 }

@@ -108,6 +108,7 @@ struct Inner {
 }
 
 struct RunHandle {
+    work: Option<devcoordinator2_api::work_context::WorkAttribution>,
     run_id: String,
     test: String,
     unit: String,
@@ -388,7 +389,7 @@ impl TestLifecycle {
         };
         let started_at = self.timestamp()?;
         let client = client_name(caller);
-        let summary = initial_summary(
+        let mut summary = initial_summary(
             &run_id,
             &specification.name,
             &started_at,
@@ -399,6 +400,7 @@ impl TestLifecycle {
             retry.map(|value| value.0.to_owned()),
             requested_tier,
         );
+        summary.work = caller.work.clone();
         if let Err(error) =
             self.inner
                 .store
@@ -542,6 +544,7 @@ impl TestLifecycle {
             Arc::clone(&stderr_bytes),
         );
         let handle = Arc::new(RunHandle {
+            work: caller.work.clone(),
             run_id: run_id.clone(),
             test: specification.name.clone(),
             unit: unit.clone(),
@@ -664,6 +667,7 @@ impl TestLifecycle {
         {
             records.retain(|record| record.run_id != current.run_id);
             records.push(crate::test_state::TestHistoryEntry {
+                work: current.work,
                 run_id: current.run_id,
                 test: current.test,
                 status: current.status,
@@ -693,18 +697,37 @@ impl TestLifecycle {
             None => 0,
         };
         let end = (start + usize::from(params.limit)).min(records.len());
-        let next_before = (end < records.len()).then(|| records[end - 1].run_id.clone());
-        let runs = records[start..end]
-            .iter()
-            .map(|record| devcoordinator2_api::results::TestHistoryRun {
+        let mut runs = Vec::new();
+        let mut bytes = 0;
+        for record in &records[start..end] {
+            let row = devcoordinator2_api::results::TestHistoryRun {
+                work: record.work.clone(),
                 run_id: record.run_id.clone(),
                 test: record.test.clone(),
                 status: record.status.clone(),
                 started_at: record.started_at.clone(),
                 finished_at: record.finished_at.clone(),
                 duration_seconds: record.duration_seconds,
-            })
-            .collect();
+            };
+            let size = serde_json::to_vec(&row)
+                .map_err(|_| {
+                    ProtocolError::new(ErrorCode::InternalError, "Cannot encode run history")
+                })?
+                .len();
+            if size > 12_288 {
+                return Err(ProtocolError::new(
+                    ErrorCode::ParamsInvalid,
+                    "Run history entry exceeds the bounded page size",
+                ));
+            }
+            if bytes + size > 12_288 {
+                break;
+            }
+            bytes += size;
+            runs.push(row);
+        }
+        let next_before = (start + runs.len() < records.len())
+            .then(|| runs.last().expect("nonempty history page").run_id.clone());
         Ok(devcoordinator2_api::results::TestHistory { runs, next_before })
     }
 
@@ -1442,6 +1465,7 @@ impl TestLifecycle {
             handle.origin_run_id.clone(),
             handle.requested_tier,
         );
+        summary.work = handle.work.clone();
         terminal_status(
             &mut summary,
             status.clone(),
@@ -1461,6 +1485,7 @@ impl TestLifecycle {
             let _ = self.inner.store.record_evidence(
                 &handle.worktree,
                 report,
+                summary.work.as_ref(),
                 handle.caller_uid,
                 handle.caller_gid,
             );

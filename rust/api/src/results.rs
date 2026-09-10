@@ -434,6 +434,8 @@ pub struct ExecutionCapacity {
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TestSummary {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub work: Option<crate::work_context::WorkAttribution>,
     pub schema_version: u8,
     pub run_id: String,
     pub test: String,
@@ -524,6 +526,8 @@ pub struct TestList {
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TestHistoryRun {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub work: Option<crate::work_context::WorkAttribution>,
     pub run_id: String,
     pub test: String,
     pub status: TestStatus,

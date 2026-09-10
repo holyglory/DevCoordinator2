@@ -19,6 +19,13 @@ use glossary_cli::GlossaryCommand;
 mod configuration_cli;
 use configuration_cli::ConfigCommand;
 
+#[path = "cli_review.rs"]
+mod review_cli;
+use review_cli::ReviewCommand;
+
+#[path = "cli_work_context.rs"]
+mod work_context_cli;
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, ValueEnum)]
 pub enum OutputFormat {
     #[default]
@@ -72,14 +79,6 @@ pub struct Cli {
 }
 
 impl Cli {
-    pub fn client_context(&self) -> ClientContext {
-        ClientContext {
-            kind: self.client.into(),
-            session: self.session.clone(),
-            identity: None,
-        }
-    }
-
     pub fn into_invocation(self) -> Result<Invocation, CliValidationError> {
         match self.command {
             Command::Daemon => Ok(Invocation::Daemon),
@@ -98,6 +97,7 @@ impl Cli {
             Command::Task { command } => command.into_invocation(),
             Command::Release { command } => command.into_invocation(),
             Command::Decision { command } => command.into_invocation(),
+            Command::Review { command } => command.into_invocation(),
             Command::Glossary { command } => command.into_invocation(),
             Command::Config { command } => command.into_invocation(),
         }
@@ -236,6 +236,10 @@ enum Command {
     Decision {
         #[command(subcommand)]
         command: DecisionCommand,
+    },
+    Review {
+        #[command(subcommand)]
+        command: ReviewCommand,
     },
 }
 
@@ -1115,6 +1119,20 @@ enum ReleaseCommand {
     Update(ReleaseUpdateArgs),
     Request(ReleaseRequestArgs),
     Deliver(ReleaseDeliverArgs),
+    DeliverEvidence {
+        #[arg(long)]
+        file: PathBuf,
+    },
+    Evidence {
+        reference: String,
+    },
+    EvidenceShow {
+        release_id: String,
+        #[arg(long, default_value_t = 0)]
+        offset: u32,
+        #[arg(long, default_value_t = 10)]
+        limit: u8,
+    },
 }
 
 #[derive(Debug, Args)]
@@ -1916,6 +1934,20 @@ impl TaskCommand {
 impl ReleaseCommand {
     fn into_invocation(self) -> Result<Invocation, CliValidationError> {
         match self {
+            Self::DeliverEvidence { file } => {
+                remote("release.deliver_evidence", review_cli::bounded_file(&file)?)
+            }
+            Self::Evidence { reference } => {
+                remote("release.evidence", json!({"reference":reference}))
+            }
+            Self::EvidenceShow {
+                release_id,
+                offset,
+                limit,
+            } => remote(
+                "release.evidence_show",
+                json!({"release_id":release_id,"offset":offset,"limit":limit}),
+            ),
             Self::Create(args) => {
                 let mut params = Map::new();
                 params.insert("path".to_owned(), Value::String(args.path.absolute()?));
@@ -2216,7 +2248,62 @@ mod tests {
         .unwrap();
         std::fs::write(&settings_file, r#"{"languages":["en"],"guidelines":[]}"#).unwrap();
         std::fs::write(&usages_file, "[]").unwrap();
+        let review_file = glossary_inputs.path().join("review.json");
+        std::fs::write(&review_file, serde_json::to_vec(&json!({
+            "version":1,"repositoryId":"project-alpha","projectId":"project-alpha","windowStartMs":1000000,"windowEndMs":605800000,
+            "experiment":{"hypothesis":"Retain the required checks","evidenceRefs":[],"alternatives":["Keep checks","Remove checks"],"chosenAction":"Keep required checks",
+            "baseline":{"evidenceRefs":[],"interpretation":"No per-task measurements","missingMeasurements":[]},"successCriteria":"Preserve required quality","rollbackCondition":"Reconsider with evidence",
+            "disposition":"proposed","resultEvidenceRefs":[],"scopeRepoId":"project-alpha","preservesQuality":true,"reason":"Retain all required checks","observations":[]}
+        })).unwrap()).unwrap();
+        let delivery_file = glossary_inputs.path().join("delivery.json");
+        std::fs::write(&delivery_file, serde_json::to_vec(&json!({"release_id":"release-alpha","path":"/tmp/repo","run_id":"run","check":"build","artifact":"package","manifest_sha256":"a".repeat(64),"source_sha256":"b".repeat(64),"target":"linux-cli","kind":"local-executable"})).unwrap()).unwrap();
         let cases: &[(&[&str], &str)] = &[
+            (
+                &[
+                    "review",
+                    "prepare",
+                    "--repository-id",
+                    "project-alpha",
+                    "--window-start-ms",
+                    "1000000",
+                    "--window-end-ms",
+                    "605800000",
+                ],
+                "review.prepare",
+            ),
+            (
+                &[
+                    "review",
+                    "record",
+                    "--file",
+                    review_file.to_str().unwrap(),
+                    "--expected-revision",
+                    "0",
+                ],
+                "review.record",
+            ),
+            (
+                &["review", "list", "--repository-id", "project-alpha"],
+                "review.show",
+            ),
+            (&["review", "show", "review-fixture@1"], "review.receipt"),
+            (
+                &[
+                    "release",
+                    "deliver-evidence",
+                    "--file",
+                    delivery_file.to_str().unwrap(),
+                ],
+                "release.deliver_evidence",
+            ),
+            (
+                &["release", "evidence-show", "release-alpha"],
+                "release.evidence_show",
+            ),
+            (
+                &["release", "evidence", "delivery-fixture"],
+                "release.evidence",
+            ),
             (&["ping"], "ping"),
             (&["config", "show"], "config.get"),
             (

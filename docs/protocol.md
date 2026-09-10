@@ -5,6 +5,10 @@ the CLI, MCP server, and Console API. The committed JSON Schema 2020-12 bundle
 is `contracts/devcoordinator2-v2.schema.json`; `contract-commands.md` explains
 the domain operations.
 
+Purpose-aware automation clients use the passive [review and delivery evidence
+API](project-automation-api.md). Scheduling and deadlines remain client-owned;
+Coordinator stores structured review revisions and verified delivery receipts.
+
 ## Transport and framing
 
 - Unix stream socket. Default path `/run/devcoordinator2/daemon.sock`,

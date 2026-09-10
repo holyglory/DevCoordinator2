@@ -523,6 +523,7 @@ impl ProgressService {
             {
                 runs.entry(summary.run_id.clone())
                     .or_insert(TestHistoryEntry {
+                        work: summary.work,
                         run_id: summary.run_id,
                         test: summary.test,
                         status: summary.status,

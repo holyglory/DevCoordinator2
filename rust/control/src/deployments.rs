@@ -1074,6 +1074,7 @@ impl Deployments {
                     gid: primary_gid(row.created_by_uid).map_err(systemd_error)?,
                     client_kind: devcoordinator2_api::ClientKind::Other,
                     client_session: None,
+                    work: None,
                     identity: None,
                 };
                 if let Ok(status) =
@@ -5074,6 +5075,7 @@ tcp="127.0.0.1:25"
                 gid: 1000,
                 client_kind: devcoordinator2_api::ClientKind::Other,
                 client_session: None,
+                work: None,
                 identity: None,
             }
         }
@@ -5418,6 +5420,7 @@ image="cache:1"
             gid: rustix::process::getgid().as_raw(),
             client_kind: devcoordinator2_api::ClientKind::Codex,
             client_session: Some("fixture".into()),
+            work: None,
             identity: None,
         };
         assert_ne!(
@@ -5584,6 +5587,7 @@ image="cache:1"
             gid: rustix::process::getgid().as_raw(),
             client_kind: devcoordinator2_api::ClientKind::Codex,
             client_session: None,
+            work: None,
             identity: None,
         };
         assert_ne!(caller.uid, 0, "checkout fixture requires a non-root caller");
@@ -5706,6 +5710,7 @@ command=["serve"]
             gid: rustix::process::getgid().as_raw(),
             client_kind: devcoordinator2_api::ClientKind::Codex,
             client_session: None,
+            work: None,
             identity: None,
         };
         assert_ne!(caller.uid, 0, "process fixture requires a non-root caller");
@@ -5817,6 +5822,7 @@ command=["serve"]
             gid: rustix::process::getgid().as_raw(),
             client_kind: devcoordinator2_api::ClientKind::Codex,
             client_session: None,
+            work: None,
             identity: None,
         };
         (temporary, worktree, deployments, docker, caller)
@@ -6002,6 +6008,7 @@ route=true
             gid: rustix::process::getgid().as_raw(),
             client_kind: devcoordinator2_api::ClientKind::Codex,
             client_session: None,
+            work: None,
             identity: None,
         };
         assert_ne!(caller.uid, 0, "Compose fixture requires a non-root caller");
@@ -6204,6 +6211,7 @@ database="app"
             gid: rustix::process::getgid().as_raw(),
             client_kind: devcoordinator2_api::ClientKind::Codex,
             client_session: None,
+            work: None,
             identity: None,
         };
         assert_ne!(

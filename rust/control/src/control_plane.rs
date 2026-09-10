@@ -134,6 +134,13 @@ pub const FOUNDATION_OPERATIONS: &[&str] = &[
     "release.update",
     "release.request",
     "release.deliver",
+    "release.deliver_evidence",
+    "release.evidence_show",
+    "release.evidence",
+    "review.prepare",
+    "review.record",
+    "review.show",
+    "review.receipt",
     "decision.tail",
     "decision.search",
     "decision.record",
@@ -150,6 +157,8 @@ pub struct ControlPlane {
     access: Access,
     registry: Registry,
     plan: PlanService,
+    reviews: crate::review::ReviewService,
+    deliveries: crate::delivery::DeliveryService,
     glossary: GlossaryService,
     logs: TestLogService,
     tests: TestLifecycle,
@@ -219,6 +228,8 @@ impl ControlPlane {
             usage.usage().clone(),
             Arc::clone(&clock),
         );
+        let reviews = crate::review::ReviewService::new(database.clone(), usage.clone());
+        let deliveries = crate::delivery::DeliveryService::new(database.clone(), artifacts.clone());
         let tests = TestLifecycle::new(
             config.clone(),
             database.clone(),
@@ -288,6 +299,8 @@ impl ControlPlane {
             access,
             registry,
             plan,
+            reviews,
+            deliveries,
             glossary,
             logs,
             tests,
@@ -1074,6 +1087,40 @@ impl ControlPlane {
                 )?;
                 encode(self.plan.decision_tail(&repository.repository_id, params)?)
             }
+            "review.prepare" => encode(
+                self.reviews.prepare(
+                    decode(params)?,
+                    self.clock
+                        .now_utc()
+                        .unix_timestamp_nanos()
+                        .div_euclid(1_000_000) as u64,
+                )?,
+            ),
+            "review.record" => encode(
+                self.reviews.record(
+                    decode(params)?,
+                    &actor,
+                    self.clock
+                        .now_utc()
+                        .unix_timestamp_nanos()
+                        .div_euclid(1_000_000) as u64,
+                )?,
+            ),
+            "review.show" => encode(self.reviews.show(decode(params)?)?),
+            "review.receipt" => encode(self.reviews.receipt(decode(params)?)?),
+            "release.evidence" => encode(self.deliveries.receipt(decode(params)?)?),
+            "release.deliver_evidence" => encode(
+                self.deliveries.deliver(
+                    decode(params)?,
+                    caller,
+                    &actor,
+                    self.clock
+                        .now_utc()
+                        .unix_timestamp_nanos()
+                        .div_euclid(1_000_000) as u64,
+                )?,
+            ),
+            "release.evidence_show" => encode(self.deliveries.show(decode(params)?)?),
             "decision.search" => {
                 let params: params::DecisionSearch = decode(params)?;
                 let repository = self.resolve_repository(
@@ -1630,6 +1677,7 @@ mod tests {
             gid: 1000,
             client_kind: devcoordinator2_api::ClientKind::Codex,
             client_session: Some("fixture".into()),
+            work: None,
             identity: None,
         }
     }
@@ -1641,6 +1689,7 @@ mod tests {
             gid: 999,
             client_kind: devcoordinator2_api::ClientKind::Edge,
             client_session: None,
+            work: None,
             identity: Some(identity.into()),
         }
     }

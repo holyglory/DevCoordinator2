@@ -2651,6 +2651,7 @@ mod tests {
             gid: rustix::process::getgid().as_raw(),
             client_kind: ClientKind::Edge,
             client_session: None,
+            work: None,
             identity: Some(identity.to_owned()),
         }
     }
