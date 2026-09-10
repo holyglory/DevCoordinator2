@@ -1016,7 +1016,7 @@ fn finding_issues(
     issues
 }
 
-fn test_reference_issue(repo: &Path, value: &str) -> Option<Value> {
+fn test_reference_issue(repo: &Path, value: &str, legacy: bool) -> Option<Value> {
     let normalized = value.trim().trim_matches('`');
     let Some((raw_path, symbol)) = normalized.split_once('#') else {
         return Some(json!({
@@ -1038,9 +1038,17 @@ fn test_reference_issue(repo: &Path, value: &str) -> Option<Value> {
         None => Some(
             json!({"reason":"test evidence path does not resolve inside the audited repo","actual":value}),
         ),
-        Some(text) if !crate::test_catalog::declares_test(raw_path, &text, symbol.trim()) => Some(
-            json!({"reason":"test name is not an unambiguous supported test declaration; supply native collection evidence for dynamic or unsupported tests","actual":value}),
-        ),
+        Some(text)
+            if !(if legacy {
+                audit_queue::is_test_source_path(raw_path) && text.contains(symbol.trim())
+            } else {
+                crate::test_catalog::declares_test(raw_path, &text, symbol.trim())
+            }) =>
+        {
+            Some(
+                json!({"reason":"test name is not an unambiguous supported test declaration; supply native collection evidence for dynamic or unsupported tests","actual":value}),
+            )
+        }
         Some(_) => None,
     }
 }
@@ -1237,7 +1245,7 @@ fn verify_batch_report(
         }
         match disposition {
             "TESTED" if matches!(level, "STRUCTURAL" | "EMPIRICAL") => {
-                if !context.declared_tests.contains(evidence) && !context.assurance.tests.contains_key(evidence) && let Some(issue) = test_reference_issue(&context.repo, evidence) {
+                if !context.declared_tests.contains(evidence) && !context.assurance.tests.contains_key(evidence) && let Some(issue) = test_reference_issue(&context.repo, evidence, context.raw.get("assurance_version").is_none()) {
                     issues.push(json!({"path":path,"target_id":target_id,"detail":issue}));
                 }
                 if level == "EMPIRICAL" && context.raw.get("assurance_version") == Some(&json!(2)) {
@@ -1645,12 +1653,22 @@ mod tests {
             &dir.path().join("tests/math.test.ts"),
             "// test('adds', () => {});\n",
         );
-        assert!(test_reference_issue(dir.path(), "tests/math.test.ts#adds").is_some());
+        assert!(test_reference_issue(dir.path(), "tests/math.test.ts#adds", false).is_some());
         write(
             &dir.path().join("src/lib.rs"),
             "#[cfg(test)] mod tests {\n#[test]\nfn adds() { assert_eq!(1 + 1, 2); }\n}\n",
         );
-        assert!(test_reference_issue(dir.path(), "src/lib.rs#adds").is_none());
+        assert!(test_reference_issue(dir.path(), "src/lib.rs#adds", false).is_none());
+        write(
+            &dir.path().join("tests/example_test.go"),
+            "func TestWorks(t *testing.T) { /* legacy source reference */ }\n",
+        );
+        assert!(
+            test_reference_issue(dir.path(), "tests/example_test.go#TestWorks", true).is_none()
+        );
+        assert!(
+            test_reference_issue(dir.path(), "tests/example_test.go#TestWorks", false).is_some()
+        );
     }
 
     #[test]

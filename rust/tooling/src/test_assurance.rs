@@ -491,7 +491,13 @@ pub fn native_tests(report: &NativeReport, base: &Path) -> Result<Vec<TestResult
                                     .get("file")
                                     .cloned()
                                     .unwrap_or_else(|| fallback.into()),
-                                name: attrs.get("name").cloned().ok_or("JUnit case has no name")?,
+                                name: {
+                                    let name = attrs.get("name").ok_or("JUnit case has no name")?;
+                                    match attrs.get("classname").filter(|class| !class.is_empty()) {
+                                        Some(class) => format!("{class}::{name}"),
+                                        None => name.clone(),
+                                    }
+                                },
                                 status: TestStatus::Passed,
                                 duration_ms: attrs
                                     .get("time")
@@ -671,6 +677,12 @@ fn load_run(
         for test in &rows {
             if !expected.contains_key(&test.file) {
                 return Err("test report file is outside the source inventory".into());
+            }
+            if test
+                .duration_ms
+                .is_some_and(|duration| duration > check.duration_ms + 1.0)
+            {
+                return Err("native test duration exceeds the enclosing check wall time".into());
             }
         }
         if tests.insert(check.check_id.clone(), rows).is_some() {
@@ -2158,6 +2170,34 @@ mod tests {
         .unwrap();
         assert_eq!(tests.len(), 2);
         assert!(tests.iter().all(|test| test.status == TestStatus::Passed));
-        assert_eq!(tests[0].reference(), "tests/value.test.mjs#true value");
+        assert_eq!(
+            tests[0].reference(),
+            "tests/value.test.mjs#test::true value"
+        );
+    }
+
+    #[test]
+    fn junit_class_names_preserve_distinct_tests_and_impossible_timings_fail() {
+        let dir = tempfile::tempdir().unwrap();
+        let artifact=artifact(dir.path(),"classes.xml",br#"<testsuite><testcase name="same" classname="First"/><testcase name="same" classname="Second"/></testsuite>"#);
+        let rows = native_tests(
+            &NativeReport {
+                artifact,
+                format: ReportFormat::Junit,
+                source_file: Some("tests/example.test.ts".into()),
+            },
+            dir.path(),
+        )
+        .unwrap();
+        assert_ne!(rows[0].reference(), rows[1].reference());
+        let mut fixture = make_fixture();
+        fixture.edit_run(2, |run| run.checks[0].duration_ms = 0.0);
+        assert!(
+            fixture
+                .evaluate()
+                .evidence_issues
+                .iter()
+                .any(|issue| issue.contains("native test duration"))
+        );
     }
 }

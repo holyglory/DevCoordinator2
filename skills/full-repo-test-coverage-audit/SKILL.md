@@ -38,7 +38,8 @@ for LCOV, Cobertura, coverage.py JSON or Istanbul reports. The builder writes
 Read [the evidence contract](references/evidence.md) when preparing these inputs.
 Use existing runner reports; do not build another scheduler, runner or cache.
 
-Inspect `manifest.json`, `audit_index.md` and `excluded_files.json`. Resolve or
+Inspect `manifest.json`, `audit_index.md`, `test_inventory.json` and
+`excluded_files.json`. Resolve or
 explicitly report scope warnings. Classify every source file, justify exclusions,
 and retain zero-hit files in the denominator. A trivial wrapper may need no
 separate unit test but still belongs in measured executable-code coverage.

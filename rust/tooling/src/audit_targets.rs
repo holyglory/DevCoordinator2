@@ -318,48 +318,73 @@ fn add_line(index: &mut CoverageIndex, rel_path: Option<&str>, line: usize, hits
     }
 }
 
-fn parse_lcov(repo: &Path, text: &str) -> CoverageIndex {
+fn parse_lcov(repo: &Path, text: &str) -> Result<CoverageIndex, String> {
     let mut index = CoverageIndex::new();
     let mut current = None;
+    let mut expected_lines = BTreeMap::<String, usize>::new();
     for raw in text.lines() {
         if let Some(path) = raw.strip_prefix("SF:") {
             current = normalize_coverage_path(repo, path.trim());
         } else if let Some(values) = raw.strip_prefix("DA:") {
             if let Some(path) = current.as_deref() {
-                let values = values.split(',').collect::<Vec<_>>();
-                if values.len() >= 2
-                    && let (Ok(line), Ok(hits)) =
-                        (values[0].parse::<usize>(), values[1].parse::<i64>())
-                {
-                    add_line(&mut index, Some(path), line, hits);
+                let fields = values.split(',').collect::<Vec<_>>();
+                if fields.len() < 2 {
+                    return Err("incomplete LCOV line counter".into());
                 }
+                let line = fields[0]
+                    .parse::<usize>()
+                    .ok()
+                    .filter(|line| *line > 0)
+                    .ok_or("invalid LCOV line number")?;
+                let hits = fields[1]
+                    .parse::<i64>()
+                    .ok()
+                    .filter(|hits| *hits >= 0)
+                    .ok_or("invalid LCOV line hits")?;
+                add_line(&mut index, Some(path), line, hits);
             }
         } else if let Some(values) = raw.strip_prefix("BRDA:") {
             if let Some(path) = current.as_ref() {
                 let fields = values.split(',').collect::<Vec<_>>();
-                if fields.len() == 4 && fields[0].parse::<usize>().is_ok() {
-                    let key = fields[..3].join(":");
-                    let hit = fields[3].parse::<u64>().is_ok_and(|hits| hits > 0);
-                    let branches = index
-                        .entry(path.clone())
-                        .or_default()
-                        .branches
-                        .get_or_insert_default();
-                    *branches.entry(key).or_default() |= hit;
+                if fields.len() != 4
+                    || fields[0]
+                        .parse::<usize>()
+                        .ok()
+                        .filter(|line| *line > 0)
+                        .is_none()
+                    || fields[1].is_empty()
+                    || fields[2].is_empty()
+                {
+                    return Err("invalid LCOV branch counter".into());
                 }
+                let hits = if fields[3] == "-" {
+                    0
+                } else {
+                    fields[3]
+                        .parse::<u64>()
+                        .map_err(|_| "invalid LCOV branch hits")?
+                };
+                let branches = index
+                    .entry(path.clone())
+                    .or_default()
+                    .branches
+                    .get_or_insert_default();
+                *branches.entry(fields[..3].join(":")).or_default() |= hits > 0;
             }
         } else if let Some(value) = raw.strip_prefix("BRF:") {
-            if let Some(path) = current.as_ref()
-                && let Ok(found) = value.parse::<usize>()
-            {
+            if let Some(path) = current.as_ref() {
+                let found = value
+                    .parse::<usize>()
+                    .map_err(|_| "invalid LCOV branch total")?;
                 let row = index.entry(path.clone()).or_default();
                 row.branch_totals.get_or_insert((0, 0)).0 = found;
                 row.branches.get_or_insert_default();
             }
         } else if let Some(value) = raw.strip_prefix("BRH:") {
-            if let Some(path) = current.as_ref()
-                && let Ok(hit) = value.parse::<usize>()
-            {
+            if let Some(path) = current.as_ref() {
+                let hit = value
+                    .parse::<usize>()
+                    .map_err(|_| "invalid LCOV covered-branch total")?;
                 index
                     .entry(path.clone())
                     .or_default()
@@ -367,18 +392,30 @@ fn parse_lcov(repo: &Path, text: &str) -> CoverageIndex {
                     .get_or_insert((0, 0))
                     .1 = hit;
             }
+        } else if let Some(value) = raw.strip_prefix("LF:") {
+            if let Some(path) = current.as_ref() {
+                let found = value
+                    .parse::<usize>()
+                    .map_err(|_| "invalid LCOV line total")?;
+                let expected = expected_lines.entry(path.clone()).or_default();
+                *expected = (*expected).max(found);
+            }
         } else if raw == "end_of_record" {
             current = None;
         }
     }
-    for row in index.values_mut() {
+    for (path, row) in &mut index {
+        if expected_lines
+            .get(path)
+            .is_some_and(|expected| *expected > row.measured.len())
+        {
+            return Err("LCOV omits declared executable line counters".into());
+        }
         if let Some(branches) = row
             .branches
             .as_ref()
             .filter(|branches| !branches.is_empty())
         {
-            // Branch identities are authoritative when present; summary counters
-            // must never hide a zero-hit outcome.
             row.branch_totals = Some((
                 row.branch_totals
                     .map_or(branches.len(), |(found, _)| found.max(branches.len())),
@@ -386,7 +423,7 @@ fn parse_lcov(repo: &Path, text: &str) -> CoverageIndex {
             ));
         }
     }
-    index
+    Ok(index)
 }
 
 fn xml_attribute(
@@ -421,6 +458,9 @@ fn add_xml_line(
         .ok()
         .filter(|value| value.is_finite())
         .map(|value| value as i64);
+    if number.is_none_or(|number| number == 0) || hits.is_none() {
+        return Err("invalid coverage XML line counter".into());
+    }
     if let (Some(number), Some(hits)) = (number, hits) {
         add_line(index, current, number, hits);
         if xml_attribute(line, b"branch", decoder)?.as_deref() == Some("true") {
@@ -512,7 +552,24 @@ fn parse_xml(repo: &Path, data: &[u8]) -> Result<CoverageIndex, String> {
     Ok(index)
 }
 
-fn parse_json(repo: &Path, payload: &serde_json::Map<String, Value>) -> (String, CoverageIndex) {
+fn json_lines(value: Option<&Value>) -> Result<BTreeSet<usize>, String> {
+    value
+        .and_then(Value::as_array)
+        .ok_or("coverage line arrays are required")?
+        .iter()
+        .map(|line| {
+            line.as_u64()
+                .and_then(|line| usize::try_from(line).ok())
+                .filter(|line| *line > 0)
+                .ok_or_else(|| "invalid coverage line number".to_owned())
+        })
+        .collect()
+}
+
+fn parse_json(
+    repo: &Path,
+    payload: &serde_json::Map<String, Value>,
+) -> Result<(String, CoverageIndex), String> {
     let mut index = CoverageIndex::new();
     if let Some(files) = payload.get("files").and_then(Value::as_object) {
         let branch_capable = payload
@@ -525,22 +582,8 @@ fn parse_json(repo: &Path, payload: &serde_json::Map<String, Value>) -> (String,
                 continue;
             };
             let rel_path = normalize_coverage_path(repo, raw_path);
-            let executed = row
-                .get("executed_lines")
-                .and_then(Value::as_array)
-                .into_iter()
-                .flatten()
-                .filter_map(Value::as_u64)
-                .filter_map(|line| usize::try_from(line).ok())
-                .collect::<BTreeSet<_>>();
-            let missing = row
-                .get("missing_lines")
-                .and_then(Value::as_array)
-                .into_iter()
-                .flatten()
-                .filter_map(Value::as_u64)
-                .filter_map(|line| usize::try_from(line).ok())
-                .collect::<BTreeSet<_>>();
+            let executed = json_lines(row.get("executed_lines"))?;
+            let missing = json_lines(row.get("missing_lines"))?;
             for line in executed.union(&missing) {
                 add_line(
                     &mut index,
@@ -563,19 +606,20 @@ fn parse_json(repo: &Path, payload: &serde_json::Map<String, Value>) -> (String,
                     for branch in row
                         .get(field)
                         .and_then(Value::as_array)
-                        .into_iter()
-                        .flatten()
+                        .ok_or("branch measurement arrays are required")?
                     {
                         if let Some(pair) = branch.as_array().filter(|pair| pair.len() == 2)
                             && let (Some(from), Some(to)) = (pair[0].as_i64(), pair[1].as_i64())
                         {
                             *branches.entry(format!("{from}:{to}")).or_default() |= hit;
+                        } else {
+                            return Err("invalid coverage branch pair".into());
                         }
                     }
                 }
             }
         }
-        return ("coverage.py-json".to_owned(), index);
+        return Ok(("coverage.py-json".to_owned(), index));
     }
     for (raw_path, value) in payload {
         let Some(row) = value.as_object() else {
@@ -589,17 +633,18 @@ fn parse_json(repo: &Path, payload: &serde_json::Map<String, Value>) -> (String,
         };
         let rel_path = normalize_coverage_path(repo, raw_path);
         for (statement_id, location) in statement_map {
-            let Some(line) = location
+            let line = location
                 .get("start")
                 .and_then(|value| value.get("line"))
                 .and_then(Value::as_u64)
                 .and_then(|line| usize::try_from(line).ok())
-            else {
-                continue;
-            };
-            let Some(hits) = hits.get(statement_id).and_then(Value::as_i64).or(Some(0)) else {
-                continue;
-            };
+                .filter(|line| *line > 0)
+                .ok_or("invalid Istanbul statement location")?;
+            let hits = hits
+                .get(statement_id)
+                .and_then(Value::as_i64)
+                .filter(|hits| *hits >= 0)
+                .ok_or("invalid Istanbul statement counter")?;
             add_line(&mut index, rel_path.as_deref(), line, hits);
         }
         if let Some(path) = rel_path
@@ -617,19 +662,25 @@ fn parse_json(repo: &Path, payload: &serde_json::Map<String, Value>) -> (String,
                 let locations = branch
                     .get("locations")
                     .and_then(Value::as_array)
-                    .map_or(0, Vec::len);
-                let hits = branch_hits.get(id).and_then(Value::as_array);
+                    .filter(|locations| !locations.is_empty())
+                    .ok_or("Istanbul branch locations are required")?
+                    .len();
+                let hits = branch_hits
+                    .get(id)
+                    .and_then(Value::as_array)
+                    .filter(|hits| hits.len() == locations)
+                    .ok_or("Istanbul branch counters are incomplete")?;
                 for position in 0..locations {
-                    let hit = hits
-                        .and_then(|hits| hits.get(position))
-                        .and_then(Value::as_u64)
-                        .is_some_and(|hits| hits > 0);
+                    let hit = hits[position]
+                        .as_u64()
+                        .ok_or("invalid Istanbul branch counter")?
+                        > 0;
                     branches.insert(format!("{id}:{position}"), hit);
                 }
             }
         }
     }
-    ("istanbul-json".to_owned(), index)
+    Ok(("istanbul-json".to_owned(), index))
 }
 
 fn freeze_index(index: CoverageIndex) -> BTreeMap<String, CoverageLines> {
@@ -693,7 +744,7 @@ pub fn ingest_coverage_reports(
             || trimmed.starts_with("SF:")
             || text.contains("\nSF:")
         {
-            ("lcov".to_owned(), parse_lcov(repo, text))
+            ("lcov".to_owned(), parse_lcov(repo, text)?)
         } else if suffix == "xml"
             || trimmed.starts_with("<?xml")
             || trimmed.starts_with("<coverage")
@@ -705,7 +756,7 @@ pub fn ingest_coverage_reports(
             let payload = payload
                 .as_object()
                 .ok_or_else(|| format!("coverage JSON must be an object: {}", path.display()))?;
-            parse_json(repo, payload)
+            parse_json(repo, payload)?
         };
         let path_text = path.to_string_lossy().into_owned();
         records.push(CoverageEvidence {
@@ -722,6 +773,37 @@ pub fn ingest_coverage_reports(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn malformed_measurements_cannot_shrink_the_coverage_denominator() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("app.rs"), "one\ntwo\nthree\n").unwrap();
+        for (name, text) in [
+            (
+                "bad.info",
+                "SF:app.rs\nDA:1,1\nDA:2,invalid\nBRF:0\nBRH:0\n",
+            ),
+            (
+                "bad.json",
+                r#"{"meta":{"branch_coverage":true},"files":{"app.rs":{"executed_lines":[1],"missing_lines":[]}}}"#,
+            ),
+            (
+                "bad-lines.json",
+                r#"{"files":{"app.rs":{"executed_lines":[1],"missing_lines":"unreadable"}}}"#,
+            ),
+            (
+                "bad.xml",
+                r#"<coverage><class filename="app.rs"><line number="1" hits="1"/><line number="2" hits="NaN"/></class></coverage>"#,
+            ),
+        ] {
+            let path = dir.path().join(name);
+            std::fs::write(&path, text).unwrap();
+            assert!(
+                ingest_coverage_reports(dir.path(), &[path]).is_err(),
+                "{name}"
+            );
+        }
+    }
 
     #[test]
     fn branch_formats_distinguish_partial_missing_and_measured_zero() {

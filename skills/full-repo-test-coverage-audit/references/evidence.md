@@ -117,7 +117,8 @@ and UI interaction evidence but cannot masquerade as a complete release run.
 
 Native report formats:
 
-- `junit`: testcases, names, optional files/times, failures/errors/skips. Use
+- `junit`: testcases, optional files/times, failures/errors/skips. Names include
+  the producer's `classname::name` when a classname is supplied. Use
   `source_file` only when the producer lacks file metadata.
 - `playwright-json`: recursively reads suites/specs and expanded cases;
   identities include their suite/title/project, outcomes and retry attempts.

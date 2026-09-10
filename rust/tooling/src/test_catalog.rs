@@ -141,7 +141,9 @@ pub fn declared_tests(path: &str, source: &str) -> Vec<String> {
                     .unwrap_or(ts.len());
                 rust_test |= ts[i + 2..end]
                     .iter()
-                    .any(|t| !t.literal && matches!(t.text.as_str(), "test" | "rstest"));
+                    .take_while(|t| !matches!(t.text.as_str(), "(" | "="))
+                    .last()
+                    .is_some_and(|t| !t.literal && matches!(t.text.as_str(), "test" | "rstest"));
             }
             if is(i, "fn") {
                 if rust_test && let Some(name) = ts.get(i + 1).filter(|t| !t.literal) {
@@ -162,6 +164,7 @@ pub fn declared_tests(path: &str, source: &str) -> Vec<String> {
             }
         } else if matches!(extension, "js" | "jsx" | "ts" | "tsx" | "mjs" | "cjs")
             && matches!(token.text.as_str(), "test" | "it" | "specify")
+            && (i == 0 || !is(i - 1, "."))
         {
             let mut next = i + 1;
             if is(next, ".")
@@ -229,6 +232,16 @@ mod tests {
 
     #[test]
     fn duplicate_names_are_ambiguous_and_dynamic_names_need_runtime_collection() {
+        assert!(!declares_test(
+            "src/lib.rs",
+            "#[cfg(test)] fn helper() {}",
+            "helper"
+        ));
+        assert!(!declares_test(
+            "a.test.ts",
+            "logger.test('message',()=>{});",
+            "message"
+        ));
         assert!(!declares_test(
             "a.test.ts",
             "test('x',()=>{});test('x',()=>{});",
