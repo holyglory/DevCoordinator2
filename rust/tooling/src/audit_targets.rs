@@ -670,11 +670,8 @@ fn parse_json(
                     .and_then(Value::as_array)
                     .filter(|hits| hits.len() == locations)
                     .ok_or("Istanbul branch counters are incomplete")?;
-                for position in 0..locations {
-                    let hit = hits[position]
-                        .as_u64()
-                        .ok_or("invalid Istanbul branch counter")?
-                        > 0;
+                for (position, counter) in hits.iter().enumerate() {
+                    let hit = counter.as_u64().ok_or("invalid Istanbul branch counter")? > 0;
                     branches.insert(format!("{id}:{position}"), hit);
                 }
             }
