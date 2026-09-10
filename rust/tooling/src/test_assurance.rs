@@ -9,9 +9,8 @@ use quick_xml::Reader;
 use quick_xml::events::Event;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
 
-use crate::audit_common::sha256_file;
+use crate::audit_common::{sha256_file, sha256_hex};
 use crate::audit_ledger::read_bytes_nofollow;
 use crate::audit_queue::{FileEntry, validate_repo_relative_path_token};
 use crate::audit_targets::{CoverageEvidence, CoverageLines, TestTarget};
@@ -37,7 +36,7 @@ impl Artifact {
         let bytes = read_bytes_nofollow(&path, None)
             .map_err(|e| e.to_string())?
             .ok_or_else(|| "evidence artifact is missing or not a regular file".to_owned())?;
-        if format!("{:x}", Sha256::digest(&bytes)) != self.sha256 {
+        if sha256_hex(&bytes) != self.sha256 {
             return Err("evidence artifact hash changed".to_owned());
         }
         Ok(bytes)
@@ -381,7 +380,7 @@ pub fn bind(path: &Path) -> Result<BoundInput, String> {
     Ok(BoundInput {
         artifact: Artifact {
             path: path.canonicalize().map_err(|e| e.to_string())?,
-            sha256: format!("{:x}", Sha256::digest(&bytes)),
+            sha256: sha256_hex(&bytes),
         },
     })
 }
