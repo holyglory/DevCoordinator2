@@ -2775,7 +2775,7 @@ fn case_readiness_allows_process_to_recover_within_restart_policy(
 }
 
 fn setup_finite_only(world: &World, script: &str) -> Result<(), String> {
-    world.write_config("schema=2\n[deployment.finite]\nsource='worktree'\ncomponents=['probe']\n[deployment.finite.component.probe]\ntype='compose'\nfiles=['finite-compose.yml']\nservices=['probe']\nfinite_services=['probe']\ntimeout_seconds=90\n")?;
+    world.write_config("schema=2\n[deployment.finite]\nsource='worktree'\ncomponents=['probe']\n[deployment.finite.component.probe]\ntype='compose'\nfiles=['finite-compose.yml']\nservices=['probe']\nfinite_services=['probe']\ntimeout_seconds=3300\n")?;
     let content = format!(
         "services:\n  probe:\n    image: postgres:16-alpine\n    network_mode: none\n    user: '1000:1000'\n    entrypoint: ['/bin/sh','-c']\n    command: {}\n    restart: 'no'\n",
         json!([script])

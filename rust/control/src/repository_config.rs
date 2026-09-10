@@ -2042,7 +2042,11 @@ fn validate_compose_component(
         body.get("timeout_seconds"),
         COMPOSE_READINESS_TIMEOUT_DEFAULT,
         1,
-        900,
+        if specification.finite_services.is_empty() {
+            900
+        } else {
+            TIMEOUT_MAX
+        },
         &format!("{label} timeout_seconds"),
     )?;
     Ok(())
@@ -2531,6 +2535,55 @@ tcp = "127.0.0.1:25"
         assert!(spec.components[0].is_finite_workload());
         assert!(!spec.components[0].wants_port);
         assert!(spec.route_component().is_none());
+    }
+
+    #[test]
+    fn finite_container_execution_deadlines_are_explicit_and_bounded() {
+        let temporary = tempdir().expect("tempdir");
+        for services in ["['probe']", "['probe','api']"] {
+            let base = format!(
+                "schema=2\n[deployment.check]\ncomponents=['probe']\n[deployment.check.component.probe]\ntype='compose'\nservices={services}\nfinite_services=['probe']\n"
+            );
+            for timeout in [901, 3300, TIMEOUT_MAX] {
+                write(
+                    temporary.path(),
+                    &format!("{base}timeout_seconds={timeout}\n"),
+                );
+                let spec = load_deployment_spec(temporary.path(), "check")
+                    .expect("bounded finite execution");
+                assert_eq!(spec.components[0].compose_timeout_seconds, timeout);
+            }
+            write(temporary.path(), &base);
+            let spec = load_deployment_spec(temporary.path(), "check").expect("default deadline");
+            assert_eq!(
+                spec.components[0].compose_timeout_seconds,
+                COMPOSE_READINESS_TIMEOUT_DEFAULT
+            );
+            for timeout in ["0", "-1", "21601", "3300.5", "'3300'", "true"] {
+                write(
+                    temporary.path(),
+                    &format!("{base}timeout_seconds={timeout}\n"),
+                );
+                let error = load_deployment_spec(temporary.path(), "check")
+                    .expect_err("invalid finite deadline");
+                assert!(
+                    error.message.contains("timeout_seconds"),
+                    "{}",
+                    error.message
+                );
+            }
+        }
+        for finite in ["", "finite_services=[]\n"] {
+            let base = format!(
+                "schema=2\n[deployment.check]\ncomponents=['api']\n[deployment.check.component.api]\ntype='compose'\nservices=['api']\n{finite}"
+            );
+            write(temporary.path(), &format!("{base}timeout_seconds=900\n"));
+            assert!(load_deployment_spec(temporary.path(), "check").is_ok());
+            write(temporary.path(), &format!("{base}timeout_seconds=901\n"));
+            let error = load_deployment_spec(temporary.path(), "check")
+                .expect_err("ordinary readiness remains bounded");
+            assert!(error.message.contains("[1, 900]"), "{}", error.message);
+        }
     }
 
     #[test]

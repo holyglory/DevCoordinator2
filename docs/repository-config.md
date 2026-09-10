@@ -260,12 +260,16 @@ independent_services = ["worker"]           # reviewed long-running service cont
 build = true                 # build on apply; ordinary start never builds
 port = true                  # leases PORT for Compose interpolation
 route = true
-timeout_seconds = 300        # finite + long-running readiness, 1..900
+timeout_seconds = 300        # 1..900; up to 21600 when finite_services is non-empty
 
 [deployment.web.component.smtp]
 type = "external"            # observed only, never owned or controlled
 tcp = "127.0.0.1:25"
 ```
+
+Explicit finite services may use a longer bounded execution deadline, including
+when accompanied by an artifact server. The default remains 300 seconds; an
+ordinary component without finite services remains limited to 900 seconds.
 
 An explicitly all-finite Compose component may list every selected service in
 `finite_services`. It completes with state `completed`, not `running`, only when
