@@ -2922,6 +2922,9 @@ fn case_native_compose_finite_service_receipt_and_start_semantics(
     world: &mut World,
 ) -> Result<(), String> {
     setup_compose(world, COMPOSE_ROUTE_YAML, "compose fixture")?;
+    world.write_config(&COMPOSE_TOML.replace("timeout_seconds = 90", "timeout_seconds = 3300"))?;
+    world.git(&["add", ".devcoordinator.toml"])?;
+    world.git(&["commit", "-qm", "long finite setup deadline"])?;
     let first = world.call(
         "deployment.apply",
         json!({"path": world.repo, "name": "stack@worktree"}),
