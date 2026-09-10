@@ -10,7 +10,7 @@ const { catalogue, href } = context.window.DevCoordinatorWorkspace;
 test('one repository includes verified clones without merging their record identities', () => {
   const source = { key: 'verified-hdlripper-origin', name: 'hdlripper' };
   const repositories = [{ repository_id: 'main', display_name: 'hdlripper' }, { repository_id: 'daily', display_name: 'workspace' }, { repository_id: 'windows', display_name: 'workspace' }];
-  const runs = repositories.map((record, index) => ({ ...record, repository_source: source, worktree_path: ['/home/owner/hdlripper', '/home/owner/hdlripper/.local/daily/workspace', '/tmp/hdlripper-windows-0.1.4/.local/daily/workspace'][index] }));
+  const runs = repositories.map((record, index) => ({ ...record, repository_source: source, worktree_path: ['/fixtures/app/main', '/fixtures/app/main/.local/daily/workspace', '/fixtures/app/windows/.local/daily/workspace'][index] }));
   const groups = catalogue(repositories, runs, []);
   assert.equal(groups.length, 1);
   assert.equal(groups[0].name, 'hdlripper');
