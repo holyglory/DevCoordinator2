@@ -31,6 +31,10 @@ earlier model messages or reload unchanged instructions.
   evidence, and execution capacity. Do not create parallel file ledgers or
   capacity controllers. Diagnose before changing outcome state. Runs, decisions,
   durable corrections, and unfinished user outcomes are different records.
+  Record functionality temporarily omitted during implementation as specific
+  open ledger outcomes, following the placement rules in
+  `modules/ledger-decisions.md`. Parent notes, decisions, and conversation
+  history alone do not satisfy this obligation.
 - The agent runtime owns persistent project/workstream clocks and wakeups;
   Coordinator supplies evidence and capacity, not agent scheduling. Classify
   specifications, research, and work with no meaningful deployable result as
