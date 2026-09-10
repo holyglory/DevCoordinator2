@@ -3789,30 +3789,38 @@ health = {{ tcp = true, timeout_seconds = 30 }}
                 .is_some(),
         "host storage reconciliation drifted"
     );
-    let postgres_detail =
-        data(&world.call("health.repository", json!({"path": world.repo}))?)?.clone();
-    let postgres = postgres_detail["components"]
-        .as_array()
-        .and_then(|rows| {
-            rows.iter()
-                .find(|row| row["id"] == format!("{deployment_id}/db"))
-        })
-        .ok_or_else(|| "PostgreSQL component health row is missing".to_owned())?;
-    ensure!(
-        postgres
-            .pointer("/storage/pg_connections")
-            .and_then(Value::as_u64)
-            .is_some_and(|value| value >= 1)
-            && postgres
-                .pointer("/storage/pg_wal_bytes")
-                .and_then(Value::as_u64)
-                .is_some_and(|value| value > 0)
-            && postgres
-                .pointer("/storage/pg_database_bytes")
-                .and_then(Value::as_u64)
-                .is_some_and(|value| value > 0),
-        "PostgreSQL operational storage facts were unavailable"
-    );
+    let mut last_postgres_storage = Value::Null;
+    wait_for_value(
+        "PostgreSQL operational storage facts",
+        Duration::from_secs(90),
+        || {
+            let detail =
+                data(&world.call("health.repository", json!({"path": world.repo}))?)?.clone();
+            let postgres = detail["components"].as_array().and_then(|rows| {
+                rows.iter()
+                    .find(|row| row["id"] == format!("{deployment_id}/db"))
+            });
+            last_postgres_storage = postgres
+                .and_then(|row| row.get("storage"))
+                .cloned()
+                .unwrap_or(Value::Null);
+            Ok(["pg_connections", "pg_wal_bytes", "pg_database_bytes"]
+                .iter()
+                .all(|metric| {
+                    last_postgres_storage
+                        .get(metric)
+                        .and_then(Value::as_u64)
+                        .is_some_and(|value| value > 0)
+                })
+                .then(|| last_postgres_storage.clone()))
+        },
+    )
+    .map_err(|error| {
+        format!(
+            "{error}; last numeric PostgreSQL storage={}",
+            bounded_json(&last_postgres_storage)
+        )
+    })?;
     let history = wait_for_value("minute health history", Duration::from_secs(90), || {
         let response = world.call(
             "health.history",
