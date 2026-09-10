@@ -957,6 +957,16 @@ fn run_state_and_wait_phase(
 ) -> Result<usize, String> {
     let base = server.base_url();
     let mut scenarios = 0usize;
+    run_node_probe(
+        root,
+        &format!(
+            "process.env.FORMAL_WEB_UI_PLAYWRIGHT_NODE_MODULES = {}; await import({});",
+            json!(playwright_module_dir(root)?),
+            json!(root.join("rust/tooling/tests/formal_occlusion.mjs")),
+        ),
+        timeout,
+    )?;
+    scenarios += 1;
     let popup_clean = run_verifier(
         root,
         &contracted_config(

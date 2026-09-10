@@ -370,12 +370,20 @@ Critical findings by default:
   warning because closed accordions/tabs/slides are often intentional.
 - Unrelated overlap/occlusion of meaningful text or controls: fully covered
   (`occluded`) or covered on ≥60% of sampled points (`partially-occluded`).
-  Every candidate starts from the verification state's original document
-  position so a probe's scroll cannot move a later measurement.
+  Every candidate starts from the verification state's original document and
+  inner-scroll positions, including open shadow roots. Probes restore those
+  exact coordinates after each candidate and on failure, without smooth-scroll
+  animation, so they cannot move a later measurement or the final page.
   Elements already in the viewport are checked at their natural on-screen
   position; only off-screen elements are scrolled into view first and their
   findings are tagged `measuredAfterScroll`. A near-transparent occluder is
   downgraded to a warning.
+  Text behind a horizontally edge-pinned sticky sibling is reachable only when
+  scrolling their shared container actually exposes the same sampled text
+  points. This is not a selector allowance: oversized gutters, exhausted scroll
+  ranges, non-scrollable clipping and unrelated overlays remain checked.
+  Focused rendered regression proof lives in
+  `rust/tooling/tests/formal_occlusion.mjs` and runs in the Rust state self-test.
 - An active focused custom modal (`role=dialog|alertdialog`, `aria-modal=true`)
   excludes only outside subtrees that are both `inert` and `aria-hidden=true`.
   Modal contents remain fully checked; an unfocused or mislabeled modal and
