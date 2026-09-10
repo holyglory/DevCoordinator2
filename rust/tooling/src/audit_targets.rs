@@ -123,6 +123,16 @@ pub struct TestTarget {
 pub struct CoverageLines {
     pub measured_lines: Vec<usize>,
     pub covered_lines: Vec<usize>,
+    /// None means the producer did not provide branch measurements, not zero branches.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branches: Option<CoverageBranches>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub struct CoverageBranches {
+    pub found: usize,
+    pub hit: usize,
+    pub missing: Vec<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -138,6 +148,8 @@ pub struct CoverageEvidence {
 struct MutableCoverage {
     measured: BTreeSet<usize>,
     covered: BTreeSet<usize>,
+    branches: Option<BTreeMap<String, bool>>,
+    branch_totals: Option<(usize, usize)>,
 }
 
 type CoverageIndex = BTreeMap<String, MutableCoverage>;
@@ -175,6 +187,10 @@ pub fn discover_targets(repo: &Path, units: &[AuditUnit]) -> Vec<TestTarget> {
             .and_then(|value| value.to_str())
             .map(|value| format!(".{}", value.to_lowercase()))
             .unwrap_or_default();
+        let suffix = match suffix.as_str() {
+            ".mjs" | ".cjs" => ".js".to_owned(),
+            _ => suffix,
+        };
         let mut found = Vec::new();
         if !lines.is_empty() && unit.start_byte.is_none() {
             let first = unit.start_line.unwrap_or(1);
@@ -195,8 +211,9 @@ pub fn discover_targets(repo: &Path, units: &[AuditUnit]) -> Vec<TestTarget> {
                             found.push((symbol.to_owned(), pattern.kind.to_owned(), line_number));
                         }
                     }
-                    if unit.interface_relevant
-                        && let Some(captures) = UI_CONTROL_RE.captures(line)
+                    for captures in UI_CONTROL_RE
+                        .captures_iter(line)
+                        .filter(|_| unit.interface_relevant)
                     {
                         let tag = captures[1].to_lowercase();
                         let label = WHITESPACE_RE
@@ -207,11 +224,20 @@ pub fn discover_targets(repo: &Path, units: &[AuditUnit]) -> Vec<TestTarget> {
                             .trim()
                             .to_owned();
                         let label = if label.is_empty() { tag.clone() } else { label };
-                        found.push((
-                            format!("{tag}:{label}"),
-                            "ui-control".to_owned(),
-                            line_number,
-                        ));
+                        let mut symbol = format!("{tag}:{label}");
+                        let occurrence = found
+                            .iter()
+                            .filter(|(candidate, kind, at)| {
+                                *at == line_number
+                                    && kind == "ui-control"
+                                    && (candidate == &symbol
+                                        || candidate.starts_with(&format!("{symbol} (occurrence ")))
+                            })
+                            .count();
+                        if occurrence > 0 {
+                            symbol = format!("{symbol} (occurrence {})", occurrence + 1);
+                        }
+                        found.push((symbol, "ui-control".to_owned(), line_number));
                     }
                 }
             }
@@ -269,7 +295,7 @@ fn normalize_coverage_path(repo: &Path, raw: &str) -> Option<String> {
     }) {
         return None;
     }
-    let normalized = raw.trim_start_matches(['.', '/']);
+    let normalized = raw.strip_prefix("./").unwrap_or(raw);
     if normalized.is_empty() {
         return None;
     }
@@ -308,8 +334,56 @@ fn parse_lcov(repo: &Path, text: &str) -> CoverageIndex {
                     add_line(&mut index, Some(path), line, hits);
                 }
             }
+        } else if let Some(values) = raw.strip_prefix("BRDA:") {
+            if let Some(path) = current.as_ref() {
+                let fields = values.split(',').collect::<Vec<_>>();
+                if fields.len() == 4 && fields[0].parse::<usize>().is_ok() {
+                    let key = fields[..3].join(":");
+                    let hit = fields[3].parse::<u64>().is_ok_and(|hits| hits > 0);
+                    let branches = index
+                        .entry(path.clone())
+                        .or_default()
+                        .branches
+                        .get_or_insert_default();
+                    *branches.entry(key).or_default() |= hit;
+                }
+            }
+        } else if let Some(value) = raw.strip_prefix("BRF:") {
+            if let Some(path) = current.as_ref()
+                && let Ok(found) = value.parse::<usize>()
+            {
+                let row = index.entry(path.clone()).or_default();
+                row.branch_totals.get_or_insert((0, 0)).0 = found;
+                row.branches.get_or_insert_default();
+            }
+        } else if let Some(value) = raw.strip_prefix("BRH:") {
+            if let Some(path) = current.as_ref()
+                && let Ok(hit) = value.parse::<usize>()
+            {
+                index
+                    .entry(path.clone())
+                    .or_default()
+                    .branch_totals
+                    .get_or_insert((0, 0))
+                    .1 = hit;
+            }
         } else if raw == "end_of_record" {
             current = None;
+        }
+    }
+    for row in index.values_mut() {
+        if let Some(branches) = row
+            .branches
+            .as_ref()
+            .filter(|branches| !branches.is_empty())
+        {
+            // Branch identities are authoritative when present; summary counters
+            // must never hide a zero-hit outcome.
+            row.branch_totals = Some((
+                row.branch_totals
+                    .map_or(branches.len(), |(found, _)| found.max(branches.len())),
+                branches.values().filter(|hit| **hit).count(),
+            ));
         }
     }
     index
@@ -349,6 +423,30 @@ fn add_xml_line(
         .map(|value| value as i64);
     if let (Some(number), Some(hits)) = (number, hits) {
         add_line(index, current, number, hits);
+        if xml_attribute(line, b"branch", decoder)?.as_deref() == Some("true") {
+            let value = xml_attribute(line, b"condition-coverage", decoder)?.unwrap_or_default();
+            let counts = value
+                .split_once('(')
+                .and_then(|(_, value)| value.trim_end_matches(')').split_once('/'));
+            let (hit, found) = counts
+                .and_then(|(hit, found)| {
+                    Some((hit.parse::<usize>().ok()?, found.parse::<usize>().ok()?))
+                })
+                .ok_or_else(|| "branch coverage requires condition-coverage counts".to_owned())?;
+            if hit > found {
+                return Err("covered branches exceed total branches".to_owned());
+            }
+            if let Some(path) = current {
+                let row = index.entry(path.to_owned()).or_default();
+                let totals = row.branch_totals.get_or_insert((0, 0));
+                totals.0 += found;
+                totals.1 += hit;
+                let branches = row.branches.get_or_insert_default();
+                for branch in hit..found {
+                    branches.insert(format!("line:{number}:missing:{branch}"), false);
+                }
+            }
+        }
     }
     Ok(())
 }
@@ -360,6 +458,7 @@ fn parse_xml(repo: &Path, data: &[u8]) -> Result<CoverageIndex, String> {
     let mut current_class = None;
     let mut class_depth = None;
     let mut depth = 0usize;
+    let mut branch_capable = false;
     loop {
         match reader
             .read_event()
@@ -367,10 +466,19 @@ fn parse_xml(repo: &Path, data: &[u8]) -> Result<CoverageIndex, String> {
         {
             Event::Start(start) => {
                 depth += 1;
+                if start.name().as_ref() == b"coverage" {
+                    branch_capable =
+                        xml_attribute(&start, b"branch-rate", reader.decoder())?.is_some();
+                }
                 if start.name().as_ref() == b"class" {
                     current_class = xml_attribute(&start, b"filename", reader.decoder())?
                         .and_then(|path| normalize_coverage_path(repo, &path));
                     class_depth = Some(depth);
+                    if branch_capable && let Some(path) = &current_class {
+                        let row = index.entry(path.clone()).or_default();
+                        row.branches.get_or_insert_default();
+                        row.branch_totals.get_or_insert((0, 0));
+                    }
                 } else if start.name().as_ref() == b"line" {
                     add_xml_line(
                         &mut index,
@@ -407,6 +515,11 @@ fn parse_xml(repo: &Path, data: &[u8]) -> Result<CoverageIndex, String> {
 fn parse_json(repo: &Path, payload: &serde_json::Map<String, Value>) -> (String, CoverageIndex) {
     let mut index = CoverageIndex::new();
     if let Some(files) = payload.get("files").and_then(Value::as_object) {
+        let branch_capable = payload
+            .get("meta")
+            .and_then(|meta| meta.get("branch_coverage"))
+            .and_then(Value::as_bool)
+            == Some(true);
         for (raw_path, value) in files {
             let Some(row) = value.as_object() else {
                 continue;
@@ -436,6 +549,31 @@ fn parse_json(repo: &Path, payload: &serde_json::Map<String, Value>) -> (String,
                     i64::from(executed.contains(line)),
                 );
             }
+            if let Some(path) = rel_path
+                && (branch_capable
+                    || row.contains_key("executed_branches")
+                    || row.contains_key("missing_branches"))
+            {
+                let branches = index
+                    .entry(path)
+                    .or_default()
+                    .branches
+                    .get_or_insert_default();
+                for (field, hit) in [("executed_branches", true), ("missing_branches", false)] {
+                    for branch in row
+                        .get(field)
+                        .and_then(Value::as_array)
+                        .into_iter()
+                        .flatten()
+                    {
+                        if let Some(pair) = branch.as_array().filter(|pair| pair.len() == 2)
+                            && let (Some(from), Some(to)) = (pair[0].as_i64(), pair[1].as_i64())
+                        {
+                            *branches.entry(format!("{from}:{to}")).or_default() |= hit;
+                        }
+                    }
+                }
+            }
         }
         return ("coverage.py-json".to_owned(), index);
     }
@@ -464,6 +602,32 @@ fn parse_json(repo: &Path, payload: &serde_json::Map<String, Value>) -> (String,
             };
             add_line(&mut index, rel_path.as_deref(), line, hits);
         }
+        if let Some(path) = rel_path
+            && let (Some(branch_map), Some(branch_hits)) = (
+                row.get("branchMap").and_then(Value::as_object),
+                row.get("b").and_then(Value::as_object),
+            )
+        {
+            let branches = index
+                .entry(path)
+                .or_default()
+                .branches
+                .get_or_insert_default();
+            for (id, branch) in branch_map {
+                let locations = branch
+                    .get("locations")
+                    .and_then(Value::as_array)
+                    .map_or(0, Vec::len);
+                let hits = branch_hits.get(id).and_then(Value::as_array);
+                for position in 0..locations {
+                    let hit = hits
+                        .and_then(|hits| hits.get(position))
+                        .and_then(Value::as_u64)
+                        .is_some_and(|hits| hits > 0);
+                    branches.insert(format!("{id}:{position}"), hit);
+                }
+            }
+        }
     }
     ("istanbul-json".to_owned(), index)
 }
@@ -477,6 +641,22 @@ fn freeze_index(index: CoverageIndex) -> BTreeMap<String, CoverageLines> {
                 CoverageLines {
                     measured_lines: lines.measured.into_iter().collect(),
                     covered_lines: lines.covered.into_iter().collect(),
+                    branches: lines.branches.map(|branches| {
+                        let (found, hit) = lines.branch_totals.unwrap_or_else(|| {
+                            (
+                                branches.len(),
+                                branches.values().filter(|hit| **hit).count(),
+                            )
+                        });
+                        CoverageBranches {
+                            found,
+                            hit,
+                            missing: branches
+                                .into_iter()
+                                .filter_map(|(id, hit)| (!hit).then_some(id))
+                                .collect(),
+                        }
+                    }),
                 },
             )
         })
@@ -508,22 +688,25 @@ pub fn ingest_coverage_reports(
             .unwrap_or("")
             .to_lowercase();
         let trimmed = text.trim_start();
-        let (format, index) =
-            if suffix == "info" || trimmed.starts_with("TN:") || text.contains("\nSF:") {
-                ("lcov".to_owned(), parse_lcov(repo, text))
-            } else if suffix == "xml"
-                || trimmed.starts_with("<?xml")
-                || trimmed.starts_with("<coverage")
-            {
-                ("cobertura-xml".to_owned(), parse_xml(repo, &data)?)
-            } else {
-                let payload: Value = serde_json::from_slice(&data)
-                    .map_err(|error| format!("coverage JSON is invalid: {error}"))?;
-                let payload = payload.as_object().ok_or_else(|| {
-                    format!("coverage JSON must be an object: {}", path.display())
-                })?;
-                parse_json(repo, payload)
-            };
+        let (format, index) = if matches!(suffix.as_str(), "info" | "lcov")
+            || trimmed.starts_with("TN:")
+            || trimmed.starts_with("SF:")
+            || text.contains("\nSF:")
+        {
+            ("lcov".to_owned(), parse_lcov(repo, text))
+        } else if suffix == "xml"
+            || trimmed.starts_with("<?xml")
+            || trimmed.starts_with("<coverage")
+        {
+            ("cobertura-xml".to_owned(), parse_xml(repo, &data)?)
+        } else {
+            let payload: Value = serde_json::from_slice(&data)
+                .map_err(|error| format!("coverage JSON is invalid: {error}"))?;
+            let payload = payload
+                .as_object()
+                .ok_or_else(|| format!("coverage JSON must be an object: {}", path.display()))?;
+            parse_json(repo, payload)
+        };
         let path_text = path.to_string_lossy().into_owned();
         records.push(CoverageEvidence {
             evidence_id: format!("coverage-{}", &sha256_hex(path_text.as_bytes())[..12]),
@@ -539,6 +722,96 @@ pub fn ingest_coverage_reports(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn branch_formats_distinguish_partial_missing_and_measured_zero() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("app.rs"), "one\ntwo\nthree\n").unwrap();
+        let cases = [
+            (
+                "partial.xml",
+                r#"<coverage branch-rate="0.5"><class filename="app.rs"><line number="1" hits="1" branch="true" condition-coverage="50% (1/2)"/></class></coverage>"#,
+                1,
+                2,
+            ),
+            (
+                "partial.json",
+                r#"{"meta":{"branch_coverage":true},"files":{"app.rs":{"executed_lines":[1],"missing_lines":[],"executed_branches":[[1,2]],"missing_branches":[[1,3]]}}}"#,
+                1,
+                2,
+            ),
+            (
+                "istanbul.json",
+                r#"{"app.rs":{"statementMap":{"0":{"start":{"line":1}}},"s":{"0":1},"branchMap":{"0":{"locations":[{},{}]}},"b":{"0":[1,0]}}}"#,
+                1,
+                2,
+            ),
+            (
+                "empty.info",
+                "TN:test\nSF:app.rs\nDA:1,1\nBRF:0\nBRH:0\nend_of_record\n",
+                0,
+                0,
+            ),
+            (
+                "contradictory.info",
+                "TN:test\nSF:app.rs\nDA:1,1\nBRDA:1,0,0,1\nBRDA:1,0,1,0\nBRF:2\nBRH:2\nend_of_record\n",
+                1,
+                2,
+            ),
+        ];
+        for (name, body, hit, found) in cases {
+            let path = dir.path().join(name);
+            std::fs::write(&path, body).unwrap();
+            let parsed = ingest_coverage_reports(dir.path(), &[path]).unwrap();
+            let branches = parsed[0].files["app.rs"].branches.as_ref().unwrap();
+            assert_eq!((branches.hit, branches.found), (hit, found), "{name}");
+        }
+    }
+
+    #[test]
+    fn repeated_control_labels_keep_distinct_target_identities() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("App.tsx"),
+            "<button>Save</button><button>Save</button>",
+        )
+        .unwrap();
+        let targets = discover_targets(
+            dir.path(),
+            &[AuditUnit {
+                unit_id: "ui".into(),
+                rel_path: "App.tsx".into(),
+                start_line: None,
+                end_line: None,
+                start_byte: None,
+                interface_relevant: true,
+            }],
+        );
+        assert_eq!(targets.len(), 2);
+        assert_ne!(targets[0].target_id, targets[1].target_id);
+    }
+
+    #[test]
+    fn regression_all_controls_and_branch_outcomes_remain_visible() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("screen.tsx"), "export function Screen() { return <><button>Save</button><button>Cancel</button></>; }\n").unwrap();
+        let units = [AuditUnit {
+            unit_id: "screen".into(),
+            rel_path: "screen.tsx".into(),
+            start_line: None,
+            end_line: None,
+            start_byte: None,
+            interface_relevant: true,
+        }];
+        let targets = discover_targets(dir.path(), &units);
+        assert_eq!(targets.iter().filter(|t| t.kind == "ui-control").count(), 2);
+        let report = dir.path().join("coverage.info");
+        std::fs::write(&report, "TN:test\nSF:screen.tsx\nDA:1,1\nBRDA:1,0,0,1\nBRDA:1,0,1,0\nBRF:2\nBRH:1\nend_of_record\n").unwrap();
+        let evidence = ingest_coverage_reports(dir.path(), &[report]).unwrap();
+        let value = serde_json::to_value(&evidence[0]).unwrap();
+        assert_eq!(value["files"]["screen.tsx"]["branches"]["found"], 2);
+        assert_eq!(value["files"]["screen.tsx"]["branches"]["hit"], 1);
+    }
 
     #[test]
     fn structural_discovery_finds_functions_controls_and_review_fallbacks() {

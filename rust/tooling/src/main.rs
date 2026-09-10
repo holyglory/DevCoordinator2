@@ -302,6 +302,9 @@ enum TestCoverageCommand {
         include_globs: Vec<String>,
         #[arg(long = "coverage-report")]
         coverage_reports: Vec<PathBuf>,
+        /// Reviewed scope, native test receipts, UI requirements and project budgets.
+        #[arg(long)]
+        assurance_input: Option<PathBuf>,
     },
     Verify {
         #[arg(long)]
@@ -310,6 +313,9 @@ enum TestCoverageCommand {
         reports: Vec<PathBuf>,
         #[arg(long)]
         skip_current_hash_check: bool,
+        /// Exit 3 when a valid audit has coverage, UI or efficiency gaps/unknowns.
+        #[arg(long)]
+        require_assurance: bool,
         #[arg(long)]
         json: bool,
     },
@@ -1559,6 +1565,7 @@ fn run_test_coverage(command: TestCoverageCommand) -> ExitCode {
             include_files,
             include_globs,
             coverage_reports,
+            assurance_input,
         } => {
             let result = (|| {
                 let repo = repo
@@ -1633,6 +1640,7 @@ fn run_test_coverage(command: TestCoverageCommand) -> ExitCode {
                             output_rel_dirs,
                         },
                         coverage_reports,
+                        assurance_input,
                     },
                 )?;
                 Ok((manifest, out))
@@ -1654,6 +1662,7 @@ fn run_test_coverage(command: TestCoverageCommand) -> ExitCode {
             manifest,
             reports,
             skip_current_hash_check,
+            require_assurance,
             json,
         } => match devcoordinator2_tooling::test_coverage_audit::verify(
             &manifest,
@@ -1663,7 +1672,11 @@ fn run_test_coverage(command: TestCoverageCommand) -> ExitCode {
             Ok(result) if json => {
                 println!("{}", serde_json::to_string_pretty(&result).unwrap());
                 if result["ok"] == true {
-                    ExitCode::SUCCESS
+                    if require_assurance && result["assurance_met"] != true {
+                        ExitCode::from(3)
+                    } else {
+                        ExitCode::SUCCESS
+                    }
                 } else {
                     ExitCode::from(1)
                 }
@@ -1671,6 +1684,13 @@ fn run_test_coverage(command: TestCoverageCommand) -> ExitCode {
             Ok(result) => {
                 println!("ok: {}", result["ok"]);
                 println!("run_id: {}", result["run_id"]);
+                println!(
+                    "coverage: {} | UI: {} | efficiency: {}",
+                    result["assurance"]["coverage"],
+                    result["assurance"]["ui"],
+                    result["assurance"]["efficiency"]
+                );
+                println!("assurance_met: {}", result["assurance_met"]);
                 if let Some(issues) = result["issues"].as_object() {
                     for (name, values) in issues {
                         if let Some(values) = values.as_array().filter(|values| !values.is_empty())
@@ -1680,7 +1700,11 @@ fn run_test_coverage(command: TestCoverageCommand) -> ExitCode {
                     }
                 }
                 if result["ok"] == true {
-                    ExitCode::SUCCESS
+                    if require_assurance && result["assurance_met"] != true {
+                        ExitCode::from(3)
+                    } else {
+                        ExitCode::SUCCESS
+                    }
                 } else {
                     ExitCode::from(1)
                 }
