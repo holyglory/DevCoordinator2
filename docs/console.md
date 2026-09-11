@@ -25,6 +25,11 @@ The Plan repository index supplies roots and verified Git source identity even
 when no test results exist or the Tests request fails. Matching source clones
 share a name and keep their exact checkout links; folder names and nesting alone
 never combine repositories. Unavailable ancestry retains the registered root.
+Checkout context below the root uses a relative path when it is inside that root;
+the checkout disclosure retains every full path and exact record link.
+Plan and Decisions reuse the shared repository selection without rereading the
+index for a hidden picker. Tests load when opened, or as a fallback if the Plan
+index is unavailable, so ordinary repository navigation does not wait for them.
 Administrators can use the pencil beside the selected repository name to choose
 a Console-only name and icon. Save persists these in repository presentation
 metadata; Cancel leaves the saved appearance unchanged, and Use defaults restores

@@ -87,6 +87,7 @@ window.DevCoordinatorWorkspace = (() => {
       sidebarCollapsed = localStorage.getItem('dc2-repository-collapsed') === 'true';
     } catch {}
     let data;
+    let testsLoaded = false;
     let retainedEvidence;
     let groups = [];
     let selectedId = '';
@@ -111,6 +112,10 @@ window.DevCoordinatorWorkspace = (() => {
       resize.setAttribute('aria-valuemax', String(maximum));
       resize.setAttribute('aria-valuenow', String(width));
       const expanded = narrow.matches ? shell.classList.contains('repository-drawer-open') : !sidebarCollapsed;
+      for (const surface of [sidebar, overlay]) {
+        if (narrow.matches && expanded) surface.dataset.uiContextualOverlay = 'Temporary repository navigation drawer';
+        else delete surface.dataset.uiContextualOverlay;
+      }
       toggle.setAttribute('aria-expanded', String(expanded));
       toggle.setAttribute('aria-label', expanded ? 'Hide repositories' : 'Show repositories');
     }
@@ -158,7 +163,10 @@ window.DevCoordinatorWorkspace = (() => {
       const record = selected?.records.find((item) => item.repository_id === selectedId);
       const scope = document.querySelector('#workspace-record-scope');
       scope.hidden = !record || selectedId === selected?.repositoryId || ['tests', 'deployments'].includes(currentView);
-      scope.textContent = scope.hidden ? '' : record.paths[0] || record.display_name;
+      const checkoutPath = record?.paths[0] || record?.display_name || '';
+      scope.textContent = scope.hidden ? '' : selected.rootPath && checkoutPath.startsWith(`${selected.rootPath}/`)
+        ? `./${checkoutPath.slice(selected.rootPath.length + 1)}` : checkoutPath;
+      scope.title = scope.hidden ? '' : checkoutPath;
       const tabs = [['plan', 'Plan & progress'], ['deployments', 'Deployments'], ['tests', 'Tests'], ['decisions', 'Decisions'], ['glossary', 'Glossary']];
       aspects.innerHTML = selectedId ? tabs.map(([view, label]) => `<a href="${href(view, selectedId)}"${(view === currentView || view === 'plan' && workViews.has(currentView)) ? ' aria-current="page"' : ''}>${label}</a>`).join('') : '';
       workNavigation.hidden = !selectedId || !workViews.has(currentView);
@@ -210,16 +218,19 @@ window.DevCoordinatorWorkspace = (() => {
     editPresentation.addEventListener('click', openPresentation);
 
     async function load(signal) {
-      if (data) return;
+      if (data && (currentView !== 'tests' || testsLoaded)) return;
       if (loading?.signal === signal) return loading.promise;
       const read = async (operation) => {
         try { return { value: await api(operation, operation === 'usage.repositories' ? { range: '24h' } : {}) }; }
         catch (error) { if (signal.aborted || error.code === 'stale' || error.code === 'unauthenticated') throw error; return { error }; }
       };
-      const promise = Promise.all([read('plan.overview'), read('test.list'), read('deployment.list'), ...(canOperate() ? [read('usage.repositories'), read('progress.repositories')] : [])]).then(([plans, tests, deploymentList, usage, progress]) => {
+      const includeTests = currentView === 'tests';
+      const promise = Promise.all([read('plan.overview'), includeTests ? read('test.list') : { value: { runs: [] } }, read('deployment.list'), ...(canOperate() ? [read('usage.repositories'), read('progress.repositories')] : [])]).then(async ([plans, tests, deploymentList, usage, progress]) => {
+        if (plans.error && !includeTests) tests = await read('test.list');
         if (signal.aborted) return;
         if ([plans, tests, deploymentList, usage, progress].filter(Boolean).every((result) => result.error)) throw plans.error;
         data = { repositories: [...(plans.value?.repositories || []), ...(usage?.value?.repositories || []), ...(progress?.value?.repositories || [])], runs: tests.value?.runs || [], deployments: deploymentList.value?.deployments || [] };
+        testsLoaded = includeTests || !!plans.error;
         groups = catalogue(data.repositories, data.runs, data.deployments);
         const unavailable = [['Plan', plans], ['Tests', tests], ['Deployments', deploymentList]].filter(([, result]) => result.error && result.error.code !== 'permission_denied');
         document.querySelector('#repository-status').textContent = unavailable.length ? `${unavailable.map(([label]) => label).join(', ')} repositories unavailable. Refresh to retry.` : '';
@@ -283,6 +294,7 @@ window.DevCoordinatorWorkspace = (() => {
       shell.classList.add('repository-drawer-open');
       toggle.setAttribute('aria-expanded', 'true');
       overlay.hidden = false;
+      paintLayout();
       search.focus();
     });
     overlay.addEventListener('click', () => closeDrawer(true));

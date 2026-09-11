@@ -49,8 +49,8 @@
 .repository-presentation-dialog .actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
 .repository-presentation-dialog .muted { font-size: 12px; }
 #workspace-heading { margin: 0; font-size: 21px; letter-spacing: -.4px; font-weight: 600; overflow-wrap: anywhere; }
-#workspace-record-scope { display: block; margin: 6px 0; font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
-#workspace-root { margin: 6px 0; font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
+#workspace-record-scope { display: block; margin: 4px 0; font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
+#workspace-root { margin: 4px 0; font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
 #workspace-root[hidden] { display: none; }
 .workspace-aspects { display: flex; gap: 24px; overflow-x: auto; margin-top: 14px; scrollbar-width: thin; }
 .workspace-aspects a { display: block; flex-shrink: 0; padding: 12px 0; color: var(--muted); border-bottom: 2px solid transparent; text-decoration: none; font-size: 14px; }

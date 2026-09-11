@@ -13,6 +13,7 @@ export async function verifyWorkspace({ page, daemon, check, scenario, baseUrl, 
   verify('one shared selector replaces page-specific pickers', await page.locator('#repository-list').count() === 1 && await page.locator('[data-project-picker], .test-repository-list').count() === 0);
   verify('all aspects have real repository-scoped links', await page.locator('#workspace-aspects a').count() === 5 && await page.locator('#workspace-aspects a[href="#/tests?repository=r0123456789abcdef"]').count() === 1);
   verify('plan and progress are one destination with three views', await page.locator('#workspace-work-views a').allTextContents().then((labels) => labels.join() === 'Plan,Progress,Usage'));
+  verify('Plan uses one repository index and does not wait for Tests', daemon.calls.filter(call => call.operation === 'plan.overview' && !call.params.repository_id).length === 1 && !daemon.calls.some(call => call.operation === 'test.list'));
   if (viewport.width > 760) {
     verify('sidebar starts wide enough for ordinary repository names', (await page.locator('#repository-sidebar').boundingBox()).width >= 280);
     const resize = page.locator('#repository-resize');
@@ -154,9 +155,11 @@ export async function verifyWorkspace({ page, daemon, check, scenario, baseUrl, 
   await page.locator('.plan-context').waitFor();
   await page.screenshot({ path: path.join(output, `workspace-${theme}-${viewport.width}.png`), fullPage: true });
   await page.route('**/api/v2/test.list', route => route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ ok: false, error: { code: 'internal_error', message: 'Fixture Tests unavailable' } }) }));
-  await page.goto(`${baseUrl}#/plan/release-clone`);
+  await page.goto(`${baseUrl}#/tests?repository=release-clone`);
   await page.reload();
   await page.locator('#workspace-aspects a').first().waitFor();
+  await page.goto(`${baseUrl}#/plan/release-clone`);
+  await page.locator('.plan-context').waitFor();
   verify('source heading survives unavailable Tests and a direct clone link', await page.locator('#workspace-heading').innerText() === 'repo-one');
   verify('selected source root is visible', await page.locator('#workspace-root').isVisible() && await page.locator('#workspace-root').innerText() === 'Root: /srv/repos/repo-one');
   verify('clone keeps its own exact plan scope', page.url().endsWith('/plan/release-clone') && await page.locator('#workspace-record-scope').innerText() === '/srv/releases/0.1.3-generated');

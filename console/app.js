@@ -3249,7 +3249,7 @@ const viewPlan = guard(async (repoId) => {
   main.innerHTML = `<div class="plan-loading">${pageHeading('Plan', '#/plan')}${skeleton(6)}</div>`;
   const [model, projectList] = await Promise.all([
     api('plan.overview', { repository_id: repoId }),
-    api('plan.overview', {}),
+    workspace.active ? {} : api('plan.overview', {}),
   ]);
   const projects = [...(projectList.repositories || []), {
     repository_id: repoId, display_name: model.display_name,
@@ -3951,7 +3951,7 @@ const viewDecisions = guard(async (repoId) => {
     : api('decision.tail', { repository_id: repoId, n: state.decisionLimit, ...aspect, ...(state.decisionBefore ? { before_seq: state.decisionBefore } : {}) });
   const [result, projectList] = await Promise.all([
     resultRequest,
-    api('plan.overview', {}),
+    workspace.active ? {} : api('plan.overview', {}),
   ]);
   const projects = [...(projectList.repositories || []), {
     repository_id: repoId, display_name: result.display_name || 'Current project',
