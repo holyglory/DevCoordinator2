@@ -398,6 +398,10 @@ Critical findings by default:
   origin (`offcanvas-cut`), fixed-position content cut by the viewport
   (`fixed-offscreen-cut`), or interactive controls beyond the horizontal
   document scroll range (`interactive-offscreen-x`).
+  Negative coordinates caused by an existing inner scroll position are not
+  unreachable when the visible scroll container can expose that content.
+  This applies to fixed and non-fixed layouts; content outside the actual
+  scroll range still fails, and measurements preserve the original offsets.
 - Controls or text outside a configured area of interest (`outside-area`).
 - Broken images/videos (`broken-image`/`broken-video`), including broken
   images that collapsed to ~0x0 because their source failed.

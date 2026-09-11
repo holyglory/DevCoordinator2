@@ -3735,9 +3735,6 @@ function pageVerifier() {
       }
     }
 
-    // Off-canvas geometry. Fixed-context content cannot be scrolled into view,
-    // so any viewport cut is a defect. Static/absolute content before the
-    // document origin (negative document coordinates) is equally unreachable.
     if (meaningful && !complexArtifact) {
       if (hasFixedContext(el)) {
         const reachableX = reachableByInnerScroll(el, 'x');
@@ -3768,12 +3765,14 @@ function pageVerifier() {
         }
       } else {
         const rtl = (document.documentElement.getAttribute("dir") || "").toLowerCase() === "rtl";
+        const reachableX = reachableByInnerScroll(el, 'x');
+        const reachableY = reachableByInnerScroll(el, 'y');
         const absLeft = rect.left + window.scrollX;
         const absTop = rect.top + window.scrollY;
-        const cutLeft = rtl ? 0 : Math.max(0, -absLeft);
-        const cutTop = Math.max(0, -absTop);
+        const cutLeft = rtl || reachableX ? 0 : Math.max(0, -absLeft);
+        const cutTop = reachableY ? 0 : Math.max(0, -absTop);
         if ((cutLeft > 4 && cutLeft / Math.max(1, rect.width) > 0.08) || (cutTop > 4 && cutTop / Math.max(1, rect.height) > 0.08)) {
-          const fullyOut = absLeft + rect.width <= 0 || absTop + rect.height <= 0;
+          const fullyOut = (!reachableX && !rtl && absLeft + rect.width <= 0) || (!reachableY && absTop + rect.height <= 0);
           if (fullyOut) {
             add("warning", "offcanvas-hidden", el, "Text/control is positioned entirely before the document origin (possible visually-hidden pattern); verify it is intentional.", {
               evidence: { documentLeft: round(absLeft), documentTop: round(absTop) },

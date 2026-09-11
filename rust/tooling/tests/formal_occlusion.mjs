@@ -64,6 +64,36 @@ function occlusions(report) {
 }
 
 for (const width of [390, 1440]) {
+  for (const axis of ["x", "y", "both"]) {
+    test(`scrolled non-fixed editor content remains reachable: ${width}, ${axis}`, async () => {
+      const page = await browser.newPage({ viewport: { width, height: 844 } });
+      try {
+        await page.setContent(editorFixture());
+        await page.locator(".cm-scroller").evaluate((element, axis) => {
+          element.scrollLeft = axis !== "y" ? 64 : 0;
+          element.scrollTop = axis !== "x" ? 80 : 0;
+        }, axis);
+        const before = await scrollCoordinates(page);
+        const report = await measure(page);
+        assert.deepEqual(report.findings.filter(finding => finding.rule === "offcanvas-cut"), []);
+        assert.deepEqual(await scrollCoordinates(page), before);
+      } finally { await page.close(); }
+    });
+  }
+}
+
+for (const axis of ["x", "y"]) {
+  test(`genuinely unreachable negative content is not excused by a scroll container: ${axis}`, async () => {
+    const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
+    try {
+      await page.setContent(`<!doctype html><style>body{margin:0;color:#111;background:white}.scroll{position:relative;margin:12px;width:200px;height:150px;overflow:auto}.content{width:600px;height:600px}.bad{position:absolute;left:${axis === "x" ? "-30px" : "10px"};top:${axis === "y" ? "-30px" : "10px"};width:90px;height:50px}</style><div class="scroll"><div class="content"><button class="bad">Unreachable action</button></div></div>`);
+      const report = await measure(page);
+      assert(report.findings.some(finding => finding.rule === "offcanvas-cut" && finding.severity === "critical" && finding.selector.includes("bad")), JSON.stringify(report.findings));
+    } finally { await page.close(); }
+  });
+}
+
+for (const width of [390, 1440]) {
   for (const left of [0, 64]) {
     test(`pinned gutter stays reachable and restores every scroll coordinate: width ${width}, left ${left}`, async () => {
       const page = await browser.newPage({ viewport: { width, height: 844 } });
