@@ -4013,7 +4013,8 @@ function pageVerifier() {
       if (movedPoint.x < movedClip.left || movedPoint.x > movedClip.right ||
           movedPoint.y < movedClip.top || movedPoint.y > movedClip.bottom) return false;
       const top = topAtPoint(element, movedPoint);
-      return Boolean(top && (top === element || element.contains(top) || top.contains(element)));
+      if (top && (top === element || element.contains(top) || top.contains(element))) return { visible: true };
+      return top ? { contextual: contextualCover(element, top) } : null;
     } finally {
       container.scrollTo({ ...original, behavior: "instant" });
     }
@@ -4065,10 +4066,11 @@ function pageVerifier() {
     for (const point of points) {
       const top = topAtPoint(el, point);
       const ok = top && (top === el || el.contains(top) || top.contains(el));
-      const contextual = !ok && top ? contextualCover(el, top) : null;
-      if (contextual) contextualCovers.set(contextual.owner, contextual.reason);
       const pinned = !ok && top ? pinnedSibling(el, top) : null;
-      const reachableAfterScroll = !ok && reachablePastPinnedSibling(el, pinned, point, rect);
+      const probed = !ok ? reachablePastPinnedSibling(el, pinned, point, rect) : null;
+      const reachableAfterScroll = probed?.visible === true;
+      const contextual = (!ok && top ? contextualCover(el, top) : null) || probed?.contextual;
+      if (contextual) contextualCovers.set(contextual.owner, contextual.reason);
       evidencePoints.push({
         x: round(point.x),
         y: round(point.y),

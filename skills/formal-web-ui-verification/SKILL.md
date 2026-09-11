@@ -40,6 +40,10 @@ positioned dialog/menu/listbox/tooltip/popover surfaces may declare
 recorded as `allowed-contextual-overlay`. This does not exempt their own
 contents from occlusion, clipping, contrast or geometry checks. An empty reason,
 unpositioned element or unrelated undeclared cover receives no exception.
+If a real gutter-scroll probe reaches that contextual surface, record the
+declared cover rather than claiming the token is still hidden by the gutter.
+Undeclared covers reached after scrolling remain failures; probes restore their
+original scroll offsets.
 Native input placeholders and every selectable native option label are measured
 against the control's rendered inner content width, including the native select
 affordance, without retaining the measured text or any entered value. Visible
