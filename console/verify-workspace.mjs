@@ -153,5 +153,19 @@ export async function verifyWorkspace({ page, daemon, check, scenario, baseUrl, 
   await page.goto(`${baseUrl}#/plan/${repositoryId}`);
   await page.locator('.plan-context').waitFor();
   await page.screenshot({ path: path.join(output, `workspace-${theme}-${viewport.width}.png`), fullPage: true });
+  await page.route('**/api/v2/test.list', route => route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ ok: false, error: { code: 'internal_error', message: 'Fixture Tests unavailable' } }) }));
+  await page.goto(`${baseUrl}#/plan/release-clone`);
+  await page.reload();
+  await page.locator('#workspace-aspects a').first().waitFor();
+  verify('source heading survives unavailable Tests and a direct clone link', await page.locator('#workspace-heading').innerText() === 'repo-one');
+  verify('selected source root is visible', await page.locator('#workspace-root').isVisible() && await page.locator('#workspace-root').innerText() === 'Root: /srv/repos/repo-one');
+  verify('clone keeps its own exact plan scope', page.url().endsWith('/plan/release-clone') && await page.locator('#workspace-record-scope').innerText() === '/srv/releases/0.1.3-generated');
+  if (viewport.width <= 760) await page.click('#repository-toggle');
+  verify('sidebar shows source root without generated clone names', await page.locator('#repository-list .workspace-repository-name').allTextContents().then(names => names.includes('repo-one') && !names.includes('0.1.3-generated')) && await page.locator('.workspace-repository[aria-current] small').innerText() === '/srv/repos/repo-one');
+  await page.locator('#repository-search').fill('/srv/releases/0.1.3-generated');
+  verify('search by an exact checkout root finds its source repository', await page.locator('#repository-list a').count() === 1 && await page.locator('#repository-list .workspace-repository-name').innerText() === 'repo-one');
+  await page.locator('#repository-search').fill('');
+  await page.screenshot({ path: path.join(output, `repository-roots-${theme}-${viewport.width}.png`), fullPage: true, mask: [page.locator('#who-email')] });
+  await page.unroute('**/api/v2/test.list');
   verify('no uncaught browser errors', errors.length === 0, errors.join('; '));
 }

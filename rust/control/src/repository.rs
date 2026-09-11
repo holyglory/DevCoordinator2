@@ -724,6 +724,17 @@ pub(crate) fn test_repository_source(
     None
 }
 
+/// Resolve presentation independently of retained test runs, using the root's
+/// physical owner for the existing bounded, credential-free Git discovery.
+pub(crate) fn repository_source_for_root(
+    root: &Path,
+) -> Option<devcoordinator2_api::results::TestRepositorySource> {
+    use std::os::unix::fs::MetadataExt;
+
+    let metadata = root.metadata().ok()?;
+    test_repository_source(root, (metadata.uid(), metadata.gid()))
+}
+
 fn local_repository_origin(remote: &str, checkout: &Path) -> Option<PathBuf> {
     if remote.starts_with("file://") {
         let parsed = reqwest::Url::parse(remote).ok()?;

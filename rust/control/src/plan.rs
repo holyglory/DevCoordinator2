@@ -304,19 +304,19 @@ impl PlanService {
             .database
             .call(|connection| {
                 let mut statement = connection.prepare(
-                    "SELECT r.repository_id,r.display_name,p.display_name,p.icon FROM repositories r \
+                    "SELECT r.repository_id,r.display_name,p.display_name,p.icon,r.root_path FROM repositories r \
                      LEFT JOIN repository_presentation p ON p.repository_id=r.repository_id \
                      WHERE r.archived_at IS NULL ORDER BY r.display_name,r.repository_id",
                 )?;
                 Ok(statement
                     .query_map([], |row| {
-                        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, Option<String>>(2)?, row.get::<_, Option<String>>(3)?))
+                        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, Option<String>>(2)?, row.get::<_, Option<String>>(3)?, row.get::<_, String>(4)?))
                     })?
                     .collect::<Result<Vec<_>, _>>()?)
             })
             .map_err(database_or_domain)?;
         let mut rows = Vec::with_capacity(repositories.len());
-        for (repository_id, display_name, custom_name, icon) in repositories {
+        for (repository_id, display_name, custom_name, icon, root_path) in repositories {
             let presentation = (custom_name.is_some() || icon.is_some()).then(|| {
                 devcoordinator2_api::results::RepositoryPresentation {
                     repository_id: repository_id.clone(),
@@ -366,6 +366,10 @@ impl PlanService {
             rows.push(PlanRepositoryRow {
                 repository_id,
                 display_name,
+                repository_source: crate::repository::repository_source_for_root(
+                    std::path::Path::new(&root_path),
+                ),
+                root_path,
                 presentation,
                 open_tasks: aggregate.tasks_total.saturating_sub(aggregate.tasks_done),
                 loc_done: aggregate.loc_done,
@@ -2166,6 +2170,71 @@ mod tests {
         ));
         let service = PlanService::new(database.clone(), evidence);
         (temporary, database, service)
+    }
+
+    #[test]
+    fn repository_index_resolves_roots_and_local_clones_without_test_results() {
+        let (temporary, database, service) = world();
+        let registry = crate::repository::Registry::new(database);
+        let root = temporary.path().join("project");
+        let clone = temporary.path().join("workspace");
+        for path in [&root, &clone] {
+            std::fs::create_dir(path).unwrap();
+            assert!(
+                std::process::Command::new("git")
+                    .arg("init")
+                    .arg(path)
+                    .output()
+                    .unwrap()
+                    .status
+                    .success()
+            );
+        }
+        for (path, origin) in [
+            (&root, "https://example.test/owner/project.git".to_owned()),
+            (&clone, root.to_string_lossy().into_owned()),
+        ] {
+            assert!(
+                std::process::Command::new("git")
+                    .arg("-C")
+                    .arg(path)
+                    .args(["remote", "add", "origin", &origin])
+                    .output()
+                    .unwrap()
+                    .status
+                    .success()
+            );
+            registry
+                .register(path, unsafe { libc::geteuid() }, unsafe { libc::getegid() })
+                .unwrap();
+        }
+        let PlanOverview::Collection(collection) = service.overview(None).unwrap() else {
+            panic!("collection expected")
+        };
+        assert_eq!(collection.repositories.len(), 2);
+        let source = collection.repositories[0]
+            .repository_source
+            .as_ref()
+            .unwrap();
+        assert_eq!(source.name, "project");
+        for row in &collection.repositories {
+            assert_eq!(row.repository_source.as_ref(), Some(source));
+            assert_eq!(row.open_tasks, 0);
+            assert!(
+                row.root_path == root.to_string_lossy() || row.root_path == clone.to_string_lossy()
+            );
+        }
+        std::fs::remove_dir_all(&clone).unwrap();
+        let PlanOverview::Collection(collection) = service.overview(None).unwrap() else {
+            panic!("collection expected")
+        };
+        let missing = collection
+            .repositories
+            .iter()
+            .find(|row| row.display_name == "workspace")
+            .unwrap();
+        assert_eq!(missing.root_path, clone.to_string_lossy());
+        assert!(missing.repository_source.is_none());
     }
 
     #[test]

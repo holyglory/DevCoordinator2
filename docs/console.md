@@ -20,6 +20,11 @@ Repository aspects are ordinary hash links: **Plan & progress**, **Deployments**
 within Plan & progress, not independent repository pickers. On phones, aspect
 links wrap so the selected destination remains visible without sideways scrolling.
 Multiline checkout paths retain their own row height in long repository lists.
+Each repository shows its root beneath the name and in the selected header.
+The Plan repository index supplies roots and verified Git source identity even
+when no test results exist or the Tests request fails. Matching source clones
+share a name and keep their exact checkout links; folder names and nesting alone
+never combine repositories. Unavailable ancestry retains the registered root.
 Administrators can use the pencil beside the selected repository name to choose
 a Console-only name and icon. Save persists these in repository presentation
 metadata; Cancel leaves the saved appearance unchanged, and Use defaults restores

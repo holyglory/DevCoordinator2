@@ -31,6 +31,8 @@ window.DevCoordinatorWorkspace = (() => {
       records.set(row.repository_id, {
         ...previous, ...row,
         display_name: previous?.display_name || row.display_name || 'Repository',
+        root_path: previous?.root_path || row.root_path,
+        repository_source: previous?.repository_source || row.repository_source,
         paths: [...new Set([...(previous?.paths || []), row.root_path, row.worktree_path].filter(Boolean))],
       });
     };
@@ -48,6 +50,7 @@ window.DevCoordinatorWorkspace = (() => {
         || left.display_name.localeCompare(right.display_name) || left.repository_id.localeCompare(right.repository_id));
       group.repositoryId = group.records[0].repository_id;
       group.paths = [...new Set(group.records.flatMap((record) => record.paths))];
+      group.rootPath = group.records[0].root_path || group.paths[0] || '';
       group.defaultName = group.name;
       group.presentation = group.records[0].presentation;
       group.name = group.presentation?.display_name || group.defaultName;
@@ -129,8 +132,8 @@ window.DevCoordinatorWorkspace = (() => {
       const visible = groups.filter((group) => [group.name, group.defaultName || '', ...group.paths].some((value) => value.toLowerCase().includes(searchText.toLowerCase())));
       navigation.innerHTML = visible.length ? visible.map((group) => {
         const selected = group === current();
-        const duplicateName = groups.filter((item) => item.name === group.name).length > 1;
-        return `<a class="workspace-repository" title="${esc(group.name)}" data-repository-icon="${group.icon || 'folder'}" href="${href(currentView, selected ? selectedId : group.repositoryId)}"${selected ? ' aria-current="page"' : ''}>${repositoryIcon(group.icon)}<span>${esc(group.name)}${duplicateName ? `<small>${esc(group.paths[0] || group.records[0].display_name)}</small>` : ''}</span></a>`;
+        const title = [group.name, group.rootPath].filter(Boolean).join('\n');
+        return `<a class="workspace-repository" title="${esc(title)}" data-repository-icon="${group.icon || 'folder'}" href="${href(currentView, selected ? selectedId : group.repositoryId)}"${selected ? ' aria-current="page"' : ''}>${repositoryIcon(group.icon)}<span><span class="workspace-repository-name">${esc(group.name)}</span>${group.rootPath ? `<small>${esc(group.rootPath)}</small>` : ''}</span></a>`;
       }).join('') : `<p class="muted">${searchText ? 'No matching repositories.' : 'No repositories available.'}</p>`;
       const selected = current();
       const checkouts = document.querySelector('#workspace-checkouts');
@@ -147,6 +150,9 @@ window.DevCoordinatorWorkspace = (() => {
       const selected = current();
       heading.innerHTML = selected ? `${repositoryIcon(selected.icon)}<span>${esc(selected.name)}</span>` : 'Repositories';
       heading.title = selected?.name || 'Repositories';
+      const root = document.querySelector('#workspace-root');
+      root.hidden = !selected?.rootPath;
+      root.textContent = selected?.rootPath ? `Root: ${selected.rootPath}` : '';
       editPresentation.hidden = !selected || !identity()?.administrator;
       toggle.title = selected ? `Current repository: ${selected.name}` : 'Repositories';
       const record = selected?.records.find((item) => item.repository_id === selectedId);

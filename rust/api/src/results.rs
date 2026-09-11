@@ -1467,6 +1467,10 @@ pub struct CurrentReleaseSummary {
 pub struct PlanRepositoryRow {
     pub repository_id: String,
     pub display_name: String,
+    #[serde(default)]
+    pub root_path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repository_source: Option<TestRepositorySource>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub presentation: Option<RepositoryPresentation>,
     pub open_tasks: u32,

@@ -346,9 +346,12 @@ const fixtures = (scenario) => {
       decisions: { unsummarized_count: scenario.empty ? 0 : 4, summary_due: false },
     },
     'plan.overview-list': { repositories: scenario.empty ? [] : [
-      { repository_id: REPO, display_name: 'repo-one', open_tasks: 5, loc_done: 550, loc_total: 1800, current_release: { name: 'Release 1', kind: 'release', status: 'planned' }, preview_requested: false, elaboration_request_count: 1 },
+      { repository_id: REPO, display_name: 'repo-one', root_path: '/srv/repos/repo-one', repository_source: { key: 'repo-one-origin', name: 'repo-one' }, open_tasks: 5, loc_done: 550, loc_total: 1800, current_release: { name: 'Release 1', kind: 'release', status: 'planned' }, preview_requested: false, elaboration_request_count: 1 },
       { repository_id: 'r2', display_name: LONG, open_tasks: 0, loc_done: 0, loc_total: 0, current_release: null, preview_requested: true, elaboration_request_count: 0 },
-      ...(scenario.workspaceLongList ? Array.from({ length: 16 }, (_, index) => ({ repository_id: `workspace-${index}`, display_name: 'workspace', root_path: `/srv/owner/checkouts/independent-project-${index}/.local/daily/workspace` })) : [])] },
+      ...(scenario.workspaceLongList ? [
+        { repository_id: 'release-clone', display_name: '0.1.3-generated', root_path: '/srv/releases/0.1.3-generated', repository_source: { key: 'repo-one-origin', name: 'repo-one' } },
+        ...Array.from({ length: 16 }, (_, index) => ({ repository_id: `workspace-${index}`, display_name: 'workspace', root_path: `/srv/owner/checkouts/independent-project-${index}/.local/daily/workspace` })),
+      ] : [])] },
     'decision.tail': {
       repository_id: REPO, display_name: 'repo-one',
       summary: scenario.empty ? null : { body: 'The story so far: the app greets people plainly and exports are files.', covers_through_seq: 40, created_at: '2026-08-20T10:00:00Z' },
