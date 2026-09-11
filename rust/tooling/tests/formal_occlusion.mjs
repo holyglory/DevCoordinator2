@@ -63,6 +63,60 @@ function occlusions(report) {
   return report.findings.filter((finding) => ["occluded", "partially-occluded"].includes(finding.rule));
 }
 
+function contextualOverlayFixture({ declared = true, reason = "User-opened preview", innerCover = false, positioned = true } = {}) {
+  return `<!doctype html><style>
+    body{margin:0;background:white;color:#111}
+    #background{position:absolute;left:30px;top:30px;width:150px;height:34px}
+    #popup{position:${positioned ? "fixed" : "relative"};left:12px;top:12px;width:250px;height:180px;background:#eee;z-index:2}
+    #popup h2{margin:0;padding:12px;font:16px sans-serif}
+    #inside{position:absolute;left:18px;top:70px;width:150px;height:34px}
+    #inner-cover{position:absolute;left:18px;top:70px;width:150px;height:34px;z-index:3;background:#333}
+  </style><button id="background">Source action</button>
+  <section id="popup" role="dialog" aria-label="Preview" ${declared ? `data-ui-contextual-overlay="${reason}"` : ""}>
+    <h2>Preview</h2><button id="inside">Edit inputs</button>${innerCover ? '<div id="inner-cover"></div>' : ""}
+  </section>`;
+}
+
+for (const width of [390, 1440]) {
+  test(`contextual overlay only excuses declared background coverage: ${width}`, async () => {
+    const page = await browser.newPage({ viewport: { width, height: 844 } });
+    try {
+      await page.setContent(contextualOverlayFixture());
+      const report = await measure(page);
+      assert.deepEqual(occlusions(report), []);
+      assert(report.findings.some(finding => finding.rule === "allowed-contextual-overlay" && finding.selector.includes("background")));
+    } finally { await page.close(); }
+  });
+  test(`contextual overlay still detects covered controls within it: ${width}`, async () => {
+    const page = await browser.newPage({ viewport: { width, height: 844 } });
+    try {
+      await page.setContent(contextualOverlayFixture({ innerCover: true }));
+      const report = await measure(page);
+      assert(occlusions(report).some(finding => finding.selector.includes("inside") && finding.severity === "critical"));
+    } finally { await page.close(); }
+  });
+}
+
+for (const options of [{ declared: false }, { reason: "" }, { positioned: false }]) {
+  test(`contextual overlay requires an explicit positioned declaration: ${JSON.stringify(options)}`, async () => {
+    const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
+    try {
+      await page.setContent(contextualOverlayFixture(options));
+      const report = await measure(page);
+      assert(occlusions(report).some(finding => finding.selector.includes("background")));
+    } finally { await page.close(); }
+  });
+}
+
+test("ordinary positioned content cannot declare itself a contextual surface", async () => {
+  const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
+  try {
+    await page.setContent(contextualOverlayFixture().replace('role="dialog"', 'role="region"'));
+    const report = await measure(page);
+    assert(occlusions(report).some(finding => finding.selector.includes("background")));
+  } finally { await page.close(); }
+});
+
 for (const width of [390, 1440]) {
   for (const axis of ["x", "y", "both"]) {
     test(`scrolled non-fixed editor content remains reachable: ${width}, ${axis}`, async () => {

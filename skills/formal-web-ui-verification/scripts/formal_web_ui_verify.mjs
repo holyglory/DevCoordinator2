@@ -3961,6 +3961,14 @@ function pageVerifier() {
     }
     return false;
   };
+  const contextualCover = (element, occluder) => {
+    for (let owner = occluder; owner && !containsComposed(owner, element); owner = composedParent(owner)) {
+      const reason = owner.getAttribute?.("data-ui-contextual-overlay")?.trim();
+      if (reason && owner.matches('[role="dialog"], [role="menu"], [role="listbox"], [role="tooltip"], [popover]') &&
+          ["fixed", "absolute"].includes(cs(owner).position)) return { owner, reason };
+    }
+    return null;
+  };
   const pinnedSibling = (element, occluder) => {
     for (let sticky = occluder; sticky && !containsComposed(sticky, element); sticky = composedParent(sticky)) {
       const style = cs(sticky);
@@ -4051,25 +4059,34 @@ function pageVerifier() {
     ].filter((point) => point.x >= sampleLeft && point.y >= sampleTop && point.x <= sampleRight && point.y <= sampleBottom);
     if (points.length < 2) return;
     let covered = 0;
+    const contextualCovers = new Map();
     let maxOccluderOpacity = 0;
     const evidencePoints = [];
     for (const point of points) {
       const top = topAtPoint(el, point);
       const ok = top && (top === el || el.contains(top) || top.contains(el));
+      const contextual = !ok && top ? contextualCover(el, top) : null;
+      if (contextual) contextualCovers.set(contextual.owner, contextual.reason);
       const pinned = !ok && top ? pinnedSibling(el, top) : null;
       const reachableAfterScroll = !ok && reachablePastPinnedSibling(el, pinned, point, rect);
       evidencePoints.push({
         x: round(point.x),
         y: round(point.y),
         topSelector: top ? selectorPath(top) : "",
-        covered: !ok && !reachableAfterScroll,
+        covered: !ok && !reachableAfterScroll && !contextual,
         ...(reachableAfterScroll ? { reachableAfterScroll: true } : {}),
+        ...(contextual ? { contextualOverlay: selectorPath(contextual.owner) } : {}),
       });
-      if (!ok && !reachableAfterScroll) {
+      if (!ok && !reachableAfterScroll && !contextual) {
         covered += 1;
         if (top) maxOccluderOpacity = Math.max(maxOccluderOpacity, occluderOpacity(top));
         if (pinned) maxOccluderOpacity = Math.max(maxOccluderOpacity, occluderOpacity(pinned.sticky));
       }
+    }
+    if (contextualCovers.size) {
+      add("warning", "allowed-contextual-overlay", el, "A declared temporary contextual surface covers this background item; its own content remains fully checked.", {
+        evidence: { overlays: [...contextualCovers].map(([owner, reason]) => ({ selector: selectorPath(owner), reason })), samplePoints: evidencePoints, measuredAfterScroll },
+      });
     }
     if (covered >= 2) {
       const coveredFraction = covered / points.length;

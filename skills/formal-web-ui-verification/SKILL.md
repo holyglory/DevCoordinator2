@@ -34,6 +34,12 @@ Native modal dialogs exclude their browser-inert background from active-content
 defects. Fixed descendants count as reachable only when an actual inner scroll
 range on the cut axis can expose them within the viewport. Locked scroll regions,
 unscrollable fixed controls and occlusion inside the active dialog still fail.
+Deliberately temporary,
+positioned dialog/menu/listbox/tooltip/popover surfaces may declare
+`data-ui-contextual-overlay="reason"` so their coverage of outside content is
+recorded as `allowed-contextual-overlay`. This does not exempt their own
+contents from occlusion, clipping, contrast or geometry checks. An empty reason,
+unpositioned element or unrelated undeclared cover receives no exception.
 Native input placeholders and every selectable native option label are measured
 against the control's rendered inner content width, including the native select
 affordance, without retaining the measured text or any entered value. Visible
