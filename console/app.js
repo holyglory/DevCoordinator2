@@ -2937,9 +2937,16 @@ function bindProgressPointValues(root) {
     point.setAttribute('aria-describedby', tooltip.id);
     place();
   };
+  let pointerPosition = null;
+  card.addEventListener('pointermove', event => {
+    const moved = !pointerPosition || event.clientX !== pointerPosition.x || event.clientY !== pointerPosition.y;
+    pointerPosition = { x: event.clientX, y: event.clientY };
+    const point = event.target.closest('[data-progress-point]');
+    if (moved && point) show(point);
+  });
   for (const point of card.querySelectorAll('[data-progress-point]')) {
-    point.addEventListener('pointerenter', () => show(point));
-    point.addEventListener('pointerleave', () => { if (document.activeElement !== point) hide(); });
+    point.addEventListener('pointerenter', () => { if (!document.activeElement?.hasAttribute('data-progress-point')) show(point); });
+    point.addEventListener('pointerleave', () => { if (active === point && document.activeElement !== point) hide(); });
     point.addEventListener('focus', () => show(point));
     point.addEventListener('blur', hide);
     point.addEventListener('click', () => { point.focus({ preventScroll: true }); show(point); });

@@ -70,8 +70,10 @@ export async function verifyProgressCharts({ page, daemon, check, scenario, base
         await page.setViewportSize(viewport);
         await page.locator('.progress-chart-legend').hover();
         check(`${prefix}: lane ${lane + 1} pointer exit dismisses values`, !await tooltip.isVisible());
+        await first.hover();
         await first.focus();
         await page.keyboard.press('End');
+        await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
         const lastValues = Object.values(await readValues());
         const total = data.series.reduce((sum, point) => sum + point[completed], 0);
         check(`${prefix}: lane ${lane + 1} keyboard reaches exact final bucket and running total`, lastValues[0] === data.series.at(-1)[completed].toLocaleString('en-US') && lastValues[2] === total.toLocaleString('en-US') && await chart.locator('[data-progress-point]:focus').getAttribute('data-progress-point') === String(data.series.length - 1));
