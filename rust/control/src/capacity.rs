@@ -445,14 +445,24 @@ impl CapacityBroker {
     }
 
     pub fn record_sample(&self, cpu_percent: Option<f64>, memory_percent: Option<f64>) {
-        if let Ok(mut state) = self.inner.state.lock() {
+        let now = self.inner.monotonic.seconds();
+        let adjustment = if let Ok(mut state) = self.inner.state.lock() {
             state.record_sample(
                 bounded_percent(cpu_percent),
                 bounded_percent(memory_percent),
             );
+            let adjustment = state.finish_epoch(now, self.inner.min_epoch_seconds);
             if !state.paused {
                 let _ = state.grant_ready(self.inner.random.as_ref());
             }
+            adjustment.map(|adjustment| (adjustment, state.learned, state.cap))
+        } else {
+            None
+        };
+        if let Some((adjustment, learned, cap)) = adjustment
+            && let Err(error) = self.persist_adjustment(learned, cap, &adjustment)
+        {
+            error!(%error, "capacity sample adjustment could not be persisted");
         }
         self.inner.notify.notify_waiters();
     }
@@ -956,12 +966,14 @@ impl State {
                 .iter()
                 .any(|run| self.registered_runs.contains_key(run));
         let longest_run = self.run_durations.iter().copied().fold(0.0, f64::max);
-        // A continuous backlog must not prevent learning from completed long
-        // runs. Short completions retain the current observation window.
-        if busy && longest_run < minimum {
+        let duration = (now - started).max(0.0);
+        // Evaluate a full live workload epoch as well as completed long runs.
+        // Otherwise one long, underused permit can strand the queue forever.
+        // An idle/registered-only queue is not evidence of executing work.
+        let eligible = longest_run >= minimum || (!self.active.is_empty() && duration >= minimum);
+        if busy && !eligible {
             return None;
         }
-        let duration = (now - started).max(0.0);
         let cpu_values = self
             .samples
             .iter()
@@ -983,7 +995,7 @@ impl State {
         let previous = self.learned;
         let mut reason = None;
         let mut new = previous;
-        if longest_run >= minimum {
+        if eligible {
             if self.pending_decrease && previous > 1 {
                 new = (previous - 1).min(previous.saturating_mul(3) / 4).max(1);
                 reason = Some(if self.epoch_memory_emergency {
@@ -991,7 +1003,9 @@ impl State {
                 } else {
                     "sustained_pressure"
                 });
-            } else if complete
+            } else if !self.pending_decrease
+                && !self.paused
+                && complete
                 && self.cap.is_none_or(|cap| cap > previous)
                 && saturation.is_some_and(|value| value >= 0.5)
                 && cpu.is_some_and(|value| value < UNDERUSED_PERCENT)
@@ -1034,10 +1048,14 @@ impl State {
         self.run_durations.clear();
         self.pending_decrease = false;
         self.epoch_memory_emergency = false;
-        self.cpu_pressure_streak = 0;
-        self.memory_pressure_streak = 0;
-        self.recovery_streak = 0;
-        self.paused = self.memory_emergency;
+        // A live epoch boundary is not pressure recovery. Keep the pause until
+        // its existing two low-utilization samples have actually arrived.
+        if !busy {
+            self.cpu_pressure_streak = 0;
+            self.memory_pressure_streak = 0;
+            self.recovery_streak = 0;
+            self.paused = self.memory_emergency;
+        }
         adjustment
     }
 }
@@ -1651,6 +1669,225 @@ mod tests {
                 .learned_capacity,
             10
         );
+    }
+
+    #[test]
+    fn active_underused_epoch_recovers_without_waiting_for_a_run_to_finish() {
+        let temporary = tempdir().expect("tempdir");
+        let database = Database::open(temporary.path().join("authority.sqlite3")).expect("db");
+        let monotonic = Arc::new(ManualMonotonic::new());
+        let broker = make_broker(
+            database.clone(),
+            temporary.path().join("capacity.sock"),
+            monotonic.clone(),
+        );
+        // Reproduce the existing learned floor without changing an admin cap:
+        // one long-running leaf occupies the grant; a second run must wait.
+        broker.state().expect("state").learned = 1;
+        broker
+            .register_run("long-active", 1000)
+            .expect("active run");
+        broker.register_run("waiting", 1000).expect("waiting run");
+        let first = broker
+            .enqueue("long-active", "long-leaf", 1000)
+            .expect("first");
+        let first_permit = match broker.take_outcome(first).expect("first outcome") {
+            Some(PendingOutcome::Granted(permit)) => permit,
+            _ => panic!("first leaf must be admitted"),
+        };
+        let second = broker
+            .enqueue("waiting", "short-leaf", 1000)
+            .expect("second");
+        for _ in 0..40 {
+            monotonic.advance(15);
+            broker.record_sample(Some(40.0), Some(40.0));
+        }
+        let snapshot = broker.snapshot().expect("snapshot");
+        assert_eq!(
+            snapshot.learned_capacity, 2,
+            "active underused work must not strand the queue"
+        );
+        assert_eq!(
+            snapshot.active, 2,
+            "the existing leaf is preserved and the waiting leaf is admitted"
+        );
+        assert_eq!(snapshot.waiting, 0);
+        assert!(matches!(
+            broker.take_outcome(second).expect("second outcome"),
+            Some(PendingOutcome::Granted(_))
+        ));
+        assert!(
+            broker
+                .state()
+                .expect("state")
+                .active
+                .contains_key(&first_permit.permit_id)
+        );
+        for _ in 0..10 {
+            monotonic.advance(15);
+            broker.record_sample(Some(40.0), Some(40.0));
+        }
+        assert_eq!(
+            broker
+                .snapshot()
+                .expect("no double credit")
+                .learned_capacity,
+            2
+        );
+        broker.unregister_run("long-active").expect("finish first");
+        broker.unregister_run("waiting").expect("finish second");
+        assert_eq!(broker.snapshot().expect("complete").learned_capacity, 2);
+        let restarted = make_broker(database, temporary.path().join("restarted.sock"), monotonic);
+        assert_eq!(
+            restarted
+                .snapshot()
+                .expect("persisted learning")
+                .learned_capacity,
+            2
+        );
+    }
+
+    #[test]
+    fn live_epochs_preserve_duration_complete_samples_saturation_and_caps() {
+        for (ticks, cpu, memory, cap, saturated, missing_sample) in [
+            (39, 40.0, 40.0, None, true, false),
+            (40, 40.0, 40.0, None, true, true),
+            (40, 95.0, 40.0, None, true, false),
+            (40, 40.0, 99.0, None, true, false),
+            (40, 40.0, 40.0, Some(1), true, false),
+            (40, 40.0, 40.0, None, false, false),
+        ] {
+            let temporary = tempdir().expect("tempdir");
+            let database = Database::open(temporary.path().join("authority.sqlite3")).expect("db");
+            let monotonic = Arc::new(ManualMonotonic::new());
+            let broker = make_broker(
+                database,
+                temporary.path().join("capacity.sock"),
+                monotonic.clone(),
+            );
+            let learned = if saturated { 1 } else { 8 };
+            broker.state().expect("state").learned = learned;
+            if cap.is_some() {
+                broker.set_cap(cap, "test:admin").expect("cap");
+            }
+            broker.register_run("active", 1000).expect("active run");
+            broker
+                .enqueue("active", "long-leaf", 1000)
+                .expect("active leaf");
+            if saturated {
+                broker.register_run("waiting", 1000).expect("waiting run");
+                broker
+                    .enqueue("waiting", "next-leaf", 1000)
+                    .expect("waiting leaf");
+            }
+            for index in 0..ticks {
+                monotonic.advance(15);
+                let observed_cpu = if missing_sample && index == 20 {
+                    None
+                } else {
+                    Some(cpu)
+                };
+                broker.record_sample(observed_cpu, Some(memory));
+            }
+            let snapshot = broker.snapshot().expect("snapshot");
+            assert_eq!(
+                snapshot.learned_capacity, learned,
+                "no unsupported live-epoch growth"
+            );
+            assert_eq!(
+                snapshot.active, 1,
+                "no admitted work may be killed or extra work admitted"
+            );
+            assert_eq!(snapshot.waiting, u32::from(saturated));
+            if memory >= 98.0 {
+                assert!(
+                    snapshot.paused,
+                    "an epoch boundary must not clear sustained pressure"
+                );
+            }
+            broker.unregister_run("active").expect("cleanup active");
+            if saturated {
+                broker.unregister_run("waiting").expect("cleanup waiting");
+            }
+        }
+    }
+
+    #[test]
+    fn live_pressure_epoch_reduces_future_grants_without_stopping_active_work() {
+        let temporary = tempdir().expect("tempdir");
+        let database = Database::open(temporary.path().join("authority.sqlite3")).expect("db");
+        let monotonic = Arc::new(ManualMonotonic::new());
+        let broker = make_broker(
+            database,
+            temporary.path().join("capacity.sock"),
+            monotonic.clone(),
+        );
+        broker.register_run("busy", 1000).expect("busy run");
+        for index in 0..9 {
+            broker
+                .enqueue("busy", &format!("leaf-{index}"), 1000)
+                .expect("leaf");
+        }
+        let original_permits = broker
+            .state()
+            .expect("state")
+            .active
+            .keys()
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        for _ in 0..40 {
+            monotonic.advance(15);
+            broker.record_sample(Some(99.0), Some(40.0));
+        }
+        let snapshot = broker.snapshot().expect("pressure snapshot");
+        assert_eq!(snapshot.learned_capacity, 6);
+        assert_eq!(snapshot.active, 8);
+        assert_eq!(snapshot.waiting, 1);
+        assert!(snapshot.paused);
+        assert_eq!(
+            broker
+                .state()
+                .expect("state")
+                .active
+                .keys()
+                .cloned()
+                .collect::<BTreeSet<_>>(),
+            original_permits
+        );
+        for _ in 0..2 {
+            monotonic.advance(15);
+            broker.record_sample(Some(40.0), Some(40.0));
+        }
+        let snapshot = broker.snapshot().expect("recovery snapshot");
+        assert!(!snapshot.paused);
+        assert_eq!(snapshot.learned_capacity, 6);
+        assert_eq!(snapshot.active, 8);
+        assert_eq!(snapshot.waiting, 1);
+        broker.unregister_run("busy").expect("cleanup");
+        assert_eq!(broker.snapshot().expect("complete").learned_capacity, 6);
+    }
+
+    #[test]
+    fn registered_without_executing_work_does_not_manufacture_a_live_epoch() {
+        let temporary = tempdir().expect("tempdir");
+        let database = Database::open(temporary.path().join("authority.sqlite3")).expect("db");
+        let monotonic = Arc::new(ManualMonotonic::new());
+        let broker = make_broker(
+            database,
+            temporary.path().join("capacity.sock"),
+            monotonic.clone(),
+        );
+        broker
+            .register_run("registered-only", 1000)
+            .expect("registered run");
+        for _ in 0..80 {
+            monotonic.advance(15);
+            broker.record_sample(Some(10.0), Some(10.0));
+        }
+        let snapshot = broker.snapshot().expect("snapshot");
+        assert_eq!(snapshot.learned_capacity, 8);
+        assert_eq!(snapshot.active, 0);
+        broker.unregister_run("registered-only").expect("cleanup");
     }
 
     #[test]
