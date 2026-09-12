@@ -619,6 +619,45 @@ impl PlanService {
         })
     }
 
+    pub fn search_tasks(
+        &self,
+        repository_id: &str,
+        params: devcoordinator2_api::params::TaskSearch,
+    ) -> Result<devcoordinator2_api::results::TaskSearch, ProtocolError> {
+        use devcoordinator2_api::results::{TaskSearch, TaskSearchHit};
+        if params.query.len() > 256
+            || !(1..=50).contains(&params.limit)
+            || params.after_sequence > i64::MAX as u64
+        {
+            return Err(ProtocolError::new(
+                ErrorCode::ParamsInvalid,
+                "task search requires a query up to 256 bytes, limit 1..50, and a valid sequence",
+            ));
+        }
+        let repository_id = repository_id.to_owned();
+        let status = params.status.map(|status| match status {
+            TaskStatus::Planned => "planned",
+            TaskStatus::InProgress => "in_progress",
+            TaskStatus::Done => "done",
+            TaskStatus::Dropped => "dropped",
+        });
+        let limit = usize::from(params.limit);
+        let mut tasks = self.database.call(move |connection| {
+            let mut statement = connection.prepare("SELECT task_id,seq,title,status FROM tasks WHERE repository_id=?1 AND (?2 IS NULL OR status=?2) AND seq>?3 AND instr(lower(title || ' ' || coalesce(outcome,'') || ' ' || coalesce(technical_note,'')),lower(?4))>0 ORDER BY seq LIMIT ?5")?;
+            let rows = statement.query_map(rusqlite::params![repository_id, status, params.after_sequence as i64, params.query, i64::from(params.limit)+1], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?, row.get::<_, String>(2)?, row.get::<_, String>(3)?))
+            })?.collect::<Result<Vec<_>, _>>()?;
+            rows.into_iter().map(|(task_id, sequence, title, status)| Ok(TaskSearchHit { task_id, sequence: sequence as u64, title, status: parse_task_status(&status)? })).collect::<Result<Vec<_>, DatabaseError>>()
+        }).map_err(database_or_domain)?;
+        let truncated = tasks.len() > limit;
+        tasks.truncate(limit);
+        let next_sequence = truncated.then(|| tasks.last().expect("positive page size").sequence);
+        Ok(TaskSearch {
+            tasks,
+            next_sequence,
+        })
+    }
+
     pub fn task_history(&self, task_id: &str) -> Result<TaskHistory, ProtocolError> {
         let row = self.task_row(task_id)?.ok_or_else(|| {
             ProtocolError::new(ErrorCode::TaskNotFound, format!("no task {task_id}"))
@@ -2624,6 +2663,66 @@ mod tests {
                     "2026-09-03T12:03:00Z",
                 )
                 .is_err()
+        );
+    }
+
+    #[test]
+    fn task_search_finds_dropped_history_with_bounded_stable_pages() {
+        let (_temporary, database, service) = world();
+        seed_repository(&database);
+        let mut ids = Vec::new();
+        for title in ["Archived export", "Current export", "Other work"] {
+            ids.push(
+                service
+                    .create_task(
+                        "r1111111111111111",
+                        task_params(title),
+                        "uid:1000",
+                        "2026-09-12T12:00:00Z",
+                    )
+                    .unwrap()
+                    .task_id,
+            );
+        }
+        service
+            .update_task(
+                serde_json::from_value(serde_json::json!({"task_id": ids[0], "status": "dropped"}))
+                    .unwrap(),
+                "uid:1000",
+                "2026-09-12T12:01:00Z",
+            )
+            .unwrap();
+        let search = |query: &str, after, status| {
+            service
+                .search_tasks(
+                    "r1111111111111111",
+                    devcoordinator2_api::params::TaskSearch {
+                        path: None,
+                        repository_id: None,
+                        query: query.into(),
+                        status,
+                        after_sequence: after,
+                        limit: 1,
+                    },
+                )
+                .unwrap()
+        };
+        let first = search("export", 0, None);
+        assert_eq!(first.tasks[0].task_id, ids[0]);
+        assert_eq!(first.tasks[0].status, TaskStatus::Dropped);
+        let second = search("export", first.next_sequence.unwrap(), None);
+        assert_eq!(second.tasks[0].task_id, ids[1]);
+        assert!(second.next_sequence.is_none());
+        assert_eq!(search("", 0, Some(TaskStatus::Dropped)).tasks.len(), 1);
+        assert!(search("%", 0, None).tasks.is_empty());
+        let PlanOverview::Detail(overview) = service.overview(Some("r1111111111111111")).unwrap()
+        else {
+            panic!("detail");
+        };
+        assert!(overview.tasks.iter().all(|task| task.task_id != ids[0]));
+        assert_eq!(
+            service.task_history(&ids[0]).unwrap().task.status,
+            TaskStatus::Dropped
         );
     }
 

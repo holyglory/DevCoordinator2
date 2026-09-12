@@ -4,14 +4,19 @@ export async function verifyTestsDesign({ page, daemon, check, scenario, baseUrl
   const verify = (name, condition, detail = '') => check(`tests ${theme} ${viewport.width}: ${name}`, condition, detail);
   const errors = [];
   page.on('pageerror', (error) => errors.push(error.message));
-  daemon.setScenario({ ...scenario, earlierEvidence: true });
+  daemon.setScenario({ ...scenario, earlierEvidence: true, admission: true, testPaged: true });
   await page.goto(`${baseUrl}#/tests`);
   await chooseRepository(page, 'repo-one');
   await page.waitForSelector('.test-result');
+  verify('Tests follows bounded pages before showing the collection', daemon.calls.some((call) => call.operation === 'test.list' && call.params.after_worktree_id === 'w1'));
   verify('Tests uses the shared repository workspace', await page.locator('.workspace-tests-heading h1').innerText() === 'Tests' && await page.locator('.test-repository-list, [data-project-picker]').count() === 0);
   verify('the selected repository is not repeated over results', !/repo-one|Latest results|Latest test runs|Repositories/.test(await page.locator('#test-runs-collection').innerText()));
   verify('results begin in the initial viewport', (await page.locator('.test-result-summary').first().boundingBox()).y < 330);
   verify('no overflow', await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+  await page.locator('.test-detail summary').first().click();
+  verify('queued checks show waiting without a false executing duration', /waiting/i.test(await page.locator('.test-check').first().innerText()) && !/running|executing|process time/i.test(await page.locator('.test-check').first().innerText()));
+  await page.locator('.test-detail summary').first().click();
+
   const grouping = await page.evaluate(() => {
     const source = { key: 'verified-origin', name: 'actual-project' };
     return window.DevCoordinatorTests.groupRuns([

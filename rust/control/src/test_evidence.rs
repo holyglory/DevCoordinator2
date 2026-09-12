@@ -3614,6 +3614,7 @@ writeJourneyEvidenceArtifact({...original,pages,coverage,plan:{plannedPageCount:
         );
         assert_eq!(summary.status, TestStatus::Running);
         let mut list = TestList {
+            next_worktree_id: None,
             runs: vec![TestListRow {
                 worktree_id: world.worktree_id,
                 worktree_path: world.repo.display().to_string(),

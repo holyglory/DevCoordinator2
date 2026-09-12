@@ -915,7 +915,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         READ_SERVER_ADMIN,
         Protocol["test list"],
         ["test_list"],
-        params::Empty,
+        params::TestList,
         results::TestList
     ),
     operation!(
@@ -1223,6 +1223,15 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         ["plan_overview"],
         params::PlanReference,
         results::PlanOverview
+    ),
+    operation!(
+        "task.search",
+        "Search all task states, including dropped history, without changing the active plan.",
+        READ_REPOSITORY_VIEWER,
+        Protocol["task search"],
+        ["task_search"],
+        params::TaskSearch,
+        results::TaskSearch
     ),
     operation!(
         "task.history",
@@ -1788,9 +1797,9 @@ mod tests {
         for tool in mcp_tools() {
             assert!(tools.insert(tool.name), "duplicate MCP tool");
         }
-        assert_eq!(OPERATIONS.len(), 99);
-        assert_eq!(tools.len(), 76);
-        assert_eq!(cli_routes.len(), 88);
+        assert_eq!(OPERATIONS.len(), 100);
+        assert_eq!(tools.len(), 77);
+        assert_eq!(cli_routes.len(), 89);
     }
 
     #[test]

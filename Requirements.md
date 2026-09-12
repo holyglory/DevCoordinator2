@@ -42,7 +42,9 @@ not contradict them.
   containers carry the exact test identity and are removed on completion,
   timeout, supersession, or the next start. Declared shared/permanent
   database dependencies are never stopped and their data never deleted by
-  test cleanup.
+  test cleanup. The ephemeral PostgreSQL data directory is explicitly set to
+  its bounded tmpfs mount, including PostgreSQL 18 image tags; digest-pinned
+  images retain exact digest verification.
 - **REQ-TEST-10** (2026-08-28, done): An extension-dependent test may use a
   reviewed PostgreSQL-compatible image pinned by immutable SHA-256 digest.
   The root daemon alone pulls and verifies the exact digest; generated
@@ -71,6 +73,14 @@ not contradict them.
   completion-only successors; success-dependent checks become explicitly not
   meaningful. Only an explicitly unsafe/stop failure cancels remaining work,
   and every path completes the existing cgroup/container cleanup contract.
+  Failure blocking propagates through the full prerequisite closure regardless
+  of declaration order. Every terminal outer run closes remaining live child
+  states; rejected, missing, mismatched, and incomplete executor reports have
+  bounded public reasons while raw contents remain private. Admission observations
+  expose waiting, granted, executing, and finished leaf counts, actual grant and
+  process timestamps, and separate accumulated queue and process durations. Checks
+  waiting for capacity have no process start time. Console shows this distinction
+  during the run; historical reports without observations remain readable.
 - **REQ-TEST-14** (2026-09-01, done): Explicit check selections and a
   failed-check retry are diagnostic only. Retry begins only after an original
   complete run finishes, includes the target's prerequisite closure, reuses
@@ -533,7 +543,10 @@ not contradict them.
 - **REQ-PLAN-04** (S8, done): `plan.overview` is one bounded call carrying
   releases with leaf-based progress, the compact active task projection
   (unfinished tasks never truncated away), pending preview requests, and
-  decision-summary state.
+  decision-summary state. A separate read-only `task.search` searches all states,
+  including dropped history, with literal title/outcome/technical-note matching,
+  an optional state filter, up to 50 compact hits, and an immutable sequence cursor.
+  Finding historical work never restores it to the active plan.
 - **REQ-PLAN-05** (S8, done): The owner can move tasks between releases,
   reorder them within a release (mutable `position`, immutable `seq`), and
   drop them; each is an append-only transition (`release_move`, `reorder`,

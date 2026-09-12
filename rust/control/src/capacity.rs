@@ -193,6 +193,22 @@ struct ActivePermit {
     run_id: String,
 }
 
+/// Holds exact connection ownership across every I/O error and task cancellation.
+struct ConnectionPermit {
+    broker: CapacityBroker,
+    pending_id: u64,
+    permit_id: Option<String>,
+}
+
+impl Drop for ConnectionPermit {
+    fn drop(&mut self) {
+        if let Some(id) = &self.permit_id {
+            let _ = self.broker.release(id);
+        }
+        let _ = self.broker.cancel_pending(self.pending_id);
+    }
+}
+
 #[derive(Clone, Debug)]
 struct Adjustment {
     actor: String,
@@ -583,6 +599,11 @@ impl CapacityBroker {
             }
         };
         let mut early_input = [0_u8; 4096];
+        let mut ownership = ConnectionPermit {
+            broker: self.clone(),
+            pending_id,
+            permit_id: None,
+        };
         let grant = loop {
             let notified = self.inner.notify.notified();
             match self.take_outcome(pending_id).map_err(protocol_io)? {
@@ -611,6 +632,7 @@ impl CapacityBroker {
             waited: Some(grant.waited),
             error: None,
         };
+        ownership.permit_id = Some(grant.permit_id.clone());
         write_response(&mut stream, &response).await?;
 
         let mut release = [0_u8; 4096];
@@ -695,6 +717,9 @@ impl CapacityBroker {
         let Some(pending) = state.pending.remove(&pending_id) else {
             return Ok(());
         };
+        if let PendingOutcome::Granted(grant) = &pending.outcome {
+            state.active.remove(&grant.permit_id);
+        }
         if let Some(queue) = state.queues.get_mut(&pending.run_id) {
             queue.retain(|candidate| *candidate != pending_id);
             if queue.is_empty() {
@@ -705,6 +730,7 @@ impl CapacityBroker {
             }
         }
         state.finish_run(&pending.run_id, now);
+        state.grant_ready(self.inner.random.as_ref())?;
         let adjustment = state.finish_epoch(now, self.inner.min_epoch_seconds);
         let learned = state.learned;
         let cap = state.cap;
@@ -1927,6 +1953,67 @@ mod tests {
             assert_eq!(broker.snapshot().expect("other survives").active, 1);
             broker.unregister_run("run-other").expect("cleanup");
         }
+    }
+
+    #[tokio::test]
+    async fn cancelled_connection_handler_releases_its_active_permit() {
+        let temporary = tempdir().expect("tempdir");
+        let database = Database::open(temporary.path().join("authority.sqlite3")).expect("db");
+        let broker = make_broker(
+            database,
+            temporary.path().join("capacity.sock"),
+            Arc::new(ManualMonotonic::new()),
+        );
+        broker
+            .register_run("run-cancel", rustix::process::getuid().as_raw())
+            .expect("run");
+        let (mut client, server) = UnixStream::pair().expect("pair");
+        let serving = broker.clone();
+        let handler = tokio::spawn(async move { serving.serve_connection(server).await });
+        let request = serde_json::json!({"schema": CAPACITY_PROTOCOL_SCHEMA, "action": "acquire", "run_id": "run-cancel", "leaf_id": "check"});
+        client
+            .write_all(format!("{request}\n").as_bytes())
+            .await
+            .expect("request");
+        let response = timeout(Duration::from_secs(2), read_line(&mut client))
+            .await
+            .expect("grant deadline")
+            .expect("grant");
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&response).unwrap()["status"],
+            "granted"
+        );
+        assert_eq!(broker.snapshot().unwrap().active, 1);
+        handler.abort();
+        assert!(handler.await.unwrap_err().is_cancelled());
+        assert_eq!(broker.snapshot().unwrap().active, 0);
+        assert!(broker.state().unwrap().pending.is_empty());
+    }
+
+    #[test]
+    fn abandoned_untaken_grant_releases_capacity_for_the_next_request() {
+        let temporary = tempdir().expect("tempdir");
+        let database = Database::open(temporary.path().join("authority.sqlite3")).expect("db");
+        let broker = make_broker(
+            database,
+            temporary.path().join("capacity.sock"),
+            Arc::new(ManualMonotonic::new()),
+        );
+        broker.set_cap(Some(1), "uid:1").unwrap();
+        broker.register_run("run-cancel", 1000).unwrap();
+        let abandoned = broker.enqueue("run-cancel", "abandoned", 1000).unwrap();
+        let following = broker.enqueue("run-cancel", "following", 1000).unwrap();
+        assert!(matches!(
+            broker.take_outcome(following).unwrap(),
+            Some(PendingOutcome::Waiting)
+        ));
+        broker.cancel_pending(abandoned).unwrap();
+        let Some(PendingOutcome::Granted(grant)) = broker.take_outcome(following).unwrap() else {
+            panic!("next request was not admitted");
+        };
+        broker.release(&grant.permit_id).unwrap();
+        assert_eq!(broker.snapshot().unwrap().active, 0);
+        assert!(broker.state().unwrap().pending.is_empty());
     }
 
     #[tokio::test]

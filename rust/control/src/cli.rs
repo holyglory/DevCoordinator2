@@ -379,7 +379,12 @@ enum TestCommand {
         #[arg(value_enum)]
         status: TestEventStatus,
     },
-    List,
+    List {
+        #[arg(long)]
+        after_worktree_id: Option<String>,
+        #[arg(long, value_parser = clap::value_parser!(u16).range(1..=50))]
+        limit: Option<u16>,
+    },
     Capacity {
         #[command(subcommand)]
         command: CapacityCommand,
@@ -1013,9 +1018,23 @@ impl TaskStatusArg {
 
 #[derive(Debug, Subcommand)]
 enum TaskCommand {
+    Search {
+        #[command(flatten)]
+        path: PathArg,
+        #[arg(long, default_value = "")]
+        query: String,
+        #[arg(long, value_enum)]
+        status: Option<TaskStatusArg>,
+        #[arg(long, default_value_t = 0)]
+        after_sequence: u64,
+        #[arg(long, default_value_t = 50, value_parser = clap::value_parser!(u16).range(1..=50))]
+        limit: u16,
+    },
     Create(TaskCreateArgs),
     Update(TaskUpdateArgs),
-    History { task_id: String },
+    History {
+        task_id: String,
+    },
 }
 
 #[derive(Debug, Args)]
@@ -1322,7 +1341,13 @@ impl TestCommand {
                 remote("test.stop", Value::Object(params))
             }
             Self::Event { status } => Ok(Invocation::TestEvent { status }),
-            Self::List => remote("test.list", json!({})),
+            Self::List {
+                after_worktree_id,
+                limit,
+            } => remote(
+                "test.list",
+                json!({"after_worktree_id": after_worktree_id, "limit": limit}),
+            ),
             Self::Capacity { command } => match command {
                 CapacityCommand::Show => remote("test.capacity.get", json!({})),
                 CapacityCommand::Set { cap } => {
@@ -1926,6 +1951,18 @@ impl TaskCommand {
                 }
                 remote("task.update", Value::Object(params))
             }
+            Self::Search {
+                path,
+                query,
+                status,
+                after_sequence,
+                limit,
+            } => remote(
+                "task.search",
+                json!({
+                    "path": path.absolute()?, "query": query, "status": status.map(TaskStatusArg::as_str), "after_sequence": after_sequence, "limit": limit
+                }),
+            ),
             Self::History { task_id } => remote("task.history", json!({"task_id":task_id})),
         }
     }
@@ -2785,6 +2822,20 @@ mod tests {
             (
                 &["task", "update", "p1", "--status", "in_progress"],
                 "task.update",
+            ),
+            (
+                &[
+                    "task",
+                    "search",
+                    "/tmp/repo",
+                    "--query",
+                    "lost",
+                    "--status",
+                    "dropped",
+                    "--limit",
+                    "1",
+                ],
+                "task.search",
             ),
             (&["task", "history", "p1"], "task.history"),
             (

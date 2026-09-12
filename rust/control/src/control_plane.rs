@@ -128,6 +128,7 @@ pub const FOUNDATION_OPERATIONS: &[&str] = &[
     "glossary.check",
     "glossary.impact",
     "task.history",
+    "task.search",
     "task.create",
     "task.update",
     "release.create",
@@ -702,8 +703,8 @@ impl ControlPlane {
             }
             "test.history" => encode(self.tests.history(decode(params)?, caller)?),
             "test.list" => {
-                let _: params::Empty = decode(params)?;
-                let mut result = self.tests.list_current()?;
+                let params: params::TestList = decode(params)?;
+                let mut result = self.tests.list_current_page(params)?;
                 self.test_evidence.enrich_list(&mut result);
                 encode(result)
             }
@@ -961,6 +962,16 @@ impl ControlPlane {
                     true,
                 )?;
                 encode(self.plan.overview(Some(&repository.repository_id))?)
+            }
+            "task.search" => {
+                let params: params::TaskSearch = decode(params)?;
+                let repository = self.resolve_repository(
+                    params.path.as_deref(),
+                    params.repository_id.as_deref(),
+                    caller,
+                    true,
+                )?;
+                encode(self.plan.search_tasks(&repository.repository_id, params)?)
             }
             "task.history" => {
                 let params: params::TaskHistory = decode(params)?;

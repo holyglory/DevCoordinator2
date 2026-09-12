@@ -778,6 +778,28 @@ pub struct PlanReference {
 
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct TaskSearch {
+    #[serde(default)]
+    pub path: Option<String>,
+    #[serde(default)]
+    pub repository_id: Option<String>,
+    #[serde(default)]
+    #[schemars(length(max = 256))]
+    pub query: String,
+    #[serde(default)]
+    pub status: Option<TaskStatus>,
+    #[serde(default)]
+    pub after_sequence: u64,
+    #[serde(default = "task_search_limit")]
+    #[schemars(range(min = 1, max = 50))]
+    pub limit: u16,
+}
+fn task_search_limit() -> u16 {
+    50
+}
+
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TaskHistory {
     pub task_id: String,
 }
@@ -1152,4 +1174,13 @@ mod tests {
         assert_eq!(clear.release_id, Some(None));
         assert_eq!(value.release_id, Some(Some("v1".into())));
     }
+}
+
+#[derive(Clone, Debug, Default, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TestList {
+    #[serde(default)]
+    pub after_worktree_id: Option<String>,
+    #[serde(default)]
+    pub limit: Option<u16>,
 }

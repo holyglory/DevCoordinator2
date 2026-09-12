@@ -40,13 +40,35 @@ window.DevCoordinatorTests = (() => {
     const evidenceRun = (run) => run.visual_evidence?.status === 'available' || run.visual_evidence?.issue_count ? run
       : run.earlier_visual_evidence ? { ...run, ...run.earlier_visual_evidence, earlier: true } : null;
 
+    const checkState = (check) => {
+      const execution = check.execution;
+      if (!activeStates.has(check.status) || !execution) return check.status;
+      if (execution.executing) return 'running';
+      if (execution.admitted) return 'starting';
+      return execution.waiting ? 'waiting' : check.status;
+    };
+    const checkTiming = (check) => {
+      if (!check.execution) return durationMs(check.duration_seconds == null ? null : check.duration_seconds * 1000);
+      const execution = check.execution;
+      if (activeStates.has(check.status)) return [execution.executing ? `${execution.executing} executing` : '', execution.waiting ? `${execution.waiting} waiting` : ''].filter(Boolean).join(' · ');
+      return `${durationMs(execution.process_duration_ms)} process time · ${durationMs(execution.capacity_wait_ms)} waiting`;
+    };
+    const checkRows = (checks) => checks.map((check) => `<div class="test-check"><span>${esc(readable(check.name))}</span>${badge(checkState(check))}<span class="muted">${esc(checkTiming(check))}</span></div>`).join('');
+    const reportIssue = (issue) => ({
+      missing: 'The run ended without a check report.',
+      invalid: 'The check report could not be validated. The run logs are available for diagnosis.',
+      unreadable: 'The check report could not be read. The run logs are available for diagnosis.',
+      identity_mismatch: 'The check report belongs to a different run and was rejected.',
+      incomplete: 'The run ended before all checks reported their results.',
+    })[issue] || '';
+
     function row(run) {
       const visual = evidenceRun(run);
       const files = availableFiles(run);
       return `<article class="test-result" data-test-run-id="${esc(run.run_id)}">
         <div class="test-result-summary"><span class="test-status-icon ${run.status === 'failed' ? 'bad' : ''}"><span class="ti ti-${run.status === 'passed' ? 'circle-check' : run.status === 'failed' ? 'circle-x' : 'refresh'}" aria-hidden="true"></span></span><div class="test-result-name"><h2>${esc(readable(run.test))}</h2><div class="test-run-time"><time datetime="${esc(run.started_at)}" title="${esc(run.started_at)}">${esc(time(run))}</time>${run.duration_seconds == null ? '' : `<span>· ${esc(duration(run))}</span>`}</div></div>${badge(run.status)}</div>
         ${visual || files.length ? `<div class="test-previews" data-preview-run="${esc(run.run_id)}" aria-label="Screenshots for ${esc(readable(run.test))}"><span class="muted">Loading screenshots…</span></div>` : ''}
-        <div class="test-result-actions"><button type="button" class="test-text-action" data-test-logs>Logs</button>${files.length ? '<button type="button" class="test-text-action" data-test-artifacts>Files</button>' : ''}<button type="button" class="test-text-action ${activeStates.has(run.status) ? 'test-stop' : ''}" data-test-start>${activeStates.has(run.status) ? 'Stop run' : 'Run again'}</button><details class="test-detail" data-disclosure="${esc(run.run_id)}"><summary aria-label="Details for ${esc(readable(run.test))}">Details</summary><div class="test-detail-content">${(run.checks || []).map((check) => `<div class="test-check"><span>${esc(readable(check.name))}</span>${badge(check.status)}<span class="muted">${esc(durationMs(check.duration_seconds == null ? null : check.duration_seconds * 1000))}</span></div>`).join('')}<dl class="test-technical"><dt>Checkout</dt><dd>${esc(run.worktree_path)}</dd><dt>Validation</dt><dd>${esc(run.requested_tier || 'Not recorded')}</dd><dt>Exit code</dt><dd>${run.exit_code ?? '—'}</dd><dt>Output / errors</dt><dd>${bytes(run.stdout_bytes_observed)} / ${bytes(run.stderr_bytes_observed)}</dd></dl>${!files.length ? '<button type="button" class="test-text-action" data-test-artifacts>Earlier files</button>' : ''}</div></details></div><div class="test-action-error" role="status"></div>
+        <div class="test-result-actions"><button type="button" class="test-text-action" data-test-logs>Logs</button>${files.length ? '<button type="button" class="test-text-action" data-test-artifacts>Files</button>' : ''}<button type="button" class="test-text-action ${activeStates.has(run.status) ? 'test-stop' : ''}" data-test-start>${activeStates.has(run.status) ? 'Stop run' : 'Run again'}</button><details class="test-detail" data-disclosure="${esc(run.run_id)}"><summary aria-label="Details for ${esc(readable(run.test))}">Details</summary><div class="test-detail-content"><div data-test-checks>${checkRows(run.checks || [])}</div><dl class="test-technical"><dt>Checkout</dt><dd>${esc(run.worktree_path)}</dd><dt>Validation</dt><dd>${esc(run.requested_tier || 'Not recorded')}</dd><dt>Exit code</dt><dd>${run.exit_code ?? '—'}</dd><dt>Output / errors</dt><dd>${bytes(run.stdout_bytes_observed)} / ${bytes(run.stderr_bytes_observed)}</dd></dl>${!files.length ? '<button type="button" class="test-text-action" data-test-artifacts>Earlier files</button>' : ''}</div></details></div><div class="test-action-error" role="status">${esc(reportIssue(run.report_issue))}</div>
       </article>`;
     }
 
@@ -247,7 +269,19 @@ window.DevCoordinatorTests = (() => {
         article.querySelector('[data-test-logs]').addEventListener('click', (event) => openLogs(run, event.currentTarget));
         for (const button of article.querySelectorAll('[data-test-artifacts]')) button.addEventListener('click', () => openFiles(run, button));
         article.querySelector('[data-test-start]').addEventListener('click', (event) => action(event.currentTarget, run));
-        article.querySelector('details').open = open.has(run.run_id);
+        const details = article.querySelector('details');
+        details.addEventListener('toggle', async () => {
+          if (!details.open || !run.checks_truncated || details.dataset.loading) return;
+          details.dataset.loading = 'true';
+          try {
+            const detail = await api('test.status', { path: run.worktree_path });
+            if (signal.aborted || !details.isConnected) return;
+            if (detail.run_id !== run.run_id) throw new Error('A newer run is available. Refresh to view it.');
+            details.querySelector('[data-test-checks]').innerHTML = checkRows(detail.checks || []);
+          } catch (error) { if (!signal.aborted && details.isConnected) article.querySelector('.test-action-error').textContent = error.message; }
+          finally { delete details.dataset.loading; }
+        });
+        details.open = open.has(run.run_id);
       }
       observer = new IntersectionObserver((entries) => {
         for (const entry of entries) if (entry.isIntersecting) {

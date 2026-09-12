@@ -164,13 +164,27 @@ impl DockerControl for PostgresDocker {
         Ok(())
     }
 
+    fn ensure_image(&self, image: &str) -> Result<(), DockerError> {
+        assert_eq!(image, "postgres:18");
+        Ok(())
+    }
+
     fn run_detached(&self, request: &RunDetachedRequest) -> Result<ExactContainerId, DockerError> {
         assert_eq!(
             request.env_names,
-            ["POSTGRES_USER", "POSTGRES_PASSWORD", "POSTGRES_DB"]
+            [
+                "POSTGRES_USER",
+                "POSTGRES_PASSWORD",
+                "POSTGRES_DB",
+                "PGDATA"
+            ]
         );
+        assert_eq!(request.env_values["PGDATA"], "/var/lib/postgresql/data");
         assert_eq!(request.publish, ["127.0.0.1::5432"]);
-        assert_eq!(request.tmpfs.len(), 1);
+        assert_eq!(
+            request.tmpfs,
+            ["/var/lib/postgresql/data:rw,size=1g,mode=0700"]
+        );
         assert_eq!(request.label_context.purpose, "test");
         assert_eq!(request.label_context.data_class, "disposable");
         self.provisioned.fetch_add(1, Ordering::SeqCst);
@@ -271,6 +285,7 @@ struct FixtureSystemd {
     mismatch_uid: AtomicBool,
     memory: Mutex<HashMap<String, String>>,
     fail_stop: AtomicBool,
+    timed_out: AtomicBool,
 }
 
 impl FixtureSystemd {
@@ -285,6 +300,7 @@ impl FixtureSystemd {
             mismatch_uid: AtomicBool::new(false),
             memory: Mutex::new(HashMap::new()),
             fail_stop: AtomicBool::new(false),
+            timed_out: AtomicBool::new(false),
         }
     }
 
@@ -339,6 +355,7 @@ impl FixtureSystemd {
             .checks
             .iter()
             .map(|check| CheckReport {
+                execution: None,
                 name: check.name.clone(),
                 tier: check.tier,
                 role: check.role,
@@ -472,6 +489,7 @@ impl SystemdControl for FixtureSystemd {
                     "MainPID" => "0".into(),
                     "ExecMainStatus" => exit.to_string(),
                     "Result" if running => String::new(),
+                    "Result" if self.timed_out.load(Ordering::SeqCst) => "timeout".into(),
                     "Result" => "success".into(),
                     "MemoryCurrent" => self
                         .memory
@@ -678,7 +696,11 @@ command=["true"]
     }
 
     fn start_other(&self) -> (PathBuf, TestStarted) {
-        let path = self._temporary.path().join("other-repository");
+        self.start_named("other-repository")
+    }
+
+    fn start_named(&self, name: &str) -> (PathBuf, TestStarted) {
+        let path = self._temporary.path().join(name);
         std::fs::create_dir(&path).unwrap();
         assert!(
             std::process::Command::new("git")
@@ -798,6 +820,219 @@ fn public_run_history_uses_exact_registration_without_edge_git_access() {
             .history(query(&world.worktree), &world.caller)
             .is_err()
     );
+}
+
+#[test]
+fn current_run_pages_bound_large_reports_and_keep_every_worktree_discoverable() {
+    let world = LifecycleWorld::new();
+    let first = world.start();
+    world.systemd.finish(&first.unit);
+    let mut summary = world.wait_status(TestStatus::Passed);
+    let mut check = summary.checks.as_ref().unwrap()[0].clone();
+    check.cases = (0..32)
+        .map(|index| devcoordinator2_api::results::CaseProjection {
+            execution: None,
+            id: format!("case-{index}-{}", "x".repeat(96)),
+            status: devcoordinator2_api::results::LeafStatus::Passed,
+            exit: devcoordinator2_api::results::DiagnosticExit {
+                code: Some(0),
+                signal: None,
+            },
+            duration_ms: 1,
+            streams: Vec::new(),
+        })
+        .collect();
+    check.case_count = 32;
+    summary.checks = Some(
+        (0..64)
+            .map(|index| {
+                let mut check = check.clone();
+                check.name = format!("check-{index}");
+                check
+            })
+            .collect(),
+    );
+    summary
+        .check_summary
+        .as_mut()
+        .unwrap()
+        .insert("passed".into(), 64);
+    let full = serde_json::to_vec(&summary).unwrap();
+    assert!(full.len() > 256 * 1024 && full.len() < 2 * 1024 * 1024);
+    std::fs::write(
+        world
+            .worktree
+            .join(".devcoordinator/test/current/summary.json"),
+        full,
+    )
+    .unwrap();
+    let (other, second) = world.start_named("other-page");
+    world.systemd.finish(&second.unit);
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while world
+        .lifecycle
+        .status(other.to_str().unwrap(), &world.caller)
+        .unwrap()
+        .status
+        == TestStatus::Running
+    {
+        assert!(Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let mut cursor = None;
+    let mut seen = std::collections::BTreeSet::new();
+    loop {
+        let page = world
+            .lifecycle
+            .list_current_page(devcoordinator2_api::params::TestList {
+                after_worktree_id: cursor,
+                limit: Some(1),
+            })
+            .unwrap();
+        assert!(serde_json::to_vec(&page).unwrap().len() < 200 * 1024);
+        for row in &page.runs {
+            assert!(seen.insert(row.worktree_id.clone()));
+            if row.worktree_path == world.worktree.to_str().unwrap() {
+                assert_eq!(row.summary.checks.as_ref().unwrap().len(), 8);
+                assert_eq!(row.summary.checks_truncated, Some(true));
+                assert!(row.summary.checks.as_ref().unwrap()[0].cases.is_empty());
+            }
+        }
+        cursor = page.next_worktree_id;
+        if cursor.is_none() {
+            break;
+        }
+    }
+    assert_eq!(seen.len(), 2);
+    let details = world
+        .lifecycle
+        .status(world.worktree.to_str().unwrap(), &world.caller)
+        .unwrap();
+    assert_eq!(details.checks.as_ref().unwrap().len(), 64);
+    assert!(serde_json::to_vec(&details).unwrap().len() < 160 * 1024);
+    assert!(
+        details
+            .checks
+            .as_ref()
+            .unwrap()
+            .iter()
+            .all(|check| check.cases_truncated)
+    );
+}
+
+#[test]
+fn finished_runs_explain_missing_invalid_mismatched_and_incomplete_reports() {
+    use devcoordinator2_api::results::TestReportIssue;
+    for issue in [
+        TestReportIssue::Missing,
+        TestReportIssue::Invalid,
+        TestReportIssue::IdentityMismatch,
+        TestReportIssue::Incomplete,
+    ] {
+        let world = LifecycleWorld::new();
+        let started = world.start();
+        let path = world
+            .worktree
+            .join(".devcoordinator/test/current")
+            .join(REPORT_FILE);
+        match issue {
+            TestReportIssue::Missing => std::fs::remove_file(&path).unwrap(),
+            TestReportIssue::Invalid => std::fs::write(&path, b"{invalid private report}").unwrap(),
+            _ => {
+                let mut report =
+                    ExecutionReport::from_json(&std::fs::read(&path).unwrap()).unwrap();
+                if issue == TestReportIssue::IdentityMismatch {
+                    report.run_id = "unrelated-run".into();
+                } else {
+                    report.status = RunStatus::Running;
+                    report.finished_at = None;
+                    report.checks[0].status = LeafStatus::Running;
+                    report.checks[0].finished_at = None;
+                    report.checks[0].duration_seconds = None;
+                    report.checks[0].exit = DiagnosticExit {
+                        code: None,
+                        signal: None,
+                    };
+                    report.counts.insert("passed".into(), 0);
+                    report.counts.insert("running".into(), 1);
+                }
+                report.validate().unwrap();
+                std::fs::write(&path, serde_json::to_vec(&report).unwrap()).unwrap();
+            }
+        }
+        world.systemd.finish(&started.unit);
+        let summary = world.wait_status(TestStatus::Failed);
+        assert_eq!(summary.report_issue, Some(issue));
+        assert!(!summary.readiness_eligible);
+        assert!(
+            !serde_json::to_string(&summary)
+                .unwrap()
+                .contains("private report")
+        );
+        if issue == TestReportIssue::Incomplete {
+            assert_eq!(
+                summary.checks.as_ref().unwrap()[0].status,
+                devcoordinator2_api::results::LeafStatus::Cancelled
+            );
+            assert_eq!(summary.check_summary.as_ref().unwrap()["running"], 0);
+        }
+    }
+}
+
+#[test]
+fn run_timeout_terminates_live_children_and_preserves_completed_checks() {
+    let world = LifecycleWorld::new();
+    let started = world.start();
+    let path = world
+        .worktree
+        .join(".devcoordinator/test/current")
+        .join(REPORT_FILE);
+    let mut report = ExecutionReport::from_json(&std::fs::read(&path).unwrap()).unwrap();
+    let mut active = report.checks[0].clone();
+    active.name = "still-running".into();
+    active.status = LeafStatus::Running;
+    active.finished_at = None;
+    active.duration_seconds = None;
+    active.exit = DiagnosticExit {
+        code: None,
+        signal: None,
+    };
+    report.checks.push(active);
+    report.counts.insert("running".into(), 1);
+    report.status = RunStatus::Running;
+    report.finished_at = None;
+    report.validate().unwrap();
+    std::fs::write(&path, serde_json::to_vec(&report).unwrap()).unwrap();
+    world.systemd.timed_out.store(true, Ordering::SeqCst);
+    world.systemd.finish(&started.unit);
+    let summary = world.wait_status(TestStatus::TimedOut);
+    assert_eq!(
+        summary.checks.as_ref().unwrap()[0].status,
+        devcoordinator2_api::results::LeafStatus::Passed
+    );
+    assert_eq!(
+        summary.checks.as_ref().unwrap()[1].status,
+        devcoordinator2_api::results::LeafStatus::TimedOut
+    );
+    assert_eq!(summary.check_summary.as_ref().unwrap()["running"], 0);
+    assert_eq!(summary.check_summary.as_ref().unwrap()["timed_out"], 1);
+}
+
+#[test]
+fn postgres_18_tag_uses_explicit_disposable_data_directory() {
+    let docker = Arc::new(PostgresDocker::new());
+    let world = LifecycleWorld::with_docker(docker.clone());
+    let path = world.worktree.join(".devcoordinator.toml");
+    let mut config = std::fs::read_to_string(&path).unwrap();
+    config.push_str(
+        "\n[test.all.postgres]\nimage=\"postgres:18\"\nuser=\"app\"\ndatabase=\"app_test\"\n",
+    );
+    std::fs::write(path, config).unwrap();
+    let started = world.start();
+    assert_eq!(docker.provisioned.load(Ordering::SeqCst), 1);
+    world.systemd.finish(&started.unit);
+    world.wait_status(TestStatus::Passed);
+    assert_eq!(docker.removed.load(Ordering::SeqCst), 1);
 }
 
 #[test]

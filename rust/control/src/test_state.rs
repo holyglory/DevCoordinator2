@@ -248,15 +248,11 @@ impl TestRunStore {
     }
 
     pub fn read_report(&self, current: &File) -> Result<Option<ExecutionReport>, TestStateError> {
-        let report = match read_json::<ExecutionReport>(current, REPORT_FILE) {
-            Ok(report) => report,
-            Err(TestStateError::Json(_)) => return Ok(None),
-            Err(error) => return Err(error),
-        };
-        if let Some(report) = &report
-            && report.validate().is_err()
-        {
-            return Ok(None);
+        let report = read_json::<ExecutionReport>(current, REPORT_FILE)?;
+        if let Some(report) = &report {
+            report
+                .validate()
+                .map_err(|_| TestStateError::Invalid("executor report failed validation".into()))?;
         }
         Ok(report)
     }
@@ -476,6 +472,7 @@ pub fn initial_summary(
         readiness_eligible: proof == ProofKind::Complete
             && requested_tier == ValidationTier::Release,
         check_report_ref: REPORT_FILE.into(),
+        report_issue: None,
         log_catalog_ref: LogCatalogReference {
             run_id: run_id.into(),
         },
@@ -529,6 +526,7 @@ fn validate_summary(summary: &TestSummary) -> Result<(), TestStateError> {
         || summary.readiness_eligible
             != (summary.proof == ApiProofKind::Complete
                 && summary.requested_tier == devcoordinator2_api::params::ValidationTier::Release
+                && summary.report_issue.is_none()
                 && !memory_stop)
         || (memory_stop && summary.status != TestStatus::Failed)
     {

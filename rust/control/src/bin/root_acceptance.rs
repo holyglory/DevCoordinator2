@@ -1714,6 +1714,17 @@ fn case_root_caller_rejected(world: &mut World) -> Result<(), String> {
 }
 
 fn case_postgres_real_query_labels_secrecy_and_cleanup(world: &mut World) -> Result<(), String> {
+    postgres_real_query_labels_secrecy_and_cleanup(world, "postgres:16-alpine")
+}
+
+fn case_postgres_18_data_directory_query_and_cleanup(world: &mut World) -> Result<(), String> {
+    postgres_real_query_labels_secrecy_and_cleanup(world, "postgres:18-alpine")
+}
+
+fn postgres_real_query_labels_secrecy_and_cleanup(
+    world: &mut World,
+    image: &str,
+) -> Result<(), String> {
     let command = vec![
         "/usr/bin/psql".to_owned(),
         "-v".to_owned(),
@@ -1724,7 +1735,7 @@ fn case_postgres_real_query_labels_secrecy_and_cleanup(world: &mut World) -> Res
     world.write_config(&unit_config_postgres(
         &command,
         120,
-        "postgres:16-alpine",
+        image,
         Some("app_test"),
         Some("app"),
     )?)?;
@@ -2813,6 +2824,98 @@ fn setup_finite_only(world: &World, script: &str) -> Result<(), String> {
     )?;
     world.git(&["add", "."])?;
     world.git(&["commit", "-qm", "finite fixture"])?;
+    Ok(())
+}
+
+fn case_failed_finite_sibling_finishes_and_evidence_service_can_restart(
+    world: &mut World,
+) -> Result<(), String> {
+    world.write_config("schema=2\n[deployment.siblings]\nsource='worktree'\ncomponents=['stack']\n[deployment.siblings.component.stack]\ntype='compose'\nfiles=['siblings.yml']\nservices=['failed','refined','artifacts']\nfinite_services=['failed','refined']\nindependent_services=['artifacts']\ntimeout_seconds=30\n")?;
+    world.write_owned(
+        "siblings.yml",
+        compose_fixture(
+            r#"services:
+  failed:
+    image: postgres:16-alpine
+    entrypoint: ['/bin/sh', '-c']
+    command: ['sleep 1; exit 7']
+    restart: 'no'
+  refined:
+    image: postgres:16-alpine
+    entrypoint: ['/bin/sh', '-c']
+    command: ['sleep 3; echo refined-complete > /evidence/result; echo refined-complete']
+    restart: 'no'
+    volumes: ['evidence:/evidence']
+  artifacts:
+    image: postgres:16-alpine
+    entrypoint: ['/bin/sh', '-c']
+    command: ['while :; do cat /evidence/result 2>/dev/null; sleep 1; done']
+    restart: 'no'
+    volumes: ['evidence:/evidence']
+volumes:
+  evidence:
+"#,
+            world.harness.compose_subnet,
+        ),
+    )?;
+    world.git(&["add", "."])?;
+    world.git(&["commit", "-qm", "independent finite sibling fixture"])?;
+    let applied = world.call(
+        "deployment.apply",
+        json!({"path":world.repo,"name":"siblings"}),
+    )?;
+    ensure!(
+        error_code(&applied) == Some("deployment_apply_failed"),
+        "ordinary failure became success"
+    );
+    let status = world.call(
+        "deployment.status",
+        json!({"path":world.repo,"name":"siblings"}),
+    )?;
+    let status = data(&status)?;
+    let project = component(status, "stack")?["binding"]["identity"]
+        .as_str()
+        .ok_or("Compose identity missing")?
+        .to_owned();
+    let volume = format!("{project}_evidence");
+    world.track_volume(&volume);
+    let refined = compose_service_id(&project, "refined")?;
+    let finished = docker_inspect_json(&refined, "{{json .State}}")?;
+    ensure!(
+        finished["Status"] == "exited" && finished["ExitCode"] == 0,
+        "safe sibling was interrupted before producing its result"
+    );
+    let restarted = world.call(
+        "deployment.start",
+        json!({"path":world.repo,"name":"siblings","component":"stack/artifacts"}),
+    )?;
+    data(&restarted)?;
+    let evidence = compose_service_id(&project, "artifacts")?;
+    ensure!(
+        docker_inspect_json(&evidence, "{{json .State}}")?["Running"] == true,
+        "selected evidence service did not start"
+    );
+    ensure!(
+        compose_service_id(&project, "refined")? == refined
+            && docker_inspect_json(&refined, "{{json .State}}")?["StartedAt"]
+                == finished["StartedAt"],
+        "retrieving evidence reran the calculation"
+    );
+    let logs = world.call(
+        "deployment.logs",
+        json!({"path":world.repo,"name":"siblings","component":"stack","tail_lines":20}),
+    )?;
+    ensure!(
+        data(&logs)?["tail"]
+            .as_str()
+            .is_some_and(|text| text.contains("refined-complete")),
+        "completed sibling evidence is unavailable"
+    );
+    data(&world.call(
+        "deployment.remove",
+        json!({"path":world.repo,"name":"siblings","delete_data":true}),
+    )?)?;
+    world.forget_volume(&volume);
     Ok(())
 }
 
@@ -4396,6 +4499,10 @@ fn cases() -> Vec<Case> {
             case_postgres_real_query_labels_secrecy_and_cleanup,
         ),
         (
+            "postgres_18_data_directory_query_and_cleanup",
+            case_postgres_18_data_directory_query_and_cleanup,
+        ),
+        (
             "digest_pinned_postgis_fixture_is_pulled_injected_and_removed",
             case_digest_pinned_postgis_fixture_is_pulled_injected_and_removed,
         ),
@@ -4446,6 +4553,10 @@ fn cases() -> Vec<Case> {
         (
             "finite_only_container_completion_failure_cancellation_and_cleanup",
             case_finite_only_container_completion_failure_cancellation_and_cleanup,
+        ),
+        (
+            "failed_finite_sibling_finishes_and_evidence_service_can_restart",
+            case_failed_finite_sibling_finishes_and_evidence_service_can_restart,
         ),
         (
             "native_compose_finite_service_receipt_and_start_semantics",

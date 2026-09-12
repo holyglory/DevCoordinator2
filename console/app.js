@@ -246,6 +246,18 @@ async function api(operation, params = {}, abortable = true) {
   if (res.status === 401) { location.href = `/auth/login?rt=${encodeURIComponent(location.pathname + location.hash)}`; throw new ApiError('unauthenticated', 'sign in'); }
   const body = await res.json().catch(() => ({ ok: false, error: { code: 'bad_response', message: `HTTP ${res.status}` } }));
   if (!body.ok) throw new ApiError(body.error?.code || 'error', body.error?.message || 'request failed');
+  if (operation === 'test.list' && !params.after_worktree_id && !params.limit) {
+    const result = body.data;
+    const seen = new Set();
+    while (result.next_worktree_id) {
+      const cursor = result.next_worktree_id;
+      if (seen.has(cursor)) throw new ApiError('bad_response', 'Test list pagination did not advance');
+      seen.add(cursor);
+      const page = await api(operation, { ...params, after_worktree_id: cursor }, abortable);
+      result.runs.push(...page.runs);
+      result.next_worktree_id = page.next_worktree_id;
+    }
+  }
   return body.data;
 }
 async function metricHistory(kind, id, metric, rangeKey) {

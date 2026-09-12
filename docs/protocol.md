@@ -122,3 +122,40 @@ Stable snake_case, terminal (no retry/queue semantics):
 - `event.wait` returns only typed, bounded, authorization-filtered event
   metadata or heartbeat-due entries. It never returns raw logs, secrets,
   private paths, agent/task orchestration state, or an instruction to act.
+
+### Historical task discovery and process admission
+
+`task.search` accepts a repository `path` or `repository_id`, optional `query`
+and `status`, `limit` (1–50, default 50), and `after_sequence` (default 0).
+Its compact `tasks` include every state, including `dropped`; pass the returned
+`next_sequence` as `after_sequence` for the next page. `task.history` retrieves
+one matching task's full history. The active `plan.overview` is unchanged.
+
+Check and case reports may include `execution`: current waiting, admitted,
+executing and finished leaf counts; first queue, admission and process-start
+UTC epoch milliseconds; last finish time when no process remains active; and
+accumulated `capacity_wait_ms` and `process_duration_ms`. A fan-out check sums
+per-process durations, so these totals can exceed elapsed wall time. The
+ordinary check duration starts with its first actual process. Historical
+reports may omit this additive observation. `capacity_wait_count` includes
+requests currently waiting, as well as completed admission waits.
+
+Terminal test summaries expose optional `report_issue`: `missing`, `invalid`,
+`unreadable`, `identity_mismatch`, or `incomplete`. This reason never contains
+report payloads. Partial check results remain available and all interrupted
+children have terminal status.
+
+A mixed Compose component waits for safe finite siblings to settle even if
+another finite service exits unsuccessfully. Cancellation and the declared
+readiness deadline still stop the operation. To retrieve retained results after
+an unsuccessful apply, declare the evidence service in `independent_services`
+and use `deployment start --component <component>/<evidence-service>`
+with the exact deployment identity. This starts the existing evidence container
+without rerunning the finite calculations; the failed apply remains failed.
+
+`test.list` returns compact current-run summaries and a `next_worktree_id` cursor.
+Pass it as `after_worktree_id`, with optional `limit` (1–50), for the next page.
+Pages stay below the response budget; list rows include up to eight checks and
+omit case streams and detailed failure payloads. Truncation flags remain explicit.
+Use `test.status` for one current run's details. Console follows list cursors and
+loads additional check details when their disclosure opens.

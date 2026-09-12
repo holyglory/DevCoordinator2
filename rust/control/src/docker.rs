@@ -1651,7 +1651,22 @@ pub trait DockerControl: Send + Sync {
             completions,
             desired_states,
         )?;
-        while state.state == RuntimeState::Starting && Instant::now() < deadline {
+        // An ordinary failed finite service does not invalidate independent
+        // calculations that are still running in this same Compose project.
+        while (state.state == RuntimeState::Starting
+            || state
+                .services
+                .iter()
+                .any(|service| service.role == "finite" && service.state == RuntimeState::Starting)
+                && state
+                    .services
+                    .iter()
+                    .filter(|service| service.role != "finite")
+                    .all(|service| {
+                        !matches!(service.state, RuntimeState::Failed | RuntimeState::Missing)
+                    }))
+            && Instant::now() < deadline
+        {
             if cancellation
                 .as_ref()
                 .is_some_and(|flag| flag.load(Ordering::Acquire))
@@ -2643,6 +2658,48 @@ mod tests {
             Some(api.as_str())
         );
         assert_eq!(calls[0].cwd.as_deref(), Some(temporary.path()));
+    }
+
+    #[test]
+    fn compose_readiness_collects_finite_siblings_after_ordinary_failure() {
+        let failed = id('a');
+        let slow = id('b');
+        let evidence = id('c');
+        let info = |service: &str, status: &str, code: i32| {
+            serde_json::json!({
+                "State": {"Status": status, "ExitCode": code},
+                "Config": {"Labels": {"com.docker.compose.service": service}}
+            })
+            .to_string()
+        };
+        let ids = format!("{failed}\n{slow}\n{evidence}\n");
+        let fake = FakeDocker::new(vec![
+            output(0, ids.clone(), ""),
+            output(0, info("failed", "exited", 1), ""),
+            output(0, info("slow", "running", 0), ""),
+            output(0, info("evidence", "running", 0), ""),
+            output(0, ids, ""),
+            output(0, info("failed", "exited", 1), ""),
+            output(0, info("slow", "exited", 0), ""),
+            output(0, info("evidence", "running", 0), ""),
+        ]);
+        let (ready, _, state) = fake
+            .compose_ready(
+                "dc2-d1-stack",
+                &["failed".into(), "slow".into(), "evidence".into()],
+                &["failed".into(), "slow".into()],
+                &BTreeSet::new(),
+                &BTreeMap::new(),
+                Duration::from_secs(2),
+                None,
+            )
+            .expect("settled result");
+        assert!(!ready);
+        assert_eq!(state.state, RuntimeState::Failed);
+        assert_eq!(state.completion_candidates.len(), 1);
+        assert_eq!(state.completion_candidates[0].service, "slow");
+        assert!(state.services.iter().any(|service| service.name == "evidence" && service.state == RuntimeState::Running));
+        assert_eq!(fake.calls().len(), 8);
     }
 
     #[test]

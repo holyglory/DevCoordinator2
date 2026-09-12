@@ -652,6 +652,7 @@ impl TestLifecycle {
             self.project_live(&mut summary, &handle)?;
         }
         summary.capacity = Some(self.inner.capacity.snapshot()?);
+        bound_summary_response(&mut summary, 128 * 1024)?;
         Ok(summary)
     }
 
@@ -960,15 +961,34 @@ impl TestLifecycle {
     }
 
     pub fn list_current(&self) -> Result<TestList, ProtocolError> {
+        self.list_current_page(devcoordinator2_api::params::TestList::default())
+    }
+
+    pub fn list_current_page(
+        &self,
+        params: devcoordinator2_api::params::TestList,
+    ) -> Result<TestList, ProtocolError> {
+        let limit = usize::from(params.limit.unwrap_or(50));
+        if !(1..=50).contains(&limit)
+            || params
+                .after_worktree_id
+                .as_ref()
+                .is_some_and(|id| id.len() > 128)
+        {
+            return Err(ProtocolError::new(
+                ErrorCode::ParamsInvalid,
+                "test list requires limit 1..50 and a bounded worktree cursor",
+            ));
+        }
         let rows = self
             .inner
             .database
-            .call(|connection| {
+            .call(move |connection| {
                 let mut statement = connection.prepare(
-                    "SELECT w.worktree_id,w.worktree_path,w.repository_id,r.display_name FROM worktrees w JOIN repositories r ON r.repository_id=w.repository_id WHERE r.archived_at IS NULL ORDER BY r.display_name,w.worktree_path",
+                    "SELECT w.worktree_id,w.worktree_path,w.repository_id,r.display_name FROM worktrees w JOIN repositories r ON r.repository_id=w.repository_id WHERE r.archived_at IS NULL AND w.worktree_id > ?1 ORDER BY w.worktree_id",
                 )?;
                 Ok(statement
-                    .query_map([], |row| {
+                    .query_map([params.after_worktree_id.as_deref().unwrap_or("")], |row| {
                         Ok((
                             row.get::<_, String>(0)?,
                             row.get::<_, String>(1)?,
@@ -988,6 +1008,8 @@ impl TestLifecycle {
             .clone();
         let mut runs = Vec::new();
         let mut sources = HashMap::new();
+        let mut bytes = 0usize;
+        let mut next_worktree_id = None;
         for (worktree_id, path, repository_id, display_name) in rows {
             let worktree = PathBuf::from(&path);
             let Some(mut summary) = self
@@ -1003,7 +1025,13 @@ impl TestLifecycle {
             {
                 self.project_live(&mut summary, handle)?;
             }
+            if runs.len() >= limit {
+                next_worktree_id = runs.last().map(|run: &TestListRow| run.worktree_id.clone());
+                break;
+            }
             summary.capacity = Some(capacity.clone());
+            compact_list_summary(&mut summary);
+            bound_summary_response(&mut summary, 48 * 1024)?;
             let repository_source = sources
                 .entry(repository_id.clone())
                 .or_insert_with(|| {
@@ -1014,7 +1042,7 @@ impl TestLifecycle {
                     )
                 })
                 .clone();
-            runs.push(TestListRow {
+            let row = TestListRow {
                 worktree_id,
                 worktree_path: path,
                 repository_id,
@@ -1030,9 +1058,23 @@ impl TestLifecycle {
                     error_code: None,
                 },
                 summary,
-            });
+            };
+            let row_bytes = serde_json::to_vec(&row)
+                .map_err(|_| {
+                    ProtocolError::new(ErrorCode::InternalError, "test row encoding failed")
+                })?
+                .len();
+            if !runs.is_empty() && bytes.saturating_add(row_bytes) > 160 * 1024 {
+                next_worktree_id = runs.last().map(|run| run.worktree_id.clone());
+                break;
+            }
+            bytes += row_bytes;
+            runs.push(row);
         }
-        Ok(TestList { runs })
+        Ok(TestList {
+            runs,
+            next_worktree_id,
+        })
     }
 
     pub fn recover(&self) -> Result<(), ProtocolError> {
@@ -1112,10 +1154,12 @@ impl TestLifecycle {
                 "ephemeral PostgreSQL failed: Docker is unavailable",
             ));
         }
-        self.inner
-            .docker
-            .ensure_digest_image(&specification.image)
-            .map_err(postgres_error)?;
+        if specification.image.contains("@sha256:") {
+            self.inner.docker.ensure_digest_image(&specification.image)
+        } else {
+            self.inner.docker.ensure_image(&specification.image)
+        }
+        .map_err(postgres_error)?;
         let mut random = [0_u8; 24];
         self.inner.random.fill(&mut random).map_err(|error| {
             ProtocolError::new(
@@ -1129,6 +1173,7 @@ impl TestLifecycle {
             ("POSTGRES_USER".into(), specification.user.clone()),
             ("POSTGRES_PASSWORD".into(), password.clone()),
             ("POSTGRES_DB".into(), specification.database.clone()),
+            ("PGDATA".into(), "/var/lib/postgresql/data".into()),
         ]);
         let container = self
             .inner
@@ -1160,6 +1205,7 @@ impl TestLifecycle {
                     "POSTGRES_USER".into(),
                     "POSTGRES_PASSWORD".into(),
                     "POSTGRES_DB".into(),
+                    "PGDATA".into(),
                 ],
                 env_values: values,
                 publish: vec!["127.0.0.1::5432".into()],
@@ -1553,7 +1599,7 @@ impl TestLifecycle {
     }
 
     fn finalize(&self, handle: &RunHandle, exit: Option<ExitStatus>, streams_complete: bool) {
-        let report = self.inner.store.read_report(&handle.current).ok().flatten();
+        let (report, report_issue) = self.report_snapshot(handle, true);
         let properties = self
             .inner
             .systemd
@@ -1618,6 +1664,7 @@ impl TestLifecycle {
             handle.requested_tier,
         );
         summary.work = handle.work.clone();
+        summary.report_issue = report_issue;
         terminal_status(
             &mut summary,
             status.clone(),
@@ -1642,37 +1689,7 @@ impl TestLifecycle {
                 handle.caller_gid,
             );
         }
-        if summary.termination_reason
-            == Some(devcoordinator2_api::results::RunTerminationReason::MemoryPressure)
-        {
-            summary.readiness_eligible = false;
-            if let Some(counts) = summary.check_summary.as_mut() {
-                let interrupted = counts
-                    .insert("running".into(), 0)
-                    .unwrap_or(0)
-                    .saturating_add(counts.insert("pending".into(), 0).unwrap_or(0));
-                *counts.entry("cancelled".into()).or_default() += interrupted;
-            }
-            for check in summary.checks.iter_mut().flatten() {
-                if matches!(
-                    check.status,
-                    devcoordinator2_api::results::LeafStatus::Pending
-                        | devcoordinator2_api::results::LeafStatus::Running
-                ) {
-                    check.status = devcoordinator2_api::results::LeafStatus::Cancelled;
-                    check.finished_at.clone_from(&summary.finished_at);
-                }
-                for case in &mut check.cases {
-                    if matches!(
-                        case.status,
-                        devcoordinator2_api::results::LeafStatus::Pending
-                            | devcoordinator2_api::results::LeafStatus::Running
-                    ) {
-                        case.status = devcoordinator2_api::results::LeafStatus::Cancelled;
-                    }
-                }
-            }
-        }
+        reconcile_terminal_checks(&mut summary);
         let summary_written = self
             .inner
             .store
@@ -1737,16 +1754,42 @@ impl TestLifecycle {
     ) -> Result<(), ProtocolError> {
         summary.stdout_bytes_observed = handle.stdout_bytes.load(Ordering::SeqCst);
         summary.stderr_bytes_observed = handle.stderr_bytes.load(Ordering::SeqCst);
-        if let Some(report) = self
-            .inner
-            .store
-            .read_report(&handle.current)
-            .map_err(state_error)?
-            .filter(|report| report_matches(handle, report))
-        {
+        let (report, issue) = self.report_snapshot(handle, false);
+        summary.report_issue = issue;
+        if let Some(report) = report {
             apply_report(summary, &report).map_err(state_error)?;
         }
+        if summary.report_issue.is_some() {
+            summary.readiness_eligible = false;
+        }
         Ok(())
+    }
+
+    fn report_snapshot(
+        &self,
+        handle: &RunHandle,
+        terminal: bool,
+    ) -> (
+        Option<ExecutionReport>,
+        Option<devcoordinator2_api::results::TestReportIssue>,
+    ) {
+        use crate::test_state::TestStateError;
+        use devcoordinator2_api::results::TestReportIssue;
+        match self.inner.store.read_report(&handle.current) {
+            Ok(Some(report)) if !report_matches(handle, &report) => {
+                (None, Some(TestReportIssue::IdentityMismatch))
+            }
+            Ok(Some(report)) => {
+                let issue = (terminal && report.status == RunStatus::Running)
+                    .then_some(TestReportIssue::Incomplete);
+                (Some(report), issue)
+            }
+            Ok(None) => (None, terminal.then_some(TestReportIssue::Missing)),
+            Err(TestStateError::Filesystem(_)) => (None, Some(TestReportIssue::Unreadable)),
+            Err(TestStateError::Json(_) | TestStateError::Invalid(_)) => {
+                (None, Some(TestReportIssue::Invalid))
+            }
+        }
     }
 
     fn supersede_prior(&self, worktree_id: &str) -> Result<Option<String>, ProtocolError> {
@@ -2020,6 +2063,124 @@ fn validate_retry(
     Ok(())
 }
 
+fn bound_summary_response(summary: &mut TestSummary, budget: usize) -> Result<(), ProtocolError> {
+    while serde_json::to_vec(summary)
+        .map_err(|_| ProtocolError::new(ErrorCode::InternalError, "test summary encoding failed"))?
+        .len()
+        > budget
+    {
+        if let Some(checks) = &mut summary.checks
+            && checks.iter().any(|check| !check.cases.is_empty())
+        {
+            for check in checks.iter_mut().filter(|check| !check.cases.is_empty()) {
+                check.cases.truncate(check.cases.len() / 2);
+                check.cases_truncated = true;
+            }
+        } else if let Some(failures) = &mut summary.failure_index
+            && !failures.is_empty()
+        {
+            failures.truncate(failures.len() / 2);
+            summary.failure_index_truncated = Some(true);
+        } else if let Some(checks) = &mut summary.checks
+            && !checks.is_empty()
+        {
+            checks.truncate(checks.len() / 2);
+            summary.checks_truncated = Some(true);
+        } else {
+            return Err(ProtocolError::new(
+                ErrorCode::InternalError,
+                "test summary metadata exceeds response budget",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn compact_list_summary(summary: &mut TestSummary) {
+    if let Some(checks) = &mut summary.checks {
+        if checks.len() > 8 {
+            summary.checks_truncated = Some(true);
+            checks.truncate(8);
+        }
+        for check in checks {
+            if !check.cases.is_empty() {
+                check.cases_truncated = true;
+                check.cases.clear();
+            }
+            check.streams.clear();
+        }
+    }
+    if summary
+        .failure_index
+        .as_ref()
+        .is_some_and(|failures| !failures.is_empty())
+    {
+        summary.failure_index_truncated = Some(true);
+        summary.failure_index = Some(Vec::new());
+    }
+}
+
+fn close_execution_observation(
+    execution: Option<&mut devcoordinator2_api::results::ExecutionProgress>,
+) {
+    if let Some(execution) = execution {
+        execution.finished += execution.waiting + execution.admitted + execution.executing;
+        execution.waiting = 0;
+        execution.admitted = 0;
+        execution.executing = 0;
+    }
+}
+
+fn reconcile_terminal_checks(summary: &mut TestSummary) {
+    use devcoordinator2_api::results::LeafStatus;
+    if summary.report_issue.is_some()
+        || summary.termination_reason
+            == Some(devcoordinator2_api::results::RunTerminationReason::MemoryPressure)
+    {
+        summary.readiness_eligible = false;
+    }
+    if summary.status == TestStatus::Running {
+        return;
+    }
+    let interrupted = if summary.status == TestStatus::TimedOut {
+        LeafStatus::TimedOut
+    } else {
+        LeafStatus::Cancelled
+    };
+    if let Some(counts) = summary.check_summary.as_mut() {
+        let running = counts.insert("running".into(), 0).unwrap_or(0);
+        let pending = counts.insert("pending".into(), 0).unwrap_or(0);
+        *counts.entry("cancelled".into()).or_default() += pending;
+        let key = if interrupted == LeafStatus::TimedOut {
+            "timed_out"
+        } else {
+            "cancelled"
+        };
+        *counts.entry(key.into()).or_default() += running;
+    }
+    for check in summary.checks.iter_mut().flatten() {
+        close_execution_observation(check.execution.as_mut());
+        if matches!(check.status, LeafStatus::Pending | LeafStatus::Running) {
+            check.status = if check.status == LeafStatus::Pending {
+                LeafStatus::Cancelled
+            } else {
+                interrupted.clone()
+            };
+            check.finished_at.clone_from(&summary.finished_at);
+        }
+        for case in &mut check.cases {
+            close_execution_observation(case.execution.as_mut());
+            if matches!(case.status, LeafStatus::Pending | LeafStatus::Running) {
+                case.status = if case.status == LeafStatus::Pending {
+                    LeafStatus::Cancelled
+                } else {
+                    interrupted.clone()
+                };
+            }
+        }
+    }
+}
+
 fn apply_report(
     summary: &mut TestSummary,
     report: &ExecutionReport,
@@ -2063,6 +2224,7 @@ fn apply_report(
 
 fn api_check(check: &CheckReport) -> Result<CheckProjection, crate::test_state::TestStateError> {
     Ok(CheckProjection {
+        execution: check.execution.as_ref().map(convert).transpose()?,
         name: check.name.clone(),
         tier: api_tier(check.tier),
         role: convert(&check.role)?,
