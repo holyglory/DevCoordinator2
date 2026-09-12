@@ -255,8 +255,8 @@ and CLI `release deliver-evidence --file delivery.json` take:
 {"release_id":"RELEASE_ID","path":"/absolute/registered/worktree","run_id":"RUN_ID","check":"build","artifact":"package","manifest_sha256":"64-hex-digest","source_sha256":"64-hex-digest","target":"linux-cli","kind":"local-executable","verification_file":"delivery.json"}
 ```
 
-Kinds: `artifact | registry-package | local-executable | web-deployment`. A retained artifact
-tree is selected through the existing hash-bound artifact service. Repository,
+Kinds: `artifact | registry-package | local-executable | web-deployment`.
+A retained artifact tree is selected through the existing hash-bound artifact service. Repository,
 manifest, source digest, finished passing run, tree and file hashes must match.
 Focused development validation is sufficient for a preliminary delivery; this
 does not promote it to complete release/readiness proof.
@@ -293,8 +293,8 @@ belong to the same retained tree. See [Web deployment observations](#web-deploym
 for the source, owned-route and observation requirements. Retaining website
 evidence does not turn the website into a downloadable package.
 
-The governed check owns the actual download or executable smoke validation and
-must report its real observation. Coordinator verifies provenance, bindings and
+The governed check owns the actual web-route, download or executable smoke
+validation and must report its real observation. Coordinator verifies provenance, bindings and
 integrity; it does not independently claim to have probed an external registry
 or execute repository binaries as root. No inline `verified`/`qualified` flag is
 accepted. Without that retained observation, external evidence stays pending.
