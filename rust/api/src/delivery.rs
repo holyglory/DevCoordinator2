@@ -7,6 +7,7 @@ pub enum Kind {
     Artifact,
     RegistryPackage,
     LocalExecutable,
+    WebDeployment,
 }
 
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
@@ -87,6 +88,17 @@ pub struct Verification {
     pub checked_at_ms: u64,
     pub access: String,
     pub observation: VerificationObservation,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deployment: Option<WebDeploymentVerification>,
+}
+
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WebDeploymentVerification {
+    pub deployment_id: String,
+    pub generation_number: u32,
+    pub http_status: u16,
+    pub content_type: String,
 }
 
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
@@ -95,4 +107,5 @@ pub enum VerificationObservation {
     DownloadMatched,
     RegistryDownloadMatched,
     ExecutableSmokePassed,
+    WebRoutePassed,
 }

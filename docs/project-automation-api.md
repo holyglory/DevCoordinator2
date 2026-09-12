@@ -89,6 +89,40 @@ control plane and disposable database. Missing references return typed errors.
 Previously qualified evidence describes an actual past verification, not a
 claim that an external URL or a retention-limited artifact is available forever.
 
+### Web deployment observations
+
+`release.deliver_evidence` also accepts `kind: "web-deployment"`. A website is
+not represented as a registry package or downloaded application artifact. Its
+passing governed route check retains the actual returned HTML and a version-1
+verification file with `observation: "web_route_passed"`. `file` identifies that
+HTML inside the retained artifact; `observed_sha256` hashes the complete returned
+body. `checked_at_ms` is the actual response observation time inside the passing
+run, never the later receipt creation time. Checks must exercise the intended
+application route and assert its expected content, not substitute a login or
+health page. Normal rendered-interaction requirements remain applicable.
+
+The verification file adds `deployment: {deployment_id, generation_number,
+http_status, content_type}`. Qualification requires HTTP 200 HTML, a current
+running generation in the same repository and an observation after that
+generation was created. Coordinator recomputes the applied deployment fingerprint
+from its recorded specification, commit/dirty state and the retained run's source
+digest. Different source or configuration, another generation, a stopped
+deployment and foreign ownership cannot qualify.
+
+`access` is the actual observed route: either the deployment's owned HTTPS origin
+or its exact assigned HTTP loopback port. An existing protected public-domain
+route remains protected when a trusted local check uses loopback; qualification
+does not publish a private deployment or alter access policy. Other origins,
+ports, credentials, query strings and fragments are refused. The service validates
+retained evidence and owned routing metadata; it does not perform network requests.
+
+Use the existing `release deliver-evidence --file request.json` operation with a
+new planned/requested release and the real retained catalog identities. Its
+qualified receipt is then read by `release evidence RECEIPT_ID`, including by
+native delivery clocks. A legacy `release deliver` record is not silently
+upgraded; new qualification requires retained verification evidence. Existing
+artifact, registry-package and local-executable contracts are unchanged.
+
 ## Prepare
 
 `review.prepare` / `review_prepare` accepts:

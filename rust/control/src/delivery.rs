@@ -7,6 +7,8 @@ use sha2::{Digest, Sha256};
 
 use crate::access::Caller;
 use crate::database::Database;
+use crate::deployment_state::DeploymentStore;
+use crate::plan::{DeploymentEvidenceReader, SqliteDeploymentEvidence};
 use crate::review::timestamp;
 use crate::review_validation::{database_error, invalid, page, text};
 use crate::test_artifacts::TestArtifactService;
@@ -15,13 +17,19 @@ use crate::test_artifacts::TestArtifactService;
 pub(crate) struct DeliveryService {
     database: Database,
     artifacts: TestArtifactService,
+    base_domain: String,
 }
 
 impl DeliveryService {
-    pub(crate) fn new(database: Database, artifacts: TestArtifactService) -> Self {
+    pub(crate) fn new(
+        database: Database,
+        artifacts: TestArtifactService,
+        base_domain: String,
+    ) -> Self {
         Self {
             database,
             artifacts,
+            base_domain,
         }
     }
 
@@ -129,6 +137,9 @@ impl DeliveryService {
                 started_ms,
                 catalog.run_finished_at_epoch_ms.unwrap_or(0),
             )?;
+            if params.kind == Kind::WebDeployment {
+                self.validate_web_deployment(&params, &verification, &receipt.repository_id)?;
+            }
             if params.kind == Kind::LocalExecutable
                 && verification.access
                     != format!(
@@ -207,6 +218,76 @@ impl DeliveryService {
         }).map_err(database_error)
     }
 
+    fn validate_web_deployment(
+        &self,
+        params: &Deliver,
+        proof: &Verification,
+        repository_id: &str,
+    ) -> Result<(), ProtocolError> {
+        let web = proof
+            .deployment
+            .as_ref()
+            .ok_or_else(|| invalid("Web observation requires its exact deployment generation"))?;
+        if web.http_status != 200
+            || web.generation_number == 0
+            || web.content_type.split(';').next().map(str::trim) != Some("text/html")
+        {
+            return Err(invalid(
+                "Web observation requires a successful route and positive generation",
+            ));
+        }
+        text(&web.deployment_id, 1, 100)?;
+        let deployment_id = web.deployment_id.clone();
+        let row = self.database.call(move |connection| {
+            Ok(connection.query_row("SELECT deployment.repository_id,deployment.state,deployment.current_generation,deployment.spec_json,generation.commit_hash,generation.dirty,generation.fingerprint,generation.created_at,generation.state FROM deployments deployment JOIN generations generation ON generation.deployment_id=deployment.deployment_id AND generation.number=deployment.current_generation WHERE deployment.deployment_id=?1", [&deployment_id], |row| Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?,row.get::<_,u32>(2)?,row.get::<_,String>(3)?,row.get::<_,Option<String>>(4)?,row.get::<_,i64>(5)? != 0,row.get::<_,String>(6)?,row.get::<_,String>(7)?,row.get::<_,String>(8)?))).optional()?)
+        }).map_err(database_error)?.ok_or_else(|| invalid("Web deployment has no current generation"))?;
+        let created =
+            time::OffsetDateTime::parse(&row.7, &time::format_description::well_known::Rfc3339)
+                .map_err(|_| invalid("Web deployment generation timestamp is invalid"))?;
+        let created_ms = u64::try_from(created.unix_timestamp_nanos() / 1_000_000)
+            .map_err(|_| invalid("Web deployment generation timestamp is invalid"))?;
+        if row.0 != repository_id
+            || row.1 != "running"
+            || row.2 != web.generation_number
+            || row.8 != "current"
+            || proof.checked_at_ms < created_ms
+        {
+            return Err(invalid(
+                "Web observation does not match the current same-repository running generation",
+            ));
+        }
+        let spec: serde_json::Value = serde_json::from_str(&row.3)
+            .map_err(|_| invalid("Web deployment specification is invalid"))?;
+        let fingerprint = DeploymentStore::fingerprint(&serde_json::json!({
+            "spec": spec, "commit": row.4, "dirty": row.5, "source_digest": params.source_sha256,
+        }));
+        if fingerprint != row.6 {
+            return Err(invalid(
+                "Retained source does not match the applied web deployment",
+            ));
+        }
+        let owned = SqliteDeploymentEvidence::new(self.database.clone(), self.base_domain.clone())
+            .read(&web.deployment_id)?;
+        let base = owned
+            .url
+            .unwrap_or_else(|| format!("http://127.0.0.1:{}", owned.port));
+        let expected =
+            reqwest::Url::parse(&base).map_err(|_| invalid("Owned web route is invalid"))?;
+        let access = reqwest::Url::parse(&proof.access)
+            .map_err(|_| invalid("Observed web route is invalid"))?;
+        let local = reqwest::Url::parse(&format!("http://127.0.0.1:{}", owned.port))
+            .map_err(|_| invalid("Owned local web route is invalid"))?;
+        if (access.origin() != expected.origin() && access.origin() != local.origin())
+            || owned.generation_number != web.generation_number
+            || owned.fingerprint.as_deref() != Some(row.6.as_str())
+        {
+            return Err(invalid(
+                "Observed web access does not belong to the verified deployment route",
+            ));
+        }
+        Ok(())
+    }
+
     pub(crate) fn receipt(
         &self,
         params: devcoordinator2_api::review::Reference,
@@ -243,6 +324,7 @@ fn validate_observation(
         || proof.observed_sha256 != file_sha256
         || proof.checked_at_ms < started_ms
         || proof.checked_at_ms > finished_ms
+        || (params.kind != Kind::WebDeployment && proof.deployment.is_some())
     {
         return Err(invalid(
             "Retained delivery observation mismatches kind, target, source, file digest or run timestamp",
@@ -262,6 +344,16 @@ fn validate_observation(
         }
         (Kind::LocalExecutable, VerificationObservation::ExecutableSmokePassed) => {
             proof.access.starts_with("artifact://") && !proof.access.contains(['?', '#', '@'])
+        }
+        (Kind::WebDeployment, VerificationObservation::WebRoutePassed) => {
+            reqwest::Url::parse(&proof.access).is_ok_and(|url| {
+                (url.scheme() == "https"
+                    || (url.scheme() == "http" && url.host_str() == Some("127.0.0.1")))
+                    && url.username().is_empty()
+                    && url.password().is_none()
+                    && url.query().is_none()
+                    && url.fragment().is_none()
+            })
         }
         _ => false,
     };

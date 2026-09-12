@@ -229,7 +229,11 @@ impl ControlPlane {
             Arc::clone(&clock),
         );
         let reviews = crate::review::ReviewService::new(database.clone(), usage.clone());
-        let deliveries = crate::delivery::DeliveryService::new(database.clone(), artifacts.clone());
+        let deliveries = crate::delivery::DeliveryService::new(
+            database.clone(),
+            artifacts.clone(),
+            config.base_domain.clone(),
+        );
         let tests = TestLifecycle::new(
             config.clone(),
             database.clone(),
