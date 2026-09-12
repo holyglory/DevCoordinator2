@@ -7,6 +7,9 @@ use serde_json::json;
 const RUN: &str = "t20260903T120718Z-57067c";
 const FINISHED: u64 = START + WEEK + 86_400_000;
 
+#[path = "delivery_web_tests.rs"]
+mod web;
+
 fn digest(bytes: &[u8]) -> String {
     Sha256::digest(bytes)
         .iter()
@@ -71,6 +74,7 @@ impl World {
                 fixture.database.clone(),
                 Registry::new(fixture.database.clone()),
             ),
+            fixture.config.base_domain.clone(),
         );
         let params = Deliver {
             release_id: "release-alpha".into(),
@@ -93,16 +97,41 @@ impl World {
             work: None,
             identity: Some("fixture@example.test".into()),
         };
-        Self {
+        let world = Self {
             fixture,
             service,
             params,
             caller,
+        };
+        if world.params.kind == Kind::WebDeployment {
+            world.configure_web();
         }
+        world
+    }
+
+    fn configure_web(&self) {
+        let spec =
+            json!({"components":[{"name":"web","type":"process","route":true,"wants_port":true}]});
+        let fingerprint = DeploymentStore::fingerprint(
+            &json!({"spec":spec,"commit":"c".repeat(40),"dirty":false,"source_digest":"a".repeat(64)}),
+        );
+        let created = timestamp(FINISHED - 2000).unwrap();
+        self.fixture.database.transaction(move |transaction| {
+            transaction.execute("INSERT INTO deployments(deployment_id,repository_id,worktree_id,name,source,spec_fingerprint,spec_json,state,current_generation,created_at,created_by_uid,client,updated_at,public) VALUES('d1111111111111111','project-alpha','w1111111111111111','web','worktree',?1,?2,'running',1,?3,999,'fixture',?3,0)",rusqlite::params![fingerprint,spec.to_string(),created])?;
+            transaction.execute("INSERT INTO generations VALUES('d1111111111111111',1,?1,0,'/fixture/web',?2,?3,'current')",rusqlite::params!["c".repeat(40),fingerprint,created])?;
+            transaction.execute("INSERT INTO port_assignments VALUES(24002,'d1111111111111111','web',1,?1)",[created])?;
+            Ok(())
+        }).unwrap();
     }
 }
 
 fn proof(kind: Kind) -> Verification {
+    let deployment = (kind == Kind::WebDeployment).then(|| WebDeploymentVerification {
+        deployment_id: "d1111111111111111".into(),
+        generation_number: 1,
+        http_status: 200,
+        content_type: "text/html; charset=utf-8".into(),
+    });
     let (access, observation) = match kind {
         Kind::Artifact => (
             "https://downloads.example.test/v1/cli".into(),
@@ -116,6 +145,10 @@ fn proof(kind: Kind) -> Verification {
             format!("artifact://w1111111111111111/{RUN}/build/package/cli"),
             VerificationObservation::ExecutableSmokePassed,
         ),
+        Kind::WebDeployment => (
+            "http://127.0.0.1:24002/airfoils/ag24".into(),
+            VerificationObservation::WebRoutePassed,
+        ),
     };
     Verification {
         version: 1,
@@ -127,6 +160,7 @@ fn proof(kind: Kind) -> Verification {
         checked_at_ms: FINISHED - 100,
         access,
         observation,
+        deployment,
     }
 }
 
@@ -167,7 +201,12 @@ fn delivery_pending_external_evidence_never_completes_release() {
 
 #[test]
 fn delivery_all_kinds_preserve_actual_time_and_exact_receipts() {
-    for kind in [Kind::Artifact, Kind::RegistryPackage, Kind::LocalExecutable] {
+    for kind in [
+        Kind::Artifact,
+        Kind::RegistryPackage,
+        Kind::LocalExecutable,
+        Kind::WebDeployment,
+    ] {
         let world = World::new(kind.clone(), Some(proof(kind.clone())));
         let first = world
             .service
