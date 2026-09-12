@@ -1363,6 +1363,49 @@ mod tests {
     }
 
     #[test]
+    fn active_underused_epoch_recovers_without_waiting_for_a_run_to_finish() {
+        let temporary = tempdir().expect("tempdir");
+        let database = Database::open(temporary.path().join("authority.sqlite3")).expect("db");
+        let monotonic = Arc::new(ManualMonotonic::new());
+        let broker = make_broker(
+            database.clone(),
+            temporary.path().join("capacity.sock"),
+            monotonic.clone(),
+        );
+        // Reproduce the existing learned floor without changing an admin cap:
+        // one long-running leaf occupies the grant; a second run must wait.
+        broker.state().expect("state").learned = 1;
+        broker.register_run("long-active", 1000).expect("active run");
+        broker.register_run("waiting", 1000).expect("waiting run");
+        let first = broker.enqueue("long-active", "long-leaf", 1000).expect("first");
+        let first_permit = match broker.take_outcome(first).expect("first outcome") {
+            Some(PendingOutcome::Granted(permit)) => permit,
+            _ => panic!("first leaf must be admitted"),
+        };
+        let second = broker.enqueue("waiting", "short-leaf", 1000).expect("second");
+        for _ in 0..40 {
+            monotonic.advance(15);
+            broker.record_sample(Some(40.0), Some(40.0));
+        }
+        let snapshot = broker.snapshot().expect("snapshot");
+        assert_eq!(snapshot.learned_capacity, 2, "active underused work must not strand the queue");
+        assert_eq!(snapshot.active, 2, "the existing leaf is preserved and the waiting leaf is admitted");
+        assert_eq!(snapshot.waiting, 0);
+        assert!(matches!(broker.take_outcome(second).expect("second outcome"), Some(PendingOutcome::Granted(_))));
+        assert!(broker.state().expect("state").active.contains_key(&first_permit.permit_id));
+        for _ in 0..10 {
+            monotonic.advance(15);
+            broker.record_sample(Some(40.0), Some(40.0));
+        }
+        assert_eq!(broker.snapshot().expect("no double credit").learned_capacity, 2);
+        broker.unregister_run("long-active").expect("finish first");
+        broker.unregister_run("waiting").expect("finish second");
+        assert_eq!(broker.snapshot().expect("complete").learned_capacity, 2);
+        let restarted = make_broker(database, temporary.path().join("restarted.sock"), monotonic);
+        assert_eq!(restarted.snapshot().expect("persisted learning").learned_capacity, 2);
+    }
+
+    #[test]
     fn backlog_learning_keeps_duration_sample_pressure_and_cap_guards() {
         for (seconds, cpu, memory, cap) in [
             (30, Some(40.0), Some(40.0), None),
