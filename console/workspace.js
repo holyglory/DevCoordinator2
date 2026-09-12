@@ -96,6 +96,7 @@ window.DevCoordinatorWorkspace = (() => {
     let loading;
     let searchText = '';
     let remembered = '';
+    let drawerBackground = null;
     try { remembered = sessionStorage.getItem('dc2-workspace-repository') || ''; } catch {}
 
     const groupFor = (repositoryId) => groups.find((group) => group.records.some((record) => record.repository_id === repositoryId));
@@ -112,9 +113,23 @@ window.DevCoordinatorWorkspace = (() => {
       resize.setAttribute('aria-valuemax', String(maximum));
       resize.setAttribute('aria-valuenow', String(width));
       const expanded = narrow.matches ? shell.classList.contains('repository-drawer-open') : !sidebarCollapsed;
-      for (const surface of [sidebar, overlay]) {
-        if (narrow.matches && expanded) surface.dataset.uiContextualOverlay = 'Temporary repository navigation drawer';
-        else delete surface.dataset.uiContextualOverlay;
+      const drawerOpen = narrow.matches && expanded;
+      if (drawerOpen && !drawerBackground) {
+        drawerBackground = [document.querySelector('.top'), document.querySelector('#banner'), content].filter(Boolean).map(element => ({ element, inert: element.inert, hidden: element.getAttribute('aria-hidden') }));
+        for (const { element } of drawerBackground) { element.inert = true; element.setAttribute('aria-hidden', 'true'); }
+        sidebar.setAttribute('role', 'dialog');
+        sidebar.setAttribute('aria-modal', 'true');
+        sidebar.dataset.uiContextualOverlay = 'Temporary repository navigation drawer';
+      } else if (!drawerOpen && drawerBackground) {
+        for (const { element, inert, hidden } of drawerBackground) {
+          element.inert = inert;
+          if (hidden === null) element.removeAttribute('aria-hidden');
+          else element.setAttribute('aria-hidden', hidden);
+        }
+        drawerBackground = null;
+        sidebar.removeAttribute('role');
+        sidebar.removeAttribute('aria-modal');
+        delete sidebar.dataset.uiContextualOverlay;
       }
       toggle.setAttribute('aria-expanded', String(expanded));
       toggle.setAttribute('aria-label', expanded ? 'Hide repositories' : 'Show repositories');

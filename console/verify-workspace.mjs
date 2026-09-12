@@ -121,8 +121,10 @@ export async function verifyWorkspace({ page, daemon, check, scenario, baseUrl, 
     verify('narrow layout puts results before the repository drawer', !await page.locator('#repository-sidebar').isVisible() && (await page.locator('.test-result').first().boundingBox()).y < 330);
     await page.click('#repository-toggle');
     verify('repository drawer focuses search', await page.locator('#repository-search:focus').count() === 1);
+    verify('open phone drawer keeps background controls inactive', await page.locator('#repository-sidebar').getAttribute('role') === 'dialog' && await page.locator('.workspace-content').evaluate(element => element.inert && element.getAttribute('aria-hidden') === 'true'));
     await page.keyboard.press('Escape');
     verify('Escape returns to the repository trigger', await page.locator('#repository-toggle:focus').count() === 1 && !await page.locator('#repository-sidebar').isVisible());
+    verify('closing the drawer restores background interaction', await page.locator('.workspace-content').evaluate(element => !element.inert && !element.hasAttribute('aria-hidden')) && await page.locator('#repository-sidebar').getAttribute('role') === null);
     await page.click('#repository-toggle');
   }
   const overlappingLabels = await page.locator('#repository-list a').evaluateAll((elements) => elements.filter((element) => {
