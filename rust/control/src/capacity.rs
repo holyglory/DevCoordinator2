@@ -407,10 +407,10 @@ impl CapacityBroker {
         } else {
             None
         };
-        if let Some((adjustment, learned, cap)) = adjustment {
-            if let Err(error) = self.persist_adjustment(learned, cap, &adjustment) {
-                error!(%error, "capacity sample adjustment could not be persisted");
-            }
+        if let Some((adjustment, learned, cap)) = adjustment
+            && let Err(error) = self.persist_adjustment(learned, cap, &adjustment)
+        {
+            error!(%error, "capacity sample adjustment could not be persisted");
         }
         self.inner.notify.notify_waiters();
     }
