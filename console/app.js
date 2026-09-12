@@ -2956,7 +2956,7 @@ function bindProgressPointValues(root) {
     });
   }
   window.addEventListener('scroll', place, { capture: true, passive: true, signal: events.signal });
-  window.addEventListener('resize', hide, { signal: events.signal });
+  window.addEventListener('resize', place, { signal: events.signal });
   document.addEventListener('pointerdown', event => { if (!event.target.closest('[data-progress-point]')) hide(); }, { signal: events.signal });
 }
 

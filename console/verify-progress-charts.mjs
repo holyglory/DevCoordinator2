@@ -65,6 +65,9 @@ export async function verifyProgressCharts({ page, daemon, check, scenario, base
         check(`${prefix}: lane ${lane + 1} hover shows exact completed and added values`, values[0] === data.series[0][completed].toLocaleString('en-US') && values[1] === data.series[0][incoming].toLocaleString('en-US'));
         const tooltipBounds = await tooltip.boundingBox();
         check(`${prefix}: lane ${lane + 1} tooltip stays inside the viewport`, tooltipBounds.x >= 0 && tooltipBounds.y >= 0 && tooltipBounds.x + tooltipBounds.width <= viewport.width && tooltipBounds.y + tooltipBounds.height <= viewport.height);
+        await page.setViewportSize({ width: viewport.width, height: viewport.height + 100 });
+        check(`${prefix}: lane ${lane + 1} visible point values survive viewport height changes`, await tooltip.isVisible());
+        await page.setViewportSize(viewport);
         await page.locator('.progress-chart-legend').hover();
         check(`${prefix}: lane ${lane + 1} pointer exit dismisses values`, !await tooltip.isVisible());
         await first.focus();
