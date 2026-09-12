@@ -87,6 +87,11 @@ accounts, legacy unit names, paths) are instance data kept in the untracked
    window includes every owned schema from 15 through the current version, so a
    version bump cannot remove the previously installed version. Installer tests
    activate each supported schema and reject older, malformed and future values.
+   Activation also protects existing private authority files and recovery
+   directories before restoring state-root traversal, then updates only the
+   state-root tmpfiles rule. The rule is included in the installation snapshot.
+   Database and backup creation retain private permissions from the first write
+   (DC2-2026-09-12-OWNER-APPROVED-STATE-REPAIR).
 10. **Docker authoritative mode** (owner decision DC2-…-DOCKER-MODE): remove
     agent accounts from the `docker` group, restart their sessions, verify
     `devcoordinator2 health containers` attributions; the observational
