@@ -2888,6 +2888,78 @@ function progressBucketLabel(ms, period) {
   ];
 }
 
+function progressPointTarget(point, index, { x, y, width, height, period, label, values, first = 0 }) {
+  const when = period === 'hour'
+    ? `${progressDate(point.bucket_start_ms, true)} · ${utcBucket(point.bucket_start_ms)}–${utcBucket(point.bucket_end_ms)} UTC`
+    : period === 'week' ? `${progressDate(point.bucket_start_ms)} – ${progressDate(point.bucket_end_ms - 1, true)} · UTC`
+      : `${progressDate(point.bucket_start_ms, true)} · UTC`;
+  return `<g class="progress-point-target" data-progress-point="${index}" data-progress-date="${esc(when)}" data-progress-label="${esc(label)}" data-progress-values="${esc(JSON.stringify(values))}" tabindex="${index === first ? 0 : -1}" role="button" aria-label="${esc(`${label}: show values for ${when}`)}"><rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${width.toFixed(1)}" height="${height.toFixed(1)}" rx="3"/></g>`;
+}
+
+let progressChartEvents;
+function bindProgressPointValues(root) {
+  progressChartEvents?.abort();
+  const events = new AbortController();
+  progressChartEvents = events;
+  viewAbort.signal.addEventListener('abort', () => events.abort(), { once: true, signal: events.signal });
+  const card = root.querySelector('.progress-pulse');
+  if (!card) return;
+  const tooltip = document.createElement('div');
+  tooltip.id = 'progress-point-tooltip';
+  tooltip.className = 'progress-point-tooltip';
+  tooltip.setAttribute('role', 'tooltip');
+  tooltip.dataset.uiContextualOverlay = 'Values for the hovered, focused or tapped chart bucket';
+  tooltip.hidden = true;
+  card.append(tooltip);
+  let active = null;
+  const hide = () => { tooltip.hidden = true; active?.removeAttribute('aria-describedby'); active = null; };
+  const place = () => {
+    if (!active) return;
+    const point = active.getBoundingClientRect();
+    const clip = card.querySelector('.progress-chart-scroll').getBoundingClientRect();
+    if (point.right <= clip.left || point.left >= clip.right || point.bottom <= 0 || point.top >= innerHeight) { hide(); return; }
+    const bounds = card.getBoundingClientRect();
+    const box = tooltip.getBoundingClientRect();
+    const left = Math.max(8, Math.min((point.left + point.right) / 2 - bounds.left - box.width / 2, bounds.width - box.width - 8));
+    let top = point.top - bounds.top - box.height - 8;
+    if (bounds.top + top < 8) top = point.bottom - bounds.top + 8;
+    top = Math.max(8 - bounds.top, Math.min(top, innerHeight - bounds.top - box.height - 8));
+    tooltip.style.left = `${left}px`;
+    tooltip.style.top = `${top}px`;
+  };
+  const show = (point) => {
+    active?.removeAttribute('aria-describedby');
+    active = point;
+    for (const sibling of point.closest('svg').querySelectorAll('[data-progress-point]')) sibling.setAttribute('tabindex', sibling === point ? '0' : '-1');
+    const values = JSON.parse(point.dataset.progressValues);
+    tooltip.innerHTML = `<strong>${esc(point.dataset.progressLabel)}</strong><span>${esc(point.dataset.progressDate)}</span><dl>${values.map(([label, value]) => `<div><dt>${esc(label)}</dt><dd>${esc(value)}</dd></div>`).join('')}</dl>`;
+    tooltip.hidden = false;
+    point.setAttribute('aria-describedby', tooltip.id);
+    place();
+  };
+  for (const point of card.querySelectorAll('[data-progress-point]')) {
+    point.addEventListener('pointerenter', () => show(point));
+    point.addEventListener('pointerleave', () => { if (document.activeElement !== point) hide(); });
+    point.addEventListener('focus', () => show(point));
+    point.addEventListener('blur', hide);
+    point.addEventListener('click', () => { point.focus({ preventScroll: true }); show(point); });
+    point.addEventListener('keydown', event => {
+      if (event.key === 'Escape') { event.preventDefault(); hide(); return; }
+      if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); show(point); return; }
+      if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+      event.preventDefault();
+      const points = [...point.closest('svg').querySelectorAll('[data-progress-point]')];
+      const current = points.indexOf(point);
+      const index = event.key === 'Home' ? 0 : event.key === 'End' ? points.length - 1 : Math.max(0, Math.min(points.length - 1, current + (event.key === 'ArrowRight' ? 1 : -1)));
+      points[index].scrollIntoView({ block: 'nearest', inline: 'nearest' });
+      points[index].focus({ preventScroll: true });
+    });
+  }
+  window.addEventListener('scroll', place, { capture: true, passive: true, signal: events.signal });
+  window.addEventListener('resize', hide, { signal: events.signal });
+  document.addEventListener('pointerdown', event => { if (!event.target.closest('[data-progress-point]')) hide(); }, { signal: events.signal });
+}
+
 function progressBarLineLane(data, {
   key, incomingKey, cumulativeKey, label, completedLabel, incomingLabel,
   detail, cls, format,
@@ -2940,7 +3012,11 @@ function progressBarLineLane(data, {
   const completedVerb = completedLabel.split(' ').at(-1).toLowerCase();
   const incomingVerb = incomingLabel.split(' ').at(-1).toLowerCase();
   const empty = total || incomingTotal ? '' : `<text x="${left + chartWidth / 2}" y="${baseline - 8}" text-anchor="middle" class="progress-chart-empty">No recorded movement in this period</text>`;
-  return `<svg class="progress-pulse-chart progress-bar-line-chart" style="min-width:${width}px" viewBox="0 0 ${width} ${height}" role="img" aria-label="${esc(label)} by ${esc(data.period)}: completed above the baseline, ${esc(incomingLabel.toLowerCase())} below, with completed running total"><title>${esc(label)} by ${esc(data.period)}</title><desc>Solid bars above the baseline show completed work. Outlined bars below show incoming work. The thin line shows the completed running total. Exact values follow the chart.</desc><line x1="${left}" x2="${width - right}" y1="${baseline}" y2="${baseline}" class="progress-grid-h progress-zero-line"/><text x="14" y="${top + 14}" class="progress-lane-title" data-ui-verify-svg-overlap="lane title stays outside plotted work">${esc(label)}</text><text x="14" y="${top + 34}" class="progress-lane-detail" data-ui-verify-svg-overlap="lane detail stays outside plotted work">${esc(detail)}</text><text x="${width - 10}" y="${top + 22}" text-anchor="end" class="progress-lane-value progress-running-${cls}">${esc(format(total))}</text><text x="${width - 10}" y="${top + 38}" text-anchor="end" class="progress-lane-detail">${esc(completedVerb)}</text><text x="${width - 10}" y="${baseline + 24}" text-anchor="end" class="progress-lane-value progress-incoming-${cls}">${esc(format(incomingTotal))}</text><text x="${width - 10}" y="${baseline + 40}" text-anchor="end" class="progress-lane-detail">${esc(incomingVerb)}</text><polyline points="${linePoints.join(' ')}" class="progress-running-line progress-running-${cls}"/>${dots}${bars}${incomingBars}${barLabels}${incomingLabels}${empty}${labels}</svg>`;
+  const pointTargets = series.map((point, index) => progressPointTarget(point, index, {
+    x: center(index) - step / 2, y: 8, width: step, height: height - bottom - 8, period: data.period, label,
+    values: [[completedLabel, values[index].toLocaleString('en-US')], [incomingLabel, incoming[index].toLocaleString('en-US')], ['Completed running total', cumulative[index].toLocaleString('en-US')]],
+  })).join('');
+  return `<svg class="progress-pulse-chart progress-bar-line-chart" style="min-width:${width}px" viewBox="0 0 ${width} ${height}" role="group" aria-label="${esc(label)} by ${esc(data.period)}: completed above the baseline, ${esc(incomingLabel.toLowerCase())} below, with completed running total"><title>${esc(label)} by ${esc(data.period)}</title><desc>Solid bars above the baseline show completed work. Outlined bars below show incoming work. The thin line shows the completed running total. Exact values follow the chart.</desc><line x1="${left}" x2="${width - right}" y1="${baseline}" y2="${baseline}" class="progress-grid-h progress-zero-line"/><text x="14" y="${top + 14}" class="progress-lane-title" data-ui-verify-svg-overlap="lane title stays outside plotted work">${esc(label)}</text><text x="14" y="${top + 34}" class="progress-lane-detail" data-ui-verify-svg-overlap="lane detail stays outside plotted work">${esc(detail)}</text><text x="${width - 10}" y="${top + 22}" text-anchor="end" class="progress-lane-value progress-running-${cls}">${esc(format(total))}</text><text x="${width - 10}" y="${top + 38}" text-anchor="end" class="progress-lane-detail">${esc(completedVerb)}</text><text x="${width - 10}" y="${baseline + 24}" text-anchor="end" class="progress-lane-value progress-incoming-${cls}">${esc(format(incomingTotal))}</text><text x="${width - 10}" y="${baseline + 40}" text-anchor="end" class="progress-lane-detail">${esc(incomingVerb)}</text><polyline points="${linePoints.join(' ')}" class="progress-running-line progress-running-${cls}"/>${dots}${bars}${incomingBars}${barLabels}${incomingLabels}${empty}${labels}${pointTargets}</svg>`;
 }
 
 function progressEvidenceLane(data, {
@@ -2963,18 +3039,25 @@ function progressEvidenceLane(data, {
   const y = (value) => top + (height - top - bottom) - (Number(value) / max) * (height - top - bottom - 10);
   const polylines = progressSegments(values, x, y).map((points) => `<polyline points="${points.join(' ')}" class="progress-evidence-line progress-running-${cls}"/>`).join('');
   const dots = values.map((value, index) => value == null ? '' : `<circle cx="${x(index).toFixed(1)}" cy="${y(value).toFixed(1)}" r="3" class="progress-evidence-dot progress-running-${cls}"><title>${esc(`${label}: ${format(value)} · ${utcBucket(data.series[index].bucket_start_ms, true)} UTC`)}</title></circle>`).join('');
+  const pointTargets = values.map((value, index) => value == null ? '' : progressPointTarget(data.series[index], index, {
+    x: x(index) - 16, y: Math.max(0, Math.min(height - 28, y(value) - 14)), width: 32, height: 28,
+    period: data.period, label, first: values.findIndex(item => item != null),
+    values: cls === 'tests'
+      ? [[label, new Intl.NumberFormat('en-US', { style: 'percent', maximumFractionDigits: 2 }).format(value)], ['Tests passed', Number(data.series[index].tests_passed).toLocaleString('en-US')], ['Recorded test runs', Number(data.series[index].test_runs).toLocaleString('en-US')]]
+      : [['Tokens', Number(value).toLocaleString('en-US')], ['Token data', bucketDataStatus(data.series[index].token_coverage)]],
+  })).join('');
   const summary = summarize
     ? summarize(observedValues)
     : [...values].reverse().find((value) => value != null);
   const note = snapshotText || (coverage.state === 'complete' ? detail : cls === 'tokens'
     ? 'Measured total; missing buckets stay blank.'
     : 'Some data is missing; gaps stay blank.');
-  return `<div class="progress-evidence-lane" data-progress-evidence="${esc(cls)}"><div><strong>${esc(label)}</strong><small>${esc(note)}</small></div><svg class="progress-evidence-chart" viewBox="0 0 ${width} ${height}" role="img" aria-label="${esc(label)} across this period"><line x1="${left}" x2="${width - right}" y1="${height - bottom}" y2="${height - bottom}" class="progress-grid-h"/>${polylines}${dots}</svg><strong aria-label="${esc(`${label} measured in this period: ${format(summary)}`)}">${esc(format(summary))}</strong></div>`;
+  return `<div class="progress-evidence-lane" data-progress-evidence="${esc(cls)}"><div><strong>${esc(label)}</strong><small>${esc(note)}</small></div><svg class="progress-evidence-chart" viewBox="0 0 ${width} ${height}" role="group" aria-label="${esc(label)} across this period"><line x1="${left}" x2="${width - right}" y1="${height - bottom}" y2="${height - bottom}" class="progress-grid-h"/>${polylines}${dots}${pointTargets}</svg><strong aria-label="${esc(`${label} measured in this period: ${format(summary)}`)}">${esc(format(summary))}</strong></div>`;
 }
 
 function progressPulseChart(data) {
   if (!data.series.length) return stateBlock('empty', 'No progress buckets in this period.');
-  return `<div class="progress-chart-scroll" tabindex="0" aria-label="Scrollable daily progress charts"><div class="progress-chart-canvas"><div class="progress-chart-legend"><span><i class="progress-legend-bar" aria-hidden="true"></i>Green = tasks</span><span><i class="progress-legend-bar progress-legend-lines" aria-hidden="true"></i>Blue = planned lines</span><span><i class="progress-legend-bar progress-legend-incoming" aria-hidden="true"></i>Solid above = completed · outlined below = incoming</span><span><i class="progress-legend-line" aria-hidden="true"></i>Line = completed running total</span></div>${progressBarLineLane(data, { key: 'tasks_completed', incomingKey: 'tasks_created', cumulativeKey: 'tasks_cumulative', label: 'Tasks finished and created', completedLabel: 'Tasks finished', incomingLabel: 'Tasks created', detail: 'Finished above · created below', cls: 'tasks', format: compactNumber })}${progressBarLineLane(data, { key: 'planned_lines_completed', incomingKey: 'planned_lines_added', cumulativeKey: 'lines_cumulative', label: 'Planned lines completed and added', completedLabel: 'Planned lines completed', incomingLabel: 'Planned lines added', detail: 'Completed above · added below', cls: 'lines', format: compactNumber })}${progressEvidenceLane(data, { key: 'test_pass_rate', label: 'Test pass rate', detail: 'Recorded terminal runs', cls: 'tests', format: progressPercent, fixedMax: 1 })}${progressEvidenceLane(data, { key: 'total_tokens', label: 'Token use', detail: 'Provider tokens · selected period', cls: 'tokens', format: compactNumber, summarize: (items) => items.reduce((sum, value) => sum + Number(value), 0) })}<p class="progress-missing-note">Missing information stays blank and is never counted as zero.</p></div></div>`;
+  return `<div class="progress-chart-legend"><span><i class="progress-legend-bar" aria-hidden="true"></i>Green = tasks</span><span><i class="progress-legend-bar progress-legend-lines" aria-hidden="true"></i>Blue = planned lines</span><span><i class="progress-legend-bar progress-legend-incoming" aria-hidden="true"></i>Solid above = completed · outlined below = incoming</span><span><i class="progress-legend-line" aria-hidden="true"></i>Line = completed running total</span></div><div class="progress-chart-scroll" tabindex="0" aria-label="Scrollable daily progress charts"><div class="progress-chart-canvas">${progressBarLineLane(data, { key: 'tasks_completed', incomingKey: 'tasks_created', cumulativeKey: 'tasks_cumulative', label: 'Tasks finished and created', completedLabel: 'Tasks finished', incomingLabel: 'Tasks created', detail: 'Finished above · created below', cls: 'tasks', format: compactNumber })}${progressBarLineLane(data, { key: 'planned_lines_completed', incomingKey: 'planned_lines_added', cumulativeKey: 'lines_cumulative', label: 'Planned lines completed and added', completedLabel: 'Planned lines completed', incomingLabel: 'Planned lines added', detail: 'Completed above · added below', cls: 'lines', format: compactNumber })}${progressEvidenceLane(data, { key: 'test_pass_rate', label: 'Test pass rate', detail: 'Recorded terminal runs', cls: 'tests', format: progressPercent, fixedMax: 1 })}${progressEvidenceLane(data, { key: 'total_tokens', label: 'Token use', detail: 'Provider tokens · selected period', cls: 'tokens', format: compactNumber, summarize: (items) => items.reduce((sum, value) => sum + Number(value), 0) })}<p class="progress-missing-note">Missing information stays blank and is never counted as zero.</p></div></div>`;
 }
 
 function progressReleaseWork(data, repositoryId) {
@@ -3017,6 +3100,7 @@ function renderProgressDashboard(data, projects, repositoryId) {
   const workspace = `<div class="progress-workspace" data-ui-region="progress-primary"><section class="progress-pulse"><div class="progress-section-heading"><div><h2>Daily progress</h2><span>Aligned ${esc(state.progressPeriod)}ly evidence · UTC</span></div></div>${progressPulseChart(data)}</section>${progressReleaseWork(data, repositoryId)}</div>`;
   main.innerHTML = `<section class="progress-dashboard">${context}${progressForecastStrip(data)}${workspace}${progressComparison(data)}${progressExactTable(data)}</section>`;
   bindProjectPicker(main);
+  bindProgressPointValues(main);
   bindSeg(main, 'progress-period', (period) => { state.progressPeriod = period; viewProgress(repositoryId).then(() => $(`[data-progress-period="${period}"]`, main)?.focus()); });
   main.querySelectorAll('[data-progress-task]').forEach((button) => button.addEventListener('click', () => {
     state.progressSelectedTaskId = button.dataset.progressTask;

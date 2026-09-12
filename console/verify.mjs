@@ -856,7 +856,7 @@ async function main() {
 
   if (process.env.CONSOLE_VERIFY_PROGRESS_ONLY) {
     try {
-      const context = await browser.newContext({ viewport: VIEWPORTS.wide });
+      const context = await browser.newContext({ viewport: VIEWPORTS.wide, hasTouch: true, colorScheme: process.env.CONSOLE_VERIFY_THEME || 'light' });
       const { cookie } = sessions.issue({ sub: 'sub', email: 'owner@example.test' });
       await context.addCookies([{ name: 'dc2_session', value: cookie.split(';')[0].split('=')[1], domain: '.' + BASE, path: '/' }]);
       const page = await context.newPage();

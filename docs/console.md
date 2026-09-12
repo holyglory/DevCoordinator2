@@ -144,6 +144,11 @@ the earlier caching policy, so a normal refresh can load the redesigned code.
    becomes unavailable when there is no release or measurable completion pace.
    Missing test/token history stays blank rather than becoming zero. Exact
    bucket values and counting semantics remain available without hover.
+   The complete legend stays in the visible card while the chart pans. Hover,
+   focus, or tap a bucket to see its UTC period and values, including completed
+   and added work and the completed running total. Arrow keys move between
+   buckets; Home/End select the first/last, and Escape dismisses the values.
+   Test and token points expose only observed data; missing points stay blank.
 4. **Decisions** — the per-repository decision history in plain language:
    "The story so far" (latest rolling summary, expandable in place), a full-text search box over
    every decision ever recorded, an aspect filter (server-side), entries
