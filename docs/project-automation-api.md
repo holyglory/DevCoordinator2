@@ -221,7 +221,7 @@ and CLI `release deliver-evidence --file delivery.json` take:
 {"release_id":"RELEASE_ID","path":"/absolute/registered/worktree","run_id":"RUN_ID","check":"build","artifact":"package","manifest_sha256":"64-hex-digest","source_sha256":"64-hex-digest","target":"linux-cli","kind":"local-executable","verification_file":"delivery.json"}
 ```
 
-Kinds: `artifact | registry-package | local-executable`. A retained artifact
+Kinds: `artifact | registry-package | local-executable | web-deployment`. A retained artifact
 tree is selected through the existing hash-bound artifact service. Repository,
 manifest, source digest, finished passing run, tree and file hashes must match.
 Focused development validation is sufficient for a preliminary delivery; this
@@ -245,6 +245,19 @@ materialization CLI to retrieve it, then restore executable permission before
 launching the verified bytes. Artifact and registry-package observations are
 respectively `download_matched` and `registry_download_matched` and require a
 credential-free HTTPS access URL without query or fragment.
+
+For a verified website, select `kind: "web-deployment"` in the same delivery
+request and retain a report like this with the observed response body:
+
+```json
+{"version":1,"kind":"web-deployment","target":"web-preview","source_sha256":"SOURCE_DIGEST_FROM_RUN","file":"response.html","observed_sha256":"SHA256_OF_RESPONSE_HTML","checked_at_ms":1789185600123,"access":"https://preview.example.test/journey","observation":"web_route_passed","deployment":{"deployment_id":"DEPLOYMENT_ID","generation_number":3,"http_status":200,"content_type":"text/html; charset=utf-8"}}
+```
+
+The identifiers, digests, generation and timestamp above are illustrative;
+the passing check must record the real values. The response body and report
+belong to the same retained tree. See [Web deployment observations](#web-deployment-observations)
+for the source, owned-route and observation requirements. Retaining website
+evidence does not turn the website into a downloadable package.
 
 The governed check owns the actual download or executable smoke validation and
 must report its real observation. Coordinator verifies provenance, bindings and
