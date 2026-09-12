@@ -224,7 +224,7 @@ window.DevCoordinatorArtifacts = (() => {
       activeRun = record.run;
       choices = [];
       renderCollections();
-      if (activeRun.run_id === run.run_id) {
+      if (activeRun.run_id === run.run_id && !run.checks_truncated) {
         choices = bundles(run);
         renderCollections();
         return;
@@ -324,7 +324,8 @@ window.DevCoordinatorArtifacts = (() => {
       const index = choices.findIndex((choice) => choice.check === initialFile.check && choice.name === initialFile.artifact);
       if (index >= 0) query('.artifact-bundle select').value = String(index);
     }
-    loadCollection();
+    if (run.checks_truncated) selectRun();
+    else loadCollection();
     loadHistory();
   }
 
