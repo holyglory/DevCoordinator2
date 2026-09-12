@@ -118,6 +118,13 @@ pub trait SystemdControl: Send + Sync + 'static {
     fn stop_unit(&self, unit: &str) -> Result<(), SystemdError>;
     fn reset_failed(&self, unit: &str) -> Result<(), SystemdError>;
     fn control_group_path(&self, unit: &str) -> Result<Option<PathBuf>, SystemdError>;
+    fn cgroup_memory_current(&self, cgroup: &Path) -> Option<u64> {
+        std::fs::read_to_string(cgroup.join("memory.current"))
+            .ok()?
+            .trim()
+            .parse()
+            .ok()
+    }
     fn prove_cgroup_empty(&self, cgroup: Option<&Path>, deadline: Duration) -> bool;
     fn process_uids(&self, pid: u32) -> Option<[u32; 4]>;
 }

@@ -95,8 +95,21 @@ not contradict them.
   25% when admission was saturated for at least half the samples and CPU and
   memory p95 were both below 90%; it decreases 25% when CPU or memory stayed at
   or above 98% for four 15-second samples spanning at least 45 seconds. Memory
-  uses `MemAvailable`. Sustained pressure pauses new grants without killing
-  active work until two samples put both measures below 95%. Missing evidence
+  uses `MemAvailable`. Sustained CPU pressure pauses new grants without killing
+  active work until two samples put both measures below 95%. A host memory
+  emergency (available memory at or below 10%) immediately pauses grants and
+  invokes one asynchronous containment worker. It selects positively owned
+  active tests by measured memory, largest first, and rechecks host memory
+  after each exact-run stop and cleanup. Negligible test wrappers (remaining
+  measured tests below 1% of host memory) are not blamed for unrelated service
+  pressure. Emergency stops remain failed runs with `memory_pressure` reasons,
+  retained logs and normal owned cleanup, never successful or operator-cancelled
+  results. Two samples with memory use below 85% and CPU below 95% restore
+  admission after a memory emergency. Missing evidence
+  never proves recovery. An emergency also marks the current workload epoch
+  for a 25% reduction, reported as `memory_emergency`, once the existing
+  ten-minute minimum run duration is met; it cannot instead teach Auto to grow.
+  Otherwise, missing evidence
   causes no adjustment. An administrator may set or clear one host-wide
   maximum; lowering it never kills active work. Learned/effective capacity,
   the cap, active/waiting counts, pause state, and append-only adjustment

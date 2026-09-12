@@ -2499,6 +2499,7 @@
           "RunTerminationReason": {
             "enum": [
               "operator_cancelled",
+              "memory_pressure",
               "superseded",
               "timed_out",
               "interrupted"
@@ -10913,6 +10914,16 @@
       "name": "test.history",
       "outputSchema": {
         "$defs": {
+          "RunTerminationReason": {
+            "enum": [
+              "operator_cancelled",
+              "memory_pressure",
+              "superseded",
+              "timed_out",
+              "interrupted"
+            ],
+            "type": "string"
+          },
           "TestHistoryRun": {
             "additionalProperties": false,
             "properties": {
@@ -10937,6 +10948,16 @@
               },
               "status": {
                 "$ref": "#/$defs/TestStatus"
+              },
+              "termination_reason": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/RunTerminationReason"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
               },
               "test": {
                 "type": "string"
@@ -11802,6 +11823,7 @@
           "RunTerminationReason": {
             "enum": [
               "operator_cancelled",
+              "memory_pressure",
               "superseded",
               "timed_out",
               "interrupted"
@@ -22187,6 +22209,20 @@
               },
               "repository_id": {
                 "type": "string"
+              },
+              "repository_source": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/TestRepositorySource"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "root_path": {
+                "default": "",
+                "type": "string"
               }
             },
             "required": [
@@ -22349,6 +22385,22 @@
               "dropped"
             ],
             "type": "string"
+          },
+          "TestRepositorySource": {
+            "additionalProperties": false,
+            "properties": {
+              "key": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "key",
+              "name"
+            ],
+            "type": "object"
           }
         },
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -26981,7 +27033,8 @@
             "enum": [
               "artifact",
               "registry-package",
-              "local-executable"
+              "local-executable",
+              "web-deployment"
             ],
             "type": "string"
           },
@@ -27130,7 +27183,8 @@
             "enum": [
               "artifact",
               "registry-package",
-              "local-executable"
+              "local-executable",
+              "web-deployment"
             ],
             "type": "string"
           }
@@ -27195,7 +27249,8 @@
                 "enum": [
                   "artifact",
                   "registry-package",
-                  "local-executable"
+                  "local-executable",
+                  "web-deployment"
                 ],
                 "type": "string"
               }
@@ -27262,7 +27317,8 @@
             "enum": [
               "artifact",
               "registry-package",
-              "local-executable"
+              "local-executable",
+              "web-deployment"
             ],
             "type": "string"
           },
@@ -27473,7 +27529,8 @@
             "enum": [
               "artifact",
               "registry-package",
-              "local-executable"
+              "local-executable",
+              "web-deployment"
             ],
             "type": "string"
           },

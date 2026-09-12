@@ -31,6 +31,8 @@ pub const MIN_EPOCH_SECONDS: f64 = 600.0;
 const PRESSURE_PERCENT: f64 = 98.0;
 const RECOVERY_PERCENT: f64 = 95.0;
 const UNDERUSED_PERCENT: f64 = 90.0;
+pub const MEMORY_EMERGENCY_PERCENT: f64 = 90.0;
+const MEMORY_RECOVERY_PERCENT: f64 = 85.0;
 const MAX_REQUEST_BYTES: usize = 4096;
 const READ_DEADLINE: Duration = Duration::from_secs(5);
 const WRITE_DEADLINE: Duration = Duration::from_secs(10);
@@ -40,6 +42,52 @@ const TIMESTAMP_FORMAT: &[FormatItem<'static>] =
 pub trait Metrics: Send + 'static {
     fn sample(&mut self) -> (Option<f64>, Option<f64>);
 }
+
+/// Host accounting uses available memory, including reclaimable caches.
+#[derive(Clone, Copy, Debug)]
+pub struct HostMemory {
+    pub total: u64,
+    pub available: u64,
+}
+
+impl HostMemory {
+    pub fn read(root: &Path) -> Option<Self> {
+        let text = std::fs::read_to_string(root.join("meminfo")).ok()?;
+        let mut total = None;
+        let mut available = None;
+        for line in text.lines() {
+            let (key, value) = line.split_once(':')?;
+            let destination = match key {
+                "MemTotal" => &mut total,
+                "MemAvailable" => &mut available,
+                _ => continue,
+            };
+            let mut fields = value.split_whitespace();
+            let kib = fields.next()?.parse::<u64>().ok()?;
+            if fields.next()? != "kB" || destination.is_some() {
+                return None;
+            }
+            *destination = Some(kib.checked_mul(1024)?);
+        }
+        let value = Self {
+            total: total?,
+            available: available?,
+        };
+        value.percent_used().map(|_| value)
+    }
+
+    pub fn percent_used(self) -> Option<f64> {
+        (self.total > 0 && self.available <= self.total)
+            .then(|| 100.0 * (self.total - self.available) as f64 / self.total as f64)
+    }
+
+    pub fn emergency(self) -> bool {
+        self.percent_used()
+            .is_some_and(|used| used >= MEMORY_EMERGENCY_PERCENT)
+    }
+}
+
+type MemoryPressureHandler = Arc<dyn Fn() + Send + Sync>;
 
 pub struct ProcMetrics {
     root: PathBuf,
@@ -88,6 +136,7 @@ struct Inner {
     monotonic: Arc<dyn MonotonicClock>,
     random: Arc<dyn RandomSource>,
     metrics: Mutex<Box<dyn Metrics>>,
+    memory_pressure_handler: Mutex<Option<MemoryPressureHandler>>,
     sample_interval: Duration,
     min_epoch_seconds: f64,
 }
@@ -104,10 +153,12 @@ struct State {
     next_pending_id: u64,
     stopping: bool,
     paused: bool,
+    memory_emergency: bool,
     cpu_pressure_streak: u8,
     memory_pressure_streak: u8,
     recovery_streak: u8,
     pending_decrease: bool,
+    epoch_memory_emergency: bool,
     epoch_started: Option<f64>,
     epoch_runs: BTreeSet<String>,
     samples: Vec<(Option<f64>, Option<f64>, bool)>,
@@ -251,6 +302,7 @@ impl CapacityBroker {
                 monotonic,
                 random,
                 metrics: Mutex::new(metrics),
+                memory_pressure_handler: Mutex::new(None),
                 sample_interval,
                 min_epoch_seconds,
             }),
@@ -405,6 +457,14 @@ impl CapacityBroker {
         self.inner.notify.notify_waiters();
     }
 
+    pub fn set_memory_pressure_handler(&self, handler: MemoryPressureHandler) {
+        *self
+            .inner
+            .memory_pressure_handler
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(handler);
+    }
+
     pub async fn serve(&self, mut shutdown: watch::Receiver<bool>) -> std::io::Result<()> {
         prepare_socket_path(&self.inner.socket_path).await?;
         let listener = UnixListener::bind(&self.inner.socket_path)?;
@@ -413,9 +473,9 @@ impl CapacityBroker {
             std::fs::Permissions::from_mode(0o666),
         )?;
         let mut connections = JoinSet::new();
+        let mut emergency = JoinSet::new();
         let mut sampler = interval(self.inner.sample_interval);
         sampler.set_missed_tick_behavior(MissedTickBehavior::Skip);
-        sampler.tick().await;
         let result = loop {
             tokio::select! {
                 changed = shutdown.changed() => {
@@ -440,6 +500,22 @@ impl CapacityBroker {
                     let sample = self.inner.metrics.lock().ok().map(|mut metrics| metrics.sample());
                     if let Some((cpu, memory)) = sample {
                         self.record_sample(cpu, memory);
+                        if bounded_percent(memory).is_some_and(|used| used >= MEMORY_EMERGENCY_PERCENT)
+                            && emergency.is_empty()
+                        {
+                            let handler = self.inner.memory_pressure_handler.lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+                            if let Some(handler) = handler {
+                                // Slow systemd cleanup must not block capacity sampling or requests.
+                                // One owned worker prevents duplicate cancellation of the same run.
+                                emergency.spawn_blocking(move || handler());
+                            }
+                        }
+                    }
+                }
+                completed = emergency.join_next(), if !emergency.is_empty() => {
+                    if let Some(Err(error)) = completed {
+                        error!(%error, "memory emergency worker failed");
                     }
                 }
                 completed = connections.join_next(), if !connections.is_empty() => {
@@ -451,6 +527,11 @@ impl CapacityBroker {
         };
         drop(listener);
         self.stop();
+        while let Some(completed) = emergency.join_next().await {
+            if let Err(error) = completed {
+                error!(%error, "memory emergency worker failed during shutdown");
+            }
+        }
         let _ = tokio::fs::remove_file(&self.inner.socket_path).await;
         while let Some(completed) = connections.join_next().await {
             if let Err(error) = completed {
@@ -721,10 +802,12 @@ impl State {
             next_pending_id: 1,
             stopping: false,
             paused: false,
+            memory_emergency: false,
             cpu_pressure_streak: 0,
             memory_pressure_streak: 0,
             recovery_streak: 0,
             pending_decrease: false,
+            epoch_memory_emergency: false,
             epoch_started: None,
             epoch_runs: BTreeSet::new(),
             samples: Vec::new(),
@@ -747,6 +830,7 @@ impl State {
             self.samples.clear();
             self.run_durations.clear();
             self.pending_decrease = false;
+            self.epoch_memory_emergency = false;
             self.epoch_runs.clear();
         }
         self.epoch_runs.insert(run_id.to_owned());
@@ -798,12 +882,20 @@ impl State {
     }
 
     fn record_sample(&mut self, cpu: Option<f64>, memory: Option<f64>) {
-        if self.epoch_started.is_none() {
+        if memory.is_some_and(|value| value >= MEMORY_EMERGENCY_PERCENT) {
+            self.memory_emergency = true;
+            self.epoch_memory_emergency = true;
+            self.paused = true;
+            self.pending_decrease = true;
+        }
+        if self.epoch_started.is_none() && !self.memory_emergency {
             return;
         }
         let saturated = self.waiting() > 0
             || (!self.active.is_empty() && self.active.len() >= self.effective() as usize);
-        self.samples.push((cpu, memory, saturated));
+        if self.epoch_started.is_some() {
+            self.samples.push((cpu, memory, saturated));
+        }
         self.cpu_pressure_streak = if cpu.is_some_and(|value| value >= PRESSURE_PERCENT) {
             self.cpu_pressure_streak.saturating_add(1)
         } else {
@@ -820,7 +912,14 @@ impl State {
         }
         if self.paused
             && cpu.is_some_and(|value| value < RECOVERY_PERCENT)
-            && memory.is_some_and(|value| value < RECOVERY_PERCENT)
+            && memory.is_some_and(|value| {
+                value
+                    < if self.memory_emergency {
+                        MEMORY_RECOVERY_PERCENT
+                    } else {
+                        RECOVERY_PERCENT
+                    }
+            })
         {
             self.recovery_streak = self.recovery_streak.saturating_add(1);
         } else if self.paused {
@@ -828,6 +927,7 @@ impl State {
         }
         if self.paused && self.recovery_streak >= 2 {
             self.paused = false;
+            self.memory_emergency = false;
             self.cpu_pressure_streak = 0;
             self.memory_pressure_streak = 0;
             self.recovery_streak = 0;
@@ -886,7 +986,11 @@ impl State {
         if longest_run >= minimum {
             if self.pending_decrease && previous > 1 {
                 new = (previous - 1).min(previous.saturating_mul(3) / 4).max(1);
-                reason = Some("sustained_pressure");
+                reason = Some(if self.epoch_memory_emergency {
+                    "memory_emergency"
+                } else {
+                    "sustained_pressure"
+                });
             } else if complete
                 && self.cap.is_none_or(|cap| cap > previous)
                 && saturation.is_some_and(|value| value >= 0.5)
@@ -929,10 +1033,11 @@ impl State {
         self.samples.clear();
         self.run_durations.clear();
         self.pending_decrease = false;
+        self.epoch_memory_emergency = false;
         self.cpu_pressure_streak = 0;
         self.memory_pressure_streak = 0;
         self.recovery_streak = 0;
-        self.paused = false;
+        self.paused = self.memory_emergency;
         adjustment
     }
 }
@@ -1082,20 +1187,7 @@ fn cpu_totals(root: &Path) -> Option<(u64, u64)> {
 }
 
 fn memory_percent(root: &Path) -> Option<f64> {
-    let text = std::fs::read_to_string(root.join("meminfo")).ok()?;
-    let mut total = None;
-    let mut available = None;
-    for line in text.lines() {
-        let (key, value) = line.split_once(':')?;
-        let value = value.split_whitespace().next()?.parse::<u64>().ok()?;
-        match key {
-            "MemTotal" => total = Some(value),
-            "MemAvailable" => available = Some(value),
-            _ => {}
-        }
-    }
-    let (total, available) = (total?, available?);
-    (total > 0 && available <= total).then_some(100.0 * (total - available) as f64 / total as f64)
+    HostMemory::read(root)?.percent_used()
 }
 
 fn bounded_percent(value: Option<f64>) -> Option<f64> {
@@ -1264,6 +1356,205 @@ mod tests {
             })
             .expect("persisted");
         assert_eq!(persisted, 6);
+    }
+
+    #[test]
+    fn memory_emergency_is_immediate_and_survives_the_last_run() {
+        let temporary = tempdir().unwrap();
+        let broker = make_broker(
+            Database::open(temporary.path().join("authority.sqlite3")).unwrap(),
+            temporary.path().join("capacity.sock"),
+            Arc::new(ManualMonotonic::new()),
+        );
+        broker.record_sample(None, Some(89.99));
+        assert!(!broker.snapshot().unwrap().paused);
+        broker.record_sample(None, Some(90.0));
+        assert!(broker.snapshot().unwrap().paused);
+        broker.register_run("pressure-run", 1000).unwrap();
+        let queued = broker.enqueue("pressure-run", "work", 1000).unwrap();
+        assert!(matches!(
+            broker.take_outcome(queued).unwrap(),
+            Some(PendingOutcome::Waiting)
+        ));
+        broker.unregister_run("pressure-run").unwrap();
+        assert!(
+            broker.snapshot().unwrap().paused,
+            "run completion must not reopen memory admission"
+        );
+        broker.record_sample(Some(20.0), Some(85.0));
+        broker.record_sample(Some(20.0), Some(85.0));
+        assert!(broker.snapshot().unwrap().paused);
+        broker.record_sample(Some(20.0), Some(84.0));
+        broker.record_sample(None, Some(84.0));
+        assert!(
+            broker.snapshot().unwrap().paused,
+            "missing evidence cannot confirm recovery"
+        );
+        broker.record_sample(Some(20.0), Some(84.0));
+        assert!(broker.snapshot().unwrap().paused);
+        broker.record_sample(Some(20.0), Some(84.0));
+        assert!(!broker.snapshot().unwrap().paused);
+    }
+
+    #[test]
+    fn host_memory_uses_available_instead_of_free_and_rejects_invalid_measurements() {
+        let temporary = tempdir().unwrap();
+        let path = temporary.path().join("meminfo");
+        std::fs::write(
+            &path,
+            "MemTotal: 1000 kB\nMemFree: 1 kB\nMemAvailable: 200 kB\nCached: 199 kB\n",
+        )
+        .unwrap();
+        let memory = HostMemory::read(temporary.path()).unwrap();
+        assert_eq!(memory.total, 1_024_000);
+        assert_eq!(memory.percent_used(), Some(80.0));
+        assert!(!memory.emergency());
+        for contents in [
+            "MemTotal: 1000 kB\nMemFree: 1 kB\n",
+            "MemTotal: 0 kB\nMemAvailable: 0 kB\n",
+            "MemTotal: 1000 kB\nMemAvailable: 1001 kB\n",
+            "MemTotal: 1000 kB\nMemAvailable: invalid kB\n",
+            "MemTotal: 1000 kB\nMemAvailable: 10 MB\n",
+            "MemTotal: 1000 kB\nMemAvailable: 10 kB\nMemAvailable: 999 kB\n",
+            "MemTotal: 18446744073709551615 kB\nMemAvailable: 0 kB\n",
+        ] {
+            std::fs::write(&path, contents).unwrap();
+            assert!(
+                HostMemory::read(temporary.path()).is_none(),
+                "invalid sample: {contents}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_late_memory_emergency_cannot_teach_an_underused_epoch_to_grow() {
+        let temporary = tempdir().unwrap();
+        let monotonic = Arc::new(ManualMonotonic::new());
+        let broker = make_broker(
+            Database::open(temporary.path().join("authority.sqlite3")).unwrap(),
+            temporary.path().join("capacity.sock"),
+            monotonic.clone(),
+        );
+        broker.register_run("late-growth", 1000).unwrap();
+        for index in 0..9 {
+            broker
+                .enqueue("late-growth", &format!("leaf-{index}"), 1000)
+                .unwrap();
+        }
+        for _ in 0..40 {
+            broker.record_sample(Some(20.0), Some(20.0));
+        }
+        broker.record_sample(Some(20.0), Some(91.0));
+        broker.record_sample(Some(20.0), Some(20.0));
+        broker.record_sample(Some(20.0), Some(20.0));
+        monotonic.advance(601);
+        broker.unregister_run("late-growth").unwrap();
+        let state = broker.snapshot().unwrap();
+        assert_eq!(state.learned_capacity, 6);
+        assert_eq!(state.last_adjustment.unwrap().reason, "memory_emergency");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn emergency_cleanup_is_single_flight_and_does_not_block_sampling() {
+        struct SampledPressure {
+            cpu: Arc<AtomicU64>,
+            percent: Arc<AtomicU64>,
+            sampled: std::sync::mpsc::Sender<()>,
+        }
+        impl Metrics for SampledPressure {
+            fn sample(&mut self) -> (Option<f64>, Option<f64>) {
+                let value = self.percent.load(Ordering::SeqCst);
+                let _ = self.sampled.send(());
+                (
+                    Some(self.cpu.load(Ordering::SeqCst) as f64),
+                    Some(value as f64),
+                )
+            }
+        }
+        let temporary = tempdir().unwrap();
+        let cpu = Arc::new(AtomicU64::new(99));
+        let percent = Arc::new(AtomicU64::new(40));
+        let (sampled, samples) = std::sync::mpsc::channel();
+        let broker = CapacityBroker::with_adapters(
+            Database::open(temporary.path().join("authority.sqlite3")).unwrap(),
+            temporary.path().join("capacity.sock"),
+            2,
+            Arc::new(crate::platform::FixedClock(datetime!(2026-09-03 12:00 UTC))),
+            Arc::new(ManualMonotonic::new()),
+            Arc::new(SequenceRandom(AtomicU64::new(1))),
+            Box::new(SampledPressure {
+                cpu: cpu.clone(),
+                percent: percent.clone(),
+                sampled,
+            }),
+            Duration::from_millis(25),
+            600.0,
+        )
+        .unwrap();
+        broker.register_run("cpu-only", 1000).unwrap();
+        broker.enqueue("cpu-only", "active", 1000).unwrap();
+        let calls = Arc::new(AtomicU64::new(0));
+        let (entered, entry) = std::sync::mpsc::channel();
+        let (release, released) = std::sync::mpsc::channel();
+        let released = Arc::new(Mutex::new(released));
+        let counted = calls.clone();
+        broker.set_memory_pressure_handler(Arc::new(move || {
+            counted.fetch_add(1, Ordering::SeqCst);
+            entered.send(()).unwrap();
+            released
+                .lock()
+                .unwrap()
+                .recv_timeout(Duration::from_secs(5))
+                .unwrap();
+        }));
+        let (shutdown, receiver) = watch::channel(false);
+        let server = {
+            let broker = broker.clone();
+            tokio::spawn(async move { broker.serve(receiver).await })
+        };
+        let samples = tokio::task::spawn_blocking(move || {
+            for _ in 0..5 {
+                samples.recv_timeout(Duration::from_secs(5)).unwrap();
+            }
+            samples
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            0,
+            "CPU saturation alone must not terminate work"
+        );
+        assert!(broker.snapshot().unwrap().paused);
+        percent.store(92, Ordering::SeqCst);
+        tokio::task::spawn_blocking(move || entry.recv_timeout(Duration::from_secs(5)))
+            .await
+            .unwrap()
+            .unwrap();
+        let samples = tokio::task::spawn_blocking(move || {
+            for _ in 0..5 {
+                samples.recv_timeout(Duration::from_secs(5)).unwrap();
+            }
+            samples
+        })
+        .await
+        .unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert!(broker.snapshot().unwrap().paused);
+        percent.store(40, Ordering::SeqCst);
+        cpu.store(20, Ordering::SeqCst);
+        release.send(()).unwrap();
+        tokio::task::spawn_blocking(move || {
+            for _ in 0..3 {
+                samples.recv_timeout(Duration::from_secs(5)).unwrap();
+            }
+        })
+        .await
+        .unwrap();
+        shutdown.send(true).unwrap();
+        server.await.unwrap().unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert!(!broker.state().unwrap().memory_emergency);
     }
 
     #[test]

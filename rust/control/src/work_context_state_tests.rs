@@ -29,6 +29,7 @@ fn work_context_receipt_retention_preserves_whole_newest_bindings_within_existin
             finished_at: Some("2026-09-04T00:00:01Z".into()),
             duration_seconds: Some(1.0),
             exit_code: Some(0),
+            termination_reason: None,
         })
         .collect::<Vec<_>>();
     let newest = rows.last().unwrap().clone();

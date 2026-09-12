@@ -60,6 +60,7 @@ pub enum TerminationReason {
 #[serde(rename_all = "snake_case")]
 pub enum RunTerminationReason {
     OperatorCancelled,
+    MemoryPressure,
     Superseded,
     TimedOut,
     Interrupted,
@@ -534,6 +535,8 @@ pub struct TestHistoryRun {
     pub started_at: String,
     pub finished_at: Option<String>,
     pub duration_seconds: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub termination_reason: Option<RunTerminationReason>,
 }
 
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]

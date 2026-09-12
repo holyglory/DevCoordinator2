@@ -29,12 +29,13 @@ use rusqlite::OptionalExtension;
 use time::{format_description::FormatItem, macros::format_description};
 
 use crate::access::Caller;
-use crate::capacity::CapacityBroker;
+use crate::capacity::{CapacityBroker, HostMemory};
 use crate::config::Config;
 use crate::database::{Database, DatabaseError};
 use crate::docker::{
     DockerCli, DockerControl, ExactContainerId, ManagedLabelContext, RunDetachedRequest,
 };
+use crate::metrics_source::{HostMetricSource, MetricSource};
 use crate::platform::{Clock, HostMonotonicClock, HostRandom, MonotonicClock, RandomSource};
 use crate::repository::{Registry, resolve_worktree};
 use crate::repository_config::{TestSpec, load_test_spec};
@@ -137,11 +138,13 @@ struct RunState {
     stop: Option<RequestedStop>,
     final_status: Option<TestStatus>,
     cleanup_complete: bool,
+    evidence_complete: bool,
 }
 
 struct RequestedStop {
     status: TestStatus,
     detail: Option<String>,
+    termination: Option<devcoordinator2_api::results::RunTerminationReason>,
 }
 
 struct Drain {
@@ -256,7 +259,7 @@ impl TestLifecycle {
             )
         })?;
         let admission = TestAdmission::new(runtime).map_err(admission_error)?;
-        Ok(Self {
+        let lifecycle = Self {
             inner: Arc::new(Inner {
                 config: Arc::new(config),
                 database,
@@ -275,7 +278,17 @@ impl TestLifecycle {
                 events: Mutex::new(None),
                 runs: Mutex::new(HashMap::new()),
             }),
-        })
+        };
+        let weak = Arc::downgrade(&lifecycle.inner);
+        lifecycle.inner.capacity.set_memory_pressure_handler(Arc::new(move || {
+            if let Some(inner) = weak.upgrade() {
+                let lifecycle = Self { inner };
+                if let Err(error) = lifecycle.relieve_memory_pressure(|| HostMemory::read(Path::new("/proc"))) {
+                    tracing::error!(code = ?error.code, "governed memory emergency cleanup failed");
+                }
+            }
+        }));
+        Ok(lifecycle)
     }
 
     pub fn set_event_sink(&self, sink: Arc<dyn TestEventSink>) {
@@ -675,6 +688,7 @@ impl TestLifecycle {
                 finished_at: current.finished_at,
                 duration_seconds: current.duration_seconds,
                 exit_code: current.exit_code,
+                termination_reason: current.termination_reason,
             });
         }
         records.sort_by(|left, right| {
@@ -708,6 +722,7 @@ impl TestLifecycle {
                 started_at: record.started_at.clone(),
                 finished_at: record.finished_at.clone(),
                 duration_seconds: record.duration_seconds,
+                termination_reason: record.termination_reason.clone(),
             };
             let size = serde_json::to_vec(&row)
                 .map_err(|_| {
@@ -786,6 +801,7 @@ impl TestLifecycle {
             state.stop = Some(RequestedStop {
                 status: TestStatus::Cancelled,
                 detail: reason,
+                termination: None,
             });
         }
         self.stop_unit(&handle.unit)?;
@@ -807,6 +823,140 @@ impl TestLifecycle {
             run_id: handle.run_id.clone(),
             status,
         })
+    }
+
+    /// Called by the capacity sampler's single emergency worker. Only exact,
+    /// currently owned test handles are eligible; deployment and foreign units
+    /// never enter this list. Re-sample after cleanup instead of cancelling a
+    /// whole batch based on stale host pressure.
+    pub fn relieve_memory_pressure(
+        &self,
+        mut memory: impl FnMut() -> Option<HostMemory>,
+    ) -> Result<Vec<String>, ProtocolError> {
+        if !memory().is_some_and(HostMemory::emergency) {
+            return Ok(Vec::new());
+        }
+        let handles = self
+            .inner
+            .runs
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        let source = HostMetricSource::new(Arc::clone(&self.inner.docker));
+        let mut candidates = handles
+            .into_iter()
+            .filter_map(|handle| {
+                let state = handle
+                    .state
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if state.final_status.is_some()
+                    || state.stop.as_ref().is_some_and(|stop| {
+                        stop.termination.as_ref()
+                            != Some(
+                                &devcoordinator2_api::results::RunTerminationReason::MemoryPressure,
+                            )
+                    })
+                {
+                    return None;
+                }
+                drop(state);
+                let properties = self
+                    .inner
+                    .systemd
+                    .show_unit(&handle.unit, &["ActiveState", "MemoryCurrent"])
+                    .ok()?;
+                if property(&properties, "ActiveState") != Some("active") {
+                    return None;
+                }
+                let mut bytes = property(&properties, "MemoryCurrent")
+                    .and_then(|value| value.parse::<u64>().ok())
+                    .unwrap_or(0);
+                for container in handle
+                    .containers
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .iter()
+                {
+                    let cgroup = source.container_cgroup(container.as_str());
+                    bytes = bytes.saturating_add(
+                        self.inner
+                            .systemd
+                            .cgroup_memory_current(&cgroup)
+                            .unwrap_or(0),
+                    );
+                }
+                (bytes > 0).then_some((bytes, handle))
+            })
+            .collect::<Vec<_>>();
+        candidates.sort_by(|left, right| {
+            right
+                .0
+                .cmp(&left.0)
+                .then_with(|| left.1.run_id.cmp(&right.1.run_id))
+        });
+        let mut stopped = Vec::new();
+        for (index, (_, handle)) in candidates.iter().enumerate() {
+            let Some(host) = memory().filter(|host| host.emergency()) else {
+                break;
+            };
+            // Do not kill negligible test wrappers when pressure belongs to
+            // unrelated services. Several contributing tests count together.
+            let remaining_bytes = candidates[index..]
+                .iter()
+                .fold(0_u64, |sum, (bytes, _)| sum.saturating_add(*bytes));
+            if remaining_bytes < host.total / 100 {
+                break;
+            }
+            {
+                let mut state = handle
+                    .state
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if state.final_status.is_some()
+                    || state.stop.as_ref().is_some_and(|stop| {
+                        stop.termination.as_ref()
+                            != Some(
+                                &devcoordinator2_api::results::RunTerminationReason::MemoryPressure,
+                            )
+                    })
+                {
+                    continue;
+                }
+                state.stop = Some(RequestedStop {
+                    status: TestStatus::Failed,
+                    detail: None,
+                    termination: Some(
+                        devcoordinator2_api::results::RunTerminationReason::MemoryPressure,
+                    ),
+                });
+            }
+            self.stop_unit(&handle.unit)?;
+            let state = handle
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let (state, _) = handle
+                .finalized
+                .wait_timeout_while(state, STOP_WAIT, |state| !state.cleanup_complete)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if !state.cleanup_complete || state.final_status.is_none() {
+                return Err(ProtocolError::new(
+                    ErrorCode::UnitStopFailed,
+                    "memory emergency test cleanup did not complete",
+                ));
+            }
+            if !state.evidence_complete {
+                return Err(ProtocolError::new(
+                    ErrorCode::UnitStopFailed,
+                    "memory emergency test stopped but its evidence could not be retained",
+                ));
+            }
+            stopped.push(handle.run_id.clone());
+        }
+        Ok(stopped)
     }
 
     pub fn list_current(&self) -> Result<TestList, ProtocolError> {
@@ -1420,7 +1570,9 @@ impl TestLifecycle {
             state.stop.take()
         };
         let (status, exit_code, termination) = if let Some(stop) = requested_stop {
-            let termination = if stop.status == TestStatus::Superseded {
+            let termination = if stop.termination.is_some() {
+                stop.termination
+            } else if stop.status == TestStatus::Superseded {
                 Some(devcoordinator2_api::results::RunTerminationReason::Superseded)
             } else if stop.detail.is_some() {
                 Some(devcoordinator2_api::results::RunTerminationReason::OperatorCancelled)
@@ -1490,23 +1642,63 @@ impl TestLifecycle {
                 handle.caller_gid,
             );
         }
-        let _ = self.inner.store.write_summary(
-            &handle.current,
-            &summary,
-            handle.caller_uid,
-            handle.caller_gid,
-        );
-        let _ = self.inner.store.record_history(
-            &handle.worktree,
-            &summary,
-            handle.caller_uid,
-            handle.caller_gid,
-        );
+        if summary.termination_reason
+            == Some(devcoordinator2_api::results::RunTerminationReason::MemoryPressure)
+        {
+            summary.readiness_eligible = false;
+            if let Some(counts) = summary.check_summary.as_mut() {
+                let interrupted = counts
+                    .insert("running".into(), 0)
+                    .unwrap_or(0)
+                    .saturating_add(counts.insert("pending".into(), 0).unwrap_or(0));
+                *counts.entry("cancelled".into()).or_default() += interrupted;
+            }
+            for check in summary.checks.iter_mut().flatten() {
+                if matches!(
+                    check.status,
+                    devcoordinator2_api::results::LeafStatus::Pending
+                        | devcoordinator2_api::results::LeafStatus::Running
+                ) {
+                    check.status = devcoordinator2_api::results::LeafStatus::Cancelled;
+                    check.finished_at.clone_from(&summary.finished_at);
+                }
+                for case in &mut check.cases {
+                    if matches!(
+                        case.status,
+                        devcoordinator2_api::results::LeafStatus::Pending
+                            | devcoordinator2_api::results::LeafStatus::Running
+                    ) {
+                        case.status = devcoordinator2_api::results::LeafStatus::Cancelled;
+                    }
+                }
+            }
+        }
+        let summary_written = self
+            .inner
+            .store
+            .write_summary(
+                &handle.current,
+                &summary,
+                handle.caller_uid,
+                handle.caller_gid,
+            )
+            .is_ok();
+        let history_written = self
+            .inner
+            .store
+            .record_history(
+                &handle.worktree,
+                &summary,
+                handle.caller_uid,
+                handle.caller_gid,
+            )
+            .is_ok();
         let mut state = handle
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         state.final_status = Some(status.clone());
+        state.evidence_complete = summary_written && history_written;
         handle.finalized.notify_all();
         drop(state);
         // Publish the terminal summary before releasing admission. A
@@ -1576,6 +1768,7 @@ impl TestLifecycle {
                     state.stop = Some(RequestedStop {
                         status: TestStatus::Superseded,
                         detail: None,
+                        termination: None,
                     });
                 }
             }

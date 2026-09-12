@@ -531,6 +531,7 @@ impl ProgressService {
                         finished_at: summary.finished_at,
                         duration_seconds: summary.duration_seconds,
                         exit_code: summary.exit_code,
+                        termination_reason: summary.termination_reason,
                     });
             }
         }

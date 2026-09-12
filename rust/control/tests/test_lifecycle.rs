@@ -11,7 +11,7 @@ use devcoordinator2_api::ErrorCode;
 use devcoordinator2_api::params::{RetryTest, StartTest, ValidationTier as ApiValidationTier};
 use devcoordinator2_api::results::{ProofKind as ApiProofKind, StopTest, TestStarted, TestStatus};
 use devcoordinator2_control::access::Caller;
-use devcoordinator2_control::capacity::CapacityBroker;
+use devcoordinator2_control::capacity::{CapacityBroker, HostMemory};
 use devcoordinator2_control::config::Config;
 use devcoordinator2_control::database::Database;
 use devcoordinator2_control::docker::{
@@ -269,6 +269,8 @@ struct FixtureSystemd {
     fail_spawn: AtomicBool,
     fail_capture: AtomicBool,
     mismatch_uid: AtomicBool,
+    memory: Mutex<HashMap<String, String>>,
+    fail_stop: AtomicBool,
 }
 
 impl FixtureSystemd {
@@ -281,6 +283,8 @@ impl FixtureSystemd {
             fail_spawn: AtomicBool::new(false),
             fail_capture: AtomicBool::new(false),
             mismatch_uid: AtomicBool::new(false),
+            memory: Mutex::new(HashMap::new()),
+            fail_stop: AtomicBool::new(false),
         }
     }
 
@@ -469,6 +473,13 @@ impl SystemdControl for FixtureSystemd {
                     "ExecMainStatus" => exit.to_string(),
                     "Result" if running => String::new(),
                     "Result" => "success".into(),
+                    "MemoryCurrent" => self
+                        .memory
+                        .lock()
+                        .unwrap()
+                        .get(unit)
+                        .cloned()
+                        .unwrap_or_default(),
                     _ => String::new(),
                 };
                 ((*name).into(), value)
@@ -476,18 +487,28 @@ impl SystemdControl for FixtureSystemd {
             .collect())
     }
 
-    fn list_matching_units(&self, _pattern: &str) -> Result<Vec<String>, SystemdError> {
+    fn list_matching_units(&self, pattern: &str) -> Result<Vec<String>, SystemdError> {
         Ok(self
             .runs
             .lock()
             .unwrap()
             .iter()
-            .filter(|(_, state)| !state.0.lock().unwrap().done)
+            .filter(|(unit, state)| {
+                let matches = pattern
+                    .split_once('*')
+                    .map_or(unit.as_str() == pattern, |(prefix, suffix)| {
+                        unit.starts_with(prefix) && unit.ends_with(suffix)
+                    });
+                matches && !state.0.lock().unwrap().done
+            })
             .map(|(unit, _)| unit.clone())
             .collect())
     }
 
     fn stop_unit(&self, unit: &str) -> Result<(), SystemdError> {
+        if self.fail_stop.load(Ordering::SeqCst) {
+            return Err(SystemdError::Operation("fixture stop unavailable".into()));
+        }
         self.stops.fetch_add(1, Ordering::SeqCst);
         if let Some(state) = self.runs.lock().unwrap().get(unit).cloned() {
             let mut current = state.0.lock().unwrap();
@@ -505,6 +526,15 @@ impl SystemdControl for FixtureSystemd {
 
     fn control_group_path(&self, _unit: &str) -> Result<Option<PathBuf>, SystemdError> {
         Ok(None)
+    }
+
+    fn cgroup_memory_current(&self, cgroup: &Path) -> Option<u64> {
+        self.memory
+            .lock()
+            .unwrap()
+            .get(cgroup.file_name()?.to_str()?)?
+            .parse()
+            .ok()
     }
 
     fn prove_cgroup_empty(&self, _cgroup: Option<&Path>, _deadline: Duration) -> bool {
@@ -536,6 +566,10 @@ struct LifecycleWorld {
 
 impl LifecycleWorld {
     fn new() -> Self {
+        Self::with_docker(Arc::new(FixtureDocker))
+    }
+
+    fn with_docker(docker: Arc<dyn DockerControl>) -> Self {
         let temporary = tempdir().unwrap();
         let worktree = temporary.path().join("repository");
         std::fs::create_dir(&worktree).unwrap();
@@ -597,7 +631,7 @@ command=["true"]
             capacity,
             logs,
             systemd.clone(),
-            Arc::new(FixtureDocker),
+            docker,
             Arc::new(FixtureCommand),
             TestRunStore,
             Arc::new(FixtureClock),
@@ -641,6 +675,37 @@ command=["true"]
                 &self.caller,
             )
             .unwrap()
+    }
+
+    fn start_other(&self) -> (PathBuf, TestStarted) {
+        let path = self._temporary.path().join("other-repository");
+        std::fs::create_dir(&path).unwrap();
+        assert!(
+            std::process::Command::new("git")
+                .args(["init", "--quiet"])
+                .current_dir(&path)
+                .status()
+                .unwrap()
+                .success()
+        );
+        std::fs::copy(
+            self.worktree.join(".devcoordinator.toml"),
+            path.join(".devcoordinator.toml"),
+        )
+        .unwrap();
+        let started = self
+            .lifecycle
+            .start(
+                StartTest {
+                    path: path.to_string_lossy().into_owned(),
+                    test: Some("all".into()),
+                    checks: Vec::new(),
+                    tier: ApiValidationTier::Release,
+                },
+                &self.caller,
+            )
+            .unwrap();
+        (path, started)
     }
 
     fn wait_status(&self, expected: TestStatus) -> devcoordinator2_api::results::TestSummary {
@@ -733,6 +798,389 @@ fn public_run_history_uses_exact_registration_without_edge_git_access() {
             .history(query(&world.worktree), &world.caller)
             .is_err()
     );
+}
+
+#[test]
+fn memory_emergency_preserves_evidence_and_does_not_claim_operator_cancellation() {
+    let world = LifecycleWorld::new();
+    let started = world.start();
+    let report_path = world
+        .worktree
+        .join(".devcoordinator/test/current")
+        .join(REPORT_FILE);
+    let mut report = ExecutionReport::from_json(&std::fs::read(&report_path).unwrap()).unwrap();
+    report.status = RunStatus::Running;
+    report.finished_at = None;
+    report.checks[0].status = LeafStatus::Running;
+    report.checks[0].finished_at = None;
+    report.checks[0].duration_seconds = None;
+    report.checks[0].exit = DiagnosticExit {
+        code: None,
+        signal: None,
+    };
+    report.counts.insert("passed".into(), 0);
+    report.counts.insert("running".into(), 1);
+    report.validate().unwrap();
+    std::fs::write(&report_path, serde_json::to_vec(&report).unwrap()).unwrap();
+    let gib = 1024_u64.pow(3);
+    world
+        .systemd
+        .memory
+        .lock()
+        .unwrap()
+        .insert(started.unit.clone(), (55 * gib).to_string());
+    // The same large run is allowed while available memory is healthy.
+    assert!(
+        world
+            .lifecycle
+            .relieve_memory_pressure(|| Some(HostMemory {
+                total: 100 * gib,
+                available: 11 * gib
+            }))
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        world
+            .lifecycle
+            .relieve_memory_pressure(|| None)
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        world
+            .lifecycle
+            .relieve_memory_pressure(|| Some(HostMemory {
+                total: 0,
+                available: 0
+            }))
+            .unwrap()
+            .is_empty()
+    );
+    let stopped = world
+        .lifecycle
+        .relieve_memory_pressure(|| {
+            Some(HostMemory {
+                total: 100 * gib,
+                available: 10 * gib,
+            })
+        })
+        .unwrap();
+    assert_eq!(stopped, vec![started.run_id.clone()]);
+    let summary = world.wait_status(TestStatus::Failed);
+    assert_eq!(
+        summary.termination_reason,
+        Some(devcoordinator2_api::results::RunTerminationReason::MemoryPressure)
+    );
+    assert!(!summary.readiness_eligible);
+    assert_eq!(
+        summary.checks.as_ref().unwrap()[0].status,
+        devcoordinator2_api::results::LeafStatus::Cancelled
+    );
+    assert_eq!(summary.check_summary.as_ref().unwrap()["running"], 0);
+    assert_eq!(summary.check_summary.as_ref().unwrap()["cancelled"], 1);
+    let history = world
+        .lifecycle
+        .history(
+            devcoordinator2_api::params::TestHistory {
+                path: world.worktree.to_string_lossy().into_owned(),
+                before: None,
+                limit: 5,
+            },
+            &world.caller,
+        )
+        .unwrap();
+    assert_eq!(history.runs[0].run_id, started.run_id);
+    assert_eq!(history.runs[0].status, TestStatus::Failed);
+    assert_eq!(
+        history.runs[0].termination_reason,
+        Some(devcoordinator2_api::results::RunTerminationReason::MemoryPressure)
+    );
+    let successor = world.start();
+    world.systemd.finish(&successor.unit);
+    world.wait_status(TestStatus::Passed);
+    let history = world
+        .lifecycle
+        .history(
+            devcoordinator2_api::params::TestHistory {
+                path: world.worktree.to_string_lossy().into_owned(),
+                before: None,
+                limit: 5,
+            },
+            &world.caller,
+        )
+        .unwrap();
+    assert_eq!(
+        history
+            .runs
+            .iter()
+            .find(|run| run.run_id == started.run_id)
+            .unwrap()
+            .termination_reason,
+        Some(devcoordinator2_api::results::RunTerminationReason::MemoryPressure)
+    );
+    assert!(
+        world
+            .lifecycle
+            .relieve_memory_pressure(|| Some(HostMemory {
+                total: 100 * gib,
+                available: 0
+            }))
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn memory_emergency_does_not_blame_missing_small_or_foreign_measurements() {
+    let world = LifecycleWorld::new();
+    let started = world.start();
+    let gib = 1024_u64.pow(3);
+    let pressure = || {
+        Some(HostMemory {
+            total: 100 * gib,
+            available: gib,
+        })
+    };
+    world.systemd.seed_unit("foreign.service", world.caller.uid);
+    world
+        .systemd
+        .memory
+        .lock()
+        .unwrap()
+        .insert("foreign.service".into(), (90 * gib).to_string());
+    for value in ["", "[not set]", "18446744073709551616", "1024"] {
+        world
+            .systemd
+            .memory
+            .lock()
+            .unwrap()
+            .insert(started.unit.clone(), value.into());
+        assert!(
+            world
+                .lifecycle
+                .relieve_memory_pressure(pressure)
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            world
+                .systemd
+                .process_state(&started.unit)
+                .unwrap()
+                .active_state,
+            "active"
+        );
+        assert_eq!(
+            world
+                .systemd
+                .process_state("foreign.service")
+                .unwrap()
+                .active_state,
+            "active"
+        );
+    }
+    world.systemd.finish(&started.unit);
+    world.wait_status(TestStatus::Passed);
+    world.systemd.finish("foreign.service");
+}
+
+#[test]
+fn memory_emergency_retries_the_exact_run_after_a_failed_stop() {
+    let world = LifecycleWorld::new();
+    let started = world.start();
+    let gib = 1024_u64.pow(3);
+    let pressure = || {
+        Some(HostMemory {
+            total: 100 * gib,
+            available: 5 * gib,
+        })
+    };
+    world
+        .systemd
+        .memory
+        .lock()
+        .unwrap()
+        .insert(started.unit.clone(), (50 * gib).to_string());
+    world.systemd.fail_stop.store(true, Ordering::SeqCst);
+    assert!(world.lifecycle.relieve_memory_pressure(pressure).is_err());
+    assert_eq!(
+        world
+            .systemd
+            .process_state(&started.unit)
+            .unwrap()
+            .active_state,
+        "active"
+    );
+    world.systemd.fail_stop.store(false, Ordering::SeqCst);
+    assert_eq!(
+        world.lifecycle.relieve_memory_pressure(pressure).unwrap(),
+        vec![started.run_id]
+    );
+    world.wait_status(TestStatus::Failed);
+}
+
+#[test]
+fn memory_emergency_selects_largest_then_stops_when_host_recovers() {
+    let world = LifecycleWorld::new();
+    let smaller = world.start();
+    let (other_path, larger) = world.start_other();
+    let gib = 1024_u64.pow(3);
+    world.systemd.memory.lock().unwrap().extend([
+        (smaller.unit.clone(), (10 * gib).to_string()),
+        (larger.unit.clone(), (60 * gib).to_string()),
+    ]);
+    let stopped = world
+        .lifecycle
+        .relieve_memory_pressure(|| {
+            let large_active = world
+                .systemd
+                .process_state(&larger.unit)
+                .unwrap()
+                .active_state
+                == "active";
+            Some(HostMemory {
+                total: 100 * gib,
+                available: if large_active { 5 * gib } else { 65 * gib },
+            })
+        })
+        .unwrap();
+    assert_eq!(stopped, vec![larger.run_id]);
+    assert_eq!(
+        world
+            .lifecycle
+            .status(other_path.to_str().unwrap(), &world.caller)
+            .unwrap()
+            .status,
+        TestStatus::Failed
+    );
+    assert_eq!(
+        world
+            .systemd
+            .process_state(&smaller.unit)
+            .unwrap()
+            .active_state,
+        "active"
+    );
+    world.systemd.finish(&smaller.unit);
+    world.wait_status(TestStatus::Passed);
+}
+
+#[test]
+fn memory_emergency_does_not_stop_a_replacement_run_from_an_old_snapshot() {
+    let world = LifecycleWorld::new();
+    let original = world.start();
+    let gib = 1024_u64.pow(3);
+    world
+        .systemd
+        .memory
+        .lock()
+        .unwrap()
+        .insert(original.unit.clone(), (60 * gib).to_string());
+    let mut samples = 0;
+    let mut replacement = None;
+    let stopped = world
+        .lifecycle
+        .relieve_memory_pressure(|| {
+            samples += 1;
+            if samples == 2 {
+                replacement = Some(world.start());
+            }
+            Some(HostMemory {
+                total: 100 * gib,
+                available: 5 * gib,
+            })
+        })
+        .unwrap();
+    assert!(stopped.is_empty());
+    let replacement = replacement.unwrap();
+    assert_eq!(
+        world
+            .systemd
+            .process_state(&replacement.unit)
+            .unwrap()
+            .active_state,
+        "active"
+    );
+    world.systemd.finish(&replacement.unit);
+    world.wait_status(TestStatus::Passed);
+}
+
+#[test]
+fn memory_emergency_counts_and_cleans_up_owned_database_containers() {
+    let docker = Arc::new(PostgresDocker::new());
+    let world = LifecycleWorld::with_docker(docker.clone());
+    let configuration = world.worktree.join(".devcoordinator.toml");
+    let mut text = std::fs::read_to_string(&configuration).unwrap();
+    text.push_str(&format!("\n[test.all.postgres]\nimage=\"postgres@sha256:{}\"\nuser=\"app\"\ndatabase=\"app_test\"\n", "a".repeat(64)));
+    std::fs::write(configuration, text).unwrap();
+    let started = world.start();
+    let gib = 1024_u64.pow(3);
+    world.systemd.memory.lock().unwrap().extend([
+        (started.unit.clone(), "1024".into()),
+        (
+            format!("docker-{}.scope", "d".repeat(64)),
+            (60 * gib).to_string(),
+        ),
+        (
+            format!("docker-{}.scope", "f".repeat(64)),
+            (90 * gib).to_string(),
+        ),
+    ]);
+    assert_eq!(
+        world
+            .lifecycle
+            .relieve_memory_pressure(|| Some(HostMemory {
+                total: 100 * gib,
+                available: 5 * gib
+            }))
+            .unwrap(),
+        vec![started.run_id]
+    );
+    assert_eq!(docker.provisioned.load(Ordering::SeqCst), 1);
+    assert_eq!(docker.removed.load(Ordering::SeqCst), 1);
+    world.wait_status(TestStatus::Failed);
+}
+
+#[test]
+fn memory_emergency_reports_unretained_evidence_without_leaving_the_process_running() {
+    let world = LifecycleWorld::new();
+    let started = world.start();
+    let gib = 1024_u64.pow(3);
+    world
+        .systemd
+        .memory
+        .lock()
+        .unwrap()
+        .insert(started.unit.clone(), (60 * gib).to_string());
+    let outside = world._temporary.path().join("preserved-history.json");
+    std::fs::write(&outside, "preserve").unwrap();
+    std::os::unix::fs::symlink(
+        &outside,
+        world.worktree.join(".devcoordinator/test/history.json"),
+    )
+    .unwrap();
+    let error = world
+        .lifecycle
+        .relieve_memory_pressure(|| {
+            Some(HostMemory {
+                total: 100 * gib,
+                available: 5 * gib,
+            })
+        })
+        .unwrap_err();
+    assert_eq!(error.code, ErrorCode::UnitStopFailed);
+    assert!(error.message.contains("evidence could not be retained"));
+    assert_eq!(
+        world
+            .systemd
+            .process_state(&started.unit)
+            .unwrap()
+            .active_state,
+        "inactive"
+    );
+    assert_eq!(std::fs::read_to_string(outside).unwrap(), "preserve");
+    world.wait_status(TestStatus::Failed);
 }
 
 #[test]

@@ -59,6 +59,8 @@ pub struct TestHistoryEntry {
     pub finished_at: Option<String>,
     pub duration_seconds: Option<f64>,
     pub exit_code: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub termination_reason: Option<RunTerminationReason>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -334,6 +336,7 @@ impl TestRunStore {
             finished_at: summary.finished_at.clone(),
             duration_seconds: summary.duration_seconds,
             exit_code: summary.exit_code,
+            termination_reason: summary.termination_reason.clone(),
         });
         if runs.len() > HISTORY_CAP {
             runs.drain(..runs.len() - HISTORY_CAP);
@@ -517,6 +520,7 @@ fn retry_check(check: &CheckReport) -> RetryCheckEvidence {
 
 fn validate_summary(summary: &TestSummary) -> Result<(), TestStateError> {
     validate_run_id(&summary.run_id)?;
+    let memory_stop = summary.termination_reason == Some(RunTerminationReason::MemoryPressure);
     if summary.schema_version != 2
         || summary.test.is_empty()
         || summary.test.len() > 32
@@ -524,7 +528,9 @@ fn validate_summary(summary: &TestSummary) -> Result<(), TestStateError> {
         || summary.log_catalog_ref.run_id != summary.run_id
         || summary.readiness_eligible
             != (summary.proof == ApiProofKind::Complete
-                && summary.requested_tier == devcoordinator2_api::params::ValidationTier::Release)
+                && summary.requested_tier == devcoordinator2_api::params::ValidationTier::Release
+                && !memory_stop)
+        || (memory_stop && summary.status != TestStatus::Failed)
     {
         return Err(TestStateError::Invalid("test summary is invalid".into()));
     }
@@ -1030,6 +1036,31 @@ mod tests {
             ValidationTier::Release,
         );
         summary.log_catalog_ref.run_id = "other".into();
+        assert!(validate_summary(&summary).is_err());
+    }
+
+    #[test]
+    fn memory_emergency_summary_must_be_failed_and_ineligible() {
+        let mut summary = initial_summary(
+            "t20260904T000000Z-aabbcc",
+            "all",
+            "2026-09-04T00:00:00Z",
+            1,
+            "codex",
+            ProofKind::Complete,
+            Vec::new(),
+            None,
+            ValidationTier::Release,
+        );
+        assert!(validate_summary(&summary).is_ok());
+        summary.termination_reason = Some(RunTerminationReason::MemoryPressure);
+        summary.status = TestStatus::Failed;
+        assert!(validate_summary(&summary).is_err());
+        summary.readiness_eligible = false;
+        assert!(validate_summary(&summary).is_ok());
+        summary.status = TestStatus::Passed;
+        assert!(validate_summary(&summary).is_err());
+        summary.status = TestStatus::Running;
         assert!(validate_summary(&summary).is_err());
     }
 }
