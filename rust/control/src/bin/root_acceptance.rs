@@ -2674,6 +2674,33 @@ fn case_failed_component_is_degraded_and_busy_is_immediate(
         .ok_or_else(|| "failed deployment id is missing".to_owned())?;
     let volume = format!("devcoordinator2-{deployment_id}-db-pgdata");
     world.track_volume(&volume);
+    // A process that failed before its binding was retained can leave the
+    // candidate name occupied. Reapply must recover that exact empty unit.
+    let stale_unit = format!(
+        "{}-deploy-{deployment_id}-api-g1.service",
+        world.unit_prefix.replace("-test", "")
+    );
+    ensure!(
+        systemctl_property(&stale_unit, "LoadState")?.contains("LoadState=not-found"),
+        "failed candidate fixture name is unexpectedly occupied"
+    );
+    let seeded = Command::new("systemd-run")
+        .args([
+            "--quiet",
+            "--wait",
+            "--unit",
+            &stale_unit,
+            "--uid",
+            &world.harness.caller_uid.to_string(),
+            "/usr/bin/false",
+        ])
+        .output()
+        .map_err(|error| error.to_string())?;
+    ensure!(
+        !seeded.status.success()
+            && systemctl_property(&stale_unit, "ActiveState")?.contains("ActiveState=failed"),
+        "fixture did not leave the failed transient name reserved"
+    );
     world.write_config(&web_deployment_config(world, "v1", None)?)?;
     let barrier = std::sync::Arc::new(std::sync::Barrier::new(3));
     let mut threads = Vec::new();

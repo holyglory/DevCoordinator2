@@ -275,6 +275,9 @@ not contradict them.
   `busy`; it is never queued.
 - **REQ-DEPLOY-03** (P3, done): Partial failure yields an honest `degraded` state
   listing exact running and failed components; no fake success.
+  Reapplying may recreate an exact failed or inactive process unit only after
+  proving its cgroup empty. Validate the request before runtime or log changes;
+  preserve prior failure logs and refuse live, transitional or unknown units.
 - **REQ-DEPLOY-04** (P3, done): Stop/restart/redeploy never deletes persistent
   database or volume data; destructive removal is a separate explicit
   action.
