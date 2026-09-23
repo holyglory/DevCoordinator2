@@ -63,23 +63,23 @@
   "value1_more_activities_a0186b": {
     "argument": "value1",
     "forms": {
-      "one": "{value1} more activity",
-      "other": "{value1} more activities",
-      "many": "{value1} more activities"
+      "one": "{value1} activité supplémentaire",
+      "many": "{value1} activités supplémentaires",
+      "other": "{value1} activités supplémentaires"
     }
   },
   "value1_revisions_ed2971": {
     "argument": "value1",
     "forms": {
-      "one": "{value1} revision",
-      "other": "{value1} revisions",
-      "many": "{value1} revisions"
+      "one": "{value1} révision",
+      "many": "{value1} révisions",
+      "other": "{value1} révisions"
     }
   },
   "activity_38da15": "Activité",
-  "partial_27f7a4": " (partial)",
+  "partial_27f7a4": " (partiel)",
   "review_usage_c39675": "Revue usage",
-  "overview_usage_83f004": "Overview usage",
+  "overview_usage_83f004": "Utilisation de la vue d’ensemble",
   "review_c97ace": "review",
   "period_514cb1": "period",
   "outcome_no_longer_available_a63b43": "Résultat no longer available",
@@ -90,9 +90,9 @@
   "value1_attributed_outcomes_6e3dca": {
     "argument": "value1",
     "forms": {
-      "one": "{value1} attributed outcome",
-      "other": "{value1} attributed outcomes",
-      "many": "{value1} attributed outcomes"
+      "one": "{value1} résultat attribué",
+      "other": "{value1} résultats attribués",
+      "many": "{value1} résultats attribués"
     }
   },
   "review_usage_value1_a681eb": "Revue usage · {value1}",
