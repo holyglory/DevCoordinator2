@@ -80,5 +80,53 @@
   "repositories_1e32af": "Repozitáře",
   "screenshot_gallery_7bd298": "Galerie snímků obrazovky",
   "these_screenshots_do_not_verify_the_latest_run_0e24e3": "Tyto snímky neověřují nejnovější běh.",
-  "the_linked_run_is_no_longer_available_in_retaine_a39a19": "Odkazovaný běh už není v uchované historii dostupný."
+  "the_linked_run_is_no_longer_available_in_retaine_a39a19": "Odkazovaný běh už není v uchované historii dostupný.",
+  "value1_of_value2_cases_shown_all_retained_case_o_89db76": {
+    "argument": "value2",
+    "forms": {
+      "one": "Zobrazené případy: {value1} z {value2}. Veškerý uchovaný výstup případů je dostupný v protokolech.",
+      "few": "Zobrazené případy: {value1} z {value2}. Veškerý uchovaný výstup případů je dostupný v protokolech.",
+      "many": "Zobrazené případy: {value1} z {value2}. Veškerý uchovaný výstup případů je dostupný v protokolech.",
+      "other": "Zobrazené případy: {value1} z {value2}. Veškerý uchovaný výstup případů je dostupný v protokolech."
+    }
+  },
+  "none_dc937b": "Žádné",
+  "start_of_output_85c6f8": "Začátek výstupu",
+  "all_results_shown_ad3d94": "Zobrazeny všechny výsledky",
+  "pending_331551": "Čeká",
+  "yes_85a39a": "Ano",
+  "in_progress_c1f88e": "Probíhá",
+  "no_1ea442": "Ne",
+  "unavailable_ca1844": "Nedostupné",
+  "database_setup_7a9e87": "Příprava databáze",
+  "stop_run_b7ec68": "Zastavit běh",
+  "run_again_3e310b": "Spustit znovu",
+  "not_recorded_b37c78": "Nezaznamenáno",
+  "value1_of_value2_882c45": "{value1} z {value2}",
+  "loading_screenshot_e0fd7b": "Načítání snímku obrazovky…",
+  "preview_value1_cb5dab": "Náhled {value1}",
+  "browse_all_value1_screenshots_81fcf6": {
+    "argument": "value1",
+    "forms": {
+      "one": "Prohlédnout {value1} snímek",
+      "few": "Prohlédnout všechny {value1} snímky",
+      "many": "Prohlédnout snímky ({value1})",
+      "other": "Prohlédnout všech {value1} snímků"
+    }
+  },
+  "earlier_run_value1_68bdba": "Dřívější běh · {value1}",
+  "value1_test_results_293210": "Výsledky testů: {value1}",
+  "test_results_3ea600": "Výsledky testů",
+  "updates_paused_value1_11b351": "Aktualizace pozastaveny: {value1}",
+  "no_maximum_b5cfdf": "Bez omezení",
+  "details_45989d": "Podrobnosti",
+  "previous_screenshot_af9be1": "Předchozí snímek obrazovky",
+  "next_screenshot_fd250f": "Další snímek obrazovky",
+  "open_in_viewer_comment_ad9420": "Otevřít v prohlížeči snímků / komentovat",
+  "screenshot_loading_cancelled_50e74f": "Načítání snímku bylo zrušeno.",
+  "the_screenshot_changed_while_loading_94fe13": "Snímek se během načítání změnil.",
+  "the_screenshot_response_was_incomplete_4d7952": "Snímek nebyl přijat celý.",
+  "screenshots_could_not_be_read_92f171": "Snímky se nepodařilo přečíst.",
+  "screenshot_could_not_be_previewed_11a0c5": "Náhled snímku se nepodařilo zobrazit.",
+  "a_newer_run_is_available_refresh_to_view_it_c113b3": "Je dostupný novější běh. Obnovte stránku, abyste ho zobrazili."
 }

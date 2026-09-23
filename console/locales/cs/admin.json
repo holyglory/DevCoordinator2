@@ -24,5 +24,11 @@
   "chat_id_d6a2bb": "ID chatu",
   "scope_5f161c": "rozsah",
   "subscribe_cc0e38": "Odebírat",
-  "server_aef7de": "Server"
+  "server_aef7de": "Server",
+  "configured_201582": "nakonfigurováno",
+  "not_configured_9f33f0": "nenakonfigurováno",
+  "yes_8a7988": "ano",
+  "remove_user_84a18f": "Odebrat uživatele",
+  "revoke_777ac4": "odvolat",
+  "remove_grant_8c57bf": "Odebrat oprávnění"
 }

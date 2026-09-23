@@ -23,5 +23,20 @@
   "tool_outcomes_3a7a68": "Výsledky nástrojů",
   "data_completeness_c7114d": "Úplnost dat",
   "counting_method_7a480a": "Způsob počítání",
-  "provider_reported_total_tokens_cached_input_and__9908f6": "Celkové tokeny hlášené poskytovatelem; vstup z mezipaměti a uvažování jsou součástí tohoto součtu."
+  "provider_reported_total_tokens_cached_input_and__9908f6": "Celkové tokeny hlášené poskytovatelem; vstup z mezipaměti a uvažování jsou součástí tohoto součtu.",
+  "schema_value19_taxonomy_value20_cdddf8": "Schéma {value19} · klasifikace {value20}",
+  "value21_environments_that_supplied_no_data_and_u_cbbc39": "{value21}. Prostředí bez dat a nenaměřené hodnoty jsou vyloučeny, nikoli započítány jako nula.",
+  "token_subsets_unavailable_4cec86": "Dílčí počty tokenů nejsou dostupné.",
+  "unknownIntervals": {
+    "argument": "count",
+    "forms": {
+      "one": "{count} neznámý interval",
+      "few": "{count} neznámé intervaly",
+      "many": "{count} neznámého intervalu",
+      "other": "{count} neznámých intervalů"
+    }
+  },
+  "about_codex_environments_4a2e3e": "O prostředích Codex",
+  "explain_codex_usage_data_completeness_63247d": "Vysvětlit úplnost údajů o využití Codexu",
+  "tokens_a039df": "Tokeny"
 }
