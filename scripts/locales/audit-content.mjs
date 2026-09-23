@@ -38,7 +38,9 @@ const exact = (sourceValue, translatedValue) => {
   if (!sourceValue || typeof translatedValue !== 'object') return false;
   return Object.entries(sourceValue.forms || {}).some(([form, text]) => translatedValue.forms?.[form] === text && !isTechnical(text));
 };
-const entries = manifest.locales.filter(entry => entry.tag !== manifest.sourceLocale && (includeDrafts || entry.status === 'enabled' || entry.tag === requested));
+const entries = requested
+  ? manifest.locales.filter(entry => entry.tag === requested)
+  : manifest.locales.filter(entry => entry.tag !== manifest.sourceLocale && (includeDrafts || entry.status === 'enabled'));
 const reports = [];
 for (const entry of entries) {
   const catalog = await readCatalog(entry);
