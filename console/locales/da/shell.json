@@ -76,5 +76,10 @@
   "icon_plane": "Flyvning",
   "icon_book": "Dokumentation",
   "icon_chart-bar": "Analyse",
-  "icon_shield": "Sikkerhed"
+  "icon_shield": "Sikkerhed",
+  "current_repository_value1_35de51": "Aktuelt repository: {value1}",
+  "could_not_save_repository_appearance_try_again_955cdd": "Repositoryets udseende kunne ikke gemmes. Prøv igen.",
+  "value1_repositories_unavailable_refresh_to_retry_426a76": "{value1} repositories utilgængelige. Opdater for at prøve igen.",
+  "montenegrinLatin": "Montenegrinsk (latinsk)",
+  "montenegrinCyrillic": "Montenegrinsk (kyrillisk)"
 }
