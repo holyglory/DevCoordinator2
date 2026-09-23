@@ -35,7 +35,7 @@ final result: passed
 ## Evidence
 
 - Fresh rendered localization verification: 201 checks, zero failures for Ukrainian at desktop, tablet and mobile themes, including modal-draft preservation.
-- Fresh rendered verification: 313 checks, zero failures for Russian, Simplified Chinese, Traditional Chinese, Japanese and Korean; all five are rendered-admitted.
+- Fresh rendered verification: 313 checks, zero failures for German, Russian, Simplified Chinese, Traditional Chinese, Japanese and Korean; all six are rendered-admitted.
 - Complete Console state matrix: 1,421 checks, zero failures after making translated checks case-insensitive and adding the initial loading surface.
 - Focused locale/runtime tests: 12 tests passed; edge suite: 22 tests passed.
 - Final exact-size audit journey: 79 checks, zero failures at 1487 × 1058 after the Health merge.
@@ -43,7 +43,7 @@ final result: passed
 
 ## Remaining rollout
 
-Only English, Ukrainian, Russian, Simplified Chinese, Traditional Chinese, Japanese and Korean are enabled in `manifest.json`; other locale drafts remain disabled because their current-source translations are incomplete or were quarantined after detecting donor-language contamination. Final localization handoff remains blocked until each enabled language has contextual translations, parity validation, rendered verification and linguistic review.
+English, German, Ukrainian, Russian, Simplified Chinese, Traditional Chinese, Japanese and Korean are enabled in `manifest.json`; other locale drafts remain disabled because their current-source translations are incomplete or were quarantined after detecting donor-language contamination. Final localization handoff remains blocked until each enabled language has contextual translations, parity validation, rendered verification and linguistic review.
 
 ---
 
