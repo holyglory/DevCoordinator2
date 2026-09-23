@@ -482,7 +482,7 @@
         "SR"
       ],
       "direction": "ltr",
-      "status": "draft",
+      "status": "enabled",
       "files": {
         "common": [
           "nl/common.json"
