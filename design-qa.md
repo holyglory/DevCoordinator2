@@ -5,7 +5,7 @@ final result: passed
 ## Source and implementation
 
 - Source visual truth: Coordinator-retained sketch `s3bb42e5e6bb75208` in batch `kb6fd7388b447ab70` (the source image was captured from the selected Product Design result); selected by the owner under `DC2-LOCALIZATION-MENU-20260923`.
-- Fresh implementation capture: `/var/tmp/dc2-localization/audit-exact/translated-uk-dark-1487.png`.
+- Fresh implementation capture: `/var/tmp/dc2-localization/audit-exact-final/translated-uk-dark-1487.png`.
 - Paired comparison: `/var/tmp/dc2-localization/audit/option1-vs-implementation.png`.
 - Both are 1487 × 1058 pixels at CSS viewport 1487 × 1058 and device scale 1; no density normalization was needed.
 - State: Plan route, dark theme, selected repository, language menu open, browser preference and supported languages visible.
@@ -38,6 +38,7 @@ final result: passed
 - Fresh rendered verification: 313 checks, zero failures for Russian, Simplified Chinese, Traditional Chinese, Japanese and Korean; all five are rendered-admitted.
 - Complete Console state matrix: 1,421 checks, zero failures after making translated checks case-insensitive and adding the initial loading surface.
 - Focused locale/runtime tests: 12 tests passed; edge suite: 22 tests passed.
+- Final exact-size audit journey: 79 checks, zero failures at 1487 × 1058 after the Health merge.
 - Evidence limits: screenshots cannot prove full accessibility compliance; keyboard, persistence, error recovery and draft preservation are covered by the rendered interaction checks.
 
 ## Remaining rollout

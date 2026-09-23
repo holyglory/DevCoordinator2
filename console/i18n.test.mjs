@@ -15,8 +15,8 @@ test('locale matching preserves script and follows ordered supported browser pre
   assert.deepEqual(browserLocales(['xx-XX','uk-UA','uk','zh-TW'], fixture.locales), ['uk','zh-Hant']);
   assert.deepEqual(recentLocales(['fr','de','fr','ru','ja','ko'], ['uk-UA','de-DE'], fixture.locales), ['fr','de','ru','ja','ko','uk']);
 });
-test('only enabled catalogs match; cookies and weighted headers are validated', () => {
-  assert.equal(matchLocale('uk-UA', manifest.locales), null);
+test('enabled catalogs match; cookies and weighted headers are validated', () => {
+  assert.equal(matchLocale('uk-UA', manifest.locales), 'uk');
   assert.deepEqual(acceptLanguages('fr;q=0.3,uk-UA,ru;q=0,en;q=broken,de;q=0.8'), ['uk-UA','de','fr']);
   assert.equal(localeCookie('dc2_session=opaque; dc2-locale=zh-Hant'), 'zh-Hant');
   assert.equal(localeCookie('dc2-locale=%E0%A4%A'), null);
