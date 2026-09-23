@@ -25,5 +25,40 @@
   "binding_164c69": "Liaison",
   "error_54a0e8": "Erreur",
   "untrusted_log_text_192942": "Texte de journal non fiable",
-  "no_measured_components_6f4369": "Aucun composant mesuré."
+  "no_measured_components_6f4369": "Aucun composant mesuré.",
+  "domain_value1_value2_ee9534": "Domaine : {value1}@{value2}",
+  "compose_value3_service_87ae79": "Service Compose {value3}",
+  "prev_value1_8d66fe": "(précédent : {value1})",
+  "logs_value1_306798": "Journaux : {value1}",
+  "deployment_aee50b": "déploiement",
+  "deployments_01366d": "déploiements",
+  "expand_workers_c57c47": "Afficher les processus de travail",
+  "collapse_workers_7a9ec3": "Masquer les processus de travail",
+  "exact_recorded_container_a9b79f": " · conteneur précisément enregistré",
+  "external_855e84": " · externe",
+  "never_6497e4": "jamais",
+  "containerCount": {
+    "argument": "count",
+    "forms": {
+      "one": "{count} conteneur",
+      "many": "{count} conteneurs",
+      "other": "{count} conteneurs"
+    }
+  },
+  "apply_97a5e4": "appliquer",
+  "workers_7a1ec9": "Processus de travail",
+  "my_app_4c9a75": "my-app",
+  "lowercase_dns_label_3dbe17": "nom DNS en minuscules",
+  "logs_98f38f": "journaux",
+  "rollback_da2548": "revenir à la version précédente",
+  "remove_deployment_keep_data_b46030": "Supprimer le déploiement — conserver les données",
+  "remove_deployment_and_delete_data_9fe36e": "Supprimer le déploiement et ses données",
+  "deploymentCount": {
+    "argument": "count",
+    "forms": {
+      "one": "{count} déploiement",
+      "many": "{count} déploiements",
+      "other": "{count} déploiements"
+    }
+  }
 }

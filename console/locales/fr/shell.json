@@ -76,5 +76,10 @@
   "icon_plane": "Vol",
   "icon_book": "Documentation",
   "icon_chart-bar": "Analyse",
-  "icon_shield": "Sécurité"
+  "icon_shield": "Sécurité",
+  "current_repository_value1_35de51": "Dépôt actuel : {value1}",
+  "could_not_save_repository_appearance_try_again_955cdd": "Impossible d’enregistrer la présentation du dépôt. Réessayez.",
+  "value1_repositories_unavailable_refresh_to_retry_426a76": "{value1} dépôts indisponibles. Actualisez pour réessayer.",
+  "montenegrinLatin": "Monténégrin (latin)",
+  "montenegrinCyrillic": "Monténégrin (cyrillique)"
 }

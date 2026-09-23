@@ -24,5 +24,11 @@
   "chat_id_d6a2bb": "identifiant de discussion",
   "scope_5f161c": "périmètre",
   "subscribe_cc0e38": "S’abonner",
-  "server_aef7de": "Serveur"
+  "server_aef7de": "Serveur",
+  "configured_201582": "configured",
+  "not_configured_9f33f0": "not configured",
+  "yes_8a7988": "yes",
+  "remove_user_84a18f": "Supprimer user",
+  "revoke_777ac4": "revoke",
+  "remove_grant_8c57bf": "Supprimer grant"
 }
