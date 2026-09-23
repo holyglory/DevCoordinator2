@@ -2518,7 +2518,7 @@
         "CO"
       ],
       "direction": "ltr",
-      "status": "draft",
+      "status": "enabled",
       "files": {
         "common": [
           "es/common.json"
