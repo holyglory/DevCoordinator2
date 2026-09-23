@@ -23,5 +23,18 @@
   "tool_outcomes_3a7a68": "Hulpmiddelresultaten",
   "data_completeness_c7114d": "Volledigheid van gegevens",
   "counting_method_7a480a": "Telmethode",
-  "provider_reported_total_tokens_cached_input_and__9908f6": "Door de aanbieder gemeld totaal aantal tokens; gecachte invoer en redenering maken deel uit van dit totaal."
+  "provider_reported_total_tokens_cached_input_and__9908f6": "Door de aanbieder gemeld totaal aantal tokens; gecachte invoer en redenering maken deel uit van dit totaal.",
+  "schema_value19_taxonomy_value20_cdddf8": "Schema {value19} · taxonomie {value20}",
+  "value21_environments_that_supplied_no_data_and_u_cbbc39": "{value21}. Environments that supplied no data and ungemeten values are excluded rather than treated as zero.",
+  "token_subsets_unavailable_4cec86": "Token-subsets niet beschikbaar.",
+  "unknownIntervals": {
+    "argument": "count",
+    "forms": {
+      "one": "{count} onbekend interval",
+      "other": "{count} onbekende intervallen"
+    }
+  },
+  "about_codex_environments_4a2e3e": "About Codex omgevingen",
+  "explain_codex_usage_data_completeness_63247d": "Volledigheid van Codex-gebruikgegevens uitleggen",
+  "tokens_a039df": "Tokens"
 }

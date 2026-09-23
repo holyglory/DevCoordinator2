@@ -24,5 +24,11 @@
   "chat_id_d6a2bb": "chat-ID",
   "scope_5f161c": "bereik",
   "subscribe_cc0e38": "Abonneren",
-  "server_aef7de": "Server"
+  "server_aef7de": "Server",
+  "configured_201582": "geconfigureerd",
+  "not_configured_9f33f0": "not geconfigureerd",
+  "yes_8a7988": "yes",
+  "remove_user_84a18f": "Gebruiker verwijderen",
+  "revoke_777ac4": "intrekken",
+  "remove_grant_8c57bf": "Toestemming verwijderen"
 }

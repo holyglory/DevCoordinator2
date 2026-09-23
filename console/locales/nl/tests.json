@@ -80,5 +80,49 @@
   "repositories_1e32af": "Repository’s",
   "screenshot_gallery_7bd298": "Galerij met schermafbeeldingen",
   "these_screenshots_do_not_verify_the_latest_run_0e24e3": "Deze schermafbeeldingen verifiëren de nieuwste uitvoering niet.",
-  "the_linked_run_is_no_longer_available_in_retaine_a39a19": "De gekoppelde uitvoering is niet langer beschikbaar in de bewaarde geschiedenis."
+  "the_linked_run_is_no_longer_available_in_retaine_a39a19": "De gekoppelde uitvoering is niet langer beschikbaar in de bewaarde geschiedenis.",
+  "value1_of_value2_cases_shown_all_retained_case_o_89db76": {
+    "argument": "value2",
+    "forms": {
+      "one": "{value1} of {value2} case shown. Alle retained case output is available in Logs.",
+      "other": "{value1} of {value2} cases shown. Alle retained case output is available in Logs."
+    }
+  },
+  "none_dc937b": "Geen",
+  "start_of_output_85c6f8": "Begin van uitvoer",
+  "all_results_shown_ad3d94": "Alle results shown",
+  "pending_331551": "In afwachting",
+  "yes_85a39a": "Ja",
+  "in_progress_c1f88e": "In uitvoering",
+  "no_1ea442": "Nee",
+  "unavailable_ca1844": "Niet beschikbaar",
+  "database_setup_7a9e87": "Database instellen",
+  "stop_run_b7ec68": "Uitvoering stoppen",
+  "run_again_3e310b": "Opnieuw uitvoeren",
+  "not_recorded_b37c78": "Neet recorded",
+  "value1_of_value2_882c45": "{value1} of {value2}",
+  "loading_screenshot_e0fd7b": "Schermafbeelding laden…",
+  "preview_value1_cb5dab": "Voorbeeld {value1}",
+  "browse_all_value1_screenshots_81fcf6": {
+    "argument": "value1",
+    "forms": {
+      "one": "Bladeren door {value1} screenshot",
+      "other": "Browse all {value1} schermafbeeldingen"
+    }
+  },
+  "earlier_run_value1_68bdba": "Eerdere uitvoering · {value1}",
+  "value1_test_results_293210": "{value1} testresultaten",
+  "test_results_3ea600": "Testresultaten",
+  "updates_paused_value1_11b351": "Updates gepauzeerd: {value1}",
+  "no_maximum_b5cfdf": "Nee maximum",
+  "details_45989d": "Details",
+  "previous_screenshot_af9be1": "Vorige schermafbeelding",
+  "next_screenshot_fd250f": "Volgende schermafbeelding",
+  "open_in_viewer_comment_ad9420": "Openen in viewer / comment",
+  "screenshot_loading_cancelled_50e74f": "Screenshot loading geannuleerd.",
+  "the_screenshot_changed_while_loading_94fe13": "The screenshot gewijzigd tijdens laden.",
+  "the_screenshot_response_was_incomplete_4d7952": "The screenshot antwoord was onvolledig.",
+  "screenshots_could_not_be_read_92f171": "Screenshots kon niet worden gelezen.",
+  "screenshot_could_not_be_previewed_11a0c5": "Screenshot kon niet als voorbeeld worden getoond.",
+  "a_newer_run_is_available_refresh_to_view_it_c113b3": "Een nieuwere uitvoering is beschikbaar. Refresh to view it."
 }

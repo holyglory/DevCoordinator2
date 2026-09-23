@@ -59,5 +59,53 @@
   "open_delivered_result_93d4e9": "Opgeleverd resultaat openen",
   "unavailable_ca1844": "Niet beschikbaar",
   "measurements_could_not_be_loaded_77193b": "Metingen konden niet worden geladen.",
-  "review_measurements_are_unavailable_497d4e": "Metingen van de beoordeling zijn niet beschikbaar."
+  "review_measurements_are_unavailable_497d4e": "Metingen van de beoordeling zijn niet beschikbaar.",
+  "value1_more_activities_a0186b": {
+    "argument": "value1",
+    "forms": {
+      "one": "{value1} extra activiteit",
+      "other": "{value1} extra activiteiten"
+    }
+  },
+  "value1_revisions_ed2971": {
+    "argument": "value1",
+    "forms": {
+      "one": "{value1} revisie",
+      "other": "{value1} revisies"
+    }
+  },
+  "activity_38da15": "Activiteit",
+  "partial_27f7a4": " (gedeeltelijk)",
+  "review_usage_c39675": "Reviewgebruik",
+  "overview_usage_83f004": "Overzichtsgebruik",
+  "review_c97ace": "review",
+  "period_514cb1": "period",
+  "outcome_no_longer_available_a63b43": "Werkresultaat niet meer beschikbaar",
+  "unknown_kind_2a60d8": "Onbekend kind",
+  "review_in_progress_bf2daa": " · Review wordt uitgevoerd",
+  "incomplete_measurement_3407ad": "Onvolledige meting",
+  "value1_total_value2_value3_0a3988": "{value1} total: {value2}{value3}",
+  "value1_attributed_outcomes_6e3dca": {
+    "argument": "value1",
+    "forms": {
+      "one": "{value1} toegewezen resultaat",
+      "other": "{value1} toegewezen resultaten"
+    }
+  },
+  "review_usage_value1_a681eb": "Reviewgebruik · {value1}",
+  "view_delivery_evidence_c18555": "View delivery bewijs",
+  "kind_user_feedback": "Gebruikersfeedback",
+  "kind_improvement": "Verbetering",
+  "kind_goal": "Doel",
+  "kind_stub": "Onvoltooid werk",
+  "kind_unknown": "Onbekend kind",
+  "kind_unattributed": "Niet toegewezen",
+  "status_proposed": "Voorgesteld",
+  "status_applied": "Toegepast",
+  "status_retained": "Behouden",
+  "status_reverted": "Teruggedraaid",
+  "status_unchanged": "Nee change",
+  "status_inconclusive": "Niet concludent",
+  "tokensByActivity": "Tokens per activiteit",
+  "tokensByKind": "Tokens per type planitem"
 }

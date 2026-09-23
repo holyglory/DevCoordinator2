@@ -52,5 +52,30 @@
   "screenshot_annotation_canvas_07eeb5": "Annotatievlak voor schermafbeelding",
   "capture_details_and_feedback_40a8be": "Opnamedetails en feedback",
   "generation_record_5e6033": "Generatiegegevens",
-  "save_1509f5": "Opslaan"
+  "save_1509f5": "Opslaan",
+  "value1_revision_value2_0cd02a": "{value1} · revisie {value2}",
+  "step_value1_of_value2_196d3d": "Stap {value1} of {value2}",
+  "value7_steps_531b1f": {
+    "argument": "value7",
+    "forms": {
+      "one": "{value7} step",
+      "other": "{value7} steps"
+    }
+  },
+  "viewport_280503": "weergavegebied",
+  "keep_183f00": "Behouden",
+  "reject_ab604a": "Afwijzen",
+  "undecided_00cc36": "Onbeslist",
+  "visual_feedback_a19903": "Visuele feedback",
+  "reopen_a886d1": "Opnieuw openen",
+  "resolve_c8f193": "Oplossen",
+  "route_unavailable_21a43f": "Route niet beschikbaar",
+  "test_run_fe9e2f": "Testuitvoering",
+  "release_proof_17fa7c": "Releasebewijs",
+  "diagnostic_only_3425ba": "Alleen diagnose",
+  "edit_464c4f": "Edit",
+  "open_plan_task_4019fe": "Open Plan taak →",
+  "full_page_9d21b6": "Volledige pagina",
+  "previous_journey_step_7a544d": "Vorige stap in gebruikersroute",
+  "next_journey_step_35037a": "Volgende stap in gebruikersroute"
 }
