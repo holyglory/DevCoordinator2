@@ -993,7 +993,7 @@
         "CZ"
       ],
       "direction": "ltr",
-      "status": "draft",
+      "status": "enabled",
       "files": {
         "common": [
           "cs/common.json"
