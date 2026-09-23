@@ -25,5 +25,40 @@
   "binding_164c69": "Associazione",
   "error_54a0e8": "Errore",
   "untrusted_log_text_192942": "Testo del registro non attendibile",
-  "no_measured_components_6f4369": "Nessun componente misurato."
+  "no_measured_components_6f4369": "Nessun componente misurato.",
+  "domain_value1_value2_ee9534": "Dominio: {value1}@{value2}",
+  "compose_value3_service_87ae79": "Servizio Compose {value3}",
+  "prev_value1_8d66fe": "(prev {value1})",
+  "logs_value1_306798": "Logs: {value1}",
+  "deployment_aee50b": "distribuzione",
+  "deployments_01366d": "distribuzioni",
+  "expand_workers_c57c47": "Espandi workers",
+  "collapse_workers_7a9ec3": "Comprimi workers",
+  "exact_recorded_container_a9b79f": " · contenitore registrato esattamente",
+  "external_855e84": " · esterno",
+  "never_6497e4": "never",
+  "containerCount": {
+    "argument": "count",
+    "forms": {
+      "one": "{count} contenitore",
+      "many": "{count} contenitori",
+      "other": "{count} contenitori"
+    }
+  },
+  "apply_97a5e4": "applica",
+  "workers_7a1ec9": "Worker",
+  "my_app_4c9a75": "my-app",
+  "lowercase_dns_label_3dbe17": "lowercase DNS etichetta",
+  "logs_98f38f": "registri",
+  "rollback_da2548": "rollback",
+  "remove_deployment_keep_data_b46030": "Rimuovi distribuzione — conserva dati",
+  "remove_deployment_and_delete_data_9fe36e": "Rimuovi distribuzione e dati",
+  "deploymentCount": {
+    "argument": "count",
+    "forms": {
+      "one": "{count} distribuzione",
+      "many": "{count} distribuzioni",
+      "other": "{count} distribuzioni"
+    }
+  }
 }
