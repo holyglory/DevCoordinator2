@@ -25,5 +25,38 @@
   "binding_164c69": "Bindning",
   "error_54a0e8": "Fel",
   "untrusted_log_text_192942": "Ej betrodd loggtext",
-  "no_measured_components_6f4369": "Inga uppmätta komponenter."
+  "no_measured_components_6f4369": "Inga uppmätta komponenter.",
+  "domain_value1_value2_ee9534": "Domän: {value1}@{value2}",
+  "compose_value3_service_87ae79": "Compose-tjänst {value3}",
+  "prev_value1_8d66fe": "(prev {value1})",
+  "logs_value1_306798": "Logs: {value1}",
+  "deployment_aee50b": "driftsättning",
+  "deployments_01366d": "driftsättnings",
+  "expand_workers_c57c47": "Udvid workers",
+  "collapse_workers_7a9ec3": "Fold sammen workers",
+  "exact_recorded_container_a9b79f": " · exakt registrerad behållare",
+  "external_855e84": " · extern",
+  "never_6497e4": "never",
+  "containerCount": {
+    "argument": "count",
+    "forms": {
+      "one": "{count} behållare",
+      "other": "{count} behållares"
+    }
+  },
+  "apply_97a5e4": "apply",
+  "workers_7a1ec9": "Workers",
+  "my_app_4c9a75": "my-app",
+  "lowercase_dns_label_3dbe17": "DNS-etikett med små bokstäver",
+  "logs_98f38f": "logs",
+  "rollback_da2548": "återställning",
+  "remove_deployment_keep_data_b46030": "Fjern implementering — behold data",
+  "remove_deployment_and_delete_data_9fe36e": "Fjern implementering og slet data",
+  "deploymentCount": {
+    "argument": "count",
+    "forms": {
+      "one": "{count} driftsättning",
+      "other": "{count} driftsättnings"
+    }
+  }
 }
