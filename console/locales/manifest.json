@@ -1565,7 +1565,7 @@
         "SM"
       ],
       "direction": "ltr",
-      "status": "draft",
+      "status": "enabled",
       "files": {
         "common": [
           "it/common.json"
