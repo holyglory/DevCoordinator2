@@ -76,5 +76,10 @@
   "icon_plane": "Voo",
   "icon_book": "Documentação",
   "icon_chart-bar": "Análise",
-  "icon_shield": "Segurança"
+  "icon_shield": "Segurança",
+  "current_repository_value1_35de51": "Repositório atual: {value1}",
+  "could_not_save_repository_appearance_try_again_955cdd": "Não foi possível guardar o aspeto do repositório. Tente novamente.",
+  "value1_repositories_unavailable_refresh_to_retry_426a76": "{value1} repositórios indisponíveis. Atualize para tentar novamente.",
+  "montenegrinLatin": "Montenegrin (Latin)",
+  "montenegrinCyrillic": "Montenegrin (Cyrillic)"
 }

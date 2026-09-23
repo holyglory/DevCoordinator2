@@ -80,5 +80,51 @@
   "repositories_1e32af": "Repositórios",
   "screenshot_gallery_7bd298": "Galeria de capturas de ecrã",
   "these_screenshots_do_not_verify_the_latest_run_0e24e3": "Estas capturas não verificam a execução mais recente.",
-  "the_linked_run_is_no_longer_available_in_retaine_a39a19": "A execução associada já não está disponível no histórico guardado."
+  "the_linked_run_is_no_longer_available_in_retaine_a39a19": "A execução associada já não está disponível no histórico guardado.",
+  "value1_of_value2_cases_shown_all_retained_case_o_89db76": {
+    "argument": "value2",
+    "forms": {
+      "one": "{value1} caso de {value2} apresentado. Toda a saída conservada está disponível nos registos.",
+      "other": "{value1} casos de {value2} apresentados. Toda a saída conservada está disponível nos registos.",
+      "many": "{value1} casos de {value2} apresentados. Toda a saída conservada está disponível nos registos."
+    }
+  },
+  "none_dc937b": "Nenhum",
+  "start_of_output_85c6f8": "Início da saída",
+  "all_results_shown_ad3d94": "Todos os resultados apresentados",
+  "pending_331551": "Pendente",
+  "yes_85a39a": "Sim",
+  "in_progress_c1f88e": "Em curso",
+  "no_1ea442": "Não",
+  "unavailable_ca1844": "Indisponível",
+  "database_setup_7a9e87": "Configuração da base de dados",
+  "stop_run_b7ec68": "Parar execução",
+  "run_again_3e310b": "Executar novamente",
+  "not_recorded_b37c78": "Nãot recorded",
+  "value1_of_value2_882c45": "{value1} of {value2}",
+  "loading_screenshot_e0fd7b": "A carregar captura de ecrã…",
+  "preview_value1_cb5dab": "Pré-visualização {value1}",
+  "browse_all_value1_screenshots_81fcf6": {
+    "argument": "value1",
+    "forms": {
+      "one": "Ver a captura ({value1})",
+      "other": "Ver todas as {value1} capturas",
+      "many": "Ver todas as {value1} capturas"
+    }
+  },
+  "earlier_run_value1_68bdba": "Execução anterior · {value1}",
+  "value1_test_results_293210": "{value1} resultados de testes",
+  "test_results_3ea600": "Resultados de testes",
+  "updates_paused_value1_11b351": "Atualizações em pausa: {value1}",
+  "no_maximum_b5cfdf": "Não maximum",
+  "details_45989d": "Detalhes",
+  "previous_screenshot_af9be1": "Captura anterior",
+  "next_screenshot_fd250f": "Captura seguinte",
+  "open_in_viewer_comment_ad9420": "Abrir no visualizador / comentar",
+  "screenshot_loading_cancelled_50e74f": "Carregamento da captura cancelado.",
+  "the_screenshot_changed_while_loading_94fe13": "A captura mudou durante o carregamento.",
+  "the_screenshot_response_was_incomplete_4d7952": "A resposta da captura estava incompleta.",
+  "screenshots_could_not_be_read_92f171": "Screenshots não foi possível ler.",
+  "screenshot_could_not_be_previewed_11a0c5": "Screenshot não foi possível pré-visualizar.",
+  "a_newer_run_is_available_refresh_to_view_it_c113b3": "Está disponível uma execução mais recente. Refresh to view it."
 }

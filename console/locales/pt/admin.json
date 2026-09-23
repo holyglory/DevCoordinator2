@@ -24,5 +24,11 @@
   "chat_id_d6a2bb": "ID da conversa",
   "scope_5f161c": "âmbito",
   "subscribe_cc0e38": "Subscrever",
-  "server_aef7de": "Servidor"
+  "server_aef7de": "Servidor",
+  "configured_201582": "configurado",
+  "not_configured_9f33f0": "não configurado",
+  "yes_8a7988": "yes",
+  "remove_user_84a18f": "Remover utilizador",
+  "revoke_777ac4": "revogar",
+  "remove_grant_8c57bf": "Remover permissão"
 }
