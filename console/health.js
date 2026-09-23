@@ -10,10 +10,18 @@
     const main = () => document.querySelector('#main');
     const phone = matchMedia('(max-width: 760px)');
     const ranges = { '24h': [1440, 288], '7d': [10080, 336], '30d': [43200, 360] };
-    const date = (v) => v && !Number.isNaN(Date.parse(v)) ? new Date(v).toLocaleString() : tr('unavailable','Unavailable');
+    const date = (v) => v && !Number.isNaN(Date.parse(v))
+      ? (window.DevCoordinatorI18n?.date ? window.DevCoordinatorI18n.date(v) : new Date(v).toLocaleString())
+      : tr('unavailable','Unavailable');
     const age = (v) => {
       const minutes = Math.max(0, Math.floor((Date.now() - Date.parse(v)) / 60000));
       if (!Number.isFinite(minutes)) return tr('time_unavailable','Time unavailable');
+      const formatter = window.DevCoordinatorI18n?.relative;
+      if (formatter) {
+        if (minutes < 60) return formatter(-minutes, 'minute');
+        if (minutes < 1440) return formatter(-Math.floor(minutes / 60), 'hour');
+        return formatter(-Math.floor(minutes / 1440), 'day');
+      }
       return minutes < 60 ? `${minutes}m ago` : minutes < 1440 ? `${Math.floor(minutes / 60)}h ago` : `${Math.floor(minutes / 1440)}d ago`;
     };
     const badge = (label, kind = '') => `<span class="badge ${kind}">${esc(label)}</span>`;
@@ -185,8 +193,15 @@
       main().querySelectorAll('[data-hi-sort]').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.hiSort===s.sort)));
     }
     function hostMarkup(h) {
-      const metric=(title,value,note)=>`<div class="hi-capacity-cell"><span>${title}</span><strong>${value}</strong><small>${note}</small></div>`;
-      return `<div class="hi-host" data-ui-region="health-primary"><section class="hi-capacity"><h2>${safe('host_capacity_c36874','Host capacity')}</h2><div>${metric('CPU',pct(h.cpu_percent),`${h.ncpu} cores`)}${metric('Memory',bytes(h.memory_used),`of ${bytes(h.memory_total)}`)}${metric('Storage',bytes(h.fs_used),`${bytes(h.fs_free)} free`)}${metric('Load',String(h.load_1 ?? '—'),`1-minute average`)}</div></section><section class="hi-trends"><div class="hi-trends-heading"><h2>${safe('system_trends_eeef72','System trends')}</h2><div role="group" aria-label="${esc(tr('history_range','History range'))}">${Object.keys(ranges).map(r=>`<button class="btn" type="button" data-hi-range="${r}" aria-pressed="${s.range===r}">${r}</button>`).join('')}</div></div><div id="hi-history" aria-live="polite"><p>${safe('loading_history','Loading history…')}</p></div></section></div>`;
+      const labels = {
+        cpu: tr('cpu_db9a4c', 'CPU'),
+        memory: tr('memory_c3963a', 'Memory'),
+        storage: tr('storage_a69c4d', 'Storage'),
+        load: tr('system_load_f58135', 'System load'),
+      };
+      const metric=(title,value,note)=>`<div class="hi-capacity-cell"><span>${esc(title)}</span><strong>${value}</strong><small>${note}</small></div>`;
+      const cores = tr('value1_cores_cfde1b', `${h.ncpu} cores`, { value1: h.ncpu });
+      return `<div class="hi-host" data-ui-region="health-primary"><section class="hi-capacity"><h2>${safe('host_capacity_c36874','Host capacity')}</h2><div>${metric(labels.cpu,pct(h.cpu_percent),esc(cores))}${metric(labels.memory,bytes(h.memory_used),`${safe('of','of')} ${bytes(h.memory_total)}`)}${metric(labels.storage,bytes(h.fs_used),`${bytes(h.fs_free)} ${safe('free','free')}`)}${metric(labels.load,String(h.load_1 ?? '—'),safe('one_minute_average','1-minute average'))}</div></section><section class="hi-trends"><div class="hi-trends-heading"><h2>${safe('system_trends_eeef72','System trends')}</h2><div role="group" aria-label="${esc(tr('history_range','History range'))}">${Object.keys(ranges).map(r=>`<button class="btn" type="button" data-hi-range="${r}" aria-pressed="${s.range===r}">${r}</button>`).join('')}</div></div><div id="hi-history" aria-live="polite"><p>${safe('loading_history','Loading history…')}</p></div></section></div>`;
     }
     async function loadHistory() {
       const epoch = s.epoch;
@@ -196,7 +211,7 @@
         const results=await Promise.all(['cpu_percent','memory_used','storage_bytes'].map(metric=>api('health.history',{subject_kind:'host',subject_id:'host',metric,minutes,points})));
         if(epoch!==s.epoch||range!==s.range)return;
         const el=main()?.querySelector('#hi-history');
-        if(el)el.innerHTML=results.map((r,i)=>chart(r.points,i?pctBytes:pct,['CPU','Memory','Storage'][i]).replace('· now','· latest average')).join('');
+        if(el)el.innerHTML=results.map((r,i)=>chart(r.points,i?pctBytes:pct,[tr('cpu_db9a4c','CPU'),tr('memory_c3963a','Memory'),tr('storage_a69c4d','Storage')][i], { scale: tr('scale','scale'), now: tr('now_ed5eb9','now') })).join('');
       } catch(e){ if(e.code==='stale')return;const el=main()?.querySelector('#hi-history');if(el){el.innerHTML=fault(tr('history_unavailable','History unavailable.') + ' '+e.message,'history');bindRetries(el);} }
     }
     const pctBytes = n => bytes(n);

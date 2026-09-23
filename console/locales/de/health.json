@@ -136,5 +136,9 @@
   "resources_by_repository": "Ressourcen nach Repository",
   "search_repositories": "Repositorys suchen",
   "find_repository": "Repository suchen",
-  "repository_resources_unavailable": "Repositoryressourcen nicht verfügbar."
+  "repository_resources_unavailable": "Repositoryressourcen nicht verfügbar.",
+  "free": "frei",
+  "of": "von",
+  "one_minute_average": "1-Minuten-Durchschnitt",
+  "scale": "Skala"
 }

@@ -206,7 +206,7 @@ function minuteLabel(minute) {
 }
 // Time-series chart: shaded min–max envelope plus the average line, with the
 // scale and window bounds as plain HTML so nothing distorts or clips.
-function chart(points, fmt, label) {
+function chart(points, fmt, label, chartLabels = {}) {
   if (!points || points.length < 2) {
     return `<div class="chartbox"><div class="chartmeta"><span>${window.DevCoordinatorI18n.computedMarkup(() => window.DevCoordinatorI18n.label(label))}</span></div><div class="notice muted"><span data-i18n="common.no_history_for_this_window_yet_samples_accumulat_f6c3ff">No history for this window yet. Samples accumulate while the coordinator runs.</span></div></div>`;
   }
@@ -222,7 +222,7 @@ function chart(points, fmt, label) {
   const grid = [0.25, 0.5, 0.75].map((f) => `<line x1="0" x2="${w}" y1="${Y(maxV * f).toFixed(1)}" y2="${Y(maxV * f).toFixed(1)}" class="gridline"/>`).join('');
   const last = points.at(-1);
   return `<div class="chartbox">
-    <div class="chartmeta"><span>${window.DevCoordinatorI18n.computedMarkup(() => window.DevCoordinatorI18n.label(label))}</span><span><span class="muted">scale 0–${fmt(maxV)} · now</span> <strong>${fmt(last.avg)}</strong></span></div>
+    <div class="chartmeta"><span>${window.DevCoordinatorI18n.computedMarkup(() => window.DevCoordinatorI18n.label(label))}</span><span><span class="muted">${esc(chartLabels.scale || 'scale')} 0–${fmt(maxV)} · ${esc(chartLabels.now || 'now')}</span> <strong>${fmt(last.avg)}</strong></span></div>
     <svg class="chart" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" aria-label="${esc(window.DevCoordinatorI18n.label(label))} history">${grid}<polygon points="${band}" class="band"/><polyline points="${avg}" class="line" fill="none"/></svg>
     <div class="chartaxis"><span>${esc(minuteLabel(points[0].minute))}</span><span class="muted"><span data-i18n="common.min_max_band_average_line_5fe15d">min–max band, average line</span></span><span>${esc(minuteLabel(last.minute))}</span></div>
   </div>`;

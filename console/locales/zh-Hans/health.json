@@ -136,5 +136,9 @@
   "resources_by_repository": "按仓库查看资源",
   "search_repositories": "搜索仓库",
   "find_repository": "查找仓库",
-  "repository_resources_unavailable": "仓库资源不可用。"
+  "repository_resources_unavailable": "仓库资源不可用。",
+  "free": "可用",
+  "of": "共",
+  "one_minute_average": "1 分钟平均值",
+  "scale": "刻度"
 }

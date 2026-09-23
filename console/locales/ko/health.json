@@ -136,5 +136,9 @@
   "resources_by_repository": "저장소별 리소스",
   "search_repositories": "저장소 검색",
   "find_repository": "저장소 찾기",
-  "repository_resources_unavailable": "저장소 리소스를 사용할 수 없습니다."
+  "repository_resources_unavailable": "저장소 리소스를 사용할 수 없습니다.",
+  "free": "사용 가능",
+  "of": "전체",
+  "one_minute_average": "1분 평균",
+  "scale": "눈금"
 }

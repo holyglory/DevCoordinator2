@@ -140,5 +140,9 @@
   "resources_by_repository": "Ресурсы по репозиторию",
   "search_repositories": "Поиск репозиториев",
   "find_repository": "Найти репозиторий",
-  "repository_resources_unavailable": "Ресурсы репозитория недоступны."
+  "repository_resources_unavailable": "Ресурсы репозитория недоступны.",
+  "free": "свободно",
+  "of": "из",
+  "one_minute_average": "среднее за 1 минуту",
+  "scale": "масштаб"
 }

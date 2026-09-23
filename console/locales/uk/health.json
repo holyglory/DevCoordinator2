@@ -140,5 +140,9 @@
   "resources_by_repository": "Ресурси за сховищем",
   "search_repositories": "Пошук сховищ",
   "find_repository": "Знайти сховище",
-  "repository_resources_unavailable": "Ресурси сховища недоступні."
+  "repository_resources_unavailable": "Ресурси сховища недоступні.",
+  "free": "вільно",
+  "of": "із",
+  "one_minute_average": "середнє за 1 хвилину",
+  "scale": "масштаб"
 }

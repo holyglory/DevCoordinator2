@@ -136,5 +136,9 @@
   "resources_by_repository": "依儲存庫檢視資源",
   "search_repositories": "搜尋儲存庫",
   "find_repository": "尋找儲存庫",
-  "repository_resources_unavailable": "儲存庫資源無法使用。"
+  "repository_resources_unavailable": "儲存庫資源無法使用。",
+  "free": "可用",
+  "of": "共",
+  "one_minute_average": "1 分鐘平均值",
+  "scale": "刻度"
 }

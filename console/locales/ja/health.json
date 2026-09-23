@@ -136,5 +136,9 @@
   "resources_by_repository": "リポジトリ別リソース",
   "search_repositories": "リポジトリを検索",
   "find_repository": "リポジトリを探す",
-  "repository_resources_unavailable": "リポジトリのリソースを利用できません。"
+  "repository_resources_unavailable": "リポジトリのリソースを利用できません。",
+  "free": "空き",
+  "of": "全",
+  "one_minute_average": "1分間平均",
+  "scale": "スケール"
 }
