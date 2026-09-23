@@ -1,3 +1,51 @@
+# Console localization language selector audit
+
+final result: passed
+
+## Source and implementation
+
+- Source visual truth: Coordinator-retained sketch `s3bb42e5e6bb75208` in batch `kb6fd7388b447ab70` (the source image was captured from the selected Product Design result); selected by the owner under `DC2-LOCALIZATION-MENU-20260923`.
+- Fresh implementation capture: `/var/tmp/dc2-localization/audit-exact/translated-uk-dark-1487.png`.
+- Paired comparison: `/var/tmp/dc2-localization/audit/option1-vs-implementation.png`.
+- Both are 1487 × 1058 pixels at CSS viewport 1487 × 1058 and device scale 1; no density normalization was needed.
+- State: Plan route, dark theme, selected repository, language menu open, browser preference and supported languages visible.
+
+## Step-linked audit
+
+1. **Open the language control — healthy.** The globe button remains in the header, keeps the current route visible, and has an accessible current-language name.
+2. **Browse Recent and All languages — healthy.** Search, browser-preference labeling, dual current/native names, one-to-three country flags and selected state are visible.
+3. **Use the menu at the target desktop viewport — healthy.** The anchored panel stays inside the viewport and preserves the existing Console surfaces.
+4. **Change language and preserve work — healthy.** Fresh rendered verification covers route preservation, a filled dialog draft, focus restoration, reload persistence, browser-language reset, failed-fragment fallback and narrow layout.
+
+## Findings and accepted deviations
+
+- No actionable P0, P1 or P2 finding remains in the selector journey.
+- The implementation menu is wider than the source mockup because the owner added native labels, browser-preference status and up to three flags per language. This is an intentional requirement-backed deviation.
+- The current Console uses its approved responsive hamburger shell at this viewport, while the generated source shows inline navigation. This preserves `DC2-2026-08-30-CONSOLE-NAVIGATION-SHELL` and the existing responsive navigation decision; no new navigation system was introduced.
+- The underlying Plan data differs from the illustrative mockup because the implementation renders real fixture/API data. This is expected and preserves truthful product behavior.
+
+## Required fidelity surfaces
+
+- **Typography:** existing Inter/system fallback, compact header hierarchy, native-script labels and accessible names remain readable.
+- **Spacing:** right-aligned menu, bounded viewport placement, scrollable results and compact header controls remain contained.
+- **Colors/tokens:** existing light/dark Console tokens are reused; selected rows and focus rings retain semantic contrast.
+- **Assets:** flags are locally hosted licensed SVG assets; the existing Tabler globe icon is used; no raster or CSS-drawn replacement was introduced.
+- **Copy/content:** current and native names, browser preference, fallback state and country names are product messages; repository names, task text, comments, logs and evidence remain user data.
+
+## Evidence
+
+- Fresh rendered localization verification: 201 checks, zero failures for Ukrainian at desktop, tablet and mobile themes, including modal-draft preservation.
+- Fresh rendered verification: 313 checks, zero failures for Russian, Simplified Chinese, Traditional Chinese, Japanese and Korean; all five are rendered-admitted.
+- Complete Console state matrix: 1,421 checks, zero failures after making translated checks case-insensitive and adding the initial loading surface.
+- Focused locale/runtime tests: 12 tests passed; edge suite: 22 tests passed.
+- Evidence limits: screenshots cannot prove full accessibility compliance; keyboard, persistence, error recovery and draft preservation are covered by the rendered interaction checks.
+
+## Remaining rollout
+
+Only English, Ukrainian, Russian, Simplified Chinese, Traditional Chinese, Japanese and Korean are enabled in `manifest.json`; other locale drafts remain disabled because their current-source translations are incomplete or were quarantined after detecting donor-language contamination. Final localization handoff remains blocked until each enabled language has contextual translations, parity validation, rendered verification and linguistic review.
+
+---
+
 # Performance page design QA
 
 final result: passed

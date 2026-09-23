@@ -1,0 +1,19 @@
+{
+  "evidence_files_647770": "Fichiers justificatifs",
+  "run_00d60e": "Exécution",
+  "close_evidence_files_519ff0": "Fermer les fichiers justificatifs",
+  "file_collection_65a537": "Collection de fichiers",
+  "download_file_9de414": "Télécharger le fichier",
+  "selected_file_2d7ad2": "Fichier sélectionné",
+  "this_file_exceeds_the_32_mib_browser_limit_it_re_6d2d08": "Ce fichier dépasse la limite de 32 Mio du navigateur. Il reste accessible via les outils en ligne de commande pour les fichiers conservés.",
+  "no_browser_preview_for_this_file_type_9c21ba": "Aucun aperçu dans le navigateur pour ce type de fichier.",
+  "loading_file_e937ad": "Chargement du fichier…",
+  "loading_files_4aed40": "Chargement des fichiers…",
+  "more_files_594130": "Autres fichiers",
+  "no_retained_files_in_this_collection_5f6de1": "Aucun fichier conservé dans cette collection.",
+  "the_selected_file_is_no_longer_available_056930": "Le fichier sélectionné n’est plus disponible.",
+  "no_retained_files_are_available_for_this_run_1cd5fa": "Aucun fichier conservé n’est disponible pour cette exécution.",
+  "finding_retained_files_652bf1": "Recherche des fichiers conservés…",
+  "loading_runs_8438ea": "Chargement des exécutions…",
+  "no_readable_data_in_this_file_the_original_is_av_7a8394": "Aucune donnée lisible dans ce fichier. L’original peut être téléchargé."
+}

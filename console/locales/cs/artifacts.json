@@ -1,0 +1,19 @@
+{
+  "evidence_files_647770": "Soubory důkazů",
+  "run_00d60e": "Běh",
+  "close_evidence_files_519ff0": "Zavřít soubory důkazů",
+  "file_collection_65a537": "Kolekce souborů",
+  "download_file_9de414": "Stáhnout soubor",
+  "selected_file_2d7ad2": "Vybraný soubor",
+  "this_file_exceeds_the_32_mib_browser_limit_it_re_6d2d08": "Tento soubor překračuje limit prohlížeče 32 MiB. Je nadále dostupný prostřednictvím nástrojů příkazového řádku pro uchované soubory.",
+  "no_browser_preview_for_this_file_type_9c21ba": "Pro tento typ souboru není v prohlížeči náhled.",
+  "loading_file_e937ad": "Načítání souboru…",
+  "loading_files_4aed40": "Načítání souborů…",
+  "more_files_594130": "Další soubory",
+  "no_retained_files_in_this_collection_5f6de1": "V této kolekci nejsou uchované soubory.",
+  "the_selected_file_is_no_longer_available_056930": "Vybraný soubor už není dostupný.",
+  "no_retained_files_are_available_for_this_run_1cd5fa": "Pro tento běh nejsou dostupné uchované soubory.",
+  "finding_retained_files_652bf1": "Hledání uchovaných souborů…",
+  "loading_runs_8438ea": "Načítání běhů…",
+  "no_readable_data_in_this_file_the_original_is_av_7a8394": "V tomto souboru nejsou zobrazitelná data. Originál lze stáhnout."
+}

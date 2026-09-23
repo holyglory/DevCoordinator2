@@ -1,0 +1,19 @@
+{
+  "evidence_files_647770": "Pliki dowodowe",
+  "run_00d60e": "Uruchomienie",
+  "close_evidence_files_519ff0": "Zamknij pliki dowodowe",
+  "file_collection_65a537": "Kolekcja plików",
+  "download_file_9de414": "Pobierz plik",
+  "selected_file_2d7ad2": "Wybrany plik",
+  "this_file_exceeds_the_32_mib_browser_limit_it_re_6d2d08": "Ten plik przekracza limit przeglądarki wynoszący 32 MiB. Jest nadal dostępny przez narzędzia wiersza poleceń do zachowanych plików.",
+  "no_browser_preview_for_this_file_type_9c21ba": "Brak podglądu tego typu pliku w przeglądarce.",
+  "loading_file_e937ad": "Wczytywanie pliku…",
+  "loading_files_4aed40": "Wczytywanie plików…",
+  "more_files_594130": "Więcej plików",
+  "no_retained_files_in_this_collection_5f6de1": "Brak zachowanych plików w tej kolekcji.",
+  "the_selected_file_is_no_longer_available_056930": "Wybrany plik nie jest już dostępny.",
+  "no_retained_files_are_available_for_this_run_1cd5fa": "Brak dostępnych zachowanych plików dla tego uruchomienia.",
+  "finding_retained_files_652bf1": "Wyszukiwanie zachowanych plików…",
+  "loading_runs_8438ea": "Wczytywanie uruchomień…",
+  "no_readable_data_in_this_file_the_original_is_av_7a8394": "Ten plik nie zawiera danych możliwych do wyświetlenia. Oryginał można pobrać."
+}

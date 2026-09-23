@@ -1,0 +1,19 @@
+{
+  "evidence_files_647770": "Datoteke dokaza",
+  "run_00d60e": "Izvođenje",
+  "close_evidence_files_519ff0": "Zatvori datoteke dokaza",
+  "file_collection_65a537": "Zbirka datoteka",
+  "download_file_9de414": "Preuzmi datoteku",
+  "selected_file_2d7ad2": "Odabrana datoteka",
+  "this_file_exceeds_the_32_mib_browser_limit_it_re_6d2d08": "Ova datoteka premašuje ograničenje preglednika od 32 MiB. I dalje je dostupna putem alata naredbenog retka za sačuvane datoteke.",
+  "no_browser_preview_for_this_file_type_9c21ba": "Za ovu vrstu datoteke nema pregleda u pregledniku.",
+  "loading_file_e937ad": "Učitavanje datoteke…",
+  "loading_files_4aed40": "Učitavanje datoteka…",
+  "more_files_594130": "Više datoteka",
+  "no_retained_files_in_this_collection_5f6de1": "U ovoj zbirci nema sačuvanih datoteka.",
+  "the_selected_file_is_no_longer_available_056930": "Odabrana datoteka više nije dostupna.",
+  "no_retained_files_are_available_for_this_run_1cd5fa": "Za ovo izvođenje nema dostupnih sačuvanih datoteka.",
+  "finding_retained_files_652bf1": "Traženje sačuvanih datoteka…",
+  "loading_runs_8438ea": "Učitavanje izvođenja…",
+  "no_readable_data_in_this_file_the_original_is_av_7a8394": "U ovoj datoteci nema čitljivih podataka. Izvornik je dostupan za preuzimanje."
+}

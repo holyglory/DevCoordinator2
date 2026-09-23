@@ -1,0 +1,19 @@
+{
+  "evidence_files_647770": "Bevisfiler",
+  "run_00d60e": "Køyring",
+  "close_evidence_files_519ff0": "Lukk bevisfiler",
+  "file_collection_65a537": "Filsamling",
+  "download_file_9de414": "Last ned fil",
+  "selected_file_2d7ad2": "Valt fil",
+  "this_file_exceeds_the_32_mib_browser_limit_it_re_6d2d08": "Denne fila overskrid nettlesargrensa på 32 MiB. Den er framleis tilgjengeleg via kommandolinjeverktøyene for bevarte filer.",
+  "no_browser_preview_for_this_file_type_9c21ba": "Ingen førehandsvising i nettlesaren for denne filtypen.",
+  "loading_file_e937ad": "Lastar fil…",
+  "loading_files_4aed40": "Lastar filer…",
+  "more_files_594130": "Fleire filer",
+  "no_retained_files_in_this_collection_5f6de1": "Ingen bevarte filer i denne samlinga.",
+  "the_selected_file_is_no_longer_available_056930": "Den valde fila er ikkje lenger tilgjengeleg.",
+  "no_retained_files_are_available_for_this_run_1cd5fa": "Ingen bevarte filer er tilgjengelege for denne køyringa.",
+  "finding_retained_files_652bf1": "Finn bevarte filer…",
+  "loading_runs_8438ea": "Lastar køyringar…",
+  "no_readable_data_in_this_file_the_original_is_av_7a8394": "Ingen lesbare data i denne fila. Originalen kan lastast ned."
+}

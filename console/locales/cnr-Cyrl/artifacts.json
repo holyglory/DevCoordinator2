@@ -1,0 +1,19 @@
+{
+  "evidence_files_647770": "Датотеке доказа",
+  "run_00d60e": "Извођење",
+  "close_evidence_files_519ff0": "Затвори датотеке доказа",
+  "file_collection_65a537": "Збирка датотека",
+  "download_file_9de414": "Преузми датотеку",
+  "selected_file_2d7ad2": "Одабрана датотека",
+  "this_file_exceeds_the_32_mib_browser_limit_it_re_6d2d08": "Ова датотека премашује ограничење прегледача од 32 MiB. И даље је доступна путем алата командне линије за сачуване датотеке.",
+  "no_browser_preview_for_this_file_type_9c21ba": "За ову врсту датотеке нема прегледа у прегледачу.",
+  "loading_file_e937ad": "Учитавање датотеке…",
+  "loading_files_4aed40": "Учитавање датотека…",
+  "more_files_594130": "Више датотека",
+  "no_retained_files_in_this_collection_5f6de1": "У овој збирци нема сачуваних датотека.",
+  "the_selected_file_is_no_longer_available_056930": "Одабрана датотека више није доступна.",
+  "no_retained_files_are_available_for_this_run_1cd5fa": "За ово извођење нема доступних сачуваних датотека.",
+  "finding_retained_files_652bf1": "Тражење сачуваних датотека…",
+  "loading_runs_8438ea": "Учитавање извођења…",
+  "no_readable_data_in_this_file_the_original_is_av_7a8394": "У овој датотеци нема читљивих података. Оригинал је доступан за преузимање."
+}
