@@ -80,5 +80,51 @@
   "repositories_1e32af": "Repositorios",
   "screenshot_gallery_7bd298": "Galería de capturas",
   "these_screenshots_do_not_verify_the_latest_run_0e24e3": "Estas capturas no verifican la última ejecución.",
-  "the_linked_run_is_no_longer_available_in_retaine_a39a19": "La ejecución enlazada ya no está disponible en el historial conservado."
+  "the_linked_run_is_no_longer_available_in_retaine_a39a19": "La ejecución enlazada ya no está disponible en el historial conservado.",
+  "value1_of_value2_cases_shown_all_retained_case_o_89db76": {
+    "argument": "value2",
+    "forms": {
+      "one": "Se muestra {value1} caso de {value2}. Toda la salida conservada está disponible en Registros.",
+      "other": "Se muestran {value1} casos de {value2}. Toda la salida conservada está disponible en Registros.",
+      "many": "Se muestran {value1} casos de {value2}. Toda la salida conservada está disponible en Registros."
+    }
+  },
+  "none_dc937b": "Ninguno",
+  "start_of_output_85c6f8": "Inicio de la salida",
+  "all_results_shown_ad3d94": "Todos los resultados mostrados",
+  "pending_331551": "Pendiente",
+  "yes_85a39a": "Sí",
+  "in_progress_c1f88e": "En curso",
+  "no_1ea442": "No",
+  "unavailable_ca1844": "No disponible",
+  "database_setup_7a9e87": "Configuración de base de datos",
+  "stop_run_b7ec68": "Detener ejecución",
+  "run_again_3e310b": "Ejecutar de nuevo",
+  "not_recorded_b37c78": "No registrado",
+  "value1_of_value2_882c45": "{value1} of {value2}",
+  "loading_screenshot_e0fd7b": "Cargando captura…",
+  "preview_value1_cb5dab": "Vista previa {value1}",
+  "browse_all_value1_screenshots_81fcf6": {
+    "argument": "value1",
+    "forms": {
+      "one": "Ver la captura ({value1})",
+      "other": "Ver todas las {value1} capturas",
+      "many": "Ver todas las {value1} capturas"
+    }
+  },
+  "earlier_run_value1_68bdba": "Ejecución anterior · {value1}",
+  "value1_test_results_293210": "{value1} resultados de pruebas",
+  "test_results_3ea600": "Resultados de pruebas",
+  "updates_paused_value1_11b351": "Actualizaciones pausadas: {value1}",
+  "no_maximum_b5cfdf": "Sin máximo",
+  "details_45989d": "Detalles",
+  "previous_screenshot_af9be1": "Captura anterior",
+  "next_screenshot_fd250f": "Siguiente captura",
+  "open_in_viewer_comment_ad9420": "Abrir en el visor / comment",
+  "screenshot_loading_cancelled_50e74f": "Carga de captura cancelada.",
+  "the_screenshot_changed_while_loading_94fe13": "La captura cambió durante la carga.",
+  "the_screenshot_response_was_incomplete_4d7952": "La respuesta de la captura estaba incompleta.",
+  "screenshots_could_not_be_read_92f171": "No se pudieron leer las capturas.",
+  "screenshot_could_not_be_previewed_11a0c5": "No se pudo previsualizar la captura.",
+  "a_newer_run_is_available_refresh_to_view_it_c113b3": "Hay una ejecución más reciente. Actualice para verla."
 }

@@ -17,13 +17,48 @@
   "apply_is_still_running_closing_this_page_does_no_83d405": "La aplicación sigue en curso. Cerrar esta página no la cancela. Actualice el estado cuando termine; mientras tanto, las demás acciones de ciclo de vida no estarán disponibles.",
   "route_port_2c38fa": "Puerto de la ruta",
   "expires_f6725f": "Caduca",
-  "components_a150ce": "Componentes",
-  "component_ce54f0": "Componente",
+  "components_a150ce": "Componenteees",
+  "component_ce54f0": "Componenteee",
   "state_a3b50c": "Estado",
   "gen_ca0aad": "Gen.",
   "restarts_4fdc8b": "Reinicios",
   "binding_164c69": "Vinculación",
   "error_54a0e8": "Error",
   "untrusted_log_text_192942": "Texto de registro no confiable",
-  "no_measured_components_6f4369": "No hay componentes medidos."
+  "no_measured_components_6f4369": "No hay componentes medidos.",
+  "domain_value1_value2_ee9534": "Dominio: {value1}@{value2}",
+  "compose_value3_service_87ae79": "Servicio Compose {value3}",
+  "prev_value1_8d66fe": "(prev {value1})",
+  "logs_value1_306798": "Logs: {value1}",
+  "deployment_aee50b": "despliegue",
+  "deployments_01366d": "despliegues",
+  "expand_workers_c57c47": "Expandir workers",
+  "collapse_workers_7a9ec3": "Contraer workers",
+  "exact_recorded_container_a9b79f": " · contenedor exacto registrado",
+  "external_855e84": " · externo",
+  "never_6497e4": "never",
+  "containerCount": {
+    "argument": "count",
+    "forms": {
+      "one": "{count} contenedor",
+      "other": "{count} contenedores",
+      "many": "{count} contenedores"
+    }
+  },
+  "apply_97a5e4": "apply",
+  "workers_7a1ec9": "Workers",
+  "my_app_4c9a75": "my-app",
+  "lowercase_dns_label_3dbe17": "etiqueta DNS en minúsculas",
+  "logs_98f38f": "logs",
+  "rollback_da2548": "revertir",
+  "remove_deployment_keep_data_b46030": "Eliminar despliegue — conservar datos",
+  "remove_deployment_and_delete_data_9fe36e": "Eliminar despliegue y datos",
+  "deploymentCount": {
+    "argument": "count",
+    "forms": {
+      "one": "{count} despliegue",
+      "other": "{count} despliegues",
+      "many": "{count} despliegues"
+    }
+  }
 }
