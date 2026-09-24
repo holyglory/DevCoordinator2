@@ -866,7 +866,7 @@
         "CY"
       ],
       "direction": "ltr",
-      "status": "draft",
+      "status": "enabled",
       "files": {
         "common": [
           "el/common.json"
