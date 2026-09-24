@@ -287,7 +287,7 @@
         "AZ"
       ],
       "direction": "ltr",
-      "status": "draft",
+      "status": "enabled",
       "files": {
         "common": [
           "az/common.json"
