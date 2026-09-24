@@ -24,5 +24,11 @@
   "chat_id_d6a2bb": "ID razgovora",
   "scope_5f161c": "opseg",
   "subscribe_cc0e38": "Pretplati se",
-  "server_aef7de": "Server"
+  "server_aef7de": "Server",
+  "configured_201582": "konfigurisano",
+  "not_configured_9f33f0": "nije konfigurisano",
+  "yes_8a7988": "da",
+  "remove_user_84a18f": "Ukloni korisnika",
+  "revoke_777ac4": "opozovi",
+  "remove_grant_8c57bf": "Ukloni dozvolu"
 }

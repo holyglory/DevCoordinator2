@@ -23,5 +23,19 @@
   "tool_outcomes_3a7a68": "Rezultati alata",
   "data_completeness_c7114d": "Potpunost podataka",
   "counting_method_7a480a": "Način brojanja",
-  "provider_reported_total_tokens_cached_input_and__9908f6": "Ukupni tokeni koje je prijavio pružalac; keširani unos i razmišljanje uključeni su u taj zbroj."
+  "provider_reported_total_tokens_cached_input_and__9908f6": "Ukupni tokeni koje je prijavio pružalac; keširani unos i razmišljanje uključeni su u taj zbroj.",
+  "schema_value19_taxonomy_value20_cdddf8": "Šema {value19} · taksonomija {value20}",
+  "value21_environments_that_supplied_no_data_and_u_cbbc39": "{value21}. Okruženja bez podataka i nemerenih vrednosti isključena su i ne tretiraju se kao nula.",
+  "token_subsets_unavailable_4cec86": "Podskupovi tokena nisu dostupni",
+  "about_codex_environments_4a2e3e": "O Codex okruženjima",
+  "explain_codex_usage_data_completeness_63247d": "Objasni potpunost podataka o korišćenju Codexa",
+  "tokens_a039df": "Tokeni",
+  "unknownIntervals": {
+    "argument": "count",
+    "forms": {
+      "one": "{count} nepoznat interval",
+      "few": "{count} nepoznata intervala",
+      "other": "{count} nepoznatih intervala"
+    }
+  }
 }
