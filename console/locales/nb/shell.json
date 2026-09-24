@@ -76,5 +76,10 @@
   "icon_plane": "Flyvning",
   "icon_book": "Dokumentasjon",
   "icon_chart-bar": "Analyse",
-  "icon_shield": "Sikkerhet"
+  "icon_shield": "Sikkerhet",
+  "current_repository_value1_35de51": "Gjeldande kodelager: {value1}",
+  "could_not_save_repository_appearance_try_again_955cdd": "Kunne ikkje lagre utsjånaden til kodelageret. Prøv igjen.",
+  "value1_repositories_unavailable_refresh_to_retry_426a76": "{value1} kodelager er utilgjengelege. Oppdater for å prøve igjen.",
+  "montenegrinLatin": "Montenegrinsk (latinsk)",
+  "montenegrinCyrillic": "Montenegrinsk (kyrillisk)"
 }

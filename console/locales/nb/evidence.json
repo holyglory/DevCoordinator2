@@ -52,5 +52,30 @@
   "screenshot_annotation_canvas_07eeb5": "Lerret for skjermbildemerknader",
   "capture_details_and_feedback_40a8be": "Opptaksdetaljer og tilbakemeldinger",
   "generation_record_5e6033": "Genereringsoppføring",
-  "save_1509f5": "Lagre"
+  "save_1509f5": "Lagre",
+  "value1_revision_value2_0cd02a": "{value1} · revisjon {value2}",
+  "step_value1_of_value2_196d3d": "Trinn {value1} av {value2}",
+  "value7_steps_531b1f": {
+    "argument": "value7",
+    "forms": {
+      "one": "{value7} trinn",
+      "other": "{value7} trinn"
+    }
+  },
+  "viewport_280503": "visningsområde",
+  "keep_183f00": "Behold",
+  "reject_ab604a": "Avvis",
+  "undecided_00cc36": "Uavklart",
+  "visual_feedback_a19903": "Visuell tilbakemelding",
+  "reopen_a886d1": "Åpne på nytt",
+  "resolve_c8f193": "Løs",
+  "route_unavailable_21a43f": "Rute utilgjengelig",
+  "test_run_fe9e2f": "Testkjøring",
+  "release_proof_17fa7c": "Leveransebevis",
+  "diagnostic_only_3425ba": "Kun diagnostikk",
+  "edit_464c4f": "Rediger",
+  "open_plan_task_4019fe": "Åpne planoppgave →",
+  "full_page_9d21b6": "Hel side",
+  "previous_journey_step_7a544d": "Forrige trinn i forløpet",
+  "next_journey_step_35037a": "Neste trinn i forløpet"
 }
