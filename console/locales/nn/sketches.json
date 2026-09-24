@@ -12,5 +12,38 @@
   "sketches_a56d78": "Skisser",
   "review_generated_options_by_set_then_select_one__020509": "Vurder dei genererte alternativene settvis, og vel ett eller fleire å jobbe videre med.",
   "publish_from_a_skill_f33a0e": "Publiser frå ein ferdigheit",
-  "sketches_are_published_by_a_registered_skill_a2ac72": "Skisser publiseres av ein registrert ferdigheit"
+  "sketches_are_published_by_a_registered_skill_a2ac72": "Skisser publiseres av ein registrert ferdigheit",
+  "value2_selected_value3_options_b64a24": "{value2} valt · {value3} alternativ",
+  "value5_sketches_value6_selected_87bdd8": "{value5} skisser · {value6} valt",
+  "value6_rejected_value7_undecided_bbc778": "{value6} avviste · {value7} uavklarte",
+  "reviewer_d29f46": "Gjennomgangsansvarleg",
+  "option_unavailable_d03e4e": "Alternativ ikkje tilgjengeleg",
+  "selected_57fd7a": "Valt",
+  "rejected_aea4a0": "Avvist",
+  "undecided_00cc36": "Uavklart",
+  "select_2a7802": "Vel",
+  "reject_ab604a": "Avvis",
+  "leave_undecided_65c5c0": "La stå uavklart",
+  "set_6ee0eb": "sett",
+  "sets_82c6db": "sett",
+  "no_selection_211f6b": "Ingen val",
+  "selectedOptionContext": {
+    "argument": "count",
+    "forms": {
+      "one": "Legg til kontekst for det valde alternativet",
+      "other": "Legg til kontekst for dei valde alternativa"
+    }
+  },
+  "review_set_ca242c": "Gå gjennom settet",
+  "open_sketch_3ccc5c": "Opne skisse",
+  "single_choice_45a76a": "Enkelt val",
+  "choose_multiple_b76dc5": "Vel fleire",
+  "open_full_review_canvas_26fc95": "Opne full gjennomgangsflate",
+  "setCount": {
+    "argument": "count",
+    "forms": {
+      "one": "{count} sett",
+      "other": "{count} sett"
+    }
+  }
 }

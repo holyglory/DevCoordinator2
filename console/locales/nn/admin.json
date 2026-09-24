@@ -24,5 +24,11 @@
   "chat_id_d6a2bb": "chat-ID",
   "scope_5f161c": "omfang",
   "subscribe_cc0e38": "Abonner",
-  "server_aef7de": "Server"
+  "server_aef7de": "Server",
+  "configured_201582": "konfigurert",
+  "not_configured_9f33f0": "ikkje konfigurert",
+  "yes_8a7988": "ja",
+  "remove_user_84a18f": "Fjern brukar",
+  "revoke_777ac4": "trekk tilbake",
+  "remove_grant_8c57bf": "Fjern tilgang"
 }

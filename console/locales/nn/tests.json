@@ -80,5 +80,49 @@
   "repositories_1e32af": "Kodelager",
   "screenshot_gallery_7bd298": "Skjermbiletegalleri",
   "these_screenshots_do_not_verify_the_latest_run_0e24e3": "Desse skjermbiletene stadfestar ikkje den siste køyringa.",
-  "the_linked_run_is_no_longer_available_in_retaine_a39a19": "Den tilknytte køyringa er ikkje lenger tilgjengeleg i den bevarte historikken."
+  "the_linked_run_is_no_longer_available_in_retaine_a39a19": "Den tilknytte køyringa er ikkje lenger tilgjengeleg i den bevarte historikken.",
+  "value1_of_value2_cases_shown_all_retained_case_o_89db76": {
+    "argument": "value2",
+    "forms": {
+      "one": "{value1} av {value2} tilfelle vist. All lagra kasusutdata finst i loggane.",
+      "other": "{value1} av {value2} tilfelle viste. All lagra kasusutdata finst i loggane."
+    }
+  },
+  "none_dc937b": "Ingen",
+  "start_of_output_85c6f8": "Start på utdata",
+  "all_results_shown_ad3d94": "Alle resultat viste",
+  "pending_331551": "Ventande",
+  "yes_85a39a": "Ja",
+  "in_progress_c1f88e": "I arbeid",
+  "no_1ea442": "Nei",
+  "unavailable_ca1844": "Ikkje tilgjengeleg",
+  "database_setup_7a9e87": "Databaseoppsett",
+  "stop_run_b7ec68": "Stopp køyring",
+  "run_again_3e310b": "Køyr på nytt",
+  "not_recorded_b37c78": "Ikkje registrert",
+  "value1_of_value2_882c45": "{value1} av {value2}",
+  "loading_screenshot_e0fd7b": "Lastar skjermbilete…",
+  "preview_value1_cb5dab": "Førehandsvising {value1}",
+  "browse_all_value1_screenshots_81fcf6": {
+    "argument": "value1",
+    "forms": {
+      "one": "Vis skjermbiletet ({value1})",
+      "other": "Vis alle {value1} skjermbilete"
+    }
+  },
+  "earlier_run_value1_68bdba": "Tidlegare køyring · {value1}",
+  "value1_test_results_293210": "{value1} testresultat",
+  "test_results_3ea600": "Testresultat",
+  "updates_paused_value1_11b351": "Oppdateringar sette på pause: {value1}",
+  "no_maximum_b5cfdf": "Ingen maksimum",
+  "details_45989d": "Detaljar",
+  "previous_screenshot_af9be1": "Førre skjermbilete",
+  "next_screenshot_fd250f": "Neste skjermbilete",
+  "open_in_viewer_comment_ad9420": "Opne i visaren / kommenter",
+  "screenshot_loading_cancelled_50e74f": "Lasting av skjermbilete avbroten.",
+  "the_screenshot_changed_while_loading_94fe13": "Skjermbiletet endra seg under lasting.",
+  "the_screenshot_response_was_incomplete_4d7952": "Svaret for skjermbiletet var ufullstendig.",
+  "screenshots_could_not_be_read_92f171": "Skjermbilete kunne ikkje lesast.",
+  "screenshot_could_not_be_previewed_11a0c5": "Skjermbiletet kunne ikkje førehandsvisast.",
+  "a_newer_run_is_available_refresh_to_view_it_c113b3": "Ei nyare køyring er tilgjengeleg. Oppdater for å sjå henne."
 }

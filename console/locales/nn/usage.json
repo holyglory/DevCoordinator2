@@ -23,5 +23,18 @@
   "tool_outcomes_3a7a68": "Verktøyresultat",
   "data_completeness_c7114d": "Datafullstende",
   "counting_method_7a480a": "Teljemetode",
-  "provider_reported_total_tokens_cached_input_and__9908f6": "Totalt tal på token rapportert av leverandøren; bufret inndata og resonnering er inkludert i totalen."
+  "provider_reported_total_tokens_cached_input_and__9908f6": "Totalt tal på token rapportert av leverandøren; bufret inndata og resonnering er inkludert i totalen.",
+  "schema_value19_taxonomy_value20_cdddf8": "Skjema {value19} · taksonomi {value20}",
+  "value21_environments_that_supplied_no_data_and_u_cbbc39": "{value21}. Miljø utan data og umålte verdiar blir utelatne i staden for å bli rekna som null.",
+  "token_subsets_unavailable_4cec86": "Delmengder av token er ikkje tilgjengelege.",
+  "unknownIntervals": {
+    "argument": "count",
+    "forms": {
+      "one": "{count} ukjent intervall",
+      "other": "{count} ukjende intervall"
+    }
+  },
+  "about_codex_environments_4a2e3e": "Om Codex-miljø",
+  "explain_codex_usage_data_completeness_63247d": "Forklar fullstendet i Codex-bruksdata",
+  "tokens_a039df": "Token"
 }
