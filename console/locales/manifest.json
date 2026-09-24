@@ -2709,7 +2709,7 @@
         "KZ"
       ],
       "direction": "ltr",
-      "status": "draft",
+      "status": "enabled",
       "files": {
         "common": [
           "ru/common.json"
