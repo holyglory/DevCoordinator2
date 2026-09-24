@@ -352,7 +352,7 @@
         "CH"
       ],
       "direction": "ltr",
-      "status": "enabled",
+      "status": "draft",
       "files": {
         "common": [
           "de/common.json"
@@ -417,7 +417,7 @@
         "BE"
       ],
       "direction": "ltr",
-      "status": "enabled",
+      "status": "draft",
       "files": {
         "common": [
           "fr/common.json"
@@ -482,7 +482,7 @@
         "SR"
       ],
       "direction": "ltr",
-      "status": "enabled",
+      "status": "draft",
       "files": {
         "common": [
           "nl/common.json"
@@ -1056,7 +1056,7 @@
         "DK"
       ],
       "direction": "ltr",
-      "status": "enabled",
+      "status": "draft",
       "files": {
         "common": [
           "da/common.json"
@@ -1246,7 +1246,7 @@
         "FI"
       ],
       "direction": "ltr",
-      "status": "enabled",
+      "status": "draft",
       "files": {
         "common": [
           "sv/common.json"
@@ -1565,7 +1565,7 @@
         "SM"
       ],
       "direction": "ltr",
-      "status": "enabled",
+      "status": "draft",
       "files": {
         "common": [
           "it/common.json"
@@ -2327,7 +2327,7 @@
         "AO"
       ],
       "direction": "ltr",
-      "status": "enabled",
+      "status": "draft",
       "files": {
         "common": [
           "pt/common.json"
@@ -2518,7 +2518,7 @@
         "CO"
       ],
       "direction": "ltr",
-      "status": "enabled",
+      "status": "draft",
       "files": {
         "common": [
           "es/common.json"
@@ -2709,7 +2709,7 @@
         "KZ"
       ],
       "direction": "ltr",
-      "status": "enabled",
+      "status": "draft",
       "files": {
         "common": [
           "ru/common.json"
@@ -2774,7 +2774,7 @@
         "MY"
       ],
       "direction": "ltr",
-      "status": "enabled",
+      "status": "draft",
       "files": {
         "common": [
           "zh-Hans/common.json"
@@ -2837,7 +2837,7 @@
         "TW"
       ],
       "direction": "ltr",
-      "status": "enabled",
+      "status": "draft",
       "files": {
         "common": [
           "zh-Hant/common.json"
@@ -2900,7 +2900,7 @@
         "JP"
       ],
       "direction": "ltr",
-      "status": "enabled",
+      "status": "draft",
       "files": {
         "common": [
           "ja/common.json"
@@ -2964,7 +2964,7 @@
         "KP"
       ],
       "direction": "ltr",
-      "status": "enabled",
+      "status": "draft",
       "files": {
         "common": [
           "ko/common.json"
