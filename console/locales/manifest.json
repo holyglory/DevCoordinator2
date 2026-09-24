@@ -930,7 +930,7 @@
         "CY"
       ],
       "direction": "ltr",
-      "status": "draft",
+      "status": "enabled",
       "files": {
         "common": [
           "tr/common.json"
