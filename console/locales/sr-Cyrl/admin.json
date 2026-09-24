@@ -24,5 +24,11 @@
   "chat_id_d6a2bb": "ID разговора",
   "scope_5f161c": "опсег",
   "subscribe_cc0e38": "Претплати се",
-  "server_aef7de": "Сервер"
+  "server_aef7de": "Сервер",
+  "configured_201582": "конфигурисано",
+  "not_configured_9f33f0": "није конфигурисано",
+  "yes_8a7988": "да",
+  "remove_user_84a18f": "Уклони корисника",
+  "revoke_777ac4": "опозови",
+  "remove_grant_8c57bf": "Уклони дозволу"
 }
