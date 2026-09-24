@@ -13,7 +13,7 @@
   "save_domain_080d60": "Salva dominio",
   "cancel_19766e": "Annulla",
   "edit_262121": "modifica",
-  "imported_from_the_live_host_start_stop_restart_a_cd3182": "Importato dall’host in esecuzione. Avvio, arresto, riavvio e registri si riferiscono ai contenitori esatti registrati. Le modifiche alla configurazione (applicazione, ripristino, rimozione) richiedono l’adozione dello stack tramite la configurazione del repository.",
+  "imported_from_the_live_host_start_stop_restart_a_cd3182": "Importato dall’host in esecuzione. Le operazioni di avvio, arresto, riavvio e consultazione dei registri riguardano i contenitori registrati in modo preciso. Le modifiche alla configurazione (applicazione, ripristino, rimozione) richiedono l’adozione dell’insieme di servizi tramite la configurazione del repository.",
   "apply_is_still_running_closing_this_page_does_no_83d405": "L’applicazione è ancora in corso. Chiudere questa pagina non la annulla. Aggiorna lo stato al termine; nel frattempo le altre azioni del ciclo di vita restano indisponibili.",
   "route_port_2c38fa": "Porta di instradamento",
   "expires_f6725f": "Scadenza",
