@@ -96,7 +96,7 @@
         "ME"
       ],
       "direction": "ltr",
-      "status": "draft",
+      "status": "enabled",
       "files": {
         "common": [
           "sq/common.json"
