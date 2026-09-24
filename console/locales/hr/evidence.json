@@ -52,5 +52,31 @@
   "screenshot_annotation_canvas_07eeb5": "Platno za bilješke na snimci zaslona",
   "capture_details_and_feedback_40a8be": "Pojedinosti snimke i povratne informacije",
   "generation_record_5e6033": "Zapis stvaranja",
-  "save_1509f5": "Spremi"
+  "save_1509f5": "Spremi",
+  "value1_revision_value2_0cd02a": "{value1} · revizija {value2}",
+  "step_value1_of_value2_196d3d": "Korak {value1} od {value2}",
+  "value7_steps_531b1f": {
+    "argument": "value7",
+    "forms": {
+      "one": "{value7} korak",
+      "few": "{value7} koraka",
+      "other": "{value7} koraka"
+    }
+  },
+  "viewport_280503": "područje prikaza",
+  "keep_183f00": "Zadrži",
+  "reject_ab604a": "Odbaci",
+  "undecided_00cc36": "Neodlučeno",
+  "visual_feedback_a19903": "Vizualne povratne informacije",
+  "reopen_a886d1": "Ponovno otvori",
+  "resolve_c8f193": "Razriješi",
+  "route_unavailable_21a43f": "Ruta nije dostupna",
+  "test_run_fe9e2f": "Pokretanje testa",
+  "release_proof_17fa7c": "Dokaz izdanja",
+  "diagnostic_only_3425ba": "Samo dijagnostika",
+  "edit_464c4f": "Uredi",
+  "open_plan_task_4019fe": "Otvori zadatak u planu →",
+  "full_page_9d21b6": "Cijela stranica",
+  "previous_journey_step_7a544d": "Prethodni korak postupka",
+  "next_journey_step_35037a": "Sljedeći korak postupka"
 }
