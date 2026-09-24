@@ -114,7 +114,7 @@
   "active": "Active",
   "incident_inbox": "Bandeja de incidentes",
   "show_more_incidents": "Mostrar más incidentes",
-  "select_incident_prompt": "Seleccionar an incident to view its response and next step.",
+  "select_incident_prompt": "Seleccione un incidente para ver su respuesta y el siguiente paso.",
   "no_incidents_escalated": "No hay incidencias escaladas a usted.",
   "no_incidents_match": "Ningún incidente coincide con su búsqueda.",
   "stored_incident_not_confirmed": "La incidencia almacenada no confirmó este cambio.",

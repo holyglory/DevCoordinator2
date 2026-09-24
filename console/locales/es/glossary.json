@@ -75,14 +75,14 @@
       "many": "Shared revisión {value1} · {value2} projects"
     }
   },
-  "this_project_uses_shared_revision_value1_revisio_c1cf8c": "This project uses shared revisión {value1}. Revision {value2} is available.",
+  "this_project_uses_shared_revision_value1_revisio_c1cf8c": "Este proyecto utiliza la revisión compartida {value1}. La revisión {value2} está disponible.",
   "adopt_revision_value4_d99ca6": "Adopt revisión {value4}",
   "guidance_and_languages_952865": "Guía and languages",
   "view_guidance_169578": "Ver guía",
   "no_concepts_on_this_page_6766a7": "No hay conceptos en esta página.",
   "no_concepts_match_these_filters_272f2a": "Ningún concepto coincide con estos filtros.",
   "no_concepts_yet_6baf89": "Aún no hay conceptos.",
-  "a_shared_glossary_revision_is_available_to_adopt_be2c66": " A shared glossary revisión is available to adopt.",
+  "a_shared_glossary_revision_is_available_to_adopt_be2c66": " Hay una revisión del glosario compartido disponible para adoptar.",
   "specialize_for_project_c6a546": "Especializar para el proyecto",
   "edit_concept_09e204": "Editar concepto",
   "reviewed_fad605": "Revisado",
