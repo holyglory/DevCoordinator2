@@ -74,5 +74,5 @@
   "estimateMissing": "Оценка отсутствует",
   "estimatedLines": "~{count} строк",
   "openTasksShown": "Показатьing {shown} of {total} open tasks",
-  "countingSemantics": "Completed lines are current планned task estimates, not measured Git changes. Added lines include initial estimates and estimate increases; reductions and dropped work are excluded. Tests use recorded terminal summaries for this repository. Token totals come from providers; missing data remains missing. Forecasts are provisional ranges based on recent completion pace, current estimates, scope changes and test stability. Unestimated work uses the median recorded task size when available."
+  "countingSemantics": "Завершённые строки — это текущие оценки плановых задач, а не измеренные изменения Git. Добавленные строки включают начальные оценки и их увеличения; уменьшения и отброшенная работа исключены. Тесты используют зарегистрированные итоговые сводки этого репозитория. Общие количества токенов поступают от провайдеров; отсутствующие данные остаются отсутствующими. Прогнозы являются предварительными диапазонами на основе недавнего темпа завершения, текущих оценок, изменений объёма и стабильности тестов. Для работы без оценки используется медианный зарегистрированный размер задачи, если он доступен."
 }
