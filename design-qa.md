@@ -43,7 +43,7 @@ final result: passed
 
 ## Remaining rollout
 
-English, Ukrainian and Czech are currently enabled in `manifest.json`. French, German, Dutch, Italian, Danish, Swedish, Spanish, Portuguese, Russian, Simplified Chinese, Traditional Chinese, Japanese and Korean were withdrawn after the 2026-09-24 mixed-language review; their catalogs remain drafts until complete-message rewrites pass the contamination audit and rendered checks. The remaining locale entries are still drafts or quarantined. Final localization handoff remains blocked until the full agreed set has contextual translations, parity validation, contamination review, rendered verification and linguistic review.
+English, German, French, Dutch, Czech, Danish, Swedish, Italian, Norwegian Bokmål, Norwegian Nynorsk, Polish, Portuguese, Spanish, Ukrainian, Russian, Simplified Chinese, Traditional Chinese, Japanese and Korean are currently enabled in `manifest.json`. Their catalogs pass structural validation, the mixed-language audit, and rendered route checks. The remaining locale entries are still drafts or quarantined; Albanian currently has an English source scaffold plus partial Albanian authoring and is not enabled. Final localization handoff remains blocked until the full agreed set has contextual translations, parity validation, contamination review, rendered verification and linguistic review.
 
 ---
 
