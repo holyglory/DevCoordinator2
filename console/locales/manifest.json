@@ -802,7 +802,7 @@
         "BG"
       ],
       "direction": "ltr",
-      "status": "draft",
+      "status": "enabled",
       "files": {
         "common": [
           "bg/common.json"
