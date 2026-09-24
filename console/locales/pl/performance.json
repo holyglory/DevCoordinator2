@@ -59,5 +59,59 @@
   "open_delivered_result_93d4e9": "Otwórz dostarczony wynik",
   "unavailable_ca1844": "Niedostępne",
   "measurements_could_not_be_loaded_77193b": "Nie udało się wczytać pomiarów.",
-  "review_measurements_are_unavailable_497d4e": "Pomiary przeglądu są niedostępne."
+  "review_measurements_are_unavailable_497d4e": "Pomiary przeglądu są niedostępne.",
+  "value1_more_activities_a0186b": {
+    "argument": "value1",
+    "forms": {
+      "one": "{value1} dodatkowa aktywność",
+      "few": "{value1} dodatkowe aktywności",
+      "many": "{value1} dodatkowych aktywności",
+      "other": "{value1} dodatkowych aktywności"
+    }
+  },
+  "value1_revisions_ed2971": {
+    "argument": "value1",
+    "forms": {
+      "one": "{value1} rewizja",
+      "few": "{value1} rewizje",
+      "many": "{value1} rewizji",
+      "other": "{value1} rewizji"
+    }
+  },
+  "activity_38da15": "Aktywność",
+  "partial_27f7a4": " (częściowo)",
+  "review_usage_c39675": "Użycie przeglądu",
+  "overview_usage_83f004": "Overview użycie",
+  "review_c97ace": "przegląd",
+  "period_514cb1": "period",
+  "outcome_no_longer_available_a63b43": "Wynik nie jest już dostępny",
+  "unknown_kind_2a60d8": "Nieznane kind",
+  "review_in_progress_bf2daa": " · Przegląd in postęp",
+  "incomplete_measurement_3407ad": "Niepełny pomiar",
+  "value1_total_value2_value3_0a3988": "{value1} total: {value2}{value3}",
+  "value1_attributed_outcomes_6e3dca": {
+    "argument": "value1",
+    "forms": {
+      "one": "{value1} przypisany wynik",
+      "few": "{value1} przypisane wyniki",
+      "many": "{value1} przypisanych wyników",
+      "other": "{value1} przypisanych wyników"
+    }
+  },
+  "review_usage_value1_a681eb": "Użycie przeglądu · {value1}",
+  "view_delivery_evidence_c18555": "Wyświetl delivery dowody",
+  "kind_user_feedback": "Informacja zwrotna użytkownika",
+  "kind_improvement": "Ulepszenie",
+  "kind_goal": "Cel",
+  "kind_stub": "Niedokończona praca",
+  "kind_unknown": "Nieznane kind",
+  "kind_unattributed": "Nieprzypisane",
+  "status_proposed": "Proponowane",
+  "status_applied": "Zastosowane",
+  "status_retained": "Zachowane",
+  "status_reverted": "Cofnięte",
+  "status_unchanged": "Nie change",
+  "status_inconclusive": "Niejednoznaczne",
+  "tokensByActivity": "Tokeny by aktywność",
+  "tokensByKind": "Tokeny by Plan item kind"
 }

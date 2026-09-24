@@ -76,5 +76,10 @@
   "icon_plane": "Lot",
   "icon_book": "Dokumentacja",
   "icon_chart-bar": "Analiza",
-  "icon_shield": "Bezpieczeństwo"
+  "icon_shield": "Bezpieczeństwo",
+  "current_repository_value1_35de51": "Bieżące repozytorium: {value1}",
+  "could_not_save_repository_appearance_try_again_955cdd": "Nie można zapisać wyglądu repozytorium. Spróbuj ponownie.",
+  "value1_repositories_unavailable_refresh_to_retry_426a76": "{value1} repozytoriów niedostępnych. Odśwież, aby spróbować ponownie.",
+  "montenegrinLatin": "czarnogórski (łaciński)",
+  "montenegrinCyrillic": "czarnogórski (cyrylica)"
 }

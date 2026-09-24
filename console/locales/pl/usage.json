@@ -23,5 +23,20 @@
   "tool_outcomes_3a7a68": "Wyniki narzędzi",
   "data_completeness_c7114d": "Kompletność danych",
   "counting_method_7a480a": "Sposób liczenia",
-  "provider_reported_total_tokens_cached_input_and__9908f6": "Łączna liczba tokenów zgłoszona przez dostawcę; buforowane wejście i rozumowanie są częścią tej sumy."
+  "provider_reported_total_tokens_cached_input_and__9908f6": "Łączna liczba tokenów zgłoszona przez dostawcę; buforowane wejście i rozumowanie są częścią tej sumy.",
+  "schema_value19_taxonomy_value20_cdddf8": "Schemat {value19} · taksonomia {value20}",
+  "value21_environments_that_supplied_no_data_and_u_cbbc39": "{value21}. Środowiska bez danych i z niemierzonymi wartościami są wykluczane, a nie traktowane jako zero.",
+  "token_subsets_unavailable_4cec86": "Podzbiory tokenów niedostępne.",
+  "unknownIntervals": {
+    "argument": "count",
+    "forms": {
+      "one": "{count} nieznany przedział",
+      "few": "{count} nieznane przedziały",
+      "many": "{count} nieznanych przedziałów",
+      "other": "{count} nieznanych przedziałów"
+    }
+  },
+  "about_codex_environments_4a2e3e": "Informacje o środowiskach Codex",
+  "explain_codex_usage_data_completeness_63247d": "Explain Codex użycie data completeness",
+  "tokens_a039df": "Tokeny"
 }
