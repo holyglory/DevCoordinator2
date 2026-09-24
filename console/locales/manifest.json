@@ -609,7 +609,7 @@
         "BA"
       ],
       "direction": "ltr",
-      "status": "draft",
+      "status": "enabled",
       "files": {
         "common": [
           "hr/common.json"
