@@ -545,7 +545,7 @@
         "BA"
       ],
       "direction": "ltr",
-      "status": "draft",
+      "status": "enabled",
       "files": {
         "common": [
           "bs/common.json"
