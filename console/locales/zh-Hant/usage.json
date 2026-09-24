@@ -25,7 +25,7 @@
   "counting_method_7a480a": "統計方法",
   "provider_reported_total_tokens_cached_input_and__9908f6": "服務提供方報告的詞元總數；快取輸入與推理詞元均包含在總數中。",
   "schema_value19_taxonomy_value20_cdddf8": "Schema {value19} · taxonomy {value20}",
-  "value21_environments_that_supplied_no_data_and_u_cbbc39": "{value21}. Environments that supplied no data and unmeasured values are excluded rather than treated as zero.",
+  "value21_environments_that_supplied_no_data_and_u_cbbc39": "{value21}。沒有資料或包含未測量值的環境會被排除，不會視為零。",
   "token_subsets_unavailable_4cec86": "詞元子集無法使用。",
   "unknownIntervals": {
     "argument": "count",

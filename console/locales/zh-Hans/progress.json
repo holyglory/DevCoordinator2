@@ -25,7 +25,7 @@
   "next_release_a90ad0": "下次发布",
   "plan_progress_bfa53d": "计划进度",
   "open_tasks_87cfa1": "未完成任务",
-  "compared_with_the_previous_matching_period_value_8b4a50": "Compared with the previous matching 期间 ({value1})",
+  "compared_with_the_previous_matching_period_value_8b4a50": "与上一个匹配期间相比（{value1}）",
   "value2_planned_lines_added_means_value3_value4_v_765cc7": "{value2}. 新增计划行数 means {value3}. {value4}. {value5}. {value6}.",
   "previous_value3_11ac0f": "Previous {value3}",
   "aligned_hour": "Aligned hourly evidence · UTC",
@@ -69,6 +69,6 @@
   "openPlanWork": "未完成计划工作",
   "estimateMissing": "缺少估算",
   "estimatedLines": "约 {count} 行",
-  "openTasksShown": "Showing {shown} of {total} open tasks",
-  "countingSemantics": "Completed lines are current planned task estimates, not measured Git changes. Added lines include initial estimates and estimate increases; reductions and dropped work are excluded. Tests use recorded terminal summaries for this repository. Token totals come from providers; missing data remains missing. Forecasts are provisional ranges based on recent completion pace, current estimates, scope changes and test stability. Unestimated work uses the median recorded task size when available."
+  "openTasksShown": "显示 {total} 个开放任务中的 {shown} 个",
+  "countingSemantics": "已完成行数是当前计划任务的估算值，不是测量的 Git 变更。新增行数包括初始估算和估算增加；减少部分和已放弃工作会被排除。测试使用此仓库记录的终态摘要。词元总数来自服务提供方；缺失数据保持缺失。预测是基于近期完成速度、当前估算、范围变化和测试稳定性的临时区间。未估算工作在可用时使用已记录任务规模的中位数。"
 }

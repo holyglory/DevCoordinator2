@@ -84,8 +84,8 @@
   "value1_of_value2_cases_shown_all_retained_case_o_89db76": {
     "argument": "value2",
     "forms": {
-      "one": "{value1} of {value2} case shown. All retained case output is available in Logs.",
-      "other": "{value1} of {value2} cases shown. All retained case output is available in Logs."
+      "one": "顯示 {value2} 個案例中的 {value1} 個。所有保留的案例輸出都在記錄中。",
+      "other": "顯示 {value2} 個案例中的 {value1} 個。所有保留的案例輸出都在記錄中"
     }
   },
   "none_dc937b": "無",

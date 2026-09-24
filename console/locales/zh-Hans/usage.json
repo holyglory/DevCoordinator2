@@ -25,7 +25,7 @@
   "counting_method_7a480a": "统计方法",
   "provider_reported_total_tokens_cached_input_and__9908f6": "服务提供方报告的词元总数；缓存输入与推理词元均包含在总数中。",
   "schema_value19_taxonomy_value20_cdddf8": "Schema {value19} · taxonomy {value20}",
-  "value21_environments_that_supplied_no_data_and_u_cbbc39": "{value21}. Environments that supplied no data and unmeasured values are excluded rather than treated as zero.",
+  "value21_environments_that_supplied_no_data_and_u_cbbc39": "{value21}。没有数据或包含未测量值的环境会被排除，不会视为零。",
   "token_subsets_unavailable_4cec86": "词元子集不可用。",
   "unknownIntervals": {
     "argument": "count",

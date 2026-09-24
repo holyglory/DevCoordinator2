@@ -25,7 +25,7 @@
   "next_release_a90ad0": "下次釋出",
   "plan_progress_bfa53d": "計劃進度",
   "open_tasks_87cfa1": "未完成任務",
-  "compared_with_the_previous_matching_period_value_8b4a50": "Compared with the previous matching 期間 ({value1})",
+  "compared_with_the_previous_matching_period_value_8b4a50": "與上一個相符期間相比（{value1}）",
   "value2_planned_lines_added_means_value3_value4_v_765cc7": "{value2}. 新增計劃行數 means {value3}. {value4}. {value5}. {value6}.",
   "previous_value3_11ac0f": "Previous {value3}",
   "aligned_hour": "Aligned hourly evidence · UTC",
@@ -69,6 +69,6 @@
   "openPlanWork": "未完成計劃工作",
   "estimateMissing": "缺少估算",
   "estimatedLines": "約 {count} 行",
-  "openTasksShown": "Showing {shown} of {total} open tasks",
-  "countingSemantics": "Completed lines are current planned task estimates, not measured Git changes. Added lines include initial estimates and estimate increases; reductions and dropped work are excluded. Tests use recorded terminal summaries for this repository. Token totals come from providers; missing data remains missing. Forecasts are provisional ranges based on recent completion pace, current estimates, scope changes and test stability. Unestimated work uses the median recorded task size when available."
+  "openTasksShown": "顯示 {total} 個未完成任務中的 {shown} 個",
+  "countingSemantics": "已完成列數是目前計畫任務的估算值，不是測量的 Git 變更。新增列數包含初始估算和估算增加；減少部分與捨棄的工作會排除。測試使用此儲存庫記錄的終態摘要。詞元總數來自服務提供者；缺少資料仍保持缺少。預測是根據近期完成速度、目前估算、範圍變更與測試穩定性的暫定區間。未估算工作在可用時使用已記錄任務大小的中位數。"
 }

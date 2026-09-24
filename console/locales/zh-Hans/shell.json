@@ -79,7 +79,7 @@
   "icon_shield": "安全",
   "current_repository_value1_35de51": "Current repository: {value1}",
   "could_not_save_repository_appearance_try_again_955cdd": "无法保存仓库外观，请重试。",
-  "value1_repositories_unavailable_refresh_to_retry_426a76": "{value1} repositories unavailable. Refresh to retry.",
+  "value1_repositories_unavailable_refresh_to_retry_426a76": "{value1} 个仓库不可用。请刷新后重试。",
   "montenegrinLatin": "黑山语（拉丁字母）",
   "montenegrinCyrillic": "黑山语（西里尔字母）"
 }
