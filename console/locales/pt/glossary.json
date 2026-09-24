@@ -75,7 +75,7 @@
       "many": "Revisão partilhada {value1} · {value2} projetos"
     }
   },
-  "this_project_uses_shared_revision_value1_revisio_c1cf8c": "This project uses shared revision {value1}. Revisão {value2} is available.",
+  "this_project_uses_shared_revision_value1_revisio_c1cf8c": "Este projeto utiliza a revisão partilhada {value1}. A revisão {value2} está disponível.",
   "adopt_revision_value4_d99ca6": "Adotar revisão {value4}",
   "guidance_and_languages_952865": "Orientações e idiomas",
   "view_guidance_169578": "Ver orientações",
