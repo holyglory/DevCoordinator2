@@ -2964,7 +2964,7 @@
         "KP"
       ],
       "direction": "ltr",
-      "status": "draft",
+      "status": "enabled",
       "files": {
         "common": [
           "ko/common.json"
