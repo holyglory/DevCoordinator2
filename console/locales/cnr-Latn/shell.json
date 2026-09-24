@@ -36,7 +36,7 @@
   "useBrowserLanguage": "Koristi jezik pregledača",
   "searchLanguages": "Pretraži jezike…",
   "noLanguages": "Nema odgovarajućih jezika.",
-  "languageFailed": "Nije moguće promijeniti jezik. Pokušajte ponovno.",
+  "languageFailed": "Nije moguće promijeniti jezik. Pokušajte ponovo.",
   "languageFallback": "Neki prevodi nisu učitani. Gdje je potrebno prikazuje se engleski.",
   "lightMode": "Svijetli način",
   "darkMode": "Tamni način",
@@ -67,7 +67,7 @@
   "icon_world": "Web",
   "icon_rocket": "Pokretanje",
   "icon_database": "Podaci",
-  "icon_device-desktop": "Stono računar",
+  "icon_device-desktop": "Stono računар",
   "icon_device-mobile": "Mobilni uređaj",
   "icon_tools": "Alati",
   "icon_flask": "Istraživanje",
@@ -76,5 +76,10 @@
   "icon_plane": "Let",
   "icon_book": "Dokumentacija",
   "icon_chart-bar": "Analitika",
-  "icon_shield": "Bezbjednost"
+  "icon_shield": "Bezbjednost",
+  "current_repository_value1_35de51": "Trenutno repozitorijum: {value1}",
+  "could_not_save_repository_appearance_try_again_955cdd": "Izgled repozitorijumi nije moguće sačuvati. Pokušajte ponovo.",
+  "value1_repositories_unavailable_refresh_to_retry_426a76": "{value1} repozitorijumi nisu dostupna. Osvežite za novi pokušaj.",
+  "montenegrinLatin": "Crnogorski (latinica)",
+  "montenegrinCyrillic": "Crnogorski (ćirilica)"
 }

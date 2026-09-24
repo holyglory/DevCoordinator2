@@ -24,7 +24,7 @@
   "could_not_load_log_09c7b7": "Nije moguće učitati dnevnik.",
   "test_logs_55496c": "Dnevnici testova",
   "close_test_logs_326894": "Zatvori dnevnike testova",
-  "try_again_d8b839": "Pokušaj ponovno",
+  "try_again_d8b839": "Pokušaj ponovo",
   "show_more_streams_c86d8d": "Prikaži više tokova",
   "output_stream_33141d": "Izlazni tok",
   "stream_details_5afc75": "Detalji toka",
@@ -65,8 +65,8 @@
   "close_screenshot_preview_e49000": "Zatvori pregled snimke zaslona",
   "screenshots_067348": "Snimke zaslona",
   "open_file_4190c0": "Otvori datoteku",
-  "retry_screenshot_23b6c7": "Ponovno učitaj snimku",
-  "retry_screenshots_232a99": "Ponovno učitaj snimke",
+  "retry_screenshot_23b6c7": "Ponovo učitaj snimku",
+  "retry_screenshots_232a99": "Ponovo učitaj snimke",
   "no_test_runs_yet_3c5be5": "Još nema izvođenja testova.",
   "test_532eaa": "Test",
   "release_e020e3": "Izdanje",
@@ -80,5 +80,51 @@
   "repositories_1e32af": "Repozitoriji",
   "screenshot_gallery_7bd298": "Galerija snimki zaslona",
   "these_screenshots_do_not_verify_the_latest_run_0e24e3": "Ove snimke ne potvrđuju najnovije izvođenje.",
-  "the_linked_run_is_no_longer_available_in_retaine_a39a19": "Povezano izvođenje više nije dostupno u sačuvanoj istoriji."
+  "the_linked_run_is_no_longer_available_in_retaine_a39a19": "Povezano izvođenje više nije dostupno u sačuvanoj istoriji.",
+  "none_dc937b": "Nema",
+  "start_of_output_85c6f8": "Početak izlaza",
+  "all_results_shown_ad3d94": "Svi rezultati su prikazani",
+  "pending_331551": "Na čekanju",
+  "yes_85a39a": "Da",
+  "in_progress_c1f88e": "U toku",
+  "no_1ea442": "Ne",
+  "unavailable_ca1844": "Nije dostupno",
+  "database_setup_7a9e87": "Podešavanje baze podataka",
+  "stop_run_b7ec68": "Zaustavi pokretanje",
+  "run_again_3e310b": "Pokreni ponovo",
+  "not_recorded_b37c78": "Nije zabeleženo",
+  "value1_of_value2_cases_shown_all_retained_case_o_89db76": {
+    "argument": "value2",
+    "forms": {
+      "one": "Prikazan je {value1} od {value2} slučaja. Sav sačuvani izlaz dostupan je u dnevnicima.",
+      "few": "Prikazana su {value1} od {value2} slučaja. Sav sačuvani izlaz dostupan je u dnevnicima.",
+      "other": "Prikazano je {value1} od {value2} slučajeva. Sav sačuvani izlaz dostupan je u dnevnicima."
+    }
+  },
+  "value1_of_value2_882c45": "{value1} od {value2}",
+  "loading_screenshot_e0fd7b": "Učitavanje snimka ekrana…",
+  "preview_value1_cb5dab": "Pregled {value1}",
+  "earlier_run_value1_68bdba": "Prethodno pokretanje · {value1}",
+  "value1_test_results_293210": "{value1} rezultata testa",
+  "test_results_3ea600": "Rezultati testova",
+  "updates_paused_value1_11b351": "Ažuriranja pauzirana: {value1}",
+  "no_maximum_b5cfdf": "Nema maksimuma",
+  "details_45989d": "Detalji",
+  "previous_screenshot_af9be1": "Prethodni snimak",
+  "next_screenshot_fd250f": "Sledeći snimak",
+  "open_in_viewer_comment_ad9420": "Otvori u pregledniku / komentariši",
+  "screenshot_loading_cancelled_50e74f": "Učitavanje snimka je otkazano.",
+  "browse_all_value1_screenshots_81fcf6": {
+    "argument": "value1",
+    "forms": {
+      "one": "Pregledaj snimak {value1}",
+      "few": "Pregledaj {value1} snimka",
+      "other": "Pregledaj svih {value1} snimaka"
+    }
+  },
+  "the_screenshot_changed_while_loading_94fe13": "Snimak ekrana se promenio tokom učitavanja.",
+  "the_screenshot_response_was_incomplete_4d7952": "Odgovor snimka ekrana bio je nepotpun.",
+  "screenshots_could_not_be_read_92f171": "Snimci ekrana ne mogu da se pročitaju.",
+  "screenshot_could_not_be_previewed_11a0c5": "Snimak ekrana ne može da se pregleda.",
+  "a_newer_run_is_available_refresh_to_view_it_c113b3": "Dostupno je novije pokretanje. Osvežite da biste ga videli."
 }
