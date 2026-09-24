@@ -1246,7 +1246,7 @@
         "FI"
       ],
       "direction": "ltr",
-      "status": "draft",
+      "status": "enabled",
       "files": {
         "common": [
           "sv/common.json"
