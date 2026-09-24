@@ -224,7 +224,7 @@
         "AM"
       ],
       "direction": "ltr",
-      "status": "draft",
+      "status": "enabled",
       "files": {
         "common": [
           "hy/common.json"
