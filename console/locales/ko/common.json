@@ -120,8 +120,8 @@
   "tasksNeedExplanation": {
     "argument": "count",
     "forms": {
-      "one": "{count} task needs a clearer explanation. Agents see these requests whenever they read or update the plan.",
-      "other": "{count} tasks need a clearer explanation. Agents see these requests whenever they read or update the plan."
+      "one": "{count}개의 작업에는 더 명확한 설명이 필요합니다. 에이전트가 계획을 읽거나 업데이트할 때 이 요청을 확인합니다.",
+      "other": "{count}개의 작업에는 더 명확한 설명이 필요합니다. 에이전트가 계획을 읽거나 업데이트할 때 이 요청을 확인합니다."
     }
   },
   "unavailable_ca1844": "사용할 수 없음",
@@ -155,9 +155,9 @@
   "unknown_b764cd": "알 수 없음",
   "projects_04e2a9": "프로젝트",
   "trend_2ab022": "추세",
-  "error_permission_denied": "You do not have permission to perform this action.",
+  "error_permission_denied": "이 작업을 수행할 권한이 없습니다.",
   "error_params_invalid": "Check the entered values.",
-  "error_busy": "This action is already in progress. Wait for it to finish.",
+  "error_busy": "이 작업은 이미 진행 중입니다. 완료될 때까지 기다리세요.",
   "error_daemon_unavailable": "코디네이터를 현재 사용할 수 없습니다.",
   "error_network": "코디네이터 연결에 실패했습니다.",
   "error_not_found": "요청한 항목을 더 이상 사용할 수 없습니다.",

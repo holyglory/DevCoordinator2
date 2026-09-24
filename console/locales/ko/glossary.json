@@ -74,14 +74,14 @@
       "other": "Shared revision {value1} · {value2} projects"
     }
   },
-  "this_project_uses_shared_revision_value1_revisio_c1cf8c": "This project uses shared revision {value1}. Revision {value2} is available.",
+  "this_project_uses_shared_revision_value1_revisio_c1cf8c": "이 프로젝트는 공유 개정 {value1}을 사용합니다. 개정 {value2}을 사용할 수 있습니다.",
   "adopt_revision_value4_d99ca6": "Adopt revision {value4}",
   "guidance_and_languages_952865": "Guidance and languages",
   "view_guidance_169578": "View guidance",
   "no_concepts_on_this_page_6766a7": "이 페이지에 개념이 없습니다.",
   "no_concepts_match_these_filters_272f2a": "필터와 일치하는 개념이 없습니다.",
   "no_concepts_yet_6baf89": "아직 개념이 없습니다.",
-  "a_shared_glossary_revision_is_available_to_adopt_be2c66": " A shared glossary revision is available to adopt.",
+  "a_shared_glossary_revision_is_available_to_adopt_be2c66": " 적용할 수 있는 공유 용어집 개정이 있습니다.",
   "specialize_for_project_c6a546": "프로젝트에 맞게 특화",
   "edit_concept_09e204": "개념 편집",
   "reviewed_fad605": "검토됨",

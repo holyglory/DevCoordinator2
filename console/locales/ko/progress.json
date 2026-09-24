@@ -25,7 +25,7 @@
   "next_release_a90ad0": "다음 릴리스",
   "plan_progress_bfa53d": "계획 진행 상황",
   "open_tasks_87cfa1": "미완료 작업",
-  "compared_with_the_previous_matching_period_value_8b4a50": "Compared with the previous matching 기간 ({value1})",
+  "compared_with_the_previous_matching_period_value_8b4a50": "이전의 일치하는 기간과 비교({value1})",
   "value2_planned_lines_added_means_value3_value4_v_765cc7": "{value2}. 추가된 계획 줄 수 means {value3}. {value4}. {value5}. {value6}.",
   "previous_value3_11ac0f": "Previous {value3}",
   "aligned_hour": "Aligned hourly evidence · UTC",
@@ -69,6 +69,6 @@
   "openPlanWork": "미완료 계획 작업",
   "estimateMissing": "추정치 없음",
   "estimatedLines": "약 {count}줄",
-  "openTasksShown": "Showing {shown} of {total} open tasks",
-  "countingSemantics": "Completed lines are current planned task estimates, not measured Git changes. Added lines include initial estimates and estimate increases; reductions and dropped work are excluded. Tests use recorded terminal summaries for this repository. Token totals come from providers; missing data remains missing. Forecasts are provisional ranges based on recent completion pace, current estimates, scope changes and test stability. Unestimated work uses the median recorded task size when available."
+  "openTasksShown": "미완료 작업 {total}개 중 {shown}개 표시",
+  "countingSemantics": "완료된 줄 수는 현재 계획 작업의 추정치이며 측정된 Git 변경이 아닙니다. 추가된 줄 수에는 초기 추정치와 추정치 증가가 포함되며, 감소분과 제외된 작업은 포함하지 않습니다. 테스트는 이 저장소에 기록된 종료 요약을 사용합니다. 토큰 합계는 공급자가 제공하며 누락된 데이터는 그대로 누락 상태입니다. 예측은 최근 완료 속도, 현재 추정치, 범위 변경, 테스트 안정성을 바탕으로 한 임시 범위입니다. 추정치가 없는 작업에는 가능한 경우 기록된 작업 크기의 중앙값을 사용합니다."
 }
