@@ -31,6 +31,13 @@ and run `node scripts/locales/validate.mjs --all` for complete rollout admission
 Ordinary validation checks enabled locales and explicitly reports drafts.
 Linguistic review is separate from key parity; copying English into a locale is
 not a completed translation. Keep the locale draft until review is complete.
+Run `node scripts/locales/audit-content.mjs --locale TAG` to find exact English
+product messages and `node scripts/locales/audit-contamination.mjs --locale TAG`
+to review mixed-language phrases and partial substitutions. Review every
+candidate in context; technical identifiers and brand names may remain, but a
+mixed-language sentence must be rewritten in the target language. These audits
+are admission evidence alongside rendered route checks, not replacements for
+linguistic review.
 
 The first rollout covers nationally official/co-official written languages in
 the agreed Council of Europe scope, plus Russian and four East Asian entries.
