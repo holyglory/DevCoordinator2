@@ -114,7 +114,7 @@
   "active": "Actif",
   "incident_inbox": "Boîte de réception des incidents",
   "show_more_incidents": "Afficher more incidents",
-  "select_incident_prompt": "Sélectionner an incident to view its response and next step.",
+  "select_incident_prompt": "Sélectionnez un incident pour consulter sa réponse et l’étape suivante.",
   "no_incidents_escalated": "Aucun incidents escalated to you.",
   "no_incidents_match": "Aucun incidents match your search.",
   "stored_incident_not_confirmed": "L’incident conservé n’a pas confirmé cette modification.",

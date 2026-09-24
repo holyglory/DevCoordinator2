@@ -31,7 +31,7 @@
   "aligned_hour": "Preuve horaire alignée · UTC",
   "aligned_day": "Preuve quotidienne alignée · UTC",
   "aligned_week": "Preuve hebdomadaire alignée · UTC",
-  "no_recorded_movement_in_this_period_59cf50": "Aucun recorded movement in this period",
+  "no_recorded_movement_in_this_period_59cf50": "Aucun mouvement enregistré pendant cette période",
   "open_full_plan_303994": "Ouvrir full plan →",
   "open_selected_in_plan_a6478f": "Ouvrir selected in plan",
   "view_progress_c2e39c": "Afficher progress",
@@ -72,5 +72,5 @@
   "estimateMissing": "Estimation manquante",
   "estimatedLines": "~{count} lines",
   "openTasksShown": "Affichering {shown} of {total} open tasks",
-  "countingSemantics": "Completd lines are current planned task estimates, not measured Git changes. Added lines include initial estimates and estimate increases; reductions and dropped work are excluded. Tests use recorded terminal summaries for this repository. Token totals come from providers; missing data remains missing. Forecasts are provisional ranges based on recent completion pace, current estimates, scope changes and test stability. Unestimated work uses the median recorded task size when available."
+  "countingSemantics": "Les lignes terminées correspondent aux estimations actuelles des tâches planifiées, et non à des modifications Git mesurées. Les lignes ajoutées incluent les estimations initiales et leurs augmentations ; les réductions et le travail abandonné sont exclus. Les tests utilisent les résumés finaux enregistrés pour ce dépôt. Les totaux de jetons proviennent des fournisseurs ; les données manquantes restent manquantes. Les prévisions sont des fourchettes provisoires fondées sur le rythme récent, les estimations actuelles, les changements de périmètre et la stabilité des tests. Le travail sans estimation utilise la taille médiane enregistrée lorsqu’elle est disponible."
 }
