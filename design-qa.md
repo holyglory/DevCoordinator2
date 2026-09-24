@@ -35,7 +35,7 @@ final result: passed
 ## Evidence
 
 - Fresh rendered localization verification: 201 checks, zero failures for Ukrainian at desktop, tablet and mobile themes, including modal-draft preservation.
-- Fresh rendered verification: 313 checks, zero failures for French, German, Dutch, Russian, Simplified Chinese, Traditional Chinese, Japanese and Korean; all eight are rendered-admitted.
+- Fresh rendered verification artifacts exist for the earlier locale batch, but the 2026-09-24 content review found mixed-language messages in those catalogs and withdrew them from the menu pending rewrite. Current admission is limited to Ukrainian and Czech (313 checks each, zero failures) plus English.
 - Complete Console state matrix: 1,421 checks, zero failures after making translated checks case-insensitive and adding the initial loading surface.
 - Focused locale/runtime tests: 12 tests passed; edge suite: 22 tests passed.
 - Final exact-size audit journey: 79 checks, zero failures at 1487 × 1058 after the Health merge.
@@ -43,7 +43,7 @@ final result: passed
 
 ## Remaining rollout
 
-English, French, German, Dutch, Ukrainian, Russian, Simplified Chinese, Traditional Chinese, Japanese and Korean are enabled in `manifest.json`; other locale drafts remain disabled because their current-source translations are incomplete or were quarantined after detecting donor-language contamination. Final localization handoff remains blocked until each enabled language has contextual translations, parity validation, rendered verification and linguistic review.
+English, Ukrainian and Czech are currently enabled in `manifest.json`. French, German, Dutch, Italian, Danish, Swedish, Spanish, Portuguese, Russian, Simplified Chinese, Traditional Chinese, Japanese and Korean were withdrawn after the 2026-09-24 mixed-language review; their catalogs remain drafts until complete-message rewrites pass the contamination audit and rendered checks. The remaining locale entries are still drafts or quarantined. Final localization handoff remains blocked until the full agreed set has contextual translations, parity validation, contamination review, rendered verification and linguistic review.
 
 ---
 
