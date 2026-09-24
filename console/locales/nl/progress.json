@@ -31,9 +31,9 @@
   "aligned_hour": "Aligned hourly bewijs · UTC",
   "aligned_day": "Aligned daily bewijs · UTC",
   "aligned_week": "Aligned weekly bewijs · UTC",
-  "no_recorded_movement_in_this_period_59cf50": "Nee recorded movement in this period",
+  "no_recorded_movement_in_this_period_59cf50": "Geen geregistreerde beweging in deze periode",
   "open_full_plan_303994": "Volledig plan openen →",
-  "open_selected_in_plan_a6478f": "Open geselecteerd in plan",
+  "open_selected_in_plan_a6478f": "Geselecteerde openen in plan",
   "view_progress_c2e39c": "Voortgang bekijken",
   "green_tasks_087f3a": "Green = taaks",
   "blue_planned_lines_adfe4a": "Blue = planned regels",
@@ -70,5 +70,5 @@
   "estimateMissing": "Schatting ontbreekt",
   "estimatedLines": "~{count} regels",
   "openTasksShown": "Tonening {shown} of {total} open taaks",
-  "countingSemantics": "Completed regels are current planned taak estimates, not gemeten Git changes. Toevoegened regels include initial estimates and estimate increases; reductions and dropped work are excluded. Tests use recorded terminal summaries for this repository. Token totals come from providers; missing data remains missing. Forecasts are provisional ranges based on recent completion pace, current estimates, scope changes and test stability. Unestimated work uses the median recorded taak size when available."
+  "countingSemantics": "Voltooide regels zijn huidige schattingen van geplande taken, geen gemeten Git-wijzigingen. Toegevoegde regels omvatten eerste schattingen en verhogingen; verlagingen en verwijderd werk zijn uitgesloten. Tests gebruiken vastgelegde eindsamenvattingen voor deze repository. Tokentotalen komen van providers; ontbrekende gegevens blijven ontbreken. Prognoses zijn voorlopige bereiken op basis van recent tempo, huidige schattingen, scopewijzigingen en teststabiliteit. Werk zonder schatting gebruikt de mediaan van vastgelegde taakgroottes wanneer beschikbaar."
 }

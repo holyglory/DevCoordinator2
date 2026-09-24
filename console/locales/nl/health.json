@@ -116,7 +116,7 @@
   "active": "Active",
   "incident_inbox": "Incidentpostvak",
   "show_more_incidents": "Meer incidenten tonen",
-  "select_incident_prompt": "Selecteren an incident to view its response and next step.",
+  "select_incident_prompt": "Selecteer een incident om de reactie en volgende stap te bekijken.",
   "no_incidents_escalated": "Nee incidents escalated to you.",
   "no_incidents_match": "Nee incidents match your search.",
   "stored_incident_not_confirmed": "Het opgeslagen incident bevestigde deze wijziging niet.",

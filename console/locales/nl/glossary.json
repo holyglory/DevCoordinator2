@@ -74,14 +74,14 @@
       "other": "Gedeeld revisie {value1} · {value2} projects"
     }
   },
-  "this_project_uses_shared_revision_value1_revisio_c1cf8c": "This project uses shared revisie {value1}. Revision {value2} is available.",
+  "this_project_uses_shared_revision_value1_revisio_c1cf8c": "Dit project gebruikt gedeelde revisie {value1}. Revisie {value2} is beschikbaar.",
   "adopt_revision_value4_d99ca6": "Adopt revisie {value4}",
   "guidance_and_languages_952865": "Richtlijnen en talen",
   "view_guidance_169578": "Richtlijnen bekijken",
   "no_concepts_on_this_page_6766a7": "Nee concepts on this page.",
   "no_concepts_match_these_filters_272f2a": "Nee concepts match these filters.",
   "no_concepts_yet_6baf89": "Nee concepts yet.",
-  "a_shared_glossary_revision_is_available_to_adopt_be2c66": " A shared glossary revisie is available to adopt.",
+  "a_shared_glossary_revision_is_available_to_adopt_be2c66": " Er is een gedeelde woordenlijstversie beschikbaar om over te nemen.",
   "specialize_for_project_c6a546": "Voor project specialiseren",
   "edit_concept_09e204": "Begrip bewerken",
   "reviewed_fad605": "Beoordeeld",

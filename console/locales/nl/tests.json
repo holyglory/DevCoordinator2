@@ -84,8 +84,8 @@
   "value1_of_value2_cases_shown_all_retained_case_o_89db76": {
     "argument": "value2",
     "forms": {
-      "one": "{value1} of {value2} case shown. Alle retained case output is available in Logs.",
-      "other": "{value1} of {value2} cases shown. Alle retained case output is available in Logs."
+      "one": "{value1} van {value2} geval getoond. Alle bewaarde uitvoer is beschikbaar in de logboeken.",
+      "other": "{value1} van {value2} gevallen getoond. Alle bewaarde uitvoer is beschikbaar in de logboeken."
     }
   },
   "none_dc937b": "Geen",
@@ -124,5 +124,5 @@
   "the_screenshot_response_was_incomplete_4d7952": "The screenshot antwoord was onvolledig.",
   "screenshots_could_not_be_read_92f171": "Screenshots kon niet worden gelezen.",
   "screenshot_could_not_be_previewed_11a0c5": "Screenshot kon niet als voorbeeld worden getoond.",
-  "a_newer_run_is_available_refresh_to_view_it_c113b3": "Een nieuwere uitvoering is beschikbaar. Refresh to view it."
+  "a_newer_run_is_available_refresh_to_view_it_c113b3": "Een nieuwere uitvoering is beschikbaar. Vernieuw om die te bekijken."
 }
