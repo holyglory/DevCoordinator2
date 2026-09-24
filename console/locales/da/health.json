@@ -112,7 +112,7 @@
   "active": "Active",
   "incident_inbox": "Indbakke for hændelser",
   "show_more_incidents": "Vis flere hændelser",
-  "select_incident_prompt": "Vælg an incident to view its response and next step.",
+  "select_incident_prompt": "Vælg en hændelse for at se dens svar og næste trin.",
   "no_incidents_escalated": "Nej incidents escalated to you.",
   "no_incidents_match": "Nej incidents match your search.",
   "stored_incident_not_confirmed": "Den gemte hændelse bekræftede ikke denne ændring.",
