@@ -2774,7 +2774,7 @@
         "MY"
       ],
       "direction": "ltr",
-      "status": "draft",
+      "status": "enabled",
       "files": {
         "common": [
           "zh-Hans/common.json"
@@ -2837,7 +2837,7 @@
         "TW"
       ],
       "direction": "ltr",
-      "status": "draft",
+      "status": "enabled",
       "files": {
         "common": [
           "zh-Hant/common.json"
