@@ -2262,7 +2262,7 @@
         "PL"
       ],
       "direction": "ltr",
-      "status": "draft",
+      "status": "enabled",
       "files": {
         "common": [
           "pl/common.json"
