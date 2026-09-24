@@ -43,7 +43,7 @@ final result: passed
 
 ## Remaining rollout
 
-English, German, French, Dutch, Czech, Danish, Swedish, Italian, Norwegian Bokmål, Norwegian Nynorsk, Polish, Portuguese, Spanish, Ukrainian, Russian, Simplified Chinese, Traditional Chinese, Japanese and Korean are currently enabled in `manifest.json`. Their catalogs pass structural validation, the mixed-language audit, and rendered route checks. The remaining locale entries are still drafts or quarantined; Albanian currently has an English source scaffold plus partial Albanian authoring and is not enabled. Final localization handoff remains blocked until the full agreed set has contextual translations, parity validation, contamination review, rendered verification and linguistic review.
+English, Albanian, German, French, Dutch, Czech, Danish, Swedish, Italian, Norwegian Bokmål, Norwegian Nynorsk, Polish, Portuguese, Spanish, Ukrainian, Russian, Simplified Chinese, Traditional Chinese, Japanese, Korean, Bulgarian, Bosnian, Croatian, and Serbian Latin/Cyrillic are currently enabled in `manifest.json`. Their catalogs pass structural validation, the mixed-language audit, and rendered route checks. Montenegrin Latin/Cyrillic were withdrawn after discovering invalid donor-derived catalogs and remain drafts pending genuine authored review. The remaining locale entries are drafts or quarantined. Final localization handoff remains blocked until the full agreed set has contextual translations, parity validation, contamination review, rendered verification and linguistic review.
 
 ---
 
