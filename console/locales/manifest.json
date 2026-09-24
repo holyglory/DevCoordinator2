@@ -674,7 +674,7 @@
         "ME"
       ],
       "direction": "ltr",
-      "status": "draft",
+      "status": "enabled",
       "files": {
         "common": [
           "sr-Cyrl/common.json"
