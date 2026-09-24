@@ -74,14 +74,14 @@
       "other": "Shared revision {value1} · {value2} projects"
     }
   },
-  "this_project_uses_shared_revision_value1_revisio_c1cf8c": "This project uses shared revision {value1}. Revision {value2} is available.",
+  "this_project_uses_shared_revision_value1_revisio_c1cf8c": "このプロジェクトは共有リビジョン {value1} を使用しています。リビジョン {value2} を利用できます。",
   "adopt_revision_value4_d99ca6": "Adopt revision {value4}",
   "guidance_and_languages_952865": "Guidance and languages",
   "view_guidance_169578": "View guidance",
   "no_concepts_on_this_page_6766a7": "このページには概念がありません。",
   "no_concepts_match_these_filters_272f2a": "条件に一致する概念はありません。",
   "no_concepts_yet_6baf89": "概念はまだありません。",
-  "a_shared_glossary_revision_is_available_to_adopt_be2c66": " A shared glossary revision is available to adopt.",
+  "a_shared_glossary_revision_is_available_to_adopt_be2c66": " 取り込める共有用語集リビジョンがあります。",
   "specialize_for_project_c6a546": "プロジェクト用に特化",
   "edit_concept_09e204": "概念を編集",
   "reviewed_fad605": "レビュー済み",

@@ -84,8 +84,8 @@
   "value1_of_value2_cases_shown_all_retained_case_o_89db76": {
     "argument": "value2",
     "forms": {
-      "one": "{value1} of {value2} case shown. All retained case output is available in Logs.",
-      "other": "{value1} of {value2} cases shown. All retained case output is available in Logs."
+      "one": "{value2} 件中 {value1} 件のケースを表示しています。保持されたケースの出力はすべてログで確認できます。",
+      "other": "{value2} 件中 {value1} 件のケースを表示しています。保持されたケースの出力はすべてログで確認できます。"
     }
   },
   "none_dc937b": "なし",

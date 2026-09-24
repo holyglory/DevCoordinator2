@@ -25,7 +25,7 @@
   "next_release_a90ad0": "次のリリース",
   "plan_progress_bfa53d": "計画の進捗",
   "open_tasks_87cfa1": "未完了タスク",
-  "compared_with_the_previous_matching_period_value_8b4a50": "Compared with the previous matching 期間 ({value1})",
+  "compared_with_the_previous_matching_period_value_8b4a50": "前回の対応する期間との比較（{value1}）",
   "value2_planned_lines_added_means_value3_value4_v_765cc7": "{value2}. 追加した計画行数 means {value3}. {value4}. {value5}. {value6}.",
   "previous_value3_11ac0f": "Previous {value3}",
   "aligned_hour": "Aligned hourly evidence · UTC",
@@ -69,6 +69,6 @@
   "openPlanWork": "未完了の計画作業",
   "estimateMissing": "見積もりなし",
   "estimatedLines": "約 {count} 行",
-  "openTasksShown": "Showing {shown} of {total} open tasks",
-  "countingSemantics": "Completed lines are current planned task estimates, not measured Git changes. Added lines include initial estimates and estimate increases; reductions and dropped work are excluded. Tests use recorded terminal summaries for this repository. Token totals come from providers; missing data remains missing. Forecasts are provisional ranges based on recent completion pace, current estimates, scope changes and test stability. Unestimated work uses the median recorded task size when available."
+  "openTasksShown": "未完了タスク {total} 件中 {shown} 件を表示",
+  "countingSemantics": "完了行数は現在の計画タスクの見積もりであり、測定した Git 変更ではありません。追加行数には初期見積もりと見積もりの増加が含まれ、減少と破棄された作業は除外されます。テストにはこのリポジトリに記録された終了時の概要を使用します。トークン合計はプロバイダーから取得します。欠落データは欠落したままです。予測は最近の完了ペース、現在の見積もり、スコープ変更、テストの安定性に基づく暫定的な範囲です。見積もりのない作業には、利用可能な場合、記録されたタスクサイズの中央値を使用します。"
 }
