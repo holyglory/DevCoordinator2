@@ -74,7 +74,7 @@
       "other": "Delad revision {value1} · {value2} projects"
     }
   },
-  "this_project_uses_shared_revision_value1_revisio_c1cf8c": "This project uses shared revision {value1}. Revision {value2} is available.",
+  "this_project_uses_shared_revision_value1_revisio_c1cf8c": "Projektet använder den delade revisionen {value1}. Revision {value2} är tillgänglig.",
   "adopt_revision_value4_d99ca6": "Överta revision {value4}",
   "guidance_and_languages_952865": "Riktlinjer och språk",
   "view_guidance_169578": "Visa riktlinjer",

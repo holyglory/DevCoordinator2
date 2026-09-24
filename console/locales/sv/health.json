@@ -112,7 +112,7 @@
   "active": "Active",
   "incident_inbox": "Incidentinkorg",
   "show_more_incidents": "Visa fler incidenter",
-  "select_incident_prompt": "Välj an incident to view its response and next step.",
+  "select_incident_prompt": "Välj en incident för att se dess svar och nästa steg.",
   "no_incidents_escalated": "Nej incidents escalated to you.",
   "no_incidents_match": "Nej incidents match your search.",
   "stored_incident_not_confirmed": "Den lagrade incidenten bekräftade inte ändringen.",

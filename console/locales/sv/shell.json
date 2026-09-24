@@ -79,7 +79,7 @@
   "icon_shield": "Säkerhet",
   "current_repository_value1_35de51": "Aktuellt kodarkiv: {value1}",
   "could_not_save_repository_appearance_try_again_955cdd": "Kodarkivets utseende kunde inte sparas. Försök igen.",
-  "value1_repositories_unavailable_refresh_to_retry_426a76": "{value1} kodarkiv unavailable. Refresh to retry.",
+  "value1_repositories_unavailable_refresh_to_retry_426a76": "{value1} kodarkiv är inte tillgängliga. Uppdatera för att försöka igen.",
   "montenegrinLatin": "Montenegrinska (latinsk skrift)",
   "montenegrinCyrillic": "Montenegrinska (kyrillisk skrift)"
 }
