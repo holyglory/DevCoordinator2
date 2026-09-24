@@ -59,5 +59,56 @@
   "open_delivered_result_93d4e9": "Otvori isporučeni rezultat",
   "unavailable_ca1844": "Nedostupno",
   "measurements_could_not_be_loaded_77193b": "Nije moguće učitati mjerenja.",
-  "review_measurements_are_unavailable_497d4e": "Mjerenja pregleda nisu dostupna."
+  "review_measurements_are_unavailable_497d4e": "Mjerenja pregleda nisu dostupna.",
+  "value1_more_activities_a0186b": {
+    "argument": "value1",
+    "forms": {
+      "one": "još {value1} aktivnost",
+      "few": "još {value1} aktivnosti",
+      "other": "još {value1} aktivnosti"
+    }
+  },
+  "value1_revisions_ed2971": {
+    "argument": "value1",
+    "forms": {
+      "one": "{value1} revizija",
+      "few": "{value1} revizije",
+      "other": "{value1} revizija"
+    }
+  },
+  "activity_38da15": "Aktivnost",
+  "partial_27f7a4": " (djelimično)",
+  "review_usage_c39675": "Korištenje pregleda",
+  "overview_usage_83f004": "Pregled korištenja",
+  "review_c97ace": "pregled",
+  "period_514cb1": "period",
+  "outcome_no_longer_available_a63b43": "Ishod više nije dostupan",
+  "unknown_kind_2a60d8": "Nepoznata vrsta",
+  "review_in_progress_bf2daa": " · Pregled u toku",
+  "incomplete_measurement_3407ad": "Nepotpuno mjerenje",
+  "value1_total_value2_value3_0a3988": "{value1} ukupno: {value2}{value3}",
+  "review_usage_value1_a681eb": "Korištenje pregleda · {value1}",
+  "value1_attributed_outcomes_6e3dca": {
+    "argument": "value1",
+    "forms": {
+      "one": "{value1} pripisan ishod",
+      "few": "{value1} pripisana ishoda",
+      "other": "{value1} pripisanih ishoda"
+    }
+  },
+  "view_delivery_evidence_c18555": "Prikaži dokaz isporuke",
+  "kind_user_feedback": "Povratne informacije korisnika",
+  "kind_improvement": "Poboljšanje",
+  "kind_goal": "Cilj",
+  "kind_stub": "Nedovršen rad",
+  "kind_unknown": "Nepoznata vrsta",
+  "kind_unattributed": "Neraspoređeno",
+  "status_proposed": "Predloženo",
+  "status_applied": "Primijenjeno",
+  "status_retained": "Zadržano",
+  "status_reverted": "Vraćeno",
+  "status_unchanged": "Bez promjene",
+  "status_inconclusive": "Neodlučno",
+  "tokensByActivity": "Tokeni po aktivnosti",
+  "tokensByKind": "Tokeni po vrsti stavke plana"
 }

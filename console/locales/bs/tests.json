@@ -80,5 +80,51 @@
   "repositories_1e32af": "Repozitoriji",
   "screenshot_gallery_7bd298": "Galerija snimki zaslona",
   "these_screenshots_do_not_verify_the_latest_run_0e24e3": "Ove snimke ne potvrđuju najnovije izvođenje.",
-  "the_linked_run_is_no_longer_available_in_retaine_a39a19": "Povezano izvođenje više nije dostupno u sačuvanoj historiji."
+  "the_linked_run_is_no_longer_available_in_retaine_a39a19": "Povezano izvođenje više nije dostupno u sačuvanoj historiji.",
+  "none_dc937b": "Nema",
+  "start_of_output_85c6f8": "Početak izlaza",
+  "all_results_shown_ad3d94": "Svi rezultati su prikazani",
+  "pending_331551": "Na čekanju",
+  "yes_85a39a": "Da",
+  "in_progress_c1f88e": "U toku",
+  "no_1ea442": "Ne",
+  "unavailable_ca1844": "Nije dostupno",
+  "database_setup_7a9e87": "Postavljanje baze podataka",
+  "stop_run_b7ec68": "Zaustavi pokretanje",
+  "value1_of_value2_cases_shown_all_retained_case_o_89db76": {
+    "argument": "value2",
+    "forms": {
+      "one": "Prikazan je {value1} od {value2} slučaja. Sav sačuvani izlaz dostupan je u dnevnicima.",
+      "few": "Prikazana su {value1} od {value2} slučaja. Sav sačuvani izlaz dostupan je u dnevnicima.",
+      "other": "Prikazano je {value1} od {value2} slučajeva. Sav sačuvani izlaz dostupan je u dnevnicima."
+    }
+  },
+  "run_again_3e310b": "Pokreni ponovo",
+  "not_recorded_b37c78": "Nije zabilježeno",
+  "value1_of_value2_882c45": "{value1} od {value2}",
+  "loading_screenshot_e0fd7b": "Učitavanje snimke…",
+  "preview_value1_cb5dab": "Pregled {value1}",
+  "earlier_run_value1_68bdba": "Prethodno pokretanje · {value1}",
+  "value1_test_results_293210": "{value1} rezultata testa",
+  "test_results_3ea600": "Rezultati testova",
+  "updates_paused_value1_11b351": "Ažuriranja pauzirana: {value1}",
+  "no_maximum_b5cfdf": "Nema maksimuma",
+  "browse_all_value1_screenshots_81fcf6": {
+    "argument": "value1",
+    "forms": {
+      "one": "Pregledaj snimku {value1}",
+      "few": "Pregledaj {value1} snimke",
+      "other": "Pregledaj svih {value1} snimaka"
+    }
+  },
+  "details_45989d": "Detalji",
+  "previous_screenshot_af9be1": "Prethodna snimka",
+  "next_screenshot_fd250f": "Sljedeća snimka",
+  "open_in_viewer_comment_ad9420": "Otvori u pregledniku / komentariši",
+  "screenshot_loading_cancelled_50e74f": "Učitavanje snimke je otkazano.",
+  "the_screenshot_changed_while_loading_94fe13": "Snimka se promijenila tokom učitavanja.",
+  "the_screenshot_response_was_incomplete_4d7952": "Odgovor snimke bio je nepotpun.",
+  "screenshots_could_not_be_read_92f171": "Snimke nije moguće pročitati.",
+  "screenshot_could_not_be_previewed_11a0c5": "Snimku nije moguće pregledati.",
+  "a_newer_run_is_available_refresh_to_view_it_c113b3": "Dostupno je novije pokretanje. Osvježite da ga vidite."
 }
