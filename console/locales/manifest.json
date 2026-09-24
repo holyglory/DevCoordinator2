@@ -161,7 +161,7 @@
         "FR"
       ],
       "direction": "ltr",
-      "status": "draft",
+      "status": "enabled",
       "files": {
         "common": [
           "ca/common.json"
