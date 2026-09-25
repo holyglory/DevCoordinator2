@@ -1119,7 +1119,7 @@
         "EE"
       ],
       "direction": "ltr",
-      "status": "draft",
+      "status": "enabled",
       "files": {
         "common": [
           "et/common.json"
