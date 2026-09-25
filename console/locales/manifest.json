@@ -1182,7 +1182,7 @@
         "FI"
       ],
       "direction": "ltr",
-      "status": "enabled",
+      "status": "draft",
       "files": {
         "common": [
           "fi/common.json"
@@ -1309,7 +1309,7 @@
         "GE"
       ],
       "direction": "ltr",
-      "status": "enabled",
+      "status": "draft",
       "files": {
         "common": [
           "ka/common.json"
@@ -1374,7 +1374,7 @@
         "SK"
       ],
       "direction": "ltr",
-      "status": "enabled",
+      "status": "draft",
       "files": {
         "common": [
           "hu/common.json"
@@ -1437,7 +1437,7 @@
         "IS"
       ],
       "direction": "ltr",
-      "status": "enabled",
+      "status": "draft",
       "files": {
         "common": [
           "is/common.json"
@@ -1500,7 +1500,7 @@
         "IE"
       ],
       "direction": "ltr",
-      "status": "enabled",
+      "status": "draft",
       "files": {
         "common": [
           "ga/common.json"
