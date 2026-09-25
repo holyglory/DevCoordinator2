@@ -41,15 +41,24 @@ earlier model messages or reload unchanged instructions.
   performance-only: reviews apply, delivery obligations and alarms do not.
   Only an authorized transition to implementation with a real delivery target
   starts that target's delivery baseline; earlier discussion time is excluded.
-- For delivery-eligible work, independent defaults are 24 hours to request
-  delivery concurrently and 36 hours to restrict the affected delivery scope
-  to recovery. The first deadline never blocks ordinary implementation. Honor
-  confirmed overrides; explicit postponements retain deadline revision history
-  and real timestamps and immediately reevaluate obsolete blocks. A completed
-  review and a qualified delivery are separate receipts. A release metadata
-  row or healthy deployment is not a qualified delivery: require a
-  `release.deliver_evidence` receipt with `qualified: true`, then record that
-  receipt ID against the matching delivery target.
+- For delivery-eligible work, set one runtime delivery alarm when the
+  authorized implementation target starts. Independent defaults are 24 hours
+  for the alarm/request and 36 hours for the hard-stop threshold. The alarm is
+  a planning signal, not a per-batch deployment command: at 24 hours, request
+  one delivery concurrently and plan the next convenient coherent result while
+  ordinary implementation continues. Honor confirmed overrides; explicit
+  postponements retain deadline revision history and real timestamps and
+  immediately reevaluate obsolete wakes. A completed review and a qualified
+  delivery are separate receipts. A release metadata row or healthy deployment
+  is not a qualified delivery: require a `release.deliver_evidence` receipt
+  with `qualified: true`, then record that receipt ID against the matching
+  delivery target.
+- At or beyond the hard-stop threshold without a qualified receipt, block the
+  affected scope from starting another implementation batch. A finite bounded
+  implementation, build, test, packaging, or publication operation already
+  underway may finish when it is directly needed to make that delivery usable;
+  publish it immediately afterward. This finishing allowance does not permit
+  unrelated edits, a new feature, a new batch, or indefinite continuation.
 - Review continuing work daily and on deduplicated evidenced bottlenecks.
   Prioritize elapsed time to the next useful result without weakening scope,
   correctness, or required verification. Use hypothesis → options → chosen

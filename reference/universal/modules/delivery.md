@@ -47,12 +47,15 @@
   Invalidate obsolete timer wakes and immediately reevaluate existing blocks;
   a superseded deadline cannot keep work blocked. Silence or a failed build is
   not a postponement. Review timing is unchanged unless revised separately.
-- Deliver the first qualifying result within the effective delivery interval
-  measured from the delivery-eligible implementation start, including its
-  discovery and setup but excluding earlier performance-only work. Thereafter,
-  measure each deadline from the last qualifying delivery. Use elapsed UTC
-  time, not accumulated agent working hours. Short tasks still finish under
-  their normal acceptance criteria; do not prolong them to reach a checkpoint.
+- At the effective delivery interval, the runtime alarm requests one delivery
+  concurrently. Plan the first qualifying result at the next convenient,
+  meaningful point; the alarm is not a per-batch deployment command. Measure
+  the first alarm from the delivery-eligible implementation start and later
+  alarms from the last qualified delivery receipt. Use elapsed UTC time, not
+  accumulated agent working hours. The qualifying result must be published
+  before the hard-stop threshold unless the bounded-operation allowance below
+  applies. Short tasks still finish under their normal acceptance criteria;
+  do not prolong them to reach an alarm.
 - Preserve actual work-start and implementation-transition times, effective
   intervals, deadline revisions, and wake identities in the runtime clock state;
   reference authoritative Coordinator delivery evidence, decisions, and reports.
@@ -76,9 +79,11 @@
 
 ### Keep web applications available
 
-- Deploy web-application increments through the configured DevCoordinator
-  service at least once per effective delivery interval. Publish a stable URL
-  that the user can actually access, and verify the advertised behavior there.
+- After the delivery alarm, deploy one coherent web-application increment
+  through the configured DevCoordinator service at the next convenient point
+  and before the hard-stop threshold. Do not deploy merely because a small
+  batch ended. Publish a stable URL that the user can actually access, and
+  verify the advertised behavior there.
 - Keep the intermediate server continuously available for inspection while
   development continues. Preserve the last working version while preparing
   its replacement; restore a failed preview promptly. Do not tear it down
@@ -92,8 +97,10 @@
 
 ### Deliver usable desktop builds and updates
 
-- Build usable packages for every agreed platform and architecture at least
-  once per effective delivery interval. Publish verified downloads through a
+- After the delivery alarm, build one coherent set of usable packages for every
+  agreed platform and architecture at the next convenient point and before the
+  hard-stop threshold. Do not start an expensive package build merely because
+  a small implementation batch ended. Publish verified downloads through a
   DevCoordinator-hosted web server, under the agreed public domain when
   available. Identify the source snapshot and version for each package.
 - Track qualifying delivery separately for every required target. A successful
@@ -168,24 +175,24 @@
   inaccessible deployment, a status report, or reposted stale artifacts is not
   a qualifying delivery. Do not reset a deadline until the result is available
   to the user and its advertised behavior has been verified.
-- On missing the effective delivery interval, report the overdue result,
-  cause, and recovery action promptly. Start or attach to exactly one
-  delivery request for that scope and deadline revision while independent
-  coding continues. Repeated wakes do not duplicate the request. Being overdue
-  before the hard-stop threshold never blocks ordinary implementation; the
-  later threshold is not permission to ignore delivery. Both thresholds use
-  the same baseline: 36 hours is not 36 additional hours after the 24-hour trigger.
-- At or beyond the effective hard-stop threshold without a qualifying
-  delivery, block ordinary implementation throughout the affected delivery
-  scope, including every delegated agent working in it; independent scopes
-  continue. For the first delivery, measure from the eligible implementation
-  start; afterward, measure from the last qualifying delivery for each required
-  surface or target. Do not conceal an overdue target behind another's success.
-- Allow only delivery recovery, necessary diagnosis and repairs, supporting
-  builds and checks, reporting, and preservation of existing results. Do not
-  start unrelated implementation or optimization under the label of recovery.
-  Safe finite runs already in progress may finish preserving their evidence;
-  independent projects may continue.
+- When the delivery alarm fires, report or attach exactly one delivery request
+  for that target and plan the next convenient qualifying result. Repeated wakes
+  do not duplicate the request. The alarm does not require an expensive
+  deployment at the end of every small batch.
+- At or beyond the effective hard-stop threshold without a qualifying delivery,
+  block the affected scope from starting a new implementation batch, including
+  delegated work; independent scopes continue. A finite implementation, build,
+  test, packaging, or publication operation already underway may finish only
+  when it is directly needed to make the overdue delivery usable, and must be
+  delivered immediately afterward. This does not authorize unrelated edits,
+  new features, a new batch, or indefinite continuation. Both thresholds use
+  the same baseline: 36 hours is not 36 additional hours after the 24-hour
+  alarm.
+- Apart from that bounded finishing allowance, allow only delivery recovery,
+  necessary diagnosis and repairs, supporting checks, reporting, and
+  preservation of existing results. Resume ordinary implementation only after
+  a qualified delivery is verified or the user explicitly changes the
+  obligation.
 - Record the exact recovery condition through the existing Coordinator
   records and communicate it to all affected agents. Resume implementation
   only when the missing delivery obligations are verified as restored or the
