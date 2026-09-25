@@ -39,6 +39,29 @@ The universal cross-repository policy is `reference/universal/AGENTS.md`.
   does not make persistent data, credentials, authorization controls, or
   root-service state disposable.
 
+## Interim delivery and audit gates
+
+- For every delivery-eligible implementation, complete a first-interim-delivery
+  checkpoint before beginning the next substantial implementation batch. Freeze
+  a coherent source snapshot, publish it through the repository's authorized
+  non-production workflow, exercise the advertised user journey, and retain the
+  Coordinator delivery receipt with the actual URL or download. A planned
+  release, source commit, local file, screenshot, queued operation, or status
+  message is not delivery evidence. If the repository is self-hosted, follow
+  its documented non-self-hosting workflow; never manufacture a receipt through
+  the installed service.
+- Before each later implementation batch, inspect the delivery clock and
+  recovery state. Once the affected scope is in recovery-only mode, stop
+  ordinary product edits and perform only delivery recovery, diagnosis,
+  supporting checks, or preservation until a qualified receipt clears the
+  condition.
+- Every locale or content audit must validate its response schema before using
+  the result. Require the expected per-locale collection and numeric finding
+  field, fail on missing or unexpected shapes, and inspect every returned
+  finding. Never default a missing result field to an empty list or zero.
+  Structural parity, heuristic contamination, and rendered checks are separate
+  gates; none may substitute for the others.
+
 ## Mockup-backed UI handoff
 
 - Use the shared Console preview as the rendered target for every
