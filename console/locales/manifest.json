@@ -1437,7 +1437,7 @@
         "IS"
       ],
       "direction": "ltr",
-      "status": "draft",
+      "status": "enabled",
       "files": {
         "common": [
           "is/common.json"
