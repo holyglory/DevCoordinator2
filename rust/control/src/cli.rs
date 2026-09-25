@@ -1218,11 +1218,26 @@ enum ReleaseCommand {
     Create(ReleaseCreateArgs),
     Update(ReleaseUpdateArgs),
     Request(ReleaseRequestArgs),
+    #[command(
+        name = "deliver",
+        about = "Record deployment metadata only; use deliver-evidence for a qualified delivery receipt."
+    )]
     Deliver(ReleaseDeliverArgs),
+    #[command(
+        name = "deliver-evidence",
+        about = "Create a qualified delivery receipt from retained artifact and bounded verification proof."
+    )]
     DeliverEvidence {
-        #[arg(long)]
+        #[arg(
+            long,
+            help = "JSON request for release.deliver_evidence; it references the retained run artifact and its compact verification file."
+        )]
         file: PathBuf,
     },
+    #[command(
+        name = "evidence",
+        about = "Read one exact delivery receipt by its delivery-* receipt ID."
+    )]
     Evidence {
         reference: String,
     },
@@ -2151,7 +2166,8 @@ impl ReleaseCommand {
     fn into_invocation(self) -> Result<Invocation, CliValidationError> {
         match self {
             Self::DeliverEvidence { file } => {
-                remote("release.deliver_evidence", review_cli::bounded_file(&file)?)
+                let params = qualified_delivery_request(&file)?;
+                remote("release.deliver_evidence", params)
             }
             Self::Evidence { reference } => {
                 remote("release.evidence", json!({"reference":reference}))
@@ -2323,6 +2339,18 @@ where
 
 fn invalid(message: impl Into<String>) -> CliValidationError {
     CliValidationError::Invalid(message.into())
+}
+
+fn qualified_delivery_request(file: &PathBuf) -> Result<Value, CliValidationError> {
+    let params = review_cli::bounded_file(file)?;
+    serde_json::from_value::<devcoordinator2_api::delivery::Deliver>(params.clone()).map_err(
+        |error| {
+            invalid(format!(
+                "invalid release.deliver_evidence request: {error}; required fields are release_id, path, run_id, check, artifact, manifest_sha256, source_sha256, target, kind, and optional verification_file"
+            ))
+        },
+    )?;
+    Ok(params)
 }
 
 fn remote(operation_name: &'static str, params: Value) -> Result<Invocation, CliValidationError> {
@@ -3321,6 +3349,23 @@ mod tests {
         assert_eq!(event_wait["cursor"], 9);
         assert_eq!(event_wait["filters"].as_array().unwrap().len(), 2);
         assert_eq!(event_wait["limit"], 25);
+    }
+
+    #[test]
+    fn qualified_delivery_cli_explains_the_request_shape_before_remote_submission() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(file.path(), br#"{"release_id":"release-only"}"#).unwrap();
+        let error = invocation(&[
+            "release",
+            "deliver-evidence",
+            "--file",
+            file.path().to_str().unwrap(),
+        ])
+        .expect_err("incomplete delivery request should fail locally");
+        let message = error.to_string();
+        assert!(message.contains("invalid release.deliver_evidence request"));
+        assert!(message.contains("manifest_sha256"));
+        assert!(message.contains("verification_file"));
     }
 
     #[test]

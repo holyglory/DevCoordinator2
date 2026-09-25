@@ -46,7 +46,10 @@ earlier model messages or reload unchanged instructions.
   to recovery. The first deadline never blocks ordinary implementation. Honor
   confirmed overrides; explicit postponements retain deadline revision history
   and real timestamps and immediately reevaluate obsolete blocks. A completed
-  review and a qualified delivery are separate receipts.
+  review and a qualified delivery are separate receipts. A release metadata
+  row or healthy deployment is not a qualified delivery: require a
+  `release.deliver_evidence` receipt with `qualified: true`, then record that
+  receipt ID against the matching delivery target.
 - Review continuing work daily and on deduplicated evidenced bottlenecks.
   Prioritize elapsed time to the next useful result without weakening scope,
   correctness, or required verification. Use hypothesis → options → chosen

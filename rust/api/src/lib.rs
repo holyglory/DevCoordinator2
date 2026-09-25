@@ -1331,7 +1331,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
     ),
     operation!(
         "release.deliver",
-        "Attach real delivery evidence to a release.",
+        "Record deployment metadata for a release; this does not create a qualified delivery receipt or satisfy a delivery clock.",
         APPEND_REPOSITORY_ADMIN,
         Protocol["release deliver"],
         ["release_deliver"],
@@ -1421,7 +1421,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
     ),
     operation!(
         "release.deliver_evidence",
-        "Attach retained delivery proof or explicitly pending external evidence.",
+        "Create a server-derived delivery receipt from retained artifact proof; use a qualified receipt ID for the delivery clock.",
         APPEND_REPOSITORY_ADMIN,
         Protocol["release deliver-evidence"],
         ["release_deliver_evidence"],

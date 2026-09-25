@@ -16,6 +16,22 @@
   increment on an authorized non-production surface: a test server,
   application build, executable, or other appropriate inspectable result.
   Do not wait for feature completion or broad validation.
+- A deployment or release row is not, by itself, qualified delivery evidence.
+  For a delivery-clock target, use the Coordinator's retained-evidence path:
+  complete a governed run, retain the artifact, create the bounded
+  `release.deliver_evidence` request with its compact verification document,
+  read the returned receipt, require `qualified: true`, and pass that receipt
+  ID to `project_automation.record_delivery`. `release deliver` records
+  deployment metadata only and must not be used as the delivery evidence
+  reference. Do not pass a preview directory or a full screenshot/journey
+  bundle as the bounded request; the request is separate from the retained
+  artifact and the verification file inside that artifact.
+  The request names the exact release, repository/worktree path, governed run,
+  check, retained artifact, manifest digest, source digest, target, delivery
+  kind, and verification-file name. The verification file is a separate
+  bounded `Verification` document inside the retained artifact; it carries
+  the observed file digest, access URL, checked timestamp, and exact web
+  deployment generation when the kind is `web-deployment`.
 - For each delivery-eligible project/workstream target, resolve the delivery
   interval and overdue hard-stop threshold from applicable project
   instructions and user-confirmed Coordinator decisions. Project-specific
@@ -123,6 +139,11 @@
   version, what the user can try against the agreed requirements, and important
   limitations. Maintain exact access or launch instructions. Label results
   preliminary; they are not final readiness or final visual approval.
+- A successful `release deliver` response, a healthy deployment, or a passing
+  journey run without a qualified `release.deliver_evidence` receipt does not
+  reset a delivery deadline. If the receipt cannot be produced, preserve the
+  preview and evidence, diagnose the exact contract failure, and keep the
+  delivery obligation open.
 - Reuse established surfaces and delivery mechanisms. Respect declared
   shared environments and coordinate actual source, resource, or server
   conflicts rather than creating unnecessary per-agent environments.
