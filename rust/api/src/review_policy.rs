@@ -61,6 +61,9 @@ pub struct Policy {
     pub due: bool,
     pub escalated: bool,
     pub delivery_route: String,
+    pub owner_thread_id: Option<String>,
+    /// Absolute UTC lease expiry in Unix milliseconds.
+    pub lease_expires_at: Option<u64>,
 }
 
 #[derive(Clone, Debug, PartialEq, JsonSchema, Serialize, Deserialize)]
@@ -74,6 +77,7 @@ pub struct Reminder {
     pub alarm_namespace: String,
     pub window_start_ms: u64,
     pub window_end_ms: u64,
+    pub due_at_ms: u64,
     pub last_completed_receipt: Option<String>,
     pub escalation: bool,
 }

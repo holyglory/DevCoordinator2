@@ -13,7 +13,7 @@
   registration uses Coordinator's existing agent-message channel. Client names
   alone never select the native route. Do not add another watcher or review worker.
 - Act on each review reminder before unrelated work. Check the current policy
-  and latest receipt first; acknowledge inactive or already-covered windows
+  and latest receipt first; acknowledge inactive, transferred or already-covered windows
   without repeating a completed review. Inspect bounded
   `usage_stats performance_review` evidence for the exact stated interval when
   available, use Coordinator `review.prepare`, retain a reasoned improvement

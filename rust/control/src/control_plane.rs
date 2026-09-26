@@ -1300,6 +1300,7 @@ impl ControlPlane {
             "review.delivery.register" => encode(self.reviews.delivery_register(
                 decode(params)?,
                 (self.clock.now_utc().unix_timestamp_nanos() / 1_000_000) as u64,
+                crate::review::RegistrationMode::Replace,
             )?),
             "review.prepare" => encode(
                 self.reviews.prepare(
@@ -1723,8 +1724,7 @@ impl OperationExecutor for ControlPlane {
                 .ok()
                 .flatten()
                 .is_some()
-            {
-                if let Err(error) = self.reviews.delivery_register(
+                && let Err(error) = self.reviews.delivery_register(
                     devcoordinator2_api::review_policy::Register {
                         repository_id: repository.repository_id,
                         workstream_id: authorization
@@ -1739,17 +1739,16 @@ impl OperationExecutor for ControlPlane {
                         lease_expires_at: capability.lease_expires_at,
                     },
                     now,
+                    crate::review::RegistrationMode::Refresh,
                 ) {
                     tracing::warn!(code=%error.code,"native review delivery registration unavailable; message fallback remains available");
                 }
-            }
         }
         let mut result = authorization.apply_result(result)?;
         if !caller.via_edge
             && !operation.starts_with("event.")
             && !operation.starts_with("agent.message.")
-        {
-            if let Ok(repository) = self.resolve_repository(
+            && let Ok(repository) = self.resolve_repository(
                 params.get("path").and_then(Value::as_str),
                 params.get("repository_id").and_then(Value::as_str),
                 caller,
@@ -1771,7 +1770,6 @@ impl OperationExecutor for ControlPlane {
                     object.insert("_agent_messages".into(), encode(messages.messages)?);
                 }
             }
-        }
         Ok(result)
     }
 
@@ -2085,6 +2083,29 @@ mod tests {
             )
             .unwrap();
         assert_eq!(policy["delivery_route"], "codex_alarm");
+        let mut second = native.clone();
+        let other_thread = "00000000-0000-0000-0000-000000000002";
+        second.client_session = Some(other_thread.into());
+        second
+            .work
+            .as_mut()
+            .unwrap()
+            .context
+            .as_mut()
+            .unwrap()
+            .thread_id = other_thread.into();
+        let refreshed = plane
+            .execute(
+                "review.policy.status",
+                serde_json::json!({"repository_id":"r1111111111111111","workstream_id":"native"}),
+                &second,
+            )
+            .unwrap();
+        assert_eq!(
+            refreshed["owner_thread_id"],
+            native.client_session.as_ref().unwrap().as_str()
+        );
+
         let pending = plane
             .execute(
                 "review.delivery.pending",
@@ -2110,9 +2131,8 @@ mod tests {
         assert!(envelope["data"].get("_agent_messages").is_none());
         let inactive=plane.execute("review.policy.set",serde_json::json!({"repository_id":"r1111111111111111","workstream_id":"official","active":false}),&local()).unwrap();
         assert!(inactive.get("_agent_messages").is_none());
-        assert_eq!(inactive["due"],false);
-        assert_eq!(inactive["last_completed_receipt"],serde_json::Value::Null);
-
+        assert_eq!(inactive["due"], false);
+        assert_eq!(inactive["last_completed_receipt"], serde_json::Value::Null);
     }
 
     #[test]

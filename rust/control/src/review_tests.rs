@@ -531,6 +531,7 @@ fn review_schedule_routes_escalates_and_only_valid_receipts_advance_it() {
                 lease_expires_at: due + 3_600_000,
             },
             due,
+            RegistrationMode::Replace,
         )
         .unwrap();
     fixture.service.review_reminders(&events, due).unwrap();

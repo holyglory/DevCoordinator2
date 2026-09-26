@@ -4,6 +4,11 @@ use crate::events::{EventService, NewEvent};
 use devcoordinator2_api::results::{OtherOwnedEvent, OwnedEvent};
 use devcoordinator2_api::review_policy::{self as api, Policy, Reminder};
 
+pub(crate) enum RegistrationMode {
+    Refresh,
+    Replace,
+}
+
 fn scope_key(workstream: &Option<String>) -> String {
     serde_json::to_string(workstream).expect("string scope encodes")
 }
@@ -70,15 +75,16 @@ impl ReviewService {
     ) -> Result<Option<Policy>, ProtocolError> {
         self.repository(&p.repository_id)?;
         let key = scope_key(&p.workstream_id);
-        self.database.call(move|c| c.query_row("SELECT interval_ms,escalation_ms,active,window_start_ms,window_end_ms,last_receipt,lease_expires_at FROM review_policies WHERE repository_id=?1 AND workstream_key=?2",rusqlite::params![p.repository_id,key],|r|{
+        self.database.call(move|c| c.query_row("SELECT interval_ms,escalation_ms,active,window_start_ms,window_end_ms,last_receipt,lease_expires_at,owner_thread_id FROM review_policies WHERE repository_id=?1 AND workstream_key=?2",rusqlite::params![p.repository_id,key],|r|{
             let end=r.get::<_,i64>(4)? as u64;let escalation=r.get::<_,i64>(1)? as u64;let active:bool=r.get(2)?;
-            Ok(Policy {repository_id:p.repository_id.clone(),workstream_id:p.workstream_id.clone(),review_interval_ms:r.get::<_,i64>(0)? as u64,escalation_interval_ms:escalation,active,window_start_ms:r.get::<_,i64>(3)? as u64,window_end_ms:end,last_completed_receipt:r.get(5)?,due:active&&now>=end,escalated:active&&now>=end.saturating_add(escalation),delivery_route:if r.get::<_,Option<i64>>(6)?.is_some_and(|expiry|expiry>now as i64){"codex_alarm"}else{"agent_messages"}.into()})
+            Ok(Policy {repository_id:p.repository_id.clone(),workstream_id:p.workstream_id.clone(),review_interval_ms:r.get::<_,i64>(0)? as u64,escalation_interval_ms:escalation,active,window_start_ms:r.get::<_,i64>(3)? as u64,window_end_ms:end,last_completed_receipt:r.get(5)?,due:active&&now>=end,escalated:active&&now>=end.saturating_add(escalation),owner_thread_id:r.get(7)?,lease_expires_at:r.get::<_,Option<i64>>(6)?.map(|at|at as u64),delivery_route:if r.get::<_,Option<i64>>(6)?.is_some_and(|expiry|expiry>now as i64){"codex_alarm"}else{"agent_messages"}.into()})
         }).optional().map_err(Into::into)).map_err(database_error)
     }
     pub(crate) fn delivery_register(
         &self,
         p: api::Register,
         now: u64,
+        mode: RegistrationMode,
     ) -> Result<Policy, ProtocolError> {
         identifier(&p.owner_thread_id)?;
         identifier(&p.alarm_namespace)?;
@@ -91,10 +97,8 @@ impl ReviewService {
         self.repository(&p.repository_id)?;
         let repo = p.repository_id.clone();
         let scope = scope_key(&p.workstream_id);
-        let changed=self.database.call(move|c| Ok(c.execute("UPDATE review_policies SET owner_thread_id=?1,alarm_namespace=?2,lease_expires_at=?3 WHERE repository_id=?4 AND workstream_key=?5",rusqlite::params![p.owner_thread_id,p.alarm_namespace,p.lease_expires_at as i64,repo,scope])?)).map_err(database_error)?;
-        if changed == 0 {
-            return Err(invalid("Register an active review policy first"));
-        }
+        let changed=self.database.call(move|c| Ok(c.execute("UPDATE review_policies SET owner_thread_id=?1,alarm_namespace=?2,lease_expires_at=?3 WHERE repository_id=?4 AND workstream_key=?5 AND (?6 OR owner_thread_id IS NULL OR owner_thread_id=?1 OR lease_expires_at IS NULL OR lease_expires_at<=?7)",rusqlite::params![p.owner_thread_id,p.alarm_namespace,p.lease_expires_at as i64,repo,scope,matches!(mode,RegistrationMode::Replace),now as i64])?)).map_err(database_error)?;
+        let _ = changed;
         self.policy_status(
             api::Scope {
                 repository_id: p.repository_id,
@@ -111,13 +115,13 @@ impl ReviewService {
     ) -> Result<(), ProtocolError> {
         // Persist each window/stage once. Publication retries use the same outbox key.
         self.database.call(move|c| {
-            c.execute("INSERT OR IGNORE INTO review_reminders(repository_id,workstream_key,window_start_ms,window_end_ms,escalation) SELECT repository_id,workstream_key,window_start_ms,window_end_ms,0 FROM review_policies WHERE active=1 AND window_end_ms<=?1",[now as i64])?;
-            c.execute("INSERT OR IGNORE INTO review_reminders(repository_id,workstream_key,window_start_ms,window_end_ms,escalation) SELECT repository_id,workstream_key,window_start_ms,window_end_ms,1 FROM review_policies WHERE active=1 AND window_end_ms+escalation_ms<=?1",[now as i64])?;
+            c.execute("INSERT OR IGNORE INTO review_reminders(repository_id,workstream_key,window_start_ms,window_end_ms,due_at_ms,escalation) SELECT repository_id,workstream_key,window_start_ms,window_end_ms,window_end_ms,0 FROM review_policies WHERE active=1 AND window_end_ms<=?1",[now as i64])?;
+            c.execute("INSERT OR IGNORE INTO review_reminders(repository_id,workstream_key,window_start_ms,window_end_ms,due_at_ms,escalation) SELECT repository_id,workstream_key,window_start_ms,window_end_ms,window_end_ms+escalation_ms,1 FROM review_policies WHERE active=1 AND window_end_ms+escalation_ms<=?1",[now as i64])?;
             Ok(())
         }).map_err(database_error)?;
         let pending=self.database.call(move|c| {
-            let mut q=c.prepare("SELECT r.reminder_id,r.repository_id,r.workstream_key,r.window_start_ms,r.window_end_ms,r.escalation,p.last_receipt,p.owner_thread_id,p.alarm_namespace,p.lease_expires_at,r.event_route,r.message_id FROM review_reminders r JOIN review_policies p USING(repository_id,workstream_key) WHERE r.resolved=0 AND p.active=1 AND ((p.lease_expires_at>?1 AND (r.event_route IS NULL OR r.event_route != p.owner_thread_id || ':' || p.alarm_namespace)) OR ((p.lease_expires_at IS NULL OR p.lease_expires_at<=?1) AND r.message_id IS NULL)) ORDER BY r.reminder_id LIMIT 128")?;
-            let rows=q.query_map([now as i64],|r| Ok((r.get::<_,i64>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,i64>(3)?,r.get::<_,i64>(4)?,r.get::<_,bool>(5)?,r.get::<_,Option<String>>(6)?,r.get::<_,Option<String>>(7)?,r.get::<_,Option<String>>(8)?,r.get::<_,Option<i64>>(9)?,r.get::<_,Option<String>>(10)?,r.get::<_,Option<String>>(11)?)))?.collect::<Result<Vec<_>,_>>()?;
+            let mut q=c.prepare("SELECT r.reminder_id,r.repository_id,r.workstream_key,r.window_start_ms,r.window_end_ms,r.escalation,p.last_receipt,p.owner_thread_id,p.alarm_namespace,p.lease_expires_at,r.event_route,r.message_id,r.due_at_ms FROM review_reminders r JOIN review_policies p USING(repository_id,workstream_key) WHERE r.resolved=0 AND p.active=1 AND ((p.lease_expires_at>?1 AND (r.event_route IS NULL OR r.event_route != p.owner_thread_id || ':' || p.alarm_namespace)) OR ((p.lease_expires_at IS NULL OR p.lease_expires_at<=?1) AND r.message_id IS NULL)) ORDER BY r.reminder_id LIMIT 128")?;
+            let rows=q.query_map([now as i64],|r| Ok((r.get::<_,i64>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,i64>(3)?,r.get::<_,i64>(4)?,r.get::<_,bool>(5)?,r.get::<_,Option<String>>(6)?,r.get::<_,Option<String>>(7)?,r.get::<_,Option<String>>(8)?,r.get::<_,Option<i64>>(9)?,r.get::<_,Option<String>>(10)?,r.get::<_,Option<String>>(11)?,r.get::<_,i64>(12)?)))?.collect::<Result<Vec<_>,_>>()?;
             Ok(rows)
         }).map_err(database_error)?;
         for (
@@ -133,6 +137,7 @@ impl ReviewService {
             expiry,
             sent,
             message,
+            due_at_ms,
         ) in pending
         {
             let workstream =
@@ -153,6 +158,7 @@ impl ReviewService {
                     alarm_namespace: namespace,
                     window_start_ms: start as u64,
                     window_end_ms: end as u64,
+                    due_at_ms: due_at_ms as u64,
                     last_completed_receipt: receipt,
                     escalation,
                 };
@@ -230,10 +236,10 @@ impl ReviewService {
         identifier(&p.alarm_namespace)?;
         self.database.call(move|c|{
             let cursor=c.query_row("SELECT COALESCE(MAX(cursor),0) FROM owned_events",[],|r|r.get::<_,i64>(0))? as u64;
-            let mut query=c.prepare("SELECT r.reminder_id,r.repository_id,r.workstream_key,r.window_start_ms,r.window_end_ms,r.escalation,p.last_receipt,p.owner_thread_id,p.alarm_namespace FROM review_reminders r JOIN review_policies p USING(repository_id,workstream_key) WHERE r.resolved=0 AND p.active=1 AND p.lease_expires_at>?1 AND p.alarm_namespace=?2 AND r.reminder_id>?3 ORDER BY r.reminder_id LIMIT 17")?;
+            let mut query=c.prepare("SELECT r.reminder_id,r.repository_id,r.workstream_key,r.window_start_ms,r.window_end_ms,r.escalation,p.last_receipt,p.owner_thread_id,p.alarm_namespace,r.due_at_ms FROM review_reminders r JOIN review_policies p USING(repository_id,workstream_key) WHERE r.resolved=0 AND p.active=1 AND p.lease_expires_at>?1 AND p.alarm_namespace=?2 AND r.reminder_id>?3 ORDER BY r.reminder_id LIMIT 17")?;
             let rows=query.query_map(rusqlite::params![now as i64,p.alarm_namespace,p.after_id as i64],|r|{
                 let id=r.get::<_,i64>(0)? as u64;
-                Ok((id,Reminder{version:1,reminder_id:format!("review-{id}"),repository_id:r.get(1)?,workstream_id:serde_json::from_str(&r.get::<_,String>(2)?).map_err(|e|rusqlite::Error::FromSqlConversionFailure(2,rusqlite::types::Type::Text,Box::new(e)))?,window_start_ms:r.get::<_,i64>(3)? as u64,window_end_ms:r.get::<_,i64>(4)? as u64,escalation:r.get(5)?,last_completed_receipt:r.get(6)?,owner_thread_id:r.get(7)?,alarm_namespace:r.get(8)?}))
+                Ok((id,Reminder{version:1,reminder_id:format!("review-{id}"),repository_id:r.get(1)?,workstream_id:serde_json::from_str(&r.get::<_,String>(2)?).map_err(|e|rusqlite::Error::FromSqlConversionFailure(2,rusqlite::types::Type::Text,Box::new(e)))?,window_start_ms:r.get::<_,i64>(3)? as u64,window_end_ms:r.get::<_,i64>(4)? as u64,due_at_ms:r.get::<_,i64>(9)? as u64,escalation:r.get(5)?,last_completed_receipt:r.get(6)?,owner_thread_id:r.get(7)?,alarm_namespace:r.get(8)?}))
             })?.collect::<Result<Vec<_>,_>>()?;
             let next_after_id=(rows.len()>16).then(||rows[15].0);
             Ok(api::Pending{cursor,reminders:rows.into_iter().take(16).map(|(_,reminder)|reminder).collect(),next_after_id})

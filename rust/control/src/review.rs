@@ -17,6 +17,7 @@ mod pages;
 mod performance;
 #[path = "review_schedule.rs"]
 mod schedule;
+pub(crate) use schedule::RegistrationMode;
 
 #[derive(Clone)]
 pub(crate) struct ReviewService {

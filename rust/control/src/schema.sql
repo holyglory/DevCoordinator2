@@ -681,7 +681,7 @@ CREATE TABLE IF NOT EXISTS review_policies (
 );
 CREATE TABLE IF NOT EXISTS review_reminders (
  reminder_id INTEGER PRIMARY KEY AUTOINCREMENT, repository_id TEXT NOT NULL, workstream_key TEXT NOT NULL,
- window_start_ms INTEGER NOT NULL, window_end_ms INTEGER NOT NULL, escalation INTEGER NOT NULL,
+ window_start_ms INTEGER NOT NULL, window_end_ms INTEGER NOT NULL, due_at_ms INTEGER NOT NULL, escalation INTEGER NOT NULL,
  event_route TEXT, message_id TEXT, resolved INTEGER NOT NULL DEFAULT 0,
  UNIQUE(repository_id,workstream_key,window_start_ms,window_end_ms,escalation)
 );
