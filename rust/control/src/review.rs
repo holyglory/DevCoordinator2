@@ -15,6 +15,8 @@ mod evidence;
 mod pages;
 #[path = "performance.rs"]
 mod performance;
+#[path = "review_schedule.rs"]
+mod schedule;
 
 #[derive(Clone)]
 pub(crate) struct ReviewService {
@@ -314,6 +316,7 @@ impl ReviewService {
             }
             transaction.execute("INSERT INTO review_records(record_id,revision,repository_id,window_start_ms,window_end_ms,record_json,actor,recorded_at_ms) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",
                 rusqlite::params![record_id,revision,stored.record.repository_id,stored.record.window_start_ms as i64,stored.record.window_end_ms as i64,encoded,actor,now_ms as i64])?;
+            schedule::complete(transaction, &stored)?;
             Ok(())
         }).map_err(database_error)?;
         Ok(result)

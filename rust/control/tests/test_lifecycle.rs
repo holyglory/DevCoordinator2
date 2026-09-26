@@ -1901,6 +1901,7 @@ fn work_context_history_pages_preserve_whole_contexts_and_advance() {
     use devcoordinator2_api::work_context::{WorkAttribution, WorkContext, WorkSource};
     let world = LifecycleWorld::new();
     let context = WorkContext {
+        alarm: None,
         version: 1,
         native_project_id: "n".repeat(256),
         thread_id: "t".repeat(256),

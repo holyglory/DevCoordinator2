@@ -671,3 +671,17 @@ CREATE TABLE IF NOT EXISTS server_definitions (
 );
 CREATE INDEX IF NOT EXISTS server_definitions_project_name
   ON server_definitions(project, name);
+
+CREATE TABLE IF NOT EXISTS review_policies (
+ repository_id TEXT NOT NULL REFERENCES repositories(repository_id), workstream_key TEXT NOT NULL,
+ interval_ms INTEGER NOT NULL, escalation_ms INTEGER NOT NULL, active INTEGER NOT NULL,
+ window_start_ms INTEGER NOT NULL, window_end_ms INTEGER NOT NULL, last_receipt TEXT,
+ owner_thread_id TEXT, alarm_namespace TEXT, lease_expires_at INTEGER,
+ PRIMARY KEY(repository_id,workstream_key)
+);
+CREATE TABLE IF NOT EXISTS review_reminders (
+ reminder_id INTEGER PRIMARY KEY AUTOINCREMENT, repository_id TEXT NOT NULL, workstream_key TEXT NOT NULL,
+ window_start_ms INTEGER NOT NULL, window_end_ms INTEGER NOT NULL, escalation INTEGER NOT NULL,
+ event_route TEXT, message_id TEXT, resolved INTEGER NOT NULL DEFAULT 0,
+ UNIQUE(repository_id,workstream_key,window_start_ms,window_end_ms,escalation)
+);

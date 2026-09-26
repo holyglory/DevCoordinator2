@@ -2445,6 +2445,8 @@ pub struct FeedbackOwnedEvent {
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct OtherOwnedEvent {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review: Option<crate::review_policy::Reminder>,
     pub kind: String,
     pub repository_id: Option<String>,
     pub deployment_id: Option<String>,

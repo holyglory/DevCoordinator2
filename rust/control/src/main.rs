@@ -315,6 +315,7 @@ async fn run_daemon(config: &Config) -> ExitCode {
                 .expect("RFC 3339 timestamp"),
             event: devcoordinator2_api::results::OwnedEvent::Other(
                 devcoordinator2_api::results::OtherOwnedEvent {
+                    review: None,
                     kind: "coordinator.started".to_owned(),
                     repository_id: None,
                     deployment_id: None,
@@ -392,6 +393,7 @@ async fn run_daemon(config: &Config) -> ExitCode {
                         let plane = expiry_plane.clone();
                         match tokio::task::spawn_blocking(move || {
                             let expired = plane.expire_previews();
+                            if let Err(error) = plane.deliver_review_reminders() { tracing::error!(code=%error.code, "review reminders unavailable"); }
                             if let Err(error) = plane.reconcile_routes() { tracing::error!(code=%error.code, "route reconciliation incomplete"); }
                             expired
                         }).await {

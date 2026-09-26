@@ -8,9 +8,10 @@
   Project age alone never creates a delivery obligation. Do not implement a
   product to satisfy a deadline during a specification-only request. An explicit
   authorized implementation transition with a real target starts delivery timing.
-- The agent runtime owns durable clocks, deadline revisions, deduplicated wakeups,
-  and work admission. The Coordinator owns authoritative outcomes, decisions,
-  evidence, and capacity. Do not add scheduling or agent execution to its API.
+- Agent runtimes provide generic alarms and deduplicated wakeups. Coordinator
+  owns authoritative outcomes, review schedules, decisions, evidence and capacity.
+  Delivery deadlines and user overrides are recorded with those outcomes;
+  agents act on reminders without hidden runtime work admission blocks.
 
 - Throughout implementation, expose the earliest meaningful, runnable
   increment on an authorized non-production surface: a test server,
@@ -21,7 +22,7 @@
   complete a governed run, retain the artifact, create the bounded
   `release.deliver_evidence` request with its compact verification document,
   read the returned receipt, require `qualified: true`, and pass that receipt
-  ID to `project_automation.record_delivery`. `release deliver` records
+  ID to the matching Coordinator outcome and set the next generic delivery alarm. `release deliver` records
   deployment metadata only and must not be used as the delivery evidence
   reference. Do not pass a preview directory or a full screenshot/journey
   bundle as the bounded request; the request is separate from the retained
@@ -54,7 +55,7 @@
   time, not accumulated agent working hours. Short tasks still finish under
   their normal acceptance criteria; do not prolong them to reach a checkpoint.
 - Preserve actual work-start and implementation-transition times, effective
-  intervals, deadline revisions, and wake identities in the runtime clock state;
+  intervals, deadline revisions, and wake identities with the Coordinator outcome and generic alarm state;
   reference authoritative Coordinator delivery evidence, decisions, and reports.
   Qualified deliveries and completed reviews are separate receipts and cannot
   reset one another. Read delivery times from actual delivery evidence, not the

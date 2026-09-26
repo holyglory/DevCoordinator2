@@ -160,6 +160,10 @@ pub const FOUNDATION_OPERATIONS: &[&str] = &[
     "performance.overview",
     "performance.reviews",
     "performance.review",
+    "review.delivery.pending",
+    "review.policy.set",
+    "review.policy.status",
+    "review.delivery.register",
     "review.prepare",
     "review.record",
     "review.show",
@@ -418,6 +422,13 @@ impl ControlPlane {
         Ok(expired)
     }
 
+    pub fn deliver_review_reminders(&self) -> Result<(), ProtocolError> {
+        self.reviews.review_reminders(
+            &self.events,
+            (self.clock.now_utc().unix_timestamp_nanos() / 1_000_000) as u64,
+        )
+    }
+
     fn dispatch_authorized(
         &self,
         operation: &str,
@@ -562,6 +573,7 @@ impl ControlPlane {
                 if result.registered {
                     self.publish_owned(
                         results::OwnedEvent::Other(results::OtherOwnedEvent {
+                            review: None,
                             kind: "repository.registered".to_owned(),
                             repository_id: Some(result.repository_id.clone()),
                             deployment_id: None,
@@ -591,6 +603,7 @@ impl ControlPlane {
                 let result = self.registry.update_presentation(params, caller.uid)?;
                 self.publish_owned(
                     results::OwnedEvent::Other(results::OtherOwnedEvent {
+                        review: None,
                         kind: "repository.presentation.updated".to_owned(),
                         repository_id: Some(result.repository_id.clone()),
                         deployment_id: None,
@@ -611,6 +624,7 @@ impl ControlPlane {
                 )?;
                 self.publish_owned(
                     results::OwnedEvent::Other(results::OtherOwnedEvent {
+                        review: None,
                         kind: "repository.archived".to_owned(),
                         repository_id: Some(result.repository_id.clone()),
                         deployment_id: None,
@@ -628,6 +642,7 @@ impl ControlPlane {
                         .unarchive(&params.repository_id, &params.note, caller.uid)?;
                 self.publish_owned(
                     results::OwnedEvent::Other(results::OtherOwnedEvent {
+                        review: None,
                         kind: "repository.unarchived".to_owned(),
                         repository_id: Some(result.repository_id.clone()),
                         deployment_id: None,
@@ -863,6 +878,7 @@ impl ControlPlane {
                 let result = self.sketches.publish(params, caller)?;
                 self.publish_owned(
                     results::OwnedEvent::Other(results::OtherOwnedEvent {
+                        review: None,
                         kind: "sketch.published".to_owned(),
                         repository_id: Some(repository_id),
                         deployment_id: None,
@@ -883,6 +899,7 @@ impl ControlPlane {
                 let result = self.sketches.decision(params, caller)?;
                 self.publish_owned(
                     results::OwnedEvent::Other(results::OtherOwnedEvent {
+                        review: None,
                         kind: "sketch.decision.changed".to_owned(),
                         repository_id: Some(repository_id),
                         deployment_id: None,
@@ -899,6 +916,7 @@ impl ControlPlane {
                 let result = self.sketches.annotation_create(params, caller)?;
                 self.publish_owned(
                     results::OwnedEvent::Other(results::OtherOwnedEvent {
+                        review: None,
                         kind: "sketch.annotation.created".to_owned(),
                         repository_id: Some(repository_id),
                         deployment_id: None,
@@ -993,6 +1011,7 @@ impl ControlPlane {
                 let incident = self.incidents.update(decode(params)?, &caller.actor())?;
                 self.publish_owned(
                     results::OwnedEvent::Other(results::OtherOwnedEvent {
+                        review: None,
                         kind: "health.incident.changed".into(),
                         repository_id: incident.repository_id.clone(),
                         deployment_id: incident.deployment_id.clone(),
@@ -1259,6 +1278,25 @@ impl ControlPlane {
                         .div_euclid(1_000_000) as u64,
                 )?,
             ),
+            "review.delivery.pending" => {
+                self.deliver_review_reminders()?;
+                encode(self.reviews.delivery_pending(
+                    decode(params)?,
+                    (self.clock.now_utc().unix_timestamp_nanos() / 1_000_000) as u64,
+                )?)
+            }
+            "review.policy.set" => encode(self.reviews.policy_set(
+                decode(params)?,
+                (self.clock.now_utc().unix_timestamp_nanos() / 1_000_000) as u64,
+            )?),
+            "review.policy.status" => encode(self.reviews.policy_status(
+                decode(params)?,
+                (self.clock.now_utc().unix_timestamp_nanos() / 1_000_000) as u64,
+            )?),
+            "review.delivery.register" => encode(self.reviews.delivery_register(
+                decode(params)?,
+                (self.clock.now_utc().unix_timestamp_nanos() / 1_000_000) as u64,
+            )?),
             "review.prepare" => encode(
                 self.reviews.prepare(
                     decode(params)?,
@@ -1651,7 +1689,86 @@ impl OperationExecutor for ControlPlane {
     ) -> Result<Value, ProtocolError> {
         let authorization = self.access.authorize(operation, &params, caller)?;
         let result = self.dispatch_authorized(operation, authorization.params.clone(), caller)?;
-        authorization.apply_result(result)
+        // Only an actual native capability selects the alarm route; client names do not.
+        if !caller.via_edge
+            && !operation.starts_with("review.delivery.")
+            && let Some(work) = caller.work.as_ref().and_then(|work| work.context.as_ref())
+            && let Some(capability) = &work.alarm
+            && let Ok(repository) = self.resolve_repository(
+                authorization.params.get("path").and_then(Value::as_str),
+                authorization
+                    .params
+                    .get("repository_id")
+                    .and_then(Value::as_str),
+                caller,
+                false,
+            )
+        {
+            let now = (self.clock.now_utc().unix_timestamp_nanos() / 1_000_000) as u64;
+            let scope = devcoordinator2_api::review_policy::Scope {
+                repository_id: repository.repository_id.clone(),
+                workstream_id: authorization
+                    .params
+                    .get("workstream_id")
+                    .map(|value| value.as_str().map(str::to_owned))
+                    .unwrap_or_else(|| work.workstream_id.clone()),
+            };
+            if self
+                .reviews
+                .policy_status(scope, now)
+                .ok()
+                .flatten()
+                .is_some()
+            {
+                if let Err(error) = self.reviews.delivery_register(
+                    devcoordinator2_api::review_policy::Register {
+                        repository_id: repository.repository_id,
+                        workstream_id: authorization
+                            .params
+                            .get("workstream_id")
+                            .map(|value| value.as_str().map(str::to_owned))
+                            .unwrap_or_else(|| work.workstream_id.clone()),
+                        owner_thread_id: work.thread_id.clone(),
+                        mode: devcoordinator2_api::review_policy::DeliveryMode::CodexAlarm,
+                        alarm_namespace: capability.alarm_namespace.clone(),
+                        capability_revision: capability.capability_revision,
+                        lease_expires_at: capability.lease_expires_at,
+                    },
+                    now,
+                ) {
+                    tracing::warn!(code=%error.code,"native review delivery registration unavailable; message fallback remains available");
+                }
+            }
+        }
+        let mut result = authorization.apply_result(result)?;
+        if !caller.via_edge
+            && !operation.starts_with("event.")
+            && !operation.starts_with("agent.message.")
+        {
+            if let Ok(repository) = self.resolve_repository(
+                params.get("path").and_then(Value::as_str),
+                params.get("repository_id").and_then(Value::as_str),
+                caller,
+                false,
+            ) {
+                if let Err(error) = self.deliver_review_reminders() {
+                    tracing::warn!(code=%error.code,"review reminders temporarily unavailable");
+                }
+                if let Ok(messages) = self.sketches.message_poll_kind(
+                    params::AgentMessagePoll {
+                        repository_id: repository.repository_id,
+                        after_id: None,
+                        limit: 2,
+                    },
+                    Some("performance_review.reminder"),
+                ) && !messages.messages.is_empty()
+                    && let Some(object) = result.as_object_mut()
+                {
+                    object.insert("_agent_messages".into(), encode(messages.messages)?);
+                }
+            }
+        }
+        Ok(result)
     }
 
     fn defer(
@@ -1790,6 +1907,7 @@ fn owned_notification(event: &TelegramEvent) -> Option<results::OwnedEvent> {
         return None;
     };
     Some(results::OwnedEvent::Other(results::OtherOwnedEvent {
+        review: None,
         kind: event.kind.clone(),
         repository_id,
         deployment_id,
@@ -1946,6 +2064,46 @@ mod tests {
             .execute("test.start", serde_json::json!({"path":"/repo"}), &local())
             .expect_err("invalid repository is rejected by the installed lifecycle");
         assert_eq!(invalid_start.code, ErrorCode::RepositoryNotFound);
+        assert!(overview.get("_agent_messages").is_none());
+        let now = (datetime!(2026-09-03 12:00 UTC).unix_timestamp_nanos() / 1_000_000) as u64;
+        let mut native = local();
+        native.client_session = Some("00000000-0000-0000-0000-000000000001".into());
+        native.work=Some(devcoordinator2_api::work_context::WorkAttribution {
+            context:Some(devcoordinator2_api::work_context::WorkContext::parse(&serde_json::json!({"version":1,"native_project_id":"project-native","thread_id":native.client_session,"workstream_id":"native","alarm":{"alarm_namespace":"codex.review.v1","capability_revision":1,"lease_expires_at":now+1000}}).to_string()).unwrap()),
+            source:devcoordinator2_api::work_context::WorkSource::Request,diagnostic:None,
+        });
+        plane.execute("review.policy.set",serde_json::json!({"repository_id":"r1111111111111111","workstream_id":"native","review_interval_ms":100,"active":true,"window_start_ms":now-100}),&native).unwrap();
+        let policy = plane
+            .execute(
+                "review.policy.status",
+                serde_json::json!({"repository_id":"r1111111111111111","workstream_id":"native"}),
+                &native,
+            )
+            .unwrap();
+        assert_eq!(policy["delivery_route"], "codex_alarm");
+        let pending = plane
+            .execute(
+                "review.delivery.pending",
+                serde_json::json!({"alarm_namespace":"codex.review.v1"}),
+                &native,
+            )
+            .unwrap();
+        assert_eq!(pending["reminders"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            pending["reminders"][0]["owner_thread_id"],
+            native.client_session.as_ref().unwrap().as_str()
+        );
+        // The same Codex client name without the capability uses normal messages.
+        let fallback=plane.execute("review.policy.set",serde_json::json!({"repository_id":"r1111111111111111","workstream_id":"official","review_interval_ms":100,"active":true,"window_start_ms":now-100}),&local()).unwrap();
+        let envelope = serde_json::to_value(
+            devcoordinator2_api::ResponseEnvelope::success("fixture", fallback).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            envelope["agent_messages"][0]["kind"],
+            "performance_review.reminder"
+        );
+        assert!(envelope["data"].get("_agent_messages").is_none());
     }
 
     #[test]

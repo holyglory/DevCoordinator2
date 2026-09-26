@@ -5,7 +5,14 @@ use std::ffi::OsStr;
 impl Cli {
     pub fn client_context(&self) -> ClientContext {
         let environment = std::env::var_os("DEVCOORDINATOR_WORK_CONTEXT");
-        let context = self.client_context_with_work(environment.as_deref());
+        let mut context = self.client_context_with_work(environment.as_deref());
+        // Kept outside the v1 work envelope so older Coordinator releases retain attribution.
+        if let Some(work) = context.work.as_mut()
+            && let Ok(capability) = std::env::var("CODEX_ALARM_CONTEXT")
+            && capability.len() <= 512
+        {
+            work.alarm = serde_json::from_str(&capability).ok();
+        }
         if let Some(diagnostic) = context.work_diagnostic {
             eprintln!(
                 "devcoordinator2: {} (attribution omitted)",

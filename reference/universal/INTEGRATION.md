@@ -42,10 +42,10 @@ and documentation; analysis → planning, diagnosis and review; implementation
 testing and delivery. Manifest arrays are an ordered any-of match, not a
 permission grant or a scheduling obligation.
 
-Binding through `project_automation` must precede changes. Refresh applicability
-after a purpose binding or action/tool applicability change and before the
-next affected work/model request. The runtime—not this text loader—owns this
-ordering and the clocks. Tool names are not guessed from prompts: map actual
+Classify the current purpose before changes. Refresh applicability after an
+action or purpose change and before the next affected work/model request. The
+runtime owns context ordering and generic alarms; Coordinator owns review
+policies, windows and completion. This text loader owns neither clock. Tool names are not guessed from prompts: map actual
 actions to the relevant tags, or include an unknown tag to load all details.
 A purpose-only classification cannot exclude a domain that remains uncertain.
 Empty/unknown work tags select all modules; unknown manifest selectors retain

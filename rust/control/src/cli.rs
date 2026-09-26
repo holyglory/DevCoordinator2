@@ -2489,7 +2489,21 @@ fn render_response_to(
             writeln!(output)
         }
         OutputFormat::Human => match response {
-            ResponseEnvelope::Success { data, .. } => render_human_success(output, data, operation),
+            ResponseEnvelope::Success {
+                data,
+                agent_messages,
+                ..
+            } => {
+                render_human_success(output, data, operation)?;
+                for message in agent_messages.iter().flatten() {
+                    writeln!(
+                        output,
+                        "Reminder {}: {}",
+                        message.message_id, message.summary
+                    )?;
+                }
+                Ok(())
+            }
             ResponseEnvelope::Failure { error, .. } => {
                 writeln!(output, "error {}: {}", error.code, error.message)?;
                 if !error.detail.is_empty() {
@@ -2616,6 +2630,14 @@ mod tests {
         .unwrap();
         std::fs::write(&settings_file, r#"{"languages":["en"],"guidelines":[]}"#).unwrap();
         std::fs::write(&usages_file, "[]").unwrap();
+        let policy_file = glossary_inputs.path().join("policy.json");
+        std::fs::write(
+            &policy_file,
+            r#"{"repository_id":"project-alpha","active":true}"#,
+        )
+        .unwrap();
+        let registration_file = glossary_inputs.path().join("registration.json");
+        std::fs::write(&registration_file,r#"{"repository_id":"project-alpha","owner_thread_id":"thread","mode":"codex_alarm","alarm_namespace":"codex.review.v1","capability_revision":1,"lease_expires_at":10000}"#).unwrap();
         let review_file = glossary_inputs.path().join("review.json");
         std::fs::write(&review_file, serde_json::to_vec(&json!({
             "version":1,"repositoryId":"project-alpha","projectId":"project-alpha","windowStartMs":1000000,"windowEndMs":605800000,
@@ -2655,6 +2677,42 @@ mod tests {
                 "review.show",
             ),
             (&["review", "show", "review-fixture@1"], "review.receipt"),
+            (
+                &[
+                    "review",
+                    "policy-status",
+                    "--repository-id",
+                    "project-alpha",
+                ],
+                "review.policy.status",
+            ),
+            (
+                &[
+                    "review",
+                    "policy-set",
+                    "--file",
+                    policy_file.to_str().unwrap(),
+                ],
+                "review.policy.set",
+            ),
+            (
+                &[
+                    "review",
+                    "delivery-register",
+                    "--file",
+                    registration_file.to_str().unwrap(),
+                ],
+                "review.delivery.register",
+            ),
+            (
+                &[
+                    "review",
+                    "delivery-pending",
+                    "--alarm-namespace",
+                    "codex.review.v1",
+                ],
+                "review.delivery.pending",
+            ),
             (
                 &[
                     "release",
