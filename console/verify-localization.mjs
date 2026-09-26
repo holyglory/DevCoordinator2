@@ -96,5 +96,21 @@ export async function verifyLocalization({ page, check, baseUrl, output, theme, 
   await dialog.locator('[data-presentation-cancel]').click();
   await page.locator('.who #language-toggle').waitFor();
   verify('selector returns to header after modal closes', await page.locator('#language-toggle').count() === 1);
+  await page.goto(`${baseUrl}#/deployments`);
+  const firstDeployment = page.locator('.deployment-record').first();
+  await firstDeployment.waitFor();
+  await firstDeployment.evaluate(node => { node.dataset.identityProof = 'retained'; });
+  await page.locator('#language-toggle').click();
+  await page.locator('#language-menu input').fill('uk');
+  await page.locator('.language-option[data-locale=uk]').first().click();
+  await page.waitForFunction(() => document.documentElement.lang === 'uk');
+  verify('deployment language switch preserves the deployment nodes', await page.locator('.deployment-record[data-identity-proof=retained]').count() === 1);
+  verify('deployment lifecycle labels update without changing commands', await page.locator('[data-cmd="deployment.start"]').evaluateAll(nodes => nodes.length > 0 && nodes.every(node => node.textContent === '[uk] Start')));
+  verify('deployment accessibility descriptions update', (await firstDeployment.locator('[data-edit-domain]').getAttribute('aria-label')).startsWith('[uk]'));
+  await page.route('**/app.js', route => route.abort());
+  await page.reload();
+  await page.waitForFunction(() => document.querySelector('#main p')?.textContent.includes('[uk] The Console could not load.'));
+  verify('startup failure and reload action use the selected language', (await page.locator('#main button').innerText()) === '[uk] Reload');
+  await page.unroute('**/app.js');
   verify('no page errors', errors.length === 0, errors.join('; '));
 }

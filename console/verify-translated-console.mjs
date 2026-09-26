@@ -18,7 +18,7 @@ export async function verifyTranslatedConsole({ page, check, baseUrl, output, th
   await page.addInitScript(tag => localStorage.setItem('dc2-locale', tag), locale);
   const errors = []; page.on('pageerror', error => errors.push(error.message));
   const repository = 'r0123456789abcdef';
-  const routes = [`deployments?repository=${repository}`,`plan/${repository}`,`progress/${repository}`,`usage/${repository}`,`performance/${repository}`,`decisions/${repository}`,`tests?repository=${repository}`,'health','health/containers','bugs','admin',`sketches/${repository}`];
+  const routes = ['deployments',`deployments?repository=${repository}`,'deployments/d0123456789abcdef',`plan/${repository}`,`progress/${repository}`,`usage/${repository}`,`performance/${repository}`,`decisions/${repository}`,`tests?repository=${repository}`,'health','health/containers','bugs','admin',`sketches/${repository}`];
   for (const route of routes) {
     await page.goto(`${baseUrl}#/${route}`);
     await page.waitForFunction(() => !document.querySelector('.skeleton'));
@@ -32,6 +32,15 @@ export async function verifyTranslatedConsole({ page, check, baseUrl, output, th
       if (pattern == null || item.value !== formatMessage(pattern,item.args,locale)) wrong.push(item.key);
     }
     verify(`${route}: rendered bindings use the real translated catalog`, wrong.length === 0, wrong.join(', '));
+    if (route.startsWith('deployments') && route !== 'deployments') {
+      const lifecycle = await page.locator('[data-cmd="deployment.start"], [data-cmd="deployment.stop"], [data-cmd="deployment.restart"]').evaluateAll(nodes => nodes.map(node => ({ action: node.dataset.cmd.split('.')[1], text: node.textContent })));
+      verify(`${route}: lifecycle controls are localized`, lifecycle.length > 0 && lifecycle.every(item => item.text === catalogs.deployments['action_' + item.action]), JSON.stringify(lifecycle));
+    }
+    if (route === 'bugs') {
+      const fields = await page.locator('#bug-form label').evaluateAll(nodes => nodes.map(node => ({ field: node.querySelector('input,textarea').name, text: node.firstElementChild.textContent })));
+      const keys = { component: 'component_ce54f0', summary: 'summary_8e76a9', expected: 'expected', actual: 'actual', steps: 'steps_1de3df' };
+      verify('Bug report field labels are localized', fields.length === 5 && fields.every(item => item.text === catalogs.bugs[keys[item.field]]));
+    }
     if (route.startsWith('plan/')) {
       const tabs = await page.locator('#workspace-work-views a').evaluateAll(nodes => nodes.map(node => ({ view: node.getAttribute('href').split('/')[1], text: node.textContent })));
       verify('Plan secondary navigation is localized', tabs.length > 0 && tabs.every(tab => tab.text === catalogs.shell['view_' + tab.view]));
