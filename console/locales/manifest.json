@@ -674,7 +674,7 @@
         "ME"
       ],
       "direction": "ltr",
-      "status": "draft",
+      "status": "enabled",
       "files": {
         "common": [
           "sr-Cyrl/common.json"
@@ -802,7 +802,7 @@
         "BG"
       ],
       "direction": "ltr",
-      "status": "draft",
+      "status": "enabled",
       "files": {
         "common": [
           "bg/common.json"
@@ -866,7 +866,7 @@
         "CY"
       ],
       "direction": "ltr",
-      "status": "draft",
+      "status": "enabled",
       "files": {
         "common": [
           "el/common.json"
@@ -930,7 +930,7 @@
         "CY"
       ],
       "direction": "ltr",
-      "status": "draft",
+      "status": "enabled",
       "files": {
         "common": [
           "tr/common.json"
@@ -1119,7 +1119,7 @@
         "EE"
       ],
       "direction": "ltr",
-      "status": "draft",
+      "status": "enabled",
       "files": {
         "common": [
           "et/common.json"
