@@ -39,7 +39,7 @@ export async function verifyTranslatedConsole({ page, check, baseUrl, output, th
     if (route === 'bugs') {
       const fields = await page.locator('#bug-form label').evaluateAll(nodes => nodes.map(node => ({ field: node.querySelector('input,textarea').name, text: node.firstElementChild.textContent })));
       const keys = { component: 'component_ce54f0', summary: 'summary_8e76a9', expected: 'expected', actual: 'actual', steps: 'steps_1de3df' };
-      verify('Bug report field labels are localized', fields.length === 5 && fields.every(item => item.text === catalogs.bugs[keys[item.field]]));
+      verify('Bug report field labels are localized', fields.length === 5 && fields.every(item => item.text === catalogs.bugs[keys[item.field]]), JSON.stringify({formCount:await page.locator('#bug-form').count(), fields, expected: Object.fromEntries(Object.entries(keys).map(([field,key]) => [field,catalogs.bugs[key]]))}));
     }
     if (route === 'health') {
       const details = page.locator('.hi-repo-details').first();
