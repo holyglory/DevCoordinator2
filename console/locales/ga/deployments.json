@@ -64,5 +64,13 @@
       "many": "{count} deployments",
       "two": "{count} deployments"
     }
-  }
+  },
+  "action_start": "Tosaigh",
+  "action_stop": "Stop",
+  "action_restart": "Atosaigh",
+  "operatorRequired": "Teastaíonn cead oibreora",
+  "refreshAfterApply": "Tá athruithe á gcur i bhfeidhm. Athnuaigh an stádas sula dtosaíonn tú nó sula stopann tú arís.",
+  "applyRunning": "Tá cur i bhfeidhm ar siúl cheana",
+  "editDomain": "Cuir fearann {name}@{source} in eagar",
+  "repositoryLabel": "Stór"
 }

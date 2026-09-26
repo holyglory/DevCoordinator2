@@ -70,5 +70,39 @@
   "resize_task_navigator_2cc8bc": "Resize task navigator",
   "decisions_7c5ca9": "Decisions →",
   "enter_a_line_estimate_7d4502": "Enter a line estimate",
-  "not_scheduled_yet_backlog_0f0d42": "not scheduled yet (backlog)"
+  "not_scheduled_yet_backlog_0f0d42": "not scheduled yet (backlog)",
+  "elaborateLabel": "Selvennä",
+  "explanationRequested": "Tehtävälle {title} on pyydetty selkeämpää kuvausta",
+  "explainTask": "Pyydä agenttia selittämään {title} yksinkertaisemmin",
+  "unestimatedCount": "Ilman arviota: {count}",
+  "doneSummary": "Valmis: {done} / {total} ({percent})",
+  "linesDone": "Rivejä valmiina: {done} / {total}",
+  "tasksDone": "Tehtäviä valmiina: {done} / {total}",
+  "dropTask": "Hylkää tehtävä",
+  "dropTaskNamed": "Hylkää tehtävä {title}",
+  "selectTask": "Valitse {title}",
+  "dragMoveTask": "Siirrä {title} vetämällä",
+  "dragResizeTask": "Muuta tehtävän {title} kokoa vetämällä",
+  "progressNeedsEstimate": "Edistymistä ei lasketa ennen kuin tälle työlle on annettu arvio.",
+  "estimatedLines": {
+    "argument": "count",
+    "forms": {
+      "one": "~{value} rivi",
+      "other": "~{value} riviä"
+    }
+  },
+  "unestimatedJobs": {
+    "argument": "count",
+    "forms": {
+      "one": "{count} tehtävä ilman arviota",
+      "other": "{count} tehtävää ilman arviota"
+    }
+  },
+  "lineCount": {
+    "argument": "count",
+    "forms": {
+      "one": "{value} rivi",
+      "other": "{value} riviä"
+    }
+  }
 }

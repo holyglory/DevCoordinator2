@@ -58,5 +58,13 @@
       "one": "{count} deployment",
       "other": "{count} deployments"
     }
-  }
+  },
+  "action_start": "გაშვება",
+  "action_stop": "შეჩერება",
+  "action_restart": "ხელახლა გაშვება",
+  "operatorRequired": "საჭიროა ოპერატორის უფლება",
+  "refreshAfterApply": "მიმდინარეობს ცვლილებების გამოყენება. შემდეგ გაშვებამდე ან შეჩერებამდე განაახლეთ მდგომარეობა.",
+  "applyRunning": "ცვლილებების გამოყენება უკვე მიმდინარეობს",
+  "editDomain": "{name}@{source}-ის დომენის შეცვლა",
+  "repositoryLabel": "რეპოზიტორია"
 }

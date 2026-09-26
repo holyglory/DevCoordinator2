@@ -80,5 +80,52 @@
   "open_plan_task_4019fe": "Oscail tasc an phlean →",
   "full_page_9d21b6": "Full page",
   "previous_journey_step_7a544d": "Previous journey step",
-  "next_journey_step_35037a": "Next journey step"
+  "next_journey_step_35037a": "Next journey step",
+  "annotationSaved": "Anótáil sábháilte",
+  "reviewComment": "Déan trácht ar an athbhreithniú seo",
+  "attachTo": "Ceangail le",
+  "activeOption": "Rogha ghníomhach",
+  "commentLabel": "Trácht",
+  "commentPlaceholder": "Cuir trácht leis faoin rogha seo nó faoin ngrúpa roghnaithe.",
+  "postComment": "Foilsigh an trácht",
+  "closeReview": "Dún an t-athbhreithniú",
+  "selectionSummary": "Roghnaithe: {selected} · roghanna: {total}",
+  "allSketchOptions": "Gach rogha sceitse",
+  "selectOptionToAnnotate": "Roghnaigh rogha le hanótáil",
+  "commentFailed": "Níorbh fhéidir an trácht a sheoladh: {message}",
+  "sketchChangeWhy": "Cén fáth a bhfuil an sceitse seo á athrú?",
+  "reviewedInConsole": "Athbhreithnithe sa Chonsól",
+  "selectedJourneyScreenshot": "Seat scáileáin den turas úsáideora roghnaithe",
+  "noChangesRequested": "Níor iarradh aon athruithe",
+  "sketchSetUnavailable": "Níl an grúpa sceitsí seo ar fáil a thuilleadh.",
+  "selectedOptions": {
+    "argument": "count",
+    "forms": {
+      "few": "Roghanna roghnaithe ({count})",
+      "many": "Roghanna roghnaithe ({count})",
+      "one": "Rogha roghnaithe ({count})",
+      "two": "Roghanna roghnaithe ({count})",
+      "other": "Roghanna roghnaithe ({count})"
+    }
+  },
+  "commentAdded": {
+    "argument": "count",
+    "forms": {
+      "few": "Cuireadh trácht leis na roghanna roghnaithe ({count})",
+      "many": "Cuireadh trácht leis na roghanna roghnaithe ({count})",
+      "one": "Cuireadh trácht leis an rogha roghnaithe ({count})",
+      "two": "Cuireadh trácht leis na roghanna roghnaithe ({count})",
+      "other": "Cuireadh trácht leis na roghanna roghnaithe ({count})"
+    }
+  },
+  "changesRequested": {
+    "argument": "count",
+    "forms": {
+      "few": "Athruithe iarrtha: {count}",
+      "many": "Athruithe iarrtha: {count}",
+      "one": "Athrú iarrtha: {count}",
+      "two": "Athruithe iarrtha: {count}",
+      "other": "Athruithe iarrtha: {count}"
+    }
+  }
 }

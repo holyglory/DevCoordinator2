@@ -140,5 +140,9 @@
   "free": "free",
   "of": "of",
   "one_minute_average": "1-minute average",
-  "scale": "scale"
+  "scale": "scale",
+  "removeTest": "Fjarlægja prófunargám",
+  "removeOrphaned": "Fjarlægja munaðarlausan gám",
+  "removeTestContainer": "Fjarlægja prófunargáminn {name}",
+  "removeOrphanedContainer": "Fjarlægja munaðarlausa gáminn {name}"
 }

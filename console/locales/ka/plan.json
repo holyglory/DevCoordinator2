@@ -70,5 +70,39 @@
   "resize_task_navigator_2cc8bc": "Resize task navigator",
   "decisions_7c5ca9": "Decisions →",
   "enter_a_line_estimate_7d4502": "Enter a line estimate",
-  "not_scheduled_yet_backlog_0f0d42": "not scheduled yet (backlog)"
+  "not_scheduled_yet_backlog_0f0d42": "not scheduled yet (backlog)",
+  "elaborateLabel": "განმარტება",
+  "explanationRequested": "{title}-ისთვის მოთხოვნილია უფრო გასაგები განმარტება",
+  "explainTask": "სთხოვეთ აგენტს, მარტივად განმარტოს {title}",
+  "unestimatedCount": "შეუფასებელია: {count}",
+  "doneSummary": "დასრულებულია: {done} / {total} ({percent})",
+  "linesDone": "დასრულებული ხაზები: {done} / {total}",
+  "tasksDone": "დასრულებული დავალებები: {done} / {total}",
+  "dropTask": "დავალების გაუქმება",
+  "dropTaskNamed": "დავალების {title} გაუქმება",
+  "selectTask": "{title}-ის არჩევა",
+  "dragMoveTask": "{title}-ის გადასატანად გადაათრიეთ",
+  "dragResizeTask": "{title}-ის ზომის შესაცვლელად გადაათრიეთ",
+  "progressNeedsEstimate": "პროგრესი არ გამოითვლება, სანამ ეს სამუშაო არ შეფასდება.",
+  "estimatedLines": {
+    "argument": "count",
+    "forms": {
+      "one": "~{value} ხაზი",
+      "other": "~{value} ხაზი"
+    }
+  },
+  "unestimatedJobs": {
+    "argument": "count",
+    "forms": {
+      "one": "{count} დავალება შეფასების გარეშე",
+      "other": "{count} დავალება შეფასების გარეშე"
+    }
+  },
+  "lineCount": {
+    "argument": "count",
+    "forms": {
+      "one": "{value} ხაზი",
+      "other": "{value} ხაზი"
+    }
+  }
 }

@@ -107,5 +107,10 @@
   "status_unchanged": "No change",
   "status_inconclusive": "Inconclusive",
   "tokensByActivity": "Tokens by activity",
-  "tokensByKind": "Tokens by Plan item kind"
+  "tokensByKind": "Tokens by Plan item kind",
+  "unattributedWork": "ზოგი სამუშაოსთვის შედეგი ჩაწერილი არ არის.",
+  "reviewScopeTotal": "მიმოხილვის ჯამი: {tokens}",
+  "periodScopeTotal": "პერიოდის ჯამი: {tokens}",
+  "reviewTotalLabel": "მიმოხილვის ჯამი",
+  "periodTotalLabel": "პერიოდის ჯამი"
 }

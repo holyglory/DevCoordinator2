@@ -58,5 +58,13 @@
       "one": "{count} deployment",
       "other": "{count} deployments"
     }
-  }
+  },
+  "action_start": "Ræsa",
+  "action_stop": "Stöðva",
+  "action_restart": "Endurræsa",
+  "operatorRequired": "Stjórnandaheimild fyrir rekstur þarf",
+  "refreshAfterApply": "Verið er að virkja breytingar. Endurnýjaðu stöðuna áður en þú ræsir eða stöðvar aftur.",
+  "applyRunning": "Virkjun breytinga er þegar í gangi",
+  "editDomain": "Breyta léni fyrir {name}@{source}",
+  "repositoryLabel": "Geymsla"
 }

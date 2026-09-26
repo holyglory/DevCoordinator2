@@ -30,5 +30,10 @@
   "yes_8a7988": "kyllä",
   "remove_user_84a18f": "Poista käyttäjä",
   "revoke_777ac4": "Peruuta",
-  "remove_grant_8c57bf": "Poista käyttöoikeus"
+  "remove_grant_8c57bf": "Poista käyttöoikeus",
+  "removeGrant": "Poista käyttäjän {email} rooli {role}",
+  "removeUser": "Poista käyttäjä {email}",
+  "telegramSummary": "Botti: {state} · lähetysjonossa: {pending} · viimeisin tarkistus: {time}",
+  "unsubscribe": "Peruuta tilaus: {scope}",
+  "roleAccess": "Vain pääsy"
 }

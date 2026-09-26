@@ -146,5 +146,9 @@
   "free": "free",
   "of": "of",
   "one_minute_average": "1-minute average",
-  "scale": "scale"
+  "scale": "scale",
+  "removeTest": "Bain an coimeádán tástála",
+  "removeOrphaned": "Bain an coimeádán dílleachta",
+  "removeTestContainer": "Bain an coimeádán tástála {name}",
+  "removeOrphanedContainer": "Bain an coimeádán dílleachta {name}"
 }

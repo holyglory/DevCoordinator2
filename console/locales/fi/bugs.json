@@ -9,5 +9,7 @@
   "report_a_bug_f75e0b": "Ilmoita virheestä",
   "report_b6ce78": "Ilmoita",
   "bounded_atomic_records_only_no_secrets_raw_logs__2abc9d": "Vain rajatut atomiset tietueet: ei salaisuuksia, raakalokeja tai yksityisiä polkuja.",
-  "close_310ff2": "sulje"
+  "close_310ff2": "sulje",
+  "expected": "Odotettu tulos",
+  "actual": "Todellinen tulos"
 }

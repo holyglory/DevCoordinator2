@@ -70,5 +70,39 @@
   "resize_task_navigator_2cc8bc": "Resize task navigator",
   "decisions_7c5ca9": "Decisions →",
   "enter_a_line_estimate_7d4502": "Enter a line estimate",
-  "not_scheduled_yet_backlog_0f0d42": "not scheduled yet (backlog)"
+  "not_scheduled_yet_backlog_0f0d42": "not scheduled yet (backlog)",
+  "elaborateLabel": "Pontosítás",
+  "explanationRequested": "A(z) {title} feladathoz érthetőbb magyarázatot kértek",
+  "explainTask": "Kérje meg az ügynököt, hogy egyszerűbben magyarázza el: {title}",
+  "unestimatedCount": "Becslés nélkül: {count}",
+  "doneSummary": "Kész: {done} / {total} ({percent})",
+  "linesDone": "Elkészült sorok: {done} / {total}",
+  "tasksDone": "Befejezett feladatok: {done} / {total}",
+  "dropTask": "Feladat elvetése",
+  "dropTaskNamed": "A(z) {title} feladat elvetése",
+  "selectTask": "{title} kiválasztása",
+  "dragMoveTask": "Húzza a(z) {title} feladatot az áthelyezéshez",
+  "dragResizeTask": "Húzza a(z) {title} feladatot az átméretezéshez",
+  "progressNeedsEstimate": "A haladás csak a munka becslése után számítható ki.",
+  "estimatedLines": {
+    "argument": "count",
+    "forms": {
+      "one": "~{value} sor",
+      "other": "~{value} sor"
+    }
+  },
+  "unestimatedJobs": {
+    "argument": "count",
+    "forms": {
+      "one": "{count} becslés nélküli feladat",
+      "other": "{count} becslés nélküli feladat"
+    }
+  },
+  "lineCount": {
+    "argument": "count",
+    "forms": {
+      "one": "{value} sor",
+      "other": "{value} sor"
+    }
+  }
 }

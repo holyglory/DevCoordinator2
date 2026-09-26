@@ -141,5 +141,9 @@
   "free": "free",
   "of": "of",
   "one_minute_average": "1-minute average",
-  "scale": "scale"
+  "scale": "scale",
+  "removeTest": "Poista testikontti",
+  "removeOrphaned": "Poista orpo kontti",
+  "removeTestContainer": "Poista testikontti {name}",
+  "removeOrphanedContainer": "Poista orpo kontti {name}"
 }

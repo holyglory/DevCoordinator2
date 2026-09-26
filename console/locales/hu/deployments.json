@@ -58,5 +58,13 @@
       "one": "{count} deployment",
       "other": "{count} deployments"
     }
-  }
+  },
+  "action_start": "Indítás",
+  "action_stop": "Leállítás",
+  "action_restart": "Újraindítás",
+  "operatorRequired": "Operátori jogosultság szükséges",
+  "refreshAfterApply": "Az alkalmazás folyamatban van. Újabb indítási vagy leállítási művelet előtt frissítse az állapotot.",
+  "applyRunning": "Az alkalmazás már folyamatban van",
+  "editDomain": "{name}@{source} domainjének szerkesztése",
+  "repositoryLabel": "Tárház"
 }

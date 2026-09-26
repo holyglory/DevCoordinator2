@@ -70,5 +70,48 @@
   "resize_task_navigator_2cc8bc": "Resize task navigator",
   "decisions_7c5ca9": "Decisions →",
   "enter_a_line_estimate_7d4502": "Enter a line estimate",
-  "not_scheduled_yet_backlog_0f0d42": "not scheduled yet (backlog)"
+  "not_scheduled_yet_backlog_0f0d42": "not scheduled yet (backlog)",
+  "elaborateLabel": "Mínigh tuilleadh",
+  "explanationRequested": "Iarradh míniú níos soiléire ar {title}",
+  "explainTask": "Iarr ar an ngníomhaire {title} a mhíniú i dteanga níos simplí",
+  "unestimatedCount": "Gan meastachán: {count}",
+  "doneSummary": "Críochnaithe: {done} / {total} ({percent})",
+  "linesDone": "Línte críochnaithe: {done} / {total}",
+  "tasksDone": "Tascanna críochnaithe: {done} / {total}",
+  "dropTask": "Tréig an tasc",
+  "dropTaskNamed": "Tréig an tasc {title}",
+  "selectTask": "Roghnaigh {title}",
+  "dragMoveTask": "Tarraing {title} chun é a bhogadh",
+  "dragResizeTask": "Tarraing chun méid {title} a athrú",
+  "progressNeedsEstimate": "Ní ríomhtar dul chun cinn go dtí go mbeidh meastachán déanta ar an obair seo.",
+  "estimatedLines": {
+    "argument": "count",
+    "forms": {
+      "few": "~{value} líne",
+      "many": "~{value} líne",
+      "one": "~{value} líne",
+      "two": "~{value} líne",
+      "other": "~{value} líne"
+    }
+  },
+  "unestimatedJobs": {
+    "argument": "count",
+    "forms": {
+      "few": "Tascanna gan meastachán: {count}",
+      "many": "Tascanna gan meastachán: {count}",
+      "one": "Tasc gan meastachán: {count}",
+      "two": "Tascanna gan meastachán: {count}",
+      "other": "Tascanna gan meastachán: {count}"
+    }
+  },
+  "lineCount": {
+    "argument": "count",
+    "forms": {
+      "few": "{value} líne",
+      "many": "{value} líne",
+      "one": "{value} líne",
+      "two": "{value} líne",
+      "other": "{value} líne"
+    }
+  }
 }

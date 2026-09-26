@@ -107,5 +107,10 @@
   "status_unchanged": "No change",
   "status_inconclusive": "Inconclusive",
   "tokensByActivity": "Tokens by activity",
-  "tokensByKind": "Tokens by Plan item kind"
+  "tokensByKind": "Tokens by Plan item kind",
+  "unattributedWork": "Egyes munkákhoz nincs rögzített eredmény.",
+  "reviewScopeTotal": "Értékelés összesen: {tokens}",
+  "periodScopeTotal": "Időszak összesen: {tokens}",
+  "reviewTotalLabel": "Értékelés összesen",
+  "periodTotalLabel": "Időszak összesen"
 }

@@ -107,5 +107,10 @@
   "status_unchanged": "No change",
   "status_inconclusive": "Inconclusive",
   "tokensByActivity": "Tokens by activity",
-  "tokensByKind": "Tokens by Plan item kind"
+  "tokensByKind": "Tokens by Plan item kind",
+  "unattributedWork": "Sum vinna hefur enga skráða niðurstöðu.",
+  "reviewScopeTotal": "Samtals fyrir yfirferð: {tokens}",
+  "periodScopeTotal": "Samtals á tímabili: {tokens}",
+  "reviewTotalLabel": "Samtals fyrir yfirferð",
+  "periodTotalLabel": "Samtals á tímabili"
 }

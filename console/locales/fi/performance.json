@@ -109,5 +109,10 @@
   "status_unchanged": "No change",
   "status_inconclusive": "Inconclusive",
   "tokensByActivity": "Tokens by activity",
-  "tokensByKind": "Tokens by Plan item kind"
+  "tokensByKind": "Tokens by Plan item kind",
+  "unattributedWork": "Osalle työstä ei ole kirjattu tavoitetta.",
+  "reviewScopeTotal": "Tarkastelun yhteismäärä: {tokens}",
+  "periodScopeTotal": "Ajanjakson yhteismäärä: {tokens}",
+  "reviewTotalLabel": "Tarkastelun yhteismäärä",
+  "periodTotalLabel": "Ajanjakson yhteismäärä"
 }

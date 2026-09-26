@@ -70,5 +70,39 @@
   "resize_task_navigator_2cc8bc": "Resize task navigator",
   "decisions_7c5ca9": "Decisions →",
   "enter_a_line_estimate_7d4502": "Enter a line estimate",
-  "not_scheduled_yet_backlog_0f0d42": "not scheduled yet (backlog)"
+  "not_scheduled_yet_backlog_0f0d42": "not scheduled yet (backlog)",
+  "elaborateLabel": "Skýra nánar",
+  "explanationRequested": "Óskað hefur verið eftir skýrari lýsingu á {title}",
+  "explainTask": "Biðja aðstoðarmanninn að útskýra {title} á einfaldara máli",
+  "unestimatedCount": "Án áætlunar: {count}",
+  "doneSummary": "Lokið: {done} / {total} ({percent})",
+  "linesDone": "Loknar línur: {done} / {total}",
+  "tasksDone": "Lokið við verkefni: {done} / {total}",
+  "dropTask": "Fella niður verkefni",
+  "dropTaskNamed": "Fella niður verkefnið {title}",
+  "selectTask": "Velja {title}",
+  "dragMoveTask": "Dragðu {title} til að færa það",
+  "dragResizeTask": "Dragðu til að breyta stærð {title}",
+  "progressNeedsEstimate": "Framvinda er ekki reiknuð fyrr en umfang þessarar vinnu hefur verið áætlað.",
+  "estimatedLines": {
+    "argument": "count",
+    "forms": {
+      "one": "~{value} lína",
+      "other": "~{value} línur"
+    }
+  },
+  "unestimatedJobs": {
+    "argument": "count",
+    "forms": {
+      "one": "{count} verk án áætlunar",
+      "other": "{count} verk án áætlunar"
+    }
+  },
+  "lineCount": {
+    "argument": "count",
+    "forms": {
+      "one": "{value} lína",
+      "other": "{value} línur"
+    }
+  }
 }

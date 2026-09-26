@@ -116,5 +116,10 @@
   "status_unchanged": "No change",
   "status_inconclusive": "Inconclusive",
   "tokensByActivity": "Tokens by activity",
-  "tokensByKind": "Tokens by Plan item kind"
+  "tokensByKind": "Tokens by Plan item kind",
+  "unattributedWork": "Níl toradh taifeadta ag baint le cuid den obair.",
+  "reviewScopeTotal": "Iomlán an athbhreithnithe: {tokens}",
+  "periodScopeTotal": "Iomlán na tréimhse: {tokens}",
+  "reviewTotalLabel": "Iomlán don athbhreithniú",
+  "periodTotalLabel": "Iomlán don tréimhse"
 }

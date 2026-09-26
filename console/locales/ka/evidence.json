@@ -77,5 +77,43 @@
   "open_plan_task_4019fe": "გეგმის ამოცანის გახსნა →",
   "full_page_9d21b6": "Full page",
   "previous_journey_step_7a544d": "Previous journey step",
-  "next_journey_step_35037a": "Next journey step"
+  "next_journey_step_35037a": "Next journey step",
+  "annotationSaved": "ანოტაცია შენახულია",
+  "reviewComment": "ამ მიმოხილვის კომენტარი",
+  "attachTo": "მიმაგრება",
+  "activeOption": "აქტიური ვარიანტი",
+  "commentLabel": "კომენტარი",
+  "commentPlaceholder": "დაამატეთ კომენტარი ამ ვარიანტის ან არჩეული ჯგუფის შესახებ.",
+  "postComment": "კომენტარის გამოქვეყნება",
+  "closeReview": "მიმოხილვის დახურვა",
+  "selectionSummary": "არჩეულია: {selected} · ვარიანტები: {total}",
+  "allSketchOptions": "ესკიზის ყველა ვარიანტი",
+  "selectOptionToAnnotate": "აირჩიეთ ვარიანტი ანოტაციისთვის",
+  "commentFailed": "კომენტარის გამოქვეყნება ვერ მოხერხდა: {message}",
+  "sketchChangeWhy": "რატომ იცვლება ეს ესკიზი?",
+  "reviewedInConsole": "განხილულია კონსოლში",
+  "selectedJourneyScreenshot": "არჩეული მომხმარებლის გზის ეკრანის სურათი",
+  "noChangesRequested": "ცვლილებები მოთხოვნილი არ არის",
+  "sketchSetUnavailable": "ესკიზების ეს ჯგუფი აღარ არის ხელმისაწვდომი.",
+  "selectedOptions": {
+    "argument": "count",
+    "forms": {
+      "one": "არჩეული ვარიანტი ({count})",
+      "other": "არჩეული ვარიანტები ({count})"
+    }
+  },
+  "commentAdded": {
+    "argument": "count",
+    "forms": {
+      "one": "კომენტარი დაემატა {count} არჩეულ ვარიანტს",
+      "other": "კომენტარი დაემატა {count} არჩეულ ვარიანტს"
+    }
+  },
+  "changesRequested": {
+    "argument": "count",
+    "forms": {
+      "one": "მოთხოვნილია {count} ცვლილება",
+      "other": "მოთხოვნილია {count} ცვლილება"
+    }
+  }
 }

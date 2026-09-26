@@ -4,8 +4,31 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { acceptLanguages, browserLocales, canonicalLocale, createCatalog, formatMessage, localeCookie, matchLocale, recentLocales } from './i18n-core.mjs';
+import { contaminationReason } from '../scripts/locales/audit-contamination.mjs';
 const manifest = JSON.parse(await readFile(new URL('./locales/manifest.json', import.meta.url)));
 const fixture = { ...manifest, locales: manifest.locales.map(entry => ({ ...entry, status: 'enabled' })) };
+
+test('catalog review catches observed German donor fragments in non-German plural branches', () => {
+  for(const locale of ['sr-Cyrl','el','bg','tr','et','fr','nl','ru','hy']) {
+    for(const value of ['{count} Änderung angefordert','{count} Änderungen angefordert']) {
+      assert.equal(contaminationReason(locale,'evidence','changesRequested',value),'german-donor-template');
+    }
+    assert.equal(contaminationReason(locale,'evidence','commentAdded','коментар zu {count} опција'),'german-donor-template');
+  }
+  assert.equal(contaminationReason('uk','common','loading','Loading screenshot'),'phrase');
+  assert.equal(contaminationReason('uk','common','detail','Your current task and history'),'english-token-cluster');
+});
+test('catalog review preserves German, valid loans, technical examples and translated messages', () => {
+  for(const [locale,namespace,id,value] of [
+    ['de','evidence','changesRequested','{count} Änderungen angefordert'],
+    ['de','evidence','commentAdded','Kommentar zu {count} Optionen'],
+    ['lb','evidence','commentAdded','Bemierkung zu {count} Optiounen'],
+    ['tr','shell','view_plan','Plan'],['et','tests','test_532eaa','Test'],
+    ['el','evidence','changesRequested','Ζητήθηκαν {count} αλλαγές'],
+    ['sr-Cyrl','evidence','commentAdded','Коментар је додат за {count} опције'],
+    ['uk','admin','telegram_acdd1e','Telegram'],['uk','glossary','en_ru_pt_br_3c5dc6','en, ru, pt-BR'],
+  ]) assert.equal(contaminationReason(locale,namespace,id,value),null,value);
+});
 
 test('locale matching preserves script and follows ordered supported browser preferences', () => {
   for (const [input, output] of [['uk-UA','uk'], ['ru-RU','ru'], ['de-AT','de'], ['zh-TW','zh-Hant'], ['zh-HK','zh-Hant'], ['zh-CN','zh-Hans'], ['zh-SG','zh-Hans'], ['zh','zh-Hans'], ['sr-Latn-RS','sr-Latn'], ['sr-RS','sr-Cyrl'], ['no-NO','nb']]) assert.equal(matchLocale(input, fixture.locales), output, input);

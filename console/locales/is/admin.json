@@ -30,5 +30,10 @@
   "yes_8a7988": "yes",
   "remove_user_84a18f": "Remove user",
   "revoke_777ac4": "revoke",
-  "remove_grant_8c57bf": "Remove grant"
+  "remove_grant_8c57bf": "Remove grant",
+  "removeGrant": "Fjarlægja heimildina {role} fyrir {email}",
+  "removeUser": "Fjarlægja notanda {email}",
+  "telegramSummary": "Vélmenni: {state} · bíður sendingar: {pending} · síðasta athugun: {time}",
+  "unsubscribe": "Hætta áskrift að {scope}",
+  "roleAccess": "Aðgangur eingöngu"
 }

@@ -9,5 +9,7 @@
   "report_a_bug_f75e0b": "Tilkynna villu",
   "report_b6ce78": "Tilkynning",
   "bounded_atomic_records_only_no_secrets_raw_logs__2abc9d": "Aðeins afmörkuð atómfærslur: engin leyndarmál, hráir annálar eða einkaslóðir.",
-  "close_310ff2": "Loka"
+  "close_310ff2": "Loka",
+  "expected": "Vænt niðurstaða",
+  "actual": "Raunveruleg niðurstaða"
 }

@@ -77,5 +77,43 @@
   "open_plan_task_4019fe": "Opna áætlunarverk →",
   "full_page_9d21b6": "Full page",
   "previous_journey_step_7a544d": "Previous journey step",
-  "next_journey_step_35037a": "Next journey step"
+  "next_journey_step_35037a": "Next journey step",
+  "annotationSaved": "Athugasemd vistuð",
+  "reviewComment": "Athugasemd við þessa yfirferð",
+  "attachTo": "Tengja við",
+  "activeOption": "Virkur valkostur",
+  "commentLabel": "Athugasemd",
+  "commentPlaceholder": "Bættu við athugasemd um þennan valkost eða valda hópinn.",
+  "postComment": "Senda athugasemd",
+  "closeReview": "Loka yfirferð",
+  "selectionSummary": "Valið: {selected} · valkostir: {total}",
+  "allSketchOptions": "Allir skissuvalkostir",
+  "selectOptionToAnnotate": "Veldu valkost til að merkja við",
+  "commentFailed": "Ekki tókst að senda athugasemd: {message}",
+  "sketchChangeWhy": "Hvers vegna er þessari skissu breytt?",
+  "reviewedInConsole": "Yfirfarið í stjórnborði",
+  "selectedJourneyScreenshot": "Skjámynd af völdu notendaferli",
+  "noChangesRequested": "Engar breytingar umbeðnar",
+  "sketchSetUnavailable": "Þessi skissuhópur er ekki lengur tiltækur.",
+  "selectedOptions": {
+    "argument": "count",
+    "forms": {
+      "one": "Valinn valkostur ({count})",
+      "other": "Valdir valkostir ({count})"
+    }
+  },
+  "commentAdded": {
+    "argument": "count",
+    "forms": {
+      "one": "Athugasemd bætt við {count} valkost",
+      "other": "Athugasemd bætt við {count} valda valkosti"
+    }
+  },
+  "changesRequested": {
+    "argument": "count",
+    "forms": {
+      "one": "Óskað eftir {count} breytingu",
+      "other": "Óskað eftir {count} breytingum"
+    }
+  }
 }

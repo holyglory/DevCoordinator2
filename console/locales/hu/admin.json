@@ -30,5 +30,10 @@
   "yes_8a7988": "yes",
   "remove_user_84a18f": "Remove user",
   "revoke_777ac4": "revoke",
-  "remove_grant_8c57bf": "Remove grant"
+  "remove_grant_8c57bf": "Remove grant",
+  "removeGrant": "{email} {role} jogosultságának eltávolítása",
+  "removeUser": "{email} felhasználó eltávolítása",
+  "telegramSummary": "Bot: {state} · küldésre vár: {pending} · utolsó lekérdezés: {time}",
+  "unsubscribe": "Leiratkozás: {scope}",
+  "roleAccess": "Csak hozzáférés"
 }

@@ -9,5 +9,7 @@
   "report_a_bug_f75e0b": "Tuairiscigh fabht",
   "report_b6ce78": "Tuairisc",
   "bounded_atomic_records_only_no_secrets_raw_logs__2abc9d": "Taifid adamhacha teoranta amháin: gan rúin, logchomhaid amh ná cosáin phríobháideacha.",
-  "close_310ff2": "Dún"
+  "close_310ff2": "Dún",
+  "expected": "An toradh a rabhthas ag súil leis",
+  "actual": "An toradh iarbhír"
 }
