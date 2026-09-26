@@ -100,7 +100,7 @@ function until(iso) {
 function badge(text, kind) {
   const cls = kind || ({ running: 'ok', healthy: 'ok', passed: 'ok', stopped: '', degraded: 'warn', unhealthy: 'bad', failed: 'bad', 'timed-out': 'bad', cancelled: '', interrupted: 'warn', superseded: '', applying: 'warn', unknown: '', none: '' }[text] ?? '');
   const key = 'status_' + String(text).replaceAll(/[^a-zA-Z0-9]/g, '_');
-  const known = ["running","healthy","passed","stopped","degraded","unhealthy","failed","timed-out","cancelled","interrupted","superseded","applying","unknown","none","observed","host","critical","warning","active","complete","partial","unavailable","pending","planned","in_progress","done","dropped","requested","delivered","your request","administrator","viewer","operator","open","resolved","deleted","checked","expired","draft","approved","deprecated","keep","reject","undecided","Earlier visual run"].includes(text);
+  const known = ["running","healthy","passed","stopped","degraded","unhealthy","failed","timed-out","cancelled","interrupted","superseded","applying","unknown","none","observed","host","critical","warning","active","complete","partial","unavailable","pending","planned","in_progress","done","dropped","requested","delivered","your request","administrator","viewer","operator","open","resolved","deleted","checked","expired","draft","approved","deprecated","keep","reject","undecided","Earlier visual run","preview","elaboration needed"].includes(text);
   return `<span class="badge ${cls}">${known ? window.DevCoordinatorI18n.markup('common.' + key) : esc(text)}</span>`;
 }
 
@@ -3579,8 +3579,14 @@ const viewAdmin = guard(async () => {
 
 // --- Plan (completion ledger, releases, previews) ------------------------
 function locN(n) { return Number(n).toLocaleString(window.DevCoordinatorI18n.locale); }
-function loc(n) { return n == null ? '' : `~${locN(n)} lines`; }
-const PLAN_WORDS = { planned: 'planned', in_progress: 'being built', done: 'done', dropped: 'dropped', requested: 'preview requested', delivered: 'delivered' };
+function loc(n) { return n == null ? '' : window.DevCoordinatorI18n.t('plan.estimatedLines', {count:n, value:locN(n)}); }
+function planEstimateText(row) {
+  if (!row.isParent) return loc(row.task.estimated_loc) || window.DevCoordinatorI18n.t('plan.not_estimated_dbbcf5');
+  return [row.subtreeLoc ? loc(row.subtreeLoc) : '', row.unsizedCount ? window.DevCoordinatorI18n.t('plan.unestimatedCount', {count:row.unsizedCount}) : ''].filter(Boolean).join(' + ');
+}
+function planDoneText(progress) {
+  return window.DevCoordinatorI18n.t('plan.doneSummary', {done:locN(progress.done), total:locN(progress.total), percent:window.DevCoordinatorI18n.percent(progress.percent / 100, {maximumFractionDigits:0})});
+}
 const PLAN_BADGE = { done: 'ok', delivered: 'ok', in_progress: 'warn', requested: 'warn' };
 function planBadge(status) { return badge(status, PLAN_BADGE[status] ?? ''); }
 function planElaborationMark(task) {
@@ -3588,11 +3594,9 @@ function planElaborationMark(task) {
 }
 function planElaborationButton(task, context = '') {
   const requested = !!task.elaboration_needed;
-  const label = requested ? 'Requested' : 'Elaborate';
-  const explanation = requested
-    ? `A clearer explanation has been requested for ${task.title}`
-    : `Ask the agent to explain ${task.title} in simpler language`;
-  return `<button class="btn btn-small plan-elaborate ${esc(context)}" type="button" data-elaborate-task="${esc(task.task_id)}" data-ui-continuation-anchor aria-label="${esc(explanation)}" title="${esc(explanation)}"${requested ? ' aria-disabled="true"' : ''}>${planIcon('message-plus')}<span class="plan-elaborate-label">${label}</span></button>`;
+  const key = requested ? 'plan.explanationRequested' : 'plan.explainTask';
+  const explanation = window.DevCoordinatorI18n.t(key, {title:task.title});
+  return `<button class="btn btn-small plan-elaborate ${esc(context)}" type="button" data-elaborate-task="${esc(task.task_id)}" data-ui-continuation-anchor aria-label="${esc(explanation)}" title="${esc(explanation)}" data-i18n-attrs='${esc(JSON.stringify({'aria-label':key,title:key}))}' data-i18n-args='${esc(JSON.stringify({title:task.title}))}'${requested ? ' aria-disabled="true"' : ''}>${planIcon('message-plus')}<span class="plan-elaborate-label">${window.DevCoordinatorI18n.markup(requested ? 'plan.requested_2d9e28' : 'plan.elaborateLabel')}</span></button>`;
 }
 
 const viewPlanPicker = guard(async (kind) => {
@@ -3689,21 +3693,21 @@ function planSelectionTray(selectedRow, releaseById, admin) {
   const progress = planRowProgress(selectedRow);
   const estimateButton = canEstimate
     ? `<button class="btn btn-small" type="button" data-resize-task="${esc(task.task_id)}">${planIcon('arrow-right')}${(task.estimated_loc == null ? window.DevCoordinatorI18n.markup("plan.add_estimate_c87fb7") : window.DevCoordinatorI18n.markup("plan.resize_2956e0"))}</button>` : '';
-  const actionButtons = admin ? `${planElaborationButton(task, 'plan-elaborate-tray')}${movable ? `<button class="btn btn-small" type="button" data-move-task="${esc(task.task_id)}">${planIcon('arrows-move')}Move</button>` : ''}${estimateButton}${editable ? `<button class="btn btn-small btn-danger" data-cmd="task.update" data-args='${esc(JSON.stringify({ task_id: task.task_id, status: 'dropped' }))}' aria-label="Drop task ${esc(task.title)}">${planIcon('trash')}Drop task</button>` : ''}` : '';
+  const actionButtons = admin ? `${planElaborationButton(task, 'plan-elaborate-tray')}${movable ? `<button class="btn btn-small" type="button" data-move-task="${esc(task.task_id)}">${planIcon('arrows-move')}${window.DevCoordinatorI18n.markup('plan.move_6ecc3d')}</button>` : ''}${estimateButton}${editable ? `<button class="btn btn-small btn-danger" data-cmd="task.update" data-args='${esc(JSON.stringify({ task_id: task.task_id, status: 'dropped' }))}' aria-label="${esc(window.DevCoordinatorI18n.t('plan.dropTaskNamed', {title:task.title}))}" data-i18n-attrs='{"aria-label":"plan.dropTaskNamed"}' data-i18n-args='${esc(JSON.stringify({title:task.title}))}'>${planIcon('trash')}${window.DevCoordinatorI18n.markup('plan.dropTask')}</button>` : ''}` : '';
   const actions = actionButtons ? `<div class="plan-selection-actions"><span class="plan-selection-label"><span data-i18n="plan.actions_ff8059">Actions</span></span><div class="actions">${actionButtons}</div></div>` : '';
-  const estimateText = selectedRow.unsizedCount
-    ? (selectedRow.isParent ? `${selectedRow.subtreeLoc ? `${loc(selectedRow.subtreeLoc)} + ` : ''}${selectedRow.unsizedCount} ${selectedRow.unsizedCount === 1 ? 'job' : 'jobs'} not estimated` : 'Not estimated yet')
-    : esc(loc(progress.total));
+  const estimateText = () => selectedRow.unsizedCount
+    ? (selectedRow.isParent ? [selectedRow.subtreeLoc ? loc(selectedRow.subtreeLoc) : '', window.DevCoordinatorI18n.t('plan.unestimatedJobs', {count:selectedRow.unsizedCount})].filter(Boolean).join(' + ') : window.DevCoordinatorI18n.t('plan.not_estimated_yet_2a73ea'))
+    : loc(progress.total);
   const progressBlock = selectedRow.isUnsized
     ? `<div class="plan-selection-detail"><span class="plan-selection-label"><span data-i18n="plan.size_1af851">Size</span></span><strong><span data-i18n="plan.not_estimated_yet_2a73ea">Not estimated yet</span></strong><span class="muted"><span data-i18n="plan.shown_in_the_non_proportional_chart_band_e2fd9f">Shown in the non-proportional chart band.</span></span></div>`
-    : `<div class="plan-selection-detail"><span class="plan-selection-label"><span data-i18n="plan.progress_466482">Progress</span></span><strong>${window.DevCoordinatorI18n.computedMarkup(() => locN(progress.done))} / ${window.DevCoordinatorI18n.computedMarkup(() => locN(progress.total))} done (${progress.percent}%)</strong><progress max="${Math.max(progress.total, 1)}" value="${progress.done}"></progress></div>`;
+    : `<div class="plan-selection-detail"><span class="plan-selection-label"><span data-i18n="plan.progress_466482">Progress</span></span><strong>${window.DevCoordinatorI18n.computedMarkup(() => planDoneText(progress))}</strong><progress max="${Math.max(progress.total, 1)}" value="${progress.done}"></progress></div>`;
   return `<section class="plan-selection${state.planSelectionCollapsed ? ' collapsed' : ''}" data-ui-region="selected-task" aria-label="Selected task details" data-i18n-attrs='{"aria-label":"plan.selected_task_details_a9a7eb"}'>
-    <div class="plan-selection-heading"><span class="plan-selection-grip">${planIcon('grip-vertical')}</span><strong data-ui-continuation-anchor>${esc(task.title)}</strong><span class="plan-selection-status">${planBadge(task.status)}${planElaborationMark(task)}</span><span class="muted">${estimateText}</span></div>
+    <div class="plan-selection-heading"><span class="plan-selection-grip">${planIcon('grip-vertical')}</span><strong data-ui-continuation-anchor>${esc(task.title)}</strong><span class="plan-selection-status">${planBadge(task.status)}${planElaborationMark(task)}</span><span class="muted">${window.DevCoordinatorI18n.computedMarkup(estimateText)}</span></div>
     ${progressBlock}
     <div class="plan-selection-detail plan-selection-impact"><span class="plan-selection-label"><span data-i18n="plan.why_it_matters_b8bda6">Why it matters</span></span><span>${task.impact ? esc(task.impact) : "<span class=\"muted\"><span data-i18n=\"plan.no_explanation_recorded_81eb6c\">No explanation recorded.</span></span>"}</span></div>
     <div class="plan-selection-detail"><span class="plan-selection-label"><span data-i18n="plan.release_e020e3">Release</span></span><span>${release ? esc(release.name) : window.DevCoordinatorI18n.markup("plan.not_scheduled_yet_6e4794")}</span>${release ? planBadge(release.status) : ''}</div>
     ${actions}
-    <button class="plan-selection-toggle" type="button" data-plan-selection-toggle aria-expanded="${!state.planSelectionCollapsed}" aria-label="${state.planSelectionCollapsed ? 'Expand' : 'Collapse'} selected task details">${planIcon(state.planSelectionCollapsed ? 'chevron-up' : 'chevron-down')}</button>
+    <button class="plan-selection-toggle" type="button" data-plan-selection-toggle aria-expanded="${!state.planSelectionCollapsed}" aria-label="${esc(window.DevCoordinatorI18n.t(state.planSelectionCollapsed ? 'common.expandTaskDetails' : 'common.collapseTaskDetails'))}" data-i18n-attrs='${esc(JSON.stringify({"aria-label":state.planSelectionCollapsed ? 'common.expandTaskDetails' : 'common.collapseTaskDetails'}))}'>${planIcon(state.planSelectionCollapsed ? 'chevron-up' : 'chevron-down')}</button>
   </section>`;
 }
 
@@ -3764,16 +3768,18 @@ const viewPlan = guard(async (repoId) => {
     const where = release?.url && /^https:\/\//.test(release.url)
       ? `<a class="plan-release-location" ${locationStyle} href="${esc(release.url)}" target="_blank" rel="noopener"><span data-i18n="plan.open_the_app_397f86">Open the app ↗</span></a>`
       : (release?.status === 'delivered' && release.port ? `<span class="plan-release-location" ${locationStyle}>${window.DevCoordinatorI18n.markup("plan.runs_on_server_port_value2_e42376", {value2: String(release.port)})}</span>` : '');
-    const measuredProgress = release
-      ? (release.loc_total ? `${locN(release.loc_done)} / ${locN(release.loc_total)} lines done` : `${release.tasks_done} / ${release.tasks_total} tasks done`)
-      : `${locN(group.end - group.start)} lines`;
-    const progress = `${measuredProgress}${group.unsizedCount ? ` · ${group.unsizedCount} not estimated` : ''}`;
+    const progress = () => {
+      const measured = release
+        ? window.DevCoordinatorI18n.t(release.loc_total ? 'plan.linesDone' : 'plan.tasksDone', {done:locN(release.loc_total ? release.loc_done : release.tasks_done), total:locN(release.loc_total || release.tasks_total)})
+        : window.DevCoordinatorI18n.t('plan.lineCount', {count:group.end - group.start, value:locN(group.end - group.start)});
+      return measured + (group.unsizedCount ? ' · ' + window.DevCoordinatorI18n.t('plan.unestimatedCount', {count:group.unsizedCount}) : '');
+    };
     const releaseBar = total && group.end > group.start
       ? `<div class="grelbar ${release?.status === 'delivered' ? 'delivered' : ''}" style="left:${pctOf(group.start)};width:${pctOf(group.end - group.start)}"><span>${(release ? esc(release.name) : window.DevCoordinatorI18n.markup("plan.not_scheduled_yet_6e4794"))}</span></div>`
       : '';
     return `<div class="grow grel"${droppable ? ` data-drop-release="${release ? esc(release.release_id) : ''}"` : ''}>
       <div class="glabel">
-        <div class="plan-release-copy"><strong title="${release ? esc(release.name) : 'Not scheduled yet'}">${(release ? esc(release.name) : window.DevCoordinatorI18n.markup("plan.not_scheduled_yet_6e4794"))}</strong><span class="plan-release-meta">${release ? planBadge(release.status) : ''}${release?.kind === 'preview' && release.status !== 'requested' ? ` ${badge('preview')}` : ''}<span class="muted" title="${esc(progress)}">${esc(progress)}</span></span></div>
+        <div class="plan-release-copy"><strong title="${esc(release ? release.name : window.DevCoordinatorI18n.t('plan.not_scheduled_yet_6e4794'))}" ${window.DevCoordinatorI18n.computedAttribute("title", () => release ? release.name : window.DevCoordinatorI18n.t("plan.not_scheduled_yet_6e4794"))}>${(release ? esc(release.name) : window.DevCoordinatorI18n.markup("plan.not_scheduled_yet_6e4794"))}</strong><span class="plan-release-meta">${release ? planBadge(release.status) : ''}${release?.kind === 'preview' && release.status !== 'requested' ? ` ${badge('preview')}` : ''}<span class="muted" title="${esc(progress())}" ${window.DevCoordinatorI18n.computedAttribute("title", progress)}>${window.DevCoordinatorI18n.computedMarkup(progress)}</span></span></div>
       </div>
       <div class="gtrack">${releaseBar}${where}</div>
     </div>`;
@@ -3789,27 +3795,25 @@ const viewPlan = guard(async (repoId) => {
     const selected = task.task_id === state.planSelectedTaskId;
     const progress = planRowProgress(row);
     const collapse = row.isParent
-      ? `<button class="plan-tree-toggle" type="button" data-collapse="${esc(task.task_id)}" data-ui-continuation-anchor aria-expanded="${!row.collapsed}" aria-label="${row.collapsed ? 'Show' : 'Hide'} subtasks of ${esc(task.title)}" title="${row.collapsed ? 'Show subtasks' : 'Hide subtasks'}">${planIcon(row.collapsed ? 'chevron-right' : 'chevron-down')}</button>`
+      ? `<button class="plan-tree-toggle" type="button" data-collapse="${esc(task.task_id)}" data-ui-continuation-anchor aria-expanded="${!row.collapsed}" aria-label="${esc(window.DevCoordinatorI18n.t(row.collapsed ? 'common.showSubtasks' : 'common.hideSubtasks', {name:task.title}))}" title="${esc(window.DevCoordinatorI18n.t(row.collapsed ? 'common.show_subtasks_fa0ff9' : 'common.hide_subtasks_07f203'))}" data-i18n-attrs='${esc(JSON.stringify({"aria-label":row.collapsed ? 'common.showSubtasks' : 'common.hideSubtasks',title:row.collapsed ? 'common.show_subtasks_fa0ff9' : 'common.hide_subtasks_07f203'}))}' data-i18n-args='${esc(JSON.stringify({name:task.title}))}'>${planIcon(row.collapsed ? 'chevron-right' : 'chevron-down')}</button>`
       : '<span class="plan-tree-toggle-spacer" aria-hidden="true"></span>';
     const drag = movable
-      ? `<span class="plan-drag-handle" draggable="true" data-drag-task="${esc(task.task_id)}" title="Drag to move task" aria-label="Drag ${esc(task.title)} to move it" data-i18n-attrs='{"title":"plan.drag_to_move_task_41b0d9"}'>${planIcon('grip-vertical')}</span>`
+      ? `<span class="plan-drag-handle" draggable="true" data-drag-task="${esc(task.task_id)}" title="Drag to move task" aria-label="${esc(window.DevCoordinatorI18n.t('plan.dragMoveTask', {title:task.title}))}" data-i18n-attrs='{"title":"plan.drag_to_move_task_41b0d9","aria-label":"plan.dragMoveTask"}' data-i18n-args='${esc(JSON.stringify({title:task.title}))}'>${planIcon('grip-vertical')}</span>`
       : '<span class="plan-drag-spacer" aria-hidden="true"></span>';
-    const metaLoc = row.isParent
-      ? `${row.subtreeLoc ? loc(row.subtreeLoc) : ''}${row.subtreeLoc && row.unsizedCount ? ' + ' : ''}${row.unsizedCount ? `${row.unsizedCount} not estimated` : ''}`
-      : (loc(task.estimated_loc) || 'not estimated');
-    const common = `role="button" tabindex="0" data-select-task="${esc(task.task_id)}" aria-pressed="${selected}" aria-label="Select ${esc(task.title)}"`;
-    const hover = `data-hover-task="${esc(task.task_id)}" data-hover-title="${esc(task.title)}" data-hover-status="${esc(PLAN_WORDS[task.status] || task.status)}" data-hover-loc="${esc(metaLoc)}" data-hover-progress="${esc(row.isUnsized ? 'Progress is not calculated until this work is estimated.' : `${locN(progress.done)} / ${locN(progress.total)} done (${progress.percent}%)`)}" data-hover-elaboration="${task.elaboration_needed ? 'true' : 'false'}"`;
+    const metaLoc = () => planEstimateText(row);
+    const common = `role="button" tabindex="0" data-select-task="${esc(task.task_id)}" aria-pressed="${selected}" aria-label="${esc(window.DevCoordinatorI18n.t('plan.selectTask', {title:task.title}))}" data-i18n-attrs='{"aria-label":"plan.selectTask"}' data-i18n-args='${esc(JSON.stringify({title:task.title}))}'`;
+    const hover = `data-hover-task="${esc(task.task_id)}" data-hover-title="${esc(task.title)}" data-hover-status="${esc(task.status)}" data-hover-loc="${esc(metaLoc())}" data-hover-progress="${esc(row.isUnsized ? window.DevCoordinatorI18n.t('plan.progressNeedsEstimate') : planDoneText(progress))}" data-hover-elaboration="${task.elaboration_needed ? 'true' : 'false'}"`;
     const sizedBar = row.width ? (row.isParent
       ? `<div class="gbar parent${selected ? ' selected' : ''}" style="left:${pctOf(row.start)};width:${pctOf(row.width)}" ${common}><span class="gdone" style="width:${progress.percent}%"></span></div>`
       : `<div class="gbar ${esc(task.status)}${selected ? ' selected' : ''}" style="left:${pctOf(row.start)};width:${pctOf(row.width)}" ${common} ${hover}>
           <span class="gdone" style="width:${progress.percent}%"></span><span class="gbar-label">${esc(task.title)}</span>
-          ${pointerResizable ? `<button type="button" class="gresize" data-resize-handle="${esc(task.task_id)}" aria-label="Drag to resize ${esc(task.title)}" title="Drag to resize estimate" data-i18n-attrs='{"title":"plan.drag_to_resize_estimate_2d023d"}'></button>` : ''}
+          ${pointerResizable ? `<button type="button" class="gresize" data-resize-handle="${esc(task.task_id)}" aria-label="${esc(window.DevCoordinatorI18n.t('plan.dragResizeTask', {title:task.title}))}" title="Drag to resize estimate" data-i18n-attrs='{"title":"plan.drag_to_resize_estimate_2d023d","aria-label":"plan.dragResizeTask"}' data-i18n-args='${esc(JSON.stringify({title:task.title}))}'></button>` : ''}
         </div>`) : '';
-    const unsizedBar = row.unsizedCount ? `<div class="gbar unsized ${row.isParent ? 'parent ' : ''}${esc(task.status)}${selected ? ' selected' : ''}" style="left:${unsizedLeft};width:${unsizedWidth}" ${common} ${hover}><span class="gbar-label">${row.isParent ? `${row.unsizedCount} not estimated` : esc(task.title)}</span></div>` : '';
+    const unsizedBar = row.unsizedCount ? `<div class="gbar unsized ${row.isParent ? 'parent ' : ''}${esc(task.status)}${selected ? ' selected' : ''}" style="left:${unsizedLeft};width:${unsizedWidth}" ${common} ${hover}><span class="gbar-label">${row.isParent ? window.DevCoordinatorI18n.markup('plan.unestimatedCount', {count:row.unsizedCount}) : esc(task.title)}</span></div>` : '';
     const bar = `${sizedBar}${unsizedBar}`;
     return `<div class="grow gtask${row.hidden ? ' ghidden' : ''}${selected ? ' selected' : ''}" data-task-row="${esc(task.task_id)}">
       <div class="glabel" style="--task-depth:${row.depth}">${drag}${collapse}<button type="button" class="plan-task-select" data-select-task="${esc(task.task_id)}" aria-pressed="${selected}">
-        <span class="plan-task-title">${esc(task.title)}</span><span class="plan-task-meta" title="${esc(`${metaLoc} · ${PLAN_WORDS[task.status] || task.status}`)}"><span title="${esc(metaLoc)}">${esc(metaLoc)}</span>${planBadge(task.status)}${task.kind === 'user_feedback' ? ` ${badge('your request')}` : ''}</span>
+        <span class="plan-task-title">${esc(task.title)}</span><span class="plan-task-meta" ${window.DevCoordinatorI18n.computedAttribute("title", () => `${metaLoc()} · ${window.DevCoordinatorI18n.t("common.status_" + task.status)}`)}><span title="${esc(metaLoc())}" ${window.DevCoordinatorI18n.computedAttribute("title", metaLoc)}>${window.DevCoordinatorI18n.computedMarkup(metaLoc)}</span>${planBadge(task.status)}${task.kind === 'user_feedback' ? ` ${badge('your request')}` : ''}</span>
       </button>${admin ? planElaborationButton(task, 'plan-elaborate-row') : (task.elaboration_needed ? planElaborationMark(task) : '')}</div>
       <div class="gtrack">${bar}</div>
     </div>`;
@@ -3829,7 +3833,7 @@ const viewPlan = guard(async (repoId) => {
     <button class="plan-tool${state.planMode === 'pan' ? ' active' : ''}" type="button" data-plan-mode="pan" aria-pressed="${state.planMode === 'pan'}" title="Pan timeline" data-i18n-attrs='{"title":"plan.pan_timeline_881955"}'>${planIcon('hand-stop')}<span class="sr-only"><span data-i18n="plan.pan_timeline_881955">Pan timeline</span></span></button>
     <span class="plan-tool-group" aria-label="Zoom controls" data-i18n-attrs='{"aria-label":"plan.zoom_controls_6af7d7"}'><button class="plan-tool" type="button" data-plan-zoom="out" title="Zoom out" data-i18n-attrs='{"title":"plan.zoom_out_bc7b63"}'>${planIcon('minus')}<span class="sr-only"><span data-i18n="plan.zoom_out_bc7b63">Zoom out</span></span></button><output id="plan-zoom-value" aria-live="polite">${state.planFit ? window.DevCoordinatorI18n.markup("plan.fit_9f872e") : `${Math.round(state.planZoom * 100)}%`}</output><button class="plan-tool" type="button" data-plan-zoom="in" title="Zoom in" data-i18n-attrs='{"title":"plan.zoom_in_0e47f0"}'>${planIcon('plus')}<span class="sr-only"><span data-i18n="plan.zoom_in_0e47f0">Zoom in</span></span></button></span>
     <button class="plan-tool" type="button" data-plan-zoom="fit" title="Fit the whole timeline" data-i18n-attrs='{"title":"plan.fit_the_whole_timeline_9cdb1c"}'>${planIcon('focus-centered')}<span class="sr-only"><span data-i18n="plan.fit_timeline_ff3a42">Fit timeline</span></span></button>
-    <button class="plan-tool plan-nav-tool" type="button" data-plan-nav-toggle data-ui-continuation-anchor aria-pressed="${state.planNavigatorCollapsed}" title="${state.planNavigatorCollapsed ? 'Show' : 'Hide'} task navigator">${planIcon(navigatorIcon)}<span class="sr-only">${state.planNavigatorCollapsed ? window.DevCoordinatorI18n.markup("plan.show_0df6f1") : window.DevCoordinatorI18n.markup("plan.hide_ac20a5")} task navigator</span></button>
+    <button class="plan-tool plan-nav-tool" type="button" data-plan-nav-toggle data-ui-continuation-anchor aria-pressed="${state.planNavigatorCollapsed}" title="${esc(window.DevCoordinatorI18n.t(state.planNavigatorCollapsed ? 'common.showTaskNavigator' : 'common.hideTaskNavigator'))}" data-i18n-attrs='${esc(JSON.stringify({title:state.planNavigatorCollapsed ? 'common.showTaskNavigator' : 'common.hideTaskNavigator'}))}'>${planIcon(navigatorIcon)}<span class="sr-only">${window.DevCoordinatorI18n.markup(state.planNavigatorCollapsed ? "common.showTaskNavigator" : "common.hideTaskNavigator")}</span></button>
   </div>`;
   const chartWidth = planCanvasWidth(total);
   const gantt = `<div class="plan-workspace${state.planNavigatorCollapsed ? ' navigator-collapsed' : ''}" style="--glabel:${state.planNavigatorCollapsed ? 0 : state.planNavigatorWidth}px;--chart-width:${chartWidth}px" data-ui-region="plan-primary">
@@ -3854,7 +3858,7 @@ const viewPlan = guard(async (repoId) => {
 
   const contextHeader = `<section class="plan-context" data-ui-region="plan-context">
     <div class="plan-identity"><h1>${destinationLink('Plan', '#/plan')}</h1><span class="plan-slash" aria-hidden="true">/</span>${projectPicker(projects, repoId, (id) => `#/plan/${id}`, 'plan')}</div>
-    <div class="plan-total-progress"><div><strong>${window.DevCoordinatorI18n.computedMarkup(() => locN(doneLoc))}</strong><span> <span data-i18n="plan.lines_done_e590ac">lines done</span></span></div><progress max="${Math.max(total, 1)}" value="${doneLoc}"></progress><div><strong>${window.DevCoordinatorI18n.computedMarkup(() => locN(total))}</strong><span> <span data-i18n="plan.lines_planned_38bf57">lines planned</span></span>${unsizedCount ? `<small>${unsizedCount} ${(unsizedCount === 1 ? window.DevCoordinatorI18n.markup("plan.job_5e8c99") : window.DevCoordinatorI18n.markup("plan.jobs_5d9a17"))} not estimated</small>` : ''}</div></div>
+    <div class="plan-total-progress"><div><strong>${window.DevCoordinatorI18n.computedMarkup(() => locN(doneLoc))}</strong><span> <span data-i18n="plan.lines_done_e590ac">lines done</span></span></div><progress max="${Math.max(total, 1)}" value="${doneLoc}"></progress><div><strong>${window.DevCoordinatorI18n.computedMarkup(() => locN(total))}</strong><span> <span data-i18n="plan.lines_planned_38bf57">lines planned</span></span>${unsizedCount ? `<small>${window.DevCoordinatorI18n.markup("plan.unestimatedJobs", {count:unsizedCount})}</small>` : ''}</div></div>
     <div class="plan-context-actions"><a href="#/decisions/${esc(repoId)}"><span data-i18n="plan.decisions_7c5ca9">Decisions →</span></a>${admin ? `<button class="btn" type="button" data-plan-feedback>${planIcon('message-plus')}Ask for a change</button>` : ''}${requestControl}</div>
   </section>`;
 
@@ -3866,7 +3870,7 @@ const viewPlan = guard(async (repoId) => {
   bind(main);
   bindProjectPicker(main);
   bindMoveButtons(main, model);
-  bindPlanWorkspace(main, model, { groups, total, unsizedCount, sizedShare, releaseById, admin });
+  bindPlanWorkspace(main, model, { groups, rows, total, unsizedCount, sizedShare, releaseById, admin });
   $('[data-plan-feedback]', main)?.addEventListener('click', () => openFeedbackDialog(repoId));
   if (admin) bindGanttDrag(main, model);
 });
@@ -3933,11 +3937,10 @@ function syncPlanElaboration(root, model, task, initiator = null) {
     mark.innerHTML = badge('elaboration needed', 'warn');
   });
   root.querySelectorAll(`[data-elaborate-task="${CSS.escape(task.task_id)}"]`).forEach((button) => {
-    const explanation = `A clearer explanation has been requested for ${task.title}`;
     button.disabled = false;
     button.setAttribute('aria-disabled', 'true');
-    button.setAttribute('aria-label', explanation);
-    button.title = explanation;
+    window.DevCoordinatorI18n.text(button, 'plan.explanationRequested', {title:task.title}, 'aria-label');
+    window.DevCoordinatorI18n.text(button, 'plan.explanationRequested', {title:task.title}, 'title');
     button.innerHTML = `${planIcon('message-plus')}<span class="plan-elaborate-label"><span data-i18n="plan.requested_2d9e28">Requested</span></span>`;
   });
   root.querySelectorAll(`[data-hover-task="${CSS.escape(task.task_id)}"]`).forEach((bar) => {
@@ -4128,7 +4131,7 @@ function bindPlanWorkspace(root, model, layout) {
     workspace.classList.toggle('navigator-collapsed', state.planNavigatorCollapsed);
     button.setAttribute('aria-pressed', String(state.planNavigatorCollapsed));
     window.DevCoordinatorI18n.bind(button, () => window.DevCoordinatorI18n.t(state.planNavigatorCollapsed ? 'common.showTaskNavigator' : 'common.hideTaskNavigator'), "title");
-    button.innerHTML = `${planIcon(state.planNavigatorCollapsed ? 'layout-sidebar-left-expand' : 'layout-sidebar-left-collapse')}<span class="sr-only">${(state.planNavigatorCollapsed ? window.DevCoordinatorI18n.markup("plan.show_0df6f1") : window.DevCoordinatorI18n.markup("plan.hide_ac20a5"))} task navigator</span>`;
+    button.innerHTML = `${planIcon(state.planNavigatorCollapsed ? 'layout-sidebar-left-expand' : 'layout-sidebar-left-collapse')}<span class="sr-only">${window.DevCoordinatorI18n.markup(state.planNavigatorCollapsed ? "common.showTaskNavigator" : "common.hideTaskNavigator")}</span>`;
     applyScale(false);
     button.focus({ preventScroll: true });
   }));
@@ -4244,9 +4247,14 @@ function bindPlanWorkspace(root, model, layout) {
   }
 
   root.querySelectorAll('[data-hover-task]').forEach((bar) => {
+    const row = layout.rows.find(row => row.task.task_id === bar.dataset.hoverTask);
+    if (row) {
+      window.DevCoordinatorI18n.bind(bar, () => planEstimateText(row), 'data-hover-loc');
+      window.DevCoordinatorI18n.bind(bar, () => row.isUnsized ? window.DevCoordinatorI18n.t('plan.progressNeedsEstimate') : planDoneText(planRowProgress(row)), 'data-hover-progress');
+    }
     const show = () => {
       if (!tooltip) return;
-      tooltip.innerHTML = `<strong>${esc(bar.dataset.hoverTitle)}</strong>${planBadge(bar.dataset.hoverStatus)}${bar.dataset.hoverElaboration === 'true' ? badge('elaboration needed', 'warn') : ''}<span>${esc(bar.dataset.hoverLoc)}</span><span>${esc(bar.dataset.hoverProgress)}</span>`;
+      tooltip.innerHTML = `<strong>${esc(bar.dataset.hoverTitle)}</strong>${planBadge(bar.dataset.hoverStatus)}${bar.dataset.hoverElaboration === 'true' ? badge('elaboration needed', 'warn') : ''}<span>${window.DevCoordinatorI18n.computedMarkup(() => bar.dataset.hoverLoc)}</span><span>${window.DevCoordinatorI18n.computedMarkup(() => bar.dataset.hoverProgress)}</span>`;
       tooltip.hidden = false;
       requestAnimationFrame(() => {
         const anchor = bar.getBoundingClientRect(); const box = tooltip.getBoundingClientRect();

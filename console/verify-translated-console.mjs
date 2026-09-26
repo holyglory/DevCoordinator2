@@ -32,6 +32,17 @@ export async function verifyTranslatedConsole({ page, check, baseUrl, output, th
       if (pattern == null || item.value !== formatMessage(pattern,item.args,locale)) wrong.push(item.key);
     }
     verify(`${route}: rendered bindings use the real translated catalog`, wrong.length === 0, wrong.join(', '));
+    if (route.startsWith('plan/')) {
+      const tabs = await page.locator('#workspace-work-views a').evaluateAll(nodes => nodes.map(node => ({ view: node.getAttribute('href').split('/')[1], text: node.textContent })));
+      verify('Plan secondary navigation is localized', tabs.length > 0 && tabs.every(tab => tab.text === catalogs.shell['view_' + tab.view]));
+      const requested = page.locator('[data-elaborate-task][aria-disabled="true"] .plan-elaborate-label');
+      const requestedLabels = await requested.allTextContents();
+      verify('Plan explanation request status is localized', requestedLabels.length > 0 && requestedLabels.every(text => text === catalogs.plan.requested_2d9e28), JSON.stringify({actual:requestedLabels, expected:catalogs.plan.requested_2d9e28}));
+      if (locale !== 'en') {
+        const summaries = await page.locator('.plan-total-progress, .plan-task-meta, .plan-release-meta').allTextContents();
+        verify('Plan generated summaries contain no English sentence fragments', summaries.every(text => !/\b(not estimated|lines done|tasks done|your request)\b/i.test(text)));
+      }
+    }
     const overflow = await page.evaluate(() => ({ width: document.documentElement.scrollWidth - innerWidth, elements: [...document.querySelectorAll('body *')].map(element => ({ tag: element.tagName, cls: element.className, right: element.getBoundingClientRect().right, left: element.getBoundingClientRect().left })).filter(item => item.right > innerWidth + 1 || item.left < -1).slice(0, 8) }));
     verify(`${route}: no document overflow`, overflow.width <= 1, JSON.stringify(overflow));
   }
