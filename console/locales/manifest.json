@@ -352,7 +352,7 @@
         "CH"
       ],
       "direction": "ltr",
-      "status": "draft",
+      "status": "enabled",
       "files": {
         "common": [
           "de/common.json"
@@ -417,7 +417,7 @@
         "BE"
       ],
       "direction": "ltr",
-      "status": "draft",
+      "status": "enabled",
       "files": {
         "common": [
           "fr/common.json"
@@ -482,7 +482,7 @@
         "SR"
       ],
       "direction": "ltr",
-      "status": "draft",
+      "status": "enabled",
       "files": {
         "common": [
           "nl/common.json"
