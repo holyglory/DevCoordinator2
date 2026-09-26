@@ -1628,7 +1628,7 @@
         "LV"
       ],
       "direction": "ltr",
-      "status": "draft",
+      "status": "enabled",
       "files": {
         "common": [
           "lv/common.json"
@@ -1691,7 +1691,7 @@
         "LT"
       ],
       "direction": "ltr",
-      "status": "draft",
+      "status": "enabled",
       "files": {
         "common": [
           "lt/common.json"
