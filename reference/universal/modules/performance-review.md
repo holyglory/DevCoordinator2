@@ -12,7 +12,9 @@
   registration selects that delivery route; missing, expired or unavailable
   registration uses Coordinator's existing agent-message channel. Client names
   alone never select the native route. Do not add another watcher or review worker.
-- Act on each review reminder before unrelated work. Inspect bounded
+- Act on each review reminder before unrelated work. Check the current policy
+  and latest receipt first; acknowledge inactive or already-covered windows
+  without repeating a completed review. Inspect bounded
   `usage_stats performance_review` evidence for the exact stated interval when
   available, use Coordinator `review.prepare`, retain a reasoned improvement
   decision, then obtain a validated `review.record` receipt. Other runtimes use

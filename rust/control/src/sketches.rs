@@ -350,7 +350,7 @@ impl SketchService {
         let kind = kind.map(str::to_owned);
         let repo = p.repository_id;
         let limit = p.limit.clamp(1, 100);
-        self.database.call(move|c|{ let mut st=c.prepare("SELECT message_id,repository_id,kind,subject_id,summary,created_at,claimed_by,acknowledged_at IS NOT NULL FROM agent_messages WHERE repository_id=?1 AND acknowledged_at IS NULL AND (?3 IS NULL OR kind=?3) AND NOT EXISTS (SELECT 1 FROM review_reminders r WHERE r.message_id=agent_messages.message_id AND r.resolved=1) ORDER BY created_at LIMIT ?2")?; let rows=st.query_map(rusqlite::params![repo,limit,kind],message_row)?.collect::<Result<Vec<_>,_>>()?; Ok(results::AgentMessageList{has_more:rows.len()==usize::from(limit),messages:rows}) }).map_err(db_error)
+        self.database.call(move|c|{ let mut st=c.prepare("SELECT message_id,repository_id,kind,subject_id,summary,created_at,claimed_by,acknowledged_at IS NOT NULL FROM agent_messages WHERE repository_id=?1 AND acknowledged_at IS NULL AND (?3 IS NULL OR kind=?3) AND NOT EXISTS (SELECT 1 FROM review_reminders r JOIN review_policies p USING(repository_id,workstream_key) WHERE r.message_id=agent_messages.message_id AND (r.resolved=1 OR p.active=0)) ORDER BY created_at LIMIT ?2")?; let rows=st.query_map(rusqlite::params![repo,limit,kind],message_row)?.collect::<Result<Vec<_>,_>>()?; Ok(results::AgentMessageList{has_more:rows.len()==usize::from(limit),messages:rows}) }).map_err(db_error)
     }
     fn add_message(
         &self,

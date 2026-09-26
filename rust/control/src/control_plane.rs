@@ -271,6 +271,10 @@ impl ControlPlane {
             database.clone(),
             artifacts.clone(),
             config.base_domain.clone(),
+        )
+        .with_native_console(
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."),
+            SOURCE_COMMIT.to_owned(),
         );
         let tests = TestLifecycle::new(
             config.clone(),
@@ -2104,6 +2108,11 @@ mod tests {
             "performance_review.reminder"
         );
         assert!(envelope["data"].get("_agent_messages").is_none());
+        let inactive=plane.execute("review.policy.set",serde_json::json!({"repository_id":"r1111111111111111","workstream_id":"official","active":false}),&local()).unwrap();
+        assert!(inactive.get("_agent_messages").is_none());
+        assert_eq!(inactive["due"],false);
+        assert_eq!(inactive["last_completed_receipt"],serde_json::Value::Null);
+
     }
 
     #[test]
