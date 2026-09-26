@@ -26,11 +26,11 @@
   "plan_progress_bfa53d": "计划进度",
   "open_tasks_87cfa1": "未完成任务",
   "compared_with_the_previous_matching_period_value_8b4a50": "与上一个匹配期间相比（{value1}）",
-  "value2_planned_lines_added_means_value3_value4_v_765cc7": "{value2}. 新增计划行数 means {value3}. {value4}. {value5}. {value6}.",
-  "previous_value3_11ac0f": "Previous {value3}",
-  "aligned_hour": "Aligned hourly evidence · UTC",
-  "aligned_day": "Aligned daily evidence · UTC",
-  "aligned_week": "Aligned weekly evidence · UTC",
+  "value2_planned_lines_added_means_value3_value4_v_765cc7": "{value2}。新增计划行数指{value3}。{value4}。{value5}。{value6}。",
+  "previous_value3_11ac0f": "上期：{value3}",
+  "aligned_hour": "按小时对齐的证据 · UTC",
+  "aligned_day": "按天对齐的证据 · UTC",
+  "aligned_week": "按周对齐的证据 · UTC",
   "no_recorded_movement_in_this_period_59cf50": "此期间没有记录的变化",
   "open_full_plan_303994": "打开完整计划 →",
   "open_selected_in_plan_a6478f": "在计划中打开选中项",
@@ -48,20 +48,20 @@
   "unestimatedTasks": {
     "argument": "count",
     "forms": {
-      "one": "{count} task has no estimate",
-      "other": "{count} tasks have no estimate"
+      "one": "{count} 个任务尚无估算",
+      "other": "{count} 个任务尚无估算"
     }
   },
   "remainingTasks": {
     "argument": "count",
     "forms": {
-      "one": "{count} task remains",
-      "other": "{count} tasks remain"
+      "one": "剩余 {count} 个任务",
+      "other": "剩余 {count} 个任务"
     }
   },
   "allEstimated": "每个剩余任务都有估算",
   "targetRecorded": "已记录发布版目标日期",
-  "targetMissing": "否 release target date is recorded",
+  "targetMissing": "尚未记录发布目标日期",
   "provisional": "此日期为临时日期。随着估算和交付证明改进，它会更加可靠。",
   "reason_no_planned_release": "请先规划发布版，再估算交付范围。",
   "reason_insufficient_completion_history": "需要更多已完成工作后，进度才能支持发布预测。",

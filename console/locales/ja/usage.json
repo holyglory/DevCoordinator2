@@ -24,14 +24,14 @@
   "data_completeness_c7114d": "データの完全性",
   "counting_method_7a480a": "集計方法",
   "provider_reported_total_tokens_cached_input_and__9908f6": "プロバイダー報告の合計トークン数です。キャッシュ済み入力と推論はこの合計に含まれます。",
-  "schema_value19_taxonomy_value20_cdddf8": "Schema {value19} · taxonomy {value20}",
+  "schema_value19_taxonomy_value20_cdddf8": "スキーマ {value19} · 分類体系 {value20}",
   "value21_environments_that_supplied_no_data_and_u_cbbc39": "{value21}。データがない、または未測定値がある環境は除外し、ゼロとして数えません。",
   "token_subsets_unavailable_4cec86": "トークンのサブセットを利用できません。",
   "unknownIntervals": {
     "argument": "count",
     "forms": {
-      "one": "{count} unknown interval",
-      "other": "{count} unknown intervals"
+      "one": "不明な区間 {count} 件",
+      "other": "不明な区間 {count} 件"
     }
   },
   "about_codex_environments_4a2e3e": "Codex 環境について",

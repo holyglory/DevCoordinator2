@@ -63,15 +63,15 @@
   "value1_more_activities_a0186b": {
     "argument": "value1",
     "forms": {
-      "one": "{value1} more activity",
-      "other": "{value1} more activities"
+      "one": "另有 {value1} 項活動",
+      "other": "另有 {value1} 項活動"
     }
   },
   "value1_revisions_ed2971": {
     "argument": "value1",
     "forms": {
-      "one": "{value1} revision",
-      "other": "{value1} revisions"
+      "one": "{value1} 個修訂版本",
+      "other": "{value1} 個修訂版本"
     }
   },
   "activity_38da15": "活動",
@@ -84,12 +84,12 @@
   "unknown_kind_2a60d8": "未知型別",
   "review_in_progress_bf2daa": " · 審查進行中",
   "incomplete_measurement_3407ad": "測量不完整",
-  "value1_total_value2_value3_0a3988": "{value1} total: {value2}{value3}",
+  "value1_total_value2_value3_0a3988": "{value1}合計：{value2}{value3}",
   "value1_attributed_outcomes_6e3dca": {
     "argument": "value1",
     "forms": {
-      "one": "{value1} attributed outcome",
-      "other": "{value1} attributed outcomes"
+      "one": "{value1} 項已歸屬成果",
+      "other": "{value1} 項已歸屬成果"
     }
   },
   "review_usage_value1_a681eb": "審查用量 · {value1}",
@@ -107,5 +107,10 @@
   "status_unchanged": "無變化",
   "status_inconclusive": "無法確定",
   "tokensByActivity": "按活動統計詞元",
-  "tokensByKind": "詞元 by Plan item kind"
+  "tokensByKind": "依計畫項目類型統計詞元",
+  "unattributedWork": "部分工作未關聯至已記錄的成果。",
+  "reviewScopeTotal": "本次評估的詞元總數：{tokens}",
+  "periodScopeTotal": "此期間的詞元總數：{tokens}",
+  "reviewTotalLabel": "本次評估合計",
+  "periodTotalLabel": "此期間合計"
 }

@@ -53,13 +53,13 @@
   "capture_details_and_feedback_40a8be": "キャプチャの詳細とフィードバック",
   "generation_record_5e6033": "生成記録",
   "save_1509f5": "保存",
-  "value1_revision_value2_0cd02a": "{value1} · revision {value2}",
-  "step_value1_of_value2_196d3d": "Step {value1} of {value2}",
+  "value1_revision_value2_0cd02a": "{value1} · リビジョン {value2}",
+  "step_value1_of_value2_196d3d": "ステップ {value1} / {value2}",
   "value7_steps_531b1f": {
     "argument": "value7",
     "forms": {
-      "one": "{value7} step",
-      "other": "{value7} steps"
+      "one": "{value7} ステップ",
+      "other": "{value7} ステップ"
     }
   },
   "viewport_280503": "ビューポート",
@@ -77,5 +77,43 @@
   "open_plan_task_4019fe": "計画タスクを開く →",
   "full_page_9d21b6": "フルページ",
   "previous_journey_step_7a544d": "前の操作手順",
-  "next_journey_step_35037a": "次の操作手順"
+  "next_journey_step_35037a": "次の操作手順",
+  "annotationSaved": "注釈を保存しました",
+  "reviewComment": "このレビューにコメントする",
+  "attachTo": "添付先",
+  "activeOption": "表示中の案",
+  "selectedOptions": {
+    "argument": "count",
+    "forms": {
+      "one": "選択した案（{count} 件）",
+      "other": "選択した案（{count} 件）"
+    }
+  },
+  "commentLabel": "コメント",
+  "commentPlaceholder": "この案または選択したセットにコメントを追加してください。",
+  "postComment": "コメントを投稿",
+  "closeReview": "レビューを閉じる",
+  "selectionSummary": "選択済み：{selected} · 選択肢：{total}",
+  "allSketchOptions": "すべてのスケッチ案",
+  "selectOptionToAnnotate": "注釈を付ける案を選択",
+  "commentAdded": {
+    "argument": "count",
+    "forms": {
+      "one": "選択した {count} 件の案にコメントを追加しました",
+      "other": "選択した {count} 件の案にコメントを追加しました"
+    }
+  },
+  "commentFailed": "コメントの投稿に失敗しました：{message}",
+  "sketchChangeWhy": "このスケッチを変更する理由は何ですか？",
+  "reviewedInConsole": "コンソールでレビュー済み",
+  "selectedJourneyScreenshot": "選択したユーザージャーニーのスクリーンショット",
+  "changesRequested": {
+    "argument": "count",
+    "forms": {
+      "one": "変更要求 {count} 件",
+      "other": "変更要求 {count} 件"
+    }
+  },
+  "noChangesRequested": "変更要求はありません",
+  "sketchSetUnavailable": "このスケッチセットは利用できなくなりました。"
 }

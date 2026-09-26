@@ -30,27 +30,27 @@
   "ttl_76f601": "TTL",
   "actions_ff8059": "操作",
   "health_9959ad": "← 系統狀態",
-  "show_deployments_value2_7bd0ee": "Show 部署s ({value2})",
+  "show_deployments_value2_7bd0ee": "顯示部署（{value2}）",
   "value1_cores_cfde1b": {
     "argument": "value1",
     "forms": {
-      "one": "{value1} core",
-      "other": "{value1} cores"
+      "one": "{value1} 個核心",
+      "other": "{value1} 個核心"
     }
   },
-  "value8_repositories_value9_healthy_944e0f": "{value8} repositories · {value9} healthy",
-  "remove_value4_container_06505c": "Remove {value4} container",
-  "value1_critical_a27eba": "{value1} critical",
+  "value8_repositories_value9_healthy_944e0f": "{value8} 個儲存庫 · {value9} 個正常",
+  "remove_value4_container_06505c": "移除容器 {value4}",
+  "value1_critical_a27eba": "{value1} 項嚴重問題",
   "reported_signal_b070ed": "已報告訊號",
   "reported_signals_22350f": "已報告訊號",
-  "no_dismissed_incidents_375c5b": "否 dismissed incidents.",
-  "no_reported_incidents_need_attention_ea3a12": "否 reported incidents need attention.",
+  "no_dismissed_incidents_375c5b": "沒有已忽略的事件。",
+  "no_reported_incidents_need_attention_ea3a12": "沒有需要處理的已回報事件。",
   "collapse_be6eb1": "摺疊",
   "expand_07548c": "展開",
   "dismissed_incidents_c4dec9": "已隱藏事件",
   "timeline_9dcff9": "時間軸",
   "repository_root_unavailable_1d7ecd": "倉庫根目錄無法使用",
-  "no_reported_incidents_6b64fd": "否 reported incidents",
+  "no_reported_incidents_6b64fd": "沒有已回報的事件",
   "controlled_via_its_deployment_59424f": "通過其部署控制",
   "decide_manually_80c52a": "手動決定",
   "restore_a76e13": "恢復",
@@ -65,13 +65,13 @@
   "label_storage_docker_shared": "Docker 共用",
   "label_storage_docker_images": "Docker 映象",
   "label_storage_docker_build_cache": "Docker 構建快取",
-  "label_storage_docker_shared_volumes": "Docker 共用 volumes",
+  "label_storage_docker_shared_volumes": "Docker 共用磁碟區",
   "label_storage_other": "其他",
   "reportedSignals": {
     "argument": "count",
     "forms": {
-      "one": "{count} reported signal",
-      "other": "{count} reported signals"
+      "one": "{count} 個已回報訊號",
+      "other": "{count} 個已回報訊號"
     }
   },
   "unavailable": "無法使用",
@@ -129,7 +129,7 @@
   "managed_cpu": "受管理 CPU",
   "managed_memory": "受管理記憶體",
   "load_range": "負載（1 / 5 / 15 分鐘）",
-  "swap": "Swap",
+  "swap": "交換空間",
   "loading_health": "正在載入系統狀態…",
   "host_health_admin_only": "主機狀態僅限管理員使用。",
   "host_health_unavailable": "主機狀態無法使用。",
@@ -140,5 +140,9 @@
   "free": "可用",
   "of": "共",
   "one_minute_average": "1 分鐘平均值",
-  "scale": "刻度"
+  "scale": "刻度",
+  "removeTest": "移除測試容器",
+  "removeOrphaned": "移除孤立容器",
+  "removeTestContainer": "移除測試容器 {name}",
+  "removeOrphanedContainer": "移除孤立容器 {name}"
 }

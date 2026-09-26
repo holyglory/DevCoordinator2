@@ -53,13 +53,13 @@
   "capture_details_and_feedback_40a8be": "캡처 세부 정보 및 피드백",
   "generation_record_5e6033": "생성 기록",
   "save_1509f5": "저장",
-  "value1_revision_value2_0cd02a": "{value1} · revision {value2}",
-  "step_value1_of_value2_196d3d": "Step {value1} of {value2}",
+  "value1_revision_value2_0cd02a": "{value1} · 리비전 {value2}",
+  "step_value1_of_value2_196d3d": "{value2}단계 중 {value1}단계",
   "value7_steps_531b1f": {
     "argument": "value7",
     "forms": {
-      "one": "{value7} step",
-      "other": "{value7} steps"
+      "one": "{value7}단계",
+      "other": "{value7}단계"
     }
   },
   "viewport_280503": "뷰포트",
@@ -77,5 +77,43 @@
   "open_plan_task_4019fe": "계획 작업 열기 →",
   "full_page_9d21b6": "전체 페이지",
   "previous_journey_step_7a544d": "이전 작업 단계",
-  "next_journey_step_35037a": "다음 작업 단계"
+  "next_journey_step_35037a": "다음 작업 단계",
+  "annotationSaved": "주석을 저장했습니다",
+  "reviewComment": "이 검토에 댓글 작성",
+  "attachTo": "첨부 대상",
+  "activeOption": "현재 옵션",
+  "selectedOptions": {
+    "argument": "count",
+    "forms": {
+      "one": "선택한 옵션({count}개)",
+      "other": "선택한 옵션({count}개)"
+    }
+  },
+  "commentLabel": "댓글",
+  "commentPlaceholder": "이 옵션 또는 선택한 세트에 대한 댓글을 작성하세요.",
+  "postComment": "댓글 게시",
+  "closeReview": "검토 닫기",
+  "selectionSummary": "선택됨: {selected} · 옵션: {total}",
+  "allSketchOptions": "모든 스케치 옵션",
+  "selectOptionToAnnotate": "주석을 달 옵션 선택",
+  "commentAdded": {
+    "argument": "count",
+    "forms": {
+      "one": "선택한 옵션 {count}개에 댓글을 추가했습니다",
+      "other": "선택한 옵션 {count}개에 댓글을 추가했습니다"
+    }
+  },
+  "commentFailed": "댓글 게시 실패: {message}",
+  "sketchChangeWhy": "이 스케치를 변경하는 이유는 무엇인가요?",
+  "reviewedInConsole": "콘솔에서 검토됨",
+  "selectedJourneyScreenshot": "선택한 사용자 여정의 스크린샷",
+  "changesRequested": {
+    "argument": "count",
+    "forms": {
+      "one": "변경 요청 {count}건",
+      "other": "변경 요청 {count}건"
+    }
+  },
+  "noChangesRequested": "변경 요청 없음",
+  "sketchSetUnavailable": "이 스케치 세트는 더 이상 사용할 수 없습니다."
 }

@@ -113,5 +113,10 @@
   "status_unchanged": "Без змін",
   "status_inconclusive": "Непевний результат",
   "tokensByActivity": "Токени за видами роботи",
-  "tokensByKind": "Токени за типами елементів плану"
+  "tokensByKind": "Токени за типами елементів плану",
+  "unattributedWork": "Для частини роботи не вказано результат.",
+  "reviewScopeTotal": "Усього за огляд: {tokens}",
+  "periodScopeTotal": "Усього за період: {tokens}",
+  "reviewTotalLabel": "Усього за огляд",
+  "periodTotalLabel": "Усього за період"
 }

@@ -30,27 +30,27 @@
   "ttl_76f601": "TTL",
   "actions_ff8059": "작업",
   "health_9959ad": "← 시스템 상태",
-  "show_deployments_value2_7bd0ee": "배포 표시 ({value2})",
+  "show_deployments_value2_7bd0ee": "배포 표시({value2})",
   "value1_cores_cfde1b": {
     "argument": "value1",
     "forms": {
-      "one": "{value1} core",
-      "other": "{value1} cores"
+      "one": "{value1}개 코어",
+      "other": "{value1}개 코어"
     }
   },
-  "value8_repositories_value9_healthy_944e0f": "{value8} repositories · {value9} healthy",
-  "remove_value4_container_06505c": "Remove {value4} container",
-  "value1_critical_a27eba": "{value1} critical",
+  "value8_repositories_value9_healthy_944e0f": "저장소 {value8}개 · 정상 {value9}개",
+  "remove_value4_container_06505c": "컨테이너 {value4} 제거",
+  "value1_critical_a27eba": "심각 {value1}건",
   "reported_signal_b070ed": "보고된 신호",
   "reported_signals_22350f": "보고된 신호",
-  "no_dismissed_incidents_375c5b": "아니요 dismissed incidents.",
-  "no_reported_incidents_need_attention_ea3a12": "아니요 reported incidents need attention.",
+  "no_dismissed_incidents_375c5b": "숨긴 인시던트가 없습니다.",
+  "no_reported_incidents_need_attention_ea3a12": "대응이 필요한 보고된 인시던트가 없습니다.",
   "collapse_be6eb1": "접기",
   "expand_07548c": "펼치기",
   "dismissed_incidents_c4dec9": "숨긴 인시던트",
   "timeline_9dcff9": "타임라인",
   "repository_root_unavailable_1d7ecd": "저장소 루트를 사용할 수 없음",
-  "no_reported_incidents_6b64fd": "아니요 reported incidents",
+  "no_reported_incidents_6b64fd": "보고된 인시던트가 없습니다",
   "controlled_via_its_deployment_59424f": "배포를 통해 제어됨",
   "decide_manually_80c52a": "수동으로 결정",
   "restore_a76e13": "복원",
@@ -65,13 +65,13 @@
   "label_storage_docker_shared": "Docker 공유",
   "label_storage_docker_images": "Docker 이미지",
   "label_storage_docker_build_cache": "Docker 빌드 캐시",
-  "label_storage_docker_shared_volumes": "Docker 공유 volumes",
+  "label_storage_docker_shared_volumes": "Docker 공유 볼륨",
   "label_storage_other": "기타",
   "reportedSignals": {
     "argument": "count",
     "forms": {
-      "one": "{count} reported signal",
-      "other": "{count} reported signals"
+      "one": "보고된 신호 {count}개",
+      "other": "보고된 신호 {count}개"
     }
   },
   "unavailable": "사용할 수 없음",
@@ -140,5 +140,9 @@
   "free": "사용 가능",
   "of": "전체",
   "one_minute_average": "1분 평균",
-  "scale": "눈금"
+  "scale": "눈금",
+  "removeTest": "테스트 컨테이너 제거",
+  "removeOrphaned": "고아 컨테이너 제거",
+  "removeTestContainer": "테스트 컨테이너 {name} 제거",
+  "removeOrphanedContainer": "고아 컨테이너 {name} 제거"
 }

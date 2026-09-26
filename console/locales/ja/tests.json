@@ -100,20 +100,20 @@
   "stop_run_b7ec68": "実行を停止",
   "run_again_3e310b": "再実行",
   "not_recorded_b37c78": "未記録",
-  "value1_of_value2_882c45": "{value1} of {value2}",
+  "value1_of_value2_882c45": "{value2} 件中 {value1} 件",
   "loading_screenshot_e0fd7b": "スクリーンショットを読み込み中…",
   "preview_value1_cb5dab": "プレビュー {value1}",
   "browse_all_value1_screenshots_81fcf6": {
     "argument": "value1",
     "forms": {
-      "one": "Browse the {value1} screenshot",
-      "other": "Browse all {value1} screenshots"
+      "one": "スクリーンショット全 {value1} 件を表示",
+      "other": "スクリーンショット全 {value1} 件を表示"
     }
   },
   "earlier_run_value1_68bdba": "以前の実行 · {value1}",
-  "value1_test_results_293210": "{value1} test results",
+  "value1_test_results_293210": "{value1} のテスト結果",
   "test_results_3ea600": "テスト結果",
-  "updates_paused_value1_11b351": "Updates paused: {value1}",
+  "updates_paused_value1_11b351": "更新を一時停止中：{value1}",
   "no_maximum_b5cfdf": "上限なし",
   "details_45989d": "詳細",
   "previous_screenshot_af9be1": "前のスクリーンショット",

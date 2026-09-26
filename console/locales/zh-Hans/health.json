@@ -30,27 +30,27 @@
   "ttl_76f601": "TTL",
   "actions_ff8059": "操作",
   "health_9959ad": "← 系统状态",
-  "show_deployments_value2_7bd0ee": "Show 部署s ({value2})",
+  "show_deployments_value2_7bd0ee": "显示部署（{value2}）",
   "value1_cores_cfde1b": {
     "argument": "value1",
     "forms": {
-      "one": "{value1} core",
-      "other": "{value1} cores"
+      "one": "{value1} 个核心",
+      "other": "{value1} 个核心"
     }
   },
-  "value8_repositories_value9_healthy_944e0f": "{value8} repositories · {value9} healthy",
-  "remove_value4_container_06505c": "Remove {value4} container",
-  "value1_critical_a27eba": "{value1} critical",
+  "value8_repositories_value9_healthy_944e0f": "{value8} 个仓库 · {value9} 个正常",
+  "remove_value4_container_06505c": "移除容器 {value4}",
+  "value1_critical_a27eba": "{value1} 项严重问题",
   "reported_signal_b070ed": "已报告信号",
   "reported_signals_22350f": "已报告信号",
-  "no_dismissed_incidents_375c5b": "否 dismissed incidents.",
-  "no_reported_incidents_need_attention_ea3a12": "否 reported incidents need attention.",
+  "no_dismissed_incidents_375c5b": "没有已忽略的事件。",
+  "no_reported_incidents_need_attention_ea3a12": "没有需要处理的已报告事件。",
   "collapse_be6eb1": "折叠",
   "expand_07548c": "展开",
   "dismissed_incidents_c4dec9": "已隐藏事件",
   "timeline_9dcff9": "时间轴",
   "repository_root_unavailable_1d7ecd": "仓库根目录不可用",
-  "no_reported_incidents_6b64fd": "否 reported incidents",
+  "no_reported_incidents_6b64fd": "没有已报告的事件",
   "controlled_via_its_deployment_59424f": "通过其部署控制",
   "decide_manually_80c52a": "手动决定",
   "restore_a76e13": "恢复",
@@ -65,13 +65,13 @@
   "label_storage_docker_shared": "Docker 共享",
   "label_storage_docker_images": "Docker 镜像",
   "label_storage_docker_build_cache": "Docker 构建缓存",
-  "label_storage_docker_shared_volumes": "Docker 共享 volumes",
+  "label_storage_docker_shared_volumes": "Docker 共享卷",
   "label_storage_other": "其他",
   "reportedSignals": {
     "argument": "count",
     "forms": {
-      "one": "{count} reported signal",
-      "other": "{count} reported signals"
+      "one": "{count} 个已报告信号",
+      "other": "{count} 个已报告信号"
     }
   },
   "unavailable": "不可用",
@@ -140,5 +140,9 @@
   "free": "可用",
   "of": "共",
   "one_minute_average": "1 分钟平均值",
-  "scale": "刻度"
+  "scale": "刻度",
+  "removeTest": "移除测试容器",
+  "removeOrphaned": "移除孤立容器",
+  "removeTestContainer": "移除测试容器 {name}",
+  "removeOrphanedContainer": "移除孤立容器 {name}"
 }

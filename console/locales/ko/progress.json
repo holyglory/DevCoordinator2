@@ -26,11 +26,11 @@
   "plan_progress_bfa53d": "계획 진행 상황",
   "open_tasks_87cfa1": "미완료 작업",
   "compared_with_the_previous_matching_period_value_8b4a50": "이전의 일치하는 기간과 비교({value1})",
-  "value2_planned_lines_added_means_value3_value4_v_765cc7": "{value2}. 추가된 계획 줄 수 means {value3}. {value4}. {value5}. {value6}.",
-  "previous_value3_11ac0f": "Previous {value3}",
-  "aligned_hour": "Aligned hourly evidence · UTC",
-  "aligned_day": "Aligned daily evidence · UTC",
-  "aligned_week": "Aligned weekly evidence · UTC",
+  "value2_planned_lines_added_means_value3_value4_v_765cc7": "{value2}. 추가된 계획 줄 수는 {value3}을 의미합니다. {value4}. {value5}. {value6}.",
+  "previous_value3_11ac0f": "이전 기간: {value3}",
+  "aligned_hour": "시간별로 정렬된 증거 · UTC",
+  "aligned_day": "일별로 정렬된 증거 · UTC",
+  "aligned_week": "주별로 정렬된 증거 · UTC",
   "no_recorded_movement_in_this_period_59cf50": "이 기간에 기록된 변화 없음",
   "open_full_plan_303994": "전체 계획 열기 →",
   "open_selected_in_plan_a6478f": "계획에서 선택 항목 열기",
@@ -48,20 +48,20 @@
   "unestimatedTasks": {
     "argument": "count",
     "forms": {
-      "one": "{count} task has no estimate",
-      "other": "{count} tasks have no estimate"
+      "one": "추정치가 없는 작업 {count}개",
+      "other": "추정치가 없는 작업 {count}개"
     }
   },
   "remainingTasks": {
     "argument": "count",
     "forms": {
-      "one": "{count} task remains",
-      "other": "{count} tasks remain"
+      "one": "남은 작업 {count}개",
+      "other": "남은 작업 {count}개"
     }
   },
   "allEstimated": "남은 모든 작업에 추정치가 있음",
   "targetRecorded": "릴리스 목표 날짜 기록됨",
-  "targetMissing": "아니요 release target date is recorded",
+  "targetMissing": "릴리스 목표 날짜가 기록되지 않았습니다",
   "provisional": "이 날짜는 임시 값입니다. 추정치와 제공 증거가 개선되면 더 신뢰할 수 있게 됩니다.",
   "reason_no_planned_release": "제공 범위를 추정하기 전에 릴리스를 계획하세요.",
   "reason_insufficient_completion_history": "속도가 릴리스 예측을 뒷받침하려면 더 많은 작업을 완료해야 합니다.",

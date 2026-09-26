@@ -26,11 +26,11 @@
   "plan_progress_bfa53d": "計劃進度",
   "open_tasks_87cfa1": "未完成任務",
   "compared_with_the_previous_matching_period_value_8b4a50": "與上一個相符期間相比（{value1}）",
-  "value2_planned_lines_added_means_value3_value4_v_765cc7": "{value2}. 新增計劃行數 means {value3}. {value4}. {value5}. {value6}.",
-  "previous_value3_11ac0f": "Previous {value3}",
-  "aligned_hour": "Aligned hourly evidence · UTC",
-  "aligned_day": "Aligned daily evidence · UTC",
-  "aligned_week": "Aligned weekly evidence · UTC",
+  "value2_planned_lines_added_means_value3_value4_v_765cc7": "{value2}。新增計畫行數是指{value3}。{value4}。{value5}。{value6}。",
+  "previous_value3_11ac0f": "上期：{value3}",
+  "aligned_hour": "按小時對齊的佐證資料 · UTC",
+  "aligned_day": "按日對齊的佐證資料 · UTC",
+  "aligned_week": "按週對齊的佐證資料 · UTC",
   "no_recorded_movement_in_this_period_59cf50": "此期間沒有記錄的變化",
   "open_full_plan_303994": "開啟完整計劃 →",
   "open_selected_in_plan_a6478f": "在計劃中開啟選中項",
@@ -48,20 +48,20 @@
   "unestimatedTasks": {
     "argument": "count",
     "forms": {
-      "one": "{count} task has no estimate",
-      "other": "{count} tasks have no estimate"
+      "one": "{count} 個任務尚無估算",
+      "other": "{count} 個任務尚無估算"
     }
   },
   "remainingTasks": {
     "argument": "count",
     "forms": {
-      "one": "{count} task remains",
-      "other": "{count} tasks remain"
+      "one": "剩餘 {count} 個任務",
+      "other": "剩餘 {count} 個任務"
     }
   },
   "allEstimated": "每個剩餘任務都有估算",
   "targetRecorded": "已記錄釋出版目標日期",
-  "targetMissing": "否 release target date is recorded",
+  "targetMissing": "尚未記錄發布目標日期",
   "provisional": "此日期為臨時日期。隨著估算和交付證明改進，它會更加可靠。",
   "reason_no_planned_release": "請先規劃釋出版，再估算交付範圍。",
   "reason_insufficient_completion_history": "需要更多已完成工作後，進度才能支援釋出預測。",

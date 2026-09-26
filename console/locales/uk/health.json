@@ -133,7 +133,7 @@
   "managed_cpu": "Керований CPU",
   "managed_memory": "Керована пам’ять",
   "load_range": "Навантаження (1 / 5 / 15 хвилин)",
-  "swap": "Swap",
+  "swap": "Пам’ять підкачки",
   "loading_health": "Завантаження стану системи…",
   "host_health_admin_only": "Стан хоста доступний лише адміністраторам.",
   "host_health_unavailable": "Стан хоста недоступний.",
@@ -144,5 +144,9 @@
   "free": "вільно",
   "of": "із",
   "one_minute_average": "середнє за 1 хвилину",
-  "scale": "масштаб"
+  "scale": "масштаб",
+  "removeTest": "Видалити тестовий контейнер",
+  "removeOrphaned": "Видалити контейнер без власника",
+  "removeTestContainer": "Видалити тестовий контейнер {name}",
+  "removeOrphanedContainer": "Видалити контейнер без власника {name}"
 }

@@ -1337,7 +1337,7 @@ async function main() {
   await page.setViewportSize(VIEWPORTS.wide);
   await revealTestSettings(page); await page.click('#test-capacity-open');
   await page.waitForSelector('dialog#test-capacity-dialog[open]');
-  await page.locator('#test-capacity-dialog input').focus();
+  await page.locator('#test-capacity-dialog input[name="cap"]').focus();
   daemon.setScenario({ ...SCENARIOS.populated, testFinished: true, targetedOnly: true });
   await page.waitForFunction(() => {
     const row = document.querySelector('[data-test-run-id="t20260101T000000Z-abc123"]');

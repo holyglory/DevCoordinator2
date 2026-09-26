@@ -107,5 +107,10 @@
   "status_unchanged": "No change",
   "status_inconclusive": "Inconclusive",
   "tokensByActivity": "Tokens by activity",
-  "tokensByKind": "Tokens by Plan item kind"
+  "tokensByKind": "Tokens by Plan item kind",
+  "unattributedWork": "Some work has no recorded outcome.",
+  "reviewScopeTotal": "Review total: {tokens}",
+  "periodScopeTotal": "Period total: {tokens}",
+  "reviewTotalLabel": "Total for review",
+  "periodTotalLabel": "Total for period"
 }

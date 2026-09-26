@@ -79,5 +79,49 @@
   "open_plan_task_4019fe": "Відкрити завдання плану →",
   "full_page_9d21b6": "Повна сторінка",
   "previous_journey_step_7a544d": "Попередній крок сценарію",
-  "next_journey_step_35037a": "Наступний крок сценарію"
+  "next_journey_step_35037a": "Наступний крок сценарію",
+  "annotationSaved": "Позначку збережено",
+  "reviewComment": "Коментар до цього перегляду",
+  "attachTo": "Додати до",
+  "activeOption": "Поточний варіант",
+  "selectedOptions": {
+    "argument": "count",
+    "forms": {
+      "one": "Вибраний варіант ({count})",
+      "few": "Вибрані варіанти ({count})",
+      "many": "Вибрані варіанти ({count})",
+      "other": "Вибрані варіанти ({count})"
+    }
+  },
+  "commentLabel": "Коментар",
+  "commentPlaceholder": "Додайте коментар до цього варіанта або вибраної групи.",
+  "postComment": "Додати коментар",
+  "closeReview": "Закрити перегляд",
+  "selectionSummary": "Вибрано: {selected} · Варіантів: {total}",
+  "allSketchOptions": "Усі варіанти ескізу",
+  "selectOptionToAnnotate": "Виберіть варіант для додавання позначок",
+  "commentAdded": {
+    "argument": "count",
+    "forms": {
+      "one": "Коментар додано до {count} варіанта",
+      "few": "Коментар додано до {count} вибраних варіантів",
+      "many": "Коментар додано до {count} вибраних варіантів",
+      "other": "Коментар додано до {count} вибраного варіанта"
+    }
+  },
+  "commentFailed": "Не вдалося додати коментар: {message}",
+  "sketchChangeWhy": "Чому ви змінюєте цей ескіз?",
+  "reviewedInConsole": "Переглянуто в Консолі",
+  "selectedJourneyScreenshot": "Вибраний знімок екрана сценарію користувача",
+  "changesRequested": {
+    "argument": "count",
+    "forms": {
+      "one": "Запитано {count} зміну",
+      "few": "Запитано {count} зміни",
+      "many": "Запитано {count} змін",
+      "other": "Запитано {count} зміни"
+    }
+  },
+  "noChangesRequested": "Змін не запитано",
+  "sketchSetUnavailable": "Ця група ескізів більше недоступна."
 }

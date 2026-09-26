@@ -13,13 +13,13 @@
   "review_generated_options_by_set_then_select_one__020509": "按組審查生成的方案，再選擇一個或多個繼續推進。",
   "publish_from_a_skill_f33a0e": "從技能釋出",
   "sketches_are_published_by_a_registered_skill_a2ac72": "設計草圖由已註冊的技能釋出",
-  "value2_selected_value3_options_b64a24": "{value2} selected · {value3} options",
-  "value5_sketches_value6_selected_87bdd8": "{value5} sketches · {value6} selected",
-  "value6_rejected_value7_undecided_bbc778": "{value6} rejected · {value7} undecided",
+  "value2_selected_value3_options_b64a24": "已選取 {value2} 項 · 共 {value3} 個方案",
+  "value5_sketches_value6_selected_87bdd8": "{value5} 張草圖 · 已選取 {value6} 張",
+  "value6_rejected_value7_undecided_bbc778": "已否決 {value6} 項 · 待定 {value7} 項",
   "reviewer_d29f46": "審查者",
   "option_unavailable_d03e4e": "方案無法使用",
   "selected_57fd7a": "已選擇",
-  "rejected_aea4a0": "拒絕ed",
+  "rejected_aea4a0": "已否決",
   "undecided_00cc36": "未決定",
   "select_2a7802": "選擇",
   "reject_ab604a": "拒絕",
@@ -41,8 +41,8 @@
   "setCount": {
     "argument": "count",
     "forms": {
-      "one": "{count} set",
-      "other": "{count} sets"
+      "one": "{count} 組",
+      "other": "{count} 組"
     }
   }
 }

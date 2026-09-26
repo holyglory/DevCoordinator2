@@ -100,20 +100,20 @@
   "stop_run_b7ec68": "실행 중지",
   "run_again_3e310b": "다시 실행",
   "not_recorded_b37c78": "기록되지 않음",
-  "value1_of_value2_882c45": "{value1} of {value2}",
+  "value1_of_value2_882c45": "{value2}개 중 {value1}개",
   "loading_screenshot_e0fd7b": "스크린샷 불러오는 중…",
   "preview_value1_cb5dab": "미리 보기 {value1}",
   "browse_all_value1_screenshots_81fcf6": {
     "argument": "value1",
     "forms": {
-      "one": "Browse the {value1} screenshot",
-      "other": "Browse all {value1} screenshots"
+      "one": "스크린샷 {value1}개 모두 보기",
+      "other": "스크린샷 {value1}개 모두 보기"
     }
   },
   "earlier_run_value1_68bdba": "이전 실행 · {value1}",
-  "value1_test_results_293210": "{value1} test results",
+  "value1_test_results_293210": "{value1} 테스트 결과",
   "test_results_3ea600": "테스트 결과",
-  "updates_paused_value1_11b351": "Updates paused: {value1}",
+  "updates_paused_value1_11b351": "업데이트 일시 중지: {value1}",
   "no_maximum_b5cfdf": "최댓값 없음",
   "details_45989d": "세부 정보",
   "previous_screenshot_af9be1": "이전 스크린샷",

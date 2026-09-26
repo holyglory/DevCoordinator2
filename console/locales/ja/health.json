@@ -34,23 +34,23 @@
   "value1_cores_cfde1b": {
     "argument": "value1",
     "forms": {
-      "one": "{value1} core",
-      "other": "{value1} cores"
+      "one": "{value1} コア",
+      "other": "{value1} コア"
     }
   },
-  "value8_repositories_value9_healthy_944e0f": "{value8} repositories · {value9} healthy",
-  "remove_value4_container_06505c": "Remove {value4} container",
-  "value1_critical_a27eba": "{value1} critical",
+  "value8_repositories_value9_healthy_944e0f": "リポジトリ {value8} 件 · 正常 {value9} 件",
+  "remove_value4_container_06505c": "コンテナー {value4} を削除",
+  "value1_critical_a27eba": "重大 {value1} 件",
   "reported_signal_b070ed": "報告されたシグナル",
   "reported_signals_22350f": "報告されたシグナル",
-  "no_dismissed_incidents_375c5b": "いいえ dismissed incidents.",
-  "no_reported_incidents_need_attention_ea3a12": "いいえ reported incidents need attention.",
+  "no_dismissed_incidents_375c5b": "非表示にしたインシデントはありません。",
+  "no_reported_incidents_need_attention_ea3a12": "対応が必要な報告済みインシデントはありません。",
   "collapse_be6eb1": "折りたたむ",
   "expand_07548c": "展開",
   "dismissed_incidents_c4dec9": "非表示のインシデント",
   "timeline_9dcff9": "タイムライン",
   "repository_root_unavailable_1d7ecd": "リポジトリのルートを利用できません",
-  "no_reported_incidents_6b64fd": "いいえ reported incidents",
+  "no_reported_incidents_6b64fd": "報告されたインシデントはありません",
   "controlled_via_its_deployment_59424f": "デプロイ経由で制御",
   "decide_manually_80c52a": "手動で決定",
   "restore_a76e13": "復元",
@@ -65,13 +65,13 @@
   "label_storage_docker_shared": "Docker 共有",
   "label_storage_docker_images": "Docker イメージ",
   "label_storage_docker_build_cache": "Docker ビルドキャッシュ",
-  "label_storage_docker_shared_volumes": "Docker 共有 volumes",
+  "label_storage_docker_shared_volumes": "Docker 共有ボリューム",
   "label_storage_other": "その他",
   "reportedSignals": {
     "argument": "count",
     "forms": {
-      "one": "{count} reported signal",
-      "other": "{count} reported signals"
+      "one": "報告されたシグナル {count} 件",
+      "other": "報告されたシグナル {count} 件"
     }
   },
   "unavailable": "利用できません",
@@ -140,5 +140,9 @@
   "free": "空き",
   "of": "全",
   "one_minute_average": "1分間平均",
-  "scale": "スケール"
+  "scale": "スケール",
+  "removeTest": "テスト用コンテナーを削除",
+  "removeOrphaned": "孤立したコンテナーを削除",
+  "removeTestContainer": "テスト用コンテナー {name} を削除",
+  "removeOrphanedContainer": "孤立したコンテナー {name} を削除"
 }

@@ -188,7 +188,7 @@
   "comment_failed_value1_19ac4b": "コメントに失敗しました：{value1}",
   "sketch_selection_saved_3e6e70": "デザイン案の選択を保存しました",
   "selection_failed_value1_7204fa": "選択に失敗しました：{value1}",
-  "value1_server_wide_health_is_administrator_only_e001e0": "{value1} (server-wide health is administrator-only)",
+  "value1_server_wide_health_is_administrator_only_e001e0": "{value1}（サーバー全体の稼働状況は管理者のみ閲覧可能）",
   "no_repositories_visible_to_you_40cf12": "表示できるリポジトリがありません。",
   "no_containers_on_this_host_f76304": "このホストにコンテナはありません。",
   "no_provider_reported_total_tokens_in_this_window_b714e4": "この期間にプロバイダーが報告したトークン総数はありません。",

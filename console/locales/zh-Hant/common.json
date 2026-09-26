@@ -188,7 +188,7 @@
   "comment_failed_value1_19ac4b": "評論失敗：{value1}",
   "sketch_selection_saved_3e6e70": "設計草圖選擇已儲存",
   "selection_failed_value1_7204fa": "選擇失敗：{value1}",
-  "value1_server_wide_health_is_administrator_only_e001e0": "{value1} (server-wide health is administrator-only)",
+  "value1_server_wide_health_is_administrator_only_e001e0": "{value1}（伺服器整體健康狀態僅限管理員檢視）",
   "no_repositories_visible_to_you_40cf12": "您看不到任何倉庫。",
   "no_containers_on_this_host_f76304": "此主機上沒有容器。",
   "no_provider_reported_total_tokens_in_this_window_b714e4": "此時間視窗沒有服務提供方報告的詞元總數。",

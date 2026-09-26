@@ -26,10 +26,10 @@
   "error_54a0e8": "エラー",
   "untrusted_log_text_192942": "信頼できないログテキスト",
   "no_measured_components_6f4369": "計測されたコンポーネントがありません。",
-  "domain_value1_value2_ee9534": "Domain: {value1}@{value2}",
-  "compose_value3_service_87ae79": "Compose {value3} service",
-  "prev_value1_8d66fe": "(prev {value1})",
-  "logs_value1_306798": "Logs: {value1}",
+  "domain_value1_value2_ee9534": "ドメイン：{value1}@{value2}",
+  "compose_value3_service_87ae79": "Compose の {value3} サービス",
+  "prev_value1_8d66fe": "（前回：{value1}）",
+  "logs_value1_306798": "ログ：{value1}",
   "deployment_aee50b": "デプロイ",
   "deployments_01366d": "デプロイ",
   "expand_workers_c57c47": "ワーカーを展開",
@@ -40,14 +40,14 @@
   "containerCount": {
     "argument": "count",
     "forms": {
-      "one": "{count} container",
-      "other": "{count} containers"
+      "one": "コンテナー {count} 個",
+      "other": "コンテナー {count} 個"
     }
   },
   "apply_97a5e4": "適用",
   "workers_7a1ec9": "ワーカー",
   "my_app_4c9a75": "my-app",
-  "lowercase_dns_label_3dbe17": "lowercase DNS label",
+  "lowercase_dns_label_3dbe17": "小文字の DNS ラベル",
   "logs_98f38f": "ログ",
   "rollback_da2548": "ロールバック",
   "remove_deployment_keep_data_b46030": "デプロイを削除 — データを保持",
@@ -55,8 +55,8 @@
   "deploymentCount": {
     "argument": "count",
     "forms": {
-      "one": "{count} deployment",
-      "other": "{count} deployments"
+      "one": "デプロイ {count} 件",
+      "other": "デプロイ {count} 件"
     }
   }
 }

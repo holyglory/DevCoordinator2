@@ -60,6 +60,8 @@ const state = {
   sketchDrawerSketchId: null,
   sketchDrawerDetail: null,
   sketchDrawerLoading: false,
+  sketchSetGroup: null,
+  sketchSetDetails: new Map(),
   collapsedDeploymentRepositories: new Set(),
   collapsedDeploymentWorkers: new Set(),
   deploymentUsageResolutions: new Map(),
@@ -1367,10 +1369,11 @@ function ensureEvidenceComposer() {
       state.evidenceDrafts.delete(key);
       if (state.evidenceDraftKey === key) {
         resetEvidenceDraft(); form.elements.body.value = '';
-        state.evidenceSelectedFeedbackId = result.feedback.feedback_id;
+        state.evidenceSelectedFeedbackId = result.feedback?.feedback_id || result.annotation?.annotation_id || null;
         revealEvidenceDiscussion(); redrawEvidenceCanvas(); updateEvidencePageStatus();
       }
-      toast(() => window.DevCoordinatorI18n.t("common.feedback_task_created_9a6d46"), 'ok');
+      toast(() => window.DevCoordinatorI18n.t(result.annotation ? "evidence.annotationSaved" : "common.feedback_task_created_9a6d46"), 'ok');
+
     } else if (state.evidenceDraftKey === key) {
       const error = $('#evidence-feedback-error', form);
       window.DevCoordinatorI18n.bind(error, () => window.DevCoordinatorI18n.t("common.could_not_confirm_the_save_value1_your_comment_a_678e78", {value1: failure?.message || 'the request failed'}));
@@ -1470,8 +1473,8 @@ async function evidenceImageUrl(run, image) {
   const promise = (async () => {
     const chunks = []; let offset = 0; let mime = image.mime || 'image/png';
     do {
-      const result = state.evidenceSource === 'sketch'
-        ? await api('design.sketch.image', { repository_id: state.sketchRepositoryId, sketch_id: state.evidenceRun.run_id, offset, max_bytes: 184320 })
+      const result = ['sketch', 'sketch-set'].includes(state.evidenceSource)
+        ? await api('design.sketch.image', { repository_id: state.sketchRepositoryId, sketch_id: state.evidenceSource === 'sketch-set' ? image.image_id : state.evidenceRun.run_id, offset, max_bytes: 184320 })
         : await api('test.evidence.image', { path: run.worktree_path, run_id: run.run_id, image_id: image.image_id, offset, max_bytes: 184320 });
       mime = result.mime || mime;
       const binary = atob(result.base64 || '');
@@ -1513,6 +1516,19 @@ function renderEvidenceRail() {
 }
 
 function renderEvidenceVariants(step, selectedCell) {
+  if (state.evidenceSource === 'sketch-set') {
+    return state.evidenceSteps.map((option) => {
+      const cell = option.variants[0];
+      const sketch = state.sketchGalleryData?.find((item) => item.sketch_id === cell.screenshots?.viewport?.image_id);
+      const image = cell.screenshots?.viewport;
+      const active = option.key === state.evidenceStepKey;
+      const decision = sketch?.decision || 'undecided';
+      return `<button type="button" class="evidence-variant sketch-set-variant${active ? ' active' : ''}${decision === 'keep' ? ' selected' : ''}" data-evidence-step="${esc(option.key)}" aria-pressed="${active}">
+        <span>${image ? `<img alt="${esc(sketch?.title || option.label)}" data-evidence-thumb="${esc(image.image_id)}">` : `<span class="muted">${window.DevCoordinatorI18n.markup("evidence.screenshot_unavailable_b9bfa8")}</span>`}</span>
+        <strong>${esc(sketch?.title || option.label)}</strong><small>${badge(decision, decision === 'keep' ? 'ok' : decision === 'reject' ? 'bad' : '')}</small>
+      </button>`;
+    }).join('');
+  }
   return step.variants.map((cell) => {
     const image = cell.screenshots?.viewport?.status === 'available'
       ? cell.screenshots.viewport : cell.screenshots?.full_page;
@@ -1553,7 +1569,13 @@ function renderEvidenceInspector(run, step, cell, screenshot) {
   const threads = evidenceFeedbackForImage(screenshot?.image_id);
   const selected = threads.find((item) => item.feedback_id === state.evidenceSelectedFeedbackId);
   const findings = cell.findings || [];
-  const sketchDecision = state.evidenceSource === 'sketch' ? `<section class="evidence-inspector-section sketch-decision"><h2><span data-i18n="evidence.decision_640ae4">Decision</span></h2><p class="muted">${window.DevCoordinatorI18n.markup("evidence.value1_revision_value2_0cd02a", {value1: state.sketchDetail?.sketch?.decision || 'undecided', value2: state.sketchDetail?.sketch?.decision_revision ?? 0})}</p><div class="actions">${['keep','reject','undecided'].map((value) => `<button class="btn btn-small" type="button" data-sketch-decision="${value}">${(value === 'keep' ? window.DevCoordinatorI18n.markup("evidence.keep_183f00") : (value === 'reject' ? window.DevCoordinatorI18n.markup("evidence.reject_ab604a") : window.DevCoordinatorI18n.markup("evidence.undecided_00cc36")))}</button>`).join('')}</div><button class="btn btn-small" type="button" data-sketch-record><span data-i18n="evidence.view_generation_record_ce5581">View generation record</span></button></section>` : '';
+  const sketchDecision = ['sketch', 'sketch-set'].includes(state.evidenceSource) ? `<section class="evidence-inspector-section sketch-decision"><h2><span data-i18n="evidence.decision_640ae4">Decision</span></h2><p class="muted">${window.DevCoordinatorI18n.markup("evidence.value1_revision_value2_0cd02a", {value1: window.DevCoordinatorI18n.t("common.status_" + (state.sketchDetail?.sketch?.decision || 'undecided')), value2: state.sketchDetail?.sketch?.decision_revision ?? 0})}</p><div class="actions">${['keep','reject','undecided'].map((value) => `<button class="btn btn-small" type="button" data-sketch-decision="${value}">${(value === 'keep' ? window.DevCoordinatorI18n.markup("evidence.keep_183f00") : (value === 'reject' ? window.DevCoordinatorI18n.markup("evidence.reject_ab604a") : window.DevCoordinatorI18n.markup("evidence.undecided_00cc36")))}</button>`).join('')}</div><button class="btn btn-small" type="button" data-sketch-record><span data-i18n="evidence.view_generation_record_ce5581">View generation record</span></button></section>` : '';
+  const sketchSetComment = state.evidenceSource === 'sketch-set' ? (() => {
+    const group = state.sketchSetGroup;
+    const selectedCount = group?.sketches.filter((item) => item.decision === 'keep').length || 0;
+    const active = group?.sketches.find((item) => item.sketch_id === state.evidenceRun.run_id);
+    return `<section class="evidence-inspector-section sketch-set-comment-compose"><h2>${window.DevCoordinatorI18n.markup("evidence.reviewComment")}</h2><form id="sketch-set-comment-form"><label class="f">${window.DevCoordinatorI18n.markup("evidence.attachTo")}<select name="scope"><option value="active">${active?.title ? esc(active.title) : window.DevCoordinatorI18n.markup("evidence.activeOption")}</option><option value="selected"${selectedCount ? '' : ' disabled'}>${window.DevCoordinatorI18n.markup("evidence.selectedOptions", {count:selectedCount})}</option></select></label><label class="f">${window.DevCoordinatorI18n.markup("evidence.commentLabel")}<textarea name="body" rows="4" minlength="3" maxlength="2000" required placeholder="Add a comment about this option or selected set." data-i18n-attrs='{"placeholder":"evidence.commentPlaceholder"}'></textarea></label><button class="btn btn-primary" type="submit">${window.DevCoordinatorI18n.markup("evidence.postComment")}</button></form></section>`;
+  })() : '';
   const capture = `${sketchDecision}<section class="evidence-inspector-section"><h2><span data-i18n="evidence.capture_details_3be67a">Capture details</span></h2><dl class="evidence-capture-facts">
     <div><dt><span data-i18n="evidence.viewport_91e53b">Viewport</span></dt><dd>${esc(cell.viewport?.name || '—')} · ${esc(cell.viewport?.width)} × ${esc(cell.viewport?.height)}</dd></div>
     <div><dt><span data-i18n="evidence.route_adc747">Route</span></dt><dd>${esc(cell.final_path || cell.requested_path || '—')}</dd></div>
@@ -1561,16 +1583,18 @@ function renderEvidenceInspector(run, step, cell, screenshot) {
     <div><dt><span data-i18n="evidence.captured_8a03fa">Captured</span></dt><dd>${(screenshot?.captured_at ? esc(ago(screenshot.captured_at)) : window.DevCoordinatorI18n.markup("evidence.unavailable_ca1844"))}</dd></div>
     <div><dt><span data-i18n="evidence.duration_4fc52a">Duration</span></dt><dd>${cell.duration_ms == null ? '—' : `${(cell.duration_ms / 1000).toFixed(1)}s`}</dd></div>
     <div><dt><span data-i18n="evidence.result_6e7d50">Result</span></dt><dd>${badge(cell.outcome === 'checked' ? 'checked' : cell.outcome, cell.outcome === 'checked' ? 'ok' : 'bad')}</dd></div>
+
   </dl></section>`;
   const automatic = `<section class="evidence-inspector-section"><h2><span data-i18n="evidence.automated_findings_7ff340">Automated findings</span> <span>${findings.length}</span></h2>${findings.length ? `<ul class="evidence-findings">${findings.map((finding) => `<li class="${esc(finding.severity)}"><button type="button" data-evidence-finding="${esc(finding.rule)}"><i></i><span><strong>${esc(evidenceFindingLabel(finding.rule))}</strong><small>${esc(finding.severity)}</small></span></button></li>`).join('')}</ul><p class="muted evidence-finding-note" id="evidence-finding-note"><span data-i18n="evidence.choose_a_finding_to_return_focus_to_its_capture_92969e">Choose a finding to return focus to its capture.</span></p>` : "<p class=\"muted\"><span data-i18n=\"evidence.no_automatic_visual_findings_for_this_capture_bc3ca1\">No automatic visual findings for this capture.</span></p>"}</section>`;
   const threadList = `<section class="evidence-inspector-section evidence-annotations"><h2><span data-i18n="evidence.annotations_1e4d67">Annotations</span> <span>${threads.length}</span></h2>${threads.length ? threads.map((thread, index) => `<button type="button" class="evidence-thread-summary${selected?.feedback_id === thread.feedback_id ? ' active' : ''}" data-evidence-feedback="${esc(thread.feedback_id)}"><i>${index + 1}</i><span><strong>${(thread.comments[0]?.body ? esc(thread.comments[0]?.body) : window.DevCoordinatorI18n.markup("evidence.visual_feedback_a19903"))}</strong><small>${esc(thread.state)} · ${esc(thread.author)}</small></span></button>`).join('') : "<p class=\"muted\"><span data-i18n=\"evidence.no_feedback_on_this_screenshot_yet_d8a0d7\">No feedback on this screenshot yet.</span></p>"}</section>`;
   if (!selected) {
-    return `${capture}${automatic}${threadList}`;
+    return `${capture}${sketchSetComment}${automatic}${threadList}`;
   }
   const comments = selected.comments.map((comment) => `<article class="evidence-comment" data-comment="${esc(comment.comment_id)}"><header><strong>${esc(comment.author)}</strong><small>${window.DevCoordinatorI18n.computedMarkup(() => ago(comment.created_at))}</small></header><p>${esc(comment.body)}</p>${comment.can_edit && !comment.deleted ? `<div class="actions"><button class="btn btn-small" type="button" data-evidence-edit-comment="${esc(comment.comment_id)}"><span data-i18n="evidence.edit_464c4f">Edit</span></button></div>` : ''}</article>`).join('');
-  const threadActions = state.evidenceSource === 'sketch' ? '' : `<form id="evidence-feedback-reply"><label class="f"><span data-i18n="evidence.reply_c253f4">Reply</span><textarea name="body" rows="3" maxlength="2000" required></textarea></label><button class="btn" type="submit"><span data-i18n="evidence.reply_c253f4">Reply</span></button></form><div class="evidence-thread-actions"><button class="btn" type="button" data-evidence-state="${selected.state === 'resolved' ? 'open' : 'resolved'}">${(selected.state === 'resolved' ? window.DevCoordinatorI18n.markup("evidence.reopen_a886d1") : window.DevCoordinatorI18n.markup("evidence.resolve_c8f193"))}</button>${selected.can_delete ? "<button class=\"btn btn-danger\" type=\"button\" data-evidence-delete><span data-i18n=\"evidence.delete_annotation_674a79\">Delete annotation</span></button>" : ''}</div>`;
+  const threadActions = ['sketch', 'sketch-set'].includes(state.evidenceSource) ? '' : `<form id="evidence-feedback-reply"><label class="f"><span data-i18n="evidence.reply_c253f4">Reply</span><textarea name="body" rows="3" maxlength="2000" required></textarea></label><button class="btn" type="submit"><span data-i18n="evidence.reply_c253f4">Reply</span></button></form><div class="evidence-thread-actions"><button class="btn" type="button" data-evidence-state="${selected.state === 'resolved' ? 'open' : 'resolved'}">${(selected.state === 'resolved' ? window.DevCoordinatorI18n.markup("evidence.reopen_a886d1") : window.DevCoordinatorI18n.markup("evidence.resolve_c8f193"))}</button>${selected.can_delete ? "<button class=\"btn btn-danger\" type=\"button\" data-evidence-delete><span data-i18n=\"evidence.delete_annotation_674a79\">Delete annotation</span></button>" : ''}</div>`;
   const thread = `<section class="evidence-inspector-section evidence-thread"><div class="evidence-thread-head"><h2><span data-i18n="evidence.discussion_5eb6cf">Discussion</span></h2><button class="btn btn-small" type="button" data-evidence-feedback-back><span data-i18n="evidence.all_annotations_9decdd">All annotations</span></button></div><div class="evidence-thread-state">${badge(selected.state, selected.state === 'resolved' ? 'ok' : 'warn')}${selected.task_id ? `<a href="#/plan/${esc(state.evidenceData.repository_id)}" data-evidence-open-task="${esc(selected.task_id)}"><span data-i18n="evidence.open_plan_task_4019fe">Open Plan task →</span></a>` : ''}</div>${comments}${threadActions}</section>`;
-  return `${capture}${automatic}${threadList}${thread}`;
+  return `${capture}${sketchSetComment}${automatic}${threadList}${thread}`;
+
 }
 
 async function loadEvidenceThumbnails(run, root = main) {
@@ -1618,7 +1642,7 @@ function setupEvidenceLayout() {
   let toastLocation;
   let frame;
   page.classList.add('evidence-layout');
-  const expanded = (panel) => fullscreen ? fullscreenPanels[panel] : preferences[panel] ?? (panel === 'journey' || page.clientWidth >= 1050);
+  const expanded = (panel) => fullscreen ? fullscreenPanels[panel] : preferences[panel] ?? (panel === 'journey' || panel === 'details' && state.evidenceSource === 'sketch-set' && page.clientWidth >= 760 || page.clientWidth >= 1050);
   const paint = () => {
     if (!page.isConnected) return;
     const narrow = page.clientWidth < 1050;
@@ -2113,21 +2137,27 @@ function renderEvidenceCurrent(step, cell) {
   const current = state.evidenceSteps.indexOf(step);
   const viewportAvailable = cell.screenshots?.viewport?.status === 'available';
   const fullAvailable = cell.screenshots?.full_page?.status === 'available';
-  return `<div class="evidence-current-copy"><strong>${window.DevCoordinatorI18n.markup("evidence.step_value1_of_value2_196d3d", {value1: current + 1, value2: state.evidenceSteps.length})}</strong><h2>${esc(step.label)}</h2><span>${cell.final_path || cell.requested_path ? esc(cell.final_path || cell.requested_path) : window.DevCoordinatorI18n.markup("evidence.route_unavailable_21a43f")}</span></div>
+  const route = state.evidenceSource === 'sketch-set' ? '' : `<span>${cell.final_path || cell.requested_path ? esc(cell.final_path || cell.requested_path) : window.DevCoordinatorI18n.markup("evidence.route_unavailable_21a43f")}</span>`;
+  return `<div class="evidence-current-copy"><strong>${window.DevCoordinatorI18n.markup("evidence.step_value1_of_value2_196d3d", {value1: current + 1, value2: state.evidenceSteps.length})}</strong><h2>${esc(step.label)}</h2>${route}</div>
     <div class="evidence-current-actions"><div class="seg evidence-capture-kind" role="tablist" aria-label="Screenshot kind" data-i18n-attrs='{"aria-label":"evidence.screenshot_kind_19a142"}'><button type="button" data-evidence-kind="viewport" class="${state.evidenceScreenshotKind === 'viewport' ? 'active' : ''}"${viewportAvailable ? '' : ' disabled'}><span data-i18n="evidence.viewport_91e53b">Viewport</span></button><button type="button" data-evidence-kind="full_page" class="${state.evidenceScreenshotKind === 'full_page' ? 'active' : ''}"${fullAvailable ? '' : ' disabled'}><span data-i18n="evidence.full_page_9d21b6">Full page</span></button></div><button class="btn btn-small" type="button" data-evidence-prev aria-label="Previous journey step"${current <= 0 ? ' disabled' : ''} data-i18n-attrs='{"aria-label":"evidence.previous_journey_step_7a544d"}'>${planIcon('chevron-left')}</button><button class="btn btn-small" type="button" data-evidence-next aria-label="Next journey step"${current >= state.evidenceSteps.length - 1 ? ' disabled' : ''} data-i18n-attrs='{"aria-label":"evidence.next_journey_step_35037a"}'>${planIcon('chevron-right')}</button></div>`;
+
 }
 
 function evidenceWorkspace(run, data) {
   const openFeedback = (data.feedback || []).filter((item) => item.state === 'open').length;
-  const home = state.evidenceSource === 'sketch' ? '#/sketches' : '#/tests';
-  const label = state.evidenceSource === 'sketch' ? 'Sketches' : 'Tests';
+  const sketchEvidence = ['sketch', 'sketch-set'].includes(state.evidenceSource);
+  const home = sketchEvidence ? '#/sketches' : '#/tests';
+  const label = window.DevCoordinatorI18n.t(sketchEvidence ? "sketches.sketches_a56d78" : "common.destination_tests");
   const breadcrumb = `<a class="destination-link" href="${home}">${label}</a><span>/</span>${workspace.active ? '' : `<strong>${esc(run.display_name)}</strong><span>/</span>`}`;
-  return `<section class="evidence-page" data-ui-region="test-evidence-primary">
-    <header class="evidence-page-head"><div><h1 class="evidence-breadcrumb">${breadcrumb}<strong>${(run.test ? esc(run.test) : window.DevCoordinatorI18n.markup("evidence.test_run_fe9e2f"))}</strong></h1><div class="evidence-run-line"><span class="mono">${esc(run.run_id)}</span>${run.isEarlierEvidence ? badge('Earlier visual run') : `${badge(run.status)}<span class="evidence-run-meta">${window.DevCoordinatorI18n.computedMarkup(() => testTierLabel(run.requested_tier))}</span><span class="evidence-run-meta">${(run.readiness_eligible ? window.DevCoordinatorI18n.markup("evidence.release_proof_17fa7c") : window.DevCoordinatorI18n.markup("evidence.diagnostic_only_3425ba"))}</span>`}<span class="evidence-run-meta">${window.DevCoordinatorI18n.computedMarkup(() => ago(run.started_at))}</span></div></div><div class="evidence-review-state"><span><span data-i18n="evidence.review_status_a410d7">Review status</span></span>${openFeedback ? badge(`${openFeedback} changes requested`, 'warn') : badge('No changes requested', 'ok')}</div></header>
+  const close = state.evidenceSource === 'sketch-set' ? `<a class="btn btn-small sketch-set-close" href="#/sketches/${esc(state.sketchRepositoryId)}">${window.DevCoordinatorI18n.markup("evidence.closeReview")}</a>` : '';
+  const setMeta = state.evidenceSource === 'sketch-set' ? window.DevCoordinatorI18n.markup("evidence.selectionSummary", {selected: state.sketchSetGroup?.sketches.filter((item) => item.decision === 'keep').length || 0, total: state.sketchSetGroup?.sketches.length || 0}) : `<span class="mono">${esc(run.run_id)}</span>${run.isEarlierEvidence ? badge('Earlier visual run') : `${badge(run.status)}<span class="evidence-run-meta">${window.DevCoordinatorI18n.computedMarkup(() => testTierLabel(run.requested_tier))}</span><span class="evidence-run-meta">${(run.readiness_eligible ? window.DevCoordinatorI18n.markup("evidence.release_proof_17fa7c") : window.DevCoordinatorI18n.markup("evidence.diagnostic_only_3425ba"))}</span>`}<span class="evidence-run-meta">${window.DevCoordinatorI18n.computedMarkup(() => ago(run.started_at))}</span>`;
+  return `<section class="evidence-page${state.evidenceSource === 'sketch-set' ? ' sketch-set-evidence-page' : ''}" data-ui-region="test-evidence-primary">
+    <header class="evidence-page-head"><div><h1 class="evidence-breadcrumb">${breadcrumb}<strong>${(run.test ? esc(run.test) : window.DevCoordinatorI18n.markup("evidence.test_run_fe9e2f"))}</strong></h1><div class="evidence-run-line">${setMeta}</div></div><div class="evidence-review-state"><span><span data-i18n="evidence.review_status_a410d7">Review status</span></span><span class="badge ${openFeedback ? 'warn' : 'ok'}">${openFeedback ? window.DevCoordinatorI18n.markup("evidence.changesRequested", {count:openFeedback}) : window.DevCoordinatorI18n.markup("evidence.noChangesRequested")}</span>${close}</div></header>
     <div class="evidence-board">
       <aside id="evidence-journey" class="evidence-rail" aria-label="Journey steps" data-i18n-attrs='{"aria-label":"evidence.journey_steps_a9b3d0"}'><div class="evidence-rail-head"><h2><span data-i18n="evidence.journey_fe50ed">Journey</span></h2><span>${window.DevCoordinatorI18n.markup("evidence.value7_steps_531b1f", {value7: state.evidenceSteps.length})}</span></div><div id="evidence-step-list">${renderEvidenceRail()}</div></aside>
-      <section class="evidence-workspace" data-ui-region="test-evidence-workspace"><header id="evidence-current" class="evidence-current"></header>${evidenceToolbar()}<div id="evidence-scroll" class="evidence-scroll"><div id="evidence-media" class="evidence-media"><img id="evidence-image" alt="Selected user journey screenshot" hidden><canvas id="evidence-canvas" tabindex="0" aria-label="Screenshot annotation canvas" data-i18n-attrs='{"aria-label":"evidence.screenshot_annotation_canvas_07eeb5"}'></canvas></div><div id="evidence-image-state" class="evidence-image-state"><span data-i18n="evidence.loading_screenshot_e0fd7b">Loading screenshot…</span></div></div><section class="evidence-compare" aria-labelledby="evidence-compare-title"><div><h2 id="evidence-compare-title"><span data-i18n="evidence.viewport_comparison_e876b4">Viewport comparison</span></h2><span><span data-i18n="evidence.same_journey_moment_4520e6">Same journey moment</span></span></div><div id="evidence-variants" class="evidence-variants"></div></section></section>
+      <section class="evidence-workspace" data-ui-region="test-evidence-workspace"><header id="evidence-current" class="evidence-current"></header>${evidenceToolbar()}<div id="evidence-scroll" class="evidence-scroll"><div id="evidence-media" class="evidence-media"><img id="evidence-image" alt="Selected user journey screenshot" data-i18n-attrs='{"alt":"evidence.selectedJourneyScreenshot"}' hidden><canvas id="evidence-canvas" tabindex="0" aria-label="Screenshot annotation canvas" data-i18n-attrs='{"aria-label":"evidence.screenshot_annotation_canvas_07eeb5"}'></canvas></div><div id="evidence-image-state" class="evidence-image-state"><span data-i18n="evidence.loading_screenshot_e0fd7b">Loading screenshot…</span></div></div><section class="evidence-compare" aria-labelledby="evidence-compare-title"><div><h2 id="evidence-compare-title">${state.evidenceSource === 'sketch-set' ? window.DevCoordinatorI18n.markup("evidence.allSketchOptions") : window.DevCoordinatorI18n.markup("evidence.viewport_comparison_e876b4")}</h2><span>${state.evidenceSource === 'sketch-set' ? window.DevCoordinatorI18n.markup("evidence.selectOptionToAnnotate") : window.DevCoordinatorI18n.markup("evidence.same_journey_moment_4520e6")}</span></div><div id="evidence-variants" class="evidence-variants"></div></section></section>
       <aside id="evidence-inspector" class="evidence-inspector" aria-label="Capture details and feedback" data-i18n-attrs='{"aria-label":"evidence.capture_details_and_feedback_40a8be"}'></aside>
+
     </div>
   </section>`;
 }
@@ -2142,12 +2172,17 @@ async function evidenceMutation(button, command, args, onError = error => toast(
   const runId = state.evidenceRun.run_id;
   button.disabled = true;
   try {
-    const result = state.evidenceSource === 'sketch'
-      ? await api('design.sketch.annotation.create', { repository_id: state.sketchRepositoryId, sketch_id: state.evidenceRun.run_id, body: args.body, marks: args.marks }, false)
+    const imageId = currentEvidenceSelection().screenshot?.image_id || state.evidenceRun.run_id;
+    const result = ['sketch', 'sketch-set'].includes(state.evidenceSource)
+      ? await api('design.sketch.annotation.create', { repository_id: state.sketchRepositoryId, sketch_id: imageId, body: args.body, marks: args.marks }, false)
       : await api(command, { path: state.evidenceRun.worktree_path, run_id: state.evidenceRun.run_id, ...args }, false);
-    if (state.evidenceSource === 'sketch' && result.annotation) {
+    if (['sketch', 'sketch-set'].includes(state.evidenceSource) && result.annotation) {
       const annotation = result.annotation;
-      replaceEvidenceFeedback({ feedback_id: annotation.annotation_id, task_id: '', task_status: 'planned', state: annotation.state, image_id: state.evidenceRun.run_id, marks: annotation.marks, author: annotation.author, created_at: annotation.created_at, updated_at: annotation.updated_at, comments: [{ comment_id: annotation.annotation_id, body: annotation.body, author: annotation.author, created_at: annotation.created_at, updated_at: annotation.updated_at, can_edit: false, deleted: false }], can_delete: annotation.can_delete });
+      if (state.evidenceSource === 'sketch-set') {
+        const detail = state.sketchSetDetails.get(imageId);
+        if (detail) state.sketchSetDetails.set(imageId, { ...detail, annotations: [...(detail.annotations || []), annotation] });
+      }
+      replaceEvidenceFeedback({ feedback_id: annotation.annotation_id, task_id: '', task_status: 'planned', state: annotation.state, image_id: imageId, marks: annotation.marks, author: annotation.author, created_at: annotation.created_at, updated_at: annotation.updated_at, comments: [{ comment_id: annotation.annotation_id, body: annotation.body, author: annotation.author, created_at: annotation.created_at, updated_at: annotation.updated_at, can_edit: false, deleted: false }], can_delete: annotation.can_delete });
     }
     if (result.feedback && state.evidenceRun?.run_id === runId) replaceEvidenceFeedback(result.feedback);
     return result;
@@ -2157,26 +2192,56 @@ async function evidenceMutation(button, command, args, onError = error => toast(
 }
 
 function bindEvidenceInspector() {
+  $('#sketch-set-comment-form', main)?.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const body = String(new FormData(form).get('body') || '').trim();
+    const scope = String(new FormData(form).get('scope') || 'active');
+    if (body.length < 3 || state.evidenceSource !== 'sketch-set') return;
+    const activeId = state.evidenceRun.run_id;
+    const group = state.sketchSetGroup;
+    const targets = scope === 'selected'
+      ? group.sketches.filter((item) => item.decision === 'keep')
+      : group.sketches.filter((item) => item.sketch_id === activeId);
+    const button = form.querySelector('button[type="submit"]');
+    if (!targets.length) return;
+    button.disabled = true;
+    try {
+      for (const target of targets) {
+        const result = await api('design.sketch.annotation.create', { repository_id: state.sketchRepositoryId, sketch_id: target.sketch_id, body, marks: [] }, false);
+        const annotation = result.annotation;
+        if (annotation) replaceEvidenceFeedback({ feedback_id: annotation.annotation_id, task_id: '', task_status: 'planned', state: annotation.state, image_id: target.sketch_id, marks: annotation.marks, author: annotation.author, created_at: annotation.created_at, updated_at: annotation.updated_at, comments: [{ comment_id: annotation.annotation_id, body: annotation.body, author: annotation.author, created_at: annotation.created_at, updated_at: annotation.updated_at, can_edit: false, deleted: false }], can_delete: annotation.can_delete });
+      }
+      form.reset(); refreshEvidenceInspector(); toast(() => window.DevCoordinatorI18n.t("evidence.commentAdded", {count:targets.length}), 'ok');
+    } catch (error) { toast(() => window.DevCoordinatorI18n.t("evidence.commentFailed", {message:error.message}), 'bad'); }
+    finally { button.disabled = false; }
+  });
   $('[data-sketch-record]', main)?.addEventListener('click', async (event) => {
     const button = event.currentTarget; button.disabled = true;
     try {
       const chunks = []; let offset = 0; let total = null;
-      do { const part = await api('design.sketch.record', { repository_id: state.sketchRepositoryId, sketch_id: state.evidenceRun.run_id, offset, max_bytes: 184320 }); const bytes = Uint8Array.from(atob(part.base64 || ''), (c) => c.charCodeAt(0)); chunks.push(bytes); total = part.total_bytes; offset += bytes.length; if (part.next_offset == null) break; } while (offset < total);
+      const recordSketchId = currentEvidenceSelection().screenshot?.image_id || state.evidenceRun.run_id;
+      do { const part = await api('design.sketch.record', { repository_id: state.sketchRepositoryId, sketch_id: recordSketchId, offset, max_bytes: 184320 }); const bytes = Uint8Array.from(atob(part.base64 || ''), (c) => c.charCodeAt(0)); chunks.push(bytes); total = part.total_bytes; offset += bytes.length; if (part.next_offset == null) break; } while (offset < total);
       const text = new TextDecoder().decode(concatBytes(chunks));
       const details = document.createElement('details'); details.className = 'sketch-record'; details.open = true; details.innerHTML = `<summary><span data-i18n="evidence.generation_record_5e6033">Generation record</span></summary><pre></pre>`; details.querySelector('pre').textContent = text;
       button.replaceWith(details);
     } catch (error) { toast(() => window.DevCoordinatorI18n.t("common.generation_record_unavailable_value1_b601a8", {value1: error.message}), 'bad'); } finally { button.disabled = false; }
   });
   main.querySelectorAll('[data-sketch-decision]').forEach((button) => button.addEventListener('click', async () => {
-    if (state.evidenceSource !== 'sketch' || !state.sketchDetail) return;
-    const rationale = window.prompt('Why is this sketch being changed?', 'Reviewed in Console')?.trim();
+    if (!['sketch', 'sketch-set'].includes(state.evidenceSource) || !state.sketchDetail) return;
+    const rationale = window.prompt(window.DevCoordinatorI18n.t("evidence.sketchChangeWhy"), window.DevCoordinatorI18n.t("evidence.reviewedInConsole"))?.trim();
     if (!rationale) return;
     button.disabled = true;
     try {
       const result = await api('design.sketch.decision', { repository_id: state.sketchRepositoryId, sketch_id: state.evidenceRun.run_id, expected_revision: state.sketchDetail.sketch.decision_revision, decision: button.dataset.sketchDecision, rationale }, false);
       state.sketchDetail = { ...state.sketchDetail, sketch: result.sketch, history: [...(state.sketchDetail.history || []), result.event] };
-      refreshEvidenceInspector(); toast(() => window.DevCoordinatorI18n.t("common.sketch_decision_saved_e11ab3"), 'ok');
+      if (state.evidenceSource === 'sketch-set') state.sketchSetDetails.set(result.sketch.sketch_id, state.sketchDetail);
+      const summary = state.sketchGalleryData?.find((item) => item.sketch_id === result.sketch.sketch_id);
+      if (summary) Object.assign(summary, { decision: result.sketch.decision, decision_revision: result.sketch.decision_revision });
+      if (state.evidenceSource === 'sketch-set') refreshEvidenceSelection(); else refreshEvidenceInspector();
+      toast(() => window.DevCoordinatorI18n.t("common.sketch_decision_saved_e11ab3"), 'ok');
     } catch (error) { toast(() => window.DevCoordinatorI18n.t("common.decision_failed_value1_c85449", {value1: error.message}), 'bad'); } finally { button.disabled = false; }
+
   }));
   main.querySelectorAll('[data-evidence-feedback]').forEach((button) => button.addEventListener('click', () => {
     state.evidenceSelectedFeedbackId = button.dataset.evidenceFeedback;
@@ -2299,6 +2364,7 @@ async function loadMainEvidenceImage(run, screenshot) {
     if (currentEvidenceSelection().screenshot?.image_id !== requested || !image?.isConnected) return;
     image.src = url; image.hidden = false; await image.decode().catch(() => {});
     status.hidden = true; setupEvidenceCanvas(requested);
+    if (state.evidenceSource === 'sketch-set') $('#evidence-canvas', main)?.focus({ preventScroll: true });
     if (state.evidencePendingLabel) evidenceTextEntry(state.evidencePendingLabel.point, false);
   } catch (error) {
     window.DevCoordinatorI18n.bind(status, () => (error.message || window.DevCoordinatorI18n.t("common.screenshot_unavailable_05e5d1"))); status.hidden = false;
@@ -2333,13 +2399,22 @@ function bindEvidenceSelection() {
 
 function refreshEvidenceSelection() {
   const { step, cell, screenshot } = currentEvidenceSelection(); if (!step) return;
+  if (state.evidenceSource === 'sketch-set' && screenshot?.image_id) {
+    state.evidenceRun.run_id = screenshot.image_id;
+    state.evidenceRunId = screenshot.image_id;
+    state.sketchDetail = state.sketchSetDetails.get(screenshot.image_id) || state.sketchDetail;
+  }
   activateEvidenceDraft(screenshot?.image_id);
   if (screenshot?.image_id) {
     const query = new URLSearchParams(location.hash.split('?')[1] || '');
     query.set('image', screenshot.image_id);
     if (state.evidenceRun.worktree_id) query.set('worktree', state.evidenceRun.worktree_id);
-    const prefix = state.evidenceSource === 'sketch' ? `#/sketches/${state.sketchRepositoryId}` : `#/tests/${state.evidenceRunId}`;
+    const prefix = ['sketch', 'sketch-set'].includes(state.evidenceSource) ? `#/sketches/${state.sketchRepositoryId}` : `#/tests/${state.evidenceRunId}`;
     if (state.evidenceSource === 'sketch') query.set('sketch', state.evidenceRunId);
+    if (state.evidenceSource === 'sketch-set') {
+      query.set('set', state.sketchSetGroup?.key || '');
+      query.set('sketch', state.evidenceRun.run_id);
+    }
     window.history.replaceState(null, '', `${prefix}?${query}`);
   }
   $('#evidence-step-list', main).innerHTML = renderEvidenceRail();
@@ -2675,9 +2750,8 @@ function openSketchDrawer(repositoryId, setName, sketchId = null) {
   const group = sketchSetGroups(state.sketchGalleryData).find((item) => item.key === setName);
   if (!group) return;
   const currentId = sketchId || group.sketches.find((sketch) => sketch.decision === 'keep')?.sketch_id || group.sketches[0]?.sketch_id;
-  state.sketchDrawerSet = setName; state.sketchDrawerSketchId = currentId; state.sketchDrawerDetail = null;
   history.replaceState(null, '', sketchRoute(repositoryId, setName, currentId));
-  renderSketchGalleryPage(repositoryId, state.sketchGalleryData || [], setName, currentId);
+  render();
 }
 
 function closeSketchDrawer(repositoryId) {
@@ -2702,7 +2776,50 @@ async function saveSketchDecisions(repositoryId, sketch, decision, rationale) {
   } catch (error) { toast(() => window.DevCoordinatorI18n.t("common.selection_failed_value1_7204fa", {value1: error.message}), 'bad'); }
 }
 
+function sketchSetEvidenceData(group, details) {
+  const cells = group.sketches.map((sketch, index) => ({
+    cell_id: sketch.sketch_id, review_cell_key: null, plan_index: index,
+    target_name: sketch.title, primary_journey: group.key, state_name: sketch.title,
+    requested_path: null, final_path: null,
+    viewport: { name: `option-${index + 1}`, width: sketch.width, height: sketch.height, device: null },
+    started_at: sketch.created_at, ended_at: sketch.created_at, duration_ms: null,
+    outcome: 'checked', http_status: null, source_binding_status: 'sketch', actions: [], findings: [], review: null,
+    screenshots: { viewport: { status: 'available', kind: 'viewport', image_id: sketch.sketch_id, mime: sketch.mime, size: sketch.byte_size, sha256: sketch.sha256, width: sketch.width, height: sketch.height, captured_at: sketch.created_at }, full_page: null },
+    formal_run_id: `sketch-set-${group.key}`,
+  }));
+  const feedback = group.sketches.flatMap((sketch) => sketchFeedback(details.get(sketch.sketch_id) || { sketch, annotations: [] }));
+  return {
+    repository_id: group.sketches[0]?.repository_id, feedback, issues: [], image_count: group.sketches.length,
+    status: 'available', run_id: group.sketches[0]?.sketch_id, worktree_id: '',
+    bundles: [{ formal_run_id: `sketch-set-${group.key}`, generated_at: group.sketches[0]?.created_at,
+      browser: group.sketches[0]?.source_skill, check: 'sketch-set', phase: 'design', case: group.key,
+      coverage: { checked_pages: group.sketches.length, planned_pages: group.sketches.length, failed: false, readiness_eligible: false },
+      cells }],
+  };
+}
+
+async function viewSketchSetEvidence(repositoryId, group, activeSketchId) {
+  const details = new Map(await Promise.all(group.sketches.map(async (sketch) => [sketch.sketch_id, await api('design.sketch.get', { repository_id: repositoryId, sketch_id: sketch.sketch_id })])));
+  state.evidenceSource = 'sketch-set'; state.sketchRepositoryId = repositoryId; state.sketchSetGroup = group; state.sketchSetDetails = details;
+  state.sketchGalleryData = group.sketches; state.sketchDetail = details.get(activeSketchId) || details.get(group.sketches[0]?.sketch_id);
+  state.evidenceRunId = state.sketchDetail?.sketch?.sketch_id;
+  state.evidenceRun = { run_id: state.evidenceRunId, display_name: group.key, test: group.key, status: 'available', readiness_eligible: false, started_at: group.sketches[0]?.created_at, worktree_path: '' };
+  state.evidenceData = sketchSetEvidenceData(group, details); state.evidenceSteps = evidenceSteps(state.evidenceData);
+  state.evidenceStepKey = state.evidenceSteps.find((step) => step.variants[0]?.cell_id === state.evidenceRunId)?.key || state.evidenceSteps[0]?.key;
+  state.evidenceViewport = null; state.evidenceScreenshotKind = 'viewport'; state.evidenceSelectedFeedbackId = null;
+  main.innerHTML = evidenceWorkspace(state.evidenceRun, state.evidenceData);
+  refreshEvidenceSelection(); setupEvidenceLayout();
+  requestAnimationFrame(() => $('#evidence-canvas', main)?.focus({ preventScroll: true }));
+}
+
 const viewSketches = guard(async (repositoryId, sketchId = null, setName = null) => {
+  if (sketchId && setName) {
+    main.innerHTML = `${pageHeading('Sketches', '#/sketches', window.DevCoordinatorI18n.t("shell.loading_ba3bbb"))}<div class="sketch-set-list">${skeleton(6)}</div>`;
+    const result = await api('design.sketch.list', { repository_id: repositoryId, limit: 100, sketch_set: setName });
+    const group = sketchSetGroups(result.sketches).find((item) => item.key === setName);
+    if (!group) { main.innerHTML = `${pageHeading('Sketches', '#/sketches')}${stateBlock('empty', window.DevCoordinatorI18n.t("evidence.sketchSetUnavailable"))}`; return; }
+    return viewSketchSetEvidence(repositoryId, group, sketchId);
+  }
   if (sketchId && !setName) {
     const detail = await api('design.sketch.get', { repository_id: repositoryId, sketch_id: sketchId });
     state.evidenceSource = 'sketch'; state.sketchRepositoryId = repositoryId; state.sketchDetail = detail;
@@ -2752,7 +2869,7 @@ const viewContainers = guard(async () => {
   main.innerHTML = `${pageHeading('Health', '#/health', 'Containers')}<p><a href="#/health"><span data-i18n="health.health_9959ad">← Health</span></a> · ${Object.entries(counts).map(([k, v]) => `${esc(k)} ${v}`).join(' · ')}</p>${containers.length ? `<div class="tablewrap"><table><thead><tr><th><span data-i18n="health.name_identity_747c22">Name / identity</span></th><th><span data-i18n="health.state_a3b50c">State</span></th><th><span data-i18n="health.class_4f3a9b">Class</span></th><th><span data-i18n="health.repository_13d6ff">Repository</span></th><th><span data-i18n="health.deployment_test_65464e">Deployment / test</span></th><th><span data-i18n="health.caller_9bc9b8">Caller</span></th><th><span data-i18n="health.cpu_db9a4c">CPU</span></th><th><span data-i18n="health.memory_c3963a">Memory</span></th><th><span data-i18n="health.layer_ac9ffc">Layer</span></th><th><span data-i18n="health.created_d70b9e">Created</span></th><th><span data-i18n="health.ttl_76f601">TTL</span></th><th><span data-i18n="health.actions_ff8059">Actions</span></th></tr></thead><tbody>${containers.map((c) => `<tr>
     <td class="wrap"><strong>${esc(c.name)}</strong><div class="muted mono">${esc(c.id)}</div><div class="muted">${esc(c.image)}</div></td><td>${badge(c.state, c.state === 'running' ? 'ok' : '')}</td><td>${badge(c.classification, c.classification === 'unmanaged' ? 'warn' : c.classification === 'orphaned-managed' ? 'bad' : 'ok')}</td>
     <td class="mono">${esc(c.repository_id || '—')}</td><td class="mono wrap">${esc(c.deployment_id ? `${c.deployment_id}/${c.component}` : c.run_id || '—')}</td><td>${c.caller_uid ?? '—'} ${esc(c.client || '')}</td><td>${window.DevCoordinatorI18n.computedMarkup(() => pct(c.cpu_percent))}</td><td>${window.DevCoordinatorI18n.computedMarkup(() => bytes(c.memory_bytes))}</td><td>${window.DevCoordinatorI18n.computedMarkup(() => bytes(c.container_layer_bytes))}</td><td class="wrap">${esc(c.created)}</td><td>${c.ttl_seconds ?? '—'}</td>
-    <td class="actions">${admin && (c.classification === 'orphaned-managed' || c.classification === 'managed-test') ? `<button class="btn btn-small btn-danger" data-cmd="health.container_remove" data-args='${esc(JSON.stringify({ container_id: c.id }))}' aria-label="Remove ${esc(c.classification)} container ${esc(c.name)}">${window.DevCoordinatorI18n.markup("health.remove_value4_container_06505c", {value4: c.classification})}</button>` : `<span class="muted">${(c.classification === 'observed-current' ? window.DevCoordinatorI18n.markup("health.controlled_via_its_deployment_59424f") : window.DevCoordinatorI18n.markup("health.decide_manually_80c52a"))}</span>`}</td></tr>`).join('')}</tbody></table></div>` : stateBlock('empty', () => window.DevCoordinatorI18n.t("common.no_containers_on_this_host_f76304"))}`;
+    <td class="actions">${admin && (c.classification === 'orphaned-managed' || c.classification === 'managed-test') ? `<button class="btn btn-small btn-danger" data-cmd="health.container_remove" data-args='${esc(JSON.stringify({ container_id: c.id }))}' aria-label="${esc(window.DevCoordinatorI18n.t(c.classification === 'managed-test' ? "health.removeTestContainer" : "health.removeOrphanedContainer", {name:c.name}))}" data-i18n-attrs='${esc(JSON.stringify({"aria-label":c.classification === 'managed-test' ? "health.removeTestContainer" : "health.removeOrphanedContainer"}))}' data-i18n-args='${esc(JSON.stringify({name:c.name}))}'>${window.DevCoordinatorI18n.markup(c.classification === 'managed-test' ? "health.removeTest" : "health.removeOrphaned")}</button>` : `<span class="muted">${(c.classification === 'observed-current' ? window.DevCoordinatorI18n.markup("health.controlled_via_its_deployment_59424f") : window.DevCoordinatorI18n.markup("health.decide_manually_80c52a"))}</span>`}</td></tr>`).join('')}</tbody></table></div>` : stateBlock('empty', () => window.DevCoordinatorI18n.t("common.no_containers_on_this_host_f76304"))}`;
   bind(main);
 });
 
@@ -4385,12 +4502,13 @@ async function render() {
   main.classList.toggle('deployments-page', view === 'deployments' && !arg);
   const sketchQuery = new URLSearchParams(location.hash.split('?')[1] || '');
   const sketchDetailRoute = view === 'sketches' && sketchQuery.has('sketch') && !sketchQuery.has('set');
-  main.classList.toggle('test-evidence-page', (view === 'tests' && !!arg) || sketchDetailRoute);
+  const sketchSetEvidenceRoute = view === 'sketches' && sketchQuery.has('sketch') && sketchQuery.has('set');
+  main.classList.toggle('test-evidence-page', (view === 'tests' && !!arg) || sketchDetailRoute || sketchSetEvidenceRoute);
   main.classList.toggle('tests-collection-page', view === 'tests' && !arg);
   main.classList.toggle('sketches-page', view === 'sketches');
   document.body.classList.toggle('plan-shell', view === 'plan' && !!arg);
-  document.body.classList.toggle('evidence-shell', (view === 'tests' && !!arg) || sketchDetailRoute);
-  if (!(view === 'tests' && arg) && !sketchDetailRoute && state.evidenceRunId) {
+  document.body.classList.toggle('evidence-shell', (view === 'tests' && !!arg) || sketchDetailRoute || sketchSetEvidenceRoute);
+  if (!(view === 'tests' && arg) && !sketchDetailRoute && !sketchSetEvidenceRoute && state.evidenceRunId) {
     evidenceCanvasSession?.observer?.disconnect(); evidenceCanvasSession = null;
     resetEvidenceImages(); state.evidenceRunId = null; state.evidenceData = null;
     state.evidenceSteps = []; state.evidenceRun = null;

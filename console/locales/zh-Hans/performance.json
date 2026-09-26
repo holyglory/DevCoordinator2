@@ -63,15 +63,15 @@
   "value1_more_activities_a0186b": {
     "argument": "value1",
     "forms": {
-      "one": "{value1} more activity",
-      "other": "{value1} more activities"
+      "one": "另有 {value1} 项活动",
+      "other": "另有 {value1} 项活动"
     }
   },
   "value1_revisions_ed2971": {
     "argument": "value1",
     "forms": {
-      "one": "{value1} revision",
-      "other": "{value1} revisions"
+      "one": "{value1} 个修订版本",
+      "other": "{value1} 个修订版本"
     }
   },
   "activity_38da15": "活动",
@@ -84,12 +84,12 @@
   "unknown_kind_2a60d8": "未知类型",
   "review_in_progress_bf2daa": " · 审查进行中",
   "incomplete_measurement_3407ad": "测量不完整",
-  "value1_total_value2_value3_0a3988": "{value1} total: {value2}{value3}",
+  "value1_total_value2_value3_0a3988": "{value1}合计：{value2}{value3}",
   "value1_attributed_outcomes_6e3dca": {
     "argument": "value1",
     "forms": {
-      "one": "{value1} attributed outcome",
-      "other": "{value1} attributed outcomes"
+      "one": "{value1} 项已归属成果",
+      "other": "{value1} 项已归属成果"
     }
   },
   "review_usage_value1_a681eb": "审查用量 · {value1}",
@@ -107,5 +107,10 @@
   "status_unchanged": "无变化",
   "status_inconclusive": "无法确定",
   "tokensByActivity": "按活动统计词元",
-  "tokensByKind": "词元 by Plan item kind"
+  "tokensByKind": "按计划项类型统计词元",
+  "unattributedWork": "部分工作未关联到已记录的成果。",
+  "reviewScopeTotal": "本次评估的词元总数：{tokens}",
+  "periodScopeTotal": "此期间的词元总数：{tokens}",
+  "reviewTotalLabel": "本次评估合计",
+  "periodTotalLabel": "此期间合计"
 }

@@ -13,13 +13,13 @@
   "review_generated_options_by_set_then_select_one__020509": "生成された案をセットごとに確認し、進める案を1つ以上選んでください。",
   "publish_from_a_skill_f33a0e": "スキルから公開",
   "sketches_are_published_by_a_registered_skill_a2ac72": "デザイン案は登録済みのスキルから公開されます",
-  "value2_selected_value3_options_b64a24": "{value2} selected · {value3} options",
-  "value5_sketches_value6_selected_87bdd8": "{value5} sketches · {value6} selected",
-  "value6_rejected_value7_undecided_bbc778": "{value6} rejected · {value7} undecided",
+  "value2_selected_value3_options_b64a24": "{value2} 件選択済み · 選択肢 {value3} 件",
+  "value5_sketches_value6_selected_87bdd8": "スケッチ {value5} 件 · {value6} 件選択済み",
+  "value6_rejected_value7_undecided_bbc778": "却下 {value6} 件 · 未決定 {value7} 件",
   "reviewer_d29f46": "レビュー担当者",
   "option_unavailable_d03e4e": "案を利用できません",
   "selected_57fd7a": "選択済み",
-  "rejected_aea4a0": "却下ed",
+  "rejected_aea4a0": "却下済み",
   "undecided_00cc36": "未決定",
   "select_2a7802": "選択",
   "reject_ab604a": "却下",
@@ -41,8 +41,8 @@
   "setCount": {
     "argument": "count",
     "forms": {
-      "one": "{count} set",
-      "other": "{count} sets"
+      "one": "{count} セット",
+      "other": "{count} セット"
     }
   }
 }

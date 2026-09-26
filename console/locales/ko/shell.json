@@ -77,9 +77,9 @@
   "icon_book": "문서",
   "icon_chart-bar": "분석",
   "icon_shield": "보안",
-  "current_repository_value1_35de51": "Current repository: {value1}",
+  "current_repository_value1_35de51": "현재 저장소: {value1}",
   "could_not_save_repository_appearance_try_again_955cdd": "저장소 표시 설정을 저장하지 못했습니다. 다시 시도하세요.",
   "value1_repositories_unavailable_refresh_to_retry_426a76": "사용할 수 없는 저장소가 {value1}개입니다. 새로 고친 후 다시 시도하세요.",
-  "montenegrinLatin": "Montenegrin (Latin)",
-  "montenegrinCyrillic": "Montenegrin (Cyrillic)"
+  "montenegrinLatin": "몬테네그로어(라틴 문자)",
+  "montenegrinCyrillic": "몬테네그로어(키릴 문자)"
 }

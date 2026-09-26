@@ -13,13 +13,13 @@
   "review_generated_options_by_set_then_select_one__020509": "생성된 시안을 모음별로 검토한 다음 진행할 시안을 하나 이상 선택하세요.",
   "publish_from_a_skill_f33a0e": "스킬에서 게시",
   "sketches_are_published_by_a_registered_skill_a2ac72": "디자인 시안은 등록된 스킬이 게시합니다",
-  "value2_selected_value3_options_b64a24": "{value2} selected · {value3} options",
-  "value5_sketches_value6_selected_87bdd8": "{value5} sketches · {value6} selected",
-  "value6_rejected_value7_undecided_bbc778": "{value6} rejected · {value7} undecided",
+  "value2_selected_value3_options_b64a24": "{value2}개 선택됨 · 옵션 {value3}개",
+  "value5_sketches_value6_selected_87bdd8": "스케치 {value5}개 · {value6}개 선택됨",
+  "value6_rejected_value7_undecided_bbc778": "거부됨 {value6}개 · 미결정 {value7}개",
   "reviewer_d29f46": "검토자",
   "option_unavailable_d03e4e": "시안을 사용할 수 없음",
   "selected_57fd7a": "선택됨",
-  "rejected_aea4a0": "거부ed",
+  "rejected_aea4a0": "거부됨",
   "undecided_00cc36": "미정",
   "select_2a7802": "선택",
   "reject_ab604a": "거부",
@@ -41,8 +41,8 @@
   "setCount": {
     "argument": "count",
     "forms": {
-      "one": "{count} set",
-      "other": "{count} sets"
+      "one": "{count}개 세트",
+      "other": "{count}개 세트"
     }
   }
 }

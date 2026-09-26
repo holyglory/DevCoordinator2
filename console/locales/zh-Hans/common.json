@@ -188,7 +188,7 @@
   "comment_failed_value1_19ac4b": "评论失败：{value1}",
   "sketch_selection_saved_3e6e70": "设计草图选择已保存",
   "selection_failed_value1_7204fa": "选择失败：{value1}",
-  "value1_server_wide_health_is_administrator_only_e001e0": "{value1} (server-wide health is administrator-only)",
+  "value1_server_wide_health_is_administrator_only_e001e0": "{value1}（服务器整体健康状况仅管理员可见）",
   "no_repositories_visible_to_you_40cf12": "您看不到任何仓库。",
   "no_containers_on_this_host_f76304": "此主机上没有容器。",
   "no_provider_reported_total_tokens_in_this_window_b714e4": "此时间窗口没有服务提供方报告的词元总数。",

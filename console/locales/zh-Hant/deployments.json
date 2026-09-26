@@ -26,12 +26,12 @@
   "error_54a0e8": "錯誤",
   "untrusted_log_text_192942": "不可信的日誌文本",
   "no_measured_components_6f4369": "沒有已測量的元件。",
-  "domain_value1_value2_ee9534": "Domain: {value1}@{value2}",
-  "compose_value3_service_87ae79": "Compose {value3} service",
-  "prev_value1_8d66fe": "(prev {value1})",
-  "logs_value1_306798": "Logs: {value1}",
+  "domain_value1_value2_ee9534": "網域：{value1}@{value2}",
+  "compose_value3_service_87ae79": "Compose {value3} 服務",
+  "prev_value1_8d66fe": "（先前為 {value1}）",
+  "logs_value1_306798": "日誌：{value1}",
   "deployment_aee50b": "部署",
-  "deployments_01366d": "部署s",
+  "deployments_01366d": "部署",
   "expand_workers_c57c47": "展開工作程序",
   "collapse_workers_7a9ec3": "摺疊工作程序",
   "exact_recorded_container_a9b79f": " · 精確記錄的容器",
@@ -40,14 +40,14 @@
   "containerCount": {
     "argument": "count",
     "forms": {
-      "one": "{count} container",
-      "other": "{count} containers"
+      "one": "{count} 個容器",
+      "other": "{count} 個容器"
     }
   },
   "apply_97a5e4": "應用",
   "workers_7a1ec9": "工作程序",
   "my_app_4c9a75": "my-app",
-  "lowercase_dns_label_3dbe17": "lowercase DNS label",
+  "lowercase_dns_label_3dbe17": "小寫 DNS 標籤",
   "logs_98f38f": "日誌",
   "rollback_da2548": "回滾",
   "remove_deployment_keep_data_b46030": "移除部署 — 保留資料",
@@ -55,8 +55,8 @@
   "deploymentCount": {
     "argument": "count",
     "forms": {
-      "one": "{count} 部署",
-      "other": "{count} 部署s"
+      "one": "{count} 個部署",
+      "other": "{count} 個部署"
     }
   }
 }

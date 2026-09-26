@@ -26,10 +26,10 @@
   "error_54a0e8": "오류",
   "untrusted_log_text_192942": "신뢰할 수 없는 로그 텍스트",
   "no_measured_components_6f4369": "측정된 구성 요소가 없습니다.",
-  "domain_value1_value2_ee9534": "Domain: {value1}@{value2}",
-  "compose_value3_service_87ae79": "Compose {value3} service",
-  "prev_value1_8d66fe": "(prev {value1})",
-  "logs_value1_306798": "Logs: {value1}",
+  "domain_value1_value2_ee9534": "도메인: {value1}@{value2}",
+  "compose_value3_service_87ae79": "Compose {value3} 서비스",
+  "prev_value1_8d66fe": "(이전: {value1})",
+  "logs_value1_306798": "로그: {value1}",
   "deployment_aee50b": "배포",
   "deployments_01366d": "배포",
   "expand_workers_c57c47": "작업자 펼치기",
@@ -40,14 +40,14 @@
   "containerCount": {
     "argument": "count",
     "forms": {
-      "one": "{count} container",
-      "other": "{count} containers"
+      "one": "컨테이너 {count}개",
+      "other": "컨테이너 {count}개"
     }
   },
   "apply_97a5e4": "적용",
   "workers_7a1ec9": "작업자",
   "my_app_4c9a75": "my-app",
-  "lowercase_dns_label_3dbe17": "lowercase DNS label",
+  "lowercase_dns_label_3dbe17": "소문자 DNS 레이블",
   "logs_98f38f": "로그",
   "rollback_da2548": "롤백",
   "remove_deployment_keep_data_b46030": "배포 제거 — 데이터 유지",
@@ -55,8 +55,8 @@
   "deploymentCount": {
     "argument": "count",
     "forms": {
-      "one": "{count} deployment",
-      "other": "{count} deployments"
+      "one": "배포 {count}개",
+      "other": "배포 {count}개"
     }
   }
 }

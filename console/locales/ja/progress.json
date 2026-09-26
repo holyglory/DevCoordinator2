@@ -26,11 +26,11 @@
   "plan_progress_bfa53d": "計画の進捗",
   "open_tasks_87cfa1": "未完了タスク",
   "compared_with_the_previous_matching_period_value_8b4a50": "前回の対応する期間との比較（{value1}）",
-  "value2_planned_lines_added_means_value3_value4_v_765cc7": "{value2}. 追加した計画行数 means {value3}. {value4}. {value5}. {value6}.",
-  "previous_value3_11ac0f": "Previous {value3}",
-  "aligned_hour": "Aligned hourly evidence · UTC",
-  "aligned_day": "Aligned daily evidence · UTC",
-  "aligned_week": "Aligned weekly evidence · UTC",
+  "value2_planned_lines_added_means_value3_value4_v_765cc7": "{value2}。追加した計画行数とは、{value3}を指します。{value4}。{value5}。{value6}。",
+  "previous_value3_11ac0f": "前期間：{value3}",
+  "aligned_hour": "時間単位で揃えた証拠 · UTC",
+  "aligned_day": "日単位で揃えた証拠 · UTC",
+  "aligned_week": "週単位で揃えた証拠 · UTC",
   "no_recorded_movement_in_this_period_59cf50": "この期間に記録された変化はありません",
   "open_full_plan_303994": "完全な計画を開く →",
   "open_selected_in_plan_a6478f": "計画で選択項目を開く",
@@ -48,20 +48,20 @@
   "unestimatedTasks": {
     "argument": "count",
     "forms": {
-      "one": "{count} task has no estimate",
-      "other": "{count} tasks have no estimate"
+      "one": "見積もりのないタスク {count} 件",
+      "other": "見積もりのないタスク {count} 件"
     }
   },
   "remainingTasks": {
     "argument": "count",
     "forms": {
-      "one": "{count} task remains",
-      "other": "{count} tasks remain"
+      "one": "残り {count} 件のタスク",
+      "other": "残り {count} 件のタスク"
     }
   },
   "allEstimated": "残りのすべてのタスクに見積もりがあります",
   "targetRecorded": "リリース目標日を記録しました",
-  "targetMissing": "いいえ release target date is recorded",
+  "targetMissing": "リリースの目標日は記録されていません",
   "provisional": "この日付は暫定です。見積もりと提供の証拠が改善すると、より信頼できる日付になります。",
   "reason_no_planned_release": "提供範囲を見積もる前にリリースを計画してください。",
   "reason_insufficient_completion_history": "進捗がリリース予測を支えられるよう、さらに完了作業が必要です。",

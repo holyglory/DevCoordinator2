@@ -1,3 +1,37 @@
+# Localization interim integration — 2026-09-26
+
+Final localization handoff: incomplete. The earlier audits below are retained
+as historical evidence; they do not certify the current integrated snapshot.
+
+The preview now integrates current main's Sketch set annotation behavior and
+adds translated full messages for its new controls, performance totals and
+container-removal actions. The current source catalog contains 1,258 messages.
+English, Ukrainian, Simplified Chinese, Traditional Chinese, Japanese and
+Korean have complete fragments for this snapshot. Other catalogs are preserved
+as drafts, with their remaining work tracked by pfdc432072d9d03e4.
+
+Fresh verification under /var/tmp/dc2-localization/recovery-20260926/:
+
+- Switching journey: 201 checks, zero failures.
+- Each of uk, zh-Hans, zh-Hant, ja and ko: 313 route checks, zero failures.
+- Edge suite: 22 passed. Focused runtime/workspace/static tests: 12 passed.
+- Full Console pass: stopped at the evidence-inspector toggle being covered by
+  its open panel (verify.mjs:1856); p6eb962256c0f2445 remains open. The initial
+  capacity-field selector ambiguity was corrected to the named capacity input.
+
+English equality was reviewed rather than suppressed: Telegram and language-tag
+examples remain verbatim. CPU, SHA-256, TTL, the product name, example app slug
+and format-only templates are also intentional. The filtered content audit
+therefore reports two legitimate matches for each translated preview locale.
+
+Rendered inspection still finds unmarked English Plan subnavigation, estimate
+summaries and elaboration actions. They are application text, not translated
+user data; p31a0a4fde12e6d10 remains open. Route tests validate existing bindings,
+not completeness of text extraction. A fresh paired Product Design audit and
+the unfinished language rollout remain required before final handoff.
+
+---
+
 # Console localization language selector audit
 
 final result: passed
@@ -497,3 +531,90 @@ final result: passed
 ## Follow-up polish
 
 - No follow-up is required for the requested dashboard.
+
+---
+
+# Design QA: Combined Sketch Review and Annotation Workspace — 2026-09-23
+
+final result: passed
+
+## Audit scope
+
+This audit covers the selected Option 3 visual direction, “Annotation-first comparison tray,” and the implemented Sketch set review route:
+
+- Source target: [approved Option 3](design-qa/sketch-annotation/approved-option-3.png)
+- Implementation capture: [rendered Option 3 state](design-qa/sketch-annotation/implementation-option-3-1263x1246.png)
+- Paired comparison: [source and implementation side by side](design-qa/sketch-annotation/comparison-option-3.png)
+- Viewport: 1263 × 1246 CSS pixels, device scale factor 1
+- Route/state: Sketches → set review → Option 3 active
+- Theme: existing Console light shell with dark retained review content
+- Source decision: `DC2-SKETCH-ANNOTATION-WORKSPACE-SELECTED-20260923`
+
+The source target was opened and inspected before comparing it with the rendered implementation. The implementation was captured from the Console code through a local edge and daemon fixture that served retained sketch images and exercised the same annotation and decision APIs.
+
+## User goal and accessibility target
+
+The owner needs to compare all three generated directions, mark the active image, write comments that attach to the active or selected options, and change each option’s Keep/Reject/Undecided decision without losing the set context.
+
+The audit target is a keyboard-operable, readable review flow with visible focus, clear per-image state, usable mobile reflow, and no hidden or inert core controls.
+
+## Strengths
+
+- The active image remains central while the bottom tray keeps all three options available.
+- The selected option, retained annotations, and per-image decision are visible together.
+- The annotation toolbar uses the existing evidence tools and preserves the project’s established visual language.
+- Comments and decisions stay in the same review route; switching options does not leave the set.
+- The mobile layout keeps the three-option tray and exposes a bottom capture-details control.
+- The source and implementation share the same hierarchy: set context, active review canvas, comments/inspection, and all-option comparison.
+
+## UX and accessibility audit
+
+The combined Product Design audit found no actionable P0, P1, or P2 findings in the reviewed states.
+
+- Task entry: the existing “Review set” action opens the combined workspace directly.
+- Hierarchy: the active sketch is the largest surface; the option tray is secondary but persistent.
+- Interaction continuation: opening a set focuses the annotation canvas; switching an option updates the active title, image, annotations, and decision controls.
+- Persistence: saved marks and comments return through the retained annotation API; decisions use revision-checked writes.
+- Keyboard behavior: the canvas is focusable, the inspector has a responsive toggle, and the existing decision controls remain keyboard targets.
+- Responsive behavior: the formal verifier checked 624 × 928 and 1280 × 900 required cells.
+- Contrast and geometry: the formal verifier found 0 critical findings across all 4 cells. It retained only 3 non-blocking media/theme warnings for the image-heavy review surface.
+
+## Interaction evidence
+
+The fresh end-to-end browser journey passed at 624 × 928 and 1280 × 900:
+
+1. Loaded all three retained images in the Sketches collection.
+2. Opened the combined set annotation workspace.
+3. Confirmed the annotation toolbar, active canvas, inspector, three option tiles, and three decision controls.
+4. Drew a rectangle mark and posted a comment through the rendered form.
+5. Switched to another option while preserving the set route.
+6. Changed the active option decision and observed the revision-backed result.
+7. Completed the journey with no browser or page errors.
+
+The focused Rust sketch lifecycle test also passed. The current retry used the designated bulk target directory after the first attempt ran out of `/tmp` space during linking.
+
+## Comparison notes
+
+The implementation retains the established Console repository shell around the selected mockup direction. That shell is an intentional project-context requirement; the selected visual direction is applied to the set review workspace inside it. The source mockup uses illustrative sample images, while the implementation renders the retained sketch bytes supplied by the Coordinator.
+
+No P0, P1, or P2 visual or interaction difference remains.
+
+## Evidence and limits
+
+- Formal Web UI run: `formal-web-ui-muer939z-f8d6fcca`
+- Formal result: 4/4 required cells passed, 0 critical findings
+- Manual screenshot review: `/tmp/dc2-sketch-annotation-manual-review-latest.json`
+- Browser journey fixture: `/tmp/dc2-sketch-annotation-e2e.mjs`
+- The audit used a local Coordinator edge/daemon fixture for safe real API and persistence behavior. The public authenticated Console tab was not mutated during verification.
+- Full WCAG conformance is outside a screenshot audit; keyboard and geometry checks were exercised, while assistive-technology output requires a dedicated screen-reader pass.
+
+## Final checklist
+
+- [x] Approved source target opened and inspected
+- [x] Matched implementation screenshot captured
+- [x] Side-by-side comparison captured
+- [x] UX and accessibility review completed
+- [x] Mobile and desktop states checked
+- [x] Rendered annotation, comment, and decision journey passed
+- [x] No actionable P0/P1/P2 findings remain
+- [x] Final result: passed

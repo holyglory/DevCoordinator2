@@ -63,15 +63,15 @@
   "value1_more_activities_a0186b": {
     "argument": "value1",
     "forms": {
-      "one": "{value1} more activity",
-      "other": "{value1} more activities"
+      "one": "추가 활동 {value1}개",
+      "other": "추가 활동 {value1}개"
     }
   },
   "value1_revisions_ed2971": {
     "argument": "value1",
     "forms": {
-      "one": "{value1} revision",
-      "other": "{value1} revisions"
+      "one": "리비전 {value1}개",
+      "other": "리비전 {value1}개"
     }
   },
   "activity_38da15": "활동",
@@ -84,12 +84,12 @@
   "unknown_kind_2a60d8": "알 수 없는 종류",
   "review_in_progress_bf2daa": " · 검토 진행 중",
   "incomplete_measurement_3407ad": "불완전한 측정",
-  "value1_total_value2_value3_0a3988": "{value1} total: {value2}{value3}",
+  "value1_total_value2_value3_0a3988": "{value1} 합계: {value2}{value3}",
   "value1_attributed_outcomes_6e3dca": {
     "argument": "value1",
     "forms": {
-      "one": "{value1} attributed outcome",
-      "other": "{value1} attributed outcomes"
+      "one": "사용량이 귀속된 결과 {value1}개",
+      "other": "사용량이 귀속된 결과 {value1}개"
     }
   },
   "review_usage_value1_a681eb": "검토 사용량 · {value1}",
@@ -107,5 +107,10 @@
   "status_unchanged": "변경 없음",
   "status_inconclusive": "판단 불가",
   "tokensByActivity": "활동별 토큰",
-  "tokensByKind": "토큰 by Plan item kind"
+  "tokensByKind": "계획 항목 유형별 토큰 수",
+  "unattributedWork": "일부 작업에는 연결된 성과가 기록되어 있지 않습니다.",
+  "reviewScopeTotal": "이 검토의 총 토큰 수: {tokens}",
+  "periodScopeTotal": "이 기간의 총 토큰 수: {tokens}",
+  "reviewTotalLabel": "이 검토의 합계",
+  "periodTotalLabel": "이 기간의 합계"
 }

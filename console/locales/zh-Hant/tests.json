@@ -100,14 +100,14 @@
   "stop_run_b7ec68": "停止執行",
   "run_again_3e310b": "再次執行",
   "not_recorded_b37c78": "未記錄",
-  "value1_of_value2_882c45": "{value1} of {value2}",
+  "value1_of_value2_882c45": "{value1} / {value2}",
   "loading_screenshot_e0fd7b": "正在載入截圖…",
   "preview_value1_cb5dab": "預覽 {value1}",
   "browse_all_value1_screenshots_81fcf6": {
     "argument": "value1",
     "forms": {
-      "one": "Browse the {value1} screenshot",
-      "other": "Browse all {value1} screenshots"
+      "one": "瀏覽全部 {value1} 張螢幕擷取畫面",
+      "other": "瀏覽全部 {value1} 張螢幕擷取畫面"
     }
   },
   "earlier_run_value1_68bdba": "較早執行 · {value1}",

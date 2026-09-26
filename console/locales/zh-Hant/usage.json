@@ -24,14 +24,14 @@
   "data_completeness_c7114d": "資料完整性",
   "counting_method_7a480a": "統計方法",
   "provider_reported_total_tokens_cached_input_and__9908f6": "服務提供方報告的詞元總數；快取輸入與推理詞元均包含在總數中。",
-  "schema_value19_taxonomy_value20_cdddf8": "Schema {value19} · taxonomy {value20}",
+  "schema_value19_taxonomy_value20_cdddf8": "資料結構版本 {value19} · 分類體系版本 {value20}",
   "value21_environments_that_supplied_no_data_and_u_cbbc39": "{value21}。沒有資料或包含未測量值的環境會被排除，不會視為零。",
   "token_subsets_unavailable_4cec86": "詞元子集無法使用。",
   "unknownIntervals": {
     "argument": "count",
     "forms": {
-      "one": "{count} unknown interval",
-      "other": "{count} unknown intervals"
+      "one": "{count} 個未知區間",
+      "other": "{count} 個未知區間"
     }
   },
   "about_codex_environments_4a2e3e": "關於 Codex 環境",

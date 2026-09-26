@@ -63,15 +63,15 @@
   "value1_more_activities_a0186b": {
     "argument": "value1",
     "forms": {
-      "one": "{value1} more activity",
-      "other": "{value1} more activities"
+      "one": "ほか {value1} 件の活動",
+      "other": "ほか {value1} 件の活動"
     }
   },
   "value1_revisions_ed2971": {
     "argument": "value1",
     "forms": {
-      "one": "{value1} revision",
-      "other": "{value1} revisions"
+      "one": "リビジョン {value1} 件",
+      "other": "リビジョン {value1} 件"
     }
   },
   "activity_38da15": "アクティビティ",
@@ -84,12 +84,12 @@
   "unknown_kind_2a60d8": "不明な種類",
   "review_in_progress_bf2daa": " · レビュー中",
   "incomplete_measurement_3407ad": "測定が不完全",
-  "value1_total_value2_value3_0a3988": "{value1} total: {value2}{value3}",
+  "value1_total_value2_value3_0a3988": "{value1}の合計：{value2}{value3}",
   "value1_attributed_outcomes_6e3dca": {
     "argument": "value1",
     "forms": {
-      "one": "{value1} attributed outcome",
-      "other": "{value1} attributed outcomes"
+      "one": "帰属先が特定された成果 {value1} 件",
+      "other": "帰属先が特定された成果 {value1} 件"
     }
   },
   "review_usage_value1_a681eb": "レビューの使用量 · {value1}",
@@ -107,5 +107,10 @@
   "status_unchanged": "変更なし",
   "status_inconclusive": "結論未確定",
   "tokensByActivity": "アクティビティ別トークン",
-  "tokensByKind": "トークン by Plan item kind"
+  "tokensByKind": "計画項目の種類別トークン数",
+  "unattributedWork": "一部の作業には、対応する成果が記録されていません。",
+  "reviewScopeTotal": "このレビューの合計トークン数：{tokens}",
+  "periodScopeTotal": "この期間の合計トークン数：{tokens}",
+  "reviewTotalLabel": "このレビューの合計",
+  "periodTotalLabel": "この期間の合計"
 }

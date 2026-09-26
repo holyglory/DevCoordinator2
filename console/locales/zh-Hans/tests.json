@@ -100,14 +100,14 @@
   "stop_run_b7ec68": "停止运行",
   "run_again_3e310b": "再次运行",
   "not_recorded_b37c78": "未记录",
-  "value1_of_value2_882c45": "{value1} of {value2}",
+  "value1_of_value2_882c45": "{value1} / {value2}",
   "loading_screenshot_e0fd7b": "正在加载截图…",
   "preview_value1_cb5dab": "预览 {value1}",
   "browse_all_value1_screenshots_81fcf6": {
     "argument": "value1",
     "forms": {
-      "one": "Browse the {value1} screenshot",
-      "other": "Browse all {value1} screenshots"
+      "one": "浏览全部 {value1} 张截图",
+      "other": "浏览全部 {value1} 张截图"
     }
   },
   "earlier_run_value1_68bdba": "较早运行 · {value1}",
