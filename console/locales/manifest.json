@@ -96,7 +96,7 @@
         "ME"
       ],
       "direction": "ltr",
-      "status": "draft",
+      "status": "enabled",
       "files": {
         "common": [
           "sq/common.json"
@@ -161,7 +161,7 @@
         "FR"
       ],
       "direction": "ltr",
-      "status": "draft",
+      "status": "enabled",
       "files": {
         "common": [
           "ca/common.json"
@@ -224,7 +224,7 @@
         "AM"
       ],
       "direction": "ltr",
-      "status": "draft",
+      "status": "enabled",
       "files": {
         "common": [
           "hy/common.json"
@@ -287,7 +287,7 @@
         "AZ"
       ],
       "direction": "ltr",
-      "status": "draft",
+      "status": "enabled",
       "files": {
         "common": [
           "az/common.json"
@@ -545,7 +545,7 @@
         "BA"
       ],
       "direction": "ltr",
-      "status": "draft",
+      "status": "enabled",
       "files": {
         "common": [
           "bs/common.json"
@@ -609,7 +609,7 @@
         "BA"
       ],
       "direction": "ltr",
-      "status": "draft",
+      "status": "enabled",
       "files": {
         "common": [
           "hr/common.json"
@@ -739,7 +739,7 @@
         "ME"
       ],
       "direction": "ltr",
-      "status": "draft",
+      "status": "enabled",
       "files": {
         "common": [
           "sr-Latn/common.json"
