@@ -26,6 +26,7 @@ pub struct Set {
 pub struct AlarmCapability {
     pub alarm_namespace: String,
     pub capability_revision: u8,
+    /// Absolute UTC lease expiry in Unix milliseconds.
     pub lease_expires_at: u64,
 }
 
@@ -38,6 +39,7 @@ pub struct Register {
     pub mode: DeliveryMode,
     pub alarm_namespace: String,
     pub capability_revision: u8,
+    /// Absolute UTC lease expiry in Unix milliseconds.
     pub lease_expires_at: u64,
 }
 #[derive(Clone, Copy, Debug, JsonSchema, Serialize, Deserialize)]
