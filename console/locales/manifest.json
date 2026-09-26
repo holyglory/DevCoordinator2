@@ -993,7 +993,7 @@
         "CZ"
       ],
       "direction": "ltr",
-      "status": "draft",
+      "status": "enabled",
       "files": {
         "common": [
           "cs/common.json"
@@ -1056,7 +1056,7 @@
         "DK"
       ],
       "direction": "ltr",
-      "status": "draft",
+      "status": "enabled",
       "files": {
         "common": [
           "da/common.json"
@@ -1246,7 +1246,7 @@
         "FI"
       ],
       "direction": "ltr",
-      "status": "draft",
+      "status": "enabled",
       "files": {
         "common": [
           "sv/common.json"
@@ -1565,7 +1565,7 @@
         "SM"
       ],
       "direction": "ltr",
-      "status": "draft",
+      "status": "enabled",
       "files": {
         "common": [
           "it/common.json"
@@ -2133,7 +2133,7 @@
         "NO"
       ],
       "direction": "ltr",
-      "status": "draft",
+      "status": "enabled",
       "aliases": [
         "no"
       ],
@@ -2199,7 +2199,7 @@
         "NO"
       ],
       "direction": "ltr",
-      "status": "draft",
+      "status": "enabled",
       "files": {
         "common": [
           "nn/common.json"
@@ -2262,7 +2262,7 @@
         "PL"
       ],
       "direction": "ltr",
-      "status": "draft",
+      "status": "enabled",
       "files": {
         "common": [
           "pl/common.json"
@@ -2327,7 +2327,7 @@
         "AO"
       ],
       "direction": "ltr",
-      "status": "draft",
+      "status": "enabled",
       "files": {
         "common": [
           "pt/common.json"
@@ -2518,7 +2518,7 @@
         "CO"
       ],
       "direction": "ltr",
-      "status": "draft",
+      "status": "enabled",
       "files": {
         "common": [
           "es/common.json"
