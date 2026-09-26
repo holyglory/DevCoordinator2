@@ -2634,7 +2634,10 @@
         "performance": [
           "rm/performance.json"
         ]
-      }
+      },
+      "intlFallbacks": [
+        "en"
+      ]
     },
     {
       "tag": "uk",

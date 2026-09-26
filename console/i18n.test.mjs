@@ -3,7 +3,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
-import { acceptLanguages, browserLocales, canonicalLocale, createCatalog, formatMessage, localeCookie, matchLocale, recentLocales } from './i18n-core.mjs';
+import { acceptLanguages, browserLocales, canonicalLocale, createCatalog, formatMessage, intlLocales, localeCookie, matchLocale, recentLocales } from './i18n-core.mjs';
 import { contaminationReason } from '../scripts/locales/audit-contamination.mjs';
 const manifest = JSON.parse(await readFile(new URL('./locales/manifest.json', import.meta.url)));
 const fixture = { ...manifest, locales: manifest.locales.map(entry => ({ ...entry, status: 'enabled' })) };
@@ -52,6 +52,19 @@ test('plural messages follow the selected language without evaluating markup', (
   assert.equal(formatMessage(message, { count: 5 }, 'uk'), '5 задач');
   assert.equal(formatMessage('Name: {name}', { name: '<img onerror=alert(1)>' }), 'Name: <img onerror=alert(1)>');
   assert.throws(() => formatMessage('Name: {name}', {}), /Missing/);
+});
+test('declared Intl fallbacks format unsupported languages without changing English fallback grammar', async () => {
+  const m={sourceLocale:'en',locales:[{tag:'en',files:{shell:['en']}},{tag:'qaa',intlFallbacks:['uk'],files:{shell:['qaa']}}]};
+  const source={number:'Value: {value}',missing:{argument:'count',forms:{one:'{count} item',other:'{count} items'}}};
+  const translated={number:'Значення: {value}'};
+  const catalog=createCatalog(m,async file=>file==='en'?source:translated);
+  await catalog.ensure('qaa',['shell']);
+  assert.deepEqual(intlLocales('qaa',m),['qaa','uk','en']);
+  assert.equal(catalog.message('qaa','shell.number',{value:1.5}),'Значення: 1,5');
+  assert.equal(catalog.message('qaa','shell.missing',{count:2}),'2 items');
+  assert.deepEqual(intlLocales('rm',manifest),['rm','en']);
+  m.locales[1].intlFallbacks=['uk','uk','../de',null];
+  assert.deepEqual(intlLocales('qaa',m),['qaa','uk','en']);
 });
 test('multiple fragments merge, concurrent reads deduplicate, and failures remain retryable', async () => {
   let failure = true; let reads = 0;
