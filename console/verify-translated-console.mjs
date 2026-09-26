@@ -41,6 +41,15 @@ export async function verifyTranslatedConsole({ page, check, baseUrl, output, th
       const keys = { component: 'component_ce54f0', summary: 'summary_8e76a9', expected: 'expected', actual: 'actual', steps: 'steps_1de3df' };
       verify('Bug report field labels are localized', fields.length === 5 && fields.every(item => item.text === catalogs.bugs[keys[item.field]]));
     }
+    if (route === 'health') {
+      const details = page.locator('.hi-repo-details').first();
+      await details.locator('summary').click();
+      const labels = await page.locator('.hi-repo-row [data-label]').evaluateAll(nodes => nodes.slice(0,3).map(node => node.dataset.label));
+      verify('Health responsive metric names are localized', JSON.stringify(labels) === JSON.stringify([catalogs.health.cpu_db9a4c,catalogs.health.memory_c3963a,catalogs.health.storage_a69c4d]));
+      const metrics = await details.locator('.hi-checkout small').first().innerText();
+      verify('Health expanded checkout metrics are localized', metrics.includes(catalogs.health.memory_c3963a) && metrics.includes(catalogs.health.storage_a69c4d), metrics);
+      await page.screenshot({path:path.join(output,`translated-health-${locale}-${theme}-${viewport.width}.png`),mask:[page.locator('#who-email')]});
+    }
     if (route.startsWith('plan/')) {
       const tabs = await page.locator('#workspace-work-views a').evaluateAll(nodes => nodes.map(node => ({ view: node.getAttribute('href').split('/')[1], text: node.textContent })));
       verify('Plan secondary navigation is localized', tabs.length > 0 && tabs.every(tab => tab.text === catalogs.shell['view_' + tab.view]));
