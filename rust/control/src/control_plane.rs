@@ -267,6 +267,10 @@ impl ControlPlane {
             database.clone(),
             artifacts.clone(),
             config.base_domain.clone(),
+        )
+        .with_native_console(
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."),
+            SOURCE_COMMIT.to_owned(),
         );
         let tests = TestLifecycle::new(
             config.clone(),

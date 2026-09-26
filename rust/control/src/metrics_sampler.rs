@@ -649,13 +649,12 @@ impl MetricSampler {
                 () = tokio::time::sleep(StdDuration::from_millis(100)) => {}
             }
         }
-        if let Some(task) = storage_task {
-            if tokio::time::timeout(StdDuration::from_secs(5), task)
+        if let Some(task) = storage_task
+            && tokio::time::timeout(StdDuration::from_secs(5), task)
                 .await
                 .is_err()
-            {
-                warn!("storage sampler did not stop within shutdown grace period");
-            }
+        {
+            warn!("storage sampler did not stop within shutdown grace period");
         }
         let _ = self.flush();
     }
