@@ -93,6 +93,7 @@ impl Cli {
             Command::Telegram { command } => command.into_invocation(),
             Command::Event { command } => command.into_invocation(),
             Command::Repository { command } => command.into_invocation(),
+            Command::Server { command } => command.into_invocation(),
             Command::Plan { command } => command.into_invocation(),
             Command::Task { command } => command.into_invocation(),
             Command::Release { command } => command.into_invocation(),
@@ -220,6 +221,10 @@ enum Command {
     Repository {
         #[command(subcommand)]
         command: RepositoryCommand,
+    },
+    Server {
+        #[command(subcommand)]
+        command: ServerCommand,
     },
     Plan {
         #[command(subcommand)]
@@ -1031,6 +1036,54 @@ enum RepositoryCommand {
         #[arg(long)]
         note: String,
     },
+}
+
+#[derive(Debug, Subcommand)]
+enum ServerCommand {
+    Register(ServerRegisterArgs),
+    List {
+        #[arg(long)]
+        project: Option<String>,
+        #[arg(long)]
+        name: Option<String>,
+    },
+    Stop(ServerStopArgs),
+}
+
+#[derive(Debug, Args)]
+struct ServerRegisterArgs {
+    #[arg(long)]
+    agent: String,
+    #[arg(long)]
+    project: String,
+    #[arg(long)]
+    name: String,
+    #[arg(long)]
+    role: String,
+    #[arg(long)]
+    cwd: String,
+    #[arg(long)]
+    argv: String,
+    #[arg(long)]
+    pid: u32,
+    #[arg(long)]
+    port: u16,
+    #[arg(long, default_value = "127.0.0.1")]
+    host: String,
+    #[arg(long)]
+    health_url: String,
+    #[arg(long, default_value_t = 5)]
+    health_timeout: u16,
+}
+
+#[derive(Debug, Args)]
+struct ServerStopArgs {
+    #[arg(long)]
+    agent: String,
+    #[arg(long)]
+    project: String,
+    #[arg(long)]
+    name: String,
 }
 
 #[derive(Debug, Subcommand)]
@@ -2030,6 +2083,45 @@ impl RepositoryCommand {
             } => remote(
                 "repository.unarchive",
                 json!({"repository_id":repository_id,"note":note}),
+            ),
+        }
+    }
+}
+
+impl ServerCommand {
+    fn into_invocation(self) -> Result<Invocation, CliValidationError> {
+        match self {
+            Self::Register(args) => {
+                let argv: Vec<String> = serde_json::from_str(&args.argv).map_err(|error| {
+                    invalid(format!("--argv must be a JSON string array: {error}"))
+                })?;
+                remote(
+                    "server.register",
+                    json!({
+                        "agent": args.agent,
+                        "project": args.project,
+                        "name": args.name,
+                        "role": args.role,
+                        "cwd": args.cwd,
+                        "argv": argv,
+                        "pid": args.pid,
+                        "port": args.port,
+                        "host": args.host,
+                        "health_url": args.health_url,
+                        "health_timeout": args.health_timeout,
+                    }),
+                )
+            }
+            Self::List { project, name } => {
+                remote("server.list", json!({"project": project, "name": name}))
+            }
+            Self::Stop(args) => remote(
+                "server.stop",
+                json!({
+                    "agent": args.agent,
+                    "project": args.project,
+                    "name": args.name,
+                }),
             ),
         }
     }
