@@ -4926,9 +4926,11 @@ mod tests {
             "the user selects one displayed option",
         );
         assert!(
-            find_app_wide_policy_violations(
-                &replace_policy_section(&policy, "UI design admission gate", &old_selection)
-            )
+            find_app_wide_policy_violations(&replace_policy_section(
+                &policy,
+                "UI design admission gate",
+                &old_selection
+            ))
             .is_empty(),
             "equivalent selection wording should remain valid"
         );
