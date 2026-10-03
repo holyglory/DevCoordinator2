@@ -119,14 +119,18 @@
       const read=++s.read, epoch=s.epoch;
       s.loading=true;s.error=null;draw();
       try {
-        const result=await api('storage.inventory',{repository_id:s.repository||null,filesystem_id:s.filesystem||null,kind:s.kind||null,safety:s.safety||null,query:s.query||null,offset:more?s.next:0,limit:100});
+        const [inventoryRead, policyRead] = await Promise.allSettled([
+          api('storage.inventory',{repository_id:s.repository||null,filesystem_id:s.filesystem||null,kind:s.kind||null,safety:s.safety||null,query:s.query||null,offset:more?s.next:0,limit:100}),
+          api('storage.policy.get',{repository_id:s.repository||null}),
+        ]);
+        if (inventoryRead.status === 'rejected') throw inventoryRead.reason;
+        const result=inventoryRead.value;
         if(read!==s.read||epoch!==s.epoch||s.signal.aborted)return;
         s.inventory=result;s.rows=more?[...s.rows,...result.artifacts]:result.artifacts;s.total=result.total;s.next=result.next_offset;
         for(const [id,revision] of s.selected){const row=s.rows.find(r=>r.artifact_id===id);if(!row?.deletable||row.revision!==revision)s.selected.delete(id);}
         if(!current())s.detail=null;
+        if(policyRead.status === 'fulfilled') s.policy=policyRead.value;
         s.loading=false;draw();
-        const policy=await api('storage.policy.get',{repository_id:s.repository||null});
-        if(read===s.read&&epoch===s.epoch){s.policy=policy;draw();}
       }catch(error){s.loading=false;fault(error);}
     }
     async function prepare() {
