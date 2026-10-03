@@ -120,7 +120,7 @@
       s.loading=true;s.error=null;draw();
       try {
         const [inventoryRead, policyRead] = await Promise.allSettled([
-          api('storage.inventory',{repository_id:s.repository||null,filesystem_id:s.filesystem||null,kind:s.kind||null,safety:s.safety||null,query:s.query||null,offset:more?s.next:0,limit:100}),
+          api('storage.inventory',{repository_id:s.repository||null,filesystem_id:s.filesystem||null,kind:s.kind||null,safety:s.safety||null,query:s.query||null,offset:more?s.next:0,limit:50}),
           api('storage.policy.get',{repository_id:s.repository||null}),
         ]);
         if (inventoryRead.status === 'rejected') throw inventoryRead.reason;
