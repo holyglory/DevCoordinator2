@@ -86,6 +86,9 @@
         ],
         "performance": [
           "en/performance.json"
+        ],
+        "storage": [
+          "en/storage.json"
         ]
       }
     },
@@ -3028,6 +3031,10 @@
   ],
   "featureNamespaces": {
     "tickets": {
+      "sourceLocale": "en",
+      "status": "source-only"
+    },
+    "storage": {
       "sourceLocale": "en",
       "status": "source-only"
     }

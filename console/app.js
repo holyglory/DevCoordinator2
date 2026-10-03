@@ -307,6 +307,7 @@ function currentDestinationHeading() {
     decisions: ['Decisions', '#/decisions'], sketches: ['Sketches', '#/sketches'],
     glossary: ['Glossary', '#/glossary'],
     tests: ['Tests', '#/tests'], health: ['Health', '#/health'],
+    storage: ['Storage', '#/storage'],
     bugs: ['Bugs', '#/bugs'], admin: ['Administration', '#/admin'], requests: ['Feature requests', '#/requests'],
   };
   const destination = destinations[view] || destinations.deployments;
@@ -2971,6 +2972,7 @@ function healthStorageBreakdown(storage) {
   return `<dl class="health-storage-breakdown">${entries.map(([name, value]) => `<div><dt>${window.DevCoordinatorI18n.computedMarkup(() => healthLabel(name, HEALTH_STORAGE_LABELS))}</dt><dd>${window.DevCoordinatorI18n.computedMarkup(() => bytes(value))}</dd></div>`).join('')}</dl>`;
 }
 const healthPage = window.DevCoordinatorHealth.create({ api, esc, bytes, pct, spark, chart, pageHeading, icon: planIcon });
+const storagePage = window.DevCoordinatorStorage.create({api,esc,bytes,icon:planIcon});
 const viewHealth = guard(async (sub) => sub === 'containers' ? viewContainers() : healthPage.show());
 
 
@@ -4872,6 +4874,7 @@ async function render() {
   main.classList.toggle('progress-page', view === 'progress' && !!arg);
   main.classList.toggle('performance-page', view === 'performance');
   main.classList.toggle('health-page', view === 'health');
+  main.classList.toggle('storage-page', view === 'storage');
   main.classList.toggle('tickets-page', view === 'requests');
   if (view !== 'requests') main.classList.remove('ticket-selected');
   main.classList.toggle('deployments-page', view === 'deployments' && !arg);
@@ -4907,6 +4910,7 @@ async function render() {
   if (view === 'tests') return viewTests(arg || null, route.settings);
   if (view === 'sketches') return viewSketches(arg, sketchQuery.get('sketch'), sketchQuery.get('set'));
   if (view === 'health') return viewHealth(arg);
+  if (view === 'storage') return storagePage.show(main,state.who?.administrator,signal);
   if (view === 'bugs') return viewBugs();
   if (view === 'requests') return window.DevCoordinatorTickets.mount(main, {api:(operation,params)=>api(operation,params,false),administrator:state.who?.administrator,signal});
   if (view === 'admin') return viewAdmin();
@@ -4927,6 +4931,7 @@ setupTopNavigation();
     state.who = await api('user.whoami', {});
     window.DevCoordinatorI18n.bind($('#who-email'), () => (state.who.identity || window.DevCoordinatorI18n.t("common.local_25bf8e")));
     $('#nav-admin').hidden = !state.who.administrator;
+    $('#nav-storage').hidden = !state.who.administrator;
   } catch (e) { if (e.code !== 'unauthenticated') setBanner(() => window.DevCoordinatorI18n.t("common.cannot_reach_the_coordinator_value1_7f685b", {value1: e.message})); }
   render();
 })();
