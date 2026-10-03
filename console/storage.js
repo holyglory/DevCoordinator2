@@ -41,7 +41,7 @@
             <label><span class="sr-only">${h('disk')}</span><select id="storage-disk"><option value="">${h('all_disks')}</option>${(s.inventory?.filesystems || []).map(f => `<option value="${esc(f.filesystem_id)}"${s.filesystem === f.filesystem_id ? ' selected' : ''}>${esc(f.label)}</option>`).join('')}</select></label>
             <label><span class="sr-only">${h('deletion_safety')}</span><select id="storage-safety"><option value="">${h('all_artifacts')}</option>${['safe','in_use','protected','needs_review','observing'].map(value => `<option value="${value}"${s.safety === value ? ' selected' : ''}>${h('safety_' + value)}</option>`).join('')}</select></label>
           </div>
-          <div class="storage-tools"><label><span class="sr-only">${h('type')}</span><select id="storage-kind"><option value="">${h('all_types')}</option>${['volume','container','image','build_cache','network','build_output','dependency_cache','worktree','backup','evidence','backing_directory','mount','unknown'].map(kind => `<option value="${kind}"${s.kind === kind ? ' selected' : ''}>${h('kind_' + kind)}</option>`).join('')}</select></label><button class="btn btn-small" id="storage-eligible"${s.rows.some(r => r.automatic_eligible) ? '' : ' disabled'}>${h('select_eligible')}</button><button class="btn btn-small" id="storage-history">${h('history')}</button></div>
+          <div class="storage-tools"><label><span class="sr-only">${h('type')}</span><select id="storage-kind"><option value="">${h('all_types')}</option>${['volume','container','image','build_cache','network','build_output','dependency_cache','worktree','backup','evidence','backing_directory','mount','unknown'].map(kind => `<option value="${kind}"${s.kind === kind ? ' selected' : ''}>${h('kind_' + kind)}</option>`).join('')}</select></label><button class="btn btn-small btn-primary" id="storage-clean"${s.rows.some(r => r.automatic_eligible && r.deletable) ? '' : ' disabled'}>${h('clean_eligible')}</button><button class="btn btn-small" id="storage-eligible"${s.rows.some(r => r.automatic_eligible) ? '' : ' disabled'}>${h('select_eligible')}</button><button class="btn btn-small" id="storage-history">${h('history')}</button></div>
           ${s.error ? `<div class="notice bad" role="alert">${esc(s.error)} <button class="btn btn-small" id="storage-retry">${h('retry')}</button></div>` : ''}
           ${s.inventory?.coverage_gaps.length ? `<div class="storage-coverage" role="status">${icon('info-circle')}<span>${h('coverage_gap')}</span></div>` : ''}
           ${s.job ? jobMarkup() : ''}
@@ -68,8 +68,9 @@
       const active = s.job && !terminal.has(s.job.state);
       const blockers = [...new Set(items.flatMap(item => item.blockers))];
       return `<aside class="storage-inspector" aria-label="${h('details')}" tabindex="-1"><header>${icon(row.kind === 'volume' ? 'database' : 'folder')}<div><h2>${esc(row.name)}</h2><p>${esc(row.repository_name || t('shared'))}</p></div><button class="btn storage-icon" id="storage-close" aria-label="${h('close')}">${icon('x')}</button></header>
-        <dl class="storage-facts"><div><dt>${h('size')}</dt><dd>${esc(bytes(row.allocated_bytes))}</dd></div><div><dt>${h('type')}</dt><dd>${h('kind_' + row.kind)}</dd></div><div><dt>${h('last_used')}</dt><dd>${esc(date(row.last_used_at_ms))}</dd></div><div><dt>${h('last_checked')}</dt><dd>${esc(date(row.verified_at_ms))}</dd></div></dl>
+        <dl class="storage-facts"><div><dt>${h('size')}</dt><dd>${esc(bytes(row.allocated_bytes))}</dd></div><div><dt>${h('type')}</dt><dd>${h('kind_' + row.kind)}</dd></div><div><dt>${h('ownership')}</dt><dd>${esc(row.ownership || t('unknown_ownership'))}</dd></div><div><dt>${h('last_used')}</dt><dd>${esc(date(row.last_used_at_ms))}</dd></div><div><dt>${h('last_checked')}</dt><dd>${esc(date(row.verified_at_ms))}</dd></div><div><dt>${h('scheduled_deletion')}</dt><dd>${esc(row.eligible_at_ms ? date(row.eligible_at_ms) : '—')}</dd></div></dl>
         <section><h3>${row.deletable ? h('why_safe') : h('why_keep')}</h3>${safety(row)}<ul class="storage-reasons">${row.reasons.map(code => `<li>${esc(reason(code))}</li>`).join('')}</ul>${row.eligible_at_ms && !row.automatic_eligible && row.deletable ? `<p class="muted">${h('automatic_after', {date:date(row.eligible_at_ms)})}</p>` : ''}</section>
+        ${row.dependencies?.length ? `<section><h3>${h('dependencies')}</h3><ul class="storage-dependencies">${row.dependencies.map(name => `<li>${esc(name)}</li>`).join('')}</ul></section>` : ''}
         ${selection.length && row.deletable && s.selected.has(row.artifact_id) ? `<section><h3>${h('selected', {count:selection.length})}<span>${esc(size(selection))}</span></h3>${s.plan ? `${dependencies(items)}${blockers.length ? `<ul class="storage-reasons storage-blockers">${blockers.map(code => `<li>${esc(reason(code))}</li>`).join('')}</ul>` : ''}` : `<p class="muted">${h('checking_selection')}</p>`}</section>
           <section class="storage-delete"><h3>${permanent ? h('permanent_title') : h('rebuildable_title')}</h3><p>${permanent ? h('permanent_body') : h('rebuildable_body')}</p><button class="btn btn-danger" id="storage-delete"${s.plan?.ready && !active ? '' : ' disabled'}>${icon('trash')}<span>${h('delete_selected')}</span><strong>${esc(size(selection))}</strong></button></section>` : ''}
         <div class="storage-inspector-actions"><button class="btn" id="storage-protect"${active ? ' disabled' : ''}>${icon('shield')}<span>${row.protected ? h('unprotect') : h('protect')}</span></button>${row.safety === 'needs_review' && row.reasons.every(r => ['ownership_unknown','disposal_not_authorized','owner_state_unverified'].includes(r)) ? `<button class="btn" id="storage-review">${h('review_ownership')}</button>` : ''}</div>
@@ -97,6 +98,7 @@
       $('#storage-scan').onclick = scan;
       $('#storage-empty-scan')?.addEventListener('click', scan);
       $('#storage-policy').onclick = policies;
+      $('#storage-clean').onclick = cleanEligible;
       $('#storage-history').onclick = history;
       $('#storage-retry')?.addEventListener('click', () => load());
       $('#storage-more')?.addEventListener('click', () => load(true));
@@ -147,6 +149,19 @@
       }catch(error){fault(error);}
     }
     async function scan() {try {await watch(await api('storage.scan',{repository_id:s.repository||null,idempotency_key:key()},false));}catch(error){fault(error);}}
+    async function cleanEligible() {
+      const rows = s.rows.filter(row => row.automatic_eligible && row.deletable);
+      if (!rows.length) { s.error = t('nothing_eligible'); draw(); return; }
+      s.selected.clear(); rows.forEach(row => s.selected.set(row.artifact_id, row.revision));
+      s.detail = rows[0].artifact_id;
+      try {
+        const plan = await api('storage.cleanup.plan', { artifact_ids: rows.map(row => row.artifact_id), automatic: true, include_persistent_data: false });
+        s.plan = plan; s.planSelection = rows.map(row => row.artifact_id).join(','); draw();
+        if (!plan.ready) return;
+        s.plan = null; draw();
+        await watch(await api('storage.cleanup.start', { plan_id: plan.plan_id, idempotency_key: key() }, false));
+      } catch (error) { fault(error); }
+    }
     async function remove() {
       if(!s.plan?.ready||selectedRows().map(r=>r.artifact_id).join(',')!==s.planSelection)return;
       const plan=s.plan;s.plan=null;draw();
