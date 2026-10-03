@@ -9,6 +9,7 @@
     const h = (key, args = {}) => esc(t(key, args));
     const date = value => value == null ? '—' : i18n().date(new Date(value).toISOString());
     const key = () => crypto.randomUUID();
+    const compact = (value, limit = 18) => value.length > limit ? `${value.slice(0, limit - 1)}…` : value;
     const reason = code => { try { return t(`reason_${code}`); } catch { return t('reason_unknown'); } };
     const selectedRows = () => s.rows.filter(row => s.selected.get(row.artifact_id) === row.revision && row.deletable);
     const current = () => s.rows.find(row => row.artifact_id === s.detail);
@@ -37,11 +38,11 @@
         <section class="storage-collection" aria-label="${h('artifacts')}">
           <header class="storage-heading"><h1>${h('title')}</h1><div class="actions"><button class="btn" id="storage-scan"${active ? ' disabled' : ''}>${icon('refresh')}<span>${h('scan')}</span></button><button class="btn" id="storage-policy">${icon('settings')}<span>${h('policies')}</span></button></div></header>
           <div class="storage-filters"><label class="storage-search"><span class="sr-only">${h('search')}</span>${icon('search')}<input id="storage-query" type="search" value="${esc(s.query)}" placeholder="${h('search')}"></label>
-            <label><span class="sr-only">${h('project')}</span><select id="storage-project"><option value="">${h('all_projects')}</option>${[...projects].sort((a,b) => a[1].localeCompare(b[1])).map(([id,name]) => `<option value="${esc(id)}"${s.repository === id ? ' selected' : ''}>${esc(name)}</option>`).join('')}</select></label>
+            <label><span class="sr-only">${h('project')}</span><select id="storage-project"><option value="">${h('all_projects')}</option>${[...projects].sort((a,b) => a[1].localeCompare(b[1])).map(([id,name]) => `<option value="${esc(id)}" title="${esc(name)}"${s.repository === id ? ' selected' : ''}>${esc(compact(name))}</option>`).join('')}</select></label>
             <label><span class="sr-only">${h('disk')}</span><select id="storage-disk"><option value="">${h('all_disks')}</option>${(s.inventory?.filesystems || []).map(f => `<option value="${esc(f.filesystem_id)}"${s.filesystem === f.filesystem_id ? ' selected' : ''}>${esc(f.label)}</option>`).join('')}</select></label>
-            <label><span class="sr-only">${h('deletion_safety')}</span><select id="storage-safety"><option value="">${h('all_artifacts')}</option>${['safe','in_use','protected','needs_review','observing'].map(value => `<option value="${value}"${s.safety === value ? ' selected' : ''}>${h('safety_' + value)}</option>`).join('')}</select></label>
+            <label><span class="sr-only">${h('deletion_safety')}</span><select id="storage-safety"><option value="">${h('all_artifacts')}</option>${[['safe','safe_short'],['in_use','in_use_short'],['protected','protected_short'],['needs_review','needs_review_short'],['observing','observing_short']].map(([value,label]) => `<option value="${value}"${s.safety === value ? ' selected' : ''}>${h(label)}</option>`).join('')}</select></label>
           </div>
-          <div class="storage-tools"><label><span class="sr-only">${h('type')}</span><select id="storage-kind"><option value="">${h('all_types')}</option>${['volume','container','image','build_cache','network','build_output','dependency_cache','worktree','backup','evidence','backing_directory','mount','unknown'].map(kind => `<option value="${kind}"${s.kind === kind ? ' selected' : ''}>${h('kind_' + kind)}</option>`).join('')}</select></label><button class="btn btn-small btn-primary" id="storage-clean"${s.rows.some(r => r.automatic_eligible && r.deletable) ? '' : ' disabled'}>${h('clean_eligible')}</button><button class="btn btn-small" id="storage-eligible"${s.rows.some(r => r.automatic_eligible) ? '' : ' disabled'}>${h('select_eligible')}</button><button class="btn btn-small" id="storage-history">${h('history')}</button></div>
+          <div class="storage-tools"><label><span class="sr-only">${h('type')}</span><select id="storage-kind"><option value="">${h('all_types')}</option>${[['volume','kind_volume'],['container','kind_container'],['image','kind_image'],['build_cache','build_cache_short'],['network','kind_network'],['build_output','build_output_short'],['dependency_cache','dependency_cache_short'],['worktree','worktree_short'],['backup','kind_backup'],['evidence','evidence_short'],['backing_directory','backing_short'],['mount','mount_short'],['unknown','unknown_short']].map(([kind,label]) => `<option value="${kind}"${s.kind === kind ? ' selected' : ''}>${h(label)}</option>`).join('')}</select></label><button class="btn btn-small btn-primary" id="storage-clean"${s.rows.some(r => r.automatic_eligible && r.deletable) ? '' : ' disabled'}>${h('clean_eligible')}</button><button class="btn btn-small" id="storage-eligible"${s.rows.some(r => r.automatic_eligible) ? '' : ' disabled'}>${h('select_eligible')}</button><button class="btn btn-small" id="storage-history">${h('history')}</button></div>
           ${s.error ? `<div class="notice bad" role="alert">${esc(s.error)} <button class="btn btn-small" id="storage-retry">${h('retry')}</button></div>` : ''}
           ${s.inventory?.coverage_gaps.length ? `<div class="storage-coverage" role="status">${icon('info-circle')}<span>${h('coverage_gap')}</span></div>` : ''}
           ${s.job ? jobMarkup() : ''}
@@ -197,7 +198,7 @@
       if(!administrator){root.innerHTML=`<h1>${h('title')}</h1><p>${h('denied')}</p>`;return;}
       signal.addEventListener('abort',()=>{clearTimeout(s.searchTimer);s.dialog?.close();},{once:true});
       s.repository=new URLSearchParams(location.hash.split('?')[1]||'').get('repository')||s.repository;
-      draw();load();
+      draw();await load();
       api('repository.list',{}).then(result=>{if(!signal.aborted){s.repositories=result.repositories||[];draw();}}).catch(()=>{});
       document.addEventListener('dc2:localechange',()=>draw(),{signal});
     }
