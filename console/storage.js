@@ -110,7 +110,7 @@
       s.root.querySelectorAll('[data-storage-select]').forEach(input => input.onchange = () => {const row=s.rows.find(r => r.artifact_id===input.dataset.storageSelect);if(input.checked&&row?.deletable)s.selected.set(row.artifact_id,row.revision);else s.selected.delete(input.dataset.storageSelect);prepare();});
       s.root.querySelectorAll('[data-storage-inspect]').forEach(button => button.onclick = () => {s.detail=button.dataset.storageInspect;draw();if(matchMedia('(max-width:900px)').matches)s.root.querySelector('.storage-inspector')?.focus();});
       $('#storage-delete')?.addEventListener('click', remove);
-      $('#storage-protect')?.addEventListener('click', async () => {const row=current();try{await api('storage.protection.set',{artifact_id:row.artifact_id,expected_revision:row.revision,protected:!row.protected},false);s.selected.delete(row.artifact_id);s.plan=null;s.safety='';await load();}catch(error){fault(error);}});
+      $('#storage-protect')?.addEventListener('click', async () => {const row=current();try{const updated=await api('storage.protection.set',{artifact_id:row.artifact_id,expected_revision:row.revision,protected:!row.protected},false);s.selected.delete(row.artifact_id);s.plan=null;s.safety='';const index=s.rows.findIndex(item=>item.artifact_id===updated.artifact_id);if(index<0)s.rows.unshift(updated);else s.rows[index]=updated;s.detail=updated.artifact_id;s.total=Math.max(s.total,s.rows.length);draw();}catch(error){fault(error);}});
       $('#storage-review')?.addEventListener('click', review);
       $('#storage-cancel-job')?.addEventListener('click', async () => {try{s.job=await api('storage.job.cancel',{job_id:s.job.job_id},false);draw();}catch(error){fault(error);}});
     }
