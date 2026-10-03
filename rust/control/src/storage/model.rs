@@ -35,6 +35,9 @@ pub enum Locator {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Record {
+    /// Persistent observation/mutation order, independent of wall-clock changes.
+    #[serde(default)]
+    pub update_sequence: u64,
     pub artifact: api::Artifact,
     pub locator: Locator,
     pub resource_key: String,
@@ -108,7 +111,9 @@ pub struct Context {
     pub recorded_containers: BTreeMap<String, (String, String)>,
     pub leased_artifacts: Vec<String>,
     pub protected_resources: Vec<String>,
+    pub protected_ancestors: Vec<String>,
     pub leased_resources: Vec<String>,
+    pub leased_ancestors: Vec<String>,
     pub now_ms: u64,
     pub retention_age_seconds: u64,
     pub retention_depth: u64,

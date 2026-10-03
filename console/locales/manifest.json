@@ -19,6 +19,7 @@
     "glossary",
     "artifacts",
     "performance"
+    ,"storage"
   ],
   "locales": [
     {
@@ -3031,10 +3032,6 @@
   ],
   "featureNamespaces": {
     "tickets": {
-      "sourceLocale": "en",
-      "status": "source-only"
-    },
-    "storage": {
       "sourceLocale": "en",
       "status": "source-only"
     }

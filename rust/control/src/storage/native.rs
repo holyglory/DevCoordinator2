@@ -1,5 +1,6 @@
 //! Native storage observation and exact-target mutations; no shell commands.
 mod docker;
+mod docker_engine;
 mod evidence;
 mod mounts;
 mod sources;
@@ -97,6 +98,9 @@ impl Backend for HostBackend {
         }
     }
     fn save_recovery(&self, r: &Record, job_id: &str) -> Result<(), ProtocolError> {
+        if matches!(r.locator, Locator::Mount { .. }) {
+            return self.save_mount_recovery(r, job_id);
+        }
         self.save_private_definition(r, job_id)
     }
 
@@ -133,7 +137,6 @@ impl Backend for HostBackend {
                 Ok(()) => result.complete_kinds.extend([
                     api::Kind::Container,
                     api::Kind::Image,
-                    api::Kind::BuildCache,
                     api::Kind::Network,
                     api::Kind::Volume,
                     api::Kind::Mount,
@@ -172,10 +175,14 @@ impl Backend for HostBackend {
         if r.artifact.protected {
             return Err(blocked("explicitly_protected"));
         }
-        if context.protected_resources.contains(&r.resource_key) {
+        if context.protected_resources.contains(&r.resource_key)
+            || context.protected_ancestors.contains(&r.resource_key)
+        {
             return Err(blocked("protected_shared_data"));
         }
-        if context.leased_resources.contains(&r.resource_key) {
+        if context.leased_resources.contains(&r.resource_key)
+            || context.leased_ancestors.contains(&r.resource_key)
+        {
             return Err(blocked("active_lease"));
         }
         for alias in &r.private_aliases {
@@ -236,6 +243,9 @@ impl Backend for HostBackend {
                     return Err(blocked("active_process"));
                 }
                 let measured = fs::measure(path)?;
+                if measured.protected_metadata && generated_kind(r.artifact.kind) {
+                    return Err(blocked("protected_source_or_credentials"));
+                }
                 if !context.discovering
                     && matches!(
                         r.artifact.kind,
@@ -256,8 +266,8 @@ impl Backend for HostBackend {
                 }
                 if r.artifact.kind == api::Kind::Worktree {
                     self.validate_worktree(path, git_root.as_deref(), context)?;
-                } else if let Some(git) = git_root {
-                    if !git_bytes(
+                } else if let Some(git) = git_root
+                    && !git_bytes(
                         git,
                         &[
                             "ls-files",
@@ -268,9 +278,8 @@ impl Backend for HostBackend {
                         context,
                     )?
                     .is_empty()
-                    {
-                        return Err(blocked("tracked_source"));
-                    }
+                {
+                    return Err(blocked("tracked_source"));
                 }
                 let allowed_mount = r
                     .artifact
@@ -328,7 +337,12 @@ impl Backend for HostBackend {
                     }
                     Ok(())
                 } else {
-                    fs::remove_tree(path, (*device, *inode), false)
+                    fs::remove_tree(
+                        path,
+                        (*device, *inode),
+                        false,
+                        generated_kind(r.artifact.kind),
+                    )
                 }
             }
             Locator::Docker { .. } => self.remove_docker(r),
@@ -388,8 +402,15 @@ pub fn validate_root(path: &Path, config: &Config) -> Result<(), ProtocolError> 
     {
         return Err(blocked("protected_system_data"));
     }
-    if path.components().any(|p|matches!(p,std::path::Component::Normal(s) if s==".git" || s==".ssh" || s=="sessions" || s=="archived_sessions")) {return Err(blocked("protected_source_or_credentials"));}
+    if path.components().any(|p|matches!(p,std::path::Component::Normal(s) if s==".git" || fs::protected_metadata_name(s))) {return Err(blocked("protected_source_or_credentials"));}
     Ok(())
+}
+
+fn generated_kind(kind: api::Kind) -> bool {
+    matches!(
+        kind,
+        api::Kind::BuildOutput | api::Kind::DependencyCache | api::Kind::Unknown
+    )
 }
 
 pub(super) fn candidate(
@@ -403,6 +424,7 @@ pub(super) fn candidate(
     let fingerprint = hash(encoded.as_bytes());
     let id = stable_id("sa", encoded.as_bytes());
     Ok(Record {
+        update_sequence: 0,
         artifact: api::Artifact {
             artifact_id: id.clone(),
             revision: 1,

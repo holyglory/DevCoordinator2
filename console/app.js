@@ -306,8 +306,7 @@ function currentDestinationHeading() {
     progress: ['Progress', '#/progress'], usage: ['Codex Usage', '#/usage'], performance: ['Performance', '#/performance'],
     decisions: ['Decisions', '#/decisions'], sketches: ['Sketches', '#/sketches'],
     glossary: ['Glossary', '#/glossary'],
-    tests: ['Tests', '#/tests'], health: ['Health', '#/health'],
-    storage: ['Storage', '#/storage'],
+    tests: ['Tests', '#/tests'], health: ['Health', '#/health'], storage: ['Storage', '#/storage'],
     bugs: ['Bugs', '#/bugs'], admin: ['Administration', '#/admin'], requests: ['Feature requests', '#/requests'],
   };
   const destination = destinations[view] || destinations.deployments;
@@ -2919,6 +2918,18 @@ async function viewSketchSetEvidence(repositoryId, group, activeSketchId) {
 }
 
 const viewSketches = guard(async (repositoryId, sketchId = null, setName = null) => {
+  const query = new URLSearchParams(location.hash.split('?')[1] || '');
+  if (query.has('surface') || (!sketchId && !setName)) {
+    return window.DevCoordinatorSketches.mount(main, {
+      repositoryId, api, esc, signal: viewAbort.signal, imageUrl: sketchImageUrl,
+      openAnnotations: async (nodes, selectedId) => {
+        await viewSketchSetEvidence(repositoryId, { key: nodes[0]?.sketch_set, sketches: nodes }, selectedId);
+        const link = document.createElement('a'); link.className = 'btn btn-small sketch-back';
+        link.href = window.DevCoordinatorSketches.route(repositoryId, query.get('surface'), selectedId);
+        window.DevCoordinatorI18n.text(link, 'sketches.backToHistory'); main.prepend(link);
+      },
+    });
+  }
   if (sketchId && setName) {
     main.innerHTML = `${pageHeading('Sketches', '#/sketches', window.DevCoordinatorI18n.t("shell.loading_ba3bbb"))}<div class="sketch-set-list">${skeleton(6)}</div>`;
     const result = await listAllSketches(repositoryId, setName);
@@ -2972,7 +2983,7 @@ function healthStorageBreakdown(storage) {
   return `<dl class="health-storage-breakdown">${entries.map(([name, value]) => `<div><dt>${window.DevCoordinatorI18n.computedMarkup(() => healthLabel(name, HEALTH_STORAGE_LABELS))}</dt><dd>${window.DevCoordinatorI18n.computedMarkup(() => bytes(value))}</dd></div>`).join('')}</dl>`;
 }
 const healthPage = window.DevCoordinatorHealth.create({ api, esc, bytes, pct, spark, chart, pageHeading, icon: planIcon });
-const storagePage = window.DevCoordinatorStorage.create({api,esc,bytes,icon:planIcon});
+const storagePage = window.DevCoordinatorStorage.create({ api, esc, bytes, icon: planIcon });
 const viewHealth = guard(async (sub) => sub === 'containers' ? viewContainers() : healthPage.show());
 
 
@@ -4879,11 +4890,12 @@ async function render() {
   if (view !== 'requests') main.classList.remove('ticket-selected');
   main.classList.toggle('deployments-page', view === 'deployments' && !arg);
   const sketchQuery = new URLSearchParams(location.hash.split('?')[1] || '');
-  const sketchDetailRoute = view === 'sketches' && sketchQuery.has('sketch') && !sketchQuery.has('set');
+  const sketchDetailRoute = view === 'sketches' && sketchQuery.has('sketch') && !sketchQuery.has('set') && (!sketchQuery.has('surface') || sketchQuery.has('annotate'));
   const sketchSetEvidenceRoute = view === 'sketches' && sketchQuery.has('sketch') && sketchQuery.has('set');
   main.classList.toggle('test-evidence-page', (view === 'tests' && !!arg) || sketchDetailRoute || sketchSetEvidenceRoute);
   main.classList.toggle('tests-collection-page', view === 'tests' && !arg);
   main.classList.toggle('sketches-page', view === 'sketches');
+  main.classList.toggle('sketch-history-page', view === 'sketches' && !sketchQuery.has('annotate') && (sketchQuery.has('surface') || !sketchQuery.has('sketch')));
   document.body.classList.toggle('plan-shell', view === 'plan' && !!arg);
   document.body.classList.toggle('evidence-shell', (view === 'tests' && !!arg) || sketchDetailRoute || sketchSetEvidenceRoute);
   if (!(view === 'tests' && arg) && !sketchDetailRoute && !sketchSetEvidenceRoute && state.evidenceRunId) {
@@ -4910,7 +4922,7 @@ async function render() {
   if (view === 'tests') return viewTests(arg || null, route.settings);
   if (view === 'sketches') return viewSketches(arg, sketchQuery.get('sketch'), sketchQuery.get('set'));
   if (view === 'health') return viewHealth(arg);
-  if (view === 'storage') return storagePage.show(main,state.who?.administrator,signal);
+  if (view === 'storage') return storagePage.show(main, state.who?.administrator, signal);
   if (view === 'bugs') return viewBugs();
   if (view === 'requests') return window.DevCoordinatorTickets.mount(main, {api:(operation,params)=>api(operation,params,false),administrator:state.who?.administrator,signal});
   if (view === 'admin') return viewAdmin();
