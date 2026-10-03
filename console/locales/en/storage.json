@@ -55,7 +55,7 @@
   "policy_title": "Cleanup policy",
   "caches": "Builds and caches",
   "other_artifacts": "Other unused artifacts",
-  "other_short": "Other",
+  "other_short": "O",
   "days": "{count} days",
   "automatic_on": "Automatic cleanup is on",
   "automatic_off": "Automatic cleanup is off",
