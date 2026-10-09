@@ -76,6 +76,15 @@ pub struct RetryCheckEvidence {
     pub exit: DiagnosticExit,
     pub artifacts: Vec<ArtifactReceipt>,
     pub streams: Vec<LogStreamSummary>,
+    /// Added by schema-2 diagnostic receipts. Keep these optional so an
+    /// upgraded daemon can recover a retained receipt written by a newer
+    /// executor without rejecting the whole worktree.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failed_diagnostics: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stdout_bytes_observed: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stderr_bytes_observed: Option<u64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -880,6 +889,9 @@ fn retry_check(check: &CheckReport) -> RetryCheckEvidence {
         exit: check.exit,
         artifacts: check.artifacts.clone(),
         streams: check.streams.clone(),
+        failed_diagnostics: Some(check.failed_diagnostics),
+        stdout_bytes_observed: None,
+        stderr_bytes_observed: None,
     }
 }
 
@@ -1513,6 +1525,7 @@ mod tests {
                     "status": "failed",
                     "duration_seconds": 1.0,
                     "exit_code": 17,
+                    "stderr_bytes_observed": 23,
                     "artifacts": [],
                     "streams": []
                 }]
@@ -1527,6 +1540,7 @@ mod tests {
         assert_eq!(evidence.len(), 1);
         assert_eq!(evidence[0].checks[0].exit.code, Some(17));
         assert_eq!(evidence[0].checks[0].exit.signal, None);
+        assert_eq!(evidence[0].checks[0].stderr_bytes_observed, Some(23));
     }
 
     #[test]
