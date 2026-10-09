@@ -107,6 +107,23 @@ waits for admission to reopen until its RFC 3339 `deadline_at`. `test.wait`
 waits for one run to finish and returns `wait_deadline_reached` when it does
 not finish in time.
 
+## test.container.create | start | inspect | remove | retry
+
+These operations are the only supported Docker boundary for temporary solver
+containers. Requests carry the registered worktree `path`, accepted `run_id`,
+`check`, and (for create) an image plus argv; they do not accept a Docker
+socket, host path, privilege flag, or raw Docker option. The daemon adds exact
+run, check, repository, worktree, purpose, and opaque owner labels, persists
+the container identity, and verifies both the full ID and exact name are absent
+after forced removal. `inspect` returns the bounded state, exit code/signal,
+labels, native-start flag, cleanup attempts, retryability, and next action.
+
+Cleanup results use `cleanup_pending`, `cleanup_complete`, or
+`cleanup_failed`. Pending cleanup is retried by the Coordinator reconciliation
+worker and by `retry`; failed or pending cleanup keeps the governed run from
+being reported as passed. Unrelated containers are never selected by name or
+prefix alone.
+
 Additive `targets: ["api","ui"]` selects multiple declarations for one invocation,
 instead of `test`. `checks` accepts qualified `target/check` names, and
 `cases: {"target/check":["case-id"]}` selects exact cases. Responses retain
@@ -168,6 +185,9 @@ summary.json fields (result schema 2; schema 1 is not read or translated):
 `stderr_bytes_observed`, `caller_uid`, `client`, `check_report_ref`, and
 `log_catalog_ref`. Retained-byte and truncation compatibility fields are not
 accepted; complete per-leaf metadata lives in the log catalogue.
+When a check declares `coordinator-json`, the summary also carries
+`failed_diagnostics`, native execution state, and cleanup status. A nonzero
+diagnostic count is terminal failure even if the reporting command exits zero.
 
 ## test.capacity.get | test.capacity.set
 
