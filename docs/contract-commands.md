@@ -534,7 +534,9 @@ and recorded bindings only — never names, ports, images, or paths.
   `pg_temp_bytes`, `pg_database_bytes` (numbers only, never content).
 - `health.history {subject_kind, subject_id, metric, minutes<=43200,
   points?}` → one-minute `{minute, min, avg, max, samples}` points, at most
-  1440 per call (`truncated` flag), from the 30-day bounded store. With
+  1440 per call (`truncated` flag), from the 30-day bounded store. Component,
+  container and test subjects may have only the most recent 7 days because
+  those high-cardinality runtime observations expire sooner. With
   `points` (2..1440) the daemon downsamples server-side into that many
   buckets preserving the min/max envelope and sample-weighted averages —
   the Console's 24h/7d/30d charts use this. Host storage

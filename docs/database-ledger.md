@@ -52,7 +52,7 @@ live in root-only 0600 files under the instance secrets directory.
 
 | Table | Fields | Status |
 |---|---|---|
-| `metric_minutes` | (subject_kind, subject_id, metric, minute_utc) PK, min/avg/max, samples; index on minute_utc; rows older than 30 days deleted directly | done |
+| `metric_minutes` | (subject_kind, subject_id, metric, minute_utc) PK, min/avg/max, samples; index on minute_utc; rows older than 30 days deleted directly; high-cardinality component/container/test rows expire after 7 days | done |
 | `alerts` | alert_key PK, kind, subject_kind, subject_id, severity, message, opened_at, last_seen_at — current alerts only; resolved rows are deleted | done |
 
 ## Schema version 4 (Phase 5) — control data, always preserved
