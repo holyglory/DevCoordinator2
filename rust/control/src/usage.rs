@@ -288,17 +288,15 @@ impl UsageService {
             self.usage.now_ms()?,
             None,
         )?;
-        // The first detail paint must share the bounded/indexed projection used
-        // by the collection. The token/cost projection remains the explicit
-        // follow-up behind wait_for_refresh, so a large collector cannot make
-        // an otherwise usable detail page start with a red refresh failure.
-        let mut report = if params.wait_for_refresh {
-            self.usage
-                .repository_tokens_with_selection(&repository, params.range.clone(), selection.clone())?
-        } else {
-            self.usage
-                .repository_fast_with_selection(&repository, params.range.clone(), selection.clone())?
-        };
+        // Detail pages promise activity, outcome cost, tool, and timing data in
+        // addition to provider token totals. Use the full indexed projection;
+        // the cache still returns immediately and refreshes it off the request
+        // path when the source is cold.
+        let mut report = self.usage.repository_full_with_selection(
+            &repository,
+            params.range.clone(),
+            selection.clone(),
+        )?;
         if !params.wait_for_refresh
             && params.worktree_ids.is_none()
             && params.include_unassigned
@@ -315,16 +313,18 @@ impl UsageService {
                 .is_some_and(|s| s.updated_at_ms.is_none() && s.refreshing)
         {
             self.usage.wait_for_refresh(Some(&repository.repository_id));
-            report = self
-                .usage
-                .repository_fast_with_selection(&repository, params.range.clone(), selection.clone())?;
+            report = self.usage.repository_full_with_selection(
+                &repository,
+                params.range.clone(),
+                selection.clone(),
+            )?;
         }
         self.attach_outcome_titles(&mut report)?;
         if params.wait_for_refresh {
             self.usage.wait_for_refresh(Some(&repository.repository_id));
-            let mut report = self
-                .usage
-                .repository_tokens_with_selection(&repository, params.range, selection)?;
+            let mut report =
+                self.usage
+                    .repository_full_with_selection(&repository, params.range, selection)?;
             self.attach_outcome_titles(&mut report)?;
             return Ok(report);
         }
@@ -622,27 +622,13 @@ impl CodexUsage {
         self.repository_projection(repository, range, Projection::Tokens, None)
     }
 
-    pub(crate) fn repository_fast_with_selection(
+    pub(crate) fn repository_full_with_selection(
         &self,
         repository: &RepositoryRecord,
         range: UsageRange,
         selection: WorktreeSelection,
     ) -> Result<UsageRepository, ProtocolError> {
-        self.repository_projection(
-            repository,
-            range,
-            Projection::PerformanceFast,
-            Some(selection),
-        )
-    }
-
-    pub(crate) fn repository_tokens_with_selection(
-        &self,
-        repository: &RepositoryRecord,
-        range: UsageRange,
-        selection: WorktreeSelection,
-    ) -> Result<UsageRepository, ProtocolError> {
-        self.repository_projection(repository, range, Projection::Tokens, Some(selection))
+        self.repository_projection(repository, range, Projection::Full, Some(selection))
     }
 
     fn repository_projection(
@@ -1316,8 +1302,19 @@ impl CodexUsage {
                 return Err("mapping_unavailable".into());
             }
             let canonical: bool = schema >= 7 && connection.query_row("SELECT COUNT(*)=1 FROM pragma_table_info('token_observations') WHERE name='source_event_id'",[],|r|r.get(0)).unwrap_or(false);
-            if canonical && matches!(projection, Projection::Tokens | Projection::PerformanceFast) {
-                if !filtered && matches!(projection, Projection::PerformanceFast) && bucket_count > 1 {
+            if canonical
+                && matches!(
+                    projection,
+                    Projection::Full | Projection::Tokens | Projection::PerformanceFast
+                )
+            {
+                // The producer API summary is intentionally compact and does
+                // not carry terminal timing or tool outcomes. Detail reads
+                // therefore stay on the bounded canonical facts reader.
+                if !filtered
+                    && matches!(projection, Projection::PerformanceFast)
+                    && bucket_count > 1
+                {
                     return source_token_report(
                         &connection,
                         &family,
@@ -1329,13 +1326,23 @@ impl CodexUsage {
                         bucket_count,
                     );
                 }
-                let mut facts = if matches!(projection, Projection::PerformanceFast) {
-                    performance::read_fast(&connection, &family, start_ms, end_ms)?
-                } else {
-                    performance::read(&connection, &family, start_ms, end_ms)?
-                }
-                .map(Ok)
-                .unwrap_or_else(|| review_facts::read(&connection, &family, start_ms, end_ms))?;
+                let mut facts = match projection {
+                    Projection::Full => review_facts::read(&connection, &family, start_ms, end_ms)?,
+                    Projection::PerformanceFast => {
+                        performance::read_fast(&connection, &family, start_ms, end_ms)?
+                            .map(Ok)
+                            .unwrap_or_else(|| {
+                                review_facts::read(&connection, &family, start_ms, end_ms)
+                            })?
+                    }
+                    Projection::Tokens => {
+                        performance::read(&connection, &family, start_ms, end_ms)?
+                            .map(Ok)
+                            .unwrap_or_else(|| {
+                                review_facts::read(&connection, &family, start_ms, end_ms)
+                            })?
+                    }
+                };
                 if filtered {
                     filter_worktree_facts(
                         &connection,
