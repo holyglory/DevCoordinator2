@@ -4505,6 +4505,7 @@ mod tests {
                 stream: LogStream::Stdout,
             }],
             origin: DiagnosticOrigin::Junit,
+            coordinator: None,
         };
         failure.fingerprint = crate::diagnostics::diagnostic_fingerprint(&failure);
         fs::write(

@@ -2522,9 +2522,9 @@ mod tests {
         for tool in mcp_tools() {
             assert!(tools.insert(tool.name), "duplicate MCP tool");
         }
-        assert_eq!(OPERATIONS.len(), 167);
-        assert_eq!(tools.len(), 138);
-        assert_eq!(cli_routes.len(), 132);
+        assert_eq!(OPERATIONS.len(), 168);
+        assert_eq!(tools.len(), 139);
+        assert_eq!(cli_routes.len(), 133);
     }
 
     #[test]
