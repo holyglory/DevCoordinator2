@@ -1144,6 +1144,13 @@ enum RepositoryCommand {
         #[arg(long)]
         note: String,
     },
+    Retire {
+        repository_id: String,
+        #[arg(long)]
+        note: String,
+        #[arg(long = "idempotency-key")]
+        idempotency_key: String,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -2252,6 +2259,14 @@ impl RepositoryCommand {
             } => remote(
                 "repository.unarchive",
                 json!({"repository_id":repository_id,"note":note}),
+            ),
+            Self::Retire {
+                repository_id,
+                note,
+                idempotency_key,
+            } => remote(
+                "repository.retire",
+                json!({"repository_id":repository_id,"note":note,"idempotency_key":idempotency_key}),
             ),
         }
     }
@@ -3736,6 +3751,18 @@ mod tests {
                     "Restore repository",
                 ],
                 "repository.unarchive",
+            ),
+            (
+                &[
+                    "repository",
+                    "retire",
+                    "r1111111111111111",
+                    "--note",
+                    "Remove disposable checkout",
+                    "--idempotency-key",
+                    "retire-sample-1",
+                ],
+                "repository.retire",
             ),
             (&["plan", "overview", "/tmp/repo"], "plan.overview"),
             (

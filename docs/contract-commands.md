@@ -17,7 +17,7 @@ multi-filter event/heartbeat tool described below.
 ## ping
 
 Args: none.
-Result: `{"daemon_version": "<semver>", "schema_version": 32, "socket": "<path>"}`
+Result: `{"daemon_version": "<semver>", "schema_version": 33, "socket": "<path>"}`
 
 ## event.wait
 
@@ -323,6 +323,18 @@ historical plan, task-history, and decision reads remain available.
 Args: `path`.
 Result: one repository object as above plus, when present, the current test
 summary reference (`summary_path`, `status`).
+
+## repository.retire
+
+Args: `{repository_id, note, idempotency_key}`. A trusted local agent or
+administrator may use this destructive operation after all planning, release,
+deployment, test, lease, and Git safety blockers are clear. It removes the
+exact registered repository checkout, every linked worktree, and their
+`.devcoordinator` test logs. It never creates a whole-checkout archive and does
+not delete Coordinator-owned planning, decision, review, delivery, or event
+history. The result returns a compact receipt ID and removed worktree count;
+the immutable receipt remains in the authority database. Dirty work, unique
+commits, active use, changed identities, and unknown ownership remain blocked.
 
 ## config.*
 

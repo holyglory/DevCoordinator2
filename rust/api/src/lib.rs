@@ -27,7 +27,7 @@ pub mod tickets;
 pub mod work_context;
 
 pub const PROTOCOL_VERSION: u8 = 2;
-pub const DATABASE_SCHEMA_VERSION: u32 = 32;
+pub const DATABASE_SCHEMA_VERSION: u32 = 33;
 pub const MAX_REQUEST_BYTES: usize = 65_536;
 pub const MAX_RESPONSE_BYTES: usize = 262_144;
 pub const MAX_ERROR_DETAIL_BYTES: usize = 4_096;
@@ -108,6 +108,7 @@ pub enum ErrorCode {
     RepositoryNotFound,
     RepositoryArchived,
     RepositoryArchiveBlocked,
+    RepositoryRetirementBlocked,
     RepositoryConfigInvalid,
     AuthorizationRequired,
     ConfigurationConflict,
@@ -1055,6 +1056,15 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         ["repository_unarchive"],
         params::UnarchiveRepository,
         results::Repository
+    ),
+    operation!(
+        "repository.retire",
+        "Remove one exact repository and its linked worktrees while retaining a compact Coordinator receipt.",
+        DESTRUCTIVE_SERVER_ADMIN,
+        Protocol["repository retire"],
+        ["repository_retire"],
+        params::RetireRepository,
+        results::RetiredRepository
     ),
     operation!(
         "server.register",

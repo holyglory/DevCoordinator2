@@ -568,6 +568,17 @@ pub struct RepositoryList {
 
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct RetiredRepository {
+    pub repository_id: String,
+    pub receipt_id: String,
+    pub removed: bool,
+    pub removed_worktree_ids: Vec<String>,
+    pub removed_worktree_count: u32,
+    pub logs_removed: bool,
+}
+
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RepositoryPresentation {
     pub repository_id: String,
     pub display_name: Option<String>,

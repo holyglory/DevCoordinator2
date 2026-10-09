@@ -8606,6 +8606,123 @@
         "routes": [
           {
             "dispatch": "protocol",
+            "route": "repository retire"
+          }
+        ]
+      },
+      "description": "Remove one exact repository and its linked worktrees while retaining a compact Coordinator receipt.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "idempotency_key": {
+            "pattern": "^[A-Za-z0-9._:-]{1,160}$",
+            "type": "string"
+          },
+          "note": {
+            "maxLength": 500,
+            "minLength": 3,
+            "type": "string"
+          },
+          "repository_id": {
+            "pattern": "^r[0-9a-f]{16}$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "repository_id",
+          "note",
+          "idempotency_key"
+        ],
+        "title": "RetireRepository",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "idempotency_key": {
+                "pattern": "^[A-Za-z0-9._:-]{1,160}$",
+                "type": "string"
+              },
+              "note": {
+                "maxLength": 500,
+                "minLength": 3,
+                "type": "string"
+              },
+              "repository_id": {
+                "pattern": "^r[0-9a-f]{16}$",
+                "type": "string"
+              }
+            },
+            "required": [
+              "repository_id",
+              "note",
+              "idempotency_key"
+            ],
+            "title": "RetireRepository",
+            "type": "object"
+          },
+          "name": "repository_retire",
+          "transform": "identity"
+        }
+      ],
+      "name": "repository.retire",
+      "outputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "logs_removed": {
+            "type": "boolean"
+          },
+          "receipt_id": {
+            "type": "string"
+          },
+          "removed": {
+            "type": "boolean"
+          },
+          "removed_worktree_count": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "removed_worktree_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "repository_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "repository_id",
+          "receipt_id",
+          "removed",
+          "removed_worktree_ids",
+          "removed_worktree_count",
+          "logs_removed"
+        ],
+        "title": "RetiredRepository",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "destructive",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "server"
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
             "route": "server register"
           }
         ]
@@ -17559,6 +17676,19 @@
               "null"
             ]
           },
+          "limit": {
+            "default": 10,
+            "format": "uint8",
+            "maximum": 32,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "offset": {
+            "default": 0,
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
           "run_id": {
             "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
             "type": "string"
@@ -17590,6 +17720,19 @@
                   "string",
                   "null"
                 ]
+              },
+              "limit": {
+                "default": 10,
+                "format": "uint8",
+                "maximum": 32,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "offset": {
+                "default": 0,
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
               },
               "run_id": {
                 "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
@@ -23525,6 +23668,7 @@
               "repository_not_found",
               "repository_archived",
               "repository_archive_blocked",
+              "repository_retirement_blocked",
               "repository_config_invalid",
               "authorization_required",
               "configuration_conflict",
@@ -24183,6 +24327,7 @@
               "repository_not_found",
               "repository_archived",
               "repository_archive_blocked",
+              "repository_retirement_blocked",
               "repository_config_invalid",
               "authorization_required",
               "configuration_conflict",
@@ -25056,6 +25201,7 @@
               "repository_not_found",
               "repository_archived",
               "repository_archive_blocked",
+              "repository_retirement_blocked",
               "repository_config_invalid",
               "authorization_required",
               "configuration_conflict",
@@ -25791,6 +25937,7 @@
               "repository_not_found",
               "repository_archived",
               "repository_archive_blocked",
+              "repository_retirement_blocked",
               "repository_config_invalid",
               "authorization_required",
               "configuration_conflict",
@@ -26456,6 +26603,7 @@
               "repository_not_found",
               "repository_archived",
               "repository_archive_blocked",
+              "repository_retirement_blocked",
               "repository_config_invalid",
               "authorization_required",
               "configuration_conflict",
@@ -27135,6 +27283,7 @@
               "repository_not_found",
               "repository_archived",
               "repository_archive_blocked",
+              "repository_retirement_blocked",
               "repository_config_invalid",
               "authorization_required",
               "configuration_conflict",
@@ -27814,6 +27963,7 @@
               "repository_not_found",
               "repository_archived",
               "repository_archive_blocked",
+              "repository_retirement_blocked",
               "repository_config_invalid",
               "authorization_required",
               "configuration_conflict",
@@ -28493,6 +28643,7 @@
               "repository_not_found",
               "repository_archived",
               "repository_archive_blocked",
+              "repository_retirement_blocked",
               "repository_config_invalid",
               "authorization_required",
               "configuration_conflict",

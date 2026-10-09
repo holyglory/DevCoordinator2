@@ -95,6 +95,7 @@ pub const FOUNDATION_OPERATIONS: &[&str] = &[
     "repository.presentation.update",
     "repository.archive",
     "repository.unarchive",
+    "repository.retire",
     "server.register",
     "server.list",
     "server.stop",
@@ -835,6 +836,28 @@ impl ControlPlane {
                     results::OwnedEvent::Other(results::OtherOwnedEvent {
                         review: None,
                         kind: "repository.unarchived".to_owned(),
+                        repository_id: Some(result.repository_id.clone()),
+                        deployment_id: None,
+                        subject_kind: "repository".to_owned(),
+                        subject_id: result.repository_id.clone(),
+                    }),
+                    None,
+                );
+                encode(result)
+            }
+            "repository.retire" => {
+                let params: params::RetireRepository = decode(params)?;
+                let result = self.registry.retire(
+                    &params.repository_id,
+                    &params.note,
+                    &params.idempotency_key,
+                    caller.uid,
+                    caller.gid,
+                )?;
+                self.publish_owned(
+                    results::OwnedEvent::Other(results::OtherOwnedEvent {
+                        review: None,
+                        kind: "repository.retired".to_owned(),
                         repository_id: Some(result.repository_id.clone()),
                         deployment_id: None,
                         subject_kind: "repository".to_owned(),
