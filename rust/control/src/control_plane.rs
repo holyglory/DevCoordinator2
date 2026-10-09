@@ -37,6 +37,7 @@ use crate::server::ServerService;
 use crate::sketches::SketchService;
 use crate::telegram::{TelegramEvent, TelegramScope, TelegramService, parse_scope};
 use crate::test_artifacts::TestArtifactService;
+use crate::test_containers::TestContainerService;
 use crate::test_evidence::TestEvidenceService;
 use crate::test_lifecycle::{TestLifecycle, TestLifecycleEvent};
 use crate::test_logs::TestLogService;
@@ -111,6 +112,11 @@ pub const FOUNDATION_OPERATIONS: &[&str] = &[
     "deployment.remove",
     "deployment.set_domain",
     "test.start",
+    "test.container.create",
+    "test.container.start",
+    "test.container.inspect",
+    "test.container.remove",
+    "test.container.retry",
     "test.admission.status",
     "test.admission.wait",
     "test.wait",
@@ -228,6 +234,7 @@ pub struct ControlPlane {
     glossary: GlossaryService,
     logs: TestLogService,
     tests: TestLifecycle,
+    test_containers: TestContainerService,
     artifacts: TestArtifactService,
     test_evidence: TestEvidenceService,
     sketches: SketchService,
@@ -341,6 +348,12 @@ impl ControlPlane {
             logs.clone(),
             Arc::clone(&clock),
         )?;
+        let test_containers = TestContainerService::new(
+            &config,
+            database.clone(),
+            tests.docker_control(),
+            Arc::clone(&clock),
+        );
         let telegram = TelegramService::from_config(&config, database.clone());
         let agent_routing = crate::agent_routing::AgentRoutingService::new(database.clone())?;
         let alert_telegram = telegram.clone();
@@ -408,6 +421,7 @@ impl ControlPlane {
             glossary,
             logs,
             tests,
+            test_containers,
             artifacts,
             test_evidence,
             sketches,
@@ -966,6 +980,17 @@ impl ControlPlane {
                 let result = self.tests.start(decode(params)?, caller)?;
                 encode(result)
             }
+            "test.container.create" => {
+                encode(self.test_containers.create(decode(params)?, caller)?)
+            }
+            "test.container.start" => encode(self.test_containers.start(decode(params)?, caller)?),
+            "test.container.inspect" => {
+                encode(self.test_containers.inspect(decode(params)?, caller)?)
+            }
+            "test.container.remove" => {
+                encode(self.test_containers.remove(decode(params)?, caller)?)
+            }
+            "test.container.retry" => encode(self.test_containers.retry(decode(params)?, caller)?),
             "test.retry" => {
                 let result = self.tests.retry(decode(params)?, caller)?;
                 encode(result)
@@ -2082,6 +2107,9 @@ impl OperationExecutor for ControlPlane {
             if operation == "test.wait" {
                 let request: params::TestWait = decode(authorization.params.clone())?;
                 let current = self.tests.status(&request.path, caller)?;
+                if current.run_id != request.run_id {
+                    return Err(test_wait_run_changed(&request.run_id, &current));
+                }
                 if current.status != results::TestStatus::Running {
                     return Ok(Box::pin(async move {
                         encode(results::TestWaitResult {
@@ -2120,9 +2148,36 @@ impl OperationExecutor for ControlPlane {
                             },
                             Arc::new(move || access_for_wait.event_visibility(&caller_for_wait)),
                         )?;
+                        // The run may finish between the initial status read and
+                        // subscription creation. Re-check immediately after the
+                        // subscription is installed so the completion event is
+                        // not required to be observed by this connection.
+                        let latest = tests.status(&path, &status_caller)?;
+                        if latest.run_id != run_id {
+                            return Err(test_wait_run_changed(&run_id, &latest));
+                        }
+                        if latest.status != results::TestStatus::Running {
+                            return encode(results::TestWaitResult {
+                                completed: true,
+                                timed_out: false,
+                                status: latest,
+                            });
+                        }
                         let result = subscription.receive().await?;
                         if !result.heartbeat_due.is_empty() {
                             let latest = tests.status(&path, &status_caller)?;
+                            if latest.run_id == run_id
+                                && latest.status != results::TestStatus::Running
+                            {
+                                return encode(results::TestWaitResult {
+                                    completed: true,
+                                    timed_out: false,
+                                    status: latest,
+                                });
+                            }
+                            if latest.run_id != run_id {
+                                return Err(test_wait_run_changed(&run_id, &latest));
+                            }
                             return Err(wait_deadline_error(
                                 "test run did not finish before the requested deadline",
                                 Some(format!("{:?}", latest.status)),
@@ -2131,8 +2186,10 @@ impl OperationExecutor for ControlPlane {
                             ));
                         }
                         let latest = tests.status(&path, &status_caller)?;
-                        if latest.run_id == run_id && latest.status != results::TestStatus::Running
-                        {
+                        if latest.run_id != run_id {
+                            return Err(test_wait_run_changed(&run_id, &latest));
+                        }
+                        if latest.status != results::TestStatus::Running {
                             return encode(results::TestWaitResult {
                                 completed: true,
                                 timed_out: false,
@@ -2279,6 +2336,43 @@ fn wait_deadline_error(
             cost: Some("immediate".into()),
             risk: Some("none".into()),
             prerequisites: vec![],
+            independent_work_safe: true,
+            user_action_required: false,
+        }],
+        field_errors: vec![],
+        example: None,
+    })
+}
+
+fn test_wait_run_changed(requested_run_id: &str, current: &results::TestSummary) -> ProtocolError {
+    ProtocolError::new(
+        ErrorCode::TestNotFound,
+        "the requested governed test run is no longer current",
+    )
+    .with_detail(format!(
+        "requested run {requested_run_id}; current run {}",
+        current.run_id
+    ))
+    .with_recovery(devcoordinator2_api::recovery::Guidance {
+        class: devcoordinator2_api::recovery::Class::Conflict,
+        retryable: false,
+        waitable: false,
+        safe_to_continue: true,
+        state: Some(format!("{:?}", current.status)),
+        reason: "The worktree has advanced to a different run; inspect history before choosing the next action.".into(),
+        run_id: Some(requested_run_id.into()),
+        deployment_id: None,
+        generation: None,
+        repository_id: None,
+        options: vec![devcoordinator2_api::recovery::RecoveryOption {
+            id: "inspect-history".into(),
+            action: devcoordinator2_api::recovery::Action::Inspect,
+            operation: Some("test.history".into()),
+            effect: "Inspect the requested run in retained history and continue without starting a duplicate run.".into(),
+            target: Some(requested_run_id.into()),
+            cost: Some("immediate".into()),
+            risk: Some("none".into()),
+            prerequisites: vec!["use the same worktree path".into()],
             independent_work_safe: true,
             user_action_required: false,
         }],

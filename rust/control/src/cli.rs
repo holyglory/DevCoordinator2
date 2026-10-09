@@ -388,6 +388,10 @@ struct RequiredLogSelector {
 #[derive(Debug, Subcommand)]
 enum TestCommand {
     Start(TestStartArgs),
+    Container {
+        #[command(subcommand)]
+        command: TestContainerCommand,
+    },
     AdmissionStatus,
     AdmissionWait {
         #[arg(long)]
@@ -431,6 +435,42 @@ enum TestCommand {
         #[command(subcommand)]
         command: CapacityCommand,
     },
+}
+
+#[derive(Debug, Subcommand)]
+enum TestContainerCommand {
+    Create(TestContainerCreateArgs),
+    Start(TestContainerReferenceArgs),
+    Inspect(TestContainerReferenceArgs),
+    #[command(alias = "force-remove")]
+    Remove(TestContainerReferenceArgs),
+    Retry(TestContainerReferenceArgs),
+}
+
+#[derive(Debug, Args)]
+struct TestContainerCreateArgs {
+    #[command(flatten)]
+    path: PathArg,
+    #[arg(long)]
+    run_id: String,
+    #[arg(long)]
+    check: String,
+    #[arg(long)]
+    image: String,
+    #[arg(value_name = "ARG", num_args = 1..=64)]
+    command: Vec<String>,
+}
+
+#[derive(Debug, Args)]
+struct TestContainerReferenceArgs {
+    #[command(flatten)]
+    path: PathArg,
+    #[arg(long)]
+    run_id: String,
+    #[arg(long)]
+    check: String,
+    #[arg(long)]
+    container_id: String,
 }
 
 #[derive(Debug, Args)]
@@ -1613,6 +1653,7 @@ impl TestCommand {
                 );
                 remote("test.start", Value::Object(params))
             }
+            Self::Container { command } => command.into_invocation(),
             Self::AdmissionStatus => remote("test.admission.status", json!({})),
             Self::AdmissionWait { deadline_at } => {
                 remote("test.admission.wait", json!({"deadline_at": deadline_at}))
@@ -1666,6 +1707,59 @@ impl TestCommand {
                 }
                 CapacityCommand::Clear => remote("test.capacity.set", json!({"cap": null})),
             },
+        }
+    }
+}
+
+impl TestContainerCommand {
+    fn into_invocation(self) -> Result<Invocation, CliValidationError> {
+        match self {
+            Self::Create(args) => remote(
+                "test.container.create",
+                json!({
+                    "path": args.path.absolute()?,
+                    "run_id": args.run_id,
+                    "check": args.check,
+                    "image": args.image,
+                    "command": args.command,
+                }),
+            ),
+            Self::Start(args) => remote(
+                "test.container.start",
+                json!({
+                    "path": args.path.absolute()?,
+                    "run_id": args.run_id,
+                    "check": args.check,
+                    "container_id": args.container_id,
+                }),
+            ),
+            Self::Inspect(args) => remote(
+                "test.container.inspect",
+                json!({
+                    "path": args.path.absolute()?,
+                    "run_id": args.run_id,
+                    "check": args.check,
+                    "container_id": args.container_id,
+                }),
+            ),
+            Self::Remove(args) => remote(
+                "test.container.remove",
+                json!({
+                    "path": args.path.absolute()?,
+                    "run_id": args.run_id,
+                    "check": args.check,
+                    "container_id": args.container_id,
+                }),
+            ),
+            Self::Retry(args) => remote(
+                "test.container.retry",
+                json!({
+                    "path": args.path.absolute()?,
+                    "run_id": args.run_id,
+                    "check": args.check,
+                    "container_id": args.container_id,
+                }),
+            ),
         }
     }
 }
@@ -3264,6 +3358,82 @@ mod tests {
             (
                 &["test", "start", "/tmp/repo", "--check", "unit"],
                 "test.start",
+            ),
+            (
+                &[
+                    "test",
+                    "container",
+                    "create",
+                    "/tmp/repo",
+                    "--run-id",
+                    "trun",
+                    "--check",
+                    "unit",
+                    "--image",
+                    "openfoam:latest",
+                    "solver",
+                ],
+                "test.container.create",
+            ),
+            (
+                &[
+                    "test",
+                    "container",
+                    "remove",
+                    "/tmp/repo",
+                    "--run-id",
+                    "trun",
+                    "--check",
+                    "unit",
+                    "--container-id",
+                    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                ],
+                "test.container.remove",
+            ),
+            (
+                &[
+                    "test",
+                    "container",
+                    "start",
+                    "/tmp/repo",
+                    "--run-id",
+                    "trun",
+                    "--check",
+                    "unit",
+                    "--container-id",
+                    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                ],
+                "test.container.start",
+            ),
+            (
+                &[
+                    "test",
+                    "container",
+                    "inspect",
+                    "/tmp/repo",
+                    "--run-id",
+                    "trun",
+                    "--check",
+                    "unit",
+                    "--container-id",
+                    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                ],
+                "test.container.inspect",
+            ),
+            (
+                &[
+                    "test",
+                    "container",
+                    "retry",
+                    "/tmp/repo",
+                    "--run-id",
+                    "trun",
+                    "--check",
+                    "unit",
+                    "--container-id",
+                    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                ],
+                "test.container.retry",
             ),
             (
                 &[
