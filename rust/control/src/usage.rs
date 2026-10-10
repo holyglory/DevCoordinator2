@@ -288,15 +288,32 @@ impl UsageService {
             self.usage.now_ms()?,
             None,
         )?;
-        // Detail pages promise activity, outcome cost, tool, and timing data in
-        // addition to provider token totals. Use the full indexed projection;
-        // the cache still returns immediately and refreshes it off the request
-        // path when the source is cold.
-        let mut report = self.usage.repository_full_with_selection(
-            &repository,
-            params.range.clone(),
-            selection.clone(),
-        )?;
+        // Paint the indexed token projection first. Large collectors can take
+        // much longer to assemble activity, outcome, tool, and timing joins;
+        // starting that full query on the first request would block the cache
+        // worker and leave the user with an all-empty detail page. The client
+        // follows the refreshing snapshot with wait_for_refresh=true, which
+        // then requests the full projection.
+        let mut report = if params.wait_for_refresh {
+            self.usage.repository_full_with_selection(
+                &repository,
+                params.range.clone(),
+                selection.clone(),
+            )?
+        } else {
+            self.usage.repository_projection(
+                &repository,
+                params.range.clone(),
+                Projection::Tokens,
+                Some(selection.clone()),
+            )?
+        };
+        if !params.wait_for_refresh
+            && report.coverage.available_collectors > 0
+            && let Some(snapshot) = report.coverage.snapshot.as_mut()
+        {
+            snapshot.refreshing = true;
+        }
         if !params.wait_for_refresh
             && params.worktree_ids.is_none()
             && params.include_unassigned
@@ -322,9 +339,28 @@ impl UsageService {
         self.attach_outcome_titles(&mut report)?;
         if params.wait_for_refresh {
             self.usage.wait_for_refresh(Some(&repository.repository_id));
-            let mut report =
-                self.usage
-                    .repository_full_with_selection(&repository, params.range, selection)?;
+            let mut report = self
+                .usage
+                .repository_full_with_selection(&repository, params.range.clone(), selection.clone())?;
+            if report.coverage.available_collectors == 0
+                && report.totals.total_tokens.is_none()
+            {
+                let fast = self.usage.repository_projection(
+                    &repository,
+                    params.range,
+                    Projection::Tokens,
+                    Some(selection),
+                )?;
+                if fast.coverage.available_collectors > 0 || fast.totals.total_tokens.is_some() {
+                    report = fast;
+                    report.coverage.has_gaps = true;
+                    increment(
+                        &mut report.coverage.unavailable_reasons,
+                        "detail_unavailable",
+                    );
+                    report.coverage.state = CoverageState::Partial;
+                }
+            }
             self.attach_outcome_titles(&mut report)?;
             return Ok(report);
         }
@@ -1301,6 +1337,25 @@ impl CodexUsage {
             if !repository_exists(&connection, &family)? {
                 return Err("mapping_unavailable".into());
             }
+            let cached_rollup: bool = connection
+                .query_row(
+                    "SELECT schema_version = 1 AND ready = 1 FROM _usage_report_cache_meta WHERE singleton = 1",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap_or(false);
+            if cached_rollup && matches!(projection, Projection::Tokens | Projection::PerformanceFast) {
+                return cached_dimension_token_report(
+                    &connection,
+                    &family,
+                    schema,
+                    taxonomy,
+                    start_ms,
+                    end_ms,
+                    bucket_ms,
+                    bucket_count,
+                );
+            }
             let canonical: bool = schema >= 7 && connection.query_row("SELECT COUNT(*)=1 FROM pragma_table_info('token_observations') WHERE name='source_event_id'",[],|r|r.get(0)).unwrap_or(false);
             if canonical
                 && matches!(
@@ -1888,6 +1943,109 @@ fn source_report(
         bucket_count,
     )?;
     add_intervals(connection, &mut report, &by_id, start_ms, end_ms)?;
+    Ok(report)
+}
+
+fn cached_dimension_token_report(
+    connection: &Connection,
+    family: &[String],
+    schema: u32,
+    taxonomy: u32,
+    start_ms: u64,
+    end_ms: u64,
+    bucket_ms: u64,
+    bucket_count: usize,
+) -> Result<SourceReport, String> {
+    let repositories = serde_json::to_string(family).map_err(|_| "source_unavailable")?;
+    let lower_hour = i64_value(start_ms / 3_600_000)?;
+    let upper_hour = i64_value(end_ms.saturating_add(3_599_999) / 3_600_000)?;
+    let sql = r#"
+        SELECT hour_index, phase, activity, provenance, measured_tokens,
+               unknown_observations, observation_count, coverage_state
+        FROM _usage_report_dimension_tokens INDEXED BY sqlite_autoindex__usage_report_dimension_tokens_1
+        WHERE hour_index >= ?2 AND hour_index < ?3
+          AND repository_bucket IN (SELECT value FROM json_each(?1))
+          AND category_path = 'total_tokens'
+          AND measurement_provenance = 'provider_reported'
+    "#;
+    let mut statement = connection.prepare(sql).map_err(|_| "source_unavailable")?;
+    let mut rows = statement
+        .query(rusqlite::params![repositories, lower_hour, upper_hour])
+        .map_err(|_| "source_unavailable")?;
+    let mut report = SourceReport {
+        database_schema: schema,
+        taxonomy_version: taxonomy,
+        phase_series: vec![BTreeMap::new(); bucket_count],
+        token_buckets_observed: vec![false; bucket_count],
+        bucket_coverage: vec![CoverageState::Unobserved; bucket_count],
+        ..Default::default()
+    };
+    while let Some(row) = rows.next().map_err(|_| "source_unavailable")? {
+        let hour: u64 = row
+            .get::<_, i64>(0)
+            .map_err(|_| "source_unavailable")?
+            .try_into()
+            .map_err(|_| "source_unavailable")?;
+        let at = hour.saturating_mul(3_600_000);
+        let phase = safe_phase(&row.get::<_, String>(1).map_err(|_| "source_unavailable")?);
+        let activity = safe_label(&row.get::<_, String>(2).map_err(|_| "source_unavailable")?);
+        let provenance = safe_label(&row.get::<_, String>(3).map_err(|_| "source_unavailable")?);
+        let tokens: u64 = row
+            .get::<_, i64>(4)
+            .map_err(|_| "source_unavailable")?
+            .try_into()
+            .map_err(|_| "source_unavailable")?;
+        let unknown: i64 = row.get(5).map_err(|_| "source_unavailable")?;
+        let observations: u64 = row
+            .get::<_, i64>(6)
+            .map_err(|_| "source_unavailable")?
+            .try_into()
+            .map_err(|_| "source_unavailable")?;
+        let coverage = safe_coverage(&row.get::<_, String>(7).map_err(|_| "source_unavailable")?);
+        report.evidence |= observations > 0;
+        report.freshest_at_ms = Some(report.freshest_at_ms.unwrap_or(0).max(at));
+        *report.tokens.entry("total_tokens".into()).or_default() = report
+            .tokens
+            .get("total_tokens")
+            .copied()
+            .unwrap_or(0)
+            .saturating_add(tokens);
+        let coverage_key = coverage_name(&coverage).to_owned();
+        let previous = report.token_observations.remove(&coverage_key).unwrap_or(0);
+        report
+            .token_observations
+            .insert(coverage_key, previous.saturating_add(observations));
+        if unknown > 0 || coverage != CoverageState::Complete {
+            increment(&mut report.coverage_events, "partial");
+        } else {
+            let previous = report.coverage_events.remove("complete").unwrap_or(0);
+            report
+                .coverage_events
+                .insert("complete".into(), previous.saturating_add(observations));
+        }
+        *report.activities.entry((phase.clone(), activity.clone())).or_default() = report
+            .activities
+            .get(&(phase.clone(), activity.clone()))
+            .copied()
+            .unwrap_or(0)
+            .saturating_add(tokens);
+        *report
+            .activity_provenance
+            .entry((phase.clone(), activity, provenance))
+            .or_default() = observations;
+        if let Some(index) = bucket_index(at, start_ms, bucket_ms, bucket_count) {
+            report.token_buckets_observed[index] = true;
+            let previous = report.phase_series[index].remove(&phase).unwrap_or(0);
+            report.phase_series[index].insert(phase, previous.saturating_add(tokens));
+            report.bucket_coverage[index] = if coverage == CoverageState::Complete
+                && report.bucket_coverage[index] != CoverageState::Partial
+            {
+                CoverageState::Complete
+            } else {
+                CoverageState::Partial
+            };
+        }
+    }
     Ok(report)
 }
 
