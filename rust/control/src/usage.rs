@@ -39,7 +39,7 @@ use crate::repository::Registry;
 
 #[path = "usage_cost.rs"]
 mod cost;
-use cost::{CostBuckets, RequestTokens, cost_from_buckets, merge_cost_bucket};
+use cost::{CostBuckets, RequestTokens, cost_from_buckets, merge_cost_bucket, request_cost};
 
 #[path = "usage_cache.rs"]
 mod cache;
@@ -339,12 +339,12 @@ impl UsageService {
         self.attach_outcome_titles(&mut report)?;
         if params.wait_for_refresh {
             self.usage.wait_for_refresh(Some(&repository.repository_id));
-            let mut report = self
-                .usage
-                .repository_full_with_selection(&repository, params.range.clone(), selection.clone())?;
-            if report.coverage.available_collectors == 0
-                && report.totals.total_tokens.is_none()
-            {
+            let mut report = self.usage.repository_full_with_selection(
+                &repository,
+                params.range.clone(),
+                selection.clone(),
+            )?;
+            if report.coverage.available_collectors == 0 && report.totals.total_tokens.is_none() {
                 let fast = self.usage.repository_projection(
                     &repository,
                     params.range,
@@ -773,7 +773,9 @@ impl CodexUsage {
             selection
                 .as_ref()
                 .and_then(|selection| selection.scope.selected_worktree_ids.as_ref()),
-            selection.as_ref().is_none_or(|selection| selection.include_unassigned),
+            selection
+                .as_ref()
+                .is_none_or(|selection| selection.include_unassigned),
             rate_cards.revision
         );
         let mut empty = combine(
@@ -911,7 +913,9 @@ impl CodexUsage {
                         selection
                             .as_ref()
                             .and_then(|selection| selection.source_keys.get(&source.uid)),
-                        selection.as_ref().map(|selection| selection.include_unassigned),
+                        selection
+                            .as_ref()
+                            .map(|selection| selection.include_unassigned),
                     ) {
                         Ok(report) => reports.push((source.uid, report)),
                         Err(reason) if reason == "mapping_unavailable" && resolve_missing => {
@@ -929,10 +933,12 @@ impl CodexUsage {
                                         deadline,
                                         projection,
                                         &rate_cards.cards,
+                                        selection.as_ref().and_then(|selection| {
+                                            selection.source_keys.get(&source.uid)
+                                        }),
                                         selection
                                             .as_ref()
-                                            .and_then(|selection| selection.source_keys.get(&source.uid)),
-                                        selection.as_ref().map(|selection| selection.include_unassigned),
+                                            .map(|selection| selection.include_unassigned),
                                     )
                                     .map_err(source_error)
                                 }) {
@@ -958,7 +964,9 @@ impl CodexUsage {
             self.config.codex_usage_sources.len(),
         );
         if let Some(mut selection) = selection {
-            selection.scope.attribution_available = reports.iter().any(|(_, source)| source.database_schema >= 9);
+            selection.scope.attribution_available = reports
+                .iter()
+                .any(|(_, source)| source.database_schema >= 9);
             report.worktree_scope = Some(selection.scope);
         }
         if !progress.is_empty() {
@@ -1101,12 +1109,17 @@ impl CodexUsage {
         rows.sort_by(|left, right| {
             let left_root = left.1 == repository.root_path;
             let right_root = right.1 == repository.root_path;
-            right_root.cmp(&left_root).then_with(|| left.0.cmp(&right.0))
+            right_root
+                .cmp(&left_root)
+                .then_with(|| left.0.cmp(&right.0))
         });
 
         let requested_set = requested.map(|ids| ids.iter().cloned().collect::<BTreeSet<_>>());
         if let Some(ids) = &requested_set {
-            if ids.iter().any(|id| !rows.iter().any(|(known, _)| known == id)) {
+            if ids
+                .iter()
+                .any(|id| !rows.iter().any(|(known, _)| known == id))
+            {
                 return Err(ProtocolError::new(
                     ErrorCode::ParamsInvalid,
                     "usage worktree is not registered for this repository",
@@ -1143,7 +1156,10 @@ impl CodexUsage {
             .collect::<BTreeMap<_, _>>();
         if labels.values().collect::<BTreeSet<_>>().len() != labels.len() {
             for (id, path) in &rows {
-                let base = labels.get(id).cloned().unwrap_or_else(|| "repository".into());
+                let base = labels
+                    .get(id)
+                    .cloned()
+                    .unwrap_or_else(|| "repository".into());
                 let parent = path
                     .parent()
                     .and_then(|value| value.file_name())
@@ -1155,16 +1171,20 @@ impl CodexUsage {
         }
         let mut scope_rows = Vec::with_capacity(rows.len());
         for (id, _) in &rows {
-            let available = requested.is_some() && self.config.codex_usage_sources.iter().any(|source| {
-                source_keys_by_worktree
-                    .get(id)
-                    .and_then(|keys| keys.get(&source.uid))
-                    .and_then(Option::as_ref)
-                    .is_some()
-            });
+            let available = requested.is_some()
+                && self.config.codex_usage_sources.iter().any(|source| {
+                    source_keys_by_worktree
+                        .get(id)
+                        .and_then(|keys| keys.get(&source.uid))
+                        .and_then(Option::as_ref)
+                        .is_some()
+                });
             scope_rows.push(UsageWorktree {
                 worktree_id: id.clone(),
-                label: labels.get(id).cloned().unwrap_or_else(|| "repository".into()),
+                label: labels
+                    .get(id)
+                    .cloned()
+                    .unwrap_or_else(|| "repository".into()),
                 available,
             });
         }
@@ -1192,7 +1212,9 @@ impl CodexUsage {
                         .and_then(Option::clone)
                     {
                         Some(key) => keys.push(key),
-                        None => { unavailable_sources.insert(source.uid); },
+                        None => {
+                            unavailable_sources.insert(source.uid);
+                        }
                     }
                 }
                 keys
@@ -1205,9 +1227,11 @@ impl CodexUsage {
                 selected_worktree_ids: requested.map(|ids| ids.to_vec()),
                 include_unassigned,
                 attribution_available: requested.is_none()
-                    || self.config.codex_usage_sources.iter().any(|source| {
-                        !unavailable_sources.contains(&source.uid)
-                    }),
+                    || self
+                        .config
+                        .codex_usage_sources
+                        .iter()
+                        .any(|source| !unavailable_sources.contains(&source.uid)),
             },
             include_unassigned,
             source_keys,
@@ -1244,8 +1268,13 @@ impl CodexUsage {
             .filter(|key| valid_repository_key(key));
         // A shared-budget expiry does not permanently mark remaining paths
         // unavailable; successful earlier probes stay cached for the retry.
-        if Instant::now() < deadline && let Ok(mut cache) = self.worktree_keys.lock() {
-            cache.insert(cache_key, (Instant::now() + Duration::from_secs(300), resolved.clone()));
+        if Instant::now() < deadline
+            && let Ok(mut cache) = self.worktree_keys.lock()
+        {
+            cache.insert(
+                cache_key,
+                (Instant::now() + Duration::from_secs(300), resolved.clone()),
+            );
             while cache.len() > 256 {
                 if let Some(oldest) = cache
                     .iter()
@@ -1344,7 +1373,9 @@ impl CodexUsage {
                     |row| row.get(0),
                 )
                 .unwrap_or(false);
-            if cached_rollup && matches!(projection, Projection::Tokens | Projection::PerformanceFast) {
+            if cached_rollup
+                && matches!(projection, Projection::Tokens | Projection::PerformanceFast)
+            {
                 return cached_dimension_token_report(
                     &connection,
                     &family,
@@ -1354,6 +1385,7 @@ impl CodexUsage {
                     end_ms,
                     bucket_ms,
                     bucket_count,
+                    rate_cards,
                 );
             }
             let canonical: bool = schema >= 7 && connection.query_row("SELECT COUNT(*)=1 FROM pragma_table_info('token_observations') WHERE name='source_event_id'",[],|r|r.get(0)).unwrap_or(false);
@@ -1649,11 +1681,15 @@ fn filter_worktree_facts(
             }
         }
     }
-    facts.operations.retain(|id, _| {
-        matching.contains(id) || include_unassigned && !assigned.contains(id)
-    });
-    facts.tokens.retain(|token| facts.operations.contains_key(&token.owner));
-    facts.waits.retain(|owner, _| facts.operations.contains_key(owner));
+    facts
+        .operations
+        .retain(|id, _| matching.contains(id) || include_unassigned && !assigned.contains(id));
+    facts
+        .tokens
+        .retain(|token| facts.operations.contains_key(&token.owner));
+    facts
+        .waits
+        .retain(|owner, _| facts.operations.contains_key(owner));
     Ok(())
 }
 
@@ -1955,6 +1991,7 @@ fn cached_dimension_token_report(
     end_ms: u64,
     bucket_ms: u64,
     bucket_count: usize,
+    rate_cards: &[devcoordinator2_api::rate_card::RateCard],
 ) -> Result<SourceReport, String> {
     let repositories = serde_json::to_string(family).map_err(|_| "source_unavailable")?;
     let lower_hour = i64_value(start_ms / 3_600_000)?;
@@ -2023,7 +2060,10 @@ fn cached_dimension_token_report(
                 .coverage_events
                 .insert("complete".into(), previous.saturating_add(observations));
         }
-        *report.activities.entry((phase.clone(), activity.clone())).or_default() = report
+        *report
+            .activities
+            .entry((phase.clone(), activity.clone()))
+            .or_default() = report
             .activities
             .get(&(phase.clone(), activity.clone()))
             .copied()
@@ -2046,7 +2086,205 @@ fn cached_dimension_token_report(
             };
         }
     }
+    add_cached_costs(
+        connection,
+        &mut report,
+        family,
+        start_ms,
+        end_ms,
+        rate_cards,
+    )?;
     Ok(report)
+}
+
+/// Enrich the indexed token dimensions with the provider's compact, timestamped
+/// model receipts. The dimension rollup is the fast source for chart totals;
+/// model receipts retain the component boundary needed to apply a rate card to
+/// the requested window without treating lifetime cost totals as a window.
+#[allow(clippy::too_many_arguments)]
+fn add_cached_costs(
+    connection: &Connection,
+    report: &mut SourceReport,
+    family: &[String],
+    start_ms: u64,
+    end_ms: u64,
+    rate_cards: &[devcoordinator2_api::rate_card::RateCard],
+) -> Result<(), String> {
+    let has_model_usage: bool = connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name='_usage_report_model_usage')",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap_or(false);
+    if !has_model_usage {
+        return Ok(());
+    }
+    let has_owner_dimensions: bool = connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name='_usage_report_owner_dimensions')",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap_or(false);
+    let repositories = serde_json::to_string(family).map_err(|_| "source_unavailable")?;
+    let owner_select = if has_owner_dimensions {
+        "owner.phase, owner.activity, owner.provenance, owner.outcome_id"
+    } else {
+        "NULL, NULL, NULL, NULL"
+    };
+    let owner_join = if has_owner_dimensions {
+        "LEFT JOIN _usage_report_owner_dimensions owner ON owner.operation_id = request.operation_id"
+    } else {
+        ""
+    };
+    let sql = format!(
+        "SELECT receipt.model_request_id, receipt.source_event_id, request.provider_kind, request.model, {owner_select}, \
+                receipt.input_tokens, receipt.input_tokens_at_ms, \
+                receipt.cached_input_tokens, receipt.cached_input_tokens_at_ms, \
+                receipt.cache_write_tokens, receipt.cache_write_tokens_at_ms, \
+                receipt.output_tokens, receipt.output_tokens_at_ms, \
+                receipt.total_tokens, receipt.total_tokens_at_ms, \
+                receipt.reasoning_tokens, receipt.reasoning_tokens_at_ms, receipt.complete_mask \
+           FROM _usage_report_model_usage receipt \
+           JOIN model_requests request ON request.id = receipt.model_request_id \
+           {owner_join} \
+          WHERE receipt.repository_bucket IN (SELECT value FROM json_each(?1)) \
+            AND ((receipt.input_tokens_at_ms >= ?2 AND receipt.input_tokens_at_ms < ?3) \
+              OR (receipt.cached_input_tokens_at_ms >= ?2 AND receipt.cached_input_tokens_at_ms < ?3) \
+              OR (receipt.cache_write_tokens_at_ms >= ?2 AND receipt.cache_write_tokens_at_ms < ?3) \
+              OR (receipt.output_tokens_at_ms >= ?2 AND receipt.output_tokens_at_ms < ?3) \
+              OR (receipt.total_tokens_at_ms >= ?2 AND receipt.total_tokens_at_ms < ?3) \
+              OR (receipt.reasoning_tokens_at_ms >= ?2 AND receipt.reasoning_tokens_at_ms < ?3))"
+    );
+    let mut statement = connection.prepare(&sql).map_err(|_| "source_unavailable")?;
+    let mut rows = statement
+        .query(rusqlite::params![
+            repositories,
+            i64_value(start_ms)?,
+            i64_value(end_ms)?
+        ])
+        .map_err(|_| "source_unavailable")?;
+    let mut request_ids = BTreeSet::new();
+    let mut operation_ids = BTreeSet::new();
+    let mut operation_activity = BTreeSet::new();
+    while let Some(row) = rows.next().map_err(|_| "source_unavailable")? {
+        let request_id = row.get::<_, String>(0).map_err(|_| "source_unavailable")?;
+        let provider_kind = row
+            .get::<_, Option<String>>(2)
+            .map_err(|_| "source_unavailable")?;
+        let model = row
+            .get::<_, Option<String>>(3)
+            .map_err(|_| "source_unavailable")?;
+        let phase = safe_phase(
+            &row.get::<_, Option<String>>(4)
+                .map_err(|_| "source_unavailable")?
+                .unwrap_or_else(|| "unattributed".into()),
+        );
+        let activity = safe_label(
+            &row.get::<_, Option<String>>(5)
+                .map_err(|_| "source_unavailable")?
+                .unwrap_or_else(|| "unknown".into()),
+        );
+        let provenance = safe_label(
+            &row.get::<_, Option<String>>(6)
+                .map_err(|_| "source_unavailable")?
+                .unwrap_or_else(|| "unknown".into()),
+        );
+        let outcome_id = row
+            .get::<_, Option<String>>(7)
+            .map_err(|_| "source_unavailable")?
+            .filter(|value| !value.is_empty());
+        let operation_id = request_id.clone();
+        let operation = Operation {
+            id: operation_id.clone(),
+            kind: "model_request".into(),
+            agent_id: None,
+            started_at_ms: 0,
+            finished_at_ms: None,
+            phase: phase.clone(),
+            activity: activity.clone(),
+            activity_state: "model_active".into(),
+            provenance: provenance.clone(),
+            terminal_event: None,
+            tool_family: None,
+            provider_kind,
+            model,
+            outcome_id,
+        };
+        let complete_mask: u64 = row
+            .get::<_, i64>(20)
+            .map_err(|_| "source_unavailable")?
+            .try_into()
+            .map_err(|_| "source_unavailable")?;
+        let mut request = RequestTokens::default();
+        let components = [
+            ("input_tokens", 8, 1_u64),
+            ("input_tokens_details.cached_tokens", 10, 2_u64),
+            ("input_tokens_details.cache_write_tokens", 12, 4_u64),
+            ("output_tokens", 14, 8_u64),
+            ("total_tokens", 16, 16_u64),
+            ("output_tokens_details.reasoning_tokens", 18, 32_u64),
+        ];
+        for (category, value_column, mask) in components {
+            let value = row
+                .get::<_, Option<i64>>(value_column)
+                .map_err(|_| "source_unavailable")?
+                .and_then(|value| u64::try_from(value).ok());
+            let at = row
+                .get::<_, Option<i64>>(value_column + 1)
+                .map_err(|_| "source_unavailable")?
+                .and_then(|value| u64::try_from(value).ok())
+                .filter(|at| *at >= start_ms && *at < end_ms);
+            if let Some(at) = at {
+                request.observe(category, value, complete_mask & mask == 0, at);
+                if let Some(value) = value {
+                    *report.tokens.entry(category.into()).or_default() = report
+                        .tokens
+                        .get(category)
+                        .copied()
+                        .unwrap_or(0)
+                        .saturating_add(value);
+                    report.freshest_at_ms = Some(report.freshest_at_ms.unwrap_or(0).max(at));
+                }
+            }
+        }
+        let has_observation = !request.fields.is_empty();
+        if !has_observation {
+            continue;
+        }
+        report.evidence = true;
+        request_ids.insert(request_id);
+        operation_ids.insert(operation_id.clone());
+        operation_activity.insert((operation_id, phase.clone(), activity.clone()));
+        let bucket = request_cost(&operation, &request, rate_cards);
+        merge_cost_bucket(
+            report
+                .activity_costs
+                .entry((phase.clone(), activity.clone()))
+                .or_default(),
+            &bucket,
+        );
+        if let Some(outcome) = &operation.outcome_id {
+            merge_cost_bucket(
+                report.outcome_costs.entry(outcome.clone()).or_default(),
+                &bucket,
+            );
+        }
+    }
+    report.model_request_count = report
+        .model_request_count
+        .saturating_add(u64::try_from(request_ids.len()).unwrap_or(u64::MAX));
+    report.operation_count = report
+        .operation_count
+        .saturating_add(u64::try_from(operation_ids.len()).unwrap_or(u64::MAX));
+    for (_, phase, activity) in operation_activity {
+        *report
+            .activity_operations
+            .entry((phase, activity))
+            .or_default() += 1;
+    }
+    Ok(())
 }
 
 // Progress needs provider totals by observation time, without loading every
@@ -3549,6 +3787,95 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn cached_cost_projection_uses_windowed_model_receipts() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE _usage_report_model_usage(
+                    model_request_id TEXT NOT NULL,
+                    source_event_id TEXT NOT NULL,
+                    repository_bucket TEXT NOT NULL,
+                    input_tokens INTEGER,
+                    input_tokens_at_ms INTEGER,
+                    cached_input_tokens INTEGER,
+                    cached_input_tokens_at_ms INTEGER,
+                    cache_write_tokens INTEGER,
+                    cache_write_tokens_at_ms INTEGER,
+                    output_tokens INTEGER,
+                    output_tokens_at_ms INTEGER,
+                    total_tokens INTEGER,
+                    total_tokens_at_ms INTEGER,
+                    reasoning_tokens INTEGER,
+                    reasoning_tokens_at_ms INTEGER,
+                    complete_mask INTEGER NOT NULL
+                );
+                CREATE TABLE model_requests(
+                    id TEXT PRIMARY KEY,
+                    operation_id TEXT NOT NULL,
+                    provider_kind TEXT,
+                    model TEXT
+                );
+                CREATE TABLE _usage_report_owner_dimensions(
+                    operation_id TEXT PRIMARY KEY,
+                    phase TEXT,
+                    activity TEXT,
+                    provenance TEXT,
+                    outcome_id TEXT
+                );
+                INSERT INTO model_requests VALUES('request-1','operation-1','openai','gpt-6-sol');
+                INSERT INTO _usage_report_owner_dimensions VALUES('operation-1','implementation','coding','agent_declared','');
+                INSERT INTO _usage_report_model_usage VALUES(
+                    'request-1','event-1','repo-1',1000,1500,400,1500,0,1500,100,1500,
+                    1100,1500,20,1500,63
+                );",
+            )
+            .unwrap();
+        let card = devcoordinator2_api::rate_card::RateCard {
+            card_id: "test-gpt-6-sol".into(),
+            version: 1,
+            provider: "openai".into(),
+            model_pattern: "gpt-6-sol".into(),
+            processing_tier: "standard".into(),
+            context_tier: "short".into(),
+            effective_from_ms: 0,
+            effective_to_ms: None,
+            input_usd_micros_per_million: 1_000_000,
+            cached_input_usd_micros_per_million: 1_000_000,
+            cache_write_usd_micros_per_million: 1_000_000,
+            output_usd_micros_per_million: 1_000_000,
+            source_ref: "fixture".into(),
+            active: true,
+        };
+        let mut report = SourceReport {
+            phase_series: vec![BTreeMap::new()],
+            token_buckets_observed: vec![false],
+            bucket_coverage: vec![CoverageState::Unobserved],
+            ..Default::default()
+        };
+        add_cached_costs(
+            &connection,
+            &mut report,
+            &["repo-1".into()],
+            1_000,
+            2_000,
+            &[card],
+        )
+        .unwrap();
+        assert_eq!(report.model_request_count, 1);
+        assert_eq!(report.tokens.get("total_tokens"), Some(&1_100));
+        assert_eq!(report.tokens.get("input_tokens"), Some(&1_000));
+        let cost = cost_from_buckets(
+            report
+                .activity_costs
+                .get(&("implementation".into(), "coding".into()))
+                .unwrap(),
+        );
+        assert_eq!(cost.status, "complete");
+        assert_eq!(cost.estimated_usd_micros, Some(1_100));
+        assert_eq!(cost.model_requests, 1);
+    }
+
+    #[test]
     fn api_equivalent_cost_uses_mutually_exclusive_standard_token_components() {
         let mut buckets = CostBuckets::default();
         buckets.models.insert(
@@ -4360,7 +4687,12 @@ pub(crate) mod tests {
         // output limits must terminate that probe rather than wait for the child.
         let mut failures = Vec::new();
         for (name, tail, budget, expected) in [
-            ("deadline", "wait", Duration::from_millis(150), "query_budget_exhausted"),
+            (
+                "deadline",
+                "wait",
+                Duration::from_millis(150),
+                "query_budget_exhausted",
+            ),
             (
                 "parent-exits",
                 "exit 0",
@@ -4375,10 +4707,16 @@ pub(crate) mod tests {
             ),
         ] {
             let child_file = temporary.path().join(format!("{name}.child"));
-            let quoted = format!("'{}'", child_file.display().to_string().replace('\'', "'\"'\"'"));
+            let quoted = format!(
+                "'{}'",
+                child_file.display().to_string().replace('\'', "'\"'\"'")
+            );
             let mut command = Command::new("/bin/sh");
             command
-                .args(["-c", &format!("sleep 1 & printf '%s' \"$!\" > {quoted}; {tail}")])
+                .args([
+                    "-c",
+                    &format!("sleep 1 & printf '%s' \"$!\" > {quoted}; {tail}"),
+                ])
                 .stdin(Stdio::null())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped());
