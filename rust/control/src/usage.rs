@@ -1339,7 +1339,7 @@ impl CodexUsage {
             }
             let cached_rollup: bool = connection
                 .query_row(
-                    "SELECT schema_version = 1 AND ready = 1 FROM _usage_report_cache_meta WHERE singleton = 1",
+                    "SELECT schema_version >= 1 AND ready = 1 FROM _usage_report_cache_meta WHERE singleton = 1",
                     [],
                     |row| row.get(0),
                 )
