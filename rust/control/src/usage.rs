@@ -39,7 +39,7 @@ use crate::repository::Registry;
 
 #[path = "usage_cost.rs"]
 mod cost;
-use cost::{CostBuckets, RequestTokens, cost_from_buckets, merge_cost_bucket, request_cost};
+use cost::{CostBuckets, RequestTokens, aggregate_cost, cost_from_buckets, merge_cost_bucket};
 
 #[path = "usage_cache.rs"]
 mod cache;
@@ -216,6 +216,14 @@ struct SourceReport {
     phase_unknown: BTreeMap<String, u64>,
     activity_costs: BTreeMap<(String, String), CostBuckets>,
     outcome_costs: BTreeMap<String, CostBuckets>,
+}
+
+#[derive(Default)]
+struct CachedCostAggregate {
+    values: BTreeMap<String, u64>,
+    observations: u64,
+    unknown_observations: u64,
+    latest_at_ms: u64,
 }
 
 #[derive(Clone)]
@@ -2086,7 +2094,7 @@ fn cached_dimension_token_report(
             };
         }
     }
-    add_cached_costs(
+    add_cached_dimension_costs(
         connection,
         &mut report,
         family,
@@ -2097,12 +2105,11 @@ fn cached_dimension_token_report(
     Ok(report)
 }
 
-/// Enrich the indexed token dimensions with the provider's compact, timestamped
-/// model receipts. The dimension rollup is the fast source for chart totals;
-/// model receipts retain the component boundary needed to apply a rate card to
-/// the requested window without treating lifetime cost totals as a window.
+/// Enrich the indexed token dimensions with model/provider components from the
+/// same hourly rollup. This keeps the cached path bounded by the producer's
+/// primary key and avoids scanning the lifetime model receipt table.
 #[allow(clippy::too_many_arguments)]
-fn add_cached_costs(
+fn add_cached_dimension_costs(
     connection: &Connection,
     report: &mut SourceReport,
     family: &[String],
@@ -2110,154 +2117,97 @@ fn add_cached_costs(
     end_ms: u64,
     rate_cards: &[devcoordinator2_api::rate_card::RateCard],
 ) -> Result<(), String> {
-    let has_model_usage: bool = connection
-        .query_row(
-            "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name='_usage_report_model_usage')",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap_or(false);
-    if !has_model_usage {
-        return Ok(());
-    }
-    let has_owner_dimensions: bool = connection
-        .query_row(
-            "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name='_usage_report_owner_dimensions')",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap_or(false);
     let repositories = serde_json::to_string(family).map_err(|_| "source_unavailable")?;
-    let owner_select = if has_owner_dimensions {
-        "owner.phase, owner.activity, owner.provenance, owner.outcome_id"
-    } else {
-        "NULL, NULL, NULL, NULL"
-    };
-    let owner_join = if has_owner_dimensions {
-        "LEFT JOIN _usage_report_owner_dimensions owner ON owner.operation_id = request.operation_id"
-    } else {
-        ""
-    };
-    let sql = format!(
-        "SELECT receipt.model_request_id, receipt.source_event_id, request.provider_kind, request.model, {owner_select}, \
-                receipt.input_tokens, receipt.input_tokens_at_ms, \
-                receipt.cached_input_tokens, receipt.cached_input_tokens_at_ms, \
-                receipt.cache_write_tokens, receipt.cache_write_tokens_at_ms, \
-                receipt.output_tokens, receipt.output_tokens_at_ms, \
-                receipt.total_tokens, receipt.total_tokens_at_ms, \
-                receipt.reasoning_tokens, receipt.reasoning_tokens_at_ms, receipt.complete_mask \
-           FROM _usage_report_model_usage receipt \
-           JOIN model_requests request ON request.id = receipt.model_request_id \
-           {owner_join} \
-          WHERE receipt.repository_bucket IN (SELECT value FROM json_each(?1)) \
-            AND ((receipt.input_tokens_at_ms >= ?2 AND receipt.input_tokens_at_ms < ?3) \
-              OR (receipt.cached_input_tokens_at_ms >= ?2 AND receipt.cached_input_tokens_at_ms < ?3) \
-              OR (receipt.cache_write_tokens_at_ms >= ?2 AND receipt.cache_write_tokens_at_ms < ?3) \
-              OR (receipt.output_tokens_at_ms >= ?2 AND receipt.output_tokens_at_ms < ?3) \
-              OR (receipt.total_tokens_at_ms >= ?2 AND receipt.total_tokens_at_ms < ?3) \
-              OR (receipt.reasoning_tokens_at_ms >= ?2 AND receipt.reasoning_tokens_at_ms < ?3))"
-    );
-    let mut statement = connection.prepare(&sql).map_err(|_| "source_unavailable")?;
+    let lower_hour = i64_value(start_ms / 3_600_000)?;
+    let upper_hour = i64_value(end_ms.saturating_add(3_599_999) / 3_600_000)?;
+    let sql = r#"
+        SELECT hour_index, model, provider_kind, phase, activity, provenance,
+               category_path, measured_tokens, unknown_observations,
+               observation_count, coverage_state
+          FROM _usage_report_dimension_tokens INDEXED BY sqlite_autoindex__usage_report_dimension_tokens_1
+         WHERE hour_index >= ?2 AND hour_index < ?3
+           AND repository_bucket IN (SELECT value FROM json_each(?1))
+           AND measurement_provenance = 'provider_reported'
+           AND category_path IN (
+             'input_tokens', 'input_tokens_details.cached_tokens',
+             'input_tokens_details.cache_write_tokens', 'output_tokens',
+             'output_tokens_details.reasoning_tokens', 'total_tokens'
+           )
+    "#;
+    let mut statement = connection.prepare(sql).map_err(|_| "source_unavailable")?;
     let mut rows = statement
-        .query(rusqlite::params![
-            repositories,
-            i64_value(start_ms)?,
-            i64_value(end_ms)?
-        ])
+        .query(rusqlite::params![repositories, lower_hour, upper_hour])
         .map_err(|_| "source_unavailable")?;
-    let mut request_ids = BTreeSet::new();
-    let mut operation_ids = BTreeSet::new();
-    let mut operation_activity = BTreeSet::new();
+    let mut groups =
+        BTreeMap::<(String, String, String, String, String), CachedCostAggregate>::new();
     while let Some(row) = rows.next().map_err(|_| "source_unavailable")? {
-        let request_id = row.get::<_, String>(0).map_err(|_| "source_unavailable")?;
-        let provider_kind = row
-            .get::<_, Option<String>>(2)
-            .map_err(|_| "source_unavailable")?;
-        let model = row
-            .get::<_, Option<String>>(3)
-            .map_err(|_| "source_unavailable")?;
-        let phase = safe_phase(
-            &row.get::<_, Option<String>>(4)
-                .map_err(|_| "source_unavailable")?
-                .unwrap_or_else(|| "unattributed".into()),
-        );
-        let activity = safe_label(
-            &row.get::<_, Option<String>>(5)
-                .map_err(|_| "source_unavailable")?
-                .unwrap_or_else(|| "unknown".into()),
-        );
-        let provenance = safe_label(
-            &row.get::<_, Option<String>>(6)
-                .map_err(|_| "source_unavailable")?
-                .unwrap_or_else(|| "unknown".into()),
-        );
-        let outcome_id = row
-            .get::<_, Option<String>>(7)
-            .map_err(|_| "source_unavailable")?
-            .filter(|value| !value.is_empty());
-        let operation_id = request_id.clone();
-        let operation = Operation {
-            id: operation_id.clone(),
-            kind: "model_request".into(),
-            agent_id: None,
-            started_at_ms: 0,
-            finished_at_ms: None,
-            phase: phase.clone(),
-            activity: activity.clone(),
-            activity_state: "model_active".into(),
-            provenance: provenance.clone(),
-            terminal_event: None,
-            tool_family: None,
-            provider_kind,
-            model,
-            outcome_id,
-        };
-        let complete_mask: u64 = row
-            .get::<_, i64>(20)
+        let hour: u64 = row
+            .get::<_, i64>(0)
             .map_err(|_| "source_unavailable")?
             .try_into()
             .map_err(|_| "source_unavailable")?;
-        let mut request = RequestTokens::default();
-        let components = [
-            ("input_tokens", 8, 1_u64),
-            ("input_tokens_details.cached_tokens", 10, 2_u64),
-            ("input_tokens_details.cache_write_tokens", 12, 4_u64),
-            ("output_tokens", 14, 8_u64),
-            ("total_tokens", 16, 16_u64),
-            ("output_tokens_details.reasoning_tokens", 18, 32_u64),
-        ];
-        for (category, value_column, mask) in components {
-            let value = row
-                .get::<_, Option<i64>>(value_column)
-                .map_err(|_| "source_unavailable")?
-                .and_then(|value| u64::try_from(value).ok());
-            let at = row
-                .get::<_, Option<i64>>(value_column + 1)
-                .map_err(|_| "source_unavailable")?
-                .and_then(|value| u64::try_from(value).ok())
-                .filter(|at| *at >= start_ms && *at < end_ms);
-            if let Some(at) = at {
-                request.observe(category, value, complete_mask & mask == 0, at);
-                if let Some(value) = value {
-                    *report.tokens.entry(category.into()).or_default() = report
-                        .tokens
-                        .get(category)
-                        .copied()
-                        .unwrap_or(0)
-                        .saturating_add(value);
-                    report.freshest_at_ms = Some(report.freshest_at_ms.unwrap_or(0).max(at));
-                }
-            }
-        }
-        let has_observation = !request.fields.is_empty();
-        if !has_observation {
+        let model = safe_label(&row.get::<_, String>(1).map_err(|_| "source_unavailable")?);
+        let provider = safe_label(&row.get::<_, String>(2).map_err(|_| "source_unavailable")?);
+        let phase = safe_phase(&row.get::<_, String>(3).map_err(|_| "source_unavailable")?);
+        let activity = safe_label(&row.get::<_, String>(4).map_err(|_| "source_unavailable")?);
+        let provenance = safe_label(&row.get::<_, String>(5).map_err(|_| "source_unavailable")?);
+        let category = row.get::<_, String>(6).map_err(|_| "source_unavailable")?;
+        let value: u64 = row
+            .get::<_, i64>(7)
+            .map_err(|_| "source_unavailable")?
+            .try_into()
+            .map_err(|_| "source_unavailable")?;
+        let unknown: u64 = row
+            .get::<_, i64>(8)
+            .map_err(|_| "source_unavailable")?
+            .try_into()
+            .map_err(|_| "source_unavailable")?;
+        let observations: u64 = row
+            .get::<_, i64>(9)
+            .map_err(|_| "source_unavailable")?
+            .try_into()
+            .map_err(|_| "source_unavailable")?;
+        let coverage = safe_coverage(&row.get::<_, String>(10).map_err(|_| "source_unavailable")?);
+        let key = (phase, activity, provenance, model, provider);
+        let group = groups.entry(key).or_default();
+        *group.values.entry(category).or_default() = group
+            .values
+            .get(&category)
+            .copied()
+            .unwrap_or(0)
+            .saturating_add(value);
+        group.observations = group.observations.max(observations);
+        group.unknown_observations = group
+            .unknown_observations
+            .saturating_add(unknown)
+            .saturating_add(u64::from(coverage != CoverageState::Complete));
+        group.latest_at_ms = group.latest_at_ms.max(hour.saturating_mul(3_600_000));
+    }
+    for ((phase, activity, _provenance, model, provider), group) in groups {
+        let Some(observations) = (group.observations > 0).then_some(group.observations) else {
             continue;
-        }
+        };
         report.evidence = true;
-        request_ids.insert(request_id);
-        operation_ids.insert(operation_id.clone());
-        operation_activity.insert((operation_id, phase.clone(), activity.clone()));
-        let bucket = request_cost(&operation, &request, rate_cards);
+        for (category, value) in &group.values {
+            if category == "total_tokens" && report.tokens.contains_key(category) {
+                continue;
+            }
+            *report.tokens.entry(category.clone()).or_default() = report
+                .tokens
+                .get(category)
+                .copied()
+                .unwrap_or(0)
+                .saturating_add(*value);
+        }
+        let bucket = aggregate_cost(
+            &provider,
+            &model,
+            &group.values,
+            observations,
+            group.unknown_observations > 0,
+            group.latest_at_ms,
+            rate_cards,
+        );
         merge_cost_bucket(
             report
                 .activity_costs
@@ -2265,24 +2215,12 @@ fn add_cached_costs(
                 .or_default(),
             &bucket,
         );
-        if let Some(outcome) = &operation.outcome_id {
-            merge_cost_bucket(
-                report.outcome_costs.entry(outcome.clone()).or_default(),
-                &bucket,
-            );
-        }
-    }
-    report.model_request_count = report
-        .model_request_count
-        .saturating_add(u64::try_from(request_ids.len()).unwrap_or(u64::MAX));
-    report.operation_count = report
-        .operation_count
-        .saturating_add(u64::try_from(operation_ids.len()).unwrap_or(u64::MAX));
-    for (_, phase, activity) in operation_activity {
+        report.model_request_count = report.model_request_count.saturating_add(observations);
+        report.operation_count = report.operation_count.saturating_add(observations);
         *report
             .activity_operations
             .entry((phase, activity))
-            .or_default() += 1;
+            .or_default() += observations;
     }
     Ok(())
 }
@@ -3787,47 +3725,37 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn cached_cost_projection_uses_windowed_model_receipts() {
+    fn cached_cost_projection_prices_model_dimensions() {
         let connection = Connection::open_in_memory().unwrap();
         connection
             .execute_batch(
-                "CREATE TABLE _usage_report_model_usage(
-                    model_request_id TEXT NOT NULL,
-                    source_event_id TEXT NOT NULL,
+                "CREATE TABLE _usage_report_dimension_tokens(
+                    hour_index INTEGER NOT NULL,
                     repository_bucket TEXT NOT NULL,
-                    input_tokens INTEGER,
-                    input_tokens_at_ms INTEGER,
-                    cached_input_tokens INTEGER,
-                    cached_input_tokens_at_ms INTEGER,
-                    cache_write_tokens INTEGER,
-                    cache_write_tokens_at_ms INTEGER,
-                    output_tokens INTEGER,
-                    output_tokens_at_ms INTEGER,
-                    total_tokens INTEGER,
-                    total_tokens_at_ms INTEGER,
-                    reasoning_tokens INTEGER,
-                    reasoning_tokens_at_ms INTEGER,
-                    complete_mask INTEGER NOT NULL
+                    thread_id TEXT NOT NULL,
+                    model TEXT NOT NULL,
+                    provider_kind TEXT NOT NULL,
+                    native_project_id TEXT NOT NULL,
+                    workstream_id TEXT NOT NULL,
+                    outcome_id TEXT NOT NULL,
+                    phase TEXT NOT NULL,
+                    activity TEXT NOT NULL,
+                    provenance TEXT NOT NULL,
+                    category_path TEXT NOT NULL,
+                    measurement_provenance TEXT NOT NULL,
+                    coverage_state TEXT NOT NULL,
+                    measured_tokens INTEGER NOT NULL,
+                    unknown_observations INTEGER NOT NULL,
+                    observation_count INTEGER NOT NULL,
+                    aggregate_overflow INTEGER NOT NULL,
+                    PRIMARY KEY(hour_index,repository_bucket,thread_id,model,provider_kind,native_project_id,workstream_id,outcome_id,phase,activity,provenance,category_path,measurement_provenance,coverage_state)
                 );
-                CREATE TABLE model_requests(
-                    id TEXT PRIMARY KEY,
-                    operation_id TEXT NOT NULL,
-                    provider_kind TEXT,
-                    model TEXT
-                );
-                CREATE TABLE _usage_report_owner_dimensions(
-                    operation_id TEXT PRIMARY KEY,
-                    phase TEXT,
-                    activity TEXT,
-                    provenance TEXT,
-                    outcome_id TEXT
-                );
-                INSERT INTO model_requests VALUES('request-1','operation-1','openai','gpt-6-sol');
-                INSERT INTO _usage_report_owner_dimensions VALUES('operation-1','implementation','coding','agent_declared','');
-                INSERT INTO _usage_report_model_usage VALUES(
-                    'request-1','event-1','repo-1',1000,1500,400,1500,0,1500,100,1500,
-                    1100,1500,20,1500,63
-                );",
+                INSERT INTO _usage_report_dimension_tokens VALUES
+                    (1,'repo-1','thread','gpt-6-sol','openai','','','','implementation','coding','agent_declared','input_tokens','provider_reported','complete',1000,0,1,0),
+                    (1,'repo-1','thread','gpt-6-sol','openai','','','','implementation','coding','agent_declared','input_tokens_details.cached_tokens','provider_reported','complete',400,0,1,0),
+                    (1,'repo-1','thread','gpt-6-sol','openai','','','','implementation','coding','agent_declared','input_tokens_details.cache_write_tokens','provider_reported','complete',0,0,1,0),
+                    (1,'repo-1','thread','gpt-6-sol','openai','','','','implementation','coding','agent_declared','output_tokens','provider_reported','complete',100,0,1,0),
+                    (1,'repo-1','thread','gpt-6-sol','openai','','','','implementation','coding','agent_declared','total_tokens','provider_reported','complete',1100,0,1,0);",
             )
             .unwrap();
         let card = devcoordinator2_api::rate_card::RateCard {
@@ -3852,12 +3780,12 @@ pub(crate) mod tests {
             bucket_coverage: vec![CoverageState::Unobserved],
             ..Default::default()
         };
-        add_cached_costs(
+        add_cached_dimension_costs(
             &connection,
             &mut report,
             &["repo-1".into()],
-            1_000,
-            2_000,
+            3_600_000,
+            7_200_000,
             &[card],
         )
         .unwrap();
