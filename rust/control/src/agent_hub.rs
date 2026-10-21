@@ -164,6 +164,7 @@ impl AgentHubService {
         &self,
         request: api::Directory,
     ) -> Result<api::DirectoryResult, ProtocolError> {
+        self.expire_leases()?;
         if request.space == api::Space::Public && !self.public_available()? {
             return Err(hub_disabled());
         }
@@ -464,6 +465,7 @@ impl AgentHubService {
     }
 
     pub fn activity(&self, request: api::Activity) -> Result<api::ActivityResult, ProtocolError> {
+        self.expire_leases()?;
         let space = request.space.map(space_text);
         self.database.call(move |db| {
             let where_space = if space.is_some() { " AND space=?1" } else { "" };
@@ -934,6 +936,19 @@ impl AgentHubService {
             })
             .map_err(database_error)
     }
+
+    fn expire_leases(&self) -> Result<(), ProtocolError> {
+        let now = now_text()?;
+        self.database
+            .call(move |db| {
+                db.execute(
+                    "UPDATE agent_hub_agents SET state='expired' WHERE state='active' AND lease_expires_at<=?1",
+                    [&now],
+                )?;
+                Ok(())
+            })
+            .map_err(database_error)
+    }
     fn public_available(&self) -> Result<bool, ProtocolError> {
         self.database.call(|db|Ok(db.query_row("SELECT public_enabled=1 AND public_paused=0 FROM agent_hub_settings WHERE singleton=1",[],|r|r.get::<_,bool>(0))?)).map_err(database_error)
     }
@@ -1382,6 +1397,30 @@ mod tests {
     }
 
     #[test]
+    fn missed_heartbeats_mark_directory_presence_expired() {
+        let (_temp, service) = world();
+        let agent = register(&service, "offline");
+        service
+            .database
+            .call(move |db| {
+                db.execute(
+                    "UPDATE agent_hub_agents SET lease_expires_at='1970-01-01T00:00:00Z' WHERE agent_id=?1",
+                    [&agent.agent.agent_id],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+        let listed = service
+            .directory(api::Directory {
+                space: api::Space::Private,
+                after: None,
+                limit: 20,
+            })
+            .unwrap();
+        assert_eq!(listed.agents[0].state, api::AgentState::Expired);
+    }
+
+    #[test]
     fn private_room_delivery_is_durable_and_acknowledgeable() {
         let (_temp, service) = world();
         let first = register(&service, "first");
@@ -1594,6 +1633,136 @@ mod tests {
             )
             .unwrap_err();
         assert_eq!(denied.code, ErrorCode::PermissionDenied);
+    }
+
+    #[test]
+    fn remote_private_and_public_agents_exchange_messages_through_the_adapter() {
+        let (_temp, service) = world();
+        let rotated = service
+            .key_rotate(api::KeyRotate { expected_revision: 0 })
+            .unwrap();
+        let register_remote = |bearer: Option<String>, name: &str, space: api::Space| {
+            let value = service
+                .remote(
+                    api::RemoteRequest {
+                        bearer,
+                        action: api::RemoteAction::Register(api::Register {
+                            space,
+                            display_name: name.into(),
+                            repository_label: Some("remote-repo".into()),
+                            domain_label: Some("remote.example".into()),
+                            current_subject: Some("remote subject".into()),
+                            capabilities: vec!["chat".into()],
+                            callback_url: None,
+                        }),
+                    },
+                    &edge(),
+                )
+                .unwrap();
+            serde_json::from_value::<api::RegisterResult>(value).unwrap()
+        };
+        let first = register_remote(Some(rotated.bearer_key.clone()), "private-a", api::Space::Private);
+        let second = register_remote(Some(rotated.bearer_key.clone()), "private-b", api::Space::Private);
+        let room = service
+            .remote(
+                api::RemoteRequest {
+                    bearer: Some(rotated.bearer_key.clone()),
+                    action: api::RemoteAction::RoomCreate(api::RoomCreate {
+                        auth: auth(&first),
+                        space: api::Space::Private,
+                        name: "remote private".into(),
+                        members: vec![second.agent.agent_id.clone()],
+                    }),
+                },
+                &edge(),
+            )
+            .unwrap();
+        let room: api::Room = serde_json::from_value(room).unwrap();
+        service
+            .remote(
+                api::RemoteRequest {
+                    bearer: Some(rotated.bearer_key.clone()),
+                    action: api::RemoteAction::Send(api::Send {
+                        auth: auth(&first),
+                        room_id: room.room_id.clone(),
+                        body: "private remote message".into(),
+                        attachments: vec![],
+                        client_message_id: None,
+                    }),
+                },
+                &edge(),
+            )
+            .unwrap();
+        let received = service
+            .remote(
+                api::RemoteRequest {
+                    bearer: Some(rotated.bearer_key.clone()),
+                    action: api::RemoteAction::Receive(api::Receive {
+                        auth: auth(&second),
+                        room_id: Some(room.room_id),
+                        after: None,
+                        limit: 20,
+                    }),
+                },
+                &edge(),
+            )
+            .unwrap();
+        assert_eq!(received["deliveries"][0]["message"]["body"], "private remote message");
+
+        service
+            .settings_set(api::SettingsSet {
+                expected_revision: 1,
+                public_enabled: true,
+                public_paused: false,
+            })
+            .unwrap();
+        let public_a = register_remote(None, "public-a", api::Space::Public);
+        let public_b = register_remote(None, "public-b", api::Space::Public);
+        let public_room = service
+            .remote(
+                api::RemoteRequest {
+                    bearer: None,
+                    action: api::RemoteAction::RoomCreate(api::RoomCreate {
+                        auth: auth(&public_a),
+                        space: api::Space::Public,
+                        name: "public board".into(),
+                        members: vec![public_b.agent.agent_id.clone()],
+                    }),
+                },
+                &edge(),
+            )
+            .unwrap();
+        let public_room: api::Room = serde_json::from_value(public_room).unwrap();
+        service
+            .remote(
+                api::RemoteRequest {
+                    bearer: None,
+                    action: api::RemoteAction::Send(api::Send {
+                        auth: auth(&public_a),
+                        room_id: public_room.room_id.clone(),
+                        body: "public message".into(),
+                        attachments: vec![],
+                        client_message_id: None,
+                    }),
+                },
+                &edge(),
+            )
+            .unwrap();
+        let public_received = service
+            .remote(
+                api::RemoteRequest {
+                    bearer: None,
+                    action: api::RemoteAction::Receive(api::Receive {
+                        auth: auth(&public_b),
+                        room_id: Some(public_room.room_id),
+                        after: None,
+                        limit: 20,
+                    }),
+                },
+                &edge(),
+            )
+            .unwrap();
+        assert_eq!(public_received["deliveries"][0]["message"]["body"], "public message");
     }
 
     #[test]
