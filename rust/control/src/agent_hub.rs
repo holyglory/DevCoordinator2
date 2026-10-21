@@ -130,12 +130,14 @@ impl AgentHubService {
         request: api::Heartbeat,
         caller: &Caller,
     ) -> Result<api::AgentProfile, ProtocolError> {
+        validate_optional_label(request.current_subject.as_deref())?;
         let now = now_text()?;
         let expiry = timestamp_after(LEASE_SECONDS)?;
         let agent = self.authenticate(&request.auth, caller, None)?;
         let id = agent.agent_id.clone();
+        let subject = request.current_subject;
         self.database.call(move |db| {
-            let changed = db.execute("UPDATE agent_hub_agents SET lease_expires_at=?1,last_seen_at=?2,state='active' WHERE agent_id=?3 AND state!='unregistered'", rusqlite::params![expiry,now,id])?;
+            let changed = db.execute("UPDATE agent_hub_agents SET current_subject=COALESCE(?1,current_subject),lease_expires_at=?2,last_seen_at=?3,state='active' WHERE agent_id=?4 AND state!='unregistered'", rusqlite::params![subject,expiry,now,id])?;
             if changed == 0 { return Err(DatabaseError::Domain(hub_not_found())); }
             Ok(())
         }).map_err(database_error)?;
@@ -1384,6 +1386,16 @@ mod tests {
         let (_temp, service) = world();
         let first = register(&service, "first");
         let second = register(&service, "second");
+        let updated = service
+            .heartbeat(
+                api::Heartbeat {
+                    auth: auth(&first),
+                    current_subject: Some("updated subject".into()),
+                },
+                &local(),
+            )
+            .unwrap();
+        assert_eq!(updated.current_subject.as_deref(), Some("updated subject"));
         let room = service
             .room_create(
                 api::RoomCreate {

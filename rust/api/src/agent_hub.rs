@@ -88,6 +88,9 @@ pub struct AgentAuth {
 #[serde(deny_unknown_fields)]
 pub struct Heartbeat {
     pub auth: AgentAuth,
+    #[serde(default)]
+    #[schemars(length(max = 160))]
+    pub current_subject: Option<String>,
 }
 
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]

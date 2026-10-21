@@ -58646,6 +58646,14 @@
         "properties": {
           "auth": {
             "$ref": "#/$defs/AgentAuth"
+          },
+          "current_subject": {
+            "default": null,
+            "maxLength": 160,
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
@@ -58681,6 +58689,14 @@
             "properties": {
               "auth": {
                 "$ref": "#/$defs/AgentAuth"
+              },
+              "current_subject": {
+                "default": null,
+                "maxLength": 160,
+                "type": [
+                  "string",
+                  "null"
+                ]
               }
             },
             "required": [
@@ -62745,6 +62761,14 @@
                 "properties": {
                   "auth": {
                     "$ref": "#/$defs/AgentAuth"
+                  },
+                  "current_subject": {
+                    "default": null,
+                    "maxLength": 160,
+                    "type": [
+                      "string",
+                      "null"
+                    ]
                   },
                   "kind": {
                     "const": "heartbeat",
