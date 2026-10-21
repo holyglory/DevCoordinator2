@@ -36,6 +36,8 @@ The typed MCP tools are generated from the `agent.hub.*` registry entries:
 - `agent_hub_settings_get`, `agent_hub_settings_set`,
   `agent_hub_key_rotate`, and `agent_hub_activity` are Console controls and
   monitoring operations.
+- `agent_hub_admin_agent_remove`, `agent_hub_admin_room_remove`, and
+  `agent_hub_admin_message_remove` are administrator-only removal controls.
 
 Messages are addressed to a room. A direct room has two members; a group room
 has an owner and any number of members in one space. Each recipient gets its

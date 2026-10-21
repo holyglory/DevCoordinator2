@@ -525,6 +525,102 @@ impl AgentHubService {
         self.send_inner(None, None, &request.room_id, &request.body, &[], None)
     }
 
+    pub fn admin_remove_agent(
+        &self,
+        request: api::AgentRemove,
+    ) -> Result<api::RemovalResult, ProtocolError> {
+        let agent_id = request.agent_id;
+        let now = now_text()?;
+        let removed = self
+            .database
+            .transaction(move |tx| {
+                let exists: Option<i64> = tx
+                    .query_row(
+                        "SELECT 1 FROM agent_hub_agents WHERE agent_id=?1 AND state!='unregistered'",
+                        [&agent_id],
+                        |row| row.get(0),
+                    )
+                    .optional()?;
+                if exists.is_none() {
+                    return Ok(false);
+                }
+                tx.execute(
+                    "DELETE FROM agent_hub_outbox WHERE delivery_id IN (SELECT delivery_id FROM agent_hub_deliveries WHERE recipient_agent_id=?1)",
+                    [&agent_id],
+                )?;
+                tx.execute(
+                    "DELETE FROM agent_hub_deliveries WHERE recipient_agent_id=?1",
+                    [&agent_id],
+                )?;
+                tx.execute(
+                    "DELETE FROM agent_hub_room_members WHERE agent_id=?1",
+                    [&agent_id],
+                )?;
+                tx.execute(
+                    "UPDATE agent_hub_agents SET state='unregistered',unregistered_at=?1,last_seen_at=?1 WHERE agent_id=?2",
+                    rusqlite::params![now, agent_id],
+                )?;
+                Ok(true)
+            })
+            .map_err(database_error)?;
+        Ok(api::RemovalResult { removed })
+    }
+
+    pub fn admin_remove_message(
+        &self,
+        request: api::MessageRemove,
+    ) -> Result<api::RemovalResult, ProtocolError> {
+        let message_id = request.message_id;
+        let removed = self
+            .database
+            .transaction(move |tx| {
+                let changed = tx.execute(
+                    "DELETE FROM agent_hub_messages WHERE message_id=?1",
+                    [&message_id],
+                )?;
+                Ok(changed != 0)
+            })
+            .map_err(database_error)?;
+        Ok(api::RemovalResult { removed })
+    }
+
+    pub fn admin_remove_room(
+        &self,
+        request: api::RoomRemove,
+    ) -> Result<api::RemovalResult, ProtocolError> {
+        let room_id = request.room_id;
+        let removed = self
+            .database
+            .transaction(move |tx| {
+                let exists: Option<i64> = tx
+                    .query_row(
+                        "SELECT 1 FROM agent_hub_rooms WHERE room_id=?1",
+                        [&room_id],
+                        |row| row.get(0),
+                    )
+                    .optional()?;
+                if exists.is_none() {
+                    return Ok(false);
+                }
+                tx.execute(
+                    "DELETE FROM agent_hub_outbox WHERE delivery_id IN (SELECT d.delivery_id FROM agent_hub_deliveries d JOIN agent_hub_messages m ON m.message_id=d.message_id WHERE m.room_id=?1)",
+                    [&room_id],
+                )?;
+                tx.execute(
+                    "DELETE FROM agent_hub_messages WHERE room_id=?1",
+                    [&room_id],
+                )?;
+                tx.execute(
+                    "DELETE FROM agent_hub_room_members WHERE room_id=?1",
+                    [&room_id],
+                )?;
+                tx.execute("DELETE FROM agent_hub_rooms WHERE room_id=?1", [&room_id])?;
+                Ok(true)
+            })
+            .map_err(database_error)?;
+        Ok(api::RemovalResult { removed })
+    }
+
     pub fn remote(
         &self,
         request: api::RemoteRequest,
@@ -1545,5 +1641,53 @@ mod tests {
             )
             .unwrap();
         assert_eq!(STANDARD.decode(file.data_base64).unwrap(), bytes);
+    }
+
+    #[test]
+    fn administrator_removals_delete_messages_and_memberships() {
+        let (_temp, service) = world();
+        let first = register(&service, "first");
+        let second = register(&service, "second");
+        let room = service
+            .room_create(
+                api::RoomCreate {
+                    auth: auth(&first),
+                    space: api::Space::Private,
+                    name: "room".into(),
+                    members: vec![second.agent.agent_id.clone()],
+                },
+                &local(),
+            )
+            .unwrap();
+        let message = service
+            .send(
+                api::Send {
+                    auth: auth(&first),
+                    room_id: room.room_id.clone(),
+                    body: "remove me".into(),
+                    attachments: vec![],
+                    client_message_id: None,
+                },
+                &local(),
+            )
+            .unwrap();
+        assert!(service
+            .admin_remove_message(api::MessageRemove {
+                message_id: message.message_id,
+            })
+            .unwrap()
+            .removed);
+        assert!(service
+            .admin_remove_room(api::RoomRemove {
+                room_id: room.room_id,
+            })
+            .unwrap()
+            .removed);
+        assert!(service
+            .admin_remove_agent(api::AgentRemove {
+                agent_id: second.agent.agent_id,
+            })
+            .unwrap()
+            .removed);
     }
 }

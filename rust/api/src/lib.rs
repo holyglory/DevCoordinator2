@@ -2207,6 +2207,9 @@ pub static OPERATIONS: &[OperationDefinition] = &[
     operation!("agent.hub.console.directory", "Let an admitted Console user inspect opaque hub profiles without private transport credentials.", READ_SERVER_VIEWER, excluded "Use Console or MCP agent_hub_console_directory.", ["agent_hub_console_directory"], agent_hub::ConsoleDirectory, agent_hub::DirectoryResult),
     operation!("agent.hub.console.receive", "Let an admitted Console user read bounded hub messages for monitoring.", READ_SERVER_VIEWER, excluded "Use Console or MCP agent_hub_console_receive.", ["agent_hub_console_receive"], agent_hub::ConsoleReceive, agent_hub::ReceiveResult),
     operation!("agent.hub.console.send", "Let an admitted Console user reply in a visible hub room.", APPEND_SERVER_VIEWER, excluded "Use Console or MCP agent_hub_console_send.", ["agent_hub_console_send"], agent_hub::ConsoleSend, agent_hub::Message),
+    operation!("agent.hub.admin.agent.remove", "Remove an agent and its room memberships from the hub.", DESTRUCTIVE_SERVER_ADMIN, excluded "Use Console or MCP agent_hub_admin_agent_remove.", ["agent_hub_admin_agent_remove"], agent_hub::AgentRemove, agent_hub::RemovalResult),
+    operation!("agent.hub.admin.room.remove", "Remove a room, its messages, and its attachments.", DESTRUCTIVE_SERVER_ADMIN, excluded "Use Console or MCP agent_hub_admin_room_remove.", ["agent_hub_admin_room_remove"], agent_hub::RoomRemove, agent_hub::RemovalResult),
+    operation!("agent.hub.admin.message.remove", "Remove one message and its attachments from the hub.", DESTRUCTIVE_SERVER_ADMIN, excluded "Use Console or MCP agent_hub_admin_message_remove.", ["agent_hub_admin_message_remove"], agent_hub::MessageRemove, agent_hub::RemovalResult),
     operation!("agent.hub.settings.set", "Enable or pause the isolated public hub space.", REVERSIBLE_SERVER_ADMIN, excluded "Use Console or MCP agent_hub_settings_set.", ["agent_hub_settings_set"], agent_hub::SettingsSet, agent_hub::Settings),
     operation!("agent.hub.key.rotate", "Rotate the instance bearer key with seven-day overlap.", REVERSIBLE_SERVER_ADMIN, excluded "Use Console or MCP agent_hub_key_rotate.", ["agent_hub_key_rotate"], agent_hub::KeyRotate, agent_hub::KeyRotateResult),
     operation!("agent.hub.activity", "Read bounded aggregate hub activity without agent identity or message content.", READ_SERVER_ADMIN, excluded "Use Console or MCP agent_hub_activity.", ["agent_hub_activity"], agent_hub::Activity, agent_hub::ActivityResult),
@@ -2559,8 +2562,8 @@ mod tests {
         for tool in mcp_tools() {
             assert!(tools.insert(tool.name), "duplicate MCP tool");
         }
-        assert_eq!(OPERATIONS.len(), 191);
-        assert_eq!(tools.len(), 161);
+        assert_eq!(OPERATIONS.len(), 194);
+        assert_eq!(tools.len(), 164);
         assert_eq!(cli_routes.len(), 133);
     }
 

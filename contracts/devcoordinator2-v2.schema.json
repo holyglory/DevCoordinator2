@@ -62115,6 +62115,195 @@
     },
     {
       "cli": {
+        "excludedReason": "Use Console or MCP agent_hub_admin_agent_remove.",
+        "routes": []
+      },
+      "description": "Remove an agent and its room memberships from the hub.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "agent_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "agent_id"
+        ],
+        "title": "AgentRemove",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "agent_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "agent_id"
+            ],
+            "title": "AgentRemove",
+            "type": "object"
+          },
+          "name": "agent_hub_admin_agent_remove",
+          "transform": "identity"
+        }
+      ],
+      "name": "agent.hub.admin.agent.remove",
+      "outputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "removed": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "removed"
+        ],
+        "title": "RemovalResult",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "destructive",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "server"
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": "Use Console or MCP agent_hub_admin_room_remove.",
+        "routes": []
+      },
+      "description": "Remove a room, its messages, and its attachments.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "room_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "room_id"
+        ],
+        "title": "RoomRemove",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "room_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "room_id"
+            ],
+            "title": "RoomRemove",
+            "type": "object"
+          },
+          "name": "agent_hub_admin_room_remove",
+          "transform": "identity"
+        }
+      ],
+      "name": "agent.hub.admin.room.remove",
+      "outputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "removed": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "removed"
+        ],
+        "title": "RemovalResult",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "destructive",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "server"
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": "Use Console or MCP agent_hub_admin_message_remove.",
+        "routes": []
+      },
+      "description": "Remove one message and its attachments from the hub.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "message_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "message_id"
+        ],
+        "title": "MessageRemove",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "message_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "message_id"
+            ],
+            "title": "MessageRemove",
+            "type": "object"
+          },
+          "name": "agent_hub_admin_message_remove",
+          "transform": "identity"
+        }
+      ],
+      "name": "agent.hub.admin.message.remove",
+      "outputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "removed": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "removed"
+        ],
+        "title": "RemovalResult",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "destructive",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "server"
+      }
+    },
+    {
+      "cli": {
         "excludedReason": "Use Console or MCP agent_hub_settings_set.",
         "routes": []
       },

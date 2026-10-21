@@ -196,6 +196,9 @@ pub const FOUNDATION_OPERATIONS: &[&str] = &[
     "agent.hub.console.directory",
     "agent.hub.console.receive",
     "agent.hub.console.send",
+    "agent.hub.admin.agent.remove",
+    "agent.hub.admin.room.remove",
+    "agent.hub.admin.message.remove",
     "agent.hub.settings.get",
     "agent.hub.settings.set",
     "agent.hub.key.rotate",
@@ -695,6 +698,15 @@ impl ControlPlane {
                     encode(self.agent_hub.console_receive(decode(params)?)?)
                 }
                 "agent.hub.console.send" => encode(self.agent_hub.console_send(decode(params)?)?),
+                "agent.hub.admin.agent.remove" => {
+                    encode(self.agent_hub.admin_remove_agent(decode(params)?)?)
+                }
+                "agent.hub.admin.room.remove" => {
+                    encode(self.agent_hub.admin_remove_room(decode(params)?)?)
+                }
+                "agent.hub.admin.message.remove" => {
+                    encode(self.agent_hub.admin_remove_message(decode(params)?)?)
+                }
                 "agent.hub.settings.get" => {
                     let _: EmptyParams = decode(params)?;
                     encode(self.agent_hub.settings()?)

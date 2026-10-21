@@ -367,6 +367,30 @@ pub struct ConsoleSend {
 
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct AgentRemove {
+    pub agent_id: String,
+}
+
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RoomRemove {
+    pub room_id: String,
+}
+
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MessageRemove {
+    pub message_id: String,
+}
+
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RemovalResult {
+    pub removed: bool,
+}
+
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Activity {
     #[serde(default)]
     pub space: Option<Space>,
