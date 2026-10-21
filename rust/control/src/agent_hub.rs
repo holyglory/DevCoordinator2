@@ -315,7 +315,13 @@ impl AgentHubService {
         let now = now_text()?;
         let recipient_id = recipient.agent_id.clone();
         self.database.transaction(move |tx| {
-            for id in ids { tx.execute("UPDATE agent_hub_deliveries SET acknowledged_at=?1 WHERE delivery_id=?2 AND recipient_agent_id=?3", rusqlite::params![now,id,recipient_id])?; }
+            for id in ids {
+                tx.execute(
+                    "UPDATE agent_hub_deliveries SET acknowledged_at=?1 WHERE delivery_id=?2 AND recipient_agent_id=?3",
+                    rusqlite::params![now, id, recipient_id],
+                )?;
+                tx.execute("DELETE FROM agent_hub_outbox WHERE delivery_id=?1", [&id])?;
+            }
             Ok(())
         }).map_err(database_error)?;
         Ok(api::ReceiveResult {
@@ -1591,6 +1597,33 @@ mod tests {
         assert!(payload["nonce"].as_str().is_some());
         assert_eq!(payload["attachments"][0]["name"], "note.txt");
         assert!(payload["attachments"][0].get("content").is_none());
+        let received = service
+            .receive(
+                api::Receive {
+                    auth: auth(&second),
+                    room_id: None,
+                    after: None,
+                    limit: 20,
+                },
+                &local(),
+            )
+            .unwrap();
+        service
+            .ack(
+                api::Ack {
+                    auth: auth(&second),
+                    delivery_ids: vec![received.deliveries[0].delivery_id.clone()],
+                },
+                &local(),
+            )
+            .unwrap();
+        let pending: u32 = service
+            .database
+            .call(|db| {
+                Ok(db.query_row("SELECT count(*) FROM agent_hub_outbox", [], |r| r.get(0))?)
+            })
+            .unwrap();
+        assert_eq!(pending, 0);
     }
 
     #[test]
