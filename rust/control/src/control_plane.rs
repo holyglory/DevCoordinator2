@@ -178,6 +178,29 @@ pub const FOUNDATION_OPERATIONS: &[&str] = &[
     "agent.message.poll",
     "agent.message.claim",
     "agent.message.ack",
+    "agent.hub.register",
+    "agent.hub.heartbeat",
+    "agent.hub.unregister",
+    "agent.hub.directory",
+    "agent.hub.room.create",
+    "agent.hub.room.list",
+    "agent.hub.room.member.add",
+    "agent.hub.room.member.remove",
+    "agent.hub.send",
+    "agent.hub.receive",
+    "agent.hub.ack",
+    "agent.hub.upload.start",
+    "agent.hub.upload.chunk",
+    "agent.hub.upload.file",
+    "agent.hub.upload.remove",
+    "agent.hub.console.directory",
+    "agent.hub.console.receive",
+    "agent.hub.console.send",
+    "agent.hub.settings.get",
+    "agent.hub.settings.set",
+    "agent.hub.key.rotate",
+    "agent.hub.activity",
+    "agent.hub.remote",
     "plan.overview",
     "completion.check",
     "plan.recovery",
@@ -251,6 +274,7 @@ pub struct ControlPlane {
     progress: ProgressService,
     telegram: TelegramService,
     agent_routing: crate::agent_routing::AgentRoutingService,
+    agent_hub: crate::agent_hub::AgentHubService,
     clock: Arc<dyn Clock>,
 }
 
@@ -356,6 +380,7 @@ impl ControlPlane {
         );
         let telegram = TelegramService::from_config(&config, database.clone());
         let agent_routing = crate::agent_routing::AgentRoutingService::new(database.clone())?;
+        let agent_hub = crate::agent_hub::AgentHubService::new(database.clone())?;
         let alert_telegram = telegram.clone();
         let alert_events = events.clone();
         let alert_clock = Arc::clone(&clock);
@@ -438,6 +463,7 @@ impl ControlPlane {
             progress,
             telegram,
             agent_routing,
+            agent_hub,
             clock,
         })
     }
@@ -492,6 +518,14 @@ impl ControlPlane {
 
     pub fn telegram(&self) -> &TelegramService {
         &self.telegram
+    }
+
+    pub fn agent_hub(&self) -> &crate::agent_hub::AgentHubService {
+        &self.agent_hub
+    }
+
+    pub fn deliver_hub_callbacks(&self) -> Result<u32, ProtocolError> {
+        self.agent_hub.deliver_once()
     }
 
     pub fn expire_previews(&self) -> Result<Vec<results::DeploymentStatus>, ProtocolError> {
@@ -618,6 +652,60 @@ impl ControlPlane {
                 _ => Err(ProtocolError::new(
                     ErrorCode::OperationUnknown,
                     "Unknown glossary operation",
+                )),
+            };
+        }
+        if operation.starts_with("agent.hub.") {
+            return match operation {
+                "agent.hub.register" => encode(self.agent_hub.register(decode(params)?, caller)?),
+                "agent.hub.heartbeat" => encode(self.agent_hub.heartbeat(decode(params)?, caller)?),
+                "agent.hub.unregister" => {
+                    encode(self.agent_hub.unregister(decode(params)?, caller)?)
+                }
+                "agent.hub.directory" => encode(self.agent_hub.directory(decode(params)?)?),
+                "agent.hub.room.create" => {
+                    encode(self.agent_hub.room_create(decode(params)?, caller)?)
+                }
+                "agent.hub.room.list" => encode(self.agent_hub.room_list(decode(params)?, caller)?),
+                "agent.hub.room.member.add" => {
+                    encode(self.agent_hub.room_member_add(decode(params)?, caller)?)
+                }
+                "agent.hub.room.member.remove" => {
+                    encode(self.agent_hub.room_member_remove(decode(params)?, caller)?)
+                }
+                "agent.hub.send" => encode(self.agent_hub.send(decode(params)?, caller)?),
+                "agent.hub.receive" => encode(self.agent_hub.receive(decode(params)?, caller)?),
+                "agent.hub.ack" => encode(self.agent_hub.ack(decode(params)?, caller)?),
+                "agent.hub.upload.start" => {
+                    encode(self.agent_hub.upload_start(decode(params)?, caller)?)
+                }
+                "agent.hub.upload.chunk" => {
+                    encode(self.agent_hub.upload_chunk(decode(params)?, caller)?)
+                }
+                "agent.hub.upload.file" => {
+                    encode(self.agent_hub.upload_file(decode(params)?, caller)?)
+                }
+                "agent.hub.upload.remove" => {
+                    encode(self.agent_hub.upload_remove(decode(params)?, caller)?)
+                }
+                "agent.hub.console.directory" => {
+                    encode(self.agent_hub.console_directory(decode(params)?)?)
+                }
+                "agent.hub.console.receive" => {
+                    encode(self.agent_hub.console_receive(decode(params)?)?)
+                }
+                "agent.hub.console.send" => encode(self.agent_hub.console_send(decode(params)?)?),
+                "agent.hub.settings.get" => {
+                    let _: EmptyParams = decode(params)?;
+                    encode(self.agent_hub.settings()?)
+                }
+                "agent.hub.settings.set" => encode(self.agent_hub.settings_set(decode(params)?)?),
+                "agent.hub.key.rotate" => encode(self.agent_hub.key_rotate(decode(params)?)?),
+                "agent.hub.activity" => encode(self.agent_hub.activity(decode(params)?)?),
+                "agent.hub.remote" => encode(self.agent_hub.remote(decode(params)?, caller)?),
+                _ => Err(ProtocolError::new(
+                    ErrorCode::OperationUnknown,
+                    "unknown agent hub operation",
                 )),
             };
         }
