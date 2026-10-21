@@ -2859,6 +2859,102 @@ mod tests {
     }
 
     #[test]
+    fn agent_hub_operations_cross_the_typed_dispatch_boundary() {
+        let temporary = tempdir().expect("tempdir");
+        let database = Database::open(temporary.path().join("authority.sqlite3")).expect("db");
+        let plane = ControlPlane::with_adapters(
+            config(temporary.path()),
+            database,
+            Arc::new(|_: &crate::access::RouteAccessSection| Ok(())),
+            Arc::new(crate::platform::FixedClock(datetime!(2026-09-03 12:00 UTC))),
+        )
+        .expect("control plane");
+
+        let first = plane
+            .execute(
+                "agent.hub.register",
+                serde_json::json!({
+                    "space":"private",
+                    "display_name":"first",
+                    "repository_label":"repo-one",
+                    "domain_label":"example.test",
+                    "current_subject":"dispatch journey",
+                    "capabilities":["chat"]
+                }),
+                &local(),
+            )
+            .expect("first registration");
+        let second = plane
+            .execute(
+                "agent.hub.register",
+                serde_json::json!({
+                    "space":"private",
+                    "display_name":"second",
+                    "repository_label":"repo-two",
+                    "domain_label":"example.test",
+                    "current_subject":"dispatch journey",
+                    "capabilities":["chat"]
+                }),
+                &local(),
+            )
+            .expect("second registration");
+        let auth = |value: &Value| {
+            serde_json::json!({
+                "agent_id": value["agent"]["agent_id"],
+                "token": value["token"]
+            })
+        };
+        let room = plane
+            .execute(
+                "agent.hub.room.create",
+                serde_json::json!({
+                    "auth":auth(&first),
+                    "space":"private",
+                    "name":"dispatch-room",
+                    "members":[second["agent"]["agent_id"]]
+                }),
+                &local(),
+            )
+            .expect("room creation");
+        let message = plane
+            .execute(
+                "agent.hub.send",
+                serde_json::json!({
+                    "auth":auth(&first),
+                    "room_id":room["room_id"],
+                    "body":"hello through dispatch",
+                    "attachments":[],
+                    "client_message_id":"dispatch-1"
+                }),
+                &local(),
+            )
+            .expect("message send");
+        assert_eq!(message["body"], "hello through dispatch");
+        let received = plane
+            .execute(
+                "agent.hub.receive",
+                serde_json::json!({
+                    "auth":auth(&second),
+                    "room_id":room["room_id"],
+                    "limit":20
+                }),
+                &local(),
+            )
+            .expect("message receive");
+        assert_eq!(received["deliveries"].as_array().unwrap().len(), 1);
+        plane
+            .execute(
+                "agent.hub.ack",
+                serde_json::json!({
+                    "auth":auth(&second),
+                    "delivery_ids":[received["deliveries"][0]["delivery_id"]]
+                }),
+                &local(),
+            )
+            .expect("message acknowledgement");
+    }
+
+    #[test]
     fn every_foundation_operation_exists_in_the_exhaustive_registry() {
         let implemented = FOUNDATION_OPERATIONS
             .iter()
