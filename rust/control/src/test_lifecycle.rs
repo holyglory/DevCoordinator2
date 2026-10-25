@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::ffi::OsString;
 use std::fs::File;
 use std::io::{self, Read, Write};
-use std::os::unix::fs::MetadataExt;
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -3132,6 +3132,25 @@ fn property<'a>(values: &'a [(String, String)], name: &str) -> Option<&'a str> {
         .map(|(_, value)| value.as_str())
 }
 
+fn regular_executable(path: &Path) -> bool {
+    std::fs::symlink_metadata(path).is_ok_and(|metadata| {
+        metadata.is_file()
+            && !metadata.file_type().is_symlink()
+            && metadata.permissions().mode() & 0o111 != 0
+    })
+}
+
+fn executor_sibling_path(executable: &Path) -> Option<PathBuf> {
+    let candidate = executable.parent()?.join("devcoordinator2-executor");
+    regular_executable(&candidate).then_some(candidate)
+}
+
+fn resolve_executor_path(current_exe: Option<&Path>, canonical: PathBuf) -> PathBuf {
+    current_exe
+        .and_then(executor_sibling_path)
+        .unwrap_or(canonical)
+}
+
 pub(crate) fn default_executor_path() -> PathBuf {
     #[cfg(feature = "root-acceptance")]
     if let Some(path) = std::env::var_os("DEVCOORDINATOR2_ROOT_EXECUTOR") {
@@ -3155,9 +3174,15 @@ pub(crate) fn default_executor_path() -> PathBuf {
             }
         }
     }
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+    let canonical = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
-        .join("target/release/devcoordinator2-executor")
+        .join("target/release/devcoordinator2-executor");
+    #[cfg(not(test))]
+    {
+        return resolve_executor_path(std::env::current_exe().ok().as_deref(), canonical);
+    }
+    #[cfg(test)]
+    canonical
 }
 
 fn client_name(caller: &Caller) -> String {
@@ -3277,6 +3302,46 @@ fn test_not_found() -> ProtocolError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn executor_path_prefers_regular_executable_sibling() {
+        let temporary = tempfile::tempdir().unwrap();
+        let release = temporary.path().join("release");
+        std::fs::create_dir(&release).unwrap();
+        let daemon = release.join("devcoordinator2");
+        let executor = release.join("devcoordinator2-executor");
+        std::fs::write(&daemon, b"daemon").unwrap();
+        std::fs::write(&executor, b"executor").unwrap();
+        std::fs::set_permissions(&daemon, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::set_permissions(&executor, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let canonical = temporary.path().join("canonical/devcoordinator2-executor");
+
+        assert_eq!(
+            resolve_executor_path(Some(&daemon), canonical),
+            executor,
+            "a verified release executable should use its adjacent executor"
+        );
+    }
+
+    #[test]
+    fn executor_path_falls_back_when_sibling_is_not_a_regular_executable() {
+        let temporary = tempfile::tempdir().unwrap();
+        let release = temporary.path().join("release");
+        std::fs::create_dir(&release).unwrap();
+        let daemon = release.join("devcoordinator2");
+        let executor = release.join("devcoordinator2-executor");
+        std::fs::write(&daemon, b"daemon").unwrap();
+        std::fs::write(&executor, b"executor").unwrap();
+        std::fs::set_permissions(&daemon, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::set_permissions(&executor, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let canonical = temporary.path().join("canonical/devcoordinator2-executor");
+
+        assert_eq!(
+            resolve_executor_path(Some(&daemon), canonical.clone()),
+            canonical
+        );
+        assert_eq!(resolve_executor_path(None, canonical.clone()), canonical);
+    }
 
     fn check(name: &str, tier: ValidationTier, dependencies: &[&str]) -> CheckPlan {
         CheckPlan {
