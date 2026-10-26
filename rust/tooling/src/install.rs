@@ -29,7 +29,14 @@ const BINARY_NAMES: &[&str] = &[
     "devcoordinator2",
     "devcoordinator2-executor",
     "devcoordinator2-tooling",
+    // The tooling self-tests resolve these fixtures beside the tooling
+    // executable. Keep them in the same immutable release bundle so a
+    // release can validate itself without reaching into another target tree.
+    "devcoordinator2-selftest-coordinator",
+    "devcoordinator2-selftest-leaf",
 ];
+
+const RELEASE_FEATURES: &str = "devcoordinator2-tooling/selftest-fixtures";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CommandRequest {
@@ -418,6 +425,8 @@ pub fn build_release_binaries_at<R: CommandRunner>(
             "--manifest-path".into(),
             manifest.as_os_str().to_owned(),
             "--workspace".into(),
+            "--features".into(),
+            RELEASE_FEATURES.into(),
         ],
         environment: BTreeMap::from([(OsString::from("PATH"), OsString::from("/usr/bin:/bin"))]),
         clear_environment: true,
@@ -2289,13 +2298,15 @@ mod tests {
             home: source.to_owned(),
         };
         let receipts = build_release_binaries(source, &commit, &identity, &tools, &runner).unwrap();
-        assert_eq!(receipts.len(), 3);
+        assert_eq!(receipts.len(), BINARY_NAMES.len());
         let requests = runner.requests.lock().unwrap();
         assert_eq!(requests[0].program, tools.setpriv);
         assert!(requests[0].args.contains(&OsString::from("--workspace")));
         assert!(requests[0].args.contains(&OsString::from(format!(
             "DEVCOORDINATOR2_SOURCE_COMMIT={commit}"
         ))));
+        assert!(requests[0].args.contains(&OsString::from("--features")));
+        assert!(requests[0].args.contains(&OsString::from(RELEASE_FEATURES)));
         assert!(
             requests[1..]
                 .iter()
