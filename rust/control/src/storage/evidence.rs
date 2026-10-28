@@ -79,10 +79,7 @@ pub(crate) fn protection_snapshot(
         })
         .map_err(db_error)?;
 
-    let worktree_paths = worktrees
-        .into_iter()
-        .map(|(id, path)| (id, path))
-        .collect::<BTreeMap<_, _>>();
+    let worktree_paths = worktrees.into_iter().collect::<BTreeMap<_, _>>();
     let mut protected = ProtectionSnapshot::new();
     let mut active_artifacts = BTreeSet::new();
     for value in leases {
@@ -107,13 +104,13 @@ pub(crate) fn protection_snapshot(
         let newest = latest_releases.insert(receipt.release_id.clone());
         let current = receipt.qualified
             && latest_targets.insert((receipt.repository_id.clone(), receipt.target.clone()));
-        if current || newest && !receipt.qualified {
-            if let Some(worktree) = worktree_paths.get(&receipt.worktree_id) {
-                protected
-                    .entry(worktree.clone())
-                    .or_default()
-                    .insert(receipt.run_id);
-            }
+        if (current || newest && !receipt.qualified)
+            && let Some(worktree) = worktree_paths.get(&receipt.worktree_id)
+        {
+            protected
+                .entry(worktree.clone())
+                .or_default()
+                .insert(receipt.run_id);
         }
     }
 
@@ -654,10 +651,9 @@ mod tests {
             })
             .unwrap();
         assert!(
-            protection_snapshot(&unknown_database)
+            !protection_snapshot(&unknown_database)
                 .unwrap()
-                .get(&unknown_first)
-                .is_none()
+                .contains_key(&unknown_first)
         );
     }
 }
