@@ -56,6 +56,20 @@ impl HostBackend {
         context: &Context,
         out: &mut Discovery,
     ) -> Result<(), ProtocolError> {
+        // Protection metadata is global to the scan. Build it once, then use
+        // the exact worktree mapping for each retained-run observation. If the
+        // snapshot cannot be read, preserve the existing fail-closed behavior
+        // by reporting an incomplete evidence inventory instead of discovering
+        // evidence without its protection blockers.
+        let protected_snapshot = match crate::storage::evidence::protection_snapshot(&self.database)
+        {
+            Ok(snapshot) => snapshot,
+            Err(_) => {
+                out.coverage_gaps
+                    .push("evidence_inventory_incomplete".into());
+                return Ok(());
+            }
+        };
         let mut complete = true;
         for (repository, worktree) in &context.worktrees {
             if context
@@ -67,7 +81,7 @@ impl HostBackend {
             }
             let observed = (|| {
                 let query = request(worktree, repository, context)?;
-                let protected = crate::storage::evidence::protected_runs(&self.database, worktree)?;
+                let protected = protected_snapshot.get(worktree);
                 let runs = retention_runs(worktree, &query)
                     .map_err(|_| unavailable("evidence_inventory_unavailable"))?;
                 for run in runs {
@@ -106,7 +120,7 @@ impl HostBackend {
                     if run.active {
                         r.blockers.push("active_evidence".into());
                     }
-                    if protected.contains(&run.run_id) {
+                    if protected.is_some_and(|runs| runs.contains(&run.run_id)) {
                         r.blockers.push("required_evidence".into());
                     }
                     out.records.push(r);
