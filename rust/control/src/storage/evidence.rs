@@ -298,11 +298,12 @@ pub(crate) fn record_expired(
 mod tests {
     use super::*;
     use crate::database::Database;
+    use devcoordinator2_api::delivery::{Kind as DeliveryKind, Qualification, Receipt};
     use devcoordinator2_api::review::{
         Baseline, Disposition, EvidenceKind, EvidenceRef, Observation, ObservationKind,
         OptimizationExperiment, ReviewRecord,
     };
-    use devcoordinator2_api::storage::{Artifact, Effect, Kind, Safety};
+    use devcoordinator2_api::storage::{Artifact, Effect, Kind, Lease, Safety};
     use tempfile::TempDir;
 
     fn artifact_record(path: &Path, run_id: &str, protected: bool) -> String {
@@ -403,6 +404,49 @@ mod tests {
         .unwrap()
     }
 
+    fn delivery_receipt(
+        receipt_id: &str,
+        release_id: &str,
+        run_id: &str,
+        target: &str,
+        qualified: bool,
+        checked_at_ms: u64,
+    ) -> String {
+        serde_json::to_string(&Receipt {
+            receipt_id: receipt_id.into(),
+            release_id: release_id.into(),
+            repository_id: "r1".into(),
+            worktree_id: "w1".into(),
+            kind: DeliveryKind::NativeConsole,
+            target: target.into(),
+            source_sha256: "source".into(),
+            config_sha256: "config".into(),
+            run_id: run_id.into(),
+            check: "check".into(),
+            artifact: "artifact".into(),
+            artifact_sha256: "artifact-sha".into(),
+            manifest_sha256: "manifest".into(),
+            run_metadata_sha256: "metadata".into(),
+            verification_sha256: None,
+            qualification: if qualified {
+                Qualification::Qualified
+            } else {
+                Qualification::PendingExternalEvidence
+            },
+            qualified,
+            verified_at_ms: None,
+            checked_at_ms,
+            delivered_at_ms: None,
+            access: None,
+            reason: None,
+            completion_sha256: None,
+            completion_claim: None,
+            completion_capabilities: None,
+            completion_incomplete: None,
+        })
+        .unwrap()
+    }
+
     fn fixture() -> (TempDir, Database, PathBuf, PathBuf) {
         let temporary = tempfile::tempdir().unwrap();
         let first = temporary.path().join("repo-one");
@@ -471,6 +515,106 @@ mod tests {
                 .unwrap()
                 .contains("run-late")
         );
+    }
+
+    #[test]
+    fn scan_snapshot_preserves_lease_delivery_and_visual_feedback_protection() {
+        let (_temporary, database, first, _second) = fixture();
+        let leased_record = artifact_record(&first, "run-lease", false);
+        let qualified = delivery_receipt(
+            "receipt-qualified",
+            "release-qualified",
+            "run-qualified",
+            "target-a",
+            true,
+            20,
+        );
+        let qualified_old = delivery_receipt(
+            "receipt-qualified-old",
+            "release-qualified-old",
+            "run-qualified-old",
+            "target-a",
+            true,
+            10,
+        );
+        let failed = delivery_receipt(
+            "receipt-failed",
+            "release-failed",
+            "run-failed",
+            "target-b",
+            false,
+            30,
+        );
+        let failed_old = delivery_receipt(
+            "receipt-failed-old",
+            "release-failed",
+            "run-failed-old",
+            "target-b",
+            false,
+            20,
+        );
+        let lease = serde_json::to_string(&Lease {
+            lease_id: "lease-one".into(),
+            artifact_ids: vec!["sa-run-lease".into()],
+            expires_at_ms: (time::OffsetDateTime::now_utc().unix_timestamp() as u64 + 3_600)
+                * 1_000,
+        })
+        .unwrap();
+        database
+            .transaction(move |c| {
+                c.execute(
+                    "INSERT INTO storage_artifacts(artifact_id,repository_id,kind,revision,removed_at_ms,record_json,updated_at_ms) VALUES('sa-run-lease','r1','evidence',1,NULL,?1,1)",
+                    [&leased_record],
+                )?;
+                c.execute(
+                    "INSERT INTO storage_leases(lease_id,actor,lease_json,expires_at_ms) VALUES('lease-one','fixture',?1,?2)",
+                    rusqlite::params![lease, (time::OffsetDateTime::now_utc().unix_timestamp() + 3_600) * 1_000],
+                )?;
+                for (release_id, seq) in [
+                    ("release-qualified", 10),
+                    ("release-qualified-old", 11),
+                    ("release-failed", 12),
+                ] {
+                    c.execute(
+                        "INSERT INTO releases(release_id,repository_id,seq,name,kind,status,created_at,created_by,updated_at) VALUES(?1,'r1',?2,?1,'native_console','delivered','t','fixture','t')",
+                        rusqlite::params![release_id, seq],
+                    )?;
+                }
+                for (receipt_id, receipt, release_id) in [
+                    ("receipt-qualified", qualified, "release-qualified"),
+                    ("receipt-qualified-old", qualified_old, "release-qualified-old"),
+                    ("receipt-failed", failed, "release-failed"),
+                    ("receipt-failed-old", failed_old, "release-failed"),
+                ] {
+                    c.execute(
+                        "INSERT INTO release_evidence(receipt_id,release_id,repository_id,receipt_json) VALUES(?1,?2,'r1',?3)",
+                        rusqlite::params![receipt_id, release_id, receipt],
+                    )?;
+                }
+                c.execute(
+                    "INSERT INTO tasks(task_id,repository_id,seq,position,title,outcome,kind,status,created_at,created_by,updated_at) VALUES('task-feedback','r1',100,1,'feedback','open','review','open','t','fixture','t')",
+                    [],
+                )?;
+                c.execute(
+                    "INSERT INTO visual_feedback(feedback_id,task_id,repository_id,worktree_id,run_id,check_name,phase,formal_run_id,cell_id,screenshot_kind,screenshot_sha256,image_id,geometry_json,root_comment_id,created_at,created_by,updated_at) VALUES('feedback-one','task-feedback','r1','w1','run-feedback','check','formal','formal-run','cell','initial','sha','image','{}','comment','t','fixture','t')",
+                    [],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+
+        let snapshot = protection_snapshot(&database).unwrap();
+        let first_runs = snapshot.get(&first).unwrap();
+        for run_id in ["run-lease", "run-qualified", "run-failed", "run-feedback"] {
+            assert!(first_runs.contains(run_id), "missing {run_id}");
+        }
+        for run_id in ["run-qualified-old", "run-failed-old"] {
+            assert!(!first_runs.contains(run_id), "stale {run_id} protected");
+        }
+        // The old per-worktree path must continue to agree with the bulk
+        // snapshot for all protection sources, including late destructive
+        // revalidation callers.
+        assert_eq!(first_runs, &protected_runs(&database, &first).unwrap());
     }
 
     #[test]
