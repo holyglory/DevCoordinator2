@@ -155,6 +155,11 @@ impl App {
                 ),
             );
         }
+        match self.deferred(&request, peer).await {
+            Ok(Some(deferred)) => return response_from_result(id, deferred.await),
+            Ok(None) => {}
+            Err(error) => return ResponseEnvelope::failure(id, error),
+        }
         let caller = match Caller::from_client(
             peer.pid,
             peer.uid,
@@ -167,32 +172,14 @@ impl App {
         };
         let operation = request.operation;
         let params = request.params;
-        if let Some(deferred) = self.executor.defer(&operation, params.clone(), &caller) {
-            return response_from_result(
-                id,
-                match deferred {
-                    Ok(deferred) => deferred.await,
-                    Err(error) => Err(error),
-                },
-            );
-        }
         let executor = Arc::clone(&self.executor);
-        let result =
-            tokio::task::spawn_blocking(move || executor.execute(&operation, params, &caller))
-                .await;
-        match result {
-            Ok(Ok(data)) => ResponseEnvelope::success(id.clone(), data)
-                .unwrap_or_else(|error| ResponseEnvelope::failure(id, error)),
-            Ok(Err(error)) => ResponseEnvelope::failure(id, error),
-            Err(error) => ResponseEnvelope::failure(
-                id,
-                ProtocolError::new(ErrorCode::InternalError, "operation task failed")
-                    .with_detail(error.to_string()),
-            ),
-        }
+        response_from_result(
+            id,
+            blocking_operation(move || executor.execute(&operation, params, &caller)).await,
+        )
     }
 
-    fn deferred(
+    async fn deferred(
         &self,
         request: &RequestEnvelope,
         peer: PeerCredentials,
@@ -204,10 +191,22 @@ impl App {
             request.client.clone(),
             self.edge_uid,
         )?;
-        self.executor
-            .defer(&request.operation, request.params.clone(), &caller)
-            .transpose()
+        let executor = Arc::clone(&self.executor);
+        let operation = request.operation.clone();
+        let params = request.params.clone();
+        blocking_operation(move || executor.defer(&operation, params, &caller).transpose()).await
     }
+}
+
+/// Wait preparation and status rechecks can read authority state or storage.
+/// Keep those synchronous steps away from the socket and bridge reactors too.
+pub(crate) async fn blocking_operation<T: Send + 'static>(
+    work: impl FnOnce() -> Result<T, ProtocolError> + Send + 'static,
+) -> Result<T, ProtocolError> {
+    tokio::task::spawn_blocking(work).await.map_err(|error| {
+        ProtocolError::new(ErrorCode::InternalError, "operation task failed")
+            .with_detail(error.to_string())
+    })?
 }
 
 fn response_from_result(id: String, result: Result<Value, ProtocolError>) -> ResponseEnvelope {
@@ -355,7 +354,7 @@ async fn serve_connection(
             Ok(request) => {
                 let id = request.id.clone();
                 let observer = crate::client::is_passive_wait_operation(&request.operation);
-                match app.deferred(&request, peer) {
+                match app.deferred(&request, peer).await {
                     Ok(Some(deferred)) => {
                         let mut unexpected = [0_u8; 1];
                         let result = tokio::select! {
@@ -517,9 +516,11 @@ mod tests {
             if let Some(sender) = self.started.lock().unwrap().take() {
                 let _ = sender.send(());
             }
-            let signal = self.dropped.lock().unwrap().take();
+            // A prepared wait owns cleanup even if interruption wins before
+            // its future is first polled, as the real EventSubscription does.
+            let signal = DropSignal(self.dropped.lock().unwrap().take());
             Some(Ok(Box::pin(async move {
-                let _signal = DropSignal(signal);
+                let _signal = signal;
                 std::future::pending::<Result<Value, ProtocolError>>().await
             })))
         }
@@ -961,6 +962,169 @@ mod tests {
         assert!(matches!(response, ResponseEnvelope::Success { .. }));
         shutdown_tx.send(true).unwrap();
         server.await.unwrap().unwrap();
+    }
+
+    // Exercise both real transports on one reactor thread. A separate thread
+    // releases slow synchronous preparation only after an unrelated request
+    // executes, or at the failure ceiling so a regression cannot hang the suite.
+    #[tokio::test(flavor = "current_thread")]
+    async fn slow_wait_preparation_keeps_both_transports_responsive() {
+        struct SlowPreparation {
+            started: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+            release: Mutex<std::sync::mpsc::Receiver<()>>,
+            ping: std::sync::mpsc::Sender<()>,
+            fail: bool,
+        }
+        impl OperationExecutor for SlowPreparation {
+            fn execute(
+                &self,
+                operation: &str,
+                _: Value,
+                _: &Caller,
+            ) -> Result<Value, ProtocolError> {
+                assert_eq!(operation, "ping");
+                let _ = self.ping.send(());
+                Ok(serde_json::json!({"responsive": true}))
+            }
+
+            fn defer(
+                &self,
+                operation: &str,
+                _: Value,
+                _: &Caller,
+            ) -> Option<Result<DeferredOperation, ProtocolError>> {
+                if operation != "test.wait" {
+                    return None;
+                }
+                self.started
+                    .lock()
+                    .unwrap()
+                    .take()
+                    .unwrap()
+                    .send(())
+                    .unwrap();
+                self.release
+                    .lock()
+                    .unwrap()
+                    .recv_timeout(Duration::from_secs(3))
+                    .unwrap();
+                Some(if self.fail {
+                    Err(ProtocolError::new(
+                        ErrorCode::ParamsInvalid,
+                        "slow preparation failed",
+                    ))
+                } else {
+                    Ok(Box::pin(async {
+                        Ok(serde_json::json!({"completed": true}))
+                    }))
+                })
+            }
+        }
+
+        let mut outcomes = Vec::new();
+        for bridge in [false, true] {
+            for fail in [false, true] {
+                let temporary = tempdir().unwrap();
+                let socket = temporary.path().join("daemon.sock");
+                let directory = temporary.path().join("bridge");
+                let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+                let (release_tx, release_rx) = std::sync::mpsc::channel();
+                let (ping_tx, ping_rx) = std::sync::mpsc::channel();
+                let watchdog = std::thread::spawn(move || {
+                    let responsive = ping_rx.recv_timeout(Duration::from_secs(2)).is_ok();
+                    release_tx.send(()).unwrap();
+                    responsive
+                });
+                let app = Arc::new(App::with_executor(
+                    None,
+                    Arc::new(SlowPreparation {
+                        started: Mutex::new(Some(started_tx)),
+                        release: Mutex::new(release_rx),
+                        ping: ping_tx,
+                        fail,
+                    }),
+                ));
+                let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
+                let endpoint = DaemonEndpoint::bind(&socket).await.unwrap();
+                let socket_app = app.clone();
+                let server =
+                    tokio::spawn(async move { endpoint.serve(&mut shutdown_rx, socket_app).await });
+                let bridge_directory = directory.clone();
+                let bridge_shutdown = shutdown_tx.subscribe();
+                let bridge_server = tokio::spawn(async move {
+                    crate::sandbox_bridge::serve(app, &bridge_directory, bridge_shutdown).await
+                });
+                while !directory.join("daemon.lock").exists() {
+                    assert!(!bridge_server.is_finished());
+                    tokio::task::yield_now().await;
+                }
+
+                let request_socket = socket.clone();
+                let request_directory = directory.clone();
+                let waiting = tokio::spawn(async move {
+                    let params = serde_json::json!({"path":"/fixture", "run_id":"accepted-run", "deadline_at":"2099-01-01T00:00:00Z"});
+                    if bridge {
+                        let request = serde_json::json!({"protocol":2, "id":"aabbcc", "operation":"test.wait", "params":params, "client":{}});
+                        std::fs::write(
+                            request_directory.join("aabbcc.request"),
+                            serde_json::to_vec(&request).unwrap(),
+                        )
+                        .unwrap();
+                        timeout(Duration::from_secs(4), async {
+                            loop {
+                                if let Ok(raw) =
+                                    std::fs::read(request_directory.join("aabbcc.response"))
+                                {
+                                    break serde_json::from_slice::<ResponseEnvelope>(&raw)
+                                        .unwrap();
+                                }
+                                tokio::task::yield_now().await;
+                            }
+                        })
+                        .await
+                        .unwrap()
+                    } else {
+                        crate::client::call(
+                            &request_socket,
+                            "test.wait",
+                            params,
+                            ClientContext::default(),
+                        )
+                        .await
+                        .unwrap()
+                    }
+                });
+                timeout(Duration::from_secs(4), started_rx)
+                    .await
+                    .unwrap()
+                    .unwrap();
+                let ping = crate::client::call(
+                    &socket,
+                    "ping",
+                    serde_json::json!({}),
+                    ClientContext::default(),
+                )
+                .await
+                .unwrap();
+                let waited = waiting.await.unwrap();
+                let responsive = watchdog.join().unwrap();
+                let expected_wait = if fail {
+                    matches!(waited, ResponseEnvelope::Failure { error, .. } if error.code == ErrorCode::ParamsInvalid)
+                } else {
+                    matches!(waited, ResponseEnvelope::Success { .. })
+                };
+                outcomes.push((bridge, fail, responsive, ping.is_ok(), expected_wait));
+                shutdown_tx.send(true).unwrap();
+                server.await.unwrap().unwrap();
+                bridge_server.await.unwrap().unwrap();
+            }
+        }
+        assert!(
+            outcomes
+                .iter()
+                .all(|(_, _, responsive, ping, waited)| *responsive && *ping && *waited),
+            "slow preparation blocked unrelated requests: {outcomes:?}"
+        );
     }
 
     #[tokio::test]
