@@ -2189,7 +2189,12 @@ impl OperationExecutor for ControlPlane {
                         crate::test_admission::wait_for_admission_open(runtime),
                     );
                     match wait.await {
-                        Ok(Ok(())) => encode(tests.admission_status()?),
+                        Ok(Ok(())) => {
+                            crate::daemon::blocking_operation(move || {
+                                encode(tests.admission_status()?)
+                            })
+                            .await
+                        }
                         Ok(Err(error)) => Err(ProtocolError::new(
                             ErrorCode::InternalError,
                             "test admission watcher failed",
@@ -2233,26 +2238,34 @@ impl OperationExecutor for ControlPlane {
                     loop {
                         let access_for_wait = access.clone();
                         let caller_for_wait = wait_caller.clone();
-                        let subscription = events.subscribe_with_visibility(
-                            params::EventWait {
-                                cursor: None,
-                                filters: vec![params::EventFilter {
-                                    filter_id: "test-wait".into(),
-                                    categories: vec![params::EventCategory::Test],
-                                    kinds: vec!["test.finished".into()],
-                                    repository_ids: vec![repository.repository_id.clone()],
-                                    deployment_ids: vec![],
-                                    deadline_at: Some(deadline.clone()),
-                                }],
-                                limit: 10,
-                            },
-                            Arc::new(move || access_for_wait.event_visibility(&caller_for_wait)),
-                        )?;
+                        let subscription_events = events.clone();
+                        let subscription_repository = repository.repository_id.clone();
+                        let subscription_deadline = deadline.clone();
+                        let subscription = crate::daemon::blocking_operation(move || {
+                            subscription_events.subscribe_with_visibility(
+                                params::EventWait {
+                                    cursor: None,
+                                    filters: vec![params::EventFilter {
+                                        filter_id: "test-wait".into(),
+                                        categories: vec![params::EventCategory::Test],
+                                        kinds: vec!["test.finished".into()],
+                                        repository_ids: vec![subscription_repository],
+                                        deployment_ids: vec![],
+                                        deadline_at: Some(subscription_deadline),
+                                    }],
+                                    limit: 10,
+                                },
+                                Arc::new(move || {
+                                    access_for_wait.event_visibility(&caller_for_wait)
+                                }),
+                            )
+                        })
+                        .await?;
                         // The run may finish between the initial status read and
                         // subscription creation. Re-check immediately after the
                         // subscription is installed so the completion event is
                         // not required to be observed by this connection.
-                        let latest = tests.status(&path, &status_caller)?;
+                        let latest = test_wait_status(&tests, &path, &status_caller).await?;
                         if latest.run_id != run_id {
                             return Err(test_wait_run_changed(&run_id, &latest));
                         }
@@ -2265,7 +2278,7 @@ impl OperationExecutor for ControlPlane {
                         }
                         let result = subscription.receive().await?;
                         if !result.heartbeat_due.is_empty() {
-                            let latest = tests.status(&path, &status_caller)?;
+                            let latest = test_wait_status(&tests, &path, &status_caller).await?;
                             if latest.run_id == run_id
                                 && latest.status != results::TestStatus::Running
                             {
@@ -2285,7 +2298,7 @@ impl OperationExecutor for ControlPlane {
                                 None,
                             ));
                         }
-                        let latest = tests.status(&path, &status_caller)?;
+                        let latest = test_wait_status(&tests, &path, &status_caller).await?;
                         if latest.run_id != run_id {
                             return Err(test_wait_run_changed(&run_id, &latest));
                         }
@@ -2320,9 +2333,6 @@ impl OperationExecutor for ControlPlane {
                 let access = self.access.clone();
                 let wait_caller = caller.clone();
                 let deployments = self.deployments.clone();
-                let path = request.path.clone();
-                let name = request.name.clone();
-                let deployment_id = request.deployment_id.clone();
                 let deadline = request.deadline_at.clone();
                 let target_deployment_id = current.deployment_id.clone();
                 let state = request.state;
@@ -2331,33 +2341,47 @@ impl OperationExecutor for ControlPlane {
                     loop {
                         let access_for_wait = access.clone();
                         let caller_for_wait = wait_caller.clone();
-                        let subscription = events.subscribe_with_visibility(
-                            params::EventWait {
-                                cursor: None,
-                                filters: vec![params::EventFilter {
-                                    filter_id: "deployment-wait".into(),
-                                    categories: vec![params::EventCategory::Deployment],
-                                    kinds: vec![
-                                        "deployment.applied".into(),
-                                        "deployment.failed".into(),
-                                        "deployment.start".into(),
-                                        "deployment.restart".into(),
-                                    ],
-                                    repository_ids: vec![],
-                                    deployment_ids: vec![target_deployment_id.clone()],
-                                    deadline_at: Some(deadline.clone()),
-                                }],
-                                limit: 10,
-                            },
-                            Arc::new(move || access_for_wait.event_visibility(&caller_for_wait)),
-                        )?;
+                        let subscription_events = events.clone();
+                        let subscription_deployment = target_deployment_id.clone();
+                        let subscription_deadline = deadline.clone();
+                        let subscription = crate::daemon::blocking_operation(move || {
+                            subscription_events.subscribe_with_visibility(
+                                params::EventWait {
+                                    cursor: None,
+                                    filters: vec![params::EventFilter {
+                                        filter_id: "deployment-wait".into(),
+                                        categories: vec![params::EventCategory::Deployment],
+                                        kinds: vec![
+                                            "deployment.applied".into(),
+                                            "deployment.failed".into(),
+                                            "deployment.start".into(),
+                                            "deployment.restart".into(),
+                                        ],
+                                        repository_ids: vec![],
+                                        deployment_ids: vec![subscription_deployment],
+                                        deadline_at: Some(subscription_deadline),
+                                    }],
+                                    limit: 10,
+                                },
+                                Arc::new(move || {
+                                    access_for_wait.event_visibility(&caller_for_wait)
+                                }),
+                            )
+                        })
+                        .await?;
                         let result = subscription.receive().await?;
-                        let latest = deployments.status(
-                            path.as_deref(),
-                            name.as_deref(),
-                            deployment_id.as_deref(),
-                            &status_caller,
-                        )?;
+                        let service = deployments.clone();
+                        let status_request = request.clone();
+                        let caller = status_caller.clone();
+                        let latest = crate::daemon::blocking_operation(move || {
+                            service.status(
+                                status_request.path.as_deref(),
+                                status_request.name.as_deref(),
+                                status_request.deployment_id.as_deref(),
+                                &caller,
+                            )
+                        })
+                        .await?;
                         if deployment_wait_satisfied(&latest, state) {
                             return encode(results::DeploymentWaitResult {
                                 completed: true,
@@ -2389,6 +2413,17 @@ impl OperationExecutor for ControlPlane {
             )
         })())
     }
+}
+
+async fn test_wait_status(
+    tests: &TestLifecycle,
+    path: &str,
+    caller: &Caller,
+) -> Result<results::TestSummary, ProtocolError> {
+    let tests = tests.clone();
+    let path = path.to_owned();
+    let caller = caller.clone();
+    crate::daemon::blocking_operation(move || tests.status(&path, &caller)).await
 }
 
 fn parse_deadline(value: &str) -> Result<tokio::time::Instant, ProtocolError> {
