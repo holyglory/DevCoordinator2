@@ -63,6 +63,13 @@ pub struct ComponentRow {
     pub updated_at: String,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SharedPostgresReference {
+    pub deployment_id: String,
+    pub deployment_name: String,
+    pub component_name: String,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct GenerationRow {
     pub deployment_id: String,
@@ -272,6 +279,83 @@ impl DeploymentStore {
                     .collect::<Result<Vec<_>, _>>()?)
             })
             .map_err(database_error)
+    }
+
+    /// Return registered deployments that borrow a PostgreSQL component from
+    /// the selected deployment. The stored specification is the authority for
+    /// this relationship, so removal cannot orphan a live borrower merely
+    /// because its process is stopped or its route is currently unused.
+    pub fn shared_postgres_references(
+        &self,
+        owner_deployment_id: &str,
+    ) -> Result<Vec<SharedPostgresReference>, ProtocolError> {
+        let owner_deployment_id = owner_deployment_id.to_owned();
+        let owner_id_for_query = owner_deployment_id.clone();
+        let rows = self
+            .database
+            .call(move |connection| {
+                let mut statement = connection.prepare(
+                    "SELECT deployment_id,name,spec_json FROM deployments WHERE deployment_id<>?1",
+                )?;
+                Ok(statement
+                    .query_map([owner_id_for_query], |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, String>(2)?,
+                        ))
+                    })?
+                    .collect::<Result<Vec<_>, _>>()?)
+            })
+            .map_err(database_error)?;
+        let owner_prefix = format!("{owner_deployment_id}/");
+        let mut references = Vec::new();
+        for (deployment_id, deployment_name, spec_json) in rows {
+            let specification: Value = serde_json::from_str(&spec_json).map_err(|error| {
+                ProtocolError::new(
+                    ErrorCode::InternalError,
+                    "stored deployment specification is invalid",
+                )
+                .with_detail(error.to_string())
+            })?;
+            let components = specification
+                .get("components")
+                .and_then(Value::as_array)
+                .ok_or_else(|| {
+                    ProtocolError::new(
+                        ErrorCode::InternalError,
+                        "stored deployment components are unavailable",
+                    )
+                })?;
+            for component in components {
+                if component.get("type").and_then(Value::as_str) != Some("postgres") {
+                    continue;
+                }
+                let Some(shared_from) = component.get("shared_from").and_then(Value::as_str) else {
+                    continue;
+                };
+                if !shared_from.starts_with(&owner_prefix) {
+                    continue;
+                }
+                let Some(component_name) = component.get("name").and_then(Value::as_str) else {
+                    return Err(ProtocolError::new(
+                        ErrorCode::InternalError,
+                        "stored shared PostgreSQL component name is unavailable",
+                    ));
+                };
+                references.push(SharedPostgresReference {
+                    deployment_id: deployment_id.clone(),
+                    deployment_name: deployment_name.clone(),
+                    component_name: component_name.to_owned(),
+                });
+            }
+        }
+        references.sort_by(|left, right| {
+            left.deployment_id
+                .cmp(&right.deployment_id)
+                .then(left.component_name.cmp(&right.component_name))
+        });
+        Ok(references)
     }
 
     pub fn components(&self, deployment_id: &str) -> Result<Vec<ComponentRow>, ProtocolError> {
@@ -1701,6 +1785,45 @@ independent_services=["worker"]
             repository_id: "r1111111111111111".into(),
             worktree_id: "w1111111111111111".into(),
         }
+    }
+
+    #[test]
+    fn shared_postgres_references_are_detected_from_saved_specs() {
+        let (_temporary, database, store, _specification) = world();
+        let owner = "d1111111111111111";
+        let borrower = "d2222222222222222";
+        let owner_spec = json!({
+            "components": [{"name": "db", "type": "postgres"}]
+        });
+        let borrower_spec = json!({
+            "components": [{
+                "name": "db",
+                "type": "postgres",
+                "shared_from": format!("{owner}/db")
+            }]
+        });
+        database
+            .transaction(move |transaction| {
+                transaction.execute(
+                    "INSERT INTO deployments(deployment_id,repository_id,worktree_id,name,source,spec_fingerprint,spec_json,state,created_at,created_by_uid,client,updated_at) VALUES(?1,'r1111111111111111','w1111111111111111',?2,'worktree','f',?3,'running','t',1,'fixture','t')",
+                    rusqlite::params![owner, "owner", owner_spec.to_string()],
+                )?;
+                transaction.execute(
+                    "INSERT INTO deployments(deployment_id,repository_id,worktree_id,name,source,spec_fingerprint,spec_json,state,created_at,created_by_uid,client,updated_at) VALUES(?1,'r1111111111111111','w1111111111111111',?2,'checkout','f',?3,'stopped','t',1,'fixture','t')",
+                    rusqlite::params![borrower, "review", borrower_spec.to_string()],
+                )?;
+                Ok(())
+            })
+            .expect("saved deployment fixtures");
+
+        assert_eq!(
+            store.shared_postgres_references(owner).unwrap(),
+            vec![SharedPostgresReference {
+                deployment_id: borrower.into(),
+                deployment_name: "review".into(),
+                component_name: "db".into(),
+            }]
+        );
     }
 
     #[test]

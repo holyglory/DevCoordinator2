@@ -1230,6 +1230,31 @@ impl Deployments {
             .row
             .clone()
             .ok_or_else(|| not_found(&target.deployment_id))?;
+        let shared_references = self
+            .store
+            .shared_postgres_references(&target.deployment_id)?;
+        if !shared_references.is_empty() {
+            let shown = shared_references
+                .iter()
+                .take(8)
+                .map(|reference| {
+                    format!(
+                        "{} ({})",
+                        reference.deployment_name, reference.component_name
+                    )
+                })
+                .collect::<Vec<_>>();
+            let suffix = (shared_references.len() > shown.len())
+                .then(|| format!("; and {} more", shared_references.len() - shown.len()))
+                .unwrap_or_default();
+            return Err(ProtocolError::new(
+                ErrorCode::DeploymentActionFailed,
+                format!(
+                    "deployment is still the PostgreSQL owner for {}; remove or reconfigure those deployments before removing it{suffix}",
+                    shown.join(", ")
+                ),
+            ));
+        }
         let _busy = self.acquire_busy(&target.deployment_id)?;
         let mut components = target.specification.components.clone();
         components.reverse();
