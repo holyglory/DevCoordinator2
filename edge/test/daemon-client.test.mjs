@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { getEventListeners } from 'node:events';
 import fs from 'node:fs/promises';
 import net from 'node:net';
 import os from 'node:os';
@@ -7,7 +8,7 @@ import { test } from 'node:test';
 
 import { createDaemonClient } from '../lib/daemon-client.mjs';
 
-async function fixture(respond, invoke, { respondOnFrame = false, timeoutMs = 1000 } = {}) {
+async function fixture(respond, invoke, { respondOnFrame = false, connectTimeoutMs = 5000, timeoutMs = 1000 } = {}) {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'dc2-daemon-client-'));
   const socketPath = path.join(directory, 'daemon.sock');
   const sockets = new Set();
@@ -29,7 +30,7 @@ async function fixture(respond, invoke, { respondOnFrame = false, timeoutMs = 10
   });
   await new Promise((resolve) => server.listen(socketPath, resolve));
   try {
-    return await invoke(createDaemonClient({ socketPath, timeoutMs }));
+    return await invoke(createDaemonClient({ socketPath, connectTimeoutMs, timeoutMs }));
   } finally {
     for (const socket of sockets) socket.destroy();
     await new Promise((resolve) => server.close(resolve));
@@ -80,6 +81,61 @@ test('daemon client enforces request and response byte caps', async () => {
   );
 });
 
+test('daemon client distinguishes timeout phases and releases settled request resources', async (t) => {
+  const connections = [];
+  const createConnection = net.createConnection;
+  t.mock.method(net, 'createConnection', (...args) => {
+    const socket = createConnection(...args);
+    connections.push(socket);
+    return socket;
+  });
+  const assertReleased = (signal) => {
+    const socket = connections.at(-1);
+    assert.equal(socket.destroyed, true);
+    assert.equal(socket.listenerCount('timeout'), 0);
+    assert.equal(getEventListeners(signal, 'abort').length, 0);
+  };
+  const cancellation = new AbortController();
+  for (const connectTimeoutMs of [1000, 0]) {
+    const connectionCount = connections.length;
+    let requestAccepted = false;
+    await fixture((_socket, raw) => {
+      assert.equal(JSON.parse(raw.subarray(0, -1)).operation, 'health.summary');
+      requestAccepted = true;
+    }, async (client) => {
+      await assert.rejects(client.call('health.summary', {}, null, { signal: cancellation.signal }), (error) => {
+        assert.equal(requestAccepted, true);
+        assert.equal(error.message, 'daemon response timeout');
+        return true;
+      });
+      assert.equal(connections.length, connectionCount + 1);
+      assertReleased(cancellation.signal);
+    }, { connectTimeoutMs, timeoutMs: 50 });
+  }
+
+  await fixture(() => {}, async (client) => {
+    const pending = client.call('health.summary', {}, null, { signal: cancellation.signal });
+    const socket = connections.at(-1);
+    assert.equal(socket.connecting, true);
+    // Inject expiry before the real local handshake, which normally completes immediately.
+    socket.emit('timeout');
+    await assert.rejects(pending, { message: 'daemon connect timeout' });
+    assertReleased(cancellation.signal);
+  });
+
+  cancellation.abort();
+  await fixture(() => assert.fail('an already-cancelled request reached the daemon'), async (client) => {
+    await assert.rejects(client.call('health.summary', {}, null, { signal: cancellation.signal }), { message: 'daemon request cancelled' });
+    assertReleased(cancellation.signal);
+  });
+
+  const connectedCancellation = new AbortController();
+  await fixture(() => connectedCancellation.abort(), async (client) => {
+    await assert.rejects(client.call('health.summary', {}, null, { signal: connectedCancellation.signal }), { message: 'daemon request cancelled' });
+    assertReleased(connectedCancellation.signal);
+  });
+});
+
 test('event wait remains open beyond the ordinary timeout and supports cancellation', async () => {
   const response = await fixture((socket, raw) => {
     const request = JSON.parse(raw.subarray(0, -1));
@@ -87,7 +143,7 @@ test('event wait remains open beyond the ordinary timeout and supports cancellat
       protocol: 2, id: request.id, ok: true,
       data: { cursor: 4, events: [], heartbeat_due: [{ filter_id: 'health', deadline_at: '2026-09-05T00:00:00Z' }] },
     })}\n`), 20);
-  }, (client) => client.call('event.wait', { filters: [{ filter_id: 'health' }] }), { respondOnFrame: true });
+  }, (client) => client.call('event.wait', { filters: [{ filter_id: 'health' }] }), { respondOnFrame: true, timeoutMs: 10 });
   assert.equal(response.data.heartbeat_due[0].filter_id, 'health');
 
   const cancellation = new AbortController();
@@ -98,6 +154,7 @@ test('event wait remains open beyond the ordinary timeout and supports cancellat
     }, { respondOnFrame: true }),
     /cancelled/,
   );
+  assert.equal(getEventListeners(cancellation.signal, 'abort').length, 0);
 });
 
 test('deployment mutations wait for the result while ordinary reads retain their deadline', async () => {
@@ -111,10 +168,11 @@ test('deployment mutations wait for the result while ordinary reads retain their
   }
   assert.equal((await fixture(delayed, (client) => client.call('plan.recovery'), { timeoutMs: 10 })).ok, true);
   for (const operation of ['performance.overview', 'performance.review', 'review.prepare']) assert.equal((await fixture(delayed, client => client.call(operation), { timeoutMs: 10 })).ok, true);
-  await assert.rejects(fixture(delayed, (client) => client.call('deployment.status'), { timeoutMs: 10 }), /timeout/);
+  await assert.rejects(fixture(delayed, (client) => client.call('deployment.status'), { timeoutMs: 10 }), /daemon response timeout/);
   const cancellation = new AbortController();
   await assert.rejects(fixture(delayed, (client) => {
     setTimeout(() => cancellation.abort(), 20);
     return client.call('deployment.apply', {}, null, { signal: cancellation.signal });
   }, { timeoutMs: 10 }), /cancelled/);
+  assert.equal(getEventListeners(cancellation.signal, 'abort').length, 0);
 });

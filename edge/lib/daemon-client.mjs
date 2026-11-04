@@ -34,21 +34,30 @@ export function createDaemonClient({ socketPath, connectTimeoutMs = 5000, timeou
       const chunks = [];
       let bytes = 0;
       let settled = false;
+      let connected = false;
       const onAbort = () => { socket.destroy(); finish(reject, new Error('daemon request cancelled')); };
+      const onTimeout = () => {
+        socket.destroy();
+        finish(reject, new Error(connected ? 'daemon response timeout' : 'daemon connect timeout'));
+      };
       const finish = (fn, value) => {
         if (!settled) {
           settled = true;
+          socket.setTimeout(0);
+          socket.off('timeout', onTimeout);
           signal?.removeEventListener('abort', onAbort);
           fn(value);
         }
       };
       if (signal?.aborted) return onAbort();
       signal?.addEventListener('abort', onAbort, { once: true });
-      socket.setTimeout(connectTimeoutMs, () => { socket.destroy(); finish(reject, new Error('daemon connect timeout')); });
+      socket.once('timeout', onTimeout);
+      socket.setTimeout(connectTimeoutMs);
       socket.on('error', (error) => finish(reject, error));
       socket.on('connect', () => {
+        connected = true;
         const longOperation = operation === 'event.wait' || operation === 'plan.recovery' || /^deployment\.(apply|rollback|start|stop|restart|remove)$/.test(operation);
-        socket.setTimeout(longOperation ? 0 : /^(performance\.(overview|review)|review\.prepare)$/.test(operation) ? 20000 : timeoutMs, () => { socket.destroy(); finish(reject, new Error('daemon response timeout')); });
+        socket.setTimeout(longOperation ? 0 : /^(performance\.(overview|review)|review\.prepare)$/.test(operation) ? 20000 : timeoutMs);
         const requestId = crypto.randomBytes(6).toString('hex');
         const request = {
           protocol: 2,
