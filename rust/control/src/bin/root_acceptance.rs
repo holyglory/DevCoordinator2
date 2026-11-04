@@ -3347,6 +3347,26 @@ shared_from = "{owner_id}/db"
         "shared consumer altered the owner port binding"
     );
 
+    let blocked_owner_removal = world.call(
+        "deployment.remove",
+        json!({"deployment_id": owner_id, "delete_data": false}),
+    )?;
+    ensure!(
+        error_code(&blocked_owner_removal) == Some("deployment_action_failed")
+            && blocked_owner_removal
+                .to_string()
+                .contains("PostgreSQL owner"),
+        "shared PostgreSQL owner was removed while a borrower remained registered"
+    );
+    let removed_consumer_response = world.call(
+        "deployment.remove",
+        json!({"deployment_id": consumer_id, "delete_data": false}),
+    )?;
+    let removed_consumer = data(&removed_consumer_response)?;
+    ensure!(
+        removed_consumer["removed"] == true,
+        "consumer deployment cleanup did not complete"
+    );
     let removed_owner = data(&world.call(
         "deployment.remove",
         json!({"deployment_id": owner_id, "delete_data": false}),
@@ -3370,14 +3390,14 @@ shared_from = "{owner_id}/db"
             .contains("shared PostgreSQL component is not deployed"),
         "missing-owner failure did not identify the ownership boundary"
     );
-    let removed_consumer_response = world.call(
+    let removed_consumer_after_owner_response = world.call(
         "deployment.remove",
         json!({"deployment_id": consumer_id, "delete_data": false}),
     )?;
-    let removed_consumer = data(&removed_consumer_response)?;
+    let removed_consumer_after_owner = data(&removed_consumer_after_owner_response)?;
     ensure!(
-        removed_consumer["removed"] == true,
-        "consumer deployment cleanup did not complete"
+        removed_consumer_after_owner["removed"] == true,
+        "consumer cleanup after the missing-owner failure did not complete"
     );
     Ok(())
 }
