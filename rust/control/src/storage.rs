@@ -438,7 +438,7 @@ impl StorageService {
             return Err(invalid("unsupported_root_kind"));
         }
         let path = std::path::PathBuf::from(&p.path);
-        native::validate_root(&path, &self.config)?;
+        native::validate_configured_root(&path, p.kind, &self.config)?;
         let (device, inode) = fs::identity(&path)?;
         let id = p
             .root_id
