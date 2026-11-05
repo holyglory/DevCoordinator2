@@ -116,6 +116,13 @@ paths and their `sha256` digests. Native installation snapshots use their
 existing database verification. Missing or damaged evidence never counts toward
 the required recovery floor.
 
+Register native installation backups only at the exact configured state
+directory's `cutover` child, with root kind `backup`. Its direct finalized
+generations use the recorded database hash and read-only SQLite verification;
+unfinished transactions, extra files or directories, aliases and changed root
+identities remain blocked. Cleanup removes only the native snapshot files and
+keeps the authority directory and all other state descendants protected.
+
 Governed test evidence remains under its existing age/depth retention service.
 Storage protection and active leases, required release/review evidence and open
 feedback references prevent expiry. Manual evidence removal uses that same

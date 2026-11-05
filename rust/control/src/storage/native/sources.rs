@@ -9,6 +9,29 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 impl HostBackend {
+    pub(super) fn native_backup_root_identity(
+        &self,
+        r: &Record,
+        root: &Path,
+        context: &Context,
+    ) -> Result<(u64, u64), ProtocolError> {
+        let registered = context
+            .roots
+            .iter()
+            .find(|configured| {
+                configured.path == root
+                    && configured.root.kind == api::Kind::Backup
+                    && (context.discovering
+                        || r.artifact.group_id.as_ref() == Some(&configured.root.root_id))
+            })
+            .ok_or_else(|| blocked("native_backup_root_unverified"))?;
+        let expected = (registered.device, registered.inode);
+        if fs::identity(root)? != expected {
+            return Err(blocked("configured_root_identity_changed"));
+        }
+        Ok(expected)
+    }
+
     pub(super) fn discover_retained_backing(
         &self,
         context: &Context,
@@ -83,6 +106,9 @@ impl HostBackend {
         self.observe_backup(&mut checked, context)?;
         if !checked.recovery_verified {
             return Err(blocked("backup_unverified"));
+        }
+        if checked.last_activity_signature != r.last_activity_signature {
+            return Err(blocked("backup_changed"));
         }
         if checked.blockers.iter().any(|b| b == "backup_in_progress") {
             return Err(blocked("backup_in_progress"));
@@ -250,8 +276,10 @@ impl HostBackend {
                             .iter()
                             .find(|p| Some(&p.id) == r.artifact.repository_id.as_ref())
                             .map(|p| p.name.clone());
-                        if r.artifact.kind == api::Kind::Backup {
-                            self.observe_backup(&mut r, context)?;
+                        if r.artifact.kind == api::Kind::Backup
+                            && let Err(error) = self.observe_backup(&mut r, context)
+                        {
+                            r.blockers.push(error.message);
                         }
                         out.records.push(r);
                     }
@@ -415,6 +443,9 @@ impl HostBackend {
         let Locator::Directory { path, root, .. } = &r.locator else {
             return Ok(());
         };
+        if super::native_backup_generation(path, root, r.artifact.kind, &self.config) {
+            fs::validate_native_snapshot(path)?;
+        }
         if path.join("installation-snapshot.json").is_file() {
             let repository = r
                 .artifact
@@ -443,7 +474,11 @@ impl HostBackend {
                 "authority:{}",
                 hash(root.to_string_lossy().as_bytes())
             ));
-            r.recovery_verified = modified.is_some();
+            r.recovery_verified = modified.is_some()
+                && !matches!(
+                    observation.snapshot_status.as_str(),
+                    "prepared" | "rolling_back"
+                );
             r.last_activity_signature = observation.backup_sha256;
             if r.recovery_verified {
                 r.blockers.retain(|s| s != "backup_unverified");
