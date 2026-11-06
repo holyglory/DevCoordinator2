@@ -162,7 +162,7 @@ pub(super) fn finish_activation(
     loop {
         let output = runner.run(&CommandRequest {
             program: control.path.clone().into(),
-            args: vec!["ping".into()],
+            args: vec!["call".into(), "ping".into()],
             environment: environment.clone(),
             clear_environment: true,
         })?;
@@ -233,6 +233,7 @@ pub(super) fn finish_activation(
         let output = runner.run(&CommandRequest {
             program: control.path.clone().into(),
             args: vec![
+                "call".into(),
                 operation.into(),
                 "--params".into(),
                 params.to_string().into(),
@@ -375,7 +376,15 @@ pub(super) fn recover(
         vec!["--destination".into(), archive.into_os_string()],
     )?;
     restore_socket(&config.runtime_dir, &config.socket_path)?;
-    install::refresh_edge_source_revision(&config.edge_env, &config.source_root, owner.0, runner)?;
+    restore_prior_edge_source(
+        &config.transaction_dir,
+        &config.source_root,
+        &config.edge_env,
+        Some(snapshot),
+        runner,
+        owner,
+    )?;
+    run_systemctl(runner, &config.systemctl, &["daemon-reload"])?;
     run_systemctl_all(
         runner,
         &config.systemctl,

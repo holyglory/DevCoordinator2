@@ -181,8 +181,15 @@ impl World {
             std::process::id(),
             &sha256_hex(name.as_bytes())[..8]
         );
+        let postgres_root = base.join("authority-postgres");
+        fs::create_dir(&postgres_root).map_err(|error| error.to_string())?;
+        // This new marker-bound parent belongs to the harness. PostgreSQL's
+        // non-root identity needs traversal even when the launcher uses 0077;
+        // the fixture retains private ownership/modes on its own children.
+        fs::set_permissions(&postgres_root, fs::Permissions::from_mode(0o711))
+            .map_err(|error| error.to_string())?;
         let postgres = devcoordinator2_control::persistence::fixture::FixtureCluster::start_in(
-            &base.join("authority-postgres"),
+            &postgres_root,
             harness.postgres_uid,
             harness.postgres_gid,
         )

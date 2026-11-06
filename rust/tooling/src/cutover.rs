@@ -270,6 +270,7 @@ pub struct HostCutoverConfig {
     pub postgres: install::postgres::PostgresSetup,
     pub candidate_manifest: PathBuf,
     pub installed_manifest: PathBuf,
+    pub source_cache_dir: PathBuf,
     pub tmpfiles_path: PathBuf,
     pub transaction_dir: PathBuf,
     pub runtime_dir: PathBuf,
@@ -336,6 +337,7 @@ impl Default for HostCutoverConfig {
             postgres: install::postgres::PostgresSetup::default(),
             candidate_manifest: "/etc/devcoordinator2/candidate-install-manifest.json".into(),
             installed_manifest: "/etc/devcoordinator2/install-manifest.json".into(),
+            source_cache_dir: "/var/lib/devcoordinator2-sources".into(),
             tmpfiles_path: "/etc/tmpfiles.d/devcoordinator2.conf".into(),
             transaction_dir: "/var/lib/devcoordinator2/cutover/postgres-v3".into(),
             runtime_dir: "/run/devcoordinator2".into(),
@@ -401,6 +403,16 @@ enum AuthorityKind {
     Postgres,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PriorEdgeSource {
+    source: install::edge_source::PinnedSource,
+    installed_manifest: PathBuf,
+    manifest_sha256: String,
+    edge_unit_path: PathBuf,
+    edge_env: PathBuf,
+}
+
 pub struct HostCutover {
     authority: AuthorityKind,
     authority_marker_path: PathBuf,
@@ -419,6 +431,7 @@ pub struct HostCutover {
     acceptance_sha256: String,
     frozen_source_sha256: Option<String>,
     postgres_started: bool,
+    prior_edge_source: Option<install::edge_source::PinnedSource>,
 }
 
 impl HostCutover {
@@ -593,6 +606,7 @@ impl HostCutover {
             acceptance_sha256,
             frozen_source_sha256: None,
             postgres_started: false,
+            prior_edge_source: None,
         })
     }
 
@@ -750,6 +764,42 @@ impl HostCutover {
         Ok(receipt)
     }
 
+    fn retain_prior_edge_source(&mut self) -> Result<(), String> {
+        if self.prior_edge_source.is_some() {
+            return Ok(());
+        }
+        let prior = install::read_and_verify_prior_manifest_owned(
+            &self.config.installed_manifest,
+            self.runner.as_ref(),
+            self.expected_owner.0,
+        )?;
+        if prior.source_root != self.manifest.source_root {
+            return Err("prior edge source belongs to another canonical installation".into());
+        }
+        let source = install::edge_source::prepare(
+            &prior,
+            &self.config.source_cache_dir,
+            self.expected_owner,
+            self.runner.as_ref(),
+        )?;
+        let binding = PriorEdgeSource {
+            source: source.clone(),
+            installed_manifest: self.config.installed_manifest.clone(),
+            manifest_sha256: install::hash_file(&self.config.installed_manifest)?,
+            edge_unit_path: self.config.edge_unit_path.clone(),
+            edge_env: self.config.edge_env.clone(),
+        };
+        install::ensure_owned_directory(&self.config.transaction_dir, 0o700, self.expected_owner)?;
+        install::atomic_file(
+            &self.config.transaction_dir.join("edge-source-before.json"),
+            &serde_json::to_vec_pretty(&binding).map_err(|_| "cannot retain prior edge source")?,
+            0o600,
+            Some(self.expected_owner),
+        )?;
+        self.prior_edge_source = Some(source);
+        Ok(())
+    }
+
     fn verify_critical_reads(&self) -> Result<(), String> {
         for (operation, params) in [
             ("repository.list", serde_json::json!({"limit":1})),
@@ -759,6 +809,7 @@ impl HostCutover {
             let output = self.runner.run(&CommandRequest {
                 program: self.installed_binary("devcoordinator2")?,
                 args: vec![
+                    "call".into(),
                     operation.into(),
                     "--params".into(),
                     params.to_string().into(),
@@ -891,6 +942,8 @@ impl CutoverAdapter for HostCutover {
     type InstallationSnapshot = InstallationSnapshot;
 
     fn close_admission(&mut self) -> Result<Self::Drain, String> {
+        self.verify_candidate_binaries()?;
+        self.retain_prior_edge_source()?;
         begin_drain(&self.config.runtime_dir, self.expected_owner)
     }
 
@@ -997,6 +1050,7 @@ impl CutoverAdapter for HostCutover {
     }
 
     fn capture_installation(&mut self) -> Result<Self::InstallationSnapshot, String> {
+        self.retain_prior_edge_source()?;
         if self.authority == AuthorityKind::Postgres {
             let helper = self
                 .manifest
@@ -1125,6 +1179,11 @@ impl CutoverAdapter for HostCutover {
             &self.manifest.source_commit,
             self.expected_owner.0,
         )?;
+        install::configure_edge_console_source(
+            &self.config.edge_env,
+            Path::new(&self.manifest.source_root),
+            self.expected_owner.0,
+        )?;
         replace_captured_target(
             &self.config.cli_link,
             &self.installed_binary("devcoordinator2")?,
@@ -1194,7 +1253,7 @@ impl CutoverAdapter for HostCutover {
         loop {
             let output = self.runner.run(&CommandRequest {
                 program: binary.clone(),
-                args: vec!["ping".into()],
+                args: vec!["call".into(), "ping".into()],
                 environment: std::collections::BTreeMap::from([
                     (OsString::from("PATH"), OsString::from("/usr/bin:/bin")),
                     (
@@ -1349,14 +1408,15 @@ impl CutoverAdapter for HostCutover {
     }
 
     fn start_legacy(&mut self) -> Result<(), String> {
-        // The prior daemon may differ from the Console assets, which continue
-        // to come directly from the current canonical checkout.
-        install::refresh_edge_source_revision(
-            &self.config.edge_env,
+        restore_prior_edge_source(
+            &self.config.transaction_dir,
             Path::new(&self.manifest.source_root),
-            self.expected_owner.0,
+            &self.config.edge_env,
+            None,
             self.runner.as_ref(),
+            self.expected_owner,
         )?;
+        self.systemctl(&["daemon-reload"])?;
         self.systemctl_all(&[
             ("restart", &self.config.daemon_unit),
             ("restart", &self.config.edge_unit),
@@ -1366,6 +1426,57 @@ impl CutoverAdapter for HostCutover {
     fn reopen_admission(&mut self, drain: Self::Drain) -> Result<(), String> {
         end_drain(&drain)
     }
+}
+
+fn restore_prior_edge_source(
+    transaction: &Path,
+    source_root: &Path,
+    edge_env: &Path,
+    snapshot: Option<&InstallationSnapshot>,
+    runner: &dyn CommandRunner,
+    owner: (u32, u32),
+) -> Result<(), String> {
+    let binding: PriorEdgeSource = serde_json::from_value(finalize::private(
+        &transaction.join("edge-source-before.json"),
+        owner.0,
+    )?)
+    .map_err(|_| "prior edge source binding is invalid")?;
+    if binding.source.repository != source_root || binding.edge_env != edge_env {
+        return Err("prior edge source belongs to another installation".into());
+    }
+    if let Some(snapshot) = snapshot {
+        for path in [
+            &binding.installed_manifest,
+            &binding.edge_unit_path,
+            &binding.edge_env,
+        ] {
+            if !snapshot
+                .entries
+                .iter()
+                .any(|entry| Path::new(&entry.path) == path)
+            {
+                return Err("prior edge source is outside the captured installation".into());
+            }
+        }
+    }
+    let manifest = install::read_and_verify_prior_manifest_owned(
+        &binding.installed_manifest,
+        runner,
+        owner.0,
+    )?;
+    if manifest.source_commit != binding.source.source_commit
+        || install::hash_file(&binding.installed_manifest)? != binding.manifest_sha256
+    {
+        return Err("prior edge manifest no longer matches its captured source".into());
+    }
+    install::edge_source::bind(
+        &binding.source,
+        &binding.edge_unit_path,
+        edge_env,
+        "devcoordinator2-edge",
+        owner.0,
+        runner,
+    )
 }
 
 fn successful_v3_ping(response: &Value) -> bool {
@@ -1518,12 +1629,15 @@ pub fn recover_host(
             return Err("cutover database backup failed integrity verification".to_owned());
         }
     };
-    install::refresh_edge_source_revision(
-        &config.edge_env,
+    restore_prior_edge_source(
+        &config.transaction_dir,
         &config.source_root,
-        expected_owner.0,
+        &config.edge_env,
+        Some(&snapshot),
         runner,
+        expected_owner,
     )?;
+    run_systemctl(runner, &config.systemctl, &["daemon-reload"])?;
     restore_socket(&config.runtime_dir, &config.socket_path)?;
     run_systemctl_all(
         runner,
@@ -2751,26 +2865,88 @@ mod tests {
             self.requests.lock().unwrap().push(request.clone());
             if request.program == Path::new("/usr/bin/git") && request.args.len() >= 5 {
                 let args = &request.args[4..];
+                let git_root = Path::new(&request.args[3]);
+                let pinned = git_root
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .filter(|name| {
+                        matches!(name.len(), 40 | 64)
+                            && name.bytes().all(|byte| byte.is_ascii_hexdigit())
+                    });
                 let stdout =
                     if args == ["rev-parse", "--show-toplevel"] {
                         request.args[3].to_string_lossy().into_owned()
                     } else if args == ["branch", "--show-current"] {
-                        "main".to_owned()
+                        if pinned.is_some() {
+                            String::new()
+                        } else {
+                            "main".to_owned()
+                        }
                     } else if args == ["status", "--porcelain", "--untracked-files=all"] {
                         let stopped =
                             self.requests.lock().unwrap().iter().any(|request| {
                                 request.args.first() == Some(&OsString::from("stop"))
                             });
-                        if self.dirty_checkout || (self.dirty_checkout_after_stop && stopped) {
+                        if pinned.is_none()
+                            && (self.dirty_checkout || (self.dirty_checkout_after_stop && stopped))
+                        {
                             " M console/workspace.js\n".to_owned()
                         } else {
                             String::new()
                         }
                     } else if args == ["rev-parse", "HEAD"] {
-                        self.checkout_commit
-                            .as_ref()
-                            .unwrap_or(&self.commit)
-                            .clone()
+                        pinned.map(str::to_owned).unwrap_or_else(|| {
+                            self.checkout_commit
+                                .as_ref()
+                                .unwrap_or(&self.commit)
+                                .clone()
+                        })
+                    } else if args == ["rev-parse", "--path-format=absolute", "--git-common-dir"] {
+                        let root = if pinned.is_some() {
+                            git_root.parent().unwrap().parent().unwrap().join("source")
+                        } else {
+                            git_root.to_owned()
+                        };
+                        root.join(".git").to_string_lossy().into_owned()
+                    } else if args.first().is_some_and(|arg| arg == "worktree") {
+                        assert_eq!(
+                            &args[..4],
+                            ["worktree", "add", "--detach", "--"].map(OsString::from)
+                        );
+                        let checkout = Path::new(&args[4]);
+                        std::fs::create_dir_all(checkout.join("edge")).unwrap();
+                        std::fs::create_dir_all(checkout.join("console")).unwrap();
+                        std::fs::write(checkout.join(".git"), "fixture pointer").unwrap();
+                        std::fs::write(
+                            checkout.join("edge/devcoordinator2-edge.mjs"),
+                            "fixture edge source\n",
+                        )
+                        .unwrap();
+                        std::fs::write(
+                            checkout.join("console/index.html"),
+                            "fixture Console source\n",
+                        )
+                        .unwrap();
+                        String::new()
+                    } else if args.first().is_some_and(|arg| arg == "ls-tree") {
+                        let digest = |bytes: &[u8]| {
+                            Sha256::digest(bytes)
+                                .iter()
+                                .map(|byte| format!("{byte:02x}"))
+                                .collect::<String>()
+                        };
+                        format!(
+                            "100644 blob {}\tedge/devcoordinator2-edge.mjs\0\
+                            100644 blob {}\tconsole/index.html\0",
+                            digest(b"fixture edge source\n"),
+                            digest(b"fixture Console source\n")
+                        )
+                    } else if args.first().is_some_and(|arg| arg == "hash-object") {
+                        args.iter()
+                            .skip(3)
+                            .map(|path| install::hash_file(&git_root.join(path)).unwrap())
+                            .collect::<Vec<_>>()
+                            .join("\n")
                     } else if args == ["rev-parse", "refs/remotes/origin/main"] {
                         self.upstream_commit
                             .as_ref()
@@ -2887,12 +3063,26 @@ mod tests {
                     stderr_truncated: false,
                 });
             }
-            if request.args.first().is_some_and(|arg| {
-                matches!(
-                    arg.to_str(),
-                    Some("repository.list" | "deployment.list" | "health.summary")
-                )
-            }) {
+            if request.program.file_name() == Some(std::ffi::OsStr::new("devcoordinator2"))
+                && request.args.first().is_some_and(|arg| arg == "call")
+                && request.args.get(1).is_some_and(|arg| {
+                    matches!(
+                        arg.to_str(),
+                        Some("repository.list" | "deployment.list" | "health.summary")
+                    )
+                })
+            {
+                let operation = request.args[1].to_str().unwrap();
+                let expected_params = if operation == "repository.list" {
+                    "{\"limit\":1}"
+                } else {
+                    "{}"
+                };
+                if request.args
+                    != ["call", operation, "--params", expected_params].map(OsString::from)
+                {
+                    return Err("candidate verification requires the exact v3 call argv".into());
+                }
                 return Ok(crate::install::CommandOutput {
                     success: true,
                     stdout: serde_json::json!({"protocol":3,"id":"x","ok":true,"data":{}})
@@ -2905,13 +3095,23 @@ mod tests {
             if request.args == [OsString::from("--source-commit")] {
                 return Ok(crate::install::CommandOutput {
                     success: true,
-                    stdout: self.commit.clone(),
+                    stdout: if request
+                        .program
+                        .components()
+                        .any(|part| part.as_os_str() == "previous-release")
+                    {
+                        "b".repeat(40)
+                    } else {
+                        self.commit.clone()
+                    },
                     stderr: String::new(),
                     stdout_truncated: false,
                     stderr_truncated: false,
                 });
             }
-            if request.args == [OsString::from("ping")] {
+            if request.program.file_name() == Some(std::ffi::OsStr::new("devcoordinator2"))
+                && request.args == [OsString::from("call"), OsString::from("ping")]
+            {
                 if self
                     .retryable_ping_failures
                     .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |remaining| {
@@ -2953,6 +3153,11 @@ mod tests {
                     stderr_truncated: false,
                 });
             }
+            if request.program.file_name() == Some(std::ffi::OsStr::new("devcoordinator2")) {
+                return Err(
+                    "unexpected candidate control argv; legacy commands are refused".into(),
+                );
+            }
             Ok(crate::install::CommandOutput {
                 success: true,
                 stdout: String::new(),
@@ -2961,6 +3166,29 @@ mod tests {
                 stderr_truncated: false,
             })
         }
+    }
+
+    fn assert_candidate_read_calls(requests: &[CommandRequest]) {
+        let actual = requests
+            .iter()
+            .filter(|request| {
+                request.program.file_name() == Some(std::ffi::OsStr::new("devcoordinator2"))
+                    && request.args != [OsString::from("--source-commit")]
+            })
+            .map(|request| request.args.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            actual,
+            vec![
+                vec!["call", "ping"],
+                vec!["call", "repository.list", "--params", "{\"limit\":1}"],
+                vec!["call", "deployment.list", "--params", "{}"],
+                vec!["call", "health.summary", "--params", "{}"],
+            ]
+            .into_iter()
+            .map(|args| args.into_iter().map(OsString::from).collect::<Vec<_>>())
+            .collect::<Vec<_>>()
+        );
     }
 
     struct HostWorld {
@@ -2975,12 +3203,62 @@ mod tests {
         commit: String,
     }
 
+    impl HostWorld {
+        fn rollback_edge_env(&self) -> String {
+            let source = self
+                .config
+                .candidate_manifest
+                .parent()
+                .unwrap()
+                .parent()
+                .unwrap()
+                .join("source");
+            self.old_edge_env.replace(
+                &format!("EDGE_CONSOLE_DIR={}/console", source.display()),
+                &format!(
+                    "EDGE_CONSOLE_DIR={}/console",
+                    self.config.source_cache_dir.join("b".repeat(40)).display()
+                ),
+            )
+        }
+        fn rollback_edge_unit(&self) -> String {
+            let source = self
+                .config
+                .candidate_manifest
+                .parent()
+                .unwrap()
+                .parent()
+                .unwrap()
+                .join("source");
+            self.old_edge_unit.replace(
+                source.to_str().unwrap(),
+                self.config
+                    .source_cache_dir
+                    .join("b".repeat(40))
+                    .to_str()
+                    .unwrap(),
+            )
+        }
+    }
+
     fn host_world() -> HostWorld {
         let temporary = tempfile::tempdir().unwrap();
         let root = temporary.path();
         let source = root.join("source");
         std::fs::create_dir_all(source.join("deploy")).unwrap();
         std::fs::create_dir_all(source.join("edge")).unwrap();
+        std::fs::create_dir_all(source.join("console")).unwrap();
+        std::fs::create_dir_all(source.join(".git")).unwrap();
+        std::fs::write(
+            source.join("edge/devcoordinator2-edge.mjs"),
+            "fixture edge source\n",
+        )
+        .unwrap();
+        std::fs::write(
+            source.join("console/index.html"),
+            "fixture Console source\n",
+        )
+        .unwrap();
         std::fs::create_dir_all(source.join("target/release")).unwrap();
         std::fs::write(
             source.join("deploy/devcoordinator2.tmpfiles.conf"),
@@ -3130,12 +3408,14 @@ mod tests {
         let old_daemon = "ExecStart=/usr/bin/python3 -m devcoordinator2.daemon\n".to_owned();
         let old_cli = "#!/usr/bin/python3\n".to_owned();
         let old_edge_unit = format!(
-            "[Service]\nExecStart=/usr/bin/node {}\n",
-            source.join("edge/devcoordinator2-edge.mjs").display()
+            "[Service]\nExecStart=/usr/bin/node {}\nReadOnlyPaths={}\n",
+            source.join("edge/devcoordinator2-edge.mjs").display(),
+            source.display()
         );
         let old_edge_env = format!(
-            "EDGE_BASE_DOMAIN=example.test\nUNRELATED=retained-private-setting\nEDGE_UI_SOURCE_REVISION=git:{}\n",
-            "b".repeat(40)
+            "EDGE_BASE_DOMAIN=example.test\nUNRELATED=retained-private-setting\nEDGE_UI_SOURCE_REVISION=git:{}\nEDGE_CONSOLE_DIR={}/console\n",
+            "b".repeat(40),
+            source.display()
         );
         let edge_env = root.join("etc/edge.env");
         std::fs::write(&edge_env, &old_edge_env).unwrap();
@@ -3145,13 +3425,39 @@ mod tests {
         std::fs::write(&tests_slice_unit_path, "old test slice\n").unwrap();
         std::fs::write(&cli_link, &old_cli).unwrap();
         std::fs::write(&tooling_link, "old tooling\n").unwrap();
-        std::fs::write(
+        let previous = source.join("target/previous-release");
+        std::fs::create_dir_all(&previous).unwrap();
+        let binaries = [
+            "devcoordinator2",
+            "devcoordinator2-executor",
+            "devcoordinator2-tooling",
+        ]
+        .into_iter()
+        .map(|name| {
+            let path = previous.join(name);
+            std::fs::write(&path, "prior fixture binary").unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+            install::BinaryReceipt {
+                name: name.into(),
+                path: path.to_string_lossy().into_owned(),
+                sha256: install::hash_file(&path).unwrap(),
+                bytes: std::fs::metadata(&path).unwrap().len(),
+                source_commit: "b".repeat(40),
+            }
+        })
+        .collect();
+        install::write_manifest(
             &installed_manifest,
-            serde_json::to_vec(&serde_json::json!({
-                "source_root": source,
-                "source_commit": "b".repeat(40),
-            }))
-            .unwrap(),
+            &InstallManifest {
+                schema: 1,
+                product: "devcoordinator2".into(),
+                package_version: env!("CARGO_PKG_VERSION").into(),
+                source_root: source.to_string_lossy().into_owned(),
+                source_commit: "b".repeat(40),
+                built_at: "fixture".into(),
+                binaries,
+            },
+            expected_owner,
         )
         .unwrap();
         HostWorld {
@@ -3169,6 +3475,7 @@ mod tests {
                 },
                 candidate_manifest,
                 installed_manifest,
+                source_cache_dir: root.join("rollback-sources"),
                 tmpfiles_path: root.join("etc/tmpfiles.conf"),
                 transaction_dir: root.join("transaction"),
                 runtime_dir,
@@ -3201,7 +3508,15 @@ mod tests {
 
     #[test]
     fn concrete_host_adapter_installs_verified_files_and_commits_snapshot() {
-        let world = host_world();
+        let mut world = host_world();
+        let transactions = world
+            .config
+            .database_path
+            .parent()
+            .unwrap()
+            .join("install-transactions");
+        std::fs::create_dir(&transactions).unwrap();
+        world.config.transaction_dir = transactions.join("candidate");
         let edge_env = world.config.instance_env.with_file_name("edge.env");
         let prior_edge_metadata = std::fs::metadata(&edge_env).unwrap();
         let prior_rule =
@@ -3214,7 +3529,23 @@ mod tests {
         let mut host =
             HostCutover::new_owned(world.config.clone(), runner.clone(), world.expected_owner)
                 .unwrap();
+        for args in [
+            vec!["ping"],
+            vec!["repository.list", "--params", "{\"limit\":1}"],
+            vec!["call", "repository.list", "--params", "{}"],
+            vec!["call", "deployment.list", "--params", "{}", "extra"],
+            vec!["call", "health.summary"],
+        ] {
+            let malformed = CommandRequest {
+                program: host.installed_binary("devcoordinator2").unwrap(),
+                args: args.into_iter().map(OsString::from).collect(),
+                environment: Default::default(),
+                clear_environment: true,
+            };
+            assert!(HostFake::default().run(&malformed).is_err());
+        }
         let receipt = activate(&mut host).unwrap();
+        assert_candidate_read_calls(&runner.requests.lock().unwrap());
         assert_eq!(receipt.status, "activated_awaiting_final_acceptance");
         assert_eq!(
             std::fs::read_to_string(&edge_env).unwrap(),
@@ -3590,6 +3921,7 @@ mod tests {
         let unchanged_sqlite = install::hash_file(&world.config.database_path).unwrap();
         let before_recovery = runner.requests.lock().unwrap().len();
         let receipt = recover_host(&recovery, runner.as_ref(), world.expected_owner).unwrap();
+        assert_candidate_read_calls(&runner.requests.lock().unwrap()[before_recovery..]);
         assert_eq!(receipt.status, "activated_awaiting_final_acceptance");
         assert!(!receipt.database_restored);
         assert_eq!(
@@ -3780,17 +4112,18 @@ mod tests {
             };
             assert!(error.contains(expected_error), "{failure}: {error}");
             assert!(!error.contains("retained-private-setting"));
-            let marker = match failure {
-                "source" => format!("git:{changed_commit}"),
-                "dirty" => String::new(),
-                // A rejected binary never starts an installation transaction.
-                _ => format!("git:{}", "b".repeat(40)),
-            };
+            let environment = std::fs::read_to_string(&world.config.edge_env).unwrap();
+            assert!(environment.contains("UNRELATED=retained-private-setting\n"));
+            assert!(
+                environment.contains(&format!("EDGE_UI_SOURCE_REVISION=git:{}\n", "b".repeat(40)))
+            );
             assert_eq!(
-                std::fs::read_to_string(&world.config.edge_env).unwrap(),
-                world
-                    .old_edge_env
-                    .replace(&format!("git:{}", "b".repeat(40)), &marker)
+                environment,
+                if failure == "source" {
+                    world.rollback_edge_env()
+                } else {
+                    world.old_edge_env.clone()
+                }
             );
             assert!(!world.config.runtime_dir.join(DRAIN_FILE).exists());
             assert!(
@@ -3806,23 +4139,23 @@ mod tests {
             );
             assert_eq!(
                 std::fs::read_to_string(&world.config.edge_unit_path).unwrap(),
-                world.old_edge_unit
+                if failure == "source" {
+                    world.rollback_edge_unit()
+                } else {
+                    world.old_edge_unit.clone()
+                }
             );
             let prior_manifest: Value =
                 serde_json::from_slice(&std::fs::read(&world.config.installed_manifest).unwrap())
                     .unwrap();
             assert_eq!(prior_manifest["source_commit"], "b".repeat(40));
             if failure == "dirty" {
-                assert!(error.contains("rollback incomplete"));
-                assert!(error.contains("marker was cleared"));
                 assert!(
                     !runner.requests.lock().unwrap().iter().any(|request| {
                         request.args.first() == Some(&OsString::from("restart"))
                     })
                 );
-                let snapshot =
-                    read_snapshot(&world.config.transaction_dir, world.expected_owner.0).unwrap();
-                assert_eq!(snapshot.status, "rolling_back");
+                assert!(!world.config.transaction_dir.exists());
             }
         }
     }
@@ -3903,7 +4236,7 @@ mod tests {
                 .lock()
                 .unwrap()
                 .iter()
-                .filter(|request| request.args == [OsString::from("ping")])
+                .filter(|request| request.args == [OsString::from("call"), OsString::from("ping")])
                 .count(),
             2
         );
@@ -4120,7 +4453,7 @@ mod tests {
         assert_eq!(snapshot.status, "rolled_back");
         assert_eq!(
             std::fs::read_to_string(&edge_env).unwrap(),
-            world.old_edge_env.replace(&"b".repeat(40), &world.commit)
+            world.rollback_edge_env()
         );
         let edge_metadata = std::fs::metadata(&edge_env).unwrap();
         assert_eq!(
@@ -4137,7 +4470,7 @@ mod tests {
         );
         assert_eq!(
             std::fs::read_to_string(&world.config.edge_unit_path).unwrap(),
-            world.old_edge_unit
+            world.rollback_edge_unit()
         );
         assert!(database_integrity(&world.config.database_path).unwrap());
         assert!(!world.config.runtime_dir.join(DRAIN_FILE).exists());
@@ -4334,9 +4667,9 @@ mod tests {
                     );
                     return;
                 }
-                let marker = if state == "late_dirty" {
+                let expected_env = if state == "late_dirty" {
                     let error = recovery.unwrap_err();
-                    assert!(error.contains("marker was cleared"));
+                    assert!(error.contains("source binding is unverified"));
                     assert!(!error.contains("retained-private-setting"));
                     assert!(
                         !recovery_runner
@@ -4348,7 +4681,7 @@ mod tests {
                                 request.args.first() == Some(&OsString::from("restart"))
                             })
                     );
-                    String::new()
+                    world.old_edge_env.clone()
                 } else {
                     let receipt = recovery.unwrap();
                     assert_eq!(receipt.status, "recovered");
@@ -4360,13 +4693,11 @@ mod tests {
                             .unwrap()
                             .contains("retained-private-setting")
                     );
-                    format!("git:{}", world.commit)
+                    world.rollback_edge_env()
                 };
                 assert_eq!(
                     std::fs::read_to_string(&world.config.edge_env).unwrap(),
-                    world
-                        .old_edge_env
-                        .replace(&format!("git:{}", "b".repeat(40)), &marker)
+                    expected_env
                 );
                 let edge_metadata = std::fs::metadata(&world.config.edge_env).unwrap();
                 assert_eq!(
@@ -4383,7 +4714,11 @@ mod tests {
                 );
                 assert_eq!(
                     std::fs::read_to_string(&world.config.edge_unit_path).unwrap(),
-                    world.old_edge_unit
+                    if state == "late_dirty" {
+                        world.old_edge_unit.clone()
+                    } else {
+                        world.rollback_edge_unit()
+                    }
                 );
                 assert_eq!(
                     std::fs::read_to_string(&world.config.daemon_unit_path).unwrap(),

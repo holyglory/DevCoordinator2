@@ -66,6 +66,11 @@ pub const MIGRATIONS: &[(i64, &str, &str)] = &[
         "compact_json_bounds",
         include_str!("../migrations/0012_compact_json_bounds.sql"),
     ),
+    (
+        13,
+        "compact_json_restore_path",
+        include_str!("../migrations/0013_compact_json_restore_path.sql"),
+    ),
 ];
 
 pub fn migrate(database: &Persistence) -> Result<()> {

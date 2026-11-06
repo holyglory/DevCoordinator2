@@ -375,6 +375,15 @@ enum JourneyDocsCommand {
 
 #[derive(Debug, Subcommand)]
 enum InstallCommand {
+    /// Reconnect the edge to the exact installed daemon's verified source commit.
+    RepairEdgeSource {
+        #[arg(long, default_value = "/etc/devcoordinator2/install-manifest.json")]
+        installed_manifest: PathBuf,
+        #[arg(long, default_value = "/var/lib/devcoordinator2-sources")]
+        source_cache_dir: PathBuf,
+        #[arg(long)]
+        yes: bool,
+    },
     /// Bind one existing Certbot lineage to the stable edge's renewal deploy hook.
     TlsRenewalConfigure {
         #[arg(long)]
@@ -2180,6 +2189,23 @@ fn run_install(command: InstallCommand) -> ExitCode {
                 "agent_links": links,
             }))
         })(),
+        InstallCommand::RepairEdgeSource {
+            installed_manifest,
+            source_cache_dir,
+            yes,
+        } => (|| {
+            if !yes || rustix::process::geteuid().as_raw() != 0 {
+                return Err("install repair-edge-source requires root and --yes for the reviewed edge-only repair".to_owned());
+            }
+            let config = install::edge_source::RepairConfig {
+                installed_manifest,
+                cache_root: source_cache_dir,
+                ..Default::default()
+            };
+            let receipt = install::edge_source::repair_host(&config, &HostRunner, (0, 0))?;
+            serde_json::to_value(receipt)
+                .map_err(|_| "cannot encode edge source repair receipt".into())
+        })(),
         InstallCommand::Preflight { source_root, fetch } => {
             install::validate_live_checkout(&source_root, fetch, &HostRunner).map(|commit| {
                 serde_json::json!({
@@ -2286,11 +2312,28 @@ fn run_install(command: InstallCommand) -> ExitCode {
                         .find(|binary| binary.name == "devcoordinator2")
                         .map(|binary| PathBuf::from(&binary.path))
                         .ok_or_else(|| "candidate manifest has no control binary".to_owned())?;
-                    let validated = install::validate_registered_repository_configs(
-                        &config.database_path,
-                        &control_binary,
+                    let prior = install::read_and_verify_prior_manifest_owned(
+                        &config.installed_manifest,
                         &HostRunner,
+                        0,
                     )?;
+                    let validated = if prior
+                        .binaries
+                        .iter()
+                        .any(|binary| binary.name == "devcoordinator2-migrate-authority")
+                    {
+                        install::validate_native_registered_repository_configs(
+                            &config.postgres.config_path,
+                            &control_binary,
+                            &HostRunner,
+                        )?
+                    } else {
+                        install::validate_registered_repository_configs(
+                            &config.database_path,
+                            &control_binary,
+                            &HostRunner,
+                        )?
+                    };
                     let mut host = devcoordinator2_tooling::cutover::HostCutover::new(
                         config,
                         std::sync::Arc::new(HostRunner),
@@ -3225,6 +3268,19 @@ mod tests {
             install.command,
             Command::Install {
                 command: InstallCommand::Preflight { .. }
+            }
+        ));
+        let repair = Cli::try_parse_from([
+            "devcoordinator2-tooling",
+            "install",
+            "repair-edge-source",
+            "--yes",
+        ])
+        .expect("verified prior edge source repair command");
+        assert!(matches!(
+            repair.command,
+            Command::Install {
+                command: InstallCommand::RepairEdgeSource { yes: true, .. }
             }
         ));
         let configure = Cli::try_parse_from([

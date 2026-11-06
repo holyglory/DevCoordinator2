@@ -81,6 +81,18 @@ fn authority_schema_pools_timeouts_rollback_and_restart() {
         assert!(c.execute("INSERT INTO owned_events(occurred_at,category,kind,payload_json) VALUES('t','other','size-overflow',$1)",[too_big]).is_err());
         Ok(())
     }).unwrap();
+    // pg_restore clears search_path. Store nested constrained JSON under that
+    // same condition so the native archive below exercises recursive checks.
+    database
+        .transaction::<_, Error, _>(|tx| {
+            tx.execute_batch("SET LOCAL search_path=''")?;
+            tx.execute(
+                "INSERT INTO public.owned_events(occurred_at,category,kind,payload_json) VALUES('t','other','nested-restore',$1)",
+                [r#"{"nested":[{"number":1,"text":"a  b"},[true,null]]}"#],
+            )?;
+            Ok(())
+        })
+        .unwrap();
     database
         .transaction::<_, Error, _>(|tx| {
             tx.execute(

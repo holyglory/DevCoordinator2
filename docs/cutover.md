@@ -26,6 +26,30 @@ One controlled initial health observation supports candidate health checks.
 Keep the Console on its matching source during the freeze: changing the canonical
 checkout must never serve v3 JavaScript through the old live edge protocol.
 
+Before draining an installed release, activation verifies its prior binary
+manifest and retains a clean detached linked checkout of that exact commit under
+`/var/lib/devcoordinator2-sources/`. The edge script and Console files are checked
+against their Git object hashes; the canonical checkout stays on clean current
+`main`. The transaction retains this source binding. A rollback selects that
+prior edge script and Console directory, preserves private environment values,
+and stamps the prior commit rather than the newer canonical commit.
+
+If an older interrupted rollback already left the old daemon paired with the
+newer edge source, repair only that source binding with the reviewed candidate
+tooling binary:
+
+```sh
+devcoordinator2-tooling install repair-edge-source \
+  --installed-manifest /etc/devcoordinator2/install-manifest.json --yes
+```
+
+This verifies the installed release, prepares or verifies its linked source,
+grants the existing edge account read access only to the edge and Console trees,
+updates the edge's exact source paths, and restarts only the edge. It does not
+activate v3, change the daemon or close test admission. Verify the restored
+Console/API journey afterward; an active edge alone does not prove that journey.
+Missing or changed prior source, binaries or private bindings refuse repair.
+
 Activation durably commits the PostgreSQL installation before admitting new
 mutations. Its result is `activated_awaiting_final_acceptance`; the old SQLite
 source and temporary rollback copy remain protected. A failure before admission
