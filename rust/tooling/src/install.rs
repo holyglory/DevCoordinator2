@@ -1990,7 +1990,7 @@ fn validate_tool(path: &Path, name: &str) -> Result<(), String> {
         .map_err(|error| format!("required {name} tool is unavailable: {error}"))
 }
 
-fn validate_regular(path: &Path, executable: bool) -> Result<std::fs::Metadata, String> {
+pub(crate) fn validate_regular(path: &Path, executable: bool) -> Result<std::fs::Metadata, String> {
     let metadata = path
         .symlink_metadata()
         .map_err(|error| format!("cannot inspect {}: {error}", path.display()))?;

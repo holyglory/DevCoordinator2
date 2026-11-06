@@ -73,6 +73,35 @@ fn contained(path: &Path, root: &Path) -> bool {
     }
     false
 }
+
+fn managed_link_contained(
+    path: &Path,
+    root: &Path,
+    binary: &install::BinaryReceipt,
+    owner: u32,
+) -> bool {
+    let parent = root.join("bin");
+    if path != parent.join(&binary.name)
+        || !contained(&parent, root)
+        || !parent
+            .symlink_metadata()
+            .is_ok_and(|metadata| metadata.is_dir() && metadata.uid() == owner)
+    {
+        return false;
+    }
+    match path.symlink_metadata() {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => true,
+        Ok(metadata) if metadata.file_type().is_symlink() && metadata.uid() == owner => {
+            let target = Path::new(&binary.path);
+            std::fs::read_link(path).is_ok_and(|selected| selected == target)
+                && install::validate_regular(target, true)
+                    .is_ok_and(|metadata| metadata.len() == binary.bytes)
+                && install::hash_file(target).is_ok_and(|hash| hash == binary.sha256)
+        }
+        _ => false,
+    }
+}
+
 fn marker(root: &Path, owner: u32) -> Result<Marker, String> {
     if !exact(root)
         || root.parent() != Some(Path::new("/var/lib"))
@@ -166,27 +195,46 @@ pub(super) fn verify_fixture_inputs(
     {
         return Err("installer fixture binaries changed".into());
     }
-    for path in [
-        &config.candidate_manifest,
-        &config.candidate_acceptance,
-        &config.installed_manifest,
-        &config.source_cache_dir,
-        &config.tmpfiles_path,
-        &config.transaction_dir,
-        &config.runtime_dir,
-        &config.socket_path,
-        &config.database_path,
-        &config.edge_env,
-        &config.cli_link,
-        &config.tooling_link,
-        &config.instance_env,
-        &config.edge_state_dir,
-        &config.postgres.data_dir,
-        &config.postgres.socket_dir,
-        &config.postgres.config_path,
+    for (field, path) in [
+        ("candidate_manifest", &config.candidate_manifest),
+        ("candidate_acceptance", &config.candidate_acceptance),
+        ("installed_manifest", &config.installed_manifest),
+        ("source_cache_dir", &config.source_cache_dir),
+        ("tmpfiles_path", &config.tmpfiles_path),
+        ("transaction_dir", &config.transaction_dir),
+        ("runtime_dir", &config.runtime_dir),
+        ("socket_path", &config.socket_path),
+        ("database_path", &config.database_path),
+        ("edge_env", &config.edge_env),
+        ("instance_env", &config.instance_env),
+        ("edge_state_dir", &config.edge_state_dir),
+        ("postgres.data_dir", &config.postgres.data_dir),
+        ("postgres.socket_dir", &config.postgres.socket_dir),
+        ("postgres.config_path", &config.postgres.config_path),
     ] {
         if !contained(path, &root) {
-            return Err("fixture cannot select installed or shared state".into());
+            return Err(format!(
+                "fixture {field} cannot select installed or shared state"
+            ));
+        }
+    }
+    for (field, path, name) in [
+        ("cli_link", &config.cli_link, "devcoordinator2"),
+        (
+            "tooling_link",
+            &config.tooling_link,
+            "devcoordinator2-tooling",
+        ),
+    ] {
+        let binary = candidate
+            .binaries
+            .iter()
+            .find(|binary| binary.name == name)
+            .ok_or_else(|| format!("fixture {field} has no verified candidate binary"))?;
+        if !managed_link_contained(path, &root, binary, owner) {
+            return Err(format!(
+                "fixture {field} must be its owned path and exact verified candidate link"
+            ));
         }
     }
     for (path, name) in [

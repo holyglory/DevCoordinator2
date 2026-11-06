@@ -770,6 +770,37 @@ impl Fixture {
         if !refused {
             return Err("fixture factory followed a foreign state alias".into());
         }
+        for (link, name) in [
+            (&first.cli_link, "devcoordinator2"),
+            (&first.tooling_link, "devcoordinator2-tooling"),
+        ] {
+            let target = binary(&self.candidate, name)?;
+            std::os::unix::fs::symlink(&target, link)
+                .map_err(|_| "cannot check intended fixture link identity")?;
+            let allowed = verify_fixture_inputs(&first, &self.candidate, 0);
+            std::fs::remove_file(link)
+                .map_err(|_| "cannot retire exact intended fixture test link")?;
+            allowed?;
+            std::os::unix::fs::symlink(self.input.work_root.join("bin/fixture-client"), link)
+                .map_err(|_| "cannot check foreign fixture link refusal")?;
+            let refused = verify_fixture_inputs(&first, &self.candidate, 0).is_err();
+            std::fs::remove_file(link)
+                .map_err(|_| "cannot retire exact foreign fixture test link")?;
+            if !refused {
+                return Err("fixture factory accepted an unverified managed link target".into());
+            }
+        }
+        let env_alias = self.input.work_root.join("foreign-env");
+        std::os::unix::fs::symlink(&first.edge_env, &env_alias)
+            .map_err(|_| "cannot check fixture environment alias refusal")?;
+        foreign = first.clone();
+        foreign.edge_env = env_alias.clone();
+        let refused = verify_fixture_inputs(&foreign, &self.candidate, 0).is_err();
+        std::fs::remove_file(&env_alias)
+            .map_err(|_| "cannot retire exact environment alias fixture")?;
+        if !refused {
+            return Err("fixture factory followed an environment leaf alias".into());
+        }
         report.checks.push(
             "fixture_factory_refuses_installed_paths_units_aliases_and_release_admission".into(),
         );
