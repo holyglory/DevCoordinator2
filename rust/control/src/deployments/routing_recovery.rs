@@ -18,12 +18,12 @@ pub(crate) fn restore_route(
 ) -> Result<Recovery, ProtocolError> {
     let route = deployments
         .database
-        .call({
+        .read({
             let id = deployment_id.to_owned();
             move |connection| {
                 connection
                     .query_row(
-                        "SELECT domain,component,port,generation,lease_id FROM domain_routes WHERE deployment_id=?1",
+                        "SELECT domain,component,port,generation,lease_id FROM domain_routes WHERE deployment_id=$1",
                         [&id],
                         |row| {
                             Ok((
@@ -75,7 +75,8 @@ pub(crate) fn restore_route(
         work: None,
         identity: None,
     };
-    let mut target = deployments.resolve_target_readonly(None, None, Some(deployment_id), &caller)?;
+    let mut target =
+        deployments.resolve_target_readonly(None, None, Some(deployment_id), &caller)?;
     // Recovery is bound to the saved declaration. If the checkout changed,
     // leave the route for an explicit apply instead of replaying new config.
     let saved_spec: serde_json::Value = serde_json::from_str(&row.spec_json).map_err(|_| {
@@ -136,14 +137,14 @@ pub(crate) fn restore_route(
         Some(port) => port,
         None => deployments
             .database
-            .call({
+            .read({
                 let id = deployment_id.to_owned();
                 let component = component_name.clone();
                 move |connection| {
                     connection
                         .query_row(
-                            "SELECT port FROM port_assignments WHERE deployment_id=?1 AND component=?2 AND generation=0",
-                            rusqlite::params![id, component],
+                            "SELECT port FROM port_assignments WHERE deployment_id=$1 AND component=$2 AND generation=0",
+                            crate::database::params![id, component],
                             |row| row.get::<_, u16>(0),
                         )
                         .optional()
@@ -155,14 +156,14 @@ pub(crate) fn restore_route(
     };
     let lease_matches = deployments
         .database
-        .call({
+        .read({
             let id = deployment_id.to_owned();
             let component = component_name.clone();
             move |connection| {
                 connection
                     .query_row(
-                        "SELECT lease_id FROM port_assignments WHERE deployment_id=?1 AND component=?2 AND generation=0 AND port=?3 AND lease_id IS NOT NULL",
-                        rusqlite::params![id, component, port],
+                        "SELECT lease_id FROM port_assignments WHERE deployment_id=$1 AND component=$2 AND generation=0 AND port=$3 AND lease_id IS NOT NULL",
+                        crate::database::params![id, component, port],
                         |row| row.get::<_, String>(0),
                     )
                     .optional()

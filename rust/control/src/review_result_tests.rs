@@ -27,24 +27,24 @@ fn measured_fixture() -> (Fixture, Record, u64) {
     std::fs::set_permissions(&probe, std::fs::Permissions::from_mode(0o700)).unwrap();
     let uid = rustix::process::getuid().as_raw();
     let source = rusqlite::Connection::open(home.join("usage/usage.sqlite3")).unwrap();
-    source.execute("INSERT INTO operations VALUES('result-op','model_request','agent-private',?1,'implementation','coding','model_active','agent_declared')", [(now-40_000) as i64]).unwrap();
+    source.execute("INSERT INTO operations VALUES('result-op','model_request','agent-private',$1,'implementation','coding','model_active','agent_declared')", [(now-40_000) as i64]).unwrap();
     source
         .execute(
-            "INSERT INTO operation_events VALUES('result-op',1,?1,'completed')",
+            "INSERT INTO operation_events VALUES('result-op',1,$1,'completed')",
             [(now - 30_000) as i64],
         )
         .unwrap();
     source.execute_batch("INSERT INTO model_requests VALUES('result-request','result-op'); INSERT INTO effective_classification_events VALUES('result-op','implementation','coding','model_active','agent_declared');").unwrap();
     source
         .execute(
-            "INSERT INTO repository_attributions VALUES('result-op',?1)",
+            "INSERT INTO repository_attributions VALUES('result-op',$1)",
             [&canonical],
         )
         .unwrap();
-    source.execute("INSERT INTO token_observations VALUES('total_tokens',60,'complete',?1,'result-request',NULL,?2,'provider_reported')", rusqlite::params![(now-30_000) as i64,canonical]).unwrap();
+    source.execute("INSERT INTO token_observations VALUES('total_tokens',60,'complete',$1,'result-request',NULL,$2,'provider_reported')", rusqlite::params![(now-30_000) as i64,canonical]).unwrap();
     source
         .execute(
-            "INSERT INTO coverage_events VALUES('result-op','complete',?1)",
+            "INSERT INTO coverage_events VALUES('result-op','complete',$1)",
             [(now - 30_000) as i64],
         )
         .unwrap();
@@ -52,8 +52,8 @@ fn measured_fixture() -> (Fixture, Record, u64) {
         .database
         .call(move |connection| {
             connection.execute(
-                "INSERT INTO codex_usage_repository_links VALUES(?1,'project-alpha',?2,5,1,'t')",
-                rusqlite::params![uid, canonical],
+                "INSERT INTO codex_usage_repository_links VALUES($1,'project-alpha',$2,5,1,'t')",
+                crate::database::params![uid, canonical],
             )?;
             Ok(())
         })
@@ -387,7 +387,7 @@ fn review_result_delivery_receipts_require_actual_timely_qualification() {
         let encoded = serde_json::to_string(&receipt).unwrap();
         fixture.database.call(move |connection| {
             connection.execute_batch("INSERT INTO releases(release_id,repository_id,seq,name,kind,status,created_at,created_by,updated_at) VALUES('release-result','project-alpha',1,'Result','preview','delivered','t','fixture','t');")?;
-            connection.execute("INSERT INTO release_evidence VALUES('delivery-result','release-result','project-alpha',?1)", [encoded])?;
+            connection.execute("INSERT INTO release_evidence VALUES('delivery-result','release-result','project-alpha',$1)", [encoded])?;
             Ok(())
         }).unwrap();
         request
@@ -418,7 +418,7 @@ fn review_result_legacy_receipt_needs_one_validated_append_not_history_rewriting
     let start = request.record.window_start_ms as i64;
     let end = request.record.window_end_ms as i64;
     fixture.database.call(move |connection| {
-        connection.execute("INSERT INTO review_records(record_id,revision,repository_id,window_start_ms,window_end_ms,record_json,actor,recorded_at_ms) VALUES('legacy',1,'project-alpha',?1,?2,?3,'fixture',?4)", rusqlite::params![start,end,encoded,now as i64])?;
+        connection.execute("INSERT INTO review_records(record_id,revision,repository_id,window_start_ms,window_end_ms,record_json,actor,recorded_at_ms) VALUES('legacy',1,'project-alpha',$1,$2,$3,'fixture',$4)", crate::database::params![start,end,encoded,now as i64])?;
         Ok(())
     }).unwrap();
     assert!(

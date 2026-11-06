@@ -123,6 +123,132 @@ pub fn measure(path: &Path) -> Result<Measurement, ProtocolError> {
     Ok(value)
 }
 
+/// A scan-owned, fd-relative traversal. A scheduler may retain this cursor
+/// between turns without rescanning earlier directory entries.
+pub struct MeasurementCursor {
+    stack: Vec<(File, Dir, usize)>,
+    seen: HashSet<(u64, u64)>,
+    value: Measurement,
+}
+
+impl MeasurementCursor {
+    pub fn new(path: &Path) -> Result<Self, ProtocolError> {
+        let directory = open_directory(path)?;
+        let own = directory
+            .metadata()
+            .map_err(|_| unavailable("directory_metadata_unavailable"))?;
+        let entries =
+            Dir::read_from(&directory).map_err(|_| unavailable("directory_read_failed"))?;
+        let mut seen = HashSet::new();
+        seen.insert((own.dev(), own.ino()));
+        Ok(Self {
+            stack: vec![(directory, entries, 0)],
+            seen,
+            value: Measurement {
+                device: own.dev(),
+                inode: own.ino(),
+                bytes: own.blocks().saturating_mul(512),
+                newest_modified_ns: 0,
+                entries: 0,
+                nested_git: false,
+                protected_metadata: false,
+                multiply_linked: false,
+            },
+        })
+    }
+
+    pub fn step(
+        &mut self,
+        max_entries: usize,
+        budget: std::time::Duration,
+    ) -> Result<Option<Measurement>, ProtocolError> {
+        use std::os::unix::ffi::OsStringExt;
+        let started = std::time::Instant::now();
+        let mut visited = 0;
+        while visited < max_entries.max(1) && (visited == 0 || started.elapsed() < budget) {
+            let Some((directory, entries, depth)) = self.stack.last_mut() else {
+                return Ok(Some(self.value.clone()));
+            };
+            let Some(entry) = entries.next() else {
+                self.stack.pop();
+                continue;
+            };
+            let entry = entry.map_err(|_| unavailable("directory_read_failed"))?;
+            let bytes = entry.file_name().to_bytes();
+            if bytes == b"." || bytes == b".." {
+                continue;
+            }
+            visited += 1;
+            self.value.entries += 1;
+            if self.value.entries > MAX_ENTRIES {
+                return Err(blocked("directory_entry_limit"));
+            }
+            let name = OsString::from_vec(bytes.to_vec());
+            self.value.nested_git |= name == ".git";
+            self.value.protected_metadata |= super::protected_metadata_name(&name);
+            let stat = unix::statat(&*directory, &name, AtFlags::SYMLINK_NOFOLLOW)
+                .map_err(|_| blocked("directory_changed"))?;
+            if stat.st_dev != self.value.device {
+                return Err(blocked("unexpected_filesystem"));
+            }
+            self.value.newest_modified_ns = self
+                .value
+                .newest_modified_ns
+                .max(i128::from(stat.st_mtime) * 1_000_000_000 + i128::from(stat.st_mtime_nsec));
+            let kind = unix::FileType::from_raw_mode(stat.st_mode);
+            match kind {
+                unix::FileType::Directory => {
+                    let child_depth = *depth + 1;
+                    if child_depth > MAX_DEPTH {
+                        return Err(blocked("directory_depth_limit"));
+                    }
+                    let child = File::from(
+                        unix::openat2(
+                            &*directory,
+                            &name,
+                            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                            Mode::empty(),
+                            unix::ResolveFlags::BENEATH
+                                | unix::ResolveFlags::NO_SYMLINKS
+                                | unix::ResolveFlags::NO_XDEV,
+                        )
+                        .map_err(|_| blocked("directory_changed"))?,
+                    );
+                    let own = child
+                        .metadata()
+                        .map_err(|_| unavailable("directory_metadata_unavailable"))?;
+                    if self.seen.insert((own.dev(), own.ino())) {
+                        self.value.bytes = self
+                            .value
+                            .bytes
+                            .saturating_add(own.blocks().saturating_mul(512));
+                    }
+                    let entries =
+                        Dir::read_from(&child).map_err(|_| unavailable("directory_read_failed"))?;
+                    self.stack.push((child, entries, child_depth));
+                }
+                unix::FileType::RegularFile | unix::FileType::Symlink => {
+                    self.value.multiply_linked |=
+                        stat.st_nlink > 1 && kind == unix::FileType::RegularFile;
+                    if self.seen.insert((stat.st_dev, stat.st_ino)) {
+                        self.value.bytes = self.value.bytes.saturating_add(
+                            u64::try_from(stat.st_blocks)
+                                .map_err(|_| unavailable("invalid_allocated_size"))?
+                                .saturating_mul(512),
+                        );
+                    }
+                }
+                _ => return Err(blocked("special_file")),
+            }
+        }
+        Ok(if self.stack.is_empty() {
+            Some(self.value.clone())
+        } else {
+            None
+        })
+    }
+}
+
 fn walk_measure(
     dir: &File,
     depth: usize,
@@ -329,4 +455,52 @@ pub fn filesystem(
         available_bytes: st.f_bavail.saturating_mul(st.f_frsize),
         measured_at_ms: now_ms,
     })
+}
+
+#[cfg(test)]
+mod cursor_tests {
+    use super::*;
+    #[test]
+    fn bounded_measurement_matches_full_safety_observation_without_following_links() {
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path().join("tree");
+        std::fs::create_dir_all(root.join("nested/.git")).unwrap();
+        for index in 0..37 {
+            std::fs::write(
+                root.join("nested").join(format!("file-{index}")),
+                b"fixture",
+            )
+            .unwrap();
+        }
+        std::fs::write(root.join("nested/auth.json"), b"protected fixture").unwrap();
+        std::fs::hard_link(root.join("nested/file-0"), root.join("hard-link")).unwrap();
+        let outside = temporary.path().join("outside");
+        std::fs::create_dir(&outside).unwrap();
+        std::fs::write(outside.join("unvisited"), vec![0u8; 16384]).unwrap();
+        std::os::unix::fs::symlink(&outside, root.join("alias")).unwrap();
+        let complete = measure(&root).unwrap();
+        let mut cursor = MeasurementCursor::new(&root).unwrap();
+        let mut turns = 0;
+        let bounded = loop {
+            let before = cursor.value.entries;
+            let result = cursor.step(3, std::time::Duration::from_secs(1)).unwrap();
+            assert!(cursor.value.entries - before <= 3);
+            turns += 1;
+            if let Some(result) = result {
+                break result;
+            }
+            assert!(turns < 100);
+        };
+        assert!(turns > 10);
+        assert_eq!(
+            (bounded.bytes, bounded.entries, bounded.newest_modified_ns),
+            (
+                complete.bytes,
+                complete.entries,
+                complete.newest_modified_ns
+            )
+        );
+        assert!(bounded.nested_git && bounded.protected_metadata && bounded.multiply_linked);
+        assert!(MeasurementCursor::new(&root.join("alias")).is_err());
+    }
 }

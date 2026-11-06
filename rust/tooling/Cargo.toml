@@ -53,3 +53,4 @@ unicode-normalization.workspace = true
 tempfile = "=3.23.0"
 
 [dev-dependencies]
+devcoordinator2-control = { path = "../control", features = ["test-fixtures"] }

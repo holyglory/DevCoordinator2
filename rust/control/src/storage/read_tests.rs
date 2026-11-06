@@ -1,0 +1,427 @@
+use super::*;
+use crate::automation_test_support::{Fixture, FixtureClock};
+use serde_json::json;
+
+pub(super) fn record(id: &str, now: u64) -> Record {
+    Record {
+        update_sequence: 1,
+        artifact: api::Artifact {
+            artifact_id: id.into(),
+            revision: 1,
+            repository_id: Some("project-alpha".into()),
+            repository_name: Some("Project Alpha".into()),
+            group_id: None,
+            group_name: None,
+            accounting_id: String::new(),
+            name: format!("Artifact {id}"),
+            kind: api::Kind::BuildCache,
+            effect: api::Effect::Rebuildable,
+            ownership: "fixture".into(),
+            filesystem_id: Some("filesystem-a".into()),
+            allocated_bytes: Some(64),
+            last_used_at_ms: None,
+            observed_since_ms: 0,
+            verified_at_ms: Some(now),
+            eligible_at_ms: None,
+            safety: api::Safety::NeedsReview,
+            reasons: vec![],
+            protected: false,
+            deletable: false,
+            automatic_eligible: false,
+            dependencies: vec![],
+            aliases: vec![],
+            removed_at_ms: None,
+        },
+        locator: Locator::Directory {
+            path: "/fixture".into(),
+            device: 1,
+            inode: 1,
+            root: "/".into(),
+            git_root: None,
+        },
+        resource_key: format!("resource-{id}"),
+        ancestor_keys: vec![],
+        fingerprint: "fixture".into(),
+        owner_deployment: None,
+        last_activity_signature: "fixture".into(),
+        discovered_effect: api::Effect::Rebuildable,
+        disposal_approved: false,
+        disposal_reason: None,
+        blockers: vec![],
+        recovery_lineage: None,
+        recovery_verified: false,
+        recovery_created_at_ms: None,
+        private_aliases: vec![],
+        retention_eligible: false,
+    }
+}
+
+pub(super) fn service(fixture: &Fixture) -> StorageService {
+    StorageService::new(
+        fixture.config.clone(),
+        fixture.database.clone(),
+        Arc::new(FixtureClock),
+        CapacityBroker::new(fixture.database.clone(), fixture.config.socket_path.clone()).unwrap(),
+        EventService::new(fixture.database.clone()).unwrap(),
+    )
+}
+
+pub(super) fn save(service: &StorageService, record: &Record) {
+    let encoded = json(record).unwrap();
+    let at = service.now_ms();
+    service.database.call(|connection|{
+        connection.execute("INSERT INTO storage_artifacts(artifact_id,repository_id,kind,revision,removed_at_ms,record_json,updated_at_ms) VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT(artifact_id) DO UPDATE SET record_json=excluded.record_json,revision=excluded.revision,removed_at_ms=excluded.removed_at_ms",crate::database::params![record.artifact.artifact_id,record.artifact.repository_id,atom(record.artifact.kind),record.artifact.revision,record.artifact.removed_at_ms,encoded,at])?;
+        Ok(())
+    }).unwrap();
+}
+
+#[test]
+fn native_storage_pages_match_current_safety_without_loading_the_catalog() {
+    let fixture = Fixture::new();
+    let service = service(&fixture);
+    let now = service.now_ms();
+    let mut records = (0..24)
+        .map(|index| record(&format!("artifact-{index:02}"), now))
+        .collect::<Vec<_>>();
+    records[0].artifact.name = "ÉCHO cache".into();
+    records[1].artifact.protected = true;
+    records[2].blockers = vec!["active_consumer".into()];
+    records[2].artifact.name = "İstanbul cache".into();
+    records[3].artifact.verified_at_ms = None;
+    records[4].artifact.verified_at_ms = Some(now - OBSERVATION_FRESH_MS - 1);
+    records[5].artifact.verified_at_ms = Some(now - OBSERVATION_FRESH_MS);
+    records[6].artifact.verified_at_ms = Some(u64::MAX);
+    records[7].blockers = vec!["evidence_retention_pending".into()];
+    records[8].discovered_effect = api::Effect::Unknown;
+    records[9].artifact.dependencies = vec![records[1].artifact.artifact_id.clone()];
+    records[10].artifact.dependencies = vec![records[11].artifact.artifact_id.clone()];
+    records[11].artifact.dependencies = vec![records[10].artifact.artifact_id.clone()];
+    records[12].artifact.dependencies = vec!["missing-dependency".into()];
+    records[13].artifact.dependencies = vec![
+        records[2].artifact.artifact_id.clone(),
+        records[1].artifact.artifact_id.clone(),
+    ];
+    records[14].artifact.dependencies = vec![
+        records[15].artifact.artifact_id.clone(),
+        records[1].artifact.artifact_id.clone(),
+    ];
+    records[15].artifact.dependencies = vec![records[2].artifact.artifact_id.clone()];
+    records[16].artifact.removed_at_ms = Some(now - 100);
+    records[16].artifact.protected = true;
+    records[17].artifact.dependencies = vec![records[16].artifact.artifact_id.clone()];
+    records[18].ancestor_keys = vec!["shared-parent".into()];
+    records[18].artifact.protected = true;
+    records[19].resource_key = "shared-parent".into();
+    records[20].ancestor_keys = vec!["shared-parent".into()];
+    records[21].artifact.repository_id = None;
+    records[21].artifact.repository_name = None;
+    records[22].resource_key = records[23].resource_key.clone();
+    for record in &records {
+        save(&service, record);
+    }
+    fixture.database.call(|connection|{
+        connection.execute("INSERT INTO storage_leases(lease_id,actor,lease_json,expires_at_ms) VALUES('active','fixture',$1,$2)",crate::database::params![json!({"lease_id":"active","artifact_ids":[records[22].artifact.artifact_id],"expires_at_ms":u64::MAX}).to_string(),now+1000])?;
+        connection.execute("INSERT INTO storage_leases(lease_id,actor,lease_json,expires_at_ms) VALUES('expired','fixture',$1,$2)",crate::database::params![json!({"lease_id":"expired","artifact_ids":[records[0].artifact.artifact_id],"expires_at_ms":now-1000}).to_string(),now-1000])?;
+        Ok(())
+    }).unwrap();
+    let expected = service.projected_records().unwrap();
+    let projection = service.projection().unwrap();
+    let eligibility_sql = format!(
+        "{} SELECT artifact_id,eligible_at_ms::text,automatic AND base_safety='safe' AND removed_at_ms IS NULL AND eligible_at_ms<=$1::bigint::numeric FROM eligibility",
+        storage_eligibility_projection()
+    );
+    let eligibility = fixture
+        .database
+        .read(|connection| {
+            let mut query = connection.prepare(&eligibility_sql)?;
+            Ok(query
+                .query_map([now], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                        row.get::<_, Option<bool>>(2)?.unwrap_or(false),
+                    ))
+                })?
+                .collect::<Result<Vec<_>, _>>()?)
+        })
+        .unwrap();
+    for (id, at, due) in eligibility {
+        let projected = service
+            .project_with(service.record(&id).unwrap(), &projection)
+            .unwrap();
+        assert_eq!(
+            at.map(|value| value.parse::<u64>().unwrap()),
+            projected.eligible_at_ms,
+            "eligibility timestamp for {id}"
+        );
+        assert_eq!(
+            due, projected.automatic_eligible,
+            "automatic eligibility for {id}"
+        );
+    }
+    assert_eq!(
+        expected[&records[10].artifact.artifact_id].safety,
+        api::Safety::Safe
+    );
+    assert_eq!(
+        expected[&records[13].artifact.artifact_id].safety,
+        api::Safety::InUse
+    );
+    assert_eq!(
+        expected[&records[14].artifact.artifact_id].safety,
+        api::Safety::Protected
+    );
+    assert_eq!(
+        expected[&records[19].artifact.artifact_id].safety,
+        api::Safety::Protected
+    );
+    assert_eq!(
+        expected[&records[20].artifact.artifact_id].safety,
+        api::Safety::Safe
+    );
+    for (id, artifact) in &expected {
+        assert_eq!(
+            &service.artifact(id).unwrap(),
+            artifact,
+            "native classifier differs for {id}"
+        );
+    }
+    assert_eq!(
+        service.artifact("not-present").unwrap_err().code,
+        ErrorCode::StorageNotFound
+    );
+    let mut ordered = expected
+        .values()
+        .filter(|value| value.removed_at_ms.is_none())
+        .cloned()
+        .collect::<Vec<_>>();
+    ordered.sort_by(|a, b| {
+        a.repository_name
+            .cmp(&b.repository_name)
+            .then(a.name.cmp(&b.name))
+            .then(a.artifact_id.cmp(&b.artifact_id))
+    });
+    let mut offset = 0;
+    let mut got = Vec::new();
+    loop {
+        let page = service
+            .inventory(api::List {
+                offset,
+                limit: Some(3),
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(page.total, ordered.len() as u64);
+        assert!(serde_json::to_vec(&page).unwrap().len() <= 192 * 1024);
+        got.extend(page.artifacts);
+        let Some(next) = page.next_offset else { break };
+        assert!(next > offset);
+        offset = next;
+    }
+    assert_eq!(got, ordered);
+    let matching = service
+        .inventory(api::List {
+            query: Some("éCHO".into()),
+            ..Default::default()
+        })
+        .unwrap();
+    assert_eq!(matching.total, 1);
+    assert_eq!(
+        matching.artifacts[0].artifact_id,
+        records[0].artifact.artifact_id
+    );
+    let matching = service
+        .inventory(api::List {
+            query: Some("i\u{307}STANBUL".into()),
+            ..Default::default()
+        })
+        .unwrap();
+    assert_eq!(matching.total, 1);
+    assert_eq!(
+        matching.artifacts[0].artifact_id,
+        records[2].artifact.artifact_id
+    );
+    for safety in [
+        api::Safety::Safe,
+        api::Safety::Protected,
+        api::Safety::InUse,
+        api::Safety::NeedsReview,
+        api::Safety::Observing,
+    ] {
+        let page = service
+            .inventory(api::List {
+                safety: Some(safety),
+                include_removed: true,
+                limit: Some(100),
+                ..Default::default()
+            })
+            .unwrap();
+        let want = expected
+            .values()
+            .filter(|value| value.safety == safety)
+            .count();
+        assert_eq!(page.total, want as u64);
+        assert_eq!(page.artifacts.len(), want);
+    }
+    // Pins, leases, and expired observations are read from their current
+    // authority rows, without waiting for another filesystem discovery.
+    let mut changed = records[1].clone();
+    changed.artifact.protected = false;
+    save(&service, &changed);
+    let expected = service.projected_records().unwrap();
+    for id in [
+        &records[1].artifact.artifact_id,
+        &records[9].artifact.artifact_id,
+    ] {
+        assert_eq!(service.artifact(id).unwrap(), expected[id]);
+    }
+
+    let caller = crate::access::Caller {
+        via_edge: false,
+        pid: 1,
+        uid: 1000,
+        gid: 1000,
+        client_kind: devcoordinator2_api::ClientKind::Codex,
+        model: None,
+        effort: None,
+        client_session: None,
+        work: None,
+        identity: None,
+    };
+    let data = fixture
+        .database
+        .data_directory()
+        .expect("fixture PostgreSQL binding");
+    for protected in [data, data.parent().unwrap()] {
+        let error = service
+            .set_root(
+                api::RootSet {
+                    root_id: None,
+                    repository_id: Some("project-alpha".into()),
+                    expected_revision: 0,
+                    label: "database cannot be disposable".into(),
+                    path: protected.to_string_lossy().into_owned(),
+                    kind: api::Kind::BuildOutput,
+                },
+                &caller,
+            )
+            .unwrap_err();
+        assert!(matches!(
+            error.message.as_str(),
+            "protected_system_data" | "protected_root"
+        ));
+    }
+    assert!(service.roots().unwrap().roots.is_empty());
+    let plan = |id: &str| {
+        service.plan(
+            api::PlanRequest {
+                artifact_ids: vec![id.into()],
+                automatic: false,
+                include_persistent_data: true,
+            },
+            &caller,
+        )
+    };
+    assert_eq!(
+        plan(&records[10].artifact.artifact_id).unwrap_err().message,
+        "dependency_cycle"
+    );
+    assert_eq!(
+        plan(&records[12].artifact.artifact_id).unwrap_err().message,
+        "dependency_not_found"
+    );
+    let mut volume = record("graph-volume", now);
+    volume.artifact.kind = api::Kind::Volume;
+    volume.resource_key = "graph-physical".into();
+    volume.locator = Locator::Docker {
+        object_type: "volume".into(),
+        identity: "graph-volume".into(),
+        created: "fixture".into(),
+    };
+    let mut backing = record("graph-backing", now);
+    backing.artifact.kind = api::Kind::BackingDirectory;
+    backing.resource_key = volume.resource_key.clone();
+    backing.artifact.dependencies = vec![volume.artifact.artifact_id.clone()];
+    let mut child = record("graph-child", now);
+    child.ancestor_keys = vec![backing.resource_key.clone()];
+    for value in [&volume, &backing, &child] {
+        save(&service, value);
+    }
+    let result = plan(&volume.artifact.artifact_id).unwrap();
+    assert!(result.ready);
+    assert_eq!(
+        result
+            .items
+            .into_iter()
+            .map(|item| item.artifact_id)
+            .collect::<BTreeSet<_>>(),
+        BTreeSet::from([
+            volume.artifact.artifact_id,
+            backing.artifact.artifact_id,
+            child.artifact.artifact_id
+        ])
+    );
+
+    // Registration historically updates JSON ownership before another scan
+    // repairs the old scalar column. Reads must follow the recorded owner.
+    let mut assigned = records[21].clone();
+    assigned.artifact.repository_id = Some("project-alpha".into());
+    assigned.artifact.repository_name = Some("Project Alpha".into());
+    save(&service, &assigned);
+    let stale = fixture
+        .database
+        .read(|connection| {
+            connection
+                .query_row(
+                    "SELECT repository_id FROM storage_artifacts WHERE artifact_id=$1",
+                    [&assigned.artifact.artifact_id],
+                    |row| row.get::<_, Option<String>>(0),
+                )
+                .map_err(DatabaseError::from)
+        })
+        .unwrap();
+    assert!(stale.is_none());
+    let scoped = service
+        .inventory(api::List {
+            repository_id: Some("project-alpha".into()),
+            limit: Some(100),
+            ..Default::default()
+        })
+        .unwrap();
+    assert!(
+        scoped
+            .artifacts
+            .iter()
+            .any(|artifact| artifact.artifact_id == assigned.artifact.artifact_id)
+    );
+    service
+        .set_policy(
+            api::PolicySet {
+                repository_id: Some("project-alpha".into()),
+                expected_revision: 0,
+                automatic: false,
+                cache_idle_seconds: api::CACHE_IDLE_SECONDS,
+                data_idle_seconds: api::DATA_IDLE_SECONDS,
+                minimum_verified_backups: 2,
+            },
+            &caller,
+        )
+        .unwrap();
+    let sql = format!(
+        "{} SELECT automatic FROM eligibility WHERE artifact_id=$2",
+        storage_eligibility_projection()
+    );
+    let automatic = fixture
+        .database
+        .read(|connection| {
+            connection
+                .query_row(
+                    &sql,
+                    crate::database::params![now, assigned.artifact.artifact_id],
+                    |row| row.get::<_, bool>(0),
+                )
+                .map_err(DatabaseError::from)
+        })
+        .unwrap();
+    assert!(!automatic);
+}

@@ -164,6 +164,27 @@ impl Config {
         self.state_dir.join("authority.sqlite3")
     }
 
+    /// Only the daemon/privileged installer loads the private database endpoint.
+    /// The public Config remains credential-free for CLI/MCP clients.
+    pub fn postgres_config(&self) -> Result<crate::database::DatabaseConfig, ConfigError> {
+        let path = std::env::var_os("DEVCOORDINATOR2_DATABASE_CONFIG")
+            .map(PathBuf::from)
+            .or_else(|| {
+                instance_file_values()
+                    .get("DEVCOORDINATOR2_DATABASE_CONFIG")
+                    .map(PathBuf::from)
+            })
+            .unwrap_or_else(|| PathBuf::from("/etc/devcoordinator2/postgres.json"));
+        Self::read_postgres_config(&path)
+    }
+
+    pub fn read_postgres_config(
+        path: &Path,
+    ) -> Result<crate::database::DatabaseConfig, ConfigError> {
+        crate::database::DatabaseConfig::from_file(path)
+            .map_err(|error| ConfigError::Invalid(error.to_string()))
+    }
+
     pub fn capacity_socket_path(&self) -> PathBuf {
         self.socket_path.with_file_name("capacity.sock")
     }
@@ -397,7 +418,11 @@ pub fn read_agent_capability_sources() -> Result<Vec<AgentCapabilitySource>, Con
     let path = std::env::var("DEVCOORDINATOR2_AGENT_CAPABILITY_SOURCES_FILE")
         .ok()
         .filter(|value| !value.is_empty())
-        .or_else(|| file_values.get("DEVCOORDINATOR2_AGENT_CAPABILITY_SOURCES_FILE").cloned())
+        .or_else(|| {
+            file_values
+                .get("DEVCOORDINATOR2_AGENT_CAPABILITY_SOURCES_FILE")
+                .cloned()
+        })
         .map(PathBuf::from);
     let Some(path) = path else {
         return Ok(Vec::new());
@@ -432,7 +457,8 @@ pub fn read_agent_capability_sources() -> Result<Vec<AgentCapabilitySource>, Con
                 "Codex capability sources require codex_home".into(),
             ));
         }
-        let home = source.home
+        let home = source
+            .home
             .map(|path| validate_absolute_policy_path("home", path))
             .transpose()?;
         sources.push(AgentCapabilitySource {

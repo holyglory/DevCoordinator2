@@ -25,6 +25,80 @@ pub const ROUTE_SCHEMA: u8 = 2;
 const TIMESTAMP_FORMAT: &[FormatItem<'static>] =
     format_description!("[year]-[month]-[day]T[hour]:[minute]:[second]Z");
 
+/// Verify native authority ownership against the snapshot actually accepted by
+/// the edge while activation remains fenced. This never repairs or publishes.
+pub fn verify_activation_routes(
+    database: &Database,
+    state: &Path,
+    edge_state: &Path,
+) -> Result<(), ProtocolError> {
+    use std::io::Read;
+    use std::os::unix::fs::OpenOptionsExt;
+    let invalid = || {
+        ProtocolError::new(
+            ErrorCode::InternalError,
+            "candidate route ownership or edge acknowledgement is unverified",
+        )
+    };
+    let read = |path: &Path| -> Result<serde_json::Value, ProtocolError> {
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+            .open(path)
+            .map_err(|_| invalid())?;
+        let metadata = file.metadata().map_err(|_| invalid())?;
+        if !metadata.is_file() || metadata.len() > 2 * 1024 * 1024 {
+            return Err(invalid());
+        }
+        let mut bytes = Vec::new();
+        file.take(2 * 1024 * 1024 + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|_| invalid())?;
+        serde_json::from_slice(&bytes).map_err(|_| invalid())
+    };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let (document, acknowledgement) = loop {
+        let document = read(&state.join("public/routes.json"));
+        let acknowledgement = read(&edge_state.join("routes.accepted.json"));
+        if let (Ok(document), Ok(acknowledgement)) = (document, acknowledgement) {
+            if document["schema"] == 2
+                && acknowledgement["schema"] == 2
+                && document["generation"].as_u64().is_some()
+                && document["payload_sha256"]
+                    .as_str()
+                    .is_some_and(|hash| hash.len() == 64)
+                && document["generation"] == acknowledgement["generation"]
+                && document["payload_sha256"] == acknowledgement["payload_sha256"]
+            {
+                break (document, acknowledgement);
+            }
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err(invalid());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    };
+    let _ = acknowledgement;
+    let routes = document["routes"].as_array().ok_or_else(invalid)?;
+    database.read_transaction(|connection| {
+        for route in routes {
+            if std::time::Instant::now()>=deadline {return Err(DatabaseError::Domain(invalid()));}
+            let port=route["port"].as_u64().and_then(|port|u16::try_from(port).ok()).ok_or_else(||DatabaseError::Domain(invalid()))?;
+            let valid=if route["observed"]==true {
+                connection.query_row("SELECT EXISTS(SELECT 1 FROM observed_routes WHERE domain=$1 AND observed_deployment_id=$2 AND component=$3 AND port=$4)",crate::database::params![route["label"].as_str(),route["deployment_id"].as_str(),route["component"].as_str(),port],|row|row.get::<_,bool>(0))?
+            } else {
+                connection.query_row("SELECT EXISTS(SELECT 1 FROM domain_routes r JOIN port_assignments p ON p.lease_id=r.lease_id AND p.port=r.port AND p.deployment_id=r.deployment_id AND p.component=r.component JOIN deployments d ON d.deployment_id=r.deployment_id WHERE p.generation=0 AND r.deployment_id=$1 AND r.component=$2 AND r.port=$3 AND r.lease_id=$4 AND r.domain=$5 AND r.generation=d.current_generation)",crate::database::params![route["deployment_id"].as_str(),route["component"].as_str(),port,route["lease_id"].as_str(),route["label"].as_str()],|row|row.get::<_,bool>(0))?
+            };
+            if !valid {return Err(DatabaseError::Domain(invalid()));}
+            if route["observed"]!=true {
+                let remaining=deadline.saturating_duration_since(std::time::Instant::now());
+                if remaining.is_zero() || std::net::TcpStream::connect_timeout(&std::net::SocketAddr::from(([127,0,0,1],port)),remaining.min(std::time::Duration::from_secs(1))).is_err() {return Err(DatabaseError::Domain(invalid()));}
+            }
+        }
+        Ok(())
+    }).map_err(|_|invalid())
+}
+
 fn timestamp_generation(now: &str) -> Result<u64, RouteError> {
     let timestamp = PrimitiveDateTime::parse(now, TIMESTAMP_FORMAT)?.assume_utc();
     u64::try_from(timestamp.unix_timestamp_nanos() / 1_000_000)
@@ -245,7 +319,7 @@ pub fn publish(
             .ok_or_else(|| DatabaseError::Domain(ProtocolError::new(ErrorCode::InternalError, "route generation exhausted")))?
             .max(timestamp_floor);
         connection.execute(
-            "INSERT OR REPLACE INTO meta(key,value) VALUES('route_generation',?1)",
+            "INSERT INTO meta(key,value) VALUES('route_generation',$1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
             [generation.to_string()],
         )?;
         let candidates = {
@@ -355,10 +429,10 @@ fn route_role(value: &str) -> Result<AccessRole, DatabaseError> {
 }
 
 fn route_from_row(
-    row: &rusqlite::Row<'_>,
+    row: &crate::database::Row<'_>,
     base_domain: &str,
     _observed: bool,
-) -> rusqlite::Result<Route> {
+) -> crate::database::Result<Route> {
     let label: String = row.get(0)?;
     Ok(Route {
         deployment_id: row.get(1)?,
@@ -626,7 +700,7 @@ mod tests {
         assert!(document.routes.is_empty());
         assert_eq!(
             database
-                .call(|c| Ok(c.query_row(
+                .read(|c| Ok(c.query_row(
                     "SELECT state FROM deployments WHERE deployment_id='d1'",
                     [],
                     |r| r.get::<_, String>(0)

@@ -38,15 +38,15 @@ async function fixture(respond, invoke, { respondOnFrame = false, connectTimeout
   }
 }
 
-test('daemon client emits and accepts only the strict protocol-v2 envelope', async () => {
+test('daemon client emits and accepts only the strict protocol-v3 envelope', async () => {
   const response = await fixture((socket, raw) => {
     assert.equal(raw.at(-1), 0x0a);
     const request = JSON.parse(raw.subarray(0, -1));
     assert.deepEqual(Object.keys(request).sort(), ['client', 'id', 'operation', 'params', 'protocol']);
-    assert.equal(request.protocol, 2);
+    assert.equal(request.protocol, 3);
     assert.equal(request.operation, 'test.list');
     assert.deepEqual(request.params, {});
-    socket.end(`${JSON.stringify({ protocol: 2, id: request.id, ok: true, data: { runs: [] } })}\n`);
+    socket.end(`${JSON.stringify({ protocol: 3, id: request.id, ok: true, data: { runs: [] } })}\n`);
   }, (client) => client.call('test.list', {}, 'owner@example.test'));
   assert.deepEqual(response.data, { runs: [] });
 });
@@ -54,16 +54,16 @@ test('daemon client emits and accepts only the strict protocol-v2 envelope', asy
 test('daemon client rejects old, mismatched, extra, and unframed responses', async () => {
   for (const response of [
     (id) => `${JSON.stringify({ protocol: 1, id, ok: true, result: {} })}\n`,
-    () => `${JSON.stringify({ protocol: 2, id: 'wrong', ok: true, data: {} })}\n`,
-    (id) => `${JSON.stringify({ protocol: 2, id, ok: true, data: {}, extra: true })}\n`,
-    (id) => JSON.stringify({ protocol: 2, id, ok: true, data: {} }),
+    () => `${JSON.stringify({ protocol: 3, id: 'wrong', ok: true, data: {} })}\n`,
+    (id) => `${JSON.stringify({ protocol: 3, id, ok: true, data: {}, extra: true })}\n`,
+    (id) => JSON.stringify({ protocol: 3, id, ok: true, data: {} }),
   ]) {
     await assert.rejects(
       fixture((socket, raw) => {
         const request = JSON.parse(raw.subarray(0, -1));
         socket.end(response(request.id));
       }, (client) => client.call('ping')),
-      /protocol-v2|newline-terminated/,
+      /protocol-v3|newline-terminated/,
     );
   }
 });
@@ -140,7 +140,7 @@ test('event wait remains open beyond the ordinary timeout and supports cancellat
   const response = await fixture((socket, raw) => {
     const request = JSON.parse(raw.subarray(0, -1));
     setTimeout(() => socket.end(`${JSON.stringify({
-      protocol: 2, id: request.id, ok: true,
+      protocol: 3, id: request.id, ok: true,
       data: { cursor: 4, events: [], heartbeat_due: [{ filter_id: 'health', deadline_at: '2026-09-05T00:00:00Z' }] },
     })}\n`), 20);
   }, (client) => client.call('event.wait', { filters: [{ filter_id: 'health' }] }), { respondOnFrame: true, timeoutMs: 10 });
@@ -160,7 +160,7 @@ test('event wait remains open beyond the ordinary timeout and supports cancellat
 test('deployment mutations wait for the result while ordinary reads retain their deadline', async () => {
   const delayed = (socket, raw) => {
     const request = JSON.parse(raw.subarray(0, -1));
-    setTimeout(() => socket.end(`${JSON.stringify({ protocol: 2, id: request.id, ok: true, data: {} })}\n`), 40);
+    setTimeout(() => socket.end(`${JSON.stringify({ protocol: 3, id: request.id, ok: true, data: {} })}\n`), 40);
   };
   for (const operation of ['apply', 'rollback', 'start', 'stop', 'restart', 'remove']) {
     const result = await fixture(delayed, (client) => client.call(`deployment.${operation}`), { timeoutMs: 10 });

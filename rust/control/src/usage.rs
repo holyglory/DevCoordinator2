@@ -32,7 +32,7 @@ use rustix::fs::{FileType, Mode, OFlags, fstat, open};
 use time::{format_description::FormatItem, macros::format_description};
 
 use crate::config::{CodexUsageSource, Config};
-use crate::database::{Database, DatabaseError};
+use crate::database::{Database, DatabaseError, OptionalExtension as _};
 use crate::platform::{Clock, HostClock};
 use crate::rate_card::RateCardSnapshot;
 use crate::repository::Registry;
@@ -391,12 +391,12 @@ impl UsageService {
         let titles = self
             .usage
             .authority
-            .call(move |connection| {
+            .read(move |connection| {
                 let mut statement = connection.prepare(
-                    "SELECT task_id,title FROM tasks WHERE repository_id=?1 AND task_id IN (SELECT value FROM json_each(?2))",
+                    "SELECT task_id,title FROM tasks WHERE repository_id=$1 AND task_id IN (SELECT jsonb_array_elements_text($2::jsonb))",
                 )?;
                 let rows = statement
-                    .query_map(rusqlite::params![repository_id, ids], |row| {
+                    .query_map(crate::database::params![repository_id, ids], |row| {
                         Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
                     })?
                     .collect::<Result<BTreeMap<_, _>, _>>()?;
@@ -1034,11 +1034,11 @@ impl CodexUsage {
         let repository_id = repository.repository_id.clone();
         let cached = self
             .authority
-            .call(move |connection| {
+            .read(move |connection| {
                 connection
                     .query_row(
-                        "SELECT codex_repository_id FROM codex_usage_repository_links WHERE source_uid=?1 AND repository_id=?2",
-                        rusqlite::params![uid,repository_id],
+                        "SELECT codex_repository_id FROM codex_usage_repository_links WHERE source_uid=$1 AND repository_id=$2",
+                        crate::database::params![uid,repository_id],
                         |row| row.get::<_,String>(0),
                     )
                     .optional()
@@ -1065,8 +1065,8 @@ impl CodexUsage {
         self.authority
             .transaction(move |transaction| {
                 transaction.execute(
-                    "INSERT OR REPLACE INTO codex_usage_repository_links(source_uid,repository_id,codex_repository_id,source_schema,taxonomy_version,resolved_at) VALUES(?1,?2,?3,?4,?5,?6)",
-                    rusqlite::params![source_uid,repository_id,stored_key,schema,taxonomy,resolved_at],
+                    "INSERT INTO codex_usage_repository_links(source_uid,repository_id,codex_repository_id,source_schema,taxonomy_version,resolved_at) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(source_uid,repository_id) DO UPDATE SET codex_repository_id=EXCLUDED.codex_repository_id,source_schema=EXCLUDED.source_schema,taxonomy_version=EXCLUDED.taxonomy_version,resolved_at=EXCLUDED.resolved_at",
+                    crate::database::params![source_uid,repository_id,stored_key,schema,taxonomy,resolved_at],
                 )?;
                 Ok(())
             })
@@ -1079,8 +1079,8 @@ impl CodexUsage {
         self.authority
             .transaction(move |transaction| {
                 transaction.execute(
-                    "DELETE FROM codex_usage_repository_links WHERE source_uid=?1 AND repository_id=?2",
-                    rusqlite::params![uid,repository_id],
+                    "DELETE FROM codex_usage_repository_links WHERE source_uid=$1 AND repository_id=$2",
+                    crate::database::params![uid,repository_id],
                 )?;
                 Ok(())
             })
@@ -1098,9 +1098,9 @@ impl CodexUsage {
         let repository_id = repository.repository_id.clone();
         let rows = self
             .authority
-            .call(move |connection| {
+            .read(move |connection| {
                 let mut query = connection.prepare(
-                    "SELECT worktree_id,worktree_path FROM worktrees WHERE repository_id=?1 ORDER BY rowid",
+                    "SELECT worktree_id,worktree_path FROM worktrees WHERE repository_id=$1 ORDER BY rowid",
                 )?;
                 query
                     .query_map([repository_id], |row| {
@@ -1519,7 +1519,7 @@ impl CodexUsage {
 
     fn rate_cards(&self) -> Result<RateCardSnapshot, ProtocolError> {
         self.authority
-            .call(|connection| Ok(crate::rate_card::snapshot_rows(connection)?))
+            .read(|connection| Ok(crate::rate_card::snapshot_rows(connection)?))
             .map_err(database_error)
     }
 
@@ -4166,7 +4166,7 @@ pub(crate) mod tests {
         let uid = rustix::process::getuid().as_raw();
         authority.call(move |connection| {
             connection.execute("INSERT INTO repositories(repository_id,root_path,display_name,registered_at,registered_by_uid,last_seen_at) VALUES('project-alpha','/fixture','Project Alpha','t',1,'t')", [])?;
-            connection.execute("INSERT INTO codex_usage_repository_links VALUES(?1,'project-alpha',?2,5,1,'t')", rusqlite::params![uid,canonical])?;
+            connection.execute("INSERT INTO codex_usage_repository_links VALUES($1,'project-alpha',$2,5,1,'t')", crate::database::params![uid,canonical])?;
             Ok(())
         }).unwrap();
         let service = UsageService {
@@ -4302,8 +4302,8 @@ pub(crate) mod tests {
             .unwrap();
         let uid = rustix::process::getuid().as_raw();
         authority.transaction(move |transaction| {
-            transaction.execute("INSERT INTO repositories(repository_id,root_path,display_name,registered_at,registered_by_uid,last_seen_at) VALUES(?1,'/repo','Example','t',1,'t')",[&repository_id])?;
-            transaction.execute("INSERT INTO codex_usage_repository_links VALUES(?1,?2,?3,4,1,'t')",rusqlite::params![uid,repository_id,canonical_for_db])?;
+            transaction.execute("INSERT INTO repositories(repository_id,root_path,display_name,registered_at,registered_by_uid,last_seen_at) VALUES($1,'/repo','Example','t',1,'t')",[&repository_id])?;
+            transaction.execute("INSERT INTO codex_usage_repository_links VALUES($1,$2,$3,4,1,'t')",crate::database::params![uid,repository_id,canonical_for_db])?;
             Ok(())
         }).unwrap();
         let usage = CodexUsage::with_probe(
@@ -4431,8 +4431,8 @@ pub(crate) mod tests {
         let uid = rustix::process::getuid().as_raw();
         authority
             .transaction(move |transaction| {
-                transaction.execute("INSERT INTO repositories(repository_id,root_path,display_name,registered_at,registered_by_uid,last_seen_at) VALUES(?1,'/repo','Example','t',1,'t')",[&repository_id])?;
-                transaction.execute("INSERT INTO codex_usage_repository_links VALUES(?1,?2,?3,4,1,'t')",rusqlite::params![uid,repository_id,canonical])?;
+                transaction.execute("INSERT INTO repositories(repository_id,root_path,display_name,registered_at,registered_by_uid,last_seen_at) VALUES($1,'/repo','Example','t',1,'t')",[&repository_id])?;
+                transaction.execute("INSERT INTO codex_usage_repository_links VALUES($1,$2,$3,4,1,'t')",crate::database::params![uid,repository_id,canonical])?;
                 Ok(())
             })
             .unwrap();
@@ -4554,8 +4554,8 @@ pub(crate) mod tests {
         let repository_id = repository.repository_id.clone();
         let uid = rustix::process::getuid().as_raw();
         authority.transaction(move |transaction| {
-            transaction.execute("INSERT INTO repositories(repository_id,root_path,display_name,registered_at,registered_by_uid,last_seen_at) VALUES(?1,'/repo','Example','t',1,'t')",[&repository_id])?;
-            transaction.execute("INSERT INTO codex_usage_repository_links VALUES(?1,?2,?3,9,1,'t')",rusqlite::params![uid,repository_id,canonical])?;
+            transaction.execute("INSERT INTO repositories(repository_id,root_path,display_name,registered_at,registered_by_uid,last_seen_at) VALUES($1,'/repo','Example','t',1,'t')",[&repository_id])?;
+            transaction.execute("INSERT INTO codex_usage_repository_links VALUES($1,$2,$3,9,1,'t')",crate::database::params![uid,repository_id,canonical])?;
             Ok(())
         }).unwrap();
         let usage = CodexUsage::with_probe(

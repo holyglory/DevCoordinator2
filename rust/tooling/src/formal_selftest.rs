@@ -4183,7 +4183,7 @@ fn run_discovery_phase(
     let base = contracted_config(
         root,
         json!({
-            "fromCoordinator":true,"coordinatorCommand":fixture,"minCheckedPages":0,
+            "fromCoordinator":true,"coordinatorCommand":fixture,"coordinatorProject":"/fixture/project","minCheckedPages":0,
             "viewports":[{"name":"desktop","width":1280,"height":800}]
         }),
     );
@@ -4210,27 +4210,31 @@ fn run_discovery_phase(
         return Err("explicit discovered-target tolerance was not preserved".to_owned());
     }
     create_directory_all_nofollow(work, 0o700).map_err(|error| error.to_string())?;
-    let legacy = work.join("coordinator-protocol-v1");
-    std::fs::copy(&fixture, &legacy)
-        .map_err(|error| format!("cannot copy v1 executable fixture: {error}"))?;
-    let mut legacy_config = base;
-    legacy_config["coordinatorCommand"] = json!(legacy);
-    let legacy = run_verifier(
-        root,
-        &legacy_config,
-        &work.join("v1-rejected"),
-        &[2],
-        timeout,
-        &[],
-    )?;
-    if !legacy
-        .pointer("/error/message")
-        .and_then(Value::as_str)
-        .is_some_and(|message| message.contains("invalid response"))
-    {
-        return Err("protocol-v1 deployment discovery was not rejected".to_owned());
+    for version in [1, 2] {
+        let legacy = work.join(format!("coordinator-protocol-v{version}"));
+        std::fs::copy(&fixture, &legacy)
+            .map_err(|error| format!("cannot copy v1 executable fixture: {error}"))?;
+        let mut legacy_config = base.clone();
+        legacy_config["coordinatorCommand"] = json!(legacy);
+        let legacy = run_verifier(
+            root,
+            &legacy_config,
+            &work.join(format!("v{version}-rejected")),
+            &[2],
+            timeout,
+            &[],
+        )?;
+        if !legacy
+            .pointer("/error/message")
+            .and_then(Value::as_str)
+            .is_some_and(|message| message.contains("invalid response"))
+        {
+            return Err(format!(
+                "protocol-v{version} deployment discovery was not rejected"
+            ));
+        }
     }
-    Ok(3)
+    Ok(4)
 }
 
 fn validate_skill_contract(root: &Path) -> Result<(), String> {

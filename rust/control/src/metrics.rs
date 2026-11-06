@@ -77,8 +77,8 @@ impl MetricsStore {
             .transaction(move |transaction| {
                 for (kind, id, metric, min, average, max, samples) in rows {
                     transaction.execute(
-                        "INSERT OR REPLACE INTO metric_minutes(subject_kind,subject_id,metric,minute_utc,min_value,avg_value,max_value,samples) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",
-                        rusqlite::params![kind,id,metric,minute,min,average,max,samples],
+                        "INSERT INTO metric_minutes(subject_kind,subject_id,metric,minute_utc,min_value,avg_value,max_value,samples) VALUES($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT(subject_kind,subject_id,metric,minute_utc) DO UPDATE SET min_value=excluded.min_value,avg_value=excluded.avg_value,max_value=excluded.max_value,samples=excluded.samples",
+                        crate::database::params![kind,id,metric,minute,min,average,max,samples],
                     )?;
                 }
                 Ok(())
@@ -86,77 +86,26 @@ impl MetricsStore {
             .map_err(database_error)
     }
 
-    pub fn expire(&self) -> Result<u64, ProtocolError> {
+    /// Execute one bounded retention transaction; the scheduler retains work
+    /// when `complete` is false rather than holding a worker through all history.
+    pub fn expire_step(
+        &self,
+    ) -> Result<crate::database::maintenance::RetentionReport, ProtocolError> {
         let now = self.clock.now_utc();
-        let cutoff = (now - Duration::days(RETENTION_DAYS))
-            .format(MINUTE_FORMAT)
-            .map_err(|error| {
-                ProtocolError::new(ErrorCode::InternalError, "cannot format metric cutoff")
-                    .with_detail(error.to_string())
-            })?;
-        let high_cardinality_cutoff = (now - Duration::days(HIGH_CARDINALITY_RETENTION_DAYS))
-            .format(MINUTE_FORMAT)
-            .map_err(|error| {
-                ProtocolError::new(
-                    ErrorCode::InternalError,
-                    "cannot format high-cardinality metric cutoff",
-                )
-                .with_detail(error.to_string())
-            })?;
-        let mut cursor = None::<(String, i64)>;
-        let mut removed = 0_u64;
-        loop {
-            let cursor_before = cursor.clone();
-            let cutoff = cutoff.clone();
-            let high_cardinality_cutoff = high_cardinality_cutoff.clone();
-            let batch = self.database.transaction(move |transaction| {
-                    let mut rows = Vec::<(i64, String, String)>::new();
-                    // The primary key puts subject_id and metric before time.
-                    // The old OR plan therefore scanned retained runtime
-                    // history. Walk only the existing time index's old range.
-                    // Split the cursor at its minute so a large same-minute
-                    // cohort never rescans earlier rowids on every batch.
-                    if let Some((minute, rowid)) = &cursor_before {
-                        let mut statement = transaction.prepare(
-                            "SELECT rowid,minute_utc,subject_kind FROM metric_minutes INDEXED BY metric_minutes_time WHERE minute_utc=?1 AND rowid>?2 ORDER BY rowid LIMIT ?3",
-                        )?;
-                        let found = statement.query_map(
-                            rusqlite::params![minute, rowid, EXPIRY_BATCH_ROWS as u32],
-                            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-                        )?;
-                        rows.extend(found.collect::<Result<Vec<_>, _>>()?);
-                    }
-                    if rows.len() < EXPIRY_BATCH_ROWS {
-                        let mut statement = transaction.prepare(
-                            "SELECT rowid,minute_utc,subject_kind FROM metric_minutes INDEXED BY metric_minutes_time WHERE minute_utc>?1 AND minute_utc<?2 ORDER BY minute_utc,rowid LIMIT ?3",
-                        )?;
-                        let since = cursor_before.as_ref().map_or("", |(minute, _)| minute.as_str());
-                        let remaining = (EXPIRY_BATCH_ROWS - rows.len()) as u32;
-                        let found = statement.query_map(
-                            rusqlite::params![since, high_cardinality_cutoff, remaining],
-                            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-                        )?;
-                        rows.extend(found.collect::<Result<Vec<_>, _>>()?);
-                    }
-                    let next = rows.last().map(|(rowid,minute,_)| (minute.clone(),*rowid));
-                    let mut deleted = 0_u64;
-                    let mut delete = transaction.prepare("DELETE FROM metric_minutes WHERE rowid=?1")?;
-                    for (rowid,minute,kind) in &rows {
-                        if minute < &cutoff || matches!(kind.as_str(), "component"|"container"|"test") {
-                            deleted = deleted.saturating_add(delete.execute([rowid])? as u64);
-                        }
-                    }
-                    Ok((next,rows.len(),deleted))
-                });
-            let (next_cursor, scanned, batch_removed) = batch.map_err(database_error)?;
-            removed = removed.saturating_add(batch_removed);
-            if scanned < EXPIRY_BATCH_ROWS {
-                return Ok(removed);
-            }
-            // A fresh actor message per bounded transaction lets queued
-            // authority reads and accepted mutations run between batches.
-            cursor = next_cursor;
-        }
+        self.database
+            .maintenance_transaction(move |connection| {
+                Ok(crate::database::maintenance::retain_metrics(
+                    connection,
+                    now,
+                    EXPIRY_BATCH_ROWS as u32,
+                )?)
+            })
+            .map_err(database_error)
+    }
+
+    /// Compatibility entry point, deliberately limited to one maintenance step.
+    pub fn expire(&self) -> Result<u64, ProtocolError> {
+        Ok(self.expire_step()?.rows_deleted)
     }
 
     pub fn series(
@@ -177,12 +126,12 @@ impl MetricsStore {
         let id = subject_id.to_owned();
         let metric = metric.to_owned();
         self.database
-            .call(move |connection| {
+            .read(move |connection| {
                 let mut statement = connection.prepare(
-                    "SELECT minute_utc,min_value,avg_value,max_value,samples FROM metric_minutes WHERE subject_kind=?1 AND subject_id=?2 AND metric=?3 AND minute_utc>=?4 ORDER BY minute_utc",
+                    "SELECT minute_utc,min_value,avg_value,max_value,samples FROM metric_minutes WHERE subject_kind=$1 AND subject_id=$2 AND metric=$3 AND minute_utc>=$4 ORDER BY minute_utc",
                 )?;
                 Ok(statement
-                    .query_map(rusqlite::params![kind,id,metric,since], |row| {
+                    .query_map(crate::database::params![kind,id,metric,since], |row| {
                         Ok(MetricPoint {
                             minute: row.get(0)?,
                             min: row.get(1)?,
@@ -223,7 +172,7 @@ impl MetricsStore {
 
     pub fn table_size(&self) -> Result<u64, ProtocolError> {
         self.database
-            .call(|connection| {
+            .read(|connection| {
                 connection
                     .query_row("SELECT count(*) FROM metric_minutes", [], |row| {
                         row.get::<_, i64>(0)
@@ -286,15 +235,14 @@ fn database_error(error: DatabaseError) -> ProtocolError {
 mod tests {
     use super::*;
     use crate::platform::FixedClock;
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    use tempfile::tempdir;
+    use devcoordinator2_persistence::fixture::FixtureCluster;
     use time::macros::datetime;
 
     #[test]
     fn aggregates_series_downsampling_trends_and_expiry_are_exact() {
-        let temporary = tempdir().unwrap();
-        let database_path = temporary.path().join("authority.sqlite3");
-        let database = Database::open(&database_path).unwrap();
+        let cluster = FixtureCluster::start().unwrap();
+        let database_config = cluster.create_database("metric_retention_restart").unwrap();
+        let database = Database::connect(&database_config).unwrap();
         let clock = Arc::new(FixedClock(datetime!(2026-09-04 12:05 UTC)));
         let store = MetricsStore::with_clock(database.clone(), clock);
         store
@@ -385,17 +333,14 @@ mod tests {
         assert_eq!(store.expire().unwrap(), 2);
         assert_eq!(store.table_size().unwrap(), 3);
 
-        // A large recent runtime history must not be scanned during expiry.
-        // Retained repository rows in one minute exercise the cursor without
-        // quadratic rescans; expired rows require several bounded commits.
+        // Exercise the actual PostgreSQL partition/default retention boundary.
+        // A recent large cohort remains while multiple independently committed
+        // steps remove expired high-cardinality rows with a stable row budget.
         database.transaction(|transaction| {
             transaction.execute_batch(
-                "WITH RECURSIVE n(value) AS (VALUES(1) UNION ALL SELECT value+1 FROM n WHERE value<50000)
-                 INSERT INTO metric_minutes SELECT 'component',printf('recent-%06d',value),'cpu_percent','2026-09-04T12:00Z',1,1,1,1 FROM n;
-                 WITH RECURSIVE n(value) AS (VALUES(1) UNION ALL SELECT value+1 FROM n WHERE value<2048)
-                 INSERT INTO metric_minutes SELECT 'repository',printf('retained-%06d',value),'cpu_percent','2026-08-20T12:00Z',1,1,1,1 FROM n;
-                 WITH RECURSIVE n(value) AS (VALUES(1) UNION ALL SELECT value+1 FROM n WHERE value<1024)
-                 INSERT INTO metric_minutes SELECT 'container',printf('expired-%06d',value),'cpu_percent','2026-08-19T12:00Z',1,1,1,1 FROM n;
+                "INSERT INTO metric_minutes SELECT 'component','recent-'||lpad(value::text,6,'0'),'cpu_percent','2026-09-04T12:00Z',1,1,1,1 FROM generate_series(1,50000) AS value;
+                 INSERT INTO metric_minutes SELECT 'repository','retained-'||lpad(value::text,6,'0'),'cpu_percent','2026-08-20T12:00Z',1,1,1,1 FROM generate_series(1,2048) AS value;
+                 INSERT INTO metric_minutes SELECT 'container','expired-'||lpad(value::text,6,'0'),'cpu_percent','2026-08-19T12:00Z',1,1,1,1 FROM generate_series(1,1024) AS value;
                  INSERT INTO metric_minutes VALUES
                    ('test','expired','cpu_percent','2026-08-20T12:00Z',1,1,1,1),
                    ('component','exact-seven-days','cpu_percent','2026-08-28T12:05Z',1,1,1,1),
@@ -405,119 +350,63 @@ mod tests {
             )?;
             Ok(())
         }).unwrap();
-        let steps = Arc::new(AtomicUsize::new(0));
-        let deletes = Arc::new(AtomicUsize::new(0));
-        let largest_batch = Arc::new(AtomicUsize::new(0));
-        let commits = Arc::new(AtomicUsize::new(0));
-        let measured_steps = Arc::clone(&steps);
-        let measured_deletes = Arc::clone(&deletes);
-        let committed_deletes = Arc::clone(&deletes);
-        let measured_largest_batch = Arc::clone(&largest_batch);
-        let measured_commits = Arc::clone(&commits);
-        database
-            .call(move |connection| {
-                connection.progress_handler(
-                    1000,
-                    Some(move || measured_steps.fetch_add(1000, Ordering::Relaxed) >= 200_000),
-                )?;
-                connection.update_hook(Some(move |action, _: &str, table: &str, _| {
-                    if action == rusqlite::hooks::Action::SQLITE_DELETE && table == "metric_minutes"
-                    {
-                        measured_deletes.fetch_add(1, Ordering::Relaxed);
-                    }
-                }))?;
-                connection.commit_hook(Some(move || {
-                    measured_largest_batch.fetch_max(
-                        committed_deletes.swap(0, Ordering::Relaxed),
-                        Ordering::Relaxed,
-                    );
-                    measured_commits.fetch_add(1, Ordering::Relaxed);
-                    false
-                }))?;
-                Ok(())
-            })
-            .unwrap();
-        let expiry = store.expire();
-        database
-            .call(|connection| {
-                connection.progress_handler(0, None::<fn() -> bool>)?;
-                connection.update_hook(None::<fn(rusqlite::hooks::Action, &str, &str, i64)>)?;
-                connection.commit_hook(None::<fn() -> bool>)?;
-                Ok(())
-            })
-            .unwrap();
-        assert_eq!(
-            expiry.unwrap(),
-            1_026,
-            "expiry must avoid recent runtime-history scans"
-        );
-        assert!(steps.load(Ordering::Relaxed) <= 200_000);
-        assert!(largest_batch.load(Ordering::Relaxed) <= EXPIRY_BATCH_ROWS);
-        assert!(commits.load(Ordering::Relaxed) >= 5);
+        let mut removed = 0;
+        let mut steps = 0;
+        loop {
+            let report = store.expire_step().unwrap();
+            // These fixtures are held in the default partition, so each
+            // receipt must stay within the configured deletion row budget.
+            assert!(report.rows_deleted <= EXPIRY_BATCH_ROWS as u64);
+            removed += report.rows_deleted;
+            steps += 1;
+            if report.complete {
+                break;
+            }
+            assert!(steps < 32, "retention must make forward progress");
+        }
+        assert_eq!(removed, 1_026);
+        assert!(steps >= 5);
         assert_eq!(store.table_size().unwrap(), 52_054);
-        assert_eq!(database.call(|connection| Ok(connection.query_row(
+        assert_eq!(database.read(|connection| Ok(connection.query_row(
             "SELECT COUNT(*) FROM metric_minutes WHERE subject_id IN ('exact-seven-days','exact-thirty-days','retained')",
             [], |row| row.get::<_, i64>(0),
         )?)).unwrap(), 3);
 
-        // A failed later commit must preserve the earlier bounded progress and
-        // allow the next maintenance pass to finish the remaining rows.
+        // A failed bounded transaction rolls back only that transaction. A
+        // subsequent step resumes from committed authority state.
         database.transaction(|transaction| {
             transaction.execute_batch(
-                "WITH RECURSIVE n(value) AS (VALUES(1) UNION ALL SELECT value+1 FROM n WHERE value<513)
-                 INSERT INTO metric_minutes SELECT 'host',printf('retry-%06d',value),'cpu_percent','2026-07-01T12:00Z',1,1,1,1 FROM n;"
+                "INSERT INTO metric_minutes SELECT 'host','retry-'||lpad(value::text,6,'0'),'cpu_percent','2026-07-01T12:00Z',1,1,1,1 FROM generate_series(1,513) AS value;"
             )?;
             Ok(())
         }).unwrap();
-        database
-            .call(|connection| {
-                let mut attempts = 0;
-                connection.commit_hook(Some(move || {
-                    attempts += 1;
-                    attempts == 2
-                }))?;
-                Ok(())
-            })
-            .unwrap();
-        let interrupted = store.expire();
-        database
-            .call(|connection| {
-                connection.commit_hook(None::<fn() -> bool>)?;
-                Ok(())
-            })
-            .unwrap();
+        assert_eq!(store.expire_step().unwrap().rows_deleted, 256);
+        let before_failure = store.table_size().unwrap();
+        let interrupted: Result<(), DatabaseError> =
+            database.maintenance_transaction(|connection| {
+                let report = crate::database::maintenance::retain_metrics(
+                    connection,
+                    datetime!(2026-09-04 12:05 UTC),
+                    EXPIRY_BATCH_ROWS as u32,
+                )?;
+                assert_eq!(report.rows_deleted, 256);
+                Err(DatabaseError::Domain(ProtocolError::new(
+                    ErrorCode::InternalError,
+                    "fixture rollback",
+                )))
+            });
         assert!(interrupted.is_err());
-        assert_eq!(store.expire().unwrap(), 257);
-        assert_eq!(store.table_size().unwrap(), 52_054);
-
-        // Queue a real actor shutdown during the first commit. It must get a
-        // turn before the whole cleanup finishes, and reopening must recover
-        // the committed batch without losing the remaining observations.
-        database.transaction(|transaction| {
-            transaction.execute_batch(
-                "WITH RECURSIVE n(value) AS (VALUES(1) UNION ALL SELECT value+1 FROM n WHERE value<513)
-                 INSERT INTO metric_minutes SELECT 'host',printf('shutdown-retry-%06d',value),'cpu_percent','2026-07-02T12:00Z',1,1,1,1 FROM n;"
-            )?;
-            Ok(())
-        }).unwrap();
-        let stop = database.clone();
-        database
-            .call(move |connection| {
-                connection.commit_hook(Some(move || {
-                    stop.close().unwrap();
-                    false
-                }))?;
-                Ok(())
-            })
-            .unwrap();
-        assert!(store.expire().is_err());
+        assert_eq!(store.table_size().unwrap(), before_failure);
         drop(store);
+        database.close().unwrap();
         drop(database);
+        cluster.restart().unwrap();
         let reopened = MetricsStore::with_clock(
-            Database::open(database_path).unwrap(),
+            Database::connect(&database_config).unwrap(),
             Arc::new(FixedClock(datetime!(2026-09-04 12:05 UTC))),
         );
-        assert_eq!(reopened.expire().unwrap(), 257);
+        assert_eq!(reopened.expire_step().unwrap().rows_deleted, 256);
+        assert_eq!(reopened.expire_step().unwrap().rows_deleted, 1);
         assert_eq!(reopened.table_size().unwrap(), 52_054);
         assert_eq!(
             reopened

@@ -108,9 +108,9 @@ fn source_api_serves_whole_collection_once_and_keeps_missing_counts_unknown() {
     let key = "b".repeat(64);
     db.transaction(move |tx|{
         for id in ["project-alpha","project-beta"] {
-            tx.execute("INSERT INTO repositories(repository_id,root_path,display_name,registered_at,registered_by_uid,last_seen_at) VALUES(?1,?2,?1,'t',1,'t')",rusqlite::params![id,format!("/{id}")])?;
+            tx.execute("INSERT INTO repositories(repository_id,root_path,display_name,registered_at,registered_by_uid,last_seen_at) VALUES($1,$2,$1,'t',1,'t')",crate::database::params![id,format!("/{id}")])?;
         }
-        tx.execute("INSERT INTO codex_usage_repository_links VALUES(?1,'project-alpha',?2,5,1,'t')",rusqlite::params![uid,key])?;Ok(())
+        tx.execute("INSERT INTO codex_usage_repository_links VALUES($1,'project-alpha',$2,5,1,'t')",crate::database::params![uid,key])?;Ok(())
     }).unwrap();
     let usage = CodexUsage::with_probe(
         config,
@@ -180,8 +180,8 @@ fn repository_fast_projection_uses_the_bounded_api_summary() {
             [],
         )?;
         tx.execute(
-            "INSERT INTO codex_usage_repository_links VALUES(?1,'project-alpha',?2,5,1,'t')",
-            rusqlite::params![uid, key],
+            "INSERT INTO codex_usage_repository_links VALUES($1,'project-alpha',$2,5,1,'t')",
+            crate::database::params![uid, key],
         )?;
         Ok(())
     })
@@ -295,8 +295,8 @@ fn initial_repository_detail_preserves_full_measurements() {
             [],
         )?;
         tx.execute(
-            "INSERT INTO codex_usage_repository_links VALUES(?1,'project-alpha',?2,8,1,'t')",
-            rusqlite::params![uid, canonical],
+            "INSERT INTO codex_usage_repository_links VALUES($1,'project-alpha',$2,8,1,'t')",
+            crate::database::params![uid, canonical],
         )?;
         Ok(())
     })
@@ -565,8 +565,8 @@ fn unfinished_source_cache_skips_raw_fallback_reads() {
                 [],
             )?;
             tx.execute(
-                "INSERT INTO codex_usage_repository_links VALUES(?1,'project-alpha',?2,8,1,'t')",
-                rusqlite::params![uid, key],
+                "INSERT INTO codex_usage_repository_links VALUES($1,'project-alpha',$2,8,1,'t')",
+                crate::database::params![uid, key],
             )?;
             Ok(())
         })

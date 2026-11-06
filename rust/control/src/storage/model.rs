@@ -94,6 +94,8 @@ pub struct Repository {
 #[derive(Clone, Debug, Default)]
 pub struct Context {
     pub discovering: bool,
+    /// Valid only within one discovery pass; removal always remeasures.
+    pub discovery_measurements: BTreeMap<PathBuf, super::fs::Measurement>,
     pub docker_snapshot: Option<std::sync::Arc<Vec<serde_json::Value>>>,
     pub docker_unavailable: bool,
     pub scan_repository_id: Option<String>,

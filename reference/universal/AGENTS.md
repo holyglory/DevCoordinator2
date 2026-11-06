@@ -15,7 +15,7 @@ earlier model messages or reload unchanged instructions.
 
 - At the beginning of each work session, fetch the current concise ownership and
   spawn instruction from the configured Coordinator with `agent.instruction.current`.
-  The CLI form is `devcoordinator2 --client <harness> [--model <model>] [--effort <effort>] agent instruction-current`.
+  The CLI form is `devcoordinator2 --client <harness> [--model <model>] [--effort <effort>] call agent.instruction.current`.
   Identify the harness and provide the current model and effort when the harness
   knows them. Cache a successful response only until its returned expiry. If the
   Coordinator is unavailable and no unexpired cached response exists, continue

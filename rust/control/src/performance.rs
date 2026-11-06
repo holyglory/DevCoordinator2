@@ -109,10 +109,10 @@ impl ReviewService {
         if before > i64::MAX as u64 {
             return Err(invalid("Invalid review cursor"));
         }
-        self.database.call(move |c| {
-            let total_reviews: i64 = c.query_row("SELECT COUNT(DISTINCT record_id) FROM review_records WHERE repository_id=?1", [&p.repository_id], |r| r.get(0))?;
-            let mut query = c.prepare("SELECT r.rowid,r.record_id,r.revision,r.recorded_at_ms,r.record_json,(SELECT COUNT(*) FROM review_records v WHERE v.repository_id=r.repository_id AND v.record_id=r.record_id) FROM review_records r WHERE r.repository_id=?1 AND r.rowid<?2 AND ((?3 IS NOT NULL AND r.record_id=?3) OR (?3 IS NULL AND NOT EXISTS(SELECT 1 FROM review_records v WHERE v.repository_id=r.repository_id AND v.record_id=r.record_id AND v.revision>r.revision))) ORDER BY r.rowid DESC LIMIT ?4")?;
-            let mut rows = query.query(rusqlite::params![p.repository_id, before as i64, p.record_id, u32::from(p.limit)+1])?;
+        self.database.read(move |c| {
+            let total_reviews: i64 = c.query_row("SELECT COUNT(DISTINCT record_id) FROM review_records WHERE repository_id=$1", [&p.repository_id], |r| r.get(0))?;
+            let mut query = c.prepare("SELECT r.rowid,r.record_id,r.revision,r.recorded_at_ms,r.record_json,(SELECT COUNT(*) FROM review_records v WHERE v.repository_id=r.repository_id AND v.record_id=r.record_id) FROM review_records r WHERE r.repository_id=$1 AND r.rowid<$2 AND (($3::text IS NOT NULL AND r.record_id=$3) OR ($3::text IS NULL AND NOT EXISTS(SELECT 1 FROM review_records v WHERE v.repository_id=r.repository_id AND v.record_id=r.record_id AND v.revision>r.revision))) ORDER BY r.rowid DESC LIMIT $4")?;
+            let mut rows = query.query(crate::database::params![p.repository_id, before as i64, p.record_id, u32::from(p.limit)+1])?;
             let mut records = Vec::new(); let mut bytes = 0; let mut last = None; let mut more = false;
             while let Some(row) = rows.next()? {
                 let encoded: String = row.get(4)?;
@@ -211,10 +211,10 @@ impl ReviewService {
                     let repo = record.repository_id.clone();
                     let reference = source.reference.clone();
                     let kind = source.kind.clone();
-                    let (title, body) = self.database.call(move |c| {
-                        let query = if kind == EvidenceKind::Decision { "SELECT title,body FROM decisions WHERE repository_id=?1 AND (decision_id=?2 OR ref=?2)" }
-                        else { "SELECT title,outcome FROM tasks WHERE repository_id=?1 AND task_id=?2" };
-                        c.query_row(query, rusqlite::params![repo,reference], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))).map_err(Into::into)
+                    let (title, body) = self.database.read(move |c| {
+                        let query = if kind == EvidenceKind::Decision { "SELECT title,body FROM decisions WHERE repository_id=$1 AND (decision_id=$2 OR ref=$2)" }
+                        else { "SELECT title,outcome FROM tasks WHERE repository_id=$1 AND task_id=$2" };
+                        c.query_row(query, crate::database::params![repo,reference], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))).map_err(Into::into)
                     }).map_err(database_error)?;
                     item.title = title.chars().take(160).collect();
                     item.body = body.chars().take(1600).collect();

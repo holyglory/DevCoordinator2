@@ -11,13 +11,13 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use crate::database::OptionalExtension;
 use devcoordinator2_api::params::{DeploymentList as DeploymentListParams, SetDomain};
 use devcoordinator2_api::results::{
     Component, ComponentBinding, ComposeService, DeclaredDeployment, DeploymentList, DeploymentLog,
     DeploymentSource, DeploymentStatus, DomainChanged,
 };
 use devcoordinator2_api::{ErrorCode, ProtocolError};
-use rusqlite::OptionalExtension;
 use time::{format_description::FormatItem, macros::format_description};
 
 use crate::access::Caller;
@@ -1333,9 +1333,37 @@ impl Deployments {
     }
 
     pub fn expire_previews(&self) -> Result<Vec<DeploymentStatus>, ProtocolError> {
+        let mut cursor = None;
+        let mut expired = Vec::new();
+        loop {
+            let (rows, next) = self.expire_previews_step(cursor)?;
+            expired.extend(rows);
+            if next.is_none() {
+                return Ok(expired);
+            }
+            cursor = next;
+        }
+    }
+
+    pub fn expire_previews_step(
+        &self,
+        after_deployment_id: Option<String>,
+    ) -> Result<(Vec<DeploymentStatus>, Option<String>), ProtocolError> {
         let now = self.store.current_timestamp()?;
         let mut expired = Vec::new();
-        for row in self.store.list(None)? {
+        let ids=self.database.read(|connection| {
+            let mut statement=connection.prepare("SELECT deployment_id FROM deployments WHERE deployment_id>$1 AND ttl_expires_at<$2 AND state<>'stopped' ORDER BY deployment_id LIMIT 2")?;
+            Ok(statement.query_map(crate::database::params![after_deployment_id.as_deref().unwrap_or(""),now],|row|row.get::<_,String>(0))?.collect::<Result<Vec<_>,_>>()?)
+        }).map_err(database_error)?;
+        let next = if ids.len() > 1 {
+            ids.first().cloned()
+        } else {
+            None
+        };
+        for id in ids.into_iter().take(1) {
+            let Some(row) = self.store.get(&id)? else {
+                continue;
+            };
             if row
                 .ttl_expires_at
                 .as_deref()
@@ -1361,7 +1389,7 @@ impl Deployments {
                 }
             }
         }
-        Ok(expired)
+        Ok((expired, next))
     }
 
     pub fn control_observed(
@@ -2257,9 +2285,9 @@ impl Deployments {
         let id = target.deployment_id.clone();
         let previous_route = self
             .database
-            .call(move |connection| {
+            .read(move |connection| {
                 connection.query_row(
-                "SELECT domain,component,port,generation FROM domain_routes WHERE deployment_id=?1",
+                "SELECT domain,component,port,generation FROM domain_routes WHERE deployment_id=$1",
                 [id], |row| Ok((row.get::<_,String>(0)?, row.get::<_,String>(1)?,
                     row.get::<_,Option<u16>>(2)?, row.get::<_,Option<u32>>(3)?)),
             ).optional().map_err(DatabaseError::from)
@@ -4008,18 +4036,37 @@ impl Deployments {
     }
 
     pub fn reconcile_routes(&self) -> Result<(), ProtocolError> {
+        let mut cursor = None;
+        loop {
+            let next = self.reconcile_routes_step(cursor)?;
+            if next.is_none() {
+                return Ok(());
+            }
+            cursor = next;
+        }
+    }
+
+    pub fn reconcile_routes_step(
+        &self,
+        after_deployment_id: Option<String>,
+    ) -> Result<Option<String>, ProtocolError> {
         let ids = self
             .database
-            .call(|connection| {
+            .read(|connection| {
                 let mut statement =
-                    connection.prepare("SELECT deployment_id FROM domain_routes")?;
+                    connection.prepare("SELECT DISTINCT deployment_id FROM domain_routes WHERE deployment_id>$1 ORDER BY deployment_id LIMIT 2")?;
                 Ok(statement
-                    .query_map([], |row| row.get::<_, String>(0))?
+                    .query_map([after_deployment_id.as_deref().unwrap_or("")], |row| row.get::<_, String>(0))?
                     .collect::<Result<Vec<_>, _>>()?)
             })
             .map_err(database_error)?;
+        let next = if ids.len() > 1 {
+            ids.first().cloned()
+        } else {
+            None
+        };
         let mut changed = false;
-        for id in ids {
+        for id in ids.into_iter().take(1) {
             let Ok(_busy) = self.acquire_busy(&id) else {
                 continue;
             };
@@ -4045,17 +4092,17 @@ impl Deployments {
         if changed {
             self.routes.publish_current()?;
         }
-        Ok(())
+        Ok(next)
     }
 
     fn validate_or_withdraw_route(&self, deployment_id: &str) -> Result<bool, ProtocolError> {
         let deployment_id_owned = deployment_id.to_owned();
         let route = self
             .database
-            .call(move |connection| {
+            .read(move |connection| {
                 connection
                     .query_row(
-                        "SELECT domain,component,port,generation,lease_id FROM domain_routes WHERE deployment_id=?1",
+                        "SELECT domain,component,port,generation,lease_id FROM domain_routes WHERE deployment_id=$1",
                         [&deployment_id_owned],
                         |row| {
                             Ok((
@@ -4079,10 +4126,10 @@ impl Deployments {
         let deployment_id_for_lease = deployment_id.to_owned();
         let valid_lease = self
             .database
-            .call(move |connection| {
+            .read(move |connection| {
                 Ok(connection.query_row(
-                    "SELECT EXISTS(SELECT 1 FROM port_assignments p JOIN components c ON c.deployment_id=p.deployment_id AND c.name=p.component WHERE p.lease_id=?1 AND p.port=?2 AND p.deployment_id=?3 AND p.component=?4 AND p.generation IN (?5,0) AND c.state='running' AND c.health='healthy')",
-                    rusqlite::params![lease_id, port, deployment_id_for_lease, component, generation.unwrap_or(0)],
+                    "SELECT EXISTS(SELECT 1 FROM port_assignments p JOIN components c ON c.deployment_id=p.deployment_id AND c.name=p.component WHERE p.lease_id=$1 AND p.port=$2 AND p.deployment_id=$3 AND p.component=$4 AND p.generation IN ($5,0) AND c.state='running' AND c.health='healthy')",
+                    crate::database::params![lease_id, port, deployment_id_for_lease, component, generation.unwrap_or(0)],
                     |row| row.get::<_, i64>(0),
                 )? != 0)
             })
@@ -4386,10 +4433,10 @@ impl Deployments {
         let deployment_id = row.deployment_id.clone();
         let (domain, route_port, route_valid) = self
             .database
-            .call(move |connection| {
+            .read(move |connection| {
                 let route = connection
                     .query_row(
-                        "SELECT domain,component,port,generation,lease_id FROM domain_routes WHERE deployment_id=?1",
+                        "SELECT domain,component,port,generation,lease_id FROM domain_routes WHERE deployment_id=$1",
                         [&deployment_id],
                         |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?,
                             row.get::<_, Option<u16>>(2)?, row.get::<_, Option<u32>>(3)?,
@@ -4449,10 +4496,10 @@ impl Deployments {
         let repository_id = row.repository_id.clone();
         let repository_name = self
             .database
-            .call(move |connection| {
+            .read(move |connection| {
                 connection
                     .query_row(
-                        "SELECT display_name FROM repositories WHERE repository_id=?1",
+                        "SELECT display_name FROM repositories WHERE repository_id=$1",
                         [&repository_id],
                         |row| row.get::<_, String>(0),
                     )
@@ -4633,7 +4680,7 @@ impl Deployments {
                 Some(port) => {
                     let deployment_id = row.deployment_id.clone();
                     let name = row.name.clone();
-                    self.database.call(move |c| Ok(c.query_row("SELECT lease_id FROM port_assignments WHERE port=?1 AND deployment_id=?2 AND component=?3",rusqlite::params![port,deployment_id,name],|r|r.get::<_,String>(0)).optional()?)).map_err(database_error)?
+                    self.database.read(move |c| Ok(c.query_row("SELECT lease_id FROM port_assignments WHERE port=$1 AND deployment_id=$2 AND component=$3",crate::database::params![port,deployment_id,name],|r|r.get::<_,String>(0)).optional()?)).map_err(database_error)?
                 }
                 None => None,
             },
@@ -4665,9 +4712,9 @@ impl Deployments {
     ) -> Result<Vec<(String, String)>, ProtocolError> {
         let deployment_id = deployment_id.to_owned();
         let component = component.map(str::to_owned);
-        let rows = self.database.call(move |connection| {
+        let rows = self.database.read(move |connection| {
             let mut statement = connection.prepare(
-                "SELECT container_id,compose_service FROM observed_containers WHERE observed_deployment_id=?1 ORDER BY compose_service,name,container_id",
+                "SELECT container_id,compose_service FROM observed_containers WHERE observed_deployment_id=$1 ORDER BY compose_service,name,container_id",
             )?;
             Ok(statement.query_map([deployment_id], |row| {
                 Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?))
@@ -4747,13 +4794,13 @@ impl Deployments {
         self.database.transaction(move |transaction| {
             for (container_id,state,status,health) in rows {
                 transaction.execute(
-                    "UPDATE observed_containers SET state=?1,status=?2,health=?3,observed_at=?4 WHERE container_id=?5",
-                    rusqlite::params![state,status,health,now,container_id],
+                    "UPDATE observed_containers SET state=$1,status=$2,health=$3,observed_at=$4 WHERE container_id=$5",
+                    crate::database::params![state,status,health,now,container_id],
                 )?;
             }
             transaction.execute(
-                "UPDATE observed_deployments SET state=?1,health=?2,observed_at=?3 WHERE observed_deployment_id=?4",
-                rusqlite::params![deployment_state,deployment_health,now,deployment_id],
+                "UPDATE observed_deployments SET state=$1,health=$2,observed_at=$3 WHERE observed_deployment_id=$4",
+                crate::database::params![deployment_state,deployment_health,now,deployment_id],
             )?;
             Ok(())
         }).map_err(database_error)
@@ -4762,10 +4809,10 @@ impl Deployments {
     fn worktree_path(&self, worktree_id: &str) -> Result<PathBuf, ProtocolError> {
         let worktree_id = worktree_id.to_owned();
         self.database
-            .call(move |connection| {
+            .read(move |connection| {
                 connection
                     .query_row(
-                        "SELECT worktree_path FROM worktrees WHERE worktree_id=?1",
+                        "SELECT worktree_path FROM worktrees WHERE worktree_id=$1",
                         [&worktree_id],
                         |row| row.get::<_, String>(0),
                     )
@@ -6023,8 +6070,8 @@ tcp="127.0.0.1:25"
             let database = Database::open(temporary.path().join("authority.sqlite3")).unwrap();
             let root = worktree.display().to_string();
             database.transaction(move |transaction| {
-                transaction.execute("INSERT INTO repositories(repository_id,root_path,display_name,registered_at,registered_by_uid,last_seen_at) VALUES('r1111111111111111',?1,'repo','t',1000,'t')",[&root])?;
-                transaction.execute("INSERT INTO worktrees(worktree_id,repository_id,worktree_path,registered_at,last_seen_at) VALUES('w1111111111111111','r1111111111111111',?1,'t','t')",[&root])?;
+                transaction.execute("INSERT INTO repositories(repository_id,root_path,display_name,registered_at,registered_by_uid,last_seen_at) VALUES('r1111111111111111',$1,'repo','t',1000,'t')",[&root])?;
+                transaction.execute("INSERT INTO worktrees(worktree_id,repository_id,worktree_path,registered_at,last_seen_at) VALUES('w1111111111111111','r1111111111111111',$1,'t','t')",[&root])?;
                 Ok(())
             }).unwrap();
             let config = Config {
@@ -6139,7 +6186,7 @@ tcp="127.0.0.1:25"
                 .set_deployment_runtime(&deployment_id, "running", Some(1), None)
                 .unwrap();
             self.database.transaction({let deployment_id=deployment_id.clone(); move |transaction| {
-                transaction.execute("INSERT INTO port_assignments(port,deployment_id,component,generation,assigned_at,lease_id) VALUES(20001,?1,'api',0,'t','lfixture')",[deployment_id])?;
+                transaction.execute("INSERT INTO port_assignments(port,deployment_id,component,generation,assigned_at,lease_id) VALUES(20001,$1,'api',0,'t','lfixture')",[deployment_id])?;
                 Ok(())
             }}).unwrap();
             self.deployments
@@ -7536,7 +7583,7 @@ env_file=".web.env"
         let repository_count = || {
             world
                 .database
-                .call(|connection| {
+                .read(|connection| {
                     Ok(
                         connection.query_row("SELECT count(*) FROM repositories", [], |row| {
                             row.get::<_, i64>(0)
@@ -7574,7 +7621,7 @@ env_file=".web.env"
         assert_eq!(
             world
                 .database
-                .call(|connection| Ok(connection.query_row(
+                .read(|connection| Ok(connection.query_row(
                     "SELECT count(*) FROM deployments",
                     [],
                     |row| row.get::<_, i64>(0)

@@ -9,13 +9,13 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use crate::database::OptionalExtension;
 use devcoordinator2_api::ErrorCode;
 use devcoordinator2_api::test_containers::{
     ContainerCleanupAttempt, ContainerCleanupStatus, ContainerCleanupSummary, ContainerCreate,
     ContainerInspection, ContainerOperationResult, ContainerReference, TestContainerRecord,
 };
 use devcoordinator2_api::{ProtocolError, results::TestStatus};
-use rusqlite::OptionalExtension;
 use serde_json::Value;
 use time::{format_description::FormatItem, macros::format_description};
 
@@ -548,10 +548,10 @@ impl TestContainerService {
         let (worktree, worktree_id, repository_id) = if caller.is_console() {
             let requested = path.to_owned();
             self.database
-                .call(move |connection| {
+                .read(move |connection| {
                     connection
                         .query_row(
-                            "SELECT worktree_path,worktree_id,repository_id FROM worktrees WHERE worktree_path=?1",
+                            "SELECT worktree_path,worktree_id,repository_id FROM worktrees WHERE worktree_path=$1",
                             [&requested],
                             |row| {
                                 Ok((

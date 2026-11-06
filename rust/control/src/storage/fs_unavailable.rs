@@ -23,6 +23,19 @@ pub fn absent(_: &Path) -> Result<bool, ProtocolError> {
 pub fn measure(_: &Path) -> Result<Measurement, ProtocolError> {
     unsupported()
 }
+pub struct MeasurementCursor;
+impl MeasurementCursor {
+    pub fn new(_: &Path) -> Result<Self, ProtocolError> {
+        unsupported()
+    }
+    pub fn step(
+        &mut self,
+        _: usize,
+        _: std::time::Duration,
+    ) -> Result<Option<Measurement>, ProtocolError> {
+        unsupported()
+    }
+}
 pub fn mount_targets() -> Result<Vec<PathBuf>, ProtocolError> {
     unsupported()
 }

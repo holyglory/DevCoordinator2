@@ -1,6 +1,6 @@
 # Security Assumptions
 
-Last reviewed: 2026-09-21 (trusted local agent access to authenticated deployments)
+Last reviewed: 2026-11-05 (owner-approved PostgreSQL authority migration)
 
 Installation-specific values (the concrete accounts, groups, domain, and
 owner identity) are deliberately not in this file. They live in the
@@ -29,6 +29,21 @@ untracked `instance/` directory and in the installed instance configuration
   only in linked worktrees.
 
 ## Runtime trust boundary
+
+- The owner approved replacing the Coordinator authority SQLite database with
+  one dedicated local PostgreSQL cluster and a breaking v3 protocol
+  (DC2-POSTGRES-V3-20261105). PostgreSQL is managed by the reviewed root installer
+  and runs as a dedicated non-root service identity. It listens only on a private
+  Unix socket. Database roles and credentials remain private; public and thin
+  clients retain the existing daemon authorization boundary.
+- The same decision authorizes one full, verified cutover preserving all
+  authority IDs, histories, records and immutable attachment bytes. JSON records
+  may be normalized to JSONB; signed payloads retain their exact bytes. The
+  frozen SQLite source and temporary rollback backup may be deleted only after
+  migration equality checks, full candidate acceptance, live source verification,
+  and a verified recoverable PostgreSQL backup. Before new live writes are
+  admitted, a failed cutover may restore SQLite; after admission, recovery must
+  preserve PostgreSQL writes and never restore a stale SQLite snapshot.
 
 - One owner controls all trusted local Unix accounts and coding agents.
   Local accounts are attribution and execution identities, not mutually

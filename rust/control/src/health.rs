@@ -365,11 +365,11 @@ impl HealthService {
         let deployment_id = deployment.deployment_id.clone();
         let observed = deployment.observed_only;
         self.database
-            .call(move |connection| {
+            .read(move |connection| {
                 let mut reasons = Vec::new();
                 if observed {
                     let mut statement = connection.prepare(
-                        "SELECT compose_service,state,status,health FROM observed_containers WHERE observed_deployment_id=?1 ORDER BY compose_service",
+                        "SELECT compose_service,state,status,health FROM observed_containers WHERE observed_deployment_id=$1 ORDER BY compose_service",
                     )?;
                     for row in statement.query_map([deployment_id], |row| {
                         Ok((
@@ -386,7 +386,7 @@ impl HealthService {
                     }
                 } else {
                     let mut statement = connection.prepare(
-                        "SELECT name,state,desired_state,health,last_error FROM components WHERE deployment_id=?1 ORDER BY order_index",
+                        "SELECT name,state,desired_state,health,last_error FROM components WHERE deployment_id=$1 ORDER BY order_index",
                     )?;
                     for row in statement.query_map([deployment_id], |row| {
                         Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?,row.get::<_,String>(2)?,row.get::<_,String>(3)?,row.get::<_,Option<String>>(4)?))
@@ -661,7 +661,7 @@ mod tests {
             .register(&repository, caller.uid, caller.gid)
             .unwrap();
         database.transaction({let registered=registered.clone();move |transaction| {
-            transaction.execute("INSERT INTO deployments(deployment_id,repository_id,worktree_id,name,source,domain,spec_fingerprint,spec_json,state,created_at,created_by_uid,client,updated_at) VALUES('d1111111111111111',?1,?2,'web','worktree',NULL,'f','{}','failed','t',1,'other','t')",rusqlite::params![registered.repository_id,registered.worktree_id])?;
+            transaction.execute("INSERT INTO deployments(deployment_id,repository_id,worktree_id,name,source,domain,spec_fingerprint,spec_json,state,created_at,created_by_uid,client,updated_at) VALUES('d1111111111111111',$1,$2,'web','worktree',NULL,'f','{}','failed','t',1,'other','t')",crate::database::params![registered.repository_id,registered.worktree_id])?;
             transaction.execute("INSERT INTO components(deployment_id,name,type,order_index,spec_fingerprint,desired_state,state,health,restarts,last_error,updated_at) VALUES('d1111111111111111','api','process',0,'f','running','failed','unhealthy',0,'boom','t')",[])?;
             Ok(())
         }}).unwrap();

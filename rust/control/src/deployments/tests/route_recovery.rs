@@ -499,7 +499,7 @@ fn reconcile_does_not_restart_stopped_or_repair_a_mismatched_route_lease() {
             let id = first.deployment_id.clone();
             move |connection| {
                 connection.execute(
-                    "UPDATE domain_routes SET lease_id='foreign-lease' WHERE deployment_id=?1",
+                    "UPDATE domain_routes SET lease_id='foreign-lease' WHERE deployment_id=$1",
                     [&id],
                 )?;
                 Ok(())

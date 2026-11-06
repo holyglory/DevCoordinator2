@@ -558,12 +558,16 @@ pub struct RepositoryListRow {
     pub archive_note: Option<String>,
     pub merged_into_repository_id: Option<String>,
     pub worktrees: Vec<Worktree>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_worktree_id: Option<String>,
 }
 
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RepositoryList {
     pub repositories: Vec<RepositoryListRow>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_repository_id: Option<String>,
 }
 
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
@@ -2048,6 +2052,8 @@ pub struct PlanRepositoryRow {
 #[serde(deny_unknown_fields)]
 pub struct PlanCollection {
     pub repositories: Vec<PlanRepositoryRow>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_repository_id: Option<String>,
 }
 
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
@@ -2111,6 +2117,10 @@ pub struct PlanDetail {
     pub releases: Vec<PlanRelease>,
     pub tasks: Vec<PlanTask>,
     pub tasks_truncated: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_sequence: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_release_sequence: Option<u32>,
     pub elaboration_requests: Vec<ElaborationRequest>,
     pub preview_requested: Vec<PreviewRequest>,
     pub decisions: DecisionState,

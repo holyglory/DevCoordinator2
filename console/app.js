@@ -1,4 +1,4 @@
-// DevCoordinator2 Console: a static app over the edge's /api/v2/<operation> bridge.
+// DevCoordinator2 Console: a static app over the edge's /api/v3/<operation> bridge.
 // Every control calls the real API and re-reads state to prove the change.
 'use strict';
 
@@ -266,10 +266,10 @@ class ApiError extends Error {
   }
 }
 let viewAbort = null; // render() aborts the previous view's pending reads so a slow stale load can never overwrite the current view
-async function api(operation, params = {}, abortable = true) {
+async function apiPage(operation, params = {}, abortable = true) {
   let res;
   try {
-    res = await fetch(`/api/v2/${operation}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(params), signal: abortable ? viewAbort?.signal : undefined });
+    res = await fetch(`/api/v3/${operation}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(params), signal: abortable ? viewAbort?.signal : undefined });
   } catch (error) {
     if (error.name === 'AbortError') throw new ApiError('stale', 'superseded by navigation');
     throw new ApiError('network', `edge unreachable: ${error.message}`);
@@ -277,20 +277,58 @@ async function api(operation, params = {}, abortable = true) {
   if (res.status === 401) { location.href = `/auth/login?rt=${encodeURIComponent(location.pathname + location.hash)}`; throw new ApiError('unauthenticated', 'sign in'); }
   const body = await res.json().catch(() => ({ ok: false, error: { code: 'bad_response', message: `HTTP ${res.status}` } }));
   if (!body.ok) throw new ApiError(body.error?.code || 'error', body.error?.message || 'request failed');
-  if (operation === 'test.list' && !params.after_worktree_id && !params.limit) {
-    const result = body.data;
-    const seen = new Set();
-    while (result.next_worktree_id) {
-      const cursor = result.next_worktree_id;
-      if (seen.has(cursor)) throw new ApiError('bad_response', 'Test list pagination did not advance');
-      seen.add(cursor);
-      const page = await api(operation, { ...params, after_worktree_id: cursor }, abortable);
-      result.runs.push(...page.runs);
-      result.next_worktree_id = page.next_worktree_id;
-    }
-  }
   return body.data;
 }
+// Follow explicit server cursors. Each transport response stays bounded, and
+// navigation aborts the entire traversal instead of allowing stale pages to render.
+async function api(operation, params = {}, abortable = true) {
+  const result = await apiPage(operation, params, abortable);
+  if (params.limit || params.after_worktree_id || params.after_repository_id || params.after_sequence || params.after_release_sequence) return result;
+  const seen = new Set();
+  const advance = cursor => {
+    if (seen.has(cursor)) throw new ApiError('bad_response', 'Pagination did not advance');
+    seen.add(cursor);
+  };
+  if (operation === 'test.list') {
+    while (result.next_worktree_id) {
+      const cursor = result.next_worktree_id; advance(cursor);
+      const page = await apiPage(operation, { ...params, after_worktree_id: cursor }, abortable);
+      result.runs.push(...page.runs); result.next_worktree_id = page.next_worktree_id;
+    }
+  } else if (operation === 'repository.list' || (operation === 'plan.overview' && result.repositories)) {
+    while (result.next_repository_id) {
+      const cursor = result.next_repository_id; advance(cursor);
+      const page = await apiPage(operation, { ...params, after_repository_id: cursor }, abortable);
+      result.repositories.push(...page.repositories); result.next_repository_id = page.next_repository_id;
+    }
+    if (operation === 'repository.list') {
+      for (const repository of result.repositories) {
+        seen.clear();
+        while (repository.next_worktree_id) {
+          const cursor = repository.next_worktree_id; advance(cursor);
+          const page = await apiPage(operation, { ...params, repository_id: repository.repository_id, after_worktree_id: cursor }, abortable);
+          const next = page.repositories.find(row => row.repository_id === repository.repository_id);
+          if (!next) throw new ApiError('bad_response', 'Repository disappeared during pagination');
+          repository.worktrees.push(...next.worktrees); repository.next_worktree_id = next.next_worktree_id;
+        }
+      }
+    }
+  } else if (operation === 'plan.overview' && result.tasks) {
+    let tasksAfter = result.next_sequence || Math.max(0, ...result.tasks.map(task => task.seq));
+    let releasesAfter = result.next_release_sequence || Math.max(0, ...result.releases.map(release => release.seq));
+    while (result.next_sequence || result.next_release_sequence) {
+      advance(`${tasksAfter}:${releasesAfter}`);
+      const page = await apiPage(operation, { ...params, after_sequence: tasksAfter, after_release_sequence: releasesAfter }, abortable);
+      for (const field of ['tasks', 'releases', 'elaboration_requests', 'preview_requested']) result[field].push(...page[field]);
+      result.next_sequence = page.next_sequence; result.next_release_sequence = page.next_release_sequence;
+      tasksAfter = page.next_sequence || Math.max(tasksAfter, ...page.tasks.map(task => task.seq));
+      releasesAfter = page.next_release_sequence || Math.max(releasesAfter, ...page.releases.map(release => release.seq));
+    }
+    result.tasks_truncated = false;
+  }
+  return result;
+}
+
 async function metricHistory(kind, id, metric, rangeKey) {
   const r = RANGES[rangeKey] || RANGES['24h'];
   return api('health.history', { subject_kind: kind, subject_id: id, metric, minutes: r.minutes, points: r.points });

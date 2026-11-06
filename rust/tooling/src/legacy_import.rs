@@ -6,14 +6,14 @@ use std::io::{Read, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
+use devcoordinator2_control::database::{Connection, DatabaseConfig, OptionalExtension};
+use devcoordinator2_control::persistence::{Lane, Persistence};
 use regex::Regex;
-use rusqlite::{Connection, OpenFlags, OptionalExtension};
 use rustix::fs::{Mode, OFlags, open as unix_open};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 
-const SCHEMA: &str = include_str!("../../control/src/schema.sql");
 const OBSERVATION_SOURCE: &str = "legacy-current-import";
 const MAX_INPUT_BYTES: u64 = 32 * 1024 * 1024;
 const REPOSITORY_NAMESPACE: &[u8] = b"devcoordinator2.repository\0";
@@ -23,6 +23,7 @@ const OBSERVED_NAMESPACE: &[u8] = b"devcoordinator2.observed-deployment\0";
 pub struct ImportOptions {
     pub export: PathBuf,
     pub state_dir: PathBuf,
+    pub database_config: Option<PathBuf>,
     pub bugs_dir: PathBuf,
     pub live_containers: Option<PathBuf>,
     pub current_route_map: Option<PathBuf>,
@@ -79,7 +80,13 @@ pub struct ObservedRoute {
 
 pub fn run(options: &ImportOptions, now: &str) -> Result<Value, String> {
     let export = read_json(&options.export)?;
-    let mut connection = open_database(&options.state_dir.join("authority.sqlite3"))?;
+    let config = if let Some(path) = &options.database_config {
+        DatabaseConfig::from_file(path)
+    } else {
+        DatabaseConfig::from_env()
+    }
+    .map_err(sql_error)?;
+    let mut connection = open_database(&config, options.dry_run)?;
     let mut report = import_state(
         &export,
         &mut connection,
@@ -106,7 +113,7 @@ pub fn run(options: &ImportOptions, now: &str) -> Result<Value, String> {
                     .base_domain
                     .as_deref()
                     .ok_or_else(|| "--base-domain is required with --routes-path".to_owned())?;
-                let generation = publish_routes(&mut connection, routes_path, base_domain, now)?;
+                let generation = publish_routes(&config, routes_path, base_domain, now)?;
                 current_report["route_generation"] = json!(generation);
             }
         }
@@ -290,15 +297,15 @@ pub fn import_state(
                 let transaction = connection.transaction().map_err(sql_error)?;
                 transaction
                     .execute(
-                        "INSERT OR REPLACE INTO telegram_chats(chat_id,email,label,linked_at) VALUES(?1,?2,?3,?4)",
-                        rusqlite::params![chat_id, owner, authorization.get("username").and_then(Value::as_str), now],
+                        "INSERT INTO telegram_chats(chat_id,email,label,linked_at) VALUES($1,$2,$3,$4) ON CONFLICT(chat_id) DO UPDATE SET email=excluded.email,label=excluded.label,linked_at=excluded.linked_at",
+                        devcoordinator2_control::database::params![chat_id, owner, authorization.get("username").and_then(Value::as_str), now],
                     )
                     .map_err(sql_error)?;
                 for scope in &scopes {
                     transaction
                         .execute(
-                            "INSERT OR IGNORE INTO telegram_subscriptions(chat_id,scope,created_at) VALUES(?1,?2,?3)",
-                            rusqlite::params![chat_id, scope, now],
+                            "INSERT INTO telegram_subscriptions(chat_id,scope,created_at) VALUES($1,$2,$3) ON CONFLICT DO NOTHING",
+                            devcoordinator2_control::database::params![chat_id, scope, now],
                         )
                         .map_err(sql_error)?;
                 }
@@ -310,15 +317,15 @@ pub fn import_state(
         let transaction = connection.transaction().map_err(sql_error)?;
         for email in &owners {
             let exists = transaction
-                .query_row("SELECT 1 FROM users WHERE email=?1", [email], |_| Ok(()))
+                .query_row("SELECT 1 FROM users WHERE email=$1", [email], |_| Ok(()))
                 .optional()
                 .map_err(sql_error)?
                 .is_some();
             if !exists {
                 transaction
                     .execute(
-                        "INSERT INTO users(user_id,email,administrator,created_at,created_by) VALUES(?1,?2,1,?3,'legacy-import')",
-                        rusqlite::params![random_id('u', 8)?, email, now],
+                        "INSERT INTO users(user_id,email,administrator,created_at,created_by) VALUES($1,$2,1,$3,'legacy-import') ON CONFLICT(email) DO NOTHING",
+                        devcoordinator2_control::database::params![random_id('u', 8)?, email, now],
                     )
                     .map_err(sql_error)?;
             }
@@ -609,7 +616,7 @@ pub fn prune_unregistered_telegram_scopes(
         let transaction = connection.transaction().map_err(sql_error)?;
         for scope in &stale {
             transaction
-                .execute("DELETE FROM telegram_subscriptions WHERE scope=?1", [scope])
+                .execute("DELETE FROM telegram_subscriptions WHERE scope=$1", [scope])
                 .map_err(sql_error)?;
         }
         transaction.commit().map_err(sql_error)?;
@@ -635,23 +642,23 @@ fn replace_current(
     for deployment in &current.deployments {
         transaction
             .execute(
-                "INSERT INTO observed_deployments(observed_deployment_id,repository_id,name,native_project,state,health,source,evidence_json,observed_at,imported_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?9)",
-                rusqlite::params![deployment.deployment_id,deployment.repository_id,deployment.name,deployment.native_project,deployment.state,deployment.health,OBSERVATION_SOURCE,canonical_string(&deployment.evidence)?,observed_at],
+                "INSERT INTO observed_deployments(observed_deployment_id,repository_id,name,native_project,state,health,source,evidence_json,observed_at,imported_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$9)",
+                devcoordinator2_control::database::params![deployment.deployment_id,deployment.repository_id,deployment.name,deployment.native_project,deployment.state,deployment.health,OBSERVATION_SOURCE,canonical_string(&deployment.evidence)?,observed_at],
             )
             .map_err(sql_error)?;
     }
     for container in &current.containers {
         transaction
             .execute(
-                "INSERT INTO observed_containers(container_id,observed_deployment_id,repository_id,name,image,compose_service,state,status,health,observed_at) VALUES(?1,?2,?3,?4,?5,?6,'running',?7,?8,?9)",
-                rusqlite::params![container.container_id,container.deployment_id,container.repository_id,container.name,container.image,container.compose_service,container.status,container.health,observed_at],
+                "INSERT INTO observed_containers(container_id,observed_deployment_id,repository_id,name,image,compose_service,state,status,health,observed_at) VALUES($1,$2,$3,$4,$5,$6,'running',$7,$8,$9)",
+                devcoordinator2_control::database::params![container.container_id,container.deployment_id,container.repository_id,container.name,container.image,container.compose_service,container.status,container.health,observed_at],
             )
             .map_err(sql_error)?;
     }
     for route in &current.routes {
         if transaction
             .query_row(
-                "SELECT deployment_id FROM domain_routes WHERE domain=?1",
+                "SELECT deployment_id FROM domain_routes WHERE domain=$1",
                 [&route.domain],
                 |row| row.get::<_, String>(0),
             )
@@ -666,8 +673,8 @@ fn replace_current(
         }
         transaction
             .execute(
-                "INSERT INTO observed_routes(domain,observed_deployment_id,component,port,public,evidence_json,observed_at) VALUES(?1,?2,?3,?4,?5,?6,?7)",
-                rusqlite::params![route.domain,route.deployment_id,route.component,route.port,i64::from(route.public),canonical_string(&route.evidence)?,observed_at],
+                "INSERT INTO observed_routes(domain,observed_deployment_id,component,port,public,evidence_json,observed_at) VALUES($1,$2,$3,$4,$5,$6,$7)",
+                devcoordinator2_control::database::params![route.domain,route.deployment_id,route.component,route.port,i64::from(route.public),canonical_string(&route.evidence)?,observed_at],
             )
             .map_err(sql_error)?;
     }
@@ -713,7 +720,7 @@ fn prune_missing_install_fixtures(
     for root in candidates {
         let repository_id = transaction
             .query_row(
-                "SELECT repository_id FROM repositories WHERE root_path=?1",
+                "SELECT repository_id FROM repositories WHERE root_path=$1",
                 [root],
                 |row| row.get::<_, String>(0),
             )
@@ -727,13 +734,13 @@ fn prune_missing_install_fixtures(
         }
         transaction
             .execute(
-                "DELETE FROM worktrees WHERE repository_id=?1",
+                "DELETE FROM worktrees WHERE repository_id=$1",
                 [&repository_id],
             )
             .map_err(sql_error)?;
         transaction
             .execute(
-                "DELETE FROM repositories WHERE repository_id=?1",
+                "DELETE FROM repositories WHERE repository_id=$1",
                 [&repository_id],
             )
             .map_err(sql_error)?;
@@ -744,166 +751,36 @@ fn prune_missing_install_fixtures(
 }
 
 fn publish_routes(
-    connection: &mut Connection,
+    config: &DatabaseConfig,
     path: &Path,
     base_domain: &str,
     now: &str,
 ) -> Result<u64, String> {
-    let transaction = connection.transaction().map_err(sql_error)?;
-    let generation = transaction
-        .query_row(
-            "SELECT value FROM meta WHERE key='route_generation'",
-            [],
-            |row| row.get::<_, String>(0),
-        )
-        .ok()
-        .and_then(|value| value.parse::<u64>().ok())
-        .unwrap_or(0)
-        + 1;
-    transaction
-        .execute(
-            "INSERT OR REPLACE INTO meta(key,value) VALUES('route_generation',?1)",
-            [generation.to_string()],
-        )
-        .map_err(sql_error)?;
-    let mut routes = Vec::new();
-    {
-        let mut statement = transaction
-            .prepare("SELECT r.domain,r.deployment_id,r.component,r.port,r.generation,d.public FROM domain_routes r JOIN deployments d ON d.deployment_id=r.deployment_id WHERE r.port IS NOT NULL ORDER BY r.domain")
-            .map_err(sql_error)?;
-        for row in statement
-            .query_map([], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                    row.get::<_, u16>(3)?,
-                    row.get::<_, Option<u32>>(4)?,
-                    row.get::<_, i64>(5)? != 0,
-                ))
-            })
-            .map_err(sql_error)?
-        {
-            routes.push(route_value(row.map_err(sql_error)?, base_domain));
-        }
-    }
-    {
-        let mut statement = transaction
-            .prepare("SELECT domain,observed_deployment_id,component,port,NULL,public FROM observed_routes WHERE port IS NOT NULL ORDER BY domain")
-            .map_err(sql_error)?;
-        for row in statement
-            .query_map([], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                    row.get::<_, u16>(3)?,
-                    row.get::<_, Option<u32>>(4)?,
-                    row.get::<_, i64>(5)? != 0,
-                ))
-            })
-            .map_err(sql_error)?
-        {
-            routes.push(route_value(row.map_err(sql_error)?, base_domain));
-        }
-    }
-    routes.sort_by(|left, right| left["label"].as_str().cmp(&right["label"].as_str()));
-    let owners = query_strings(
-        &transaction,
-        "SELECT email FROM users WHERE administrator=1 ORDER BY email",
-    )?;
-    let mut grants = Vec::new();
-    let mut statement = transaction
-        .prepare("SELECT u.email,g.deployment_id,g.role FROM grants g JOIN users u ON u.user_id=g.user_id ORDER BY u.email,g.deployment_id")
-        .map_err(sql_error)?;
-    for row in statement
-        .query_map([], |row| {
-            Ok(json!({
-                "identity": row.get::<_, String>(0)?,
-                "deployment_id": row.get::<_, String>(1)?,
-                "role": row.get::<_, String>(2)?,
-            }))
-        })
-        .map_err(sql_error)?
-    {
-        grants.push(row.map_err(sql_error)?);
-    }
-    drop(statement);
-    let access = json!({"owners":owners,"grants":grants});
-    let payload = json!({
-        "generation":generation,
-        "published_at":now,
-        "domain":base_domain,
-        "routes":routes,
-        "access":access,
-    });
-    let document = json!({
-        "schema":1,
-        "payload_sha256": sha256_hex(&serde_json::to_vec(&payload).map_err(|error| error.to_string())?),
-        "generation":generation,
-        "published_at":now,
-        "domain":base_domain,
-        "routes":payload["routes"],
-        "access":payload["access"],
-    });
-    transaction.commit().map_err(sql_error)?;
-    atomic_json(path, &document, 0o644)?;
-    Ok(generation)
+    let database = devcoordinator2_control::database::Database::connect(config)
+        .map_err(|_| "native authority unavailable for route publication".to_owned())?;
+    devcoordinator2_control::routes::publish(&database, path, base_domain, None, now)
+        .map(|document| document.generation)
+        .map_err(|_| "native route publication failed; committed import remains queryable".into())
 }
 
-fn route_value(row: (String, String, String, u16, Option<u32>, bool), base_domain: &str) -> Value {
-    let (label, deployment_id, component, port, generation, public) = row;
-    json!({
-        "deployment_id":deployment_id,
-        "component":component,
-        "label":label,
-        "domain":if base_domain.is_empty() { label.clone() } else { format!("{label}.{base_domain}") },
-        "port":port,
-        "scheme":"http",
-        "auth":if public {"public"} else {"authenticated"},
-        "generation":generation,
-    })
-}
-
-fn open_database(path: &Path) -> Result<Connection, String> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|error| format!("cannot create state directory: {error}"))?;
-    }
-    let connection = Connection::open_with_flags(
-        path,
-        OpenFlags::SQLITE_OPEN_READ_WRITE
-            | OpenFlags::SQLITE_OPEN_CREATE
-            | OpenFlags::SQLITE_OPEN_NOFOLLOW
-            | OpenFlags::SQLITE_OPEN_PRIVATE_CACHE,
-    )
-    .map_err(sql_error)?;
-    connection
-        .execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA synchronous=FULL;")
+fn open_database(config: &DatabaseConfig, dry_run: bool) -> Result<Connection, String> {
+    let database = Persistence::connect(config).map_err(sql_error)?;
+    let connection = database
+        .acquire(if dry_run { Lane::Read } else { Lane::Write })
         .map_err(sql_error)?;
-    let version = connection
+    let version: String = connection
         .query_row(
             "SELECT value FROM meta WHERE key='schema_version'",
             [],
-            |row| row.get::<_, String>(0),
-        )
-        .ok();
-    if version
-        .as_deref()
-        .is_some_and(|version| !matches!(version, "15" | "16"))
-    {
-        return Err(format!(
-            "legacy import target must use database schema 15 or 16, found {}",
-            version.unwrap_or_default()
-        ));
-    }
-    connection.execute_batch(SCHEMA).map_err(sql_error)?;
-    connection
-        .execute(
-            "INSERT OR REPLACE INTO meta(key,value) VALUES('schema_version','16')",
-            [],
+            |r| r.get(0),
         )
         .map_err(sql_error)?;
+    if version != devcoordinator2_control::persistence::schema::DATABASE_SCHEMA_VERSION.to_string()
+    {
+        return Err(
+            "legacy import requires the initialized native PostgreSQL authority schema".into(),
+        );
+    }
     Ok(connection)
 }
 
@@ -935,7 +812,7 @@ fn query_strings(connection: &Connection, sql: &str) -> Result<Vec<String>, Stri
 
 fn repository_has_state(connection: &Connection, repository_id: &str) -> Result<bool, String> {
     for table in ["deployments", "observed_deployments"] {
-        let sql = format!("SELECT 1 FROM {table} WHERE repository_id=?1");
+        let sql = format!("SELECT 1 FROM {table} WHERE repository_id=$1");
         if connection
             .query_row(&sql, [repository_id], |_| Ok(()))
             .optional()
@@ -993,10 +870,6 @@ fn first_hex(bytes: &[u8], maximum: usize) -> String {
         write!(result, "{byte:02x}").expect("string write");
     }
     result
-}
-
-fn sha256_hex(bytes: &[u8]) -> String {
-    first_hex(&Sha256::digest(bytes), 32)
 }
 
 fn canonical_string(value: &Value) -> Result<String, String> {
@@ -1090,7 +963,7 @@ fn clip_chars(value: &str, maximum: usize) -> String {
     value.chars().take(maximum).collect()
 }
 
-fn sql_error(error: rusqlite::Error) -> String {
+fn sql_error(error: devcoordinator2_control::database::Error) -> String {
     format!("legacy import database operation failed: {error}")
 }
 
@@ -1249,23 +1122,31 @@ mod tests {
         })
     }
 
-    fn registered_database(path: &Path, repository: &Path) -> Connection {
-        let connection = open_database(path).unwrap();
+    fn registered_database(
+        path: &Path,
+        repository: &Path,
+    ) -> (devcoordinator2_control::database::Database, Connection) {
+        let database = devcoordinator2_control::database::Database::open(path).unwrap();
+        let connection = database.persistence().acquire(Lane::Write).unwrap();
         let repository_id = repository_id(repository).unwrap();
         let worktree_id = format!("w{}", &repository_id[1..]);
         connection
             .execute(
-                "INSERT INTO repositories(repository_id,root_path,display_name,registered_at,registered_by_uid,last_seen_at) VALUES(?1,?2,'repo','t',1000,'t')",
-                rusqlite::params![repository_id,repository.display().to_string()],
+                "INSERT INTO repositories(repository_id,root_path,display_name,registered_at,registered_by_uid,last_seen_at) VALUES($1,$2,'repo','t',1000,'t')",
+                devcoordinator2_control::database::params![repository_id,repository.display().to_string()],
             )
             .unwrap();
         connection
             .execute(
-                "INSERT INTO worktrees VALUES(?1,?2,?3,'t','t')",
-                rusqlite::params![worktree_id, repository_id, repository.display().to_string()],
+                "INSERT INTO worktrees VALUES($1,$2,$3,'t','t')",
+                devcoordinator2_control::database::params![
+                    worktree_id,
+                    repository_id,
+                    repository.display().to_string()
+                ],
             )
             .unwrap();
-        connection
+        (database, connection)
     }
 
     #[test]
@@ -1273,8 +1154,8 @@ mod tests {
         let temporary = tempfile::tempdir().unwrap();
         let repository = temporary.path().join("repo");
         std::fs::create_dir(&repository).unwrap();
-        let connection =
-            registered_database(&temporary.path().join("authority.sqlite3"), &repository);
+        let (_fixture, connection) =
+            registered_database(&temporary.path().join("postgres-fixture"), &repository);
         let export = fixture_export(&repository);
         let live = json!({"ok":true,"result":{"containers":[
             {"id":"a".repeat(64),"name":"app-1","image":"app:current","state":"running","status":"Up 1 hour (healthy)"},
@@ -1304,8 +1185,16 @@ mod tests {
         let repository = temporary.path().join("repo");
         std::fs::create_dir(&repository).unwrap();
         let state = temporary.path().join("state");
-        let database_path = state.join("authority.sqlite3");
-        let connection = registered_database(&database_path, &repository);
+        let database_path = state.join("postgres-fixture");
+        let (database, connection) = registered_database(&database_path, &repository);
+        let config = database.persistence().config().clone();
+        let config_path = temporary.path().join("postgres-private.json");
+        atomic_json(
+            &config_path,
+            &json!({"schema":1,"connection":config.url}),
+            0o600,
+        )
+        .unwrap();
         connection
             .execute(
                 "INSERT INTO repositories(repository_id,root_path,display_name,registered_at,registered_by_uid,last_seen_at) VALUES('rfixture','/tmp/dc2-installed-missing-rust-fixture','fixture','t',1000,'t')",
@@ -1344,6 +1233,7 @@ mod tests {
         let mut options = ImportOptions {
             export: export_path,
             state_dir: state,
+            database_config: Some(config_path),
             bugs_dir: temporary.path().join("bugs"),
             live_containers: Some(live_path),
             current_route_map: Some(route_path),
@@ -1358,7 +1248,7 @@ mod tests {
             dry["would_prune_install_fixtures"],
             json!(["/tmp/dc2-installed-missing-rust-fixture"])
         );
-        let connection = Connection::open(&database_path).unwrap();
+        let connection = open_database(&config, true).unwrap();
         assert_eq!(
             connection
                 .query_row("SELECT COUNT(*) FROM users", [], |row| row.get::<_, u32>(0))
@@ -1376,7 +1266,7 @@ mod tests {
             applied["pruned_install_fixtures"],
             json!(["/tmp/dc2-installed-missing-rust-fixture"])
         );
-        let connection = Connection::open(&database_path).unwrap();
+        let connection = open_database(&config, true).unwrap();
         assert_eq!(
             connection
                 .query_row("SELECT COUNT(*) FROM observed_deployments", [], |row| {

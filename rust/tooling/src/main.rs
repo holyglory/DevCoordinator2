@@ -442,6 +442,8 @@ enum InstallCommand {
             default_value = "/etc/devcoordinator2/candidate-install-manifest.json"
         )]
         candidate_manifest: PathBuf,
+        #[arg(long, default_value = "/etc/devcoordinator2/candidate-acceptance.json")]
+        candidate_acceptance: PathBuf,
         #[arg(long)]
         transaction_dir: Option<PathBuf>,
         #[arg(long)]
@@ -452,6 +454,17 @@ enum InstallCommand {
     Recover {
         #[arg(long)]
         transaction_dir: Option<PathBuf>,
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Retire SQLite only after the activated v3 service passes live acceptance.
+    Finalize {
+        #[arg(long)]
+        transaction_dir: PathBuf,
+        #[arg(long)]
+        live_acceptance: PathBuf,
+        #[arg(long, default_value = "/etc/devcoordinator2/install-manifest.json")]
+        installed_manifest: PathBuf,
         #[arg(long)]
         yes: bool,
     },
@@ -485,6 +498,9 @@ struct LegacyImportArgs {
     export_file: PathBuf,
     #[arg(long)]
     state_dir: PathBuf,
+    /// Private PostgreSQL connection file; defaults to DATABASE_CONFIG env.
+    #[arg(long)]
+    database_config: Option<PathBuf>,
     #[arg(long)]
     bugs_dir: PathBuf,
     #[arg(long)]
@@ -682,8 +698,10 @@ enum PolicyCommand {
 #[derive(Debug, Subcommand)]
 enum ContractCommand {
     Export {
-        #[arg(long, default_value = "contracts/devcoordinator2-v2.schema.json")]
+        #[arg(long, default_value = "contracts/devcoordinator2-v3.schema.json")]
         output: PathBuf,
+        #[arg(long, default_value = "edge/lib/operations.json")]
+        edge_output: PathBuf,
         #[arg(long)]
         check: bool,
     },
@@ -780,8 +798,15 @@ fn main() -> ExitCode {
         Command::Audit { command } => run_audit(command),
         Command::FormalUi { command } => run_formal_ui(command),
         Command::Contract {
-            command: ContractCommand::Export { output, check },
-        } => match devcoordinator2_tooling::export_contract(&output, check) {
+            command:
+                ContractCommand::Export {
+                    output,
+                    edge_output,
+                    check,
+                },
+        } => match devcoordinator2_tooling::export_contract(&output, check)
+            .and_then(|()| devcoordinator2_tooling::export_edge_operations(&edge_output, check))
+        {
             Ok(()) => ExitCode::SUCCESS,
             Err(error) => {
                 eprintln!("{error}");
@@ -2215,6 +2240,7 @@ fn run_install(command: InstallCommand) -> ExitCode {
         }
         InstallCommand::Activate {
             candidate_manifest,
+            candidate_acceptance,
             transaction_dir,
             canary,
             yes,
@@ -2230,6 +2256,7 @@ fn run_install(command: InstallCommand) -> ExitCode {
             }
             let config = devcoordinator2_tooling::cutover::HostCutoverConfig {
                 candidate_manifest,
+                candidate_acceptance,
                 transaction_dir: transaction_dir.unwrap_or_else(|| {
                     PathBuf::from(format!(
                         "/var/lib/devcoordinator2/cutover/activation-{}-{}",
@@ -2275,6 +2302,35 @@ fn run_install(command: InstallCommand) -> ExitCode {
                     }))
                 },
             )
+        }
+        InstallCommand::Finalize {
+            transaction_dir,
+            live_acceptance,
+            installed_manifest,
+            yes,
+        } => {
+            if !yes {
+                return tooling_error(
+                    "install finalize requires --yes and verified live acceptance",
+                    2,
+                );
+            }
+            if rustix::process::geteuid().as_raw() != 0 {
+                return tooling_error("install finalize must run as root", 2);
+            }
+            devcoordinator2_tooling::cutover::finalize_host(
+                &devcoordinator2_tooling::cutover::FinalizationConfig {
+                    transaction_dir,
+                    live_acceptance,
+                    installed_manifest,
+                },
+                &HostRunner,
+                (0, 0),
+            )
+            .and_then(|receipt| {
+                serde_json::to_value(receipt)
+                    .map_err(|_| "cannot encode finalization receipt".into())
+            })
         }
         InstallCommand::Recover {
             transaction_dir,
@@ -2431,6 +2487,7 @@ fn run_legacy(command: LegacyCommand) -> ExitCode {
             let options = devcoordinator2_tooling::legacy_import::ImportOptions {
                 export: args.export_file,
                 state_dir: args.state_dir,
+                database_config: args.database_config,
                 bugs_dir: args.bugs_dir,
                 live_containers: args.live_containers,
                 current_route_map: args.current_route_map,
@@ -2461,7 +2518,17 @@ fn run_planning(command: PlanningCommand) -> ExitCode {
         task_ids: task_id,
         include_identities: identities,
     };
-    match devcoordinator2_tooling::planning_backup::inspect(&request) {
+    let inspection = match devcoordinator2_control::config::Config::load()
+        .and_then(|config| config.postgres_config())
+    {
+        Ok(config) => {
+            devcoordinator2_tooling::planning_backup::inspect_configured(&config, &request)
+        }
+        // Historical SQLite snapshots remain inspectable without a running
+        // authority cluster. Native archives require the configured cluster.
+        Err(_) => devcoordinator2_tooling::planning_backup::inspect(&request),
+    };
+    match inspection {
         Ok(result) => emit_report(json!(result), true, 0),
         Err(error) => tooling_error(&error, 2),
     }

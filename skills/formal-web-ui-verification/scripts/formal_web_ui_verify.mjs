@@ -2624,8 +2624,8 @@ async function launchBrowser(chromium, executablePath) {
 function coordinatorTargets(config) {
   if (!config.fromCoordinator) return [];
   const command = config.coordinatorCommand || "devcoordinator2";
-  const args = ["deployment", "list"];
-  if (config.coordinatorProject) args.push(config.coordinatorProject);
+  const params = config.coordinatorProject ? {path: config.coordinatorProject} : {};
+  const args = ["call", "deployment.list", "--params", JSON.stringify(params)];
   const result = spawnSync(command, args, {
     cwd: process.cwd(),
     encoding: "utf8",
@@ -2635,7 +2635,7 @@ function coordinatorTargets(config) {
     throw new Error(`Coordinator deployment discovery failed:\n${result.stderr || result.stdout}`);
   }
   const response = JSON.parse(result.stdout);
-  if (!response || response.protocol !== 2 || response.ok !== true || !response.data) {
+  if (!response || response.protocol !== 3 || response.ok !== true || !response.data) {
     throw new Error("Coordinator deployment discovery returned an invalid response");
   }
   const deployments = Array.isArray(response.data.deployments)

@@ -7,7 +7,7 @@
         "routes": [
           {
             "dispatch": "protocol",
-            "route": "ping"
+            "route": "call ping"
           }
         ]
       },
@@ -68,6 +68,11 @@
         "idempotent": true,
         "role": "anonymous",
         "scope": "public"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
@@ -76,7 +81,7 @@
         "routes": [
           {
             "dispatch": "protocol",
-            "route": "storage inventory"
+            "route": "call storage.inventory"
           }
         ]
       },
@@ -570,6 +575,11 @@
         "idempotent": true,
         "role": "administrator",
         "scope": "server"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
@@ -578,7 +588,7 @@
         "routes": [
           {
             "dispatch": "protocol",
-            "route": "agent settings-get"
+            "route": "call agent.settings.get"
           }
         ]
       },
@@ -904,6 +914,11 @@
         "idempotent": true,
         "role": "administrator",
         "scope": "server"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
@@ -912,7 +927,7 @@
         "routes": [
           {
             "dispatch": "protocol",
-            "route": "agent settings-save"
+            "route": "call agent.settings.save"
           }
         ]
       },
@@ -1342,6 +1357,11 @@
         "idempotent": true,
         "role": "administrator",
         "scope": "server"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
@@ -1350,7 +1370,7 @@
         "routes": [
           {
             "dispatch": "protocol",
-            "route": "agent roles-save"
+            "route": "call agent.roles.save"
           }
         ]
       },
@@ -1532,6 +1552,11 @@
         "idempotent": true,
         "role": "administrator",
         "scope": "server"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
@@ -1540,7 +1565,7 @@
         "routes": [
           {
             "dispatch": "protocol",
-            "route": "agent capabilities-report"
+            "route": "call agent.capabilities.report"
           }
         ]
       },
@@ -1709,59 +1734,6 @@
       "name": "agent.capabilities.report",
       "outputSchema": {
         "$defs": {
-          "Capabilities": {
-            "additionalProperties": false,
-            "properties": {
-              "efforts": {
-                "items": {
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              "expires_at_ms": {
-                "format": "uint64",
-                "minimum": 0,
-                "type": [
-                  "integer",
-                  "null"
-                ]
-              },
-              "fresh": {
-                "type": "boolean"
-              },
-              "harness": {
-                "$ref": "#/$defs/ClientKind"
-              },
-              "models": {
-                "items": {
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              "pairs": {
-                "items": {
-                  "$ref": "#/$defs/Pair"
-                },
-                "type": "array"
-              },
-              "reported_at_ms": {
-                "format": "uint64",
-                "minimum": 0,
-                "type": [
-                  "integer",
-                  "null"
-                ]
-              }
-            },
-            "required": [
-              "harness",
-              "models",
-              "efforts",
-              "pairs",
-              "fresh"
-            ],
-            "type": "object"
-          },
           "ClientKind": {
             "enum": [
               "codex",
@@ -1794,14 +1766,55 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "additionalProperties": false,
         "properties": {
-          "capabilities": {
-            "$ref": "#/$defs/Capabilities"
+          "efforts": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "expires_at_ms": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "fresh": {
+            "type": "boolean"
+          },
+          "harness": {
+            "$ref": "#/$defs/ClientKind"
+          },
+          "models": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "pairs": {
+            "items": {
+              "$ref": "#/$defs/Pair"
+            },
+            "type": "array"
+          },
+          "reported_at_ms": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
           }
         },
         "required": [
-          "capabilities"
+          "harness",
+          "models",
+          "efforts",
+          "pairs",
+          "fresh"
         ],
-        "title": "AgentCapabilitiesReported",
+        "title": "Capabilities",
         "type": "object"
       },
       "policy": {
@@ -1809,6 +1822,11 @@
         "idempotent": false,
         "role": "self",
         "scope": "self"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
@@ -1817,7 +1835,7 @@
         "routes": [
           {
             "dispatch": "protocol",
-            "route": "agent instruction-current"
+            "route": "call agent.instruction.current"
           }
         ]
       },
@@ -1981,6 +1999,11 @@
         "idempotent": true,
         "role": "administrator",
         "scope": "server"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
@@ -1989,7 +2012,7 @@
         "routes": [
           {
             "dispatch": "protocol",
-            "route": "storage show"
+            "route": "call storage.artifact.get"
           }
         ]
       },
@@ -2230,6 +2253,11 @@
         "idempotent": true,
         "role": "administrator",
         "scope": "server"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
@@ -2238,7 +2266,7 @@
         "routes": [
           {
             "dispatch": "protocol",
-            "route": "storage scan"
+            "route": "call storage.scan"
           }
         ]
       },
@@ -2469,6 +2497,11 @@
         "idempotent": true,
         "role": "administrator",
         "scope": "server"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
@@ -2477,7 +2510,7 @@
         "routes": [
           {
             "dispatch": "protocol",
-            "route": "storage register"
+            "route": "call storage.register"
           }
         ]
       },
@@ -2788,6 +2821,11 @@
         "idempotent": true,
         "role": "administrator",
         "scope": "server"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
@@ -2796,7 +2834,7 @@
         "routes": [
           {
             "dispatch": "protocol",
-            "route": "storage legacy-register"
+            "route": "call storage.legacy.register"
           }
         ]
       },
@@ -3035,6 +3073,11 @@
         "idempotent": true,
         "role": "administrator",
         "scope": "server"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
@@ -3043,7 +3086,7 @@
         "routes": [
           {
             "dispatch": "protocol",
-            "route": "storage protect"
+            "route": "call storage.protection.set"
           }
         ]
       },
@@ -3304,6 +3347,11 @@
         "idempotent": true,
         "role": "administrator",
         "scope": "server"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
@@ -3312,7 +3360,7 @@
         "routes": [
           {
             "dispatch": "protocol",
-            "route": "storage policy show"
+            "route": "call storage.policy.get"
           }
         ]
       },
@@ -3406,6 +3454,11 @@
         "idempotent": true,
         "role": "administrator",
         "scope": "server"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
@@ -3414,7 +3467,7 @@
         "routes": [
           {
             "dispatch": "protocol",
-            "route": "storage policy set"
+            "route": "call storage.policy.set"
           }
         ]
       },
@@ -3568,6 +3621,11 @@
         "idempotent": true,
         "role": "administrator",
         "scope": "server"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
@@ -3576,7 +3634,7 @@
         "routes": [
           {
             "dispatch": "protocol",
-            "route": "storage roots list"
+            "route": "call storage.roots.list"
           }
         ]
       },
@@ -3675,6 +3733,11 @@
         "idempotent": true,
         "role": "administrator",
         "scope": "server"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
@@ -3683,7 +3746,7 @@
         "routes": [
           {
             "dispatch": "protocol",
-            "route": "storage roots set"
+            "route": "call storage.roots.set"
           }
         ]
       },
@@ -3875,6 +3938,11 @@
         "idempotent": true,
         "role": "administrator",
         "scope": "server"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
@@ -3883,7 +3951,7 @@
         "routes": [
           {
             "dispatch": "protocol",
-            "route": "storage cleanup plan"
+            "route": "call storage.cleanup.plan"
           }
         ]
       },
@@ -4079,6 +4147,11 @@
         "idempotent": false,
         "role": "administrator",
         "scope": "server"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
@@ -4087,7 +4160,7 @@
         "routes": [
           {
             "dispatch": "protocol",
-            "route": "storage cleanup start"
+            "route": "call storage.cleanup.start"
           }
         ]
       },
@@ -4314,6 +4387,11 @@
         "idempotent": true,
         "role": "administrator",
         "scope": "server"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
@@ -4322,7 +4400,7 @@
         "routes": [
           {
             "dispatch": "protocol",
-            "route": "storage job status"
+            "route": "call storage.job.status"
           }
         ]
       },
@@ -4541,6 +4619,11 @@
         "idempotent": true,
         "role": "administrator",
         "scope": "server"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
@@ -4549,7 +4632,7 @@
         "routes": [
           {
             "dispatch": "protocol",
-            "route": "storage job cancel"
+            "route": "call storage.job.cancel"
           }
         ]
       },
@@ -4768,6 +4851,11 @@
         "idempotent": true,
         "role": "administrator",
         "scope": "server"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
@@ -4776,7 +4864,7 @@
         "routes": [
           {
             "dispatch": "protocol",
-            "route": "storage history"
+            "route": "call storage.history"
           }
         ]
       },
@@ -5052,6 +5140,11 @@
         "idempotent": true,
         "role": "administrator",
         "scope": "server"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
@@ -5060,7 +5153,7 @@
         "routes": [
           {
             "dispatch": "protocol",
-            "route": "storage lease set"
+            "route": "call storage.lease.set"
           }
         ]
       },
@@ -5163,6 +5256,11 @@
         "idempotent": true,
         "role": "administrator",
         "scope": "server"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
@@ -5171,7 +5269,7 @@
         "routes": [
           {
             "dispatch": "protocol",
-            "route": "storage lease release"
+            "route": "call storage.lease.release"
           }
         ]
       },
@@ -5244,12 +5342,22 @@
         "idempotent": true,
         "role": "administrator",
         "scope": "server"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
       "cli": {
-        "excludedReason": "Use Console or MCP ticket_request.",
-        "routes": []
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "call ticket.request"
+          }
+        ]
       },
       "description": "Public feature requests: list/get/comment/create/edit/remove/close, stage multiple attachments on any message, and read file chunks. Target defaults to configured upstream; local selects this server. Upload chunks are base64, at most 32 KiB decoded. Retain request_key on retry. The remove action is destructive.",
       "inputSchema": {
@@ -6348,12 +6456,22 @@
         "idempotent": false,
         "role": "self",
         "scope": "self"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
       "cli": {
-        "excludedReason": "Use Console or MCP ticket_settings.",
-        "routes": []
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "call ticket.settings"
+          }
+        ]
       },
       "description": "Read the feature request upstream, default vr.ae, and prior ticket destinations.",
       "inputSchema": {
@@ -6415,12 +6533,22 @@
         "idempotent": true,
         "role": "self",
         "scope": "self"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
       "cli": {
-        "excludedReason": "Use Console or MCP ticket_configure.",
-        "routes": []
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "call ticket.configure"
+          }
+        ]
       },
       "description": "Set the feature request upstream without moving existing tickets; local uses this server.",
       "inputSchema": {
@@ -6510,12 +6638,22 @@
         "idempotent": true,
         "role": "administrator",
         "scope": "server"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
       "cli": {
-        "excludedReason": "Used only by the dedicated edge ticket endpoint.",
-        "routes": []
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "call ticket.remote"
+          }
+        ]
       },
       "description": "Dedicated federation adapter. Public reads and credential-bound originating-server writes; no inherited administrator authority.",
       "inputSchema": {
@@ -7254,12 +7392,22 @@
         "idempotent": false,
         "role": "anonymous",
         "scope": "public"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
       "cli": {
-        "excludedReason": "The signed-in identity is served directly by the Console edge.",
-        "routes": []
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "call user.whoami"
+          }
+        ]
       },
       "description": "Show the current public identity and grants.",
       "inputSchema": {
@@ -7324,12 +7472,22 @@
         "idempotent": true,
         "role": "anonymous",
         "scope": "public"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
       "cli": {
-        "excludedReason": "Invitation acceptance is bound to the authenticated Console edge.",
-        "routes": []
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "call user.accept_invitation"
+          }
+        ]
       },
       "description": "Accept an invitation for the edge-authenticated identity.",
       "inputSchema": {
@@ -7395,12 +7553,22 @@
         "idempotent": false,
         "role": "self",
         "scope": "self"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
       "cli": {
-        "excludedReason": "User administration is a Console-only owner workflow.",
-        "routes": []
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "call user.list"
+          }
+        ]
       },
       "description": "List public Console users and invitations.",
       "inputSchema": {
@@ -7594,12 +7762,22 @@
         "idempotent": true,
         "role": "administrator",
         "scope": "server"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
       "cli": {
-        "excludedReason": "User administration is a Console-only owner workflow.",
-        "routes": []
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "call user.invite"
+          }
+        ]
       },
       "description": "Invite a public Console user.",
       "inputSchema": {
@@ -7686,12 +7864,22 @@
         "idempotent": false,
         "role": "administrator",
         "scope": "server"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
       "cli": {
-        "excludedReason": "User administration is a Console-only owner workflow.",
-        "routes": []
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "call user.remove"
+          }
+        ]
       },
       "description": "Remove one public Console user.",
       "inputSchema": {
@@ -7739,12 +7927,22 @@
         "idempotent": true,
         "role": "administrator",
         "scope": "server"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
       "cli": {
-        "excludedReason": "Access grants are a Console-only owner workflow.",
-        "routes": []
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "call grant.set"
+          }
+        ]
       },
       "description": "Set one deployment access role.",
       "inputSchema": {
@@ -7823,12 +8021,22 @@
         "idempotent": true,
         "role": "administrator",
         "scope": "deployment"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
       "cli": {
-        "excludedReason": "Access grants are a Console-only owner workflow.",
-        "routes": []
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "call grant.remove"
+          }
+        ]
       },
       "description": "Remove one deployment access grant.",
       "inputSchema": {
@@ -7881,6 +8089,11 @@
         "idempotent": true,
         "role": "administrator",
         "scope": "deployment"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
@@ -7889,7 +8102,7 @@
         "routes": [
           {
             "dispatch": "protocol",
-            "route": "repository register"
+            "route": "call repository.register"
           }
         ]
       },
@@ -7951,6 +8164,11 @@
         "idempotent": true,
         "role": "administrator",
         "scope": "server"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
@@ -7959,7 +8177,7 @@
         "routes": [
           {
             "dispatch": "protocol",
-            "route": "repository list"
+            "route": "call repository.list"
           }
         ]
       },
@@ -7968,9 +8186,37 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "additionalProperties": false,
         "properties": {
+          "after_repository_id": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "after_worktree_id": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "include_archived": {
             "default": false,
             "type": "boolean"
+          },
+          "limit": {
+            "default": 100,
+            "format": "uint16",
+            "maximum": 200,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "repository_id": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "title": "RepositoryList",
@@ -7983,9 +8229,37 @@
             "$schema": "https://json-schema.org/draft/2020-12/schema",
             "additionalProperties": false,
             "properties": {
+              "after_repository_id": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "after_worktree_id": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
               "include_archived": {
                 "default": false,
                 "type": "boolean"
+              },
+              "limit": {
+                "default": 100,
+                "format": "uint16",
+                "maximum": 200,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "repository_id": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
               }
             },
             "title": "RepositoryList",
@@ -8028,6 +8302,12 @@
                 "type": "string"
               },
               "merged_into_repository_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "next_worktree_id": {
                 "type": [
                   "string",
                   "null"
@@ -8079,6 +8359,12 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "additionalProperties": false,
         "properties": {
+          "next_repository_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "repositories": {
             "items": {
               "$ref": "#/$defs/RepositoryListRow"
@@ -8097,6 +8383,11 @@
         "idempotent": true,
         "role": "administrator",
         "scope": "server"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
@@ -8105,7 +8396,7 @@
         "routes": [
           {
             "dispatch": "protocol",
-            "route": "repository status"
+            "route": "call repository.status"
           }
         ]
       },
@@ -8256,12 +8547,22 @@
         "idempotent": true,
         "role": "administrator",
         "scope": "repository"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
       "cli": {
-        "excludedReason": "Repository appearance is a Console-only administrator workflow.",
-        "routes": []
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "call repository.presentation.update"
+          }
+        ]
       },
       "description": "Choose a repository's Console name and icon without changing its identity.",
       "inputSchema": {
@@ -8328,6 +8629,11 @@
         "idempotent": true,
         "role": "administrator",
         "scope": "repository"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
@@ -8336,7 +8642,7 @@
         "routes": [
           {
             "dispatch": "protocol",
-            "route": "repository archive"
+            "route": "call repository.archive"
           }
         ]
       },
@@ -8468,6 +8774,11 @@
         "idempotent": true,
         "role": "administrator",
         "scope": "server"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
@@ -8476,7 +8787,7 @@
         "routes": [
           {
             "dispatch": "protocol",
-            "route": "repository unarchive"
+            "route": "call repository.unarchive"
           }
         ]
       },
@@ -8598,6 +8909,11 @@
         "idempotent": true,
         "role": "administrator",
         "scope": "server"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
@@ -8606,7 +8922,7 @@
         "routes": [
           {
             "dispatch": "protocol",
-            "route": "repository retire"
+            "route": "call repository.retire"
           }
         ]
       },
@@ -8715,6 +9031,11 @@
         "idempotent": true,
         "role": "administrator",
         "scope": "server"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
@@ -8723,7 +9044,7 @@
         "routes": [
           {
             "dispatch": "protocol",
-            "route": "server register"
+            "route": "call server.register"
           }
         ]
       },
@@ -8964,6 +9285,11 @@
         "idempotent": true,
         "role": "administrator",
         "scope": "server"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
@@ -8972,7 +9298,7 @@
         "routes": [
           {
             "dispatch": "protocol",
-            "route": "server list"
+            "route": "call server.list"
           }
         ]
       },
@@ -9170,6 +9496,11 @@
         "idempotent": true,
         "role": "administrator",
         "scope": "server"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
@@ -9178,7 +9509,7 @@
         "routes": [
           {
             "dispatch": "protocol",
-            "route": "server stop"
+            "route": "call server.stop"
           }
         ]
       },
@@ -9367,6 +9698,11 @@
         "idempotent": true,
         "role": "administrator",
         "scope": "server"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
@@ -9375,7 +9711,7 @@
         "routes": [
           {
             "dispatch": "protocol",
-            "route": "test start"
+            "route": "call test.start"
           }
         ]
       },
@@ -9646,6 +9982,11 @@
         "idempotent": false,
         "role": "administrator",
         "scope": "repository"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
@@ -9654,7 +9995,7 @@
         "routes": [
           {
             "dispatch": "protocol",
-            "route": "test container create"
+            "route": "call test.container.create"
           }
         ]
       },
@@ -10032,6 +10373,11 @@
         "idempotent": false,
         "role": "administrator",
         "scope": "repository"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
@@ -10040,7 +10386,7 @@
         "routes": [
           {
             "dispatch": "protocol",
-            "route": "test container start"
+            "route": "call test.container.start"
           }
         ]
       },
@@ -10404,6 +10750,11 @@
         "idempotent": false,
         "role": "administrator",
         "scope": "repository"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
@@ -10412,7 +10763,7 @@
         "routes": [
           {
             "dispatch": "protocol",
-            "route": "test container inspect"
+            "route": "call test.container.inspect"
           }
         ]
       },
@@ -10776,6 +11127,11 @@
         "idempotent": true,
         "role": "administrator",
         "scope": "repository"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
@@ -10784,7 +11140,7 @@
         "routes": [
           {
             "dispatch": "protocol",
-            "route": "test container remove"
+            "route": "call test.container.remove"
           }
         ]
       },
@@ -11148,6 +11504,11 @@
         "idempotent": true,
         "role": "administrator",
         "scope": "repository"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
@@ -11156,7 +11517,7 @@
         "routes": [
           {
             "dispatch": "protocol",
-            "route": "test container retry"
+            "route": "call test.container.retry"
           }
         ]
       },
@@ -11520,6 +11881,11 @@
         "idempotent": true,
         "role": "administrator",
         "scope": "repository"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
@@ -11528,7 +11894,7 @@
         "routes": [
           {
             "dispatch": "protocol",
-            "route": "test admission-status"
+            "route": "call test.admission.status"
           }
         ]
       },
@@ -11605,6 +11971,11 @@
         "idempotent": true,
         "role": "administrator",
         "scope": "server"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
@@ -11613,7 +11984,7 @@
         "routes": [
           {
             "dispatch": "protocol",
-            "route": "test admission-wait"
+            "route": "call test.admission.wait"
           }
         ]
       },
@@ -11706,6 +12077,11 @@
         "idempotent": true,
         "role": "administrator",
         "scope": "server"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": true,
+        "responseTimeoutSeconds": null
       }
     },
     {
@@ -11714,7 +12090,7 @@
         "routes": [
           {
             "dispatch": "protocol",
-            "route": "test wait"
+            "route": "call test.wait"
           }
         ]
       },
@@ -13278,6 +13654,11 @@
         "idempotent": true,
         "role": "administrator",
         "scope": "repository"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": true,
+        "responseTimeoutSeconds": null
       }
     },
     {
@@ -13286,7 +13667,7 @@
         "routes": [
           {
             "dispatch": "protocol",
-            "route": "test retry"
+            "route": "call test.retry"
           }
         ]
       },
@@ -13477,6 +13858,11 @@
         "idempotent": false,
         "role": "administrator",
         "scope": "repository"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
@@ -13485,7 +13871,7 @@
         "routes": [
           {
             "dispatch": "protocol",
-            "route": "test status"
+            "route": "call test.status"
           }
         ]
       },
@@ -15015,6 +15401,11 @@
         "idempotent": true,
         "role": "administrator",
         "scope": "repository"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
@@ -15023,7 +15414,7 @@
         "routes": [
           {
             "dispatch": "protocol",
-            "route": "test log catalog"
+            "route": "call test.log.catalog"
           }
         ]
       },
@@ -15399,6 +15790,11 @@
         "idempotent": true,
         "role": "administrator",
         "scope": "repository"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
@@ -15407,7 +15803,7 @@
         "routes": [
           {
             "dispatch": "protocol",
-            "route": "test log tail"
+            "route": "call test.log.tail"
           }
         ]
       },
@@ -15702,6 +16098,11 @@
         "idempotent": true,
         "role": "administrator",
         "scope": "repository"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
@@ -15710,7 +16111,7 @@
         "routes": [
           {
             "dispatch": "protocol",
-            "route": "test log search"
+            "route": "call test.log.search"
           }
         ]
       },
@@ -16031,6 +16432,11 @@
         "idempotent": true,
         "role": "administrator",
         "scope": "repository"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
@@ -16039,7 +16445,7 @@
         "routes": [
           {
             "dispatch": "protocol",
-            "route": "test log range"
+            "route": "call test.log.range"
           }
         ]
       },
@@ -16392,6 +16798,11 @@
         "idempotent": true,
         "role": "administrator",
         "scope": "repository"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
@@ -16400,7 +16811,7 @@
         "routes": [
           {
             "dispatch": "protocol",
-            "route": "test log failure-context"
+            "route": "call test.log.failure_context"
           }
         ]
       },
@@ -17126,6 +17537,11 @@
         "idempotent": true,
         "role": "administrator",
         "scope": "repository"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
@@ -17134,7 +17550,7 @@
         "routes": [
           {
             "dispatch": "protocol",
-            "route": "test log retention show"
+            "route": "call test.log.retention.get"
           }
         ]
       },
@@ -17240,6 +17656,11 @@
         "idempotent": true,
         "role": "administrator",
         "scope": "server"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
@@ -17248,7 +17669,7 @@
         "routes": [
           {
             "dispatch": "protocol",
-            "route": "test log retention set"
+            "route": "call test.log.retention.set"
           }
         ]
       },
@@ -17390,6 +17811,11 @@
         "idempotent": true,
         "role": "administrator",
         "scope": "server"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
@@ -17398,7 +17824,7 @@
         "routes": [
           {
             "dispatch": "protocol",
-            "route": "test evidence show"
+            "route": "call test.evidence.get"
           }
         ]
       },
@@ -18434,6 +18860,11 @@
         "idempotent": true,
         "role": "administrator",
         "scope": "repository"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
@@ -18442,7 +18873,7 @@
         "routes": [
           {
             "dispatch": "protocol",
-            "route": "test evidence image"
+            "route": "call test.evidence.image"
           }
         ]
       },
@@ -18590,6 +19021,11 @@
         "idempotent": true,
         "role": "administrator",
         "scope": "repository"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
@@ -18598,7 +19034,7 @@
         "routes": [
           {
             "dispatch": "protocol",
-            "route": "test artifact catalog"
+            "route": "call test.artifact.catalog"
           }
         ]
       },
@@ -18890,6 +19326,11 @@
         "idempotent": true,
         "role": "administrator",
         "scope": "repository"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
@@ -18898,7 +19339,7 @@
         "routes": [
           {
             "dispatch": "protocol",
-            "route": "test artifact file"
+            "route": "call test.artifact.file"
           }
         ]
       },
@@ -19078,6 +19519,11 @@
         "idempotent": true,
         "role": "administrator",
         "scope": "repository"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
@@ -19086,7 +19532,7 @@
         "routes": [
           {
             "dispatch": "protocol",
-            "route": "test evidence feedback create"
+            "route": "call test.evidence.feedback.create"
           }
         ]
       },
@@ -20053,6 +20499,11 @@
         "idempotent": false,
         "role": "administrator",
         "scope": "repository"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
@@ -20061,7 +20512,7 @@
         "routes": [
           {
             "dispatch": "protocol",
-            "route": "test evidence lookup"
+            "route": "call test.evidence.lookup"
           }
         ]
       },
@@ -21171,6 +21622,11 @@
         "idempotent": true,
         "role": "administrator",
         "scope": "server"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
@@ -21179,7 +21635,7 @@
         "routes": [
           {
             "dispatch": "protocol",
-            "route": "test evidence feedback reply"
+            "route": "call test.evidence.feedback.reply"
           }
         ]
       },
@@ -21646,6 +22102,11 @@
         "idempotent": false,
         "role": "administrator",
         "scope": "repository"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
@@ -21654,7 +22115,7 @@
         "routes": [
           {
             "dispatch": "protocol",
-            "route": "test evidence feedback edit"
+            "route": "call test.evidence.feedback.edit"
           }
         ]
       },
@@ -22129,6 +22590,11 @@
         "idempotent": false,
         "role": "administrator",
         "scope": "repository"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
@@ -22137,7 +22603,7 @@
         "routes": [
           {
             "dispatch": "protocol",
-            "route": "test evidence feedback state"
+            "route": "call test.evidence.feedback.state"
           }
         ]
       },
@@ -22618,6 +23084,11 @@
         "idempotent": true,
         "role": "administrator",
         "scope": "repository"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
@@ -22626,7 +23097,7 @@
         "routes": [
           {
             "dispatch": "protocol",
-            "route": "test evidence feedback delete"
+            "route": "call test.evidence.feedback.delete"
           }
         ]
       },
@@ -23081,6 +23552,11 @@
         "idempotent": true,
         "role": "administrator",
         "scope": "repository"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
@@ -23089,7 +23565,7 @@
         "routes": [
           {
             "dispatch": "protocol",
-            "route": "test stop"
+            "route": "call test.stop"
           }
         ]
       },
@@ -23207,6 +23683,11 @@
         "idempotent": true,
         "role": "administrator",
         "scope": "repository"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
@@ -23215,7 +23696,7 @@
         "routes": [
           {
             "dispatch": "protocol",
-            "route": "test history"
+            "route": "call test.history"
           }
         ]
       },
@@ -23544,6 +24025,11 @@
         "idempotent": true,
         "role": "administrator",
         "scope": "repository"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
@@ -23552,7 +24038,7 @@
         "routes": [
           {
             "dispatch": "protocol",
-            "route": "test list"
+            "route": "call test.list"
           }
         ]
       },
@@ -25244,6 +25730,11 @@
         "idempotent": true,
         "role": "administrator",
         "scope": "server"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
@@ -25252,7 +25743,7 @@
         "routes": [
           {
             "dispatch": "protocol",
-            "route": "test capacity show"
+            "route": "call test.capacity.get"
           }
         ]
       },
@@ -25414,6 +25905,11 @@
         "idempotent": true,
         "role": "administrator",
         "scope": "server"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
@@ -25422,11 +25918,7 @@
         "routes": [
           {
             "dispatch": "protocol",
-            "route": "test capacity set"
-          },
-          {
-            "dispatch": "protocol",
-            "route": "test capacity clear"
+            "route": "call test.capacity.set"
           }
         ]
       },
@@ -25644,6 +26136,11 @@
         "idempotent": true,
         "role": "administrator",
         "scope": "server"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
@@ -25652,7 +26149,7 @@
         "routes": [
           {
             "dispatch": "protocol",
-            "route": "config show"
+            "route": "call config.get"
           }
         ]
       },
@@ -25779,6 +26276,11 @@
         "idempotent": true,
         "role": "administrator",
         "scope": "server"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
@@ -25787,11 +26289,7 @@
         "routes": [
           {
             "dispatch": "protocol",
-            "route": "config authorize"
-          },
-          {
-            "dispatch": "protocol",
-            "route": "config revoke"
+            "route": "call config.env.set"
           }
         ]
       },
@@ -25992,6 +26490,11 @@
         "idempotent": true,
         "role": "administrator",
         "scope": "server"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
@@ -26000,7 +26503,7 @@
         "routes": [
           {
             "dispatch": "protocol",
-            "route": "config reload"
+            "route": "call config.reload"
           }
         ]
       },
@@ -26143,6 +26646,11 @@
         "idempotent": true,
         "role": "administrator",
         "scope": "server"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
@@ -26151,7 +26659,7 @@
         "routes": [
           {
             "dispatch": "protocol",
-            "route": "deployment preflight"
+            "route": "call deployment.preflight"
           }
         ]
       },
@@ -26347,6 +26855,11 @@
         "idempotent": true,
         "role": "administrator",
         "scope": "deployment"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
@@ -26355,7 +26868,7 @@
         "routes": [
           {
             "dispatch": "protocol",
-            "route": "deployment list"
+            "route": "call deployment.list"
           }
         ]
       },
@@ -26538,6 +27051,11 @@
         "idempotent": true,
         "role": "viewer",
         "scope": "deployment"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
@@ -26546,7 +27064,7 @@
         "routes": [
           {
             "dispatch": "protocol",
-            "route": "deployment status"
+            "route": "call deployment.status"
           }
         ]
       },
@@ -27209,6 +27727,11 @@
         "idempotent": true,
         "role": "viewer",
         "scope": "deployment"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
@@ -27217,7 +27740,7 @@
         "routes": [
           {
             "dispatch": "protocol",
-            "route": "deployment wait"
+            "route": "call deployment.wait"
           }
         ]
       },
@@ -27942,6 +28465,11 @@
         "idempotent": true,
         "role": "viewer",
         "scope": "deployment"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": true,
+        "responseTimeoutSeconds": null
       }
     },
     {
@@ -27950,7 +28478,7 @@
         "routes": [
           {
             "dispatch": "protocol",
-            "route": "deployment logs"
+            "route": "call deployment.logs"
           }
         ]
       },
@@ -28100,6 +28628,11 @@
         "idempotent": true,
         "role": "viewer",
         "scope": "deployment"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
@@ -28108,7 +28641,7 @@
         "routes": [
           {
             "dispatch": "protocol",
-            "route": "deployment apply"
+            "route": "call deployment.apply"
           }
         ]
       },
@@ -28829,6 +29362,11 @@
         "idempotent": false,
         "role": "administrator",
         "scope": "deployment"
+      },
+      "transport": {
+        "longRunning": true,
+        "passiveWait": false,
+        "responseTimeoutSeconds": null
       }
     },
     {
@@ -28837,7 +29375,7 @@
         "routes": [
           {
             "dispatch": "protocol",
-            "route": "deployment rollback"
+            "route": "call deployment.rollback"
           }
         ]
       },
@@ -29500,6 +30038,11 @@
         "idempotent": false,
         "role": "administrator",
         "scope": "deployment"
+      },
+      "transport": {
+        "longRunning": true,
+        "passiveWait": false,
+        "responseTimeoutSeconds": null
       }
     },
     {
@@ -29508,7 +30051,7 @@
         "routes": [
           {
             "dispatch": "protocol",
-            "route": "deployment start"
+            "route": "call deployment.start"
           }
         ]
       },
@@ -30185,6 +30728,11 @@
         "idempotent": true,
         "role": "operator",
         "scope": "deployment"
+      },
+      "transport": {
+        "longRunning": true,
+        "passiveWait": false,
+        "responseTimeoutSeconds": null
       }
     },
     {
@@ -30193,7 +30741,7 @@
         "routes": [
           {
             "dispatch": "protocol",
-            "route": "deployment stop"
+            "route": "call deployment.stop"
           }
         ]
       },
@@ -30870,6 +31418,11 @@
         "idempotent": true,
         "role": "operator",
         "scope": "deployment"
+      },
+      "transport": {
+        "longRunning": true,
+        "passiveWait": false,
+        "responseTimeoutSeconds": null
       }
     },
     {
@@ -30878,7 +31431,7 @@
         "routes": [
           {
             "dispatch": "protocol",
-            "route": "deployment restart"
+            "route": "call deployment.restart"
           }
         ]
       },
@@ -31555,6 +32108,11 @@
         "idempotent": false,
         "role": "operator",
         "scope": "deployment"
+      },
+      "transport": {
+        "longRunning": true,
+        "passiveWait": false,
+        "responseTimeoutSeconds": null
       }
     },
     {
@@ -31563,7 +32121,7 @@
         "routes": [
           {
             "dispatch": "protocol",
-            "route": "deployment set-domain"
+            "route": "call deployment.set_domain"
           }
         ]
       },
@@ -31724,6 +32282,11 @@
         "idempotent": true,
         "role": "administrator",
         "scope": "deployment"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
@@ -31732,7 +32295,7 @@
         "routes": [
           {
             "dispatch": "protocol",
-            "route": "deployment remove"
+            "route": "call deployment.remove"
           }
         ]
       },
@@ -31807,6 +32370,11 @@
         "idempotent": true,
         "role": "administrator",
         "scope": "deployment"
+      },
+      "transport": {
+        "longRunning": true,
+        "passiveWait": false,
+        "responseTimeoutSeconds": null
       }
     },
     {
@@ -31815,7 +32383,7 @@
         "routes": [
           {
             "dispatch": "protocol",
-            "route": "health summary"
+            "route": "call health.summary"
           }
         ]
       },
@@ -32276,6 +32844,11 @@
         "idempotent": true,
         "role": "administrator",
         "scope": "server"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
@@ -32284,7 +32857,7 @@
         "routes": [
           {
             "dispatch": "protocol",
-            "route": "health incidents"
+            "route": "call health.incidents"
           }
         ]
       },
@@ -32549,6 +33122,11 @@
         "idempotent": true,
         "role": "administrator",
         "scope": "server"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
@@ -32557,7 +33135,7 @@
         "routes": [
           {
             "dispatch": "protocol",
-            "route": "health incident update"
+            "route": "call health.incident.update"
           }
         ]
       },
@@ -32891,6 +33469,11 @@
         "idempotent": true,
         "role": "administrator",
         "scope": "server"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
@@ -32899,7 +33482,7 @@
         "routes": [
           {
             "dispatch": "protocol",
-            "route": "health repositories"
+            "route": "call health.repositories"
           }
         ]
       },
@@ -33480,6 +34063,11 @@
         "idempotent": true,
         "role": "viewer",
         "scope": "repository"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
@@ -33488,7 +34076,7 @@
         "routes": [
           {
             "dispatch": "protocol",
-            "route": "health repository"
+            "route": "call health.repository"
           }
         ]
       },
@@ -33849,6 +34437,11 @@
         "idempotent": true,
         "role": "viewer",
         "scope": "repository"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
@@ -33857,7 +34450,7 @@
         "routes": [
           {
             "dispatch": "protocol",
-            "route": "health history"
+            "route": "call health.history"
           }
         ]
       },
@@ -34048,6 +34641,11 @@
         "idempotent": true,
         "role": "viewer",
         "scope": "repository"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
@@ -34056,7 +34654,7 @@
         "routes": [
           {
             "dispatch": "protocol",
-            "route": "health containers"
+            "route": "call health.containers"
           }
         ]
       },
@@ -34244,12 +34842,22 @@
         "idempotent": true,
         "role": "administrator",
         "scope": "server"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
       "cli": {
-        "excludedReason": "Container removal is deliberately exposed only by the authenticated Console.",
-        "routes": []
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "call health.container_remove"
+          }
+        ]
       },
       "description": "Remove one exact unmanaged container.",
       "inputSchema": {
@@ -34311,6 +34919,11 @@
         "idempotent": true,
         "role": "administrator",
         "scope": "server"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
@@ -34319,7 +34932,7 @@
         "routes": [
           {
             "dispatch": "protocol",
-            "route": "glossary list"
+            "route": "call glossary.list"
           }
         ]
       },
@@ -34799,6 +35412,11 @@
         "idempotent": true,
         "role": "viewer",
         "scope": "repository"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
@@ -34807,7 +35425,7 @@
         "routes": [
           {
             "dispatch": "protocol",
-            "route": "glossary resolve"
+            "route": "call glossary.resolve"
           }
         ]
       },
@@ -35287,6 +35905,11 @@
         "idempotent": true,
         "role": "viewer",
         "scope": "repository"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
@@ -35295,7 +35918,7 @@
         "routes": [
           {
             "dispatch": "protocol",
-            "route": "glossary get"
+            "route": "call glossary.get"
           }
         ]
       },
@@ -35646,6 +36269,11 @@
         "idempotent": true,
         "role": "viewer",
         "scope": "repository"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
@@ -35654,7 +36282,7 @@
         "routes": [
           {
             "dispatch": "protocol",
-            "route": "glossary save"
+            "route": "call glossary.save"
           }
         ]
       },
@@ -35979,6 +36607,11 @@
         "idempotent": false,
         "role": "administrator",
         "scope": "repository"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
@@ -35987,7 +36620,7 @@
         "routes": [
           {
             "dispatch": "protocol",
-            "route": "glossary configure"
+            "route": "call glossary.configure"
           }
         ]
       },
@@ -36194,6 +36827,11 @@
         "idempotent": false,
         "role": "administrator",
         "scope": "repository"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
@@ -36202,7 +36840,7 @@
         "routes": [
           {
             "dispatch": "protocol",
-            "route": "glossary inherit"
+            "route": "call glossary.inherit"
           }
         ]
       },
@@ -36305,6 +36943,11 @@
         "idempotent": false,
         "role": "administrator",
         "scope": "repository"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
@@ -36313,7 +36956,7 @@
         "routes": [
           {
             "dispatch": "protocol",
-            "route": "glossary history"
+            "route": "call glossary.history"
           }
         ]
       },
@@ -36476,6 +37119,11 @@
         "idempotent": true,
         "role": "viewer",
         "scope": "repository"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
@@ -36484,7 +37132,7 @@
         "routes": [
           {
             "dispatch": "protocol",
-            "route": "glossary check"
+            "route": "call glossary.check"
           }
         ]
       },
@@ -36783,6 +37431,11 @@
         "idempotent": true,
         "role": "viewer",
         "scope": "repository"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
@@ -36791,7 +37444,7 @@
         "routes": [
           {
             "dispatch": "protocol",
-            "route": "glossary impact"
+            "route": "call glossary.impact"
           }
         ]
       },
@@ -36920,6 +37573,11 @@
         "idempotent": true,
         "role": "administrator",
         "scope": "server"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
@@ -36928,7 +37586,7 @@
         "routes": [
           {
             "dispatch": "protocol",
-            "route": "deployment recovery"
+            "route": "call deployment.recovery"
           }
         ]
       },
@@ -37130,6 +37788,11 @@
         "idempotent": true,
         "role": "administrator",
         "scope": "server"
+      },
+      "transport": {
+        "longRunning": true,
+        "passiveWait": false,
+        "responseTimeoutSeconds": null
       }
     },
     {
@@ -37138,7 +37801,7 @@
         "routes": [
           {
             "dispatch": "protocol",
-            "route": "plan recovery"
+            "route": "call plan.recovery"
           }
         ]
       },
@@ -37440,6 +38103,11 @@
         "idempotent": true,
         "role": "administrator",
         "scope": "server"
+      },
+      "transport": {
+        "longRunning": true,
+        "passiveWait": false,
+        "responseTimeoutSeconds": null
       }
     },
     {
@@ -37448,7 +38116,7 @@
         "routes": [
           {
             "dispatch": "protocol",
-            "route": "plan overview"
+            "route": "call plan.overview"
           }
         ]
       },
@@ -37457,6 +38125,32 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "additionalProperties": false,
         "properties": {
+          "after_release_sequence": {
+            "default": 0,
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "after_repository_id": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "after_sequence": {
+            "default": 0,
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "limit": {
+            "default": 100,
+            "format": "uint16",
+            "maximum": 200,
+            "minimum": 1,
+            "type": "integer"
+          },
           "path": {
             "default": null,
             "type": [
@@ -37482,6 +38176,32 @@
             "$schema": "https://json-schema.org/draft/2020-12/schema",
             "additionalProperties": false,
             "properties": {
+              "after_release_sequence": {
+                "default": 0,
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "after_repository_id": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "after_sequence": {
+                "default": 0,
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "limit": {
+                "default": 100,
+                "format": "uint16",
+                "maximum": 200,
+                "minimum": 1,
+                "type": "integer"
+              },
               "path": {
                 "default": null,
                 "type": [
@@ -37582,6 +38302,12 @@
           "PlanCollection": {
             "additionalProperties": false,
             "properties": {
+              "next_repository_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
               "repositories": {
                 "items": {
                   "$ref": "#/$defs/PlanRepositoryRow"
@@ -37615,6 +38341,22 @@
               "merged_into_repository_id": {
                 "type": [
                   "string",
+                  "null"
+                ]
+              },
+              "next_release_sequence": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "next_sequence": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": [
+                  "integer",
                   "null"
                 ]
               },
@@ -38004,6 +38746,11 @@
         "idempotent": true,
         "role": "viewer",
         "scope": "repository"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
@@ -38012,7 +38759,7 @@
         "routes": [
           {
             "dispatch": "protocol",
-            "route": "completion check"
+            "route": "call completion.check"
           }
         ]
       },
@@ -38378,6 +39125,11 @@
         "idempotent": true,
         "role": "viewer",
         "scope": "repository"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
@@ -38386,7 +39138,7 @@
         "routes": [
           {
             "dispatch": "protocol",
-            "route": "task search"
+            "route": "call task.search"
           }
         ]
       },
@@ -38590,6 +39342,11 @@
         "idempotent": true,
         "role": "viewer",
         "scope": "repository"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
@@ -38598,7 +39355,7 @@
         "routes": [
           {
             "dispatch": "protocol",
-            "route": "task history"
+            "route": "call task.history"
           }
         ]
       },
@@ -38872,6 +39629,11 @@
         "idempotent": true,
         "role": "viewer",
         "scope": "repository"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
@@ -38880,7 +39642,7 @@
         "routes": [
           {
             "dispatch": "protocol",
-            "route": "task create"
+            "route": "call task.create"
           }
         ]
       },
@@ -39235,6 +39997,11 @@
         "idempotent": false,
         "role": "administrator",
         "scope": "repository"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
@@ -39243,7 +40010,7 @@
         "routes": [
           {
             "dispatch": "protocol",
-            "route": "task update"
+            "route": "call task.update"
           }
         ]
       },
@@ -39652,6 +40419,11 @@
         "idempotent": false,
         "role": "administrator",
         "scope": "repository"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
@@ -39660,7 +40432,7 @@
         "routes": [
           {
             "dispatch": "protocol",
-            "route": "release create"
+            "route": "call release.create"
           }
         ]
       },
@@ -39797,6 +40569,40 @@
       "name": "release.create",
       "outputSchema": {
         "$defs": {
+          "ElaborationRequest": {
+            "additionalProperties": false,
+            "properties": {
+              "kind": {
+                "$ref": "#/$defs/TaskKind"
+              },
+              "outcome": {
+                "type": "string"
+              },
+              "requested_at": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "status": {
+                "$ref": "#/$defs/TaskStatus"
+              },
+              "task_id": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "task_id",
+              "title",
+              "outcome",
+              "status",
+              "kind"
+            ],
+            "type": "object"
+          },
           "ReleaseKind": {
             "enum": [
               "preview",
@@ -39812,16 +40618,34 @@
               "dropped"
             ],
             "type": "string"
+          },
+          "TaskKind": {
+            "enum": [
+              "goal",
+              "stub",
+              "improvement",
+              "user_feedback"
+            ],
+            "type": "string"
+          },
+          "TaskStatus": {
+            "enum": [
+              "planned",
+              "in_progress",
+              "done",
+              "dropped"
+            ],
+            "type": "string"
           }
         },
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "additionalProperties": false,
         "properties": {
-          "delivered_at": {
-            "type": [
-              "string",
-              "null"
-            ]
+          "elaboration_requests": {
+            "items": {
+              "$ref": "#/$defs/ElaborationRequest"
+            },
+            "type": "array"
           },
           "kind": {
             "$ref": "#/$defs/ReleaseKind"
@@ -39839,7 +40663,10 @@
             "type": "string"
           },
           "repository_id": {
-            "type": "string"
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "requested_at": {
             "type": [
@@ -39858,13 +40685,13 @@
         },
         "required": [
           "release_id",
-          "repository_id",
           "seq",
           "name",
           "kind",
-          "status"
+          "status",
+          "elaboration_requests"
         ],
-        "title": "Release",
+        "title": "ReleaseMutation",
         "type": "object"
       },
       "policy": {
@@ -39872,6 +40699,11 @@
         "idempotent": false,
         "role": "administrator",
         "scope": "repository"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
@@ -39880,7 +40712,7 @@
         "routes": [
           {
             "dispatch": "protocol",
-            "route": "release update"
+            "route": "call release.update"
           }
         ]
       },
@@ -39949,6 +40781,40 @@
       "name": "release.update",
       "outputSchema": {
         "$defs": {
+          "ElaborationRequest": {
+            "additionalProperties": false,
+            "properties": {
+              "kind": {
+                "$ref": "#/$defs/TaskKind"
+              },
+              "outcome": {
+                "type": "string"
+              },
+              "requested_at": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "status": {
+                "$ref": "#/$defs/TaskStatus"
+              },
+              "task_id": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "task_id",
+              "title",
+              "outcome",
+              "status",
+              "kind"
+            ],
+            "type": "object"
+          },
           "ReleaseKind": {
             "enum": [
               "preview",
@@ -39964,16 +40830,34 @@
               "dropped"
             ],
             "type": "string"
+          },
+          "TaskKind": {
+            "enum": [
+              "goal",
+              "stub",
+              "improvement",
+              "user_feedback"
+            ],
+            "type": "string"
+          },
+          "TaskStatus": {
+            "enum": [
+              "planned",
+              "in_progress",
+              "done",
+              "dropped"
+            ],
+            "type": "string"
           }
         },
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "additionalProperties": false,
         "properties": {
-          "delivered_at": {
-            "type": [
-              "string",
-              "null"
-            ]
+          "elaboration_requests": {
+            "items": {
+              "$ref": "#/$defs/ElaborationRequest"
+            },
+            "type": "array"
           },
           "kind": {
             "$ref": "#/$defs/ReleaseKind"
@@ -39991,7 +40875,10 @@
             "type": "string"
           },
           "repository_id": {
-            "type": "string"
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "requested_at": {
             "type": [
@@ -40010,13 +40897,13 @@
         },
         "required": [
           "release_id",
-          "repository_id",
           "seq",
           "name",
           "kind",
-          "status"
+          "status",
+          "elaboration_requests"
         ],
-        "title": "Release",
+        "title": "ReleaseMutation",
         "type": "object"
       },
       "policy": {
@@ -40024,6 +40911,11 @@
         "idempotent": false,
         "role": "administrator",
         "scope": "repository"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
@@ -40032,7 +40924,7 @@
         "routes": [
           {
             "dispatch": "protocol",
-            "route": "release request"
+            "route": "call release.request"
           }
         ]
       },
@@ -40078,6 +40970,40 @@
       "name": "release.request",
       "outputSchema": {
         "$defs": {
+          "ElaborationRequest": {
+            "additionalProperties": false,
+            "properties": {
+              "kind": {
+                "$ref": "#/$defs/TaskKind"
+              },
+              "outcome": {
+                "type": "string"
+              },
+              "requested_at": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "status": {
+                "$ref": "#/$defs/TaskStatus"
+              },
+              "task_id": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "task_id",
+              "title",
+              "outcome",
+              "status",
+              "kind"
+            ],
+            "type": "object"
+          },
           "ReleaseKind": {
             "enum": [
               "preview",
@@ -40093,16 +41019,34 @@
               "dropped"
             ],
             "type": "string"
+          },
+          "TaskKind": {
+            "enum": [
+              "goal",
+              "stub",
+              "improvement",
+              "user_feedback"
+            ],
+            "type": "string"
+          },
+          "TaskStatus": {
+            "enum": [
+              "planned",
+              "in_progress",
+              "done",
+              "dropped"
+            ],
+            "type": "string"
           }
         },
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "additionalProperties": false,
         "properties": {
-          "delivered_at": {
-            "type": [
-              "string",
-              "null"
-            ]
+          "elaboration_requests": {
+            "items": {
+              "$ref": "#/$defs/ElaborationRequest"
+            },
+            "type": "array"
           },
           "kind": {
             "$ref": "#/$defs/ReleaseKind"
@@ -40120,7 +41064,10 @@
             "type": "string"
           },
           "repository_id": {
-            "type": "string"
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "requested_at": {
             "type": [
@@ -40139,13 +41086,13 @@
         },
         "required": [
           "release_id",
-          "repository_id",
           "seq",
           "name",
           "kind",
-          "status"
+          "status",
+          "elaboration_requests"
         ],
-        "title": "Release",
+        "title": "ReleaseMutation",
         "type": "object"
       },
       "policy": {
@@ -40153,6 +41100,11 @@
         "idempotent": false,
         "role": "administrator",
         "scope": "repository"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
@@ -40161,7 +41113,7 @@
         "routes": [
           {
             "dispatch": "protocol",
-            "route": "release deliver"
+            "route": "call release.deliver"
           }
         ]
       },
@@ -40352,6 +41304,11 @@
         "idempotent": false,
         "role": "administrator",
         "scope": "repository"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
@@ -40360,7 +41317,7 @@
         "routes": [
           {
             "dispatch": "protocol",
-            "route": "decision tail"
+            "route": "call decision.tail"
           }
         ]
       },
@@ -40716,12 +41673,22 @@
         "idempotent": true,
         "role": "viewer",
         "scope": "repository"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
       "cli": {
-        "excludedReason": "Use the typed API or MCP adapter.",
-        "routes": []
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "call performance.overview"
+          }
+        ]
       },
       "description": "Read repository performance overview without changing accounting or reviews.",
       "inputSchema": {
@@ -41803,12 +42770,22 @@
         "idempotent": true,
         "role": "administrator",
         "scope": "repository"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 20
       }
     },
     {
       "cli": {
-        "excludedReason": "Use the typed API or MCP adapter.",
-        "routes": []
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "call performance.reviews"
+          }
+        ]
       },
       "description": "Read repository performance reviews without changing accounting or reviews.",
       "inputSchema": {
@@ -42229,12 +43206,22 @@
         "idempotent": true,
         "role": "administrator",
         "scope": "repository"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
       "cli": {
-        "excludedReason": "Use the typed API or MCP adapter.",
-        "routes": []
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "call performance.review"
+          }
+        ]
       },
       "description": "Read repository performance review without changing accounting or reviews.",
       "inputSchema": {
@@ -43623,6 +44610,11 @@
         "idempotent": true,
         "role": "administrator",
         "scope": "repository"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 20
       }
     },
     {
@@ -43631,7 +44623,7 @@
         "routes": [
           {
             "dispatch": "protocol",
-            "route": "review delivery-pending"
+            "route": "call review.delivery.pending"
           }
         ]
       },
@@ -43786,6 +44778,11 @@
         "idempotent": true,
         "role": "administrator",
         "scope": "server"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
@@ -43794,7 +44791,7 @@
         "routes": [
           {
             "dispatch": "protocol",
-            "route": "review policy-set"
+            "route": "call review.policy.set"
           }
         ]
       },
@@ -44077,6 +45074,11 @@
         "idempotent": false,
         "role": "administrator",
         "scope": "repository"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
@@ -44085,7 +45087,7 @@
         "routes": [
           {
             "dispatch": "protocol",
-            "route": "review policy-status"
+            "route": "call review.policy.status"
           }
         ]
       },
@@ -44278,6 +45280,11 @@
         "idempotent": true,
         "role": "administrator",
         "scope": "repository"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
@@ -44286,7 +45293,7 @@
         "routes": [
           {
             "dispatch": "protocol",
-            "route": "review delivery-register"
+            "route": "call review.delivery.register"
           }
         ]
       },
@@ -44535,6 +45542,11 @@
         "idempotent": false,
         "role": "administrator",
         "scope": "repository"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
@@ -44543,7 +45555,7 @@
         "routes": [
           {
             "dispatch": "protocol",
-            "route": "review prepare"
+            "route": "call review.prepare"
           }
         ]
       },
@@ -45903,6 +46915,11 @@
         "idempotent": true,
         "role": "administrator",
         "scope": "repository"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 20
       }
     },
     {
@@ -45911,7 +46928,7 @@
         "routes": [
           {
             "dispatch": "protocol",
-            "route": "review record"
+            "route": "call review.record"
           }
         ]
       },
@@ -46763,6 +47780,11 @@
         "idempotent": false,
         "role": "administrator",
         "scope": "repository"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 20
       }
     },
     {
@@ -46771,7 +47793,7 @@
         "routes": [
           {
             "dispatch": "protocol",
-            "route": "review list"
+            "route": "call review.show"
           }
         ]
       },
@@ -47164,6 +48186,11 @@
         "idempotent": true,
         "role": "administrator",
         "scope": "repository"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
@@ -47172,7 +48199,7 @@
         "routes": [
           {
             "dispatch": "protocol",
-            "route": "review show"
+            "route": "call review.receipt"
           }
         ]
       },
@@ -47504,6 +48531,11 @@
         "idempotent": true,
         "role": "administrator",
         "scope": "repository"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
@@ -47512,7 +48544,7 @@
         "routes": [
           {
             "dispatch": "protocol",
-            "route": "release evidence"
+            "route": "call release.evidence"
           }
         ]
       },
@@ -47730,6 +48762,11 @@
         "idempotent": true,
         "role": "administrator",
         "scope": "repository"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
@@ -47738,7 +48775,7 @@
         "routes": [
           {
             "dispatch": "protocol",
-            "route": "release deliver-evidence"
+            "route": "call release.deliver_evidence"
           }
         ]
       },
@@ -48066,6 +49103,11 @@
         "idempotent": false,
         "role": "administrator",
         "scope": "repository"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
@@ -48074,7 +49116,7 @@
         "routes": [
           {
             "dispatch": "protocol",
-            "route": "release evidence-show"
+            "route": "call release.evidence_show"
           }
         ]
       },
@@ -48341,6 +49383,11 @@
         "idempotent": true,
         "role": "administrator",
         "scope": "repository"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
@@ -48349,7 +49396,7 @@
         "routes": [
           {
             "dispatch": "protocol",
-            "route": "decision search"
+            "route": "call decision.search"
           }
         ]
       },
@@ -48661,6 +49708,11 @@
         "idempotent": true,
         "role": "viewer",
         "scope": "repository"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
@@ -48669,7 +49721,7 @@
         "routes": [
           {
             "dispatch": "protocol",
-            "route": "decision record"
+            "route": "call decision.record"
           }
         ]
       },
@@ -48942,6 +49994,11 @@
         "idempotent": false,
         "role": "administrator",
         "scope": "repository"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
@@ -48950,7 +50007,7 @@
         "routes": [
           {
             "dispatch": "protocol",
-            "route": "decision summarize"
+            "route": "call decision.summarize"
           }
         ]
       },
@@ -49131,12 +50188,22 @@
         "idempotent": false,
         "role": "administrator",
         "scope": "repository"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
       "cli": {
-        "excludedReason": "Usage analytics are presented by the Console, not the preserved CLI.",
-        "routes": []
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "call usage.repositories"
+          }
+        ]
       },
       "description": "Show privacy-preserving usage across visible repositories.",
       "inputSchema": {
@@ -49681,12 +50748,22 @@
         "idempotent": true,
         "role": "operator",
         "scope": "repository"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
       "cli": {
-        "excludedReason": "Usage analytics are presented by the Console, not the preserved CLI.",
-        "routes": []
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "call usage.repository"
+          }
+        ]
       },
       "description": "Show privacy-preserving usage for one repository.",
       "inputSchema": {
@@ -50704,12 +51781,22 @@
         "idempotent": true,
         "role": "operator",
         "scope": "repository"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
       "cli": {
-        "excludedReason": "Use the typed API or MCP adapter.",
-        "routes": []
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "call usage.rate_card.list"
+          }
+        ]
       },
       "description": "List administrator-managed API-equivalent pricing cards.",
       "inputSchema": {
@@ -50874,12 +51961,22 @@
         "idempotent": true,
         "role": "administrator",
         "scope": "server"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
       "cli": {
-        "excludedReason": "Use the typed API or MCP adapter.",
-        "routes": []
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "call usage.rate_card.set"
+          }
+        ]
       },
       "description": "Append one immutable API-equivalent pricing-card version.",
       "inputSchema": {
@@ -51019,12 +52116,22 @@
         "idempotent": true,
         "role": "administrator",
         "scope": "server"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
       "cli": {
-        "excludedReason": "Progress analytics are presented by the Console, not the preserved CLI.",
-        "routes": []
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "call progress.repositories"
+          }
+        ]
       },
       "description": "Show delivery progress across visible repositories.",
       "inputSchema": {
@@ -51139,12 +52246,22 @@
         "idempotent": true,
         "role": "operator",
         "scope": "repository"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
       "cli": {
-        "excludedReason": "Progress analytics are presented by the Console, not the preserved CLI.",
-        "routes": []
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "call progress.repository"
+          }
+        ]
       },
       "description": "Show delivery progress for one repository.",
       "inputSchema": {
@@ -52026,6 +53143,11 @@
         "idempotent": true,
         "role": "operator",
         "scope": "repository"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
@@ -52034,7 +53156,7 @@
         "routes": [
           {
             "dispatch": "protocol",
-            "route": "telegram link"
+            "route": "call telegram.link"
           }
         ]
       },
@@ -52088,6 +53210,11 @@
         "idempotent": false,
         "role": "self",
         "scope": "self"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
@@ -52096,7 +53223,7 @@
         "routes": [
           {
             "dispatch": "protocol",
-            "route": "telegram subscribe"
+            "route": "call telegram.subscribe"
           }
         ]
       },
@@ -52153,6 +53280,11 @@
         "idempotent": false,
         "role": "self",
         "scope": "self"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
@@ -52161,7 +53293,7 @@
         "routes": [
           {
             "dispatch": "protocol",
-            "route": "telegram unsubscribe"
+            "route": "call telegram.unsubscribe"
           }
         ]
       },
@@ -52218,6 +53350,11 @@
         "idempotent": true,
         "role": "self",
         "scope": "self"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
@@ -52226,7 +53363,7 @@
         "routes": [
           {
             "dispatch": "protocol",
-            "route": "telegram list"
+            "route": "call telegram.list"
           }
         ]
       },
@@ -52320,6 +53457,11 @@
         "idempotent": true,
         "role": "self",
         "scope": "self"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
@@ -52328,7 +53470,7 @@
         "routes": [
           {
             "dispatch": "protocol",
-            "route": "event wait"
+            "route": "call event.wait"
           }
         ]
       },
@@ -53044,12 +54186,22 @@
         "idempotent": true,
         "role": "self",
         "scope": "self"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": true,
+        "responseTimeoutSeconds": null
       }
     },
     {
       "cli": {
-        "excludedReason": "Use the typed API or MCP adapter.",
-        "routes": []
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "call design.sketch.publish"
+          }
+        ]
       },
       "description": "Retain a project-scoped batch of generated sketches and its generation record.",
       "inputSchema": {
@@ -53727,12 +54879,22 @@
         "idempotent": false,
         "role": "administrator",
         "scope": "repository"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
       "cli": {
-        "excludedReason": "Use the typed API or MCP adapter.",
-        "routes": []
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "call design.sketch.list"
+          }
+        ]
       },
       "description": "List retained project sketches and their current decisions.",
       "inputSchema": {
@@ -54166,12 +55328,22 @@
         "idempotent": true,
         "role": "administrator",
         "scope": "repository"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
       "cli": {
-        "excludedReason": "Use the typed API or MCP adapter.",
-        "routes": []
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "call design.sketch.search"
+          }
+        ]
       },
       "description": "Search retained sketch descriptions, decisions, and lineage context.",
       "inputSchema": {
@@ -54531,12 +55703,22 @@
         "idempotent": true,
         "role": "administrator",
         "scope": "repository"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
       "cli": {
-        "excludedReason": "Use the typed API or MCP adapter.",
-        "routes": []
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "call design.sketch.story"
+          }
+        ]
       },
       "description": "Read one surface's mockup history graph and current heads.",
       "inputSchema": {
@@ -54995,12 +56177,22 @@
         "idempotent": true,
         "role": "administrator",
         "scope": "repository"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
       "cli": {
-        "excludedReason": "Use the typed API or MCP adapter.",
-        "routes": []
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "call design.sketch.resolve"
+          }
+        ]
       },
       "description": "Resolve the explicit current mockup head for one surface.",
       "inputSchema": {
@@ -55297,12 +56489,22 @@
         "idempotent": true,
         "role": "administrator",
         "scope": "repository"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
       "cli": {
-        "excludedReason": "Use the typed API or MCP adapter.",
-        "routes": []
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "call design.sketch.get"
+          }
+        ]
       },
       "description": "Open one retained project sketch with decision history and annotations.",
       "inputSchema": {
@@ -56057,12 +57259,22 @@
         "idempotent": true,
         "role": "administrator",
         "scope": "repository"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
       "cli": {
-        "excludedReason": "Use the typed API or MCP adapter.",
-        "routes": []
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "call design.sketch.image"
+          }
+        ]
       },
       "description": "Read one verified retained sketch image chunk.",
       "inputSchema": {
@@ -56194,12 +57406,22 @@
         "idempotent": true,
         "role": "administrator",
         "scope": "repository"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
       "cli": {
-        "excludedReason": "Use the typed API or MCP adapter.",
-        "routes": []
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "call design.sketch.record"
+          }
+        ]
       },
       "description": "Read one verified retained generation record chunk.",
       "inputSchema": {
@@ -56351,12 +57573,22 @@
         "idempotent": true,
         "role": "administrator",
         "scope": "repository"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
       "cli": {
-        "excludedReason": "Use the typed API or MCP adapter.",
-        "routes": []
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "call design.sketch.decision"
+          }
+        ]
       },
       "description": "Change a sketch decision with an expected revision and rationale.",
       "inputSchema": {
@@ -56703,12 +57935,22 @@
         "idempotent": false,
         "role": "administrator",
         "scope": "repository"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
       "cli": {
-        "excludedReason": "Use the typed API or MCP adapter.",
-        "routes": []
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "call design.sketch.activate"
+          }
+        ]
       },
       "description": "Record the explicit current continuation set for one surface.",
       "inputSchema": {
@@ -57101,12 +58343,22 @@
         "idempotent": false,
         "role": "administrator",
         "scope": "repository"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
       "cli": {
-        "excludedReason": "Use the typed API or MCP adapter.",
-        "routes": []
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "call design.sketch.description"
+          }
+        ]
       },
       "description": "Append a revised mockup description and context revision.",
       "inputSchema": {
@@ -57501,12 +58753,22 @@
         "idempotent": false,
         "role": "administrator",
         "scope": "repository"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
       "cli": {
-        "excludedReason": "Use the typed API or MCP adapter.",
-        "routes": []
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "call design.sketch.annotation.create"
+          }
+        ]
       },
       "description": "Save a marked-up sketch annotation.",
       "inputSchema": {
@@ -58347,12 +59609,22 @@
         "idempotent": false,
         "role": "administrator",
         "scope": "repository"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
       "cli": {
-        "excludedReason": "Use Console or MCP agent_hub_register.",
-        "routes": []
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "call agent.hub.register"
+          }
+        ]
       },
       "description": "Register an agent in the private or opt-in public hub space and issue its lease token.",
       "inputSchema": {
@@ -58614,12 +59886,22 @@
         "idempotent": false,
         "role": "self",
         "scope": "self"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
       "cli": {
-        "excludedReason": "Use Console or MCP agent_hub_heartbeat.",
-        "routes": []
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "call agent.hub.heartbeat"
+          }
+        ]
       },
       "description": "Renew one agent's 90-second lease.",
       "inputSchema": {
@@ -58795,12 +60077,22 @@
         "idempotent": true,
         "role": "self",
         "scope": "self"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
       "cli": {
-        "excludedReason": "Use Console or MCP agent_hub_unregister.",
-        "routes": []
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "call agent.hub.unregister"
+          }
+        ]
       },
       "description": "Remove one agent from the hub and its room memberships.",
       "inputSchema": {
@@ -58960,12 +60252,22 @@
         "idempotent": true,
         "role": "self",
         "scope": "self"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
       "cli": {
-        "excludedReason": "Use Console or MCP agent_hub_directory.",
-        "routes": []
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "call agent.hub.directory"
+          }
+        ]
       },
       "description": "List opaque agent profiles in one isolated hub space.",
       "inputSchema": {
@@ -59160,12 +60462,22 @@
         "idempotent": true,
         "role": "self",
         "scope": "self"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
       "cli": {
-        "excludedReason": "Use Console or MCP agent_hub_room_create.",
-        "routes": []
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "call agent.hub.room.create"
+          }
+        ]
       },
       "description": "Create a direct or group room in one hub space.",
       "inputSchema": {
@@ -59335,12 +60647,22 @@
         "idempotent": false,
         "role": "self",
         "scope": "self"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
       "cli": {
-        "excludedReason": "Use Console or MCP agent_hub_room_list.",
-        "routes": []
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "call agent.hub.room.list"
+          }
+        ]
       },
       "description": "List rooms visible to one registered agent.",
       "inputSchema": {
@@ -59527,12 +60849,22 @@
         "idempotent": true,
         "role": "self",
         "scope": "self"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
       "cli": {
-        "excludedReason": "Use Console or MCP agent_hub_room_member_add.",
-        "routes": []
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "call agent.hub.room.member.add"
+          }
+        ]
       },
       "description": "Add one registered agent to a room.",
       "inputSchema": {
@@ -59670,12 +61002,22 @@
         "idempotent": false,
         "role": "self",
         "scope": "self"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
       "cli": {
-        "excludedReason": "Use Console or MCP agent_hub_room_member_remove.",
-        "routes": []
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "call agent.hub.room.member.remove"
+          }
+        ]
       },
       "description": "Remove one registered agent from a room.",
       "inputSchema": {
@@ -59813,12 +61155,22 @@
         "idempotent": false,
         "role": "self",
         "scope": "self"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
       "cli": {
-        "excludedReason": "Use Console or MCP agent_hub_send.",
-        "routes": []
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "call agent.hub.send"
+          }
+        ]
       },
       "description": "Send a durable message with bounded attachments to a room.",
       "inputSchema": {
@@ -60093,12 +61445,22 @@
         "idempotent": false,
         "role": "self",
         "scope": "self"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
       "cli": {
-        "excludedReason": "Use Console or MCP agent_hub_receive.",
-        "routes": []
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "call agent.hub.receive"
+          }
+        ]
       },
       "description": "Read at-least-once deliveries for one agent.",
       "inputSchema": {
@@ -60406,12 +61768,22 @@
         "idempotent": true,
         "role": "self",
         "scope": "self"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
       "cli": {
-        "excludedReason": "Use Console or MCP agent_hub_ack.",
-        "routes": []
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "call agent.hub.ack"
+          }
+        ]
       },
       "description": "Acknowledge one or more durable deliveries.",
       "inputSchema": {
@@ -60691,12 +62063,22 @@
         "idempotent": true,
         "role": "self",
         "scope": "self"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
       "cli": {
-        "excludedReason": "Use Console or MCP agent_hub_upload_start.",
-        "routes": []
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "call agent.hub.upload.start"
+          }
+        ]
       },
       "description": "Start a resumable bounded attachment upload.",
       "inputSchema": {
@@ -60882,12 +62264,22 @@
         "idempotent": false,
         "role": "self",
         "scope": "self"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
       "cli": {
-        "excludedReason": "Use Console or MCP agent_hub_upload_chunk.",
-        "routes": []
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "call agent.hub.upload.chunk"
+          }
+        ]
       },
       "description": "Append one base64 attachment chunk at its exact offset.",
       "inputSchema": {
@@ -61023,12 +62415,22 @@
         "idempotent": true,
         "role": "self",
         "scope": "self"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
       "cli": {
-        "excludedReason": "Use Console or MCP agent_hub_upload_file.",
-        "routes": []
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "call agent.hub.upload.file"
+          }
+        ]
       },
       "description": "Read one bounded attachment chunk.",
       "inputSchema": {
@@ -61212,12 +62614,22 @@
         "idempotent": true,
         "role": "self",
         "scope": "self"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
       "cli": {
-        "excludedReason": "Use Console or MCP agent_hub_upload_remove.",
-        "routes": []
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "call agent.hub.upload.remove"
+          }
+        ]
       },
       "description": "Remove one private incomplete upload.",
       "inputSchema": {
@@ -61303,7 +62715,43 @@
       "outputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "additionalProperties": false,
-        "title": "EmptyParams",
+        "properties": {
+          "callback_outbox_pending": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "current_key_created_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "previous_key_expires_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "public_enabled": {
+            "type": "boolean"
+          },
+          "public_paused": {
+            "type": "boolean"
+          },
+          "revision": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "revision",
+          "public_enabled",
+          "public_paused",
+          "callback_outbox_pending"
+        ],
+        "title": "Settings",
         "type": "object"
       },
       "policy": {
@@ -61311,12 +62759,22 @@
         "idempotent": true,
         "role": "self",
         "scope": "self"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
       "cli": {
-        "excludedReason": "Use Console or MCP agent_hub_settings_get.",
-        "routes": []
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "call agent.hub.settings.get"
+          }
+        ]
       },
       "description": "Read private/public hub controls and callback queue status.",
       "inputSchema": {
@@ -61386,12 +62844,22 @@
         "idempotent": true,
         "role": "administrator",
         "scope": "server"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
       "cli": {
-        "excludedReason": "Use Console or MCP agent_hub_console_directory.",
-        "routes": []
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "call agent.hub.console.directory"
+          }
+        ]
       },
       "description": "Let an admitted Console user inspect opaque hub profiles without private transport credentials.",
       "inputSchema": {
@@ -61586,12 +63054,22 @@
         "idempotent": true,
         "role": "viewer",
         "scope": "server"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
       "cli": {
-        "excludedReason": "Use Console or MCP agent_hub_console_receive.",
-        "routes": []
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "call agent.hub.console.receive"
+          }
+        ]
       },
       "description": "Let an admitted Console user read bounded hub messages for monitoring.",
       "inputSchema": {
@@ -61881,12 +63359,22 @@
         "idempotent": true,
         "role": "viewer",
         "scope": "server"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
       "cli": {
-        "excludedReason": "Use Console or MCP agent_hub_console_send.",
-        "routes": []
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "call agent.hub.console.send"
+          }
+        ]
       },
       "description": "Let an admitted Console user reply in a visible hub room.",
       "inputSchema": {
@@ -62127,12 +63615,22 @@
         "idempotent": false,
         "role": "viewer",
         "scope": "server"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
       "cli": {
-        "excludedReason": "Use Console or MCP agent_hub_admin_agent_remove.",
-        "routes": []
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "call agent.hub.admin.agent.remove"
+          }
+        ]
       },
       "description": "Remove an agent and its room memberships from the hub.",
       "inputSchema": {
@@ -62190,12 +63688,22 @@
         "idempotent": true,
         "role": "administrator",
         "scope": "server"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
       "cli": {
-        "excludedReason": "Use Console or MCP agent_hub_admin_room_remove.",
-        "routes": []
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "call agent.hub.admin.room.remove"
+          }
+        ]
       },
       "description": "Remove a room, its messages, and its attachments.",
       "inputSchema": {
@@ -62253,12 +63761,22 @@
         "idempotent": true,
         "role": "administrator",
         "scope": "server"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
       "cli": {
-        "excludedReason": "Use Console or MCP agent_hub_admin_message_remove.",
-        "routes": []
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "call agent.hub.admin.message.remove"
+          }
+        ]
       },
       "description": "Remove one message and its attachments from the hub.",
       "inputSchema": {
@@ -62316,12 +63834,22 @@
         "idempotent": true,
         "role": "administrator",
         "scope": "server"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
       "cli": {
-        "excludedReason": "Use Console or MCP agent_hub_settings_set.",
-        "routes": []
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "call agent.hub.settings.set"
+          }
+        ]
       },
       "description": "Enable or pause the isolated public hub space.",
       "inputSchema": {
@@ -62427,12 +63955,22 @@
         "idempotent": true,
         "role": "administrator",
         "scope": "server"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
       "cli": {
-        "excludedReason": "Use Console or MCP agent_hub_key_rotate.",
-        "routes": []
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "call agent.hub.key.rotate"
+          }
+        ]
       },
       "description": "Rotate the instance bearer key with seven-day overlap.",
       "inputSchema": {
@@ -62504,12 +64042,22 @@
         "idempotent": true,
         "role": "administrator",
         "scope": "server"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
       "cli": {
-        "excludedReason": "Use Console or MCP agent_hub_activity.",
-        "routes": []
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "call agent.hub.activity"
+          }
+        ]
       },
       "description": "Read bounded aggregate hub activity without agent identity or message content.",
       "inputSchema": {
@@ -62635,12 +64183,22 @@
         "idempotent": true,
         "role": "administrator",
         "scope": "server"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
       "cli": {
-        "excludedReason": "Used only by the dedicated edge agent-hub endpoint.",
-        "routes": []
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "call agent.hub.remote"
+          }
+        ]
       },
       "description": "Dedicated remote adapter for the agent hub; only the edge allowlist may invoke it.",
       "inputSchema": {
@@ -63197,12 +64755,22 @@
         "idempotent": false,
         "role": "anonymous",
         "scope": "public"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
       "cli": {
-        "excludedReason": "Use the typed API or MCP adapter.",
-        "routes": []
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "call agent.message.poll"
+          }
+        ]
       },
       "description": "Read pending repository messages for an agent.",
       "inputSchema": {
@@ -63341,12 +64909,22 @@
         "idempotent": true,
         "role": "administrator",
         "scope": "repository"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
       "cli": {
-        "excludedReason": "Use the typed API or MCP adapter.",
-        "routes": []
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "call agent.message.claim"
+          }
+        ]
       },
       "description": "Claim one repository message for the current agent.",
       "inputSchema": {
@@ -63460,12 +65038,22 @@
         "idempotent": false,
         "role": "administrator",
         "scope": "repository"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
       "cli": {
-        "excludedReason": "Use the typed API or MCP adapter.",
-        "routes": []
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "call agent.message.ack"
+          }
+        ]
       },
       "description": "Acknowledge one claimed repository message.",
       "inputSchema": {
@@ -63579,6 +65167,11 @@
         "idempotent": false,
         "role": "administrator",
         "scope": "repository"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
@@ -63587,7 +65180,7 @@
         "routes": [
           {
             "dispatch": "local",
-            "route": "bug report"
+            "route": "call bug.report"
           }
         ]
       },
@@ -63889,6 +65482,11 @@
         "idempotent": false,
         "role": "self",
         "scope": "self"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
@@ -63897,7 +65495,7 @@
         "routes": [
           {
             "dispatch": "local",
-            "route": "bug list"
+            "route": "call bug.list"
           }
         ]
       },
@@ -64052,6 +65650,11 @@
         "idempotent": true,
         "role": "self",
         "scope": "self"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     },
     {
@@ -64060,7 +65663,7 @@
         "routes": [
           {
             "dispatch": "local",
-            "route": "bug close"
+            "route": "call bug.close"
           }
         ]
       },
@@ -64144,11 +65747,16 @@
         "idempotent": true,
         "role": "self",
         "scope": "self"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
       }
     }
   ],
   "product": "devcoordinator2",
-  "protocol": 2,
+  "protocol": 3,
   "requestEnvelope": {
     "$defs": {
       "AlarmCapability": {

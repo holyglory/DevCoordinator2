@@ -46,11 +46,11 @@ export async function verifyWorkspace({ page, daemon, check, scenario, baseUrl, 
   verify('blank names cannot be saved', await appearance.isVisible() && !daemon.calls.some((call) => call.operation === 'repository.presentation.update'));
   await appearance.locator('input[name=display_name]').fill('My project');
   await appearance.locator('input[value=rocket]').check();
-  await page.route('**/api/v2/repository.presentation.update', (route) => route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ ok: false, error: { code: 'unavailable', message: 'Fixture save unavailable' } }) }));
+  await page.route('**/api/v3/repository.presentation.update', (route) => route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ ok: false, error: { code: 'unavailable', message: 'Fixture save unavailable' } }) }));
   await appearance.locator('button[type=submit]').click();
   await appearance.locator('[role=alert]:not([hidden])').waitFor();
   verify('failed appearance save keeps entered name and icon', await appearance.locator('input[name=display_name]').inputValue() === 'My project' && await appearance.locator('input[value=rocket]').isChecked());
-  await page.unroute('**/api/v2/repository.presentation.update');
+  await page.unroute('**/api/v3/repository.presentation.update');
   await appearance.locator('button[type=submit]').click();
   await appearance.waitFor({ state: 'detached' });
   await page.reload(); await page.locator('.plan-context').waitFor();
@@ -156,7 +156,7 @@ export async function verifyWorkspace({ page, daemon, check, scenario, baseUrl, 
   await page.goto(`${baseUrl}#/plan/${repositoryId}`);
   await page.locator('.plan-context').waitFor();
   await page.screenshot({ path: path.join(output, `workspace-${theme}-${viewport.width}.png`), fullPage: true });
-  await page.route('**/api/v2/test.list', route => route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ ok: false, error: { code: 'internal_error', message: 'Fixture Tests unavailable' } }) }));
+  await page.route('**/api/v3/test.list', route => route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ ok: false, error: { code: 'internal_error', message: 'Fixture Tests unavailable' } }) }));
   await page.goto(`${baseUrl}#/tests?repository=release-clone`);
   await page.reload();
   await page.locator('#workspace-aspects a').first().waitFor();
@@ -171,6 +171,6 @@ export async function verifyWorkspace({ page, daemon, check, scenario, baseUrl, 
   verify('search by an exact checkout root finds its source repository', await page.locator('#repository-list a').count() === 1 && await page.locator('#repository-list .workspace-repository-name').innerText() === 'repo-one');
   await page.locator('#repository-search').fill('');
   await page.screenshot({ path: path.join(output, `repository-roots-${theme}-${viewport.width}.png`), fullPage: true, mask: [page.locator('#who-email')] });
-  await page.unroute('**/api/v2/test.list');
+  await page.unroute('**/api/v3/test.list');
   verify('no uncaught browser errors', errors.length === 0, errors.join('; '));
 }

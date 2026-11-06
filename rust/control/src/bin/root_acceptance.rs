@@ -66,6 +66,8 @@ struct Harness {
     work_root: PathBuf,
     caller_uid: u32,
     caller_gid: u32,
+    postgres_uid: u32,
+    postgres_gid: u32,
     compose_subnet: Option<Ipv4Addr>,
     port_range: String,
 }
@@ -77,6 +79,9 @@ struct World {
     socket: PathBuf,
     state: PathBuf,
     policy: PathBuf,
+    postgres: Option<devcoordinator2_control::persistence::fixture::FixtureCluster>,
+    postgres_config: devcoordinator2_control::database::DatabaseConfig,
+    database_config: PathBuf,
     sandboxed: bool,
     unit_prefix: String,
     daemon: Option<Child>,
@@ -175,6 +180,20 @@ impl World {
             std::process::id(),
             &sha256_hex(name.as_bytes())[..8]
         );
+        let postgres = devcoordinator2_control::persistence::fixture::FixtureCluster::start_in(
+            &base.join("authority-postgres"),
+            harness.postgres_uid,
+            harness.postgres_gid,
+        )
+        .map_err(|e| e.to_string())?;
+        let postgres_config = postgres
+            .create_database("authority")
+            .map_err(|e| e.to_string())?;
+        let database_config = base.join("authority-postgres.json");
+        write_private_json(
+            &database_config,
+            &json!({"schema":1,"connection":postgres_config.url,"data_directory":postgres_config.data_directory}),
+        )?;
         let mut world = Self {
             harness: harness.clone(),
             base,
@@ -182,6 +201,9 @@ impl World {
             socket,
             state,
             policy: allowlist,
+            postgres: Some(postgres),
+            postgres_config,
+            database_config,
             sandboxed: false,
             unit_prefix,
             daemon: None,
@@ -227,6 +249,7 @@ impl World {
             .env("DEVCOORDINATOR2_SOCKET", &self.socket)
             .env("DEVCOORDINATOR2_ROOT_EXECUTOR", &self.harness.executor)
             .env("DEVCOORDINATOR2_STATE_DIR", &self.state)
+            .env("DEVCOORDINATOR2_DATABASE_CONFIG", &self.database_config)
             .env("DEVCOORDINATOR2_BUGS_DIR", self.base.join("bugs"))
             .env("DEVCOORDINATOR2_UNIT_PREFIX", &self.unit_prefix)
             .env("DEVCOORDINATOR2_SLICE", "devcoordinator2-tests.slice")
@@ -295,6 +318,19 @@ impl World {
             }
             thread::sleep(Duration::from_millis(20));
         }
+    }
+
+    fn authority(&self) -> Result<devcoordinator2_control::database::Database, String> {
+        devcoordinator2_control::database::Database::connect(&self.postgres_config)
+            .map_err(|e| e.to_string())
+    }
+    fn authority_connection(
+        &self,
+    ) -> Result<devcoordinator2_control::database::Connection, String> {
+        self.authority()?
+            .persistence()
+            .acquire(devcoordinator2_control::database::Lane::Write)
+            .map_err(|e| e.to_string())
     }
 
     fn sandbox_command(&self, daemon: &Command) -> Result<Command, String> {
@@ -641,6 +677,11 @@ impl World {
                 }
             }
         }
+        if let Some(postgres) = self.postgres.take() {
+            if let Err(error) = postgres.stop() {
+                failures.push(error.to_string());
+            }
+        }
         if !preserve_files
             && self.base.join(OWNERSHIP_MARKER).is_file()
             && let Err(error) = fs::remove_dir_all(&self.base)
@@ -662,16 +703,12 @@ impl World {
             "Compose fixture ownership marker is missing"
         );
         let mut projects = BTreeSet::new();
-        let database = self.state.join("authority.sqlite3");
-        if database.is_file() {
-            let connection = rusqlite::Connection::open_with_flags(
-                database,
-                rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
-            )
-            .map_err(|error| error.to_string())?;
+        if self.postgres.is_some() {
+            let database = self.authority()?;
+            let rows=database.read(|connection| {
             let mut query = connection
                 .prepare("SELECT deployment_id,name,binding_identity FROM components WHERE binding_kind='compose'")
-                .map_err(|error| error.to_string())?;
+                ?;
             let rows = query
                 .query_map([], |row| {
                     Ok((
@@ -680,9 +717,11 @@ impl World {
                         row.get::<_, String>(2)?,
                     ))
                 })
-                .map_err(|error| error.to_string())?;
+                ?.collect::<devcoordinator2_control::database::Result<Vec<_>>>()?;
+            Ok(rows)
+            }).map_err(|e|e.to_string())?;
             for row in rows {
-                let (deployment, component, project) = row.map_err(|error| error.to_string())?;
+                let (deployment, component, project) = row;
                 ensure!(
                     project
                         == devcoordinator2_control::docker::compose_project(
@@ -784,7 +823,7 @@ impl Drop for World {
 fn request(operation: &str, params: Value, kind: &str, identity: Option<&str>) -> Value {
     let id = REQUEST_SEQUENCE.fetch_add(1, Ordering::Relaxed);
     json!({
-        "protocol": 2,
+        "protocol": devcoordinator2_api::PROTOCOL_VERSION,
         "id": format!("root-{id:08x}"),
         "operation": operation,
         "params": params,
@@ -797,7 +836,7 @@ fn request(operation: &str, params: Value, kind: &str, identity: Option<&str>) -
 }
 
 fn data(response: &Value) -> Result<&Value, String> {
-    if response.get("protocol") != Some(&json!(2)) {
+    if response.get("protocol") != Some(&json!(devcoordinator2_api::PROTOCOL_VERSION)) {
         return Err(format!(
             "invalid response protocol: {}",
             bounded_json(response)
@@ -1120,6 +1159,26 @@ fn caller_identity() -> Result<(u32, u32), String> {
     }
     // SAFETY: entry was checked for null and points to a valid passwd record.
     Ok(unsafe { ((*entry).pw_uid, (*entry).pw_gid) })
+}
+
+fn postgres_identity() -> Result<(u32, u32), String> {
+    let explicit = (
+        std::env::var("DEVCOORDINATOR2_TEST_POSTGRES_UID").ok(),
+        std::env::var("DEVCOORDINATOR2_TEST_POSTGRES_GID").ok(),
+    );
+    let (uid, gid) = if explicit.0.is_some() || explicit.1.is_some() {
+        explicit
+    } else {
+        (
+            std::env::var("SUDO_UID").ok(),
+            std::env::var("SUDO_GID").ok(),
+        )
+    };
+    let uid=uid.and_then(|v|v.parse::<u32>().ok()).filter(|v|*v!=0).ok_or("root PostgreSQL fixture requires an explicit trusted non-root UID/GID, through DEVCOORDINATOR2_TEST_POSTGRES_UID/GID or the original sudo caller")?;
+    let gid = gid
+        .and_then(|v| v.parse::<u32>().ok())
+        .ok_or("root PostgreSQL fixture GID is missing")?;
+    Ok((uid, gid))
 }
 
 fn command_json(command: &[String]) -> Result<String, String> {
@@ -2690,11 +2749,10 @@ health={{path="/healthz",timeout_seconds=10}}
     let pending_id = data(&pending)?["release_id"]
         .as_str()
         .ok_or("missing pending release")?;
-    let database = rusqlite::Connection::open(world.state.join("authority.sqlite3"))
-        .map_err(|e| e.to_string())?;
+    let database = world.authority_connection()?;
     database
         .execute(
-            "DELETE FROM port_assignments WHERE deployment_id=?1 AND component='web'",
+            "DELETE FROM port_assignments WHERE deployment_id=$1 AND component='web'",
             [id],
         )
         .map_err(|e| e.to_string())?;
@@ -2708,7 +2766,7 @@ health={{path="/healthz",timeout_seconds=10}}
     );
     let stored: (String, Option<u16>) = database
         .query_row(
-            "SELECT status,port FROM releases WHERE release_id=?1",
+            "SELECT status,port FROM releases WHERE release_id=$1",
             [pending_id],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
@@ -3140,8 +3198,7 @@ fn case_console_test_requests_use_registered_source_without_edge_git_access(
         fs::metadata(&world.repo).map_err(|e| e.to_string())?.mode() & 0o777 == 0o700,
         "Console execution widened repository filesystem access"
     );
-    let database = rusqlite::Connection::open(world.state.join("authority.sqlite3"))
-        .map_err(|e| e.to_string())?;
+    let database = world.authority_connection()?;
     database
         .execute("UPDATE repositories SET registered_by_uid=0", [])
         .map_err(|e| e.to_string())?;
@@ -3154,7 +3211,7 @@ fn case_console_test_requests_use_registered_source_without_edge_git_access(
     )?;
     database
         .execute(
-            "UPDATE repositories SET registered_by_uid=?1",
+            "UPDATE repositories SET registered_by_uid=$1",
             [world.harness.caller_uid],
         )
         .map_err(|e| e.to_string())?;
@@ -5277,24 +5334,23 @@ fn case_unchanged_apply_rechecks_already_bad_published_compose_route(
         "initial unreachable route did not fail"
     );
     {
-        let connection = rusqlite::Connection::open(world.state.join("authority.sqlite3"))
-            .map_err(|error| error.to_string())?;
+        let connection = world.authority_connection()?;
         connection
             .execute(
-                "UPDATE deployments SET state='running' WHERE deployment_id=?1",
-                rusqlite::params![deployment_id],
+                "UPDATE deployments SET state='running' WHERE deployment_id=$1",
+                devcoordinator2_control::database::params![deployment_id],
             )
             .map_err(|error| error.to_string())?;
         connection
             .execute(
-                "UPDATE components SET state='running', health='unhealthy', last_error='seeded unreachable route' WHERE deployment_id=?1 AND name='compose'",
-                rusqlite::params![deployment_id],
+                "UPDATE components SET state='running', health='unhealthy', last_error='seeded unreachable route' WHERE deployment_id=$1 AND name='compose'",
+                devcoordinator2_control::database::params![deployment_id],
             )
             .map_err(|error| error.to_string())?;
         connection
             .execute(
-                "INSERT OR REPLACE INTO domain_routes(domain, deployment_id, component, port, generation, published_at, lease_id) VALUES(?1,?2,'compose',?3,?4,'seeded',(SELECT lease_id FROM port_assignments WHERE deployment_id=?2 AND component='compose' AND port=?3))",
-                rusqlite::params![
+                "INSERT INTO domain_routes(domain, deployment_id, component, port, generation, published_at, lease_id) VALUES($1,$2,'compose',$3,$4,'seeded',(SELECT lease_id FROM port_assignments WHERE deployment_id=$2 AND component='compose' AND port=$3)) ON CONFLICT(domain) DO UPDATE SET deployment_id=excluded.deployment_id,component=excluded.component,port=excluded.port,generation=excluded.generation,published_at=excluded.published_at,lease_id=excluded.lease_id",
+                devcoordinator2_control::database::params![
                     "upgrade-stack",
                     deployment_id,
                     i64::try_from(route_port).map_err(|_| "route port overflow")?,
@@ -6271,10 +6327,8 @@ health={{path="/healthz",timeout_seconds=30}}
     let saved = world.base.join("saved");
     fs::create_dir(&saved).map_err(|e| e.to_string())?;
     fs::set_permissions(&saved, fs::Permissions::from_mode(0o700)).map_err(|e| e.to_string())?;
-    let authority =
-        devcoordinator2_control::database::Database::open(world.state.join("authority.sqlite3"))
-            .map_err(|e| e.to_string())?;
-    let snapshot = saved.join("authority-before.sqlite3");
+    let authority = world.authority()?;
+    let snapshot = saved.join("authority-before.pgdump");
     authority
         .backup(snapshot.clone())
         .map_err(|e| e.to_string())?;
@@ -6282,30 +6336,32 @@ health={{path="/healthz",timeout_seconds=30}}
     authority
         .transaction(move |c| {
             c.execute(
-                "UPDATE deployments SET current_generation=0 WHERE deployment_id=?1",
+                "UPDATE deployments SET current_generation=0 WHERE deployment_id=$1",
                 [&key],
             )?;
             c.execute(
-                "DELETE FROM components WHERE deployment_id=?1 AND name='db'",
+                "DELETE FROM components WHERE deployment_id=$1 AND name='db'",
                 [&key],
             )?;
             c.execute(
-                "DELETE FROM port_assignments WHERE deployment_id=?1 AND component='db'",
+                "DELETE FROM port_assignments WHERE deployment_id=$1 AND component='db'",
                 [&key],
             )?;
             Ok(())
         })
         .map_err(|e| e.to_string())?;
     authority.close().map_err(|e| e.to_string())?;
+    let hash = sha256_hex(&fs::read(&snapshot).map_err(|e| e.to_string())?);
     let header = saved.join("installation-snapshot.json");
     fs::write(
         &header,
-        serde_json::to_vec(&json!({"schema":1,"status":"committed","transaction_dir":saved}))
-            .map_err(|e| e.to_string())?,
+        serde_json::to_vec(
+            &json!({"schema":3,"status":"committed","transaction_dir":saved,"backup_sha256":hash}),
+        )
+        .map_err(|e| e.to_string())?,
     )
     .map_err(|e| e.to_string())?;
     fs::set_permissions(&header, fs::Permissions::from_mode(0o600)).map_err(|e| e.to_string())?;
-    let hash = sha256_hex(&fs::read(&snapshot).map_err(|e| e.to_string())?);
     world.start_daemon(None, None, None)?;
     let mut params = json!({"repository_id":repository,"deployment_id":deployment,"transaction_dir":saved,"backup_sha256":hash});
     let credentials = world
@@ -7050,7 +7106,7 @@ fn case_bridge_observer_cutover_and_restart_receipt(world: &mut World) -> Result
     data(&world.call("ping", json!({}))?)?;
     world.stop_daemon(false)?;
     let stale = bridge.join("abbbcd.processing");
-    fs::write(&stale, serde_json::to_vec(&json!({"protocol":2,"id":"abbbcd","operation":"health.summary","params":{},"client":{}})).map_err(|e|e.to_string())?).map_err(|e|e.to_string())?;
+    fs::write(&stale, serde_json::to_vec(&json!({"protocol":3,"id":"abbbcd","operation":"health.summary","params":{},"client":{}})).map_err(|e|e.to_string())?).map_err(|e|e.to_string())?;
     chown_path(&stale, world.harness.caller_uid, world.harness.caller_gid)?;
     world.start_daemon(None, None, None)?;
     let recovered = bridge.join("abbbcd.response");
@@ -7172,6 +7228,7 @@ fn run_suite(
     reject_ephemeral_overlap(&port_range, &ephemeral)?;
     validate_run_inputs(&daemon, &executor, &fixture, &work_root, &report)?;
     let (caller_uid, caller_gid) = caller_identity()?;
+    let (postgres_uid, postgres_gid) = postgres_identity()?;
     let harness = Harness {
         daemon,
         executor,
@@ -7180,6 +7237,8 @@ fn run_suite(
         work_root,
         caller_uid,
         caller_gid,
+        postgres_uid,
+        postgres_gid,
         compose_subnet,
         port_range,
     };

@@ -354,7 +354,8 @@ candidate preliminary or blocked.
      below-the-fold and lazy-loaded content is exercised; how far it scrolled is
      reported in `metrics.scroll`. Pass `--no-scroll` (or `"scroll": false` in a
      config) only when the page must not scroll during inspection.
-   - Use `--from-coordinator --only-current` only for already-running current
+   - Discovery calls protocol-v3 `call deployment.list --params` with typed JSON.
+     Use `--from-coordinator --only-current` only for already-running current
      coordinator URLs. A discovered URL that cannot be checked fails the
      coverage gate by default. Use `--allow-discovered-target-failures` only
      when stale discovery is expected and the incomplete coverage is acceptable.

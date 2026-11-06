@@ -12,9 +12,9 @@ use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::Duration;
-use tokio::sync::{Notify, watch};
-use tokio::time::sleep;
+use tokio::sync::Notify;
 
+use crate::database::OptionalExtension;
 use devcoordinator2_api::ClientKind;
 use devcoordinator2_api::params::{RetryTest, StartTest};
 use devcoordinator2_api::results::{
@@ -28,7 +28,6 @@ use devcoordinator2_executor_protocol::{
     CheckPlan, CheckReport, ExecutionPlan, ExecutionReport, LeafStatus, ProofKind, RunStatus,
     Schema2, ValidationTier,
 };
-use rusqlite::OptionalExtension;
 use time::{format_description::FormatItem, macros::format_description};
 
 use crate::access::Caller;
@@ -324,57 +323,49 @@ impl TestLifecycle {
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(sink);
     }
 
-    pub async fn serve_reconciliation(&self, mut shutdown: watch::Receiver<bool>) {
-        loop {
-            if *shutdown.borrow() {
-                return;
-            }
-            let lifecycle = self.clone();
-            if let Err(error) =
-                tokio::task::spawn_blocking(move || lifecycle.reconcile_orphans()).await
-            {
-                tracing::error!(%error, "test reconciliation worker failed");
-            }
-            tokio::select! {
-                _ = self.inner.reconcile_wake.notified() => {}
-                _ = sleep(Duration::from_secs(30)) => {}
-                changed = shutdown.changed() => {
-                    if changed.is_err() || *shutdown.borrow() { return; }
-                }
-            }
+    pub fn reconciliation_signal(&self) -> Arc<Notify> {
+        self.inner.reconcile_wake.clone()
+    }
+
+    /// Reconcile one registered worktree; continue from its stable identity.
+    pub fn reconcile_orphans_step(
+        &self,
+        after_worktree_id: Option<String>,
+    ) -> Result<(Option<String>, Option<ProtocolError>), ProtocolError> {
+        if after_worktree_id.is_none() {
+            self.inner.databases.prune_idle(false);
         }
+        let worktrees=self.inner.database.read(|connection| {
+            let mut statement=connection.prepare("SELECT w.worktree_id,w.worktree_path,w.repository_id FROM worktrees w JOIN repositories r ON r.repository_id=w.repository_id WHERE r.archived_at IS NULL AND w.worktree_id>$1 ORDER BY w.worktree_id LIMIT 2")?;
+            Ok(statement.query_map([after_worktree_id.as_deref().unwrap_or("")],|row|Ok((row.get::<_,String>(0)?,PathBuf::from(row.get::<_,String>(1)?),row.get::<_,String>(2)?)))?.collect::<Result<Vec<_>,_>>()?)
+        }).map_err(database_error)?;
+        let has_more = worktrees.len() > 1;
+        let Some((worktree_id, worktree, repository_id)) = worktrees.into_iter().next() else {
+            return Ok((None, None));
+        };
+        let error = self
+            .reconcile_worktree(&worktree_id, &worktree, &repository_id)
+            .err();
+        if let Some(error) = &error {
+            tracing::warn!(code=%error.code,worktree_id,"test reconciliation failed");
+        }
+        Ok((has_more.then_some(worktree_id), error))
     }
 
     pub fn reconcile_orphans(&self) -> Result<(), ProtocolError> {
-        self.inner.databases.prune_idle(false);
-        let worktrees = self.inner.database.call(|connection| {
-            let mut statement = connection.prepare(
-                "SELECT w.worktree_id,w.worktree_path,w.repository_id FROM worktrees w JOIN repositories r ON r.repository_id=w.repository_id WHERE r.archived_at IS NULL ORDER BY w.rowid",
-            )?;
-            Ok(statement
-                .query_map([], |row| {
-                    Ok((
-                        row.get::<_, String>(0)?,
-                        PathBuf::from(row.get::<_, String>(1)?),
-                        row.get::<_, String>(2)?,
-                    ))
-                })?
-                .collect::<Result<Vec<_>, _>>()?)
-        }).map_err(database_error)?;
+        let mut cursor = None;
         let mut first_error = None;
-        for (worktree_id, worktree, repository_id) in worktrees {
-            let result = self.reconcile_worktree(&worktree_id, &worktree, &repository_id);
-            if let Err(error) = result {
-                tracing::warn!(code = %error.code, worktree_id, "test reconciliation failed");
-                if first_error.is_none() {
-                    first_error = Some(error);
-                }
+        loop {
+            let (next, error) = self.reconcile_orphans_step(cursor)?;
+            if first_error.is_none() {
+                first_error = error;
             }
+            if next.is_none() {
+                break;
+            }
+            cursor = next;
         }
-        if let Some(error) = first_error {
-            return Err(error);
-        }
-        Ok(())
+        first_error.map_or(Ok(()), Err)
     }
 
     fn reconcile_worktree(
@@ -1730,9 +1721,9 @@ impl TestLifecycle {
         let rows = self
             .inner
             .database
-            .call(move |connection| {
+            .read(move |connection| {
                 let mut statement = connection.prepare(
-                    "SELECT w.worktree_id,w.worktree_path,w.repository_id,r.display_name FROM worktrees w JOIN repositories r ON r.repository_id=w.repository_id WHERE r.archived_at IS NULL AND w.worktree_id > ?1 ORDER BY w.worktree_id",
+                    "SELECT w.worktree_id,w.worktree_path,w.repository_id,r.display_name FROM worktrees w JOIN repositories r ON r.repository_id=w.repository_id WHERE r.archived_at IS NULL AND w.worktree_id > $1 ORDER BY w.worktree_id",
                 )?;
                 Ok(statement
                     .query_map([params.after_worktree_id.as_deref().unwrap_or("")], |row| {
@@ -1869,10 +1860,10 @@ impl TestLifecycle {
         let requested = path.to_owned();
         self.inner
             .database
-            .call(move |connection| {
+            .read(move |connection| {
                 connection
                     .query_row(
-                        "SELECT worktree_path FROM worktrees WHERE worktree_path=?1",
+                        "SELECT worktree_path FROM worktrees WHERE worktree_path=$1",
                         [&requested],
                         |row| row.get::<_, String>(0),
                     )
@@ -1896,10 +1887,10 @@ impl TestLifecycle {
             let id = self
                 .inner
                 .database
-                .call(move |connection| {
+                .read(move |connection| {
                     connection
                         .query_row(
-                            "SELECT worktree_id FROM worktrees WHERE worktree_path=?1",
+                            "SELECT worktree_id FROM worktrees WHERE worktree_path=$1",
                             [requested],
                             |row| row.get::<_, String>(0),
                         )
@@ -3158,6 +3149,12 @@ pub(crate) fn default_executor_path() -> PathBuf {
     }
     // Unit tests may use an isolated Cargo target directory. Resolve candidates
     // from that test executable, never from another checkout or installed daemon.
+    #[cfg(test)]
+    if let Ok(executable) = std::env::current_exe()
+        && let Some(candidate) = executor_sibling_path(&executable)
+    {
+        return candidate;
+    }
     #[cfg(test)]
     if let Ok(executable) = std::env::current_exe()
         && let Some(profile) = executable.parent().and_then(Path::parent)

@@ -11,7 +11,7 @@ use devcoordinator2_api::{
 use serde_json::Value;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
-use tokio::sync::watch;
+use tokio::sync::{Semaphore, watch};
 use tokio::task::JoinSet;
 use tokio::time::timeout;
 use tracing::{error, info};
@@ -95,6 +95,9 @@ pub struct App {
     edge_uid: Option<u32>,
     executor: Arc<dyn OperationExecutor>,
     installation_endpoint: Option<std::path::PathBuf>,
+    request_slots: Arc<Semaphore>,
+    action_slots: Arc<Semaphore>,
+    wait_preparations: Arc<Semaphore>,
 }
 
 impl App {
@@ -104,6 +107,9 @@ impl App {
             edge_uid: None,
             executor: Arc::new(PingExecutor { socket_display }),
             installation_endpoint: None,
+            request_slots: Arc::new(Semaphore::new(16)),
+            action_slots: Arc::new(Semaphore::new(4)),
+            wait_preparations: Arc::new(Semaphore::new(8)),
         }
     }
 
@@ -112,6 +118,9 @@ impl App {
             edge_uid,
             executor,
             installation_endpoint: None,
+            request_slots: Arc::new(Semaphore::new(16)),
+            action_slots: Arc::new(Semaphore::new(4)),
+            wait_preparations: Arc::new(Semaphore::new(8)),
         }
     }
 
@@ -141,11 +150,17 @@ impl App {
     ) -> ResponseEnvelope {
         let id = request.id.clone();
         if self.installation_endpoint.as_ref().is_some_and(|path| {
-            // The replacement answers readiness while rollback remains
-            // possible, but must not accept user writes that rollback could
-            // discard. Removing the retained socket commits normal admission.
+            // Candidate reads support frozen-source comparisons. A path could
+            // implicitly register a repository, so only exact-identity reads
+            // are allowed before committing normal mutation admission.
             path.with_file_name("daemon.pre-cutover.sock").exists()
-                && (!path.exists() || request.operation != "ping")
+                && (!path.exists()
+                    || !devcoordinator2_api::operation(&request.operation)
+                        .is_some_and(|op| op.policy.read_only() && !op.passive_wait())
+                    || request
+                        .params
+                        .get("path")
+                        .is_some_and(|value| !value.is_null()))
         }) {
             return ResponseEnvelope::failure(
                 id,
@@ -155,10 +170,12 @@ impl App {
                 ),
             );
         }
-        match self.deferred(&request, peer).await {
-            Ok(Some(deferred)) => return response_from_result(id, deferred.await),
-            Ok(None) => {}
-            Err(error) => return ResponseEnvelope::failure(id, error),
+        if crate::client::is_passive_wait_operation(&request.operation) {
+            match self.deferred(&request, peer).await {
+                Ok(Some(deferred)) => return response_from_result(id, deferred.await),
+                Ok(None) => {}
+                Err(error) => return ResponseEnvelope::failure(id, error),
+            }
         }
         let caller = match Caller::from_client(
             peer.pid,
@@ -170,12 +187,27 @@ impl App {
             Ok(caller) => caller,
             Err(error) => return ResponseEnvelope::failure(id, error),
         };
+        let slots = if devcoordinator2_api::operation(&request.operation)
+            .is_some_and(|op| op.long_running())
+        {
+            &self.action_slots
+        } else {
+            &self.request_slots
+        };
+        let permit = match Arc::clone(slots).try_acquire_owned() {
+            Ok(permit) => permit,
+            Err(_) => return ResponseEnvelope::failure(id, overloaded()),
+        };
         let operation = request.operation;
         let params = request.params;
         let executor = Arc::clone(&self.executor);
         response_from_result(
             id,
-            blocking_operation(move || executor.execute(&operation, params, &caller)).await,
+            blocking_operation(move || {
+                let _permit = permit;
+                executor.execute(&operation, params, &caller)
+            })
+            .await,
         )
     }
 
@@ -184,6 +216,22 @@ impl App {
         request: &RequestEnvelope,
         peer: PeerCredentials,
     ) -> Result<Option<DeferredOperation>, ProtocolError> {
+        if !crate::client::is_passive_wait_operation(&request.operation) {
+            return Ok(None);
+        }
+        if self
+            .installation_endpoint
+            .as_ref()
+            .is_some_and(|path| path.with_file_name("daemon.pre-cutover.sock").exists())
+        {
+            return Err(ProtocolError::new(
+                ErrorCode::DaemonUnavailable,
+                "installation in progress; reconnect this wait after recovery",
+            ));
+        }
+        let permit = Arc::clone(&self.wait_preparations)
+            .try_acquire_owned()
+            .map_err(|_| overloaded())?;
         let caller = Caller::from_client(
             peer.pid,
             peer.uid,
@@ -194,7 +242,11 @@ impl App {
         let executor = Arc::clone(&self.executor);
         let operation = request.operation.clone();
         let params = request.params.clone();
-        blocking_operation(move || executor.defer(&operation, params, &caller).transpose()).await
+        blocking_operation(move || {
+            let _permit = permit;
+            executor.defer(&operation, params, &caller).transpose()
+        })
+        .await
     }
 }
 
@@ -207,6 +259,40 @@ pub(crate) async fn blocking_operation<T: Send + 'static>(
         ProtocolError::new(ErrorCode::InternalError, "operation task failed")
             .with_detail(error.to_string())
     })?
+}
+
+fn overloaded() -> ProtocolError {
+    use devcoordinator2_api::recovery::{Action, Class, Guidance, RecoveryOption};
+    ProtocolError::new(
+        ErrorCode::Busy,
+        "Coordinator request lane is full; this request was not started",
+    )
+    .with_recovery(Guidance {
+        class: Class::Transient,
+        retryable: true,
+        waitable: false,
+        safe_to_continue: true,
+        state: Some("not_admitted".into()),
+        reason: "Bounded request admission rejected this request before execution".into(),
+        run_id: None,
+        deployment_id: None,
+        generation: None,
+        repository_id: None,
+        options: vec![RecoveryOption {
+            id: "retry-not-admitted".into(),
+            action: Action::Retry,
+            operation: None,
+            effect: "Retry this unstarted request after pending work completes".into(),
+            target: None,
+            cost: Some("bounded backoff".into()),
+            risk: Some("none; request was not started".into()),
+            prerequisites: vec![],
+            independent_work_safe: true,
+            user_action_required: false,
+        }],
+        field_errors: vec![],
+        example: None,
+    })
 }
 
 fn response_from_result(id: String, result: Result<Value, ProtocolError>) -> ResponseEnvelope {
@@ -252,7 +338,7 @@ impl DaemonEndpoint {
             mut changes,
             path,
         } = self;
-        info!(socket = %path.display(), "serving protocol 2");
+        info!(socket = %path.display(), "serving protocol 3");
         let mut connections = JoinSet::new();
         let (observer_interrupt, _) = watch::channel(false);
         while !*shutdown.borrow() {
@@ -276,6 +362,7 @@ impl DaemonEndpoint {
                 }
                 accepted = endpoint.listener.accept() => {
                     let (stream, _) = accepted?;
+                    if connections.len() >= 256 { drop(stream); continue; }
                     let app = Arc::clone(&app);
                     let interruptions = observer_interrupt.subscribe();
                     connections.spawn(async move {
@@ -664,7 +751,7 @@ mod tests {
         .await
         .expect("socket readiness");
         let mut stream = UnixStream::connect(&socket).await.unwrap();
-        stream.write_all(b"{\"protocol\":2,\"id\":\"wait\",\"operation\":\"event.wait\",\"params\":{\"filters\":[{\"filter_id\":\"retained\",\"categories\":[\"health\"]}]},\"client\":{}}\n").await.unwrap();
+        stream.write_all(b"{\"protocol\":3,\"id\":\"wait\",\"operation\":\"event.wait\",\"params\":{\"filters\":[{\"filter_id\":\"retained\",\"categories\":[\"health\"]}]},\"client\":{}}\n").await.unwrap();
         timeout(Duration::from_secs(2), started_rx)
             .await
             .unwrap()
@@ -711,7 +798,7 @@ mod tests {
         let app = App::new(&socket).with_installation_fence(socket.clone());
         let ping = || {
             serde_json::from_value(serde_json::json!({
-                "protocol":2,"id":"fence-proof","operation":"ping","params":{},"client":{}
+                "protocol":3,"id":"fence-proof","operation":"ping","params":{},"client":{}
             }))
             .unwrap()
         };
@@ -774,7 +861,7 @@ mod tests {
         let endpoint = DaemonEndpoint::bind(&socket).await.unwrap();
         let server = tokio::spawn(async move { endpoint.serve(&mut shutdown_rx, app).await });
         let mut stream = UnixStream::connect(&socket).await.unwrap();
-        stream.write_all(b"{\"protocol\":2,\"id\":\"observer\",\"operation\":\"event.wait\",\"params\":{\"filters\":[{\"filter_id\":\"upgrade\",\"categories\":[\"health\"]}]},\"client\":{}}\n").await.unwrap();
+        stream.write_all(b"{\"protocol\":3,\"id\":\"observer\",\"operation\":\"event.wait\",\"params\":{\"filters\":[{\"filter_id\":\"upgrade\",\"categories\":[\"health\"]}]},\"client\":{}}\n").await.unwrap();
         timeout(Duration::from_secs(2), started_rx)
             .await
             .unwrap()
@@ -846,7 +933,7 @@ mod tests {
         let endpoint = DaemonEndpoint::bind(&socket).await.unwrap();
         let server = tokio::spawn(async move { endpoint.serve(&mut shutdown_rx, app).await });
         let mut stream = UnixStream::connect(&socket).await.unwrap();
-        stream.write_all(b"{\"protocol\":2,\"id\":\"finite\",\"operation\":\"ping\",\"params\":{},\"client\":{}}\n").await.unwrap();
+        stream.write_all(b"{\"protocol\":3,\"id\":\"finite\",\"operation\":\"ping\",\"params\":{},\"client\":{}}\n").await.unwrap();
         timeout(Duration::from_secs(2), started_rx)
             .await
             .unwrap()
@@ -894,7 +981,7 @@ mod tests {
         let mut stream = UnixStream::connect(&socket).await.unwrap();
         stream
             .write_all(
-                b"{\"protocol\":2,\"id\":\"wait\",\"operation\":\"event.wait\",\"params\":{\"filters\":[{\"filter_id\":\"disconnect\",\"categories\":[\"health\"]}]},\"client\":{}}\n",
+                b"{\"protocol\":3,\"id\":\"wait\",\"operation\":\"event.wait\",\"params\":{\"filters\":[{\"filter_id\":\"disconnect\",\"categories\":[\"health\"]}]},\"client\":{}}\n",
             )
             .await
             .unwrap();
@@ -1064,7 +1151,7 @@ mod tests {
                 let waiting = tokio::spawn(async move {
                     let params = serde_json::json!({"path":"/fixture", "run_id":"accepted-run", "deadline_at":"2099-01-01T00:00:00Z"});
                     if bridge {
-                        let request = serde_json::json!({"protocol":2, "id":"aabbcc", "operation":"test.wait", "params":params, "client":{}});
+                        let request = serde_json::json!({"protocol":3, "id":"aabbcc", "operation":"test.wait", "params":params, "client":{}});
                         std::fs::write(
                             request_directory.join("aabbcc.request"),
                             serde_json::to_vec(&request).unwrap(),
@@ -1146,7 +1233,7 @@ mod tests {
         let mut stream = UnixStream::connect(&socket).await.unwrap();
         stream
             .write_all(
-                br#"{"protocol":2,"id":"wait-run","operation":"test.wait","params":{"path":"/worktree","run_id":"accepted-run","deadline_at":"2099-01-01T00:00:00Z"},"client":{}}
+                br#"{"protocol":3,"id":"wait-run","operation":"test.wait","params":{"path":"/worktree","run_id":"accepted-run","deadline_at":"2099-01-01T00:00:00Z"},"client":{}}
 "#,
             )
             .await

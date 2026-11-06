@@ -1,5 +1,4 @@
 use super::*;
-use devcoordinator2_control::database::Database;
 use devcoordinator2_control::deployment_state::{
     DeploymentStore, ObservedContainerInput, ObservedDeploymentInput,
 };
@@ -463,8 +462,7 @@ fn unused_image_ownership(
             "reserved",
         )
         .map_err(|e| e.to_string())?;
-        let database =
-            Database::open(world.state.join("authority.sqlite3")).map_err(|e| e.to_string())?;
+        let database = world.authority()?;
         let store = DeploymentStore::new(database.clone());
         let target = devcoordinator2_control::deployment_state::RegisteredDeploymentTarget {
             repository_id: repository.into(),
@@ -1148,8 +1146,7 @@ pub(super) fn legacy_docker_consumers(world: &mut World) -> Result<(), String> {
         ids.push(id);
     }
     world.stop_daemon(false)?;
-    let database =
-        Database::open(world.state.join("authority.sqlite3")).map_err(|e| e.to_string())?;
+    let database = world.authority()?;
     let store = DeploymentStore::new(database.clone());
     let deployment = "d1234567890abcdef";
     store
@@ -1506,15 +1503,22 @@ fn unused_volume_ownership(world: &mut World, repo: &str) -> Result<(), String> 
     Ok(())
 }
 
-fn cli(world: &World, args: &[&str]) -> Result<Value, String> {
+fn cli(world: &World, operation: &str, params: Value) -> Result<Value, String> {
     let socket = format!("DEVCOORDINATOR2_SOCKET={}", world.socket.display());
     let program = world
         .harness
         .daemon
         .to_str()
         .ok_or("candidate path is not UTF-8")?;
-    let mut all = vec![socket.as_str(), program];
-    all.extend_from_slice(args);
+    let encoded = serde_json::to_string(&params).map_err(|e| e.to_string())?;
+    let all = vec![
+        socket.as_str(),
+        program,
+        "call",
+        operation,
+        "--params",
+        encoded.as_str(),
+    ];
     let text = command_stdout_as(
         world.harness.caller_uid,
         world.harness.caller_gid,
@@ -1528,6 +1532,10 @@ fn cli(world: &World, args: &[&str]) -> Result<Value, String> {
 
 fn mcp(world: &World, name: &str, arguments: Value) -> Result<Value, String> {
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+    let operation = devcoordinator2_api::mcp_tool(name)
+        .ok_or("unknown acceptance operation alias")?
+        .operation
+        .name;
     tokio::runtime::Runtime::new().map_err(|e|e.to_string())?.block_on(async {
         tokio::time::timeout(Duration::from_secs(30),async {
             let mut child=tokio::process::Command::new("/usr/bin/setpriv")
@@ -1542,7 +1550,7 @@ fn mcp(world: &World, name: &str, arguments: Value) -> Result<Value, String> {
             let initialized:Value=serde_json::from_str(&lines.next_line().await.map_err(|e|e.to_string())?.ok_or("MCP initialization closed")?).map_err(|e|e.to_string())?;
             ensure!(initialized["id"]==1 && initialized.get("error").is_none(),"MCP initialization failed");
             input.write_all(b"{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}\n").await.map_err(|e|e.to_string())?;
-            let request=json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":name,"arguments":arguments}});
+            let request=json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"call_operation","arguments":{"operation":operation,"params":arguments}}});
             input.write_all(format!("{request}\n").as_bytes()).await.map_err(|e|e.to_string())?;
             loop {
                 let line=lines.next_line().await.map_err(|e|e.to_string())?.ok_or("MCP tool call closed")?;
@@ -1795,8 +1803,7 @@ fn observation_age_and_plan_expiry(world: &World, row: &Value, now: u64) -> Resu
     // A sequence advance keeps an older in-flight scan from replacing this
     // controlled observation; the normal API still derives all safety facts.
     let age = |verified: Option<u64>| -> Result<(), String> {
-        let database =
-            Database::open(world.state.join("authority.sqlite3")).map_err(|e| e.to_string())?;
+        let database = world.authority()?;
         let id = row["artifact_id"]
             .as_str()
             .ok_or("freshness artifact missing")?
@@ -1804,7 +1811,7 @@ fn observation_age_and_plan_expiry(world: &World, row: &Value, now: u64) -> Resu
         database.transaction(move|c| {
             c.execute("UPDATE storage_scan_state SET revision=revision+1 WHERE singleton=1",[])?;
             let sequence:i64=c.query_row("SELECT revision FROM storage_scan_state WHERE singleton=1",[],|r|r.get(0))?;
-            c.execute("UPDATE storage_artifacts SET record_json=json_set(record_json,'$.artifact.verified_at_ms',?1,'$.update_sequence',?2) WHERE artifact_id=?3",rusqlite::params![verified.map(|v|v as i64),sequence,id])?;
+            c.execute("UPDATE storage_artifacts SET record_json=jsonb_set(jsonb_set(record_json,'{artifact,verified_at_ms}',coalesce(to_jsonb($1::bigint),'null'::jsonb)),'{update_sequence}',to_jsonb($2::bigint)) WHERE artifact_id=$3",devcoordinator2_control::database::params![verified.map(|v|v as i64),sequence,id])?;
             Ok(())
         }).map_err(|e|e.to_string())?;
         database.close().map_err(|e| e.to_string())
@@ -2089,14 +2096,8 @@ pub(super) fn real_files_and_protection(world: &mut World) -> Result<(), String>
     let began = Instant::now();
     let started = cli(
         world,
-        &[
-            "storage",
-            "scan",
-            "--repository-id",
-            &repo,
-            "--idempotency-key",
-            "storage-initial",
-        ],
+        "storage.scan",
+        json!({"repository_id":repo,"idempotency_key":"storage-initial"}),
     )?;
     world
         .measurements
@@ -2168,15 +2169,8 @@ pub(super) fn real_files_and_protection(world: &mut World) -> Result<(), String>
     let plan_id = plan["plan_id"].as_str().ok_or("plan id missing")?;
     let started = cli(
         world,
-        &[
-            "storage",
-            "cleanup",
-            "start",
-            "--plan-id",
-            plan_id,
-            "--idempotency-key",
-            "remove-cache",
-        ],
+        "storage.cleanup.start",
+        json!({"plan_id":plan_id,"idempotency_key":"remove-cache"}),
     )?;
     let job_id = data(&started)?["job_id"]
         .as_str()
@@ -2199,15 +2193,8 @@ pub(super) fn real_files_and_protection(world: &mut World) -> Result<(), String>
     );
     let retried = cli(
         world,
-        &[
-            "storage",
-            "cleanup",
-            "start",
-            "--plan-id",
-            plan_id,
-            "--idempotency-key",
-            "remove-cache",
-        ],
+        "storage.cleanup.start",
+        json!({"plan_id":plan_id,"idempotency_key":"remove-cache"}),
     )?;
     ensure!(
         data(&retried)?["job_id"] == job_id,
@@ -2463,13 +2450,8 @@ fn generated_output_safety(world: &World, repo: &str) -> Result<(), String> {
     scanned(world, repo, "generated-inactive")?;
     let request = cli(
         world,
-        &[
-            "storage",
-            "cleanup",
-            "plan",
-            "--artifact-id",
-            build["artifact_id"].as_str().ok_or("build id missing")?,
-        ],
+        "storage.cleanup.plan",
+        json!({"artifact_ids":[build["artifact_id"].as_str().ok_or("build id missing")?]}),
     )?;
     let plan = data(&request)?;
     ensure!(
@@ -2478,15 +2460,8 @@ fn generated_output_safety(world: &World, repo: &str) -> Result<(), String> {
     );
     let started = cli(
         world,
-        &[
-            "storage",
-            "cleanup",
-            "start",
-            "--plan-id",
-            plan["plan_id"].as_str().ok_or("build plan missing")?,
-            "--idempotency-key",
-            "remove-compiled-output",
-        ],
+        "storage.cleanup.start",
+        json!({"plan_id":plan["plan_id"].as_str().ok_or("build plan missing")?,"idempotency_key":"remove-compiled-output"}),
     )?;
     let done = wait_job(
         world,

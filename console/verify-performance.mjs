@@ -103,14 +103,14 @@ export async function verifyPerformance({ page, daemon, check, scenario, baseUrl
   await page.locator('[data-performance-history] tbody tr').first().waitFor();
   verify('repository switch scopes the reads', daemon.calls.some(call => call.operation==='performance.reviews' && call.params.repository_id==='r2'));
   let failed=false;
-  await page.route('**/api/v2/performance.overview',route=>{const params=route.request().postDataJSON();if(!params.totals_only && !failed){failed=true;return route.fulfill({status:503,contentType:'application/json',body:JSON.stringify({ok:false,error:{code:'unavailable',message:'Fixture measurements unavailable'}})});}return route.continue();});
+  await page.route('**/api/v3/performance.overview',route=>{const params=route.request().postDataJSON();if(!params.totals_only && !failed){failed=true;return route.fulfill({status:503,contentType:'application/json',body:JSON.stringify({ok:false,error:{code:'unavailable',message:'Fixture measurements unavailable'}})});}return route.continue();});
   await page.locator('[data-performance-refresh]').click();
   await page.locator('[data-performance-charts] [role=alert]').waitFor();
   verify('measurement failure preserves review browsing', await page.locator('[data-performance-history] tbody tr').count()===2 && (await page.locator('[data-performance-outcomes]').innerText()).includes('could not be loaded'));
   await page.locator('[data-performance-charts] button').click();
   await page.locator('.performance-distribution').first().waitFor();
   verify('failed measurements can recover', await page.locator('.performance-distribution').count()===2);
-  await page.unroute('**/api/v2/performance.overview');
+  await page.unroute('**/api/v3/performance.overview');
   daemon.setScenario({...scenario,usageUnavailable:true});
   await page.locator('[data-performance-refresh]').click();
   await page.waitForFunction(()=>document.querySelector('[data-performance-charts]')?.textContent.includes('Token measurements are unavailable'));

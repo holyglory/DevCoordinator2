@@ -271,7 +271,15 @@ impl CollectorApi {
             return Err("api_unavailable".into());
         }
         // The lock coalesces source requests; callers never queue unbounded work.
-        let result = fetch(source, repository, worktree_keys, include_unassigned, start, end, deadline);
+        let result = fetch(
+            source,
+            repository,
+            worktree_keys,
+            include_unassigned,
+            start,
+            end,
+            deadline,
+        );
         match result {
             Ok((report, bytes)) => {
                 state.failed_until.remove(path);
@@ -705,18 +713,18 @@ impl CodexUsage {
             let mut failures = BTreeMap::new();
             for source in &self.config.codex_usage_sources {
                 match self.repository_key(source, repository, now, false) {
-                    Ok(key) => match self
-                        .api
-                        .summary(source, Some(&key), None, true, start, end, deadline)
-                    {
-                        Ok(summary) => {
-                            reports.push((
+                    Ok(key) => {
+                        match self
+                            .api
+                            .summary(source, Some(&key), None, true, start, end, deadline)
+                        {
+                            Ok(summary) => reports.push((
                                 source.uid,
                                 summary.source_report(Some(&key), count, None, true),
-                            ))
+                            )),
+                            Err(_) => return Ok(None),
                         }
-                        Err(_) => return Ok(None),
-                    },
+                    }
                     Err(error) => increment(&mut failures, &error.message),
                 }
             }

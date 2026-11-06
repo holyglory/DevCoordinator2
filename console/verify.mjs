@@ -500,11 +500,11 @@ async function startFakeDaemon(dir) {
       buf += c; if (!buf.endsWith('\n')) return;
       const req = JSON.parse(buf);
       const requestKeys = Object.keys(req).sort().join(',');
-      if (req.protocol !== 2 || requestKeys !== 'client,id,operation,params,protocol'
+      if (req.protocol !== 3 || requestKeys !== 'client,id,operation,params,protocol'
         || typeof req.operation !== 'string' || !req.params || Array.isArray(req.params)
         || typeof req.params !== 'object') {
-        socket.end(`${JSON.stringify({ protocol: 2, id: req.id || '', ok: false,
-          error: { code: 'protocol_invalid', message: 'fixture requires protocol v2', detail: '' } })}\n`);
+        socket.end(`${JSON.stringify({ protocol: 3, id: req.id || '', ok: false,
+          error: { code: 'protocol_invalid', message: 'fixture requires protocol v3', detail: '' } })}\n`);
         return;
       }
       calls.push(req);
@@ -545,7 +545,7 @@ async function startFakeDaemon(dir) {
             }
           }
         }
-        socket.end(JSON.stringify({ protocol: 2, id: req.id, ...payload }) + '\n', markSettled);
+        socket.end(JSON.stringify({ protocol: 3, id: req.id, ...payload }) + '\n', markSettled);
       };
       if (scenario.delayMs && (!scenario.delayOperations || scenario.delayOperations.includes(req.operation))) await new Promise((resolve) => delayedReplies.add(resolve));
       const cmd = req.operation;
@@ -1040,7 +1040,7 @@ async function main() {
             daemon.setScenario({ ...SCENARIOS.populated, cacheState });
             const operation = route === 'usage' ? 'usage.repositories' : route.startsWith('progress') ? 'progress.repository' : 'usage.repository';
             const failed = ['failed', 'unavailable'].includes(cacheState);
-            const waitRequest = failed ? null : page.waitForRequest(request => [operation, ...(route === 'usage' ? ['usage.repository'] : [])].some(name => request.url().endsWith('/api/v2/' + name)) && request.postDataJSON()?.wait_for_refresh === true).catch(error => ({ error }));
+            const waitRequest = failed ? null : page.waitForRequest(request => [operation, ...(route === 'usage' ? ['usage.repository'] : [])].some(name => request.url().endsWith('/api/v3/' + name)) && request.postDataJSON()?.wait_for_refresh === true).catch(error => ({ error }));
             await page.goto('http://' + HOST + ':' + port + '/?cache=' + cacheState + '#/' + route);
             await page.waitForFunction(() => /Loading usage|Saved usage|Refresh failed|refresh failed/i.test(document.querySelector('main').innerText));
             const before = await page.locator('main').innerText();

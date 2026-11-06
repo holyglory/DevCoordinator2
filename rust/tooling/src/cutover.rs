@@ -1,11 +1,10 @@
-//! Fail-closed activation state machine for the one live Rust cutover.
+//! Fenced PostgreSQL activation, native upgrades, and delayed source retirement.
 //!
-//! Concrete host access is an adapter so the sequence can be exhaustively
-//! rehearsed. The database backup is restored when integrity fails or a failed
-//! candidate changed the schema beyond the captured prior installation. A
-//! same-schema startup or acceptance failure keeps intact data and restores
-//! units, links, private edge settings, and the socket. The Console source
-//! marker is verified separately against the checkout that still serves it.
+//! Concrete host access is an adapter for complete rollback rehearsals. Each
+//! attempt copies into a fresh database while the prior authority stays intact.
+//! Before write admission, failure restores the prior service/configuration;
+//! after admission, recovery preserves PostgreSQL writes and moves forward.
+//! Final source retirement requires separate post-activation live acceptance.
 
 #[cfg(target_os = "linux")]
 use std::ffi::CString;
@@ -32,12 +31,19 @@ use crate::install::{
     render_daemon_unit_for_binary, render_edge_unit, render_tests_slice_unit,
 };
 
+#[path = "cutover/finalize.rs"]
+mod finalize;
+#[path = "cutover/native_recovery.rs"]
+mod native_recovery;
+pub use finalize::{FinalizationConfig, FinalizationReceipt, LiveAcceptance, finalize_host};
+
 const DRAIN_FILE: &str = "test-drain.json";
 const ACTIVITY_FILE: &str = "test-activity.json";
 const LOCK_FILE: &str = "test-admission.lock";
 const MAX_STATE_BYTES: u64 = 2 * 1024 * 1024;
 const MAX_SNAPSHOT_BYTES: u64 = 1024 * 1024;
 const MINIMUM_SUPPORTED_DATABASE_SCHEMA: u32 = 15;
+const MAXIMUM_LEGACY_SQLITE_SCHEMA: u32 = 34;
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -64,6 +70,12 @@ pub trait CutoverAdapter {
     fn start_rust(&mut self) -> Result<(), String>;
     fn verify_live(&mut self) -> Result<Vec<String>, String>;
     fn commit_activation(&mut self, snapshot: &Self::InstallationSnapshot) -> Result<(), String>;
+    fn writes_admitted(&self) -> bool {
+        false
+    }
+    fn finalization_required(&self) -> bool {
+        false
+    }
     fn stop_rust(&mut self) -> Result<(), String>;
     fn restore_installation(&mut self, snapshot: &Self::InstallationSnapshot)
     -> Result<(), String>;
@@ -123,26 +135,8 @@ fn activate_drained<A: CutoverAdapter>(
             ));
         }
     }
-    let backup = match adapter.backup_database() {
-        Ok(backup) => backup,
-        Err(error) => {
-            return Err(combine(
-                error,
-                "restore legacy socket",
-                adapter.restore_legacy_socket(),
-            ));
-        }
-    };
-    let snapshot = match adapter.capture_installation() {
-        Ok(snapshot) => snapshot,
-        Err(error) => {
-            return Err(combine(
-                error,
-                "restore legacy socket",
-                adapter.restore_legacy_socket(),
-            ));
-        }
-    };
+    // The legacy process and its background writers stop before the frozen
+    // authority copy is captured. Accepted work and socket users already drained.
     if let Err(error) = adapter.stop_legacy() {
         let error = combine(
             error,
@@ -155,6 +149,36 @@ fn activate_drained<A: CutoverAdapter>(
             adapter.start_legacy(),
         ));
     }
+    let backup = match adapter.backup_database() {
+        Ok(backup) => backup,
+        Err(error) => {
+            let error = combine(
+                error,
+                "restore legacy socket",
+                adapter.restore_legacy_socket(),
+            );
+            return Err(combine(
+                error,
+                "restart prior services",
+                adapter.start_legacy(),
+            ));
+        }
+    };
+    let snapshot = match adapter.capture_installation() {
+        Ok(snapshot) => snapshot,
+        Err(error) => {
+            let error = combine(
+                error,
+                "restore legacy socket",
+                adapter.restore_legacy_socket(),
+            );
+            return Err(combine(
+                error,
+                "restart prior services",
+                adapter.start_legacy(),
+            ));
+        }
+    };
     let activation = (|| {
         adapter.install_rust()?;
         adapter.start_rust()?;
@@ -164,7 +188,12 @@ fn activate_drained<A: CutoverAdapter>(
     })();
     match activation {
         Ok(checks) => Ok(CutoverReceipt {
-            status: "activated".to_owned(),
+            status: if adapter.finalization_required() {
+                "activated_awaiting_final_acceptance"
+            } else {
+                "activated"
+            }
+            .to_owned(),
             backup,
             database_restored: false,
             checks,
@@ -179,6 +208,11 @@ fn rollback<A: CutoverAdapter>(
     backup: &str,
     activation_error: String,
 ) -> Result<CutoverReceipt, String> {
+    if adapter.writes_admitted() {
+        return Err(format!(
+            "PostgreSQL authority is active; recovery must preserve its new writes and roll forward: {activation_error}"
+        ));
+    }
     let mut failures = Vec::new();
     if let Err(error) = adapter.stop_rust() {
         failures.push(format!("stop Rust: {error}"));
@@ -232,6 +266,8 @@ fn combine(primary: String, operation: &str, secondary: Result<(), String>) -> S
 
 #[derive(Clone, Debug)]
 pub struct HostCutoverConfig {
+    pub candidate_acceptance: PathBuf,
+    pub postgres: install::postgres::PostgresSetup,
     pub candidate_manifest: PathBuf,
     pub installed_manifest: PathBuf,
     pub tmpfiles_path: PathBuf,
@@ -296,10 +332,12 @@ pub struct RecoveryReceipt {
 impl Default for HostCutoverConfig {
     fn default() -> Self {
         Self {
+            candidate_acceptance: "/etc/devcoordinator2/candidate-acceptance.json".into(),
+            postgres: install::postgres::PostgresSetup::default(),
             candidate_manifest: "/etc/devcoordinator2/candidate-install-manifest.json".into(),
             installed_manifest: "/etc/devcoordinator2/install-manifest.json".into(),
             tmpfiles_path: "/etc/tmpfiles.d/devcoordinator2.conf".into(),
-            transaction_dir: "/var/lib/devcoordinator2/cutover/rust-v2".into(),
+            transaction_dir: "/var/lib/devcoordinator2/cutover/postgres-v3".into(),
             runtime_dir: "/run/devcoordinator2".into(),
             socket_path: "/run/devcoordinator2/daemon.sock".into(),
             database_path: "/var/lib/devcoordinator2/authority.sqlite3".into(),
@@ -357,7 +395,17 @@ pub struct HostDrain {
     nonce: String,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum AuthorityKind {
+    LegacySqlite,
+    Postgres,
+}
+
 pub struct HostCutover {
+    authority: AuthorityKind,
+    authority_marker_path: PathBuf,
+    frozen_companions: Vec<(PathBuf, String)>,
+    inherited_retirement_targets: Vec<Value>,
     config: HostCutoverConfig,
     runner: Arc<dyn CommandRunner>,
     manifest: InstallManifest,
@@ -367,6 +415,10 @@ pub struct HostCutover {
     tmpfiles_text: String,
     expected_owner: (u32, u32),
     fenced: bool,
+    admitted: bool,
+    acceptance_sha256: String,
+    frozen_source_sha256: Option<String>,
+    postgres_started: bool,
 }
 
 impl HostCutover {
@@ -375,7 +427,7 @@ impl HostCutover {
     }
 
     pub fn new_owned(
-        config: HostCutoverConfig,
+        mut config: HostCutoverConfig,
         runner: Arc<dyn CommandRunner>,
         expected_owner: (u32, u32),
     ) -> Result<Self, String> {
@@ -389,6 +441,114 @@ impl HostCutover {
             runner.as_ref(),
             expected_owner.0,
         )?;
+        let acceptance_sha256 = install::postgres::verify_acceptance(
+            &config.candidate_acceptance,
+            &manifest,
+            expected_owner.0,
+        )?;
+        config
+            .postgres
+            .verify_binaries(runner.as_ref(), expected_owner)?;
+        let installed_manifest = read_json_file(&config.installed_manifest)?;
+        let authority = if installed_manifest
+            .as_ref()
+            .and_then(|value| value.get("binaries"))
+            .and_then(Value::as_array)
+            .is_some_and(|binaries| {
+                binaries
+                    .iter()
+                    .any(|binary| binary["name"] == "devcoordinator2-migrate-authority")
+            }) {
+            AuthorityKind::Postgres
+        } else {
+            AuthorityKind::LegacySqlite
+        };
+        let mut inherited_retirement_targets = Vec::new();
+        if authority == AuthorityKind::Postgres {
+            let current_path = config
+                .postgres
+                .data_dir
+                .parent()
+                .ok_or("PostgreSQL data directory has no parent")?
+                .join("authority-current.json");
+            let current = finalize::private(&current_path, expected_owner.0)?;
+            if current["schema"] != 1
+                || current["source_commit"]
+                    != installed_manifest
+                        .as_ref()
+                        .and_then(|m| m.get("source_commit"))
+                        .cloned()
+                        .unwrap_or(Value::Null)
+            {
+                return Err(
+                    "current PostgreSQL authority binding does not match the installed source"
+                        .into(),
+                );
+            }
+            let transaction = Path::new(
+                current["transaction_dir"]
+                    .as_str()
+                    .ok_or("current PostgreSQL authority has no transaction binding")?,
+            );
+            if !transaction.is_absolute() {
+                return Err("current PostgreSQL transaction binding is not absolute".into());
+            }
+            let final_path = transaction.join("finalization.json");
+            let prior_finalization = if final_path.exists() {
+                let receipt: FinalizationReceipt =
+                    serde_json::from_value(finalize::private(&final_path, expected_owner.0)?)
+                        .map_err(|_| "prior PostgreSQL finalization receipt is invalid")?;
+                if receipt.schema != 1 || current["source_commit"] != receipt.source_commit {
+                    return Err("prior PostgreSQL finalization belongs to another source".into());
+                }
+                Some(receipt)
+            } else {
+                None
+            };
+            let pending_path = transaction.join("retirement-pending.json");
+            if prior_finalization
+                .as_ref()
+                .is_some_and(|receipt| receipt.status != "finalized")
+                || (prior_finalization.is_some() && pending_path.exists())
+            {
+                return Err(
+                    "finish the prior activation's exact finalization retry before another upgrade"
+                        .into(),
+                );
+            }
+            if pending_path.exists() {
+                let pending = finalize::private(&pending_path, expected_owner.0)?;
+                if pending["source_commit"] != current["source_commit"] {
+                    return Err(
+                        "prior PostgreSQL retirement binding belongs to another source".into(),
+                    );
+                }
+                inherited_retirement_targets = pending["retirement_targets"]
+                    .as_array()
+                    .filter(|targets| targets.len() <= 32)
+                    .cloned()
+                    .ok_or("prior PostgreSQL activation has invalid retirement targets")?;
+            } else if prior_finalization.is_none() {
+                return Err(
+                    "prior PostgreSQL activation has no retirement completion evidence".into(),
+                );
+            }
+        }
+        use sha2::Digest;
+        let candidate = sha2::Sha256::digest(config.transaction_dir.as_os_str().as_encoded_bytes());
+        config.postgres.database_name = format!(
+            "devcoordinator2_candidate_{}",
+            candidate[..8]
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>()
+        );
+        let authority_marker_path = config
+            .postgres
+            .data_dir
+            .parent()
+            .ok_or("PostgreSQL data directory has no parent")?
+            .join("authority-current.json");
         let source_root = Path::new(&manifest.source_root);
         let daemon_binary = manifest
             .binaries
@@ -396,11 +556,30 @@ impl HostCutover {
             .find(|binary| binary.name == "devcoordinator2")
             .map(|binary| PathBuf::from(&binary.path))
             .ok_or_else(|| "candidate manifest has no control binary".to_owned())?;
-        let daemon_unit_text = render_daemon_unit_for_binary(source_root, &daemon_binary)?;
+        for unit in [
+            &config.daemon_unit,
+            &config.edge_unit,
+            &config.postgres.unit,
+        ] {
+            if !unit.ends_with(".service")
+                || unit.len() > 128
+                || !unit.bytes().all(|byte| {
+                    byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'@')
+                })
+            {
+                return Err("cutover requires exact service unit names".into());
+            }
+        }
+        let daemon_unit_text = render_daemon_unit_for_binary(source_root, &daemon_binary)?
+            .replace("devcoordinator2-postgres.service", &config.postgres.unit);
         let edge_unit_text = render_edge_unit(source_root, config.canary)?;
         let tests_slice_unit_text = render_tests_slice_unit(source_root)?;
         let tmpfiles_text = install::state_tmpfiles(source_root, &config.tmpfiles_path)?;
         Ok(Self {
+            authority,
+            authority_marker_path,
+            frozen_companions: Vec::new(),
+            inherited_retirement_targets,
             config,
             runner,
             manifest,
@@ -410,6 +589,10 @@ impl HostCutover {
             tmpfiles_text,
             expected_owner,
             fenced: false,
+            admitted: false,
+            acceptance_sha256,
+            frozen_source_sha256: None,
+            postgres_started: false,
         })
     }
 
@@ -444,8 +627,12 @@ impl HostCutover {
         }
     }
 
-    fn snapshot_targets(&self) -> [&Path; 8] {
+    fn snapshot_targets(&self) -> [&Path; 12] {
         [
+            &self.authority_marker_path,
+            &self.config.postgres.unit_path,
+            &self.config.postgres.config_path,
+            &self.config.instance_env,
             &self.config.daemon_unit_path,
             &self.config.edge_unit_path,
             &self.config.edge_env,
@@ -474,6 +661,228 @@ impl HostCutover {
             );
         }
         Ok(())
+    }
+
+    fn migrate_authority(&self, mode: &str, report_name: &str) -> Result<Value, String> {
+        self.migrate_at(
+            mode,
+            report_name,
+            &self.config.transaction_dir.join("authority-before.pgdump"),
+        )
+    }
+
+    fn migrate_at(&self, mode: &str, report_name: &str, archive: &Path) -> Result<Value, String> {
+        self.verify_candidate_binaries()?;
+        let source = self.config.transaction_dir.join("authority-before.sqlite3");
+        let archive = archive.to_owned();
+        let report = self.config.transaction_dir.join(report_name);
+        let mut args = vec![
+            "--mode".into(),
+            mode.into(),
+            "--source".into(),
+            source.into_os_string(),
+            "--database-config".into(),
+            self.config.postgres.config_path.clone().into_os_string(),
+            "--report".into(),
+            report.clone().into_os_string(),
+        ];
+        if matches!(mode, "backup" | "verify-backup" | "restore-candidate") {
+            args.extend(["--destination".into(), archive.into_os_string()]);
+        }
+        if mode == "verify-routes" {
+            args.extend([
+                "--state-dir".into(),
+                self.config
+                    .database_path
+                    .parent()
+                    .ok_or("authority state has no parent")?
+                    .as_os_str()
+                    .to_owned(),
+                "--edge-state".into(),
+                self.config.edge_state_dir.clone().into_os_string(),
+            ]);
+        }
+        let output = self.runner.run(&CommandRequest {
+            program: self.installed_binary("devcoordinator2-migrate-authority")?,
+            args,
+            environment: std::collections::BTreeMap::from([(
+                OsString::from("PATH"),
+                OsString::from("/usr/bin:/bin"),
+            )]),
+            clear_environment: true,
+        })?;
+        if !output.success || output.stdout_truncated || output.stderr_truncated {
+            return Err(format!(
+                "PostgreSQL authority {mode} failed; legacy source remains retained"
+            ));
+        }
+        let metadata = report
+            .symlink_metadata()
+            .map_err(|_| "PostgreSQL migration did not retain its verification receipt")?;
+        if metadata.file_type().is_symlink()
+            || !metadata.is_file()
+            || metadata.uid() != self.expected_owner.0
+            || metadata.mode() & 0o777 != 0o600
+        {
+            return Err("PostgreSQL verification receipt is not private and owned".into());
+        }
+        let receipt =
+            read_json_file(&report)?.ok_or("PostgreSQL verification receipt is unavailable")?;
+        if matches!(mode, "import" | "verify") {
+            let checks = receipt["checks"]
+                .as_array()
+                .ok_or("PostgreSQL verification receipt has no table checks")?;
+            if checks.is_empty()
+                || checks.iter().any(|row| row["matched"] != true)
+                || receipt["source_unchanged"] != true
+                || receipt["foreign_keys_valid"] != true
+                || receipt["identities_restored"] != true
+                || receipt["committed"] != true
+            {
+                return Err(
+                    "PostgreSQL authority copy did not pass every equality and integrity check"
+                        .into(),
+                );
+            }
+        } else if receipt["verified"] != true {
+            return Err("PostgreSQL archive did not pass recovery verification".into());
+        }
+        Ok(receipt)
+    }
+
+    fn verify_critical_reads(&self) -> Result<(), String> {
+        for (operation, params) in [
+            ("repository.list", serde_json::json!({"limit":1})),
+            ("deployment.list", serde_json::json!({})),
+            ("health.summary", serde_json::json!({})),
+        ] {
+            let output = self.runner.run(&CommandRequest {
+                program: self.installed_binary("devcoordinator2")?,
+                args: vec![
+                    operation.into(),
+                    "--params".into(),
+                    params.to_string().into(),
+                ],
+                environment: std::collections::BTreeMap::from([
+                    (OsString::from("PATH"), OsString::from("/usr/bin:/bin")),
+                    (
+                        OsString::from("DEVCOORDINATOR2_INSTANCE_ENV"),
+                        self.config.instance_env.as_os_str().to_owned(),
+                    ),
+                ]),
+                clear_environment: true,
+            })?;
+            let value = serde_json::from_str::<Value>(&output.stdout)
+                .map_err(|_| format!("candidate {operation} returned no bounded typed result"))?;
+            if !output.success || output.stdout_truncated || !successful_v3_ping(&value) {
+                return Err(format!(
+                    "candidate {operation} failed before write admission"
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn retain_activation_commit(&self, snapshot: &InstallationSnapshot) -> Result<(), String> {
+        self.verify_candidate_binaries()?;
+        let mut retirement_targets = self.inherited_retirement_targets.clone();
+        if self.authority == AuthorityKind::LegacySqlite {
+            if self.frozen_source_sha256.as_deref()
+                != Some(install::hash_file(&self.config.database_path)?.as_str())
+                || install::hash_file(
+                    &self.config.transaction_dir.join("authority-before.sqlite3"),
+                )? != snapshot.backup_sha256
+            {
+                return Err("frozen authority source changed before PostgreSQL admission".into());
+            }
+            retirement_targets.extend([serde_json::json!({"path":self.config.database_path,"sha256":self.frozen_source_sha256}),serde_json::json!({"path":self.config.transaction_dir.join("authority-before.sqlite3"),"sha256":snapshot.backup_sha256})]);
+            for suffix in ["-wal", "-shm", "-journal"] {
+                let path =
+                    PathBuf::from(format!("{}{}", self.config.database_path.display(), suffix));
+                if let Ok(metadata) = path.symlink_metadata() {
+                    let Some((_, digest)) = self
+                        .frozen_companions
+                        .iter()
+                        .find(|(frozen, _)| frozen == &path)
+                    else {
+                        return Err(
+                            "legacy authority gained a companion after the source freeze".into(),
+                        );
+                    };
+                    if metadata.file_type().is_symlink()
+                        || !metadata.is_file()
+                        || metadata.uid() != self.expected_owner.0
+                        || install::hash_file(&path)? != *digest
+                    {
+                        return Err(
+                            "frozen SQLite companion changed before native admission".into()
+                        );
+                    }
+                    retirement_targets.push(serde_json::json!({"path":path,"sha256":digest}));
+                }
+            }
+        }
+        if install::postgres::verify_acceptance(
+            &self.config.candidate_acceptance,
+            &self.manifest,
+            self.expected_owner.0,
+        )? != self.acceptance_sha256
+        {
+            return Err("candidate acceptance changed during activation".into());
+        }
+        self.verify_candidate_binaries()?;
+        let mut native = snapshot.clone();
+        native.schema = 3;
+        native.backup_sha256 =
+            install::hash_file(&self.config.transaction_dir.join("authority-before.pgdump"))?;
+        let activated_at_ms =
+            (time::OffsetDateTime::now_utc().unix_timestamp_nanos() / 1_000_000) as u64;
+        let fence = self.config.runtime_dir.join("daemon.pre-cutover.sock");
+        let fence_binding = owned_fence_binding(&fence, self.expected_owner.0)?;
+        let accepted = self
+            .config
+            .transaction_dir
+            .join("candidate-acceptance.json");
+        atomic_copy(
+            &self.config.candidate_acceptance,
+            &accepted,
+            self.expected_owner,
+        )?;
+        if install::hash_file(&accepted)? != self.acceptance_sha256 {
+            return Err("candidate acceptance changed before authority commitment".into());
+        }
+        let service_bindings = [
+            &self.config.daemon_unit_path,
+            &self.config.edge_unit_path,
+            &self.config.postgres.unit_path,
+        ]
+        .iter()
+        .map(|path| Ok(serde_json::json!({"path":path,"sha256":install::hash_file(path)?})))
+        .collect::<Result<Vec<_>, String>>()?;
+        let pending = serde_json::json!({"schema":1,"source_commit":self.manifest.source_commit,"activated_at_ms":activated_at_ms,"retirement_targets":retirement_targets,"postgres_config":self.config.postgres.config_path,"postgres_config_sha256":install::hash_file(&self.config.postgres.config_path)?,"database_name":self.config.postgres.database_name,"authority_marker":self.authority_marker_path,"installed_manifest":self.config.installed_manifest,"instance_env":self.config.instance_env,"instance_env_sha256":install::hash_file(&self.config.instance_env)?,"edge_env":self.config.edge_env,"edge_env_sha256":install::hash_file(&self.config.edge_env)?,"socket_path":self.config.socket_path,"postgres_unit":self.config.postgres.unit,"daemon_unit":self.config.daemon_unit,"edge_unit":self.config.edge_unit,"service_bindings":service_bindings,"candidate_acceptance":accepted,"candidate_acceptance_sha256":self.acceptance_sha256,"fence":fence_binding});
+        install::atomic_file(
+            &self.config.transaction_dir.join("retirement-pending.json"),
+            &serde_json::to_vec(&pending)
+                .map_err(|_| "cannot retain PostgreSQL activation boundary")?,
+            0o600,
+            Some(self.expected_owner),
+        )?;
+        write_snapshot(&native, "committed", self.expected_owner)?;
+        let current = serde_json::json!({"schema":1,"source_commit":self.manifest.source_commit,"transaction_dir":self.config.transaction_dir,"database_name":self.config.postgres.database_name,"activated_at_ms":activated_at_ms});
+        install::atomic_file(
+            &self.authority_marker_path,
+            &serde_json::to_vec(&current)
+                .map_err(|_| "cannot retain current PostgreSQL authority binding")?,
+            0o600,
+            Some(self.expected_owner),
+        )?;
+
+        Ok(())
+    }
+
+    fn verify_native_routes(&self) -> Result<(), String> {
+        self.migrate_authority("verify-routes", "native-routes-verified.json")
+            .map(|_| ())
     }
 }
 
@@ -510,7 +919,28 @@ impl CutoverAdapter for HostCutover {
     }
 
     fn deployment_is_applying(&mut self) -> Result<bool, String> {
+        if self.authority == AuthorityKind::Postgres {
+            install::ensure_owned_directory(
+                &self.config.transaction_dir,
+                0o700,
+                self.expected_owner,
+            )?;
+            let receipt =
+                self.migrate_authority("inspect-postgres", "native-source-inspected.json")?;
+            if receipt["schema_version"]
+                .as_u64()
+                .is_none_or(|version| version < 35 || version > u64::from(DATABASE_SCHEMA_VERSION))
+            {
+                return Err("native source schema is not supported by this candidate".into());
+            }
+            return receipt["applying"]
+                .as_bool()
+                .ok_or_else(|| "native activity inspection did not return a typed result".into());
+        }
         let connection = open_database_read_only(&self.config.database_path)?;
+        if database_schema_from(&connection)? != "34" {
+            return Err("PostgreSQL cutover requires the complete frozen SQLite schema 34".into());
+        }
         connection
             .query_row(
                 "SELECT EXISTS(SELECT 1 FROM deployments WHERE state='applying')",
@@ -523,6 +953,11 @@ impl CutoverAdapter for HostCutover {
     fn backup_database(&mut self) -> Result<String, String> {
         install::ensure_owned_directory(&self.config.transaction_dir, 0o700, self.expected_owner)
             .map_err(|error| format!("cannot prepare cutover transaction: {error}"))?;
+        if self.authority == AuthorityKind::Postgres {
+            self.migrate_authority("backup", "source-native-backup.json")?;
+            self.migrate_authority("verify-backup", "source-native-backup-verified.json")?;
+            return path_text(&self.config.transaction_dir.join("authority-before.pgdump"));
+        }
         let backup = self.config.transaction_dir.join("authority-before.sqlite3");
         if backup.exists() {
             return Err("cutover database backup already exists".to_owned());
@@ -542,23 +977,63 @@ impl CutoverAdapter for HostCutover {
         if !database_integrity(&backup)? {
             return Err("captured database backup failed integrity verification".into());
         }
+        drop(connection);
+        self.frozen_source_sha256 = Some(install::hash_file(&self.config.database_path)?);
+        for suffix in ["-wal", "-shm", "-journal"] {
+            let path = PathBuf::from(format!("{}{}", self.config.database_path.display(), suffix));
+            if let Ok(metadata) = path.symlink_metadata() {
+                if metadata.file_type().is_symlink()
+                    || !metadata.is_file()
+                    || metadata.uid() != self.expected_owner.0
+                {
+                    return Err("frozen SQLite companion is not an owned regular file".into());
+                }
+                self.frozen_companions
+                    .push((path.clone(), install::hash_file(&path)?));
+            }
+        }
+
         path_text(&backup)
     }
 
     fn capture_installation(&mut self) -> Result<Self::InstallationSnapshot, String> {
+        if self.authority == AuthorityKind::Postgres {
+            let helper = self
+                .manifest
+                .binaries
+                .iter()
+                .find(|binary| binary.name == "devcoordinator2-migrate-authority")
+                .ok_or("verified migration helper is unavailable")?;
+            let context = serde_json::json!({"schema":1,"postgres_config":self.config.postgres.config_path,"postgres_unit":self.config.postgres.unit,"helper_binary":helper.path,"helper_sha256":helper.sha256,"source_commit":self.manifest.source_commit});
+            install::atomic_file(
+                &self.config.transaction_dir.join("native-source.json"),
+                &serde_json::to_vec(&context)
+                    .map_err(|_| "cannot retain native recovery binding")?,
+                0o600,
+                Some(self.expected_owner),
+            )?;
+        }
         let entries = self
             .snapshot_targets()
             .into_iter()
             .map(capture_entry)
             .collect::<Result<Vec<_>, _>>()?;
         let snapshot = InstallationSnapshot {
-            schema: 2,
+            schema: if self.authority == AuthorityKind::Postgres {
+                3
+            } else {
+                2
+            },
             status: "prepared".to_owned(),
             transaction_dir: path_text(&self.config.transaction_dir)?,
             entries,
-            backup_sha256: install::hash_file(
-                &self.config.transaction_dir.join("authority-before.sqlite3"),
-            )?,
+            backup_sha256: install::hash_file(&self.config.transaction_dir.join(
+                if self.authority == AuthorityKind::Postgres {
+                    "authority-before.pgdump"
+                } else {
+                    "authority-before.sqlite3"
+                },
+            ))?,
             candidate_commit: self.manifest.source_commit.clone(),
         };
         write_snapshot(&snapshot, "prepared", self.expected_owner)?;
@@ -658,7 +1133,46 @@ impl CutoverAdapter for HostCutover {
             &self.config.tooling_link,
             &self.installed_binary("devcoordinator2-tooling")?,
         )?;
-        self.systemctl(&["daemon-reload"])
+        install::set_env_value(
+            &self.config.instance_env,
+            "DEVCOORDINATOR2_DATABASE_CONFIG",
+            &path_text(&self.config.postgres.config_path)?,
+        )?;
+        self.config.postgres.prepare(
+            Path::new(&self.manifest.source_root),
+            self.runner.as_ref(),
+            self.expected_owner,
+        )?;
+        self.systemctl(&["daemon-reload"])?;
+        self.systemctl(&["enable", &self.config.postgres.unit])?;
+        self.systemctl(&["start", &self.config.postgres.unit])?;
+        self.postgres_started = true;
+        self.config.postgres.bootstrap(self.runner.as_ref())?;
+        if self.authority == AuthorityKind::LegacySqlite {
+            self.migrate_authority("import", "import.json")?;
+            self.systemctl(&["restart", &self.config.postgres.unit])?;
+            self.config.postgres.wait_ready(self.runner.as_ref())?;
+            self.migrate_authority("verify", "restart-verified.json")?;
+            self.migrate_authority("backup", "postgres-backup.json")?;
+            self.migrate_authority("verify-backup", "postgres-backup-verified.json")?;
+        } else {
+            self.migrate_authority("restore-candidate", "native-candidate-restored.json")?;
+            self.migrate_authority("verify-backup", "native-candidate-copy-verified.json")?;
+            self.migrate_authority("migrate", "native-candidate-migrated.json")?;
+            self.systemctl(&["restart", &self.config.postgres.unit])?;
+            self.config.postgres.wait_ready(self.runner.as_ref())?;
+            let archive = self
+                .config
+                .transaction_dir
+                .join("authority-candidate.pgdump");
+            self.migrate_at("backup", "native-candidate-backup.json", &archive)?;
+            self.migrate_at(
+                "verify-backup",
+                "native-candidate-restart-verified.json",
+                &archive,
+            )?;
+        }
+        Ok(())
     }
 
     fn start_rust(&mut self) -> Result<(), String> {
@@ -691,44 +1205,78 @@ impl CutoverAdapter for HostCutover {
                 clear_environment: true,
             })?;
             let response = serde_json::from_str::<Value>(&output.stdout).ok();
-            if output.success && response.as_ref().is_some_and(successful_v2_ping) {
+            if output.success
+                && response.as_ref().is_some_and(|response| {
+                    successful_v3_ping(response)
+                        && response["data"]["source_commit"].as_str()
+                            == Some(self.manifest.source_commit.as_str())
+                        && response["data"]["socket"].as_str() == self.config.socket_path.to_str()
+                })
+            {
                 break;
             }
-            if !response.as_ref().is_some_and(retryable_v2_ping)
+            if !response.as_ref().is_some_and(retryable_v3_ping)
                 || std::time::Instant::now() >= deadline
             {
-                return Err(command_failure("v2 ping", &output.stderr, &output.stdout));
+                return Err(command_failure("v3 ping", &output.stderr, &output.stdout));
             }
             self.systemctl(&["is-active", "--quiet", &self.config.daemon_unit])?;
             std::thread::sleep(std::time::Duration::from_millis(100));
         }
         self.systemctl(&["is-active", "--quiet", &self.config.daemon_unit])?;
         self.systemctl(&["is-active", "--quiet", &self.config.edge_unit])?;
-        verify_reconciled_routes(&self.config.database_path, &self.config.edge_state_dir)?;
+        self.verify_native_routes()?;
+        self.verify_critical_reads()?;
         Ok(vec![
             "route-lease-edge-reconciled".to_owned(),
-            "v2-cli-ping".to_owned(),
+            "v3-cli-ping".to_owned(),
             "rust-daemon-active".to_owned(),
             "node-edge-active".to_owned(),
+            if self.authority == AuthorityKind::LegacySqlite {
+                "postgres-import-equal-after-restart"
+            } else {
+                "native-authority-upgrade-verified"
+            }
+            .to_owned(),
+            "postgres-backup-restored-and-verified".to_owned(),
+            "frozen-candidate-acceptance".to_owned(),
+            "critical-read-api".to_owned(),
         ])
     }
 
     fn commit_activation(&mut self, snapshot: &Self::InstallationSnapshot) -> Result<(), String> {
-        write_snapshot(snapshot, "committed", self.expected_owner)?;
-        let fence = self.config.runtime_dir.join("daemon.pre-cutover.sock");
-        if fence.exists() {
-            std::fs::remove_file(&fence)
-                .map_err(|error| format!("cannot retire legacy socket fence: {error}"))?;
-        }
+        self.retain_activation_commit(snapshot)?;
+        // The durable authority choice is irreversible even if the final
+        // fence unlink fails. Recovery verifies and finishes this same commit.
+        self.admitted = true;
+        let pending = finalize::private(
+            &self.config.transaction_dir.join("retirement-pending.json"),
+            self.expected_owner.0,
+        )?;
+        release_committed_fence(&self.config.runtime_dir, &pending, self.expected_owner.0)?;
         self.fenced = false;
+        self.admitted = true;
         Ok(())
     }
 
+    fn writes_admitted(&self) -> bool {
+        self.admitted
+    }
+
+    fn finalization_required(&self) -> bool {
+        true
+    }
+
     fn stop_rust(&mut self) -> Result<(), String> {
-        self.systemctl_all(&[
+        let result = self.systemctl_all(&[
             ("stop", &self.config.edge_unit),
             ("stop", &self.config.daemon_unit),
-        ])
+        ]);
+        if self.postgres_started {
+            self.systemctl(&["stop", &self.config.postgres.unit])?;
+            self.postgres_started = false;
+        }
+        result
     }
 
     fn restore_installation(
@@ -747,6 +1295,13 @@ impl CutoverAdapter for HostCutover {
     }
 
     fn database_matches_backup(&mut self, backup: &str) -> Result<bool, String> {
+        if self.authority == AuthorityKind::Postgres {
+            self.systemctl(&["start", &self.config.postgres.unit])?;
+            self.config.postgres.wait_ready(self.runner.as_ref())?;
+            self.migrate_authority("verify-backup", "native-source-rollback-verified.json")?;
+            return Ok(true);
+        }
+
         if !database_integrity(&self.config.database_path)? {
             return Ok(false);
         }
@@ -757,6 +1312,13 @@ impl CutoverAdapter for HostCutover {
     }
 
     fn restore_database(&mut self, backup: &str) -> Result<(), String> {
+        if self.authority == AuthorityKind::Postgres {
+            return Err("native source database is preserved; restore its captured configuration rather than overwriting PostgreSQL data".into());
+        }
+
+        if self.admitted {
+            return Err("cannot restore SQLite after PostgreSQL writes were admitted".into());
+        }
         if !database_integrity(Path::new(backup))? {
             return Err("cutover database backup failed integrity verification".to_owned());
         }
@@ -806,13 +1368,40 @@ impl CutoverAdapter for HostCutover {
     }
 }
 
-fn successful_v2_ping(response: &Value) -> bool {
-    response.get("protocol").and_then(Value::as_u64) == Some(2)
+fn successful_v3_ping(response: &Value) -> bool {
+    response.get("protocol").and_then(Value::as_u64) == Some(3)
         && response.get("ok") == Some(&Value::Bool(true))
 }
 
-fn retryable_v2_ping(response: &Value) -> bool {
-    response.get("protocol").and_then(Value::as_u64) == Some(2)
+fn owned_fence_binding(path: &Path, owner: u32) -> Result<Value, String> {
+    let metadata = path.symlink_metadata().map_err(
+        |_| "the exact committed activation fence is unavailable; preserve PostgreSQL authority",
+    )?;
+    if metadata.file_type().is_symlink()
+        || (!metadata.file_type().is_socket() && !(cfg!(test) && metadata.is_file()))
+        || metadata.uid() != owner
+    {
+        return Err("committed activation fence is not owned by this installation".into());
+    }
+    Ok(
+        serde_json::json!({"path":path,"identity":file_identity(&metadata),"uid":metadata.uid(),"gid":metadata.gid(),"mode":metadata.mode()}),
+    )
+}
+
+fn release_committed_fence(runtime: &Path, pending: &Value, owner: u32) -> Result<(), String> {
+    let fence = runtime.join("daemon.pre-cutover.sock");
+    if owned_fence_binding(&fence, owner)? != pending["fence"] {
+        return Err("committed activation fence changed; PostgreSQL remains authoritative".into());
+    }
+    std::fs::remove_file(&fence).map_err(|_| "cannot release exact committed activation fence")?;
+    File::open(runtime)
+        .and_then(|file| file.sync_all())
+        .map_err(|_| "cannot seal committed activation admission")?;
+    Ok(())
+}
+
+fn retryable_v3_ping(response: &Value) -> bool {
+    response.get("protocol").and_then(Value::as_u64) == Some(3)
         && response.get("ok") == Some(&Value::Bool(false))
         && response
             .get("error")
@@ -834,6 +1423,17 @@ pub fn recover_host(
     let invalid_target = |error| format!("recovery target invalid: {error}");
     let snapshot =
         read_snapshot(&config.transaction_dir, expected_owner.0).map_err(invalid_target)?;
+    if snapshot.schema == 3 && snapshot.status == "committed" {
+        return native_recovery::finish_activation(config, &snapshot, runner, expected_owner);
+    }
+    if snapshot.schema == 3
+        && !matches!(
+            snapshot.status.as_str(),
+            "prepared" | "activating" | "rolling_back"
+        )
+    {
+        return Err("PostgreSQL authority has crossed admission; recovery must preserve PostgreSQL writes and roll forward".into());
+    }
     if !matches!(
         snapshot.status.as_str(),
         "prepared" | "activating" | "rolling_back"
@@ -865,6 +1465,9 @@ pub fn recover_host(
         {
             return Err("recovery target belongs to a different installed candidate".into());
         }
+    }
+    if snapshot.schema == 3 {
+        return native_recovery::recover(config, &snapshot, runner, expected_owner);
     }
     let backup_path = config.transaction_dir.join("authority-before.sqlite3");
     if install::hash_file(&backup_path).map_err(invalid_target)? != snapshot.backup_sha256 {
@@ -1037,7 +1640,8 @@ fn read_snapshot(
         read_json_file(&path)?.ok_or_else(|| "installation snapshot is unavailable".to_owned())?;
     let snapshot: InstallationSnapshot = serde_json::from_value(value)
         .map_err(|error| format!("installation snapshot is invalid: {error}"))?;
-    if snapshot.schema != 2 || Path::new(&snapshot.transaction_dir) != transaction_dir {
+    if !matches!(snapshot.schema, 2 | 3) || Path::new(&snapshot.transaction_dir) != transaction_dir
+    {
         return Err("installation snapshot identity does not match its transaction".to_owned());
     }
     Ok(snapshot)
@@ -1290,7 +1894,9 @@ fn bridge_observation(value: &Value) -> bool {
     else {
         return false;
     };
-    request.protocol == 2
+    // Protocol 2 is inspected only while draining the old source at its
+    // one-time cutover; the candidate daemon itself accepts protocol 3 only.
+    matches!(request.protocol, 2 | 3)
         && !request.id.is_empty()
         && request.id.len() <= 64
         && request.id.bytes().all(|byte| byte.is_ascii_hexdigit())
@@ -1498,17 +2104,67 @@ fn remove_file_if_present(path: &Path) -> Result<(), String> {
 }
 
 fn atomic_copy(source: &Path, destination: &Path, owner: (u32, u32)) -> Result<(), String> {
-    let mut file = unix_fs::open(
+    let mut input = unix_fs::open(
         source,
         OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK,
         Mode::empty(),
     )
     .map(File::from)
-    .map_err(|error| format!("cannot open database backup: {error}"))?;
-    let mut bytes = Vec::new();
-    file.read_to_end(&mut bytes)
-        .map_err(|error| format!("cannot read database backup: {error}"))?;
-    install::atomic_file(destination, &bytes, 0o600, Some(owner))
+    .map_err(|_| "cannot open frozen database backup")?;
+    let before = input
+        .metadata()
+        .map_err(|_| "cannot inspect frozen database backup")?;
+    if !before.is_file() {
+        return Err("frozen database backup is not a regular file".into());
+    }
+    let parent = destination
+        .parent()
+        .ok_or("database restore destination has no parent")?;
+    let name = destination
+        .file_name()
+        .ok_or("database restore destination has no leaf")?;
+    let directory = unix_fs::open(
+        parent,
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+        Mode::empty(),
+    )
+    .map(File::from)
+    .map_err(|_| "cannot open database restore directory")?;
+    let temporary = OsString::from(format!(".authority-restore-{}", random_hex(8)?));
+    let result = (|| {
+        let mut output = unix_fs::openat(
+            &directory,
+            &temporary,
+            OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+            Mode::from_raw_mode(0o600),
+        )
+        .map(File::from)
+        .map_err(|_| "cannot create private database restore temporary")?;
+        if unsafe { libc::fchown(output.as_raw_fd(), owner.0, owner.1) } != 0 {
+            return Err("cannot retain database restore ownership".to_owned());
+        }
+        let copied =
+            std::io::copy(&mut input, &mut output).map_err(|_| "database backup copy failed")?;
+        let after = input
+            .metadata()
+            .map_err(|_| "cannot recheck database backup")?;
+        if copied != before.len() || file_identity(&before) != file_identity(&after) {
+            return Err("database backup changed during restore".into());
+        }
+        output
+            .sync_all()
+            .map_err(|_| "cannot seal database restore temporary")?;
+        unix_fs::renameat(&directory, &temporary, &directory, name)
+            .map_err(|_| "cannot atomically restore database backup")?;
+        directory
+            .sync_all()
+            .map_err(|_| "cannot seal database restore directory")?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = unix_fs::unlinkat(&directory, &temporary, unix_fs::AtFlags::empty());
+    }
+    result
 }
 
 fn open_database_read_only(path: &Path) -> Result<Connection, String> {
@@ -1523,11 +2179,11 @@ fn open_database_read_only(path: &Path) -> Result<Connection, String> {
         .pragma_update(None, "query_only", true)
         .map_err(|error| format!("cannot protect Coordinator database read: {error}"))?;
     let schema = database_schema_from(&connection)?;
-    if !(MINIMUM_SUPPORTED_DATABASE_SCHEMA..=DATABASE_SCHEMA_VERSION)
+    if !(MINIMUM_SUPPORTED_DATABASE_SCHEMA..=MAXIMUM_LEGACY_SQLITE_SCHEMA)
         .any(|supported| schema == supported.to_string())
     {
         return Err(format!(
-            "cutover requires database schema {MINIMUM_SUPPORTED_DATABASE_SCHEMA} through {DATABASE_SCHEMA_VERSION}, found {schema}"
+            "legacy recovery requires SQLite schema {MINIMUM_SUPPORTED_DATABASE_SCHEMA} through {MAXIMUM_LEGACY_SQLITE_SCHEMA}, found {schema}"
         ));
     }
     Ok(connection)
@@ -1591,7 +2247,7 @@ fn database_integrity(path: &Path) -> Result<bool, String> {
         |row| row.get::<_, String>(0),
     ) {
         Ok(schema) => Ok(schema.parse::<u32>().is_ok_and(|version| {
-            (MINIMUM_SUPPORTED_DATABASE_SCHEMA..=DATABASE_SCHEMA_VERSION).contains(&version)
+            (MINIMUM_SUPPORTED_DATABASE_SCHEMA..=MAXIMUM_LEGACY_SQLITE_SCHEMA).contains(&version)
         })),
         Err(error) if sqlite_corruption(&error) => Ok(false),
         Err(error) => Err(format!("cannot confirm database schema: {error}")),
@@ -1730,6 +2386,11 @@ mod tests {
         };
         let health = request("health.summary", serde_json::json!({}));
         assert!(bridge_observation(&health));
+        let mut native = health.clone();
+        native["protocol"] = serde_json::json!(3);
+        assert!(bridge_observation(&native));
+        native["protocol"] = serde_json::json!(4);
+        assert!(!bridge_observation(&native));
         assert!(bridge_observation(&request(
             "event.wait",
             serde_json::json!({
@@ -1955,9 +2616,9 @@ mod tests {
                 "fence_legacy_socket",
                 "wait_for_connections",
                 "deployment_is_applying",
+                "stop_legacy",
                 "backup_database",
                 "capture_installation",
-                "stop_legacy",
                 "install_rust",
                 "start_rust",
                 "verify_live",
@@ -2127,6 +2788,120 @@ mod tests {
                     stderr_truncated: false,
                 });
             }
+            if request.program == Path::new("/usr/bin/setpriv")
+                && request
+                    .args
+                    .iter()
+                    .any(|arg| arg.to_string_lossy().ends_with("/initdb"))
+            {
+                let directory = PathBuf::from(
+                    &request
+                        .args
+                        .windows(2)
+                        .find(|pair| pair[0] == "--pgdata")
+                        .unwrap()[1],
+                );
+                std::fs::write(directory.join("PG_VERSION"), "17\n").unwrap();
+            }
+            if request.program == Path::new("/usr/bin/id") {
+                return Ok(crate::install::CommandOutput {
+                    success: true,
+                    stdout: if request.args.first().is_some_and(|v| v == "-g") {
+                        rustix::process::getgid().as_raw().to_string()
+                    } else {
+                        rustix::process::getuid().as_raw().to_string()
+                    },
+                    stderr: String::new(),
+                    stdout_truncated: false,
+                    stderr_truncated: false,
+                });
+            }
+            if request.args == [OsString::from("--version")]
+                && request
+                    .program
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| {
+                        [
+                            "postgres",
+                            "initdb",
+                            "psql",
+                            "pg_dump",
+                            "pg_restore",
+                            "pg_isready",
+                        ]
+                        .contains(&name)
+                    })
+            {
+                return Ok(crate::install::CommandOutput {
+                    success: true,
+                    stdout: format!(
+                        "{} (PostgreSQL) 17.6\n",
+                        request.program.file_name().unwrap().to_string_lossy()
+                    ),
+                    stderr: String::new(),
+                    stdout_truncated: false,
+                    stderr_truncated: false,
+                });
+            }
+            if request.program.file_name()
+                == Some(std::ffi::OsStr::new("devcoordinator2-migrate-authority"))
+                && request.args.first().is_some_and(|v| v == "--mode")
+            {
+                let argument = |name: &str| {
+                    request
+                        .args
+                        .windows(2)
+                        .find(|pair| pair[0] == name)
+                        .map(|pair| PathBuf::from(&pair[1]))
+                        .unwrap()
+                };
+                let mode = request.args[1].to_string_lossy();
+                if mode == "backup" {
+                    std::fs::write(
+                        argument("--destination"),
+                        b"PGDMP fixture native authority archive",
+                    )
+                    .unwrap();
+                }
+                let receipt = if mode == "inspect-postgres" {
+                    serde_json::json!({"verified":true,"applying":false,"schema_version":35})
+                } else if matches!(mode.as_ref(), "import" | "verify") {
+                    serde_json::json!({"checks":[{"matched":true}],"source_unchanged":true,"foreign_keys_valid":true,"identities_restored":true,"committed":true})
+                } else if matches!(
+                    mode.as_ref(),
+                    "backup" | "verify-backup" | "verify-recoverable-backup"
+                ) {
+                    serde_json::json!({"verified":true,"archive_sha256":install::hash_file(&argument("--destination")).unwrap(),"isolated_restore_removed":true})
+                } else {
+                    serde_json::json!({"verified":true})
+                };
+                let path = argument("--report");
+                std::fs::write(&path, serde_json::to_vec(&receipt).unwrap()).unwrap();
+                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+                return Ok(crate::install::CommandOutput {
+                    success: true,
+                    stdout: "private verification receipt retained".into(),
+                    stderr: String::new(),
+                    stdout_truncated: false,
+                    stderr_truncated: false,
+                });
+            }
+            if request.args.first().is_some_and(|arg| {
+                matches!(
+                    arg.to_str(),
+                    Some("repository.list" | "deployment.list" | "health.summary")
+                )
+            }) {
+                return Ok(crate::install::CommandOutput {
+                    success: true,
+                    stdout: serde_json::json!({"protocol":3,"id":"x","ok":true,"data":{}})
+                        .to_string(),
+                    stderr: String::new(),
+                    stdout_truncated: false,
+                    stderr_truncated: false,
+                });
+            }
             if request.args == [OsString::from("--source-commit")] {
                 return Ok(crate::install::CommandOutput {
                     success: true,
@@ -2146,7 +2921,7 @@ mod tests {
                 {
                     return Ok(crate::install::CommandOutput {
                         success: false,
-                        stdout: "{\"protocol\":2,\"id\":\"x\",\"ok\":false,\"error\":{\"code\":\"daemon_unavailable\",\"message\":\"not ready\",\"detail\":\"\"}}\n".to_owned(),
+                        stdout: "{\"protocol\":3,\"id\":\"x\",\"ok\":false,\"error\":{\"code\":\"daemon_unavailable\",\"message\":\"not ready\",\"detail\":\"\"}}\n".to_owned(),
                         stderr: String::new(),
                         stdout_truncated: false,
                         stderr_truncated: false,
@@ -2157,7 +2932,17 @@ mod tests {
                     stdout: if self.fail_ping {
                         String::new()
                     } else {
-                        "{\"protocol\":2,\"id\":\"x\",\"ok\":true,\"data\":{}}\n".to_owned()
+                        let instance = request
+                            .environment
+                            .get(std::ffi::OsStr::new("DEVCOORDINATOR2_INSTANCE_ENV"))
+                            .unwrap();
+                        let socket = Path::new(instance)
+                            .parent()
+                            .unwrap()
+                            .parent()
+                            .unwrap()
+                            .join("run/daemon.sock");
+                        serde_json::json!({"protocol":3,"id":"x","ok":true,"data":{"source_commit":self.commit,"socket":socket}}).to_string()
                     },
                     stderr: if self.fail_ping {
                         "ping failed".to_owned()
@@ -2217,12 +3002,32 @@ mod tests {
             include_str!("../../../deploy/devcoordinator2-tests.slice"),
         )
         .unwrap();
+        std::fs::write(
+            source.join("deploy/devcoordinator2-postgres.service"),
+            include_str!("../../../deploy/devcoordinator2-postgres.service"),
+        )
+        .unwrap();
+        let pg_bin = root.join("postgres-bin");
+        std::fs::create_dir(&pg_bin).unwrap();
+        for name in [
+            "postgres",
+            "initdb",
+            "psql",
+            "pg_dump",
+            "pg_restore",
+            "pg_isready",
+        ] {
+            let path = pg_bin.join(name);
+            std::fs::write(&path, "fixture tool").unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
         let commit = "c".repeat(40);
         let mut receipts = Vec::new();
         for name in [
             "devcoordinator2",
             "devcoordinator2-executor",
             "devcoordinator2-tooling",
+            "devcoordinator2-migrate-authority",
         ] {
             let path = source.join("target/release").join(name);
             let bytes = format!("binary-{name}").into_bytes();
@@ -2251,6 +3056,29 @@ mod tests {
         );
         let candidate_manifest = root.join("etc/candidate.json");
         crate::install::write_manifest(&candidate_manifest, &manifest, expected_owner).unwrap();
+        let candidate_acceptance = root.join("etc/candidate-acceptance.json");
+        let acceptance = install::postgres::CandidateAcceptance {
+            schema: 1,
+            result: "passed".into(),
+            source_commit: manifest.source_commit.clone(),
+            binaries: manifest
+                .binaries
+                .iter()
+                .map(|binary| (binary.name.clone(), binary.sha256.clone()))
+                .collect(),
+            checks: install::postgres::ACCEPTANCE_CHECKS
+                .iter()
+                .map(|name| (*name).into())
+                .collect(),
+        };
+        install::atomic_file(
+            &candidate_acceptance,
+            &serde_json::to_vec(&acceptance).unwrap(),
+            0o600,
+            Some(expected_owner),
+        )
+        .unwrap();
+
         let runtime_dir = root.join("run");
         std::fs::create_dir(&runtime_dir).unwrap();
         std::fs::write(
@@ -2278,11 +3106,13 @@ mod tests {
         let database_path = state.join("authority.sqlite3");
         let connection = Connection::open(&database_path).unwrap();
         connection
-            .execute_batch(include_str!("../../control/src/schema.sql"))
+            .execute_batch(include_str!(
+                "../../persistence/tests/fixtures/sqlite-schema-34/schema.sql"
+            ))
             .unwrap();
         connection
             .execute(
-                "INSERT OR REPLACE INTO meta(key,value) VALUES('schema_version','15')",
+                "INSERT OR REPLACE INTO meta(key,value) VALUES('schema_version','34')",
                 [],
             )
             .unwrap();
@@ -2326,6 +3156,17 @@ mod tests {
         .unwrap();
         HostWorld {
             config: HostCutoverConfig {
+                candidate_acceptance,
+                postgres: install::postgres::PostgresSetup {
+                    account: "fixture-pg".into(),
+                    database_name: "devcoordinator2_fixture".into(),
+                    bin_dir: pg_bin,
+                    data_dir: root.join("pg-state/data"),
+                    socket_dir: root.join("pg-run"),
+                    config_path: root.join("etc/postgres.json"),
+                    unit_path: root.join("system/devcoordinator2-postgres.service"),
+                    unit: "devcoordinator2-postgres.service".into(),
+                },
                 candidate_manifest,
                 installed_manifest,
                 tmpfiles_path: root.join("etc/tmpfiles.conf"),
@@ -2371,9 +3212,10 @@ mod tests {
             ..HostFake::default()
         });
         let mut host =
-            HostCutover::new_owned(world.config.clone(), runner, world.expected_owner).unwrap();
+            HostCutover::new_owned(world.config.clone(), runner.clone(), world.expected_owner)
+                .unwrap();
         let receipt = activate(&mut host).unwrap();
-        assert_eq!(receipt.status, "activated");
+        assert_eq!(receipt.status, "activated_awaiting_final_acceptance");
         assert_eq!(
             std::fs::read_to_string(&edge_env).unwrap(),
             world.old_edge_env.replace(&"b".repeat(40), &world.commit)
@@ -2396,12 +3238,27 @@ mod tests {
                 .unwrap()
                 .contains("retained-private-setting")
         );
-        assert_eq!(
-            std::fs::metadata(&world.config.database_path)
-                .unwrap()
-                .mode()
-                & 0o777,
-            0o600
+        assert!(world.config.database_path.is_file());
+        assert!(
+            world
+                .config
+                .transaction_dir
+                .join("authority-before.pgdump")
+                .is_file()
+        );
+        assert!(
+            world
+                .config
+                .transaction_dir
+                .join("retirement-pending.json")
+                .is_file()
+        );
+        assert!(world.config.postgres.config_path.is_file());
+        assert!(
+            !receipt
+                .checks
+                .iter()
+                .any(|check| check == "legacy-authority-source-retired")
         );
         assert_eq!(
             std::fs::metadata(world.config.database_path.parent().unwrap())
@@ -2414,7 +3271,10 @@ mod tests {
             std::fs::read_to_string(&world.config.tmpfiles_path).unwrap(),
             prior_rule.replace("0750", "0751")
         );
-        assert!(Path::new(&receipt.backup).is_file());
+        assert!(
+            Path::new(&receipt.backup).is_file(),
+            "rollback source stays protected until post-activation live acceptance"
+        );
         assert!(
             std::fs::read_to_string(&world.config.daemon_unit_path)
                 .unwrap()
@@ -2432,6 +3292,12 @@ mod tests {
         )
         .unwrap();
         assert_eq!(snapshot.status, "committed");
+        assert_eq!(snapshot.schema, 3);
+        assert_eq!(
+            snapshot.backup_sha256,
+            install::hash_file(&world.config.transaction_dir.join("authority-before.pgdump"))
+                .unwrap()
+        );
         assert!(
             !world
                 .config
@@ -2440,6 +3306,448 @@ mod tests {
                 .exists()
         );
         assert!(!world.config.runtime_dir.join(DRAIN_FILE).exists());
+        let retained_sha = install::hash_file(&world.config.database_path).unwrap();
+        let commands_before = runner.requests.lock().unwrap().len();
+        let error =
+            rollback(&mut host, &snapshot, &receipt.backup, "live failure".into()).unwrap_err();
+        assert!(error.contains("preserve its new writes"));
+        assert_eq!(commands_before, runner.requests.lock().unwrap().len());
+        assert_eq!(
+            retained_sha,
+            install::hash_file(&world.config.database_path).unwrap()
+        );
+        let finalization = FinalizationConfig {
+            transaction_dir: world.config.transaction_dir.clone(),
+            installed_manifest: world.config.installed_manifest.clone(),
+            live_acceptance: world.config.transaction_dir.join("live-acceptance.json"),
+        };
+        assert!(finalize_host(&finalization, runner.as_ref(), world.expected_owner).is_err());
+        assert!(world.config.database_path.is_file());
+        let mut live = LiveAcceptance {
+            schema: 1,
+            result: "passed".into(),
+            source_commit: host.manifest.source_commit.clone(),
+            edge_source_commit: host.manifest.source_commit.clone(),
+            binaries: host
+                .manifest
+                .binaries
+                .iter()
+                .map(|binary| (binary.name.clone(), binary.sha256.clone()))
+                .collect(),
+            checked_at_ms: (time::OffsetDateTime::now_utc().unix_timestamp_nanos() / 1_000_000)
+                as u64,
+            checks: vec!["critical-api".into()],
+            evidence: vec!["fixture:live-journey-receipt".into()],
+        };
+        install::atomic_file(
+            &finalization.live_acceptance,
+            &serde_json::to_vec(&live).unwrap(),
+            0o600,
+            Some(world.expected_owner),
+        )
+        .unwrap();
+        assert!(finalize_host(&finalization, runner.as_ref(), world.expected_owner).is_err());
+        assert!(world.config.database_path.is_file());
+        live.checks = finalize::LIVE_CHECKS
+            .iter()
+            .map(|check| (*check).into())
+            .collect();
+        install::atomic_file(
+            &finalization.live_acceptance,
+            &serde_json::to_vec(&live).unwrap(),
+            0o600,
+            Some(world.expected_owner),
+        )
+        .unwrap();
+        let pending_marker =
+            std::fs::read(world.config.transaction_dir.join("retirement-pending.json")).unwrap();
+        let finalized =
+            finalize_host(&finalization, runner.as_ref(), world.expected_owner).unwrap();
+        assert_eq!(finalized.status, "finalized");
+        assert_eq!(finalized.retired_sources, 2);
+        assert!(!world.config.database_path.exists());
+        assert!(!Path::new(&receipt.backup).exists());
+        assert!(
+            !world
+                .config
+                .transaction_dir
+                .join("retirement-pending.json")
+                .exists()
+        );
+        // A crash after the terminal receipt but before removing the marker
+        // must finish that last exact cleanup on an idempotent retry.
+        install::atomic_file(
+            &world.config.transaction_dir.join("retirement-pending.json"),
+            &pending_marker,
+            0o600,
+            Some(world.expected_owner),
+        )
+        .unwrap();
+        assert_eq!(
+            finalize_host(&finalization, runner.as_ref(), world.expected_owner).unwrap(),
+            finalized
+        );
+        assert!(
+            !world
+                .config
+                .transaction_dir
+                .join("retirement-pending.json")
+                .exists()
+        );
+    }
+
+    #[test]
+    fn native_upgrade_restores_into_a_fresh_candidate_and_retains_prior_authority_on_failure() {
+        let world = host_world();
+        let runner = Arc::new(HostFake {
+            commit: world.commit.clone(),
+            ..HostFake::default()
+        });
+        let mut first =
+            HostCutover::new_owned(world.config.clone(), runner.clone(), world.expected_owner)
+                .unwrap();
+        activate(&mut first).unwrap();
+        let prior_config = std::fs::read(&world.config.postgres.config_path).unwrap();
+        let prior_marker = std::fs::read(&first.authority_marker_path).unwrap();
+        let mut candidate = world.config.clone();
+        candidate.transaction_dir = world._temporary.path().join("native-upgrade");
+        std::fs::remove_file(&first.authority_marker_path).unwrap();
+        assert!(
+            HostCutover::new_owned(candidate.clone(), runner.clone(), world.expected_owner)
+                .is_err()
+        );
+        install::atomic_file(
+            &first.authority_marker_path,
+            &prior_marker,
+            0o600,
+            Some(world.expected_owner),
+        )
+        .unwrap();
+        let unfinished = FinalizationReceipt {
+            schema: 1,
+            status: "retiring".into(),
+            source_commit: first.manifest.source_commit.clone(),
+            live_acceptance_sha256: "1".repeat(64),
+            postgres_archive_sha256: "2".repeat(64),
+            retired_sources: 0,
+        };
+        let prior_finalization = world.config.transaction_dir.join("finalization.json");
+        install::atomic_file(
+            &prior_finalization,
+            &serde_json::to_vec(&unfinished).unwrap(),
+            0o600,
+            Some(world.expected_owner),
+        )
+        .unwrap();
+        assert!(
+            HostCutover::new_owned(candidate.clone(), runner.clone(), world.expected_owner)
+                .is_err()
+        );
+        std::fs::remove_file(prior_finalization).unwrap();
+        // The fixture's replacement daemon binds the newly exposed endpoint.
+        std::fs::write(&candidate.socket_path, b"prior native daemon endpoint").unwrap();
+        let failing = Arc::new(HostFake {
+            commit: world.commit.clone(),
+            fail_ping: true,
+            ..HostFake::default()
+        });
+        let mut upgrade =
+            HostCutover::new_owned(candidate.clone(), failing.clone(), world.expected_owner)
+                .unwrap();
+        assert_eq!(upgrade.authority, AuthorityKind::Postgres);
+        assert_ne!(
+            upgrade.config.postgres.database_name,
+            first.config.postgres.database_name
+        );
+        assert!(
+            activate(&mut upgrade)
+                .unwrap_err()
+                .contains("without replacing the intact database")
+        );
+        assert_eq!(
+            std::fs::read(&candidate.postgres.config_path).unwrap(),
+            prior_config
+        );
+        assert_eq!(
+            std::fs::read(&upgrade.authority_marker_path).unwrap(),
+            prior_marker
+        );
+        let modes = failing
+            .requests
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|request| request.args.first().is_some_and(|arg| arg == "--mode"))
+            .map(|request| request.args[1].to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert!(modes.iter().any(|mode| mode == "restore-candidate"));
+        assert!(modes.iter().any(|mode| mode == "migrate"));
+        assert!(!modes.iter().any(|mode| mode == "import"));
+        assert!(
+            world.config.database_path.is_file(),
+            "inherited SQLite retirement stays protected"
+        );
+        let mut cold_config = world.config.clone();
+        cold_config.transaction_dir = world._temporary.path().join("native-upgrade-interrupted");
+        let mut cold =
+            HostCutover::new_owned(cold_config.clone(), runner.clone(), world.expected_owner)
+                .unwrap();
+        cold.fence_legacy_socket().unwrap();
+        cold.backup_database().unwrap();
+        cold.capture_installation().unwrap();
+        cold.stop_legacy().unwrap();
+        cold.install_rust().unwrap();
+        assert_ne!(
+            std::fs::read(&cold_config.postgres.config_path).unwrap(),
+            prior_config
+        );
+        let recovered = recover_host(
+            &RecoveryConfig {
+                transaction_dir: cold_config.transaction_dir.clone(),
+                runtime_dir: cold_config.runtime_dir.clone(),
+                socket_path: cold_config.socket_path.clone(),
+                database_path: cold_config.database_path.clone(),
+                systemctl: cold_config.systemctl.clone(),
+                daemon_unit: cold_config.daemon_unit.clone(),
+                edge_unit: cold_config.edge_unit.clone(),
+                edge_state_dir: cold_config.edge_state_dir.clone(),
+                source_root: PathBuf::from(&cold.manifest.source_root),
+                edge_env: cold_config.edge_env.clone(),
+            },
+            runner.as_ref(),
+            world.expected_owner,
+        )
+        .unwrap();
+        assert_eq!(recovered.status, "recovered");
+        assert!(!recovered.database_restored);
+        assert_eq!(
+            std::fs::read(&cold_config.postgres.config_path).unwrap(),
+            prior_config
+        );
+        assert_eq!(
+            std::fs::read(&cold.authority_marker_path).unwrap(),
+            prior_marker
+        );
+        let mut successful_config = world.config.clone();
+        successful_config.transaction_dir = world._temporary.path().join("native-upgrade-retry");
+        let mut successful =
+            HostCutover::new_owned(successful_config, runner.clone(), world.expected_owner)
+                .unwrap();
+        let drain = successful.close_admission().unwrap();
+        successful.wait_for_quiescence(&drain).unwrap();
+        successful.fence_legacy_socket().unwrap();
+        successful.wait_for_connections().unwrap();
+        assert!(!successful.deployment_is_applying().unwrap());
+        successful.stop_legacy().unwrap();
+        successful.backup_database().unwrap();
+        let prepared = successful.capture_installation().unwrap();
+        successful.install_rust().unwrap();
+        successful.start_rust().unwrap();
+        successful.verify_live().unwrap();
+        // Model process death after the durable native commitment and before
+        // the final fence unlink. No old installation may be restored now.
+        successful.retain_activation_commit(&prepared).unwrap();
+        end_drain(&drain).unwrap();
+        let recovery = RecoveryConfig {
+            transaction_dir: successful.config.transaction_dir.clone(),
+            runtime_dir: successful.config.runtime_dir.clone(),
+            socket_path: successful.config.socket_path.clone(),
+            database_path: successful.config.database_path.clone(),
+            systemctl: successful.config.systemctl.clone(),
+            daemon_unit: successful.config.daemon_unit.clone(),
+            edge_unit: successful.config.edge_unit.clone(),
+            edge_state_dir: successful.config.edge_state_dir.clone(),
+            source_root: PathBuf::from(&successful.manifest.source_root),
+            edge_env: successful.config.edge_env.clone(),
+        };
+        let current = read_json_file(&successful.authority_marker_path)
+            .unwrap()
+            .unwrap();
+        let mut wrong = current.clone();
+        wrong["database_name"] = Value::String("another_owned_candidate".into());
+        install::atomic_file(
+            &successful.authority_marker_path,
+            &serde_json::to_vec(&wrong).unwrap(),
+            0o600,
+            Some(world.expected_owner),
+        )
+        .unwrap();
+        assert!(recover_host(&recovery, runner.as_ref(), world.expected_owner).is_err());
+        assert!(
+            successful
+                .config
+                .runtime_dir
+                .join("daemon.pre-cutover.sock")
+                .exists()
+        );
+        install::atomic_file(
+            &successful.authority_marker_path,
+            &serde_json::to_vec(&current).unwrap(),
+            0o600,
+            Some(world.expected_owner),
+        )
+        .unwrap();
+        let unchanged_sqlite = install::hash_file(&world.config.database_path).unwrap();
+        let before_recovery = runner.requests.lock().unwrap().len();
+        let receipt = recover_host(&recovery, runner.as_ref(), world.expected_owner).unwrap();
+        assert_eq!(receipt.status, "activated_awaiting_final_acceptance");
+        assert!(!receipt.database_restored);
+        assert_eq!(
+            install::hash_file(&world.config.database_path).unwrap(),
+            unchanged_sqlite
+        );
+        assert!(
+            !successful
+                .config
+                .runtime_dir
+                .join("daemon.pre-cutover.sock")
+                .exists()
+        );
+        assert!(
+            successful
+                .config
+                .transaction_dir
+                .join("activation-recovery.json")
+                .is_file()
+        );
+        assert!(
+            !runner
+                .requests
+                .lock()
+                .unwrap()
+                .iter()
+                .skip(before_recovery)
+                .any(
+                    |request| request.args.first().is_some_and(|arg| arg == "stop")
+                        || request.args.windows(2).any(|pair| pair[0] == "--mode"
+                            && matches!(pair[1].to_str(), Some("import" | "restore-candidate")))
+                )
+        );
+        assert!(
+            successful
+                .config
+                .transaction_dir
+                .join("authority-before.pgdump")
+                .is_file()
+        );
+        assert!(
+            !successful
+                .config
+                .transaction_dir
+                .join("authority-before.sqlite3")
+                .exists()
+        );
+        let pending = read_json_file(
+            &successful
+                .config
+                .transaction_dir
+                .join("retirement-pending.json"),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(pending["retirement_targets"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn postgres_preparation_preserves_unknown_data_and_reuses_only_its_private_binding() {
+        let world = host_world();
+        let postgres = world.config.postgres.bin_dir.join("postgres");
+        let saved_postgres = world.config.postgres.bin_dir.join("postgres.fixture-saved");
+        std::fs::rename(&postgres, &saved_postgres).unwrap();
+        let preflight_runner = Arc::new(HostFake {
+            commit: world.commit.clone(),
+            ..HostFake::default()
+        });
+        let error = HostCutover::new_owned(
+            world.config.clone(),
+            preflight_runner.clone(),
+            world.expected_owner,
+        )
+        .err()
+        .unwrap();
+        assert!(error.contains("required before cutover"));
+        assert!(!world.config.runtime_dir.join(DRAIN_FILE).exists());
+        assert!(
+            !preflight_runner
+                .requests
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|request| request.program == world.config.systemctl)
+        );
+        std::fs::rename(&saved_postgres, &postgres).unwrap();
+        let runner = HostFake {
+            commit: world.commit.clone(),
+            ..HostFake::default()
+        };
+        let mut setup = world.config.postgres.clone();
+        setup.unit = "devcoordinator2-rustint-fixture-postgres.service".into();
+        let source = PathBuf::from(
+            read_json_file(&world.config.candidate_manifest)
+                .unwrap()
+                .unwrap()["source_root"]
+                .as_str()
+                .unwrap(),
+        );
+        std::fs::create_dir_all(&setup.data_dir).unwrap();
+        std::fs::write(setup.data_dir.join("PG_VERSION"), "17\n").unwrap();
+        std::fs::write(setup.data_dir.join("valuable"), b"preserve these bytes").unwrap();
+        let before = std::fs::metadata(&setup.data_dir).unwrap().mode();
+        assert!(
+            setup
+                .prepare(&source, &runner, world.expected_owner)
+                .is_err()
+        );
+        assert_eq!(
+            std::fs::read(setup.data_dir.join("valuable")).unwrap(),
+            b"preserve these bytes"
+        );
+        assert_eq!(std::fs::metadata(&setup.data_dir).unwrap().mode(), before);
+        std::fs::remove_file(setup.data_dir.join("PG_VERSION")).unwrap();
+        std::fs::remove_file(setup.data_dir.join("valuable")).unwrap();
+        setup
+            .prepare(&source, &runner, world.expected_owner)
+            .unwrap();
+        setup
+            .prepare(&source, &runner, world.expected_owner)
+            .unwrap();
+        let config = std::fs::read_to_string(setup.data_dir.join("postgresql.conf")).unwrap();
+        let private_config = read_json_file(&setup.config_path).unwrap().unwrap();
+        assert_eq!(
+            private_config["data_directory"].as_str(),
+            setup.data_dir.to_str()
+        );
+        assert!(config.contains("listen_addresses = ''"));
+        assert!(config.contains("log_parameter_max_length_on_error = 0"));
+        assert!(config.contains("log_statement = 'none'"));
+        assert!(config.contains("log_min_error_statement = 'panic'"));
+        assert!(config.contains("log_error_verbosity = 'terse'"));
+        let private_before = install::hash_file(&setup.config_path).unwrap();
+        let marker = setup
+            .data_dir
+            .parent()
+            .unwrap()
+            .join("authority-install.json");
+        std::fs::write(&marker, b"{\"schema\":1,\"product\":\"another-authority\"}").unwrap();
+        std::fs::set_permissions(&setup.data_dir, std::fs::Permissions::from_mode(0o750)).unwrap();
+        assert!(
+            setup
+                .prepare(&source, &runner, world.expected_owner)
+                .is_err()
+        );
+        assert_eq!(
+            std::fs::metadata(&setup.data_dir).unwrap().mode() & 0o777,
+            0o750
+        );
+        assert_eq!(
+            install::hash_file(&setup.config_path).unwrap(),
+            private_before
+        );
+        assert!(
+            !std::fs::read_to_string(&setup.unit_path)
+                .unwrap()
+                .contains("Before=devcoordinator2.service")
+        );
     }
 
     #[test]
@@ -2521,43 +3829,57 @@ mod tests {
 
     #[test]
     fn concrete_host_adapter_activates_supported_schemas_and_rejects_unknown_schemas() {
-        for schema in 15..=DATABASE_SCHEMA_VERSION {
-            let world = host_world();
-            let connection = Connection::open(&world.config.database_path).unwrap();
+        let world = host_world();
+        let connection = Connection::open(&world.config.database_path).unwrap();
+        let runner = Arc::new(HostFake {
+            commit: world.commit.clone(),
+            ..HostFake::default()
+        });
+        let mut host =
+            HostCutover::new_owned(world.config.clone(), runner.clone(), world.expected_owner)
+                .unwrap();
+        for unsupported in ["14", "15", "33", "35", "36", "invalid"] {
             connection
                 .execute(
                     "UPDATE meta SET value=?1 WHERE key='schema_version'",
-                    [schema.to_string()],
+                    [unsupported],
                 )
                 .unwrap();
-            let runner = Arc::new(HostFake {
-                commit: world.commit.clone(),
-                ..HostFake::default()
-            });
-            let mut host =
-                HostCutover::new_owned(world.config.clone(), runner, world.expected_owner).unwrap();
-
-            let receipt = activate(&mut host).unwrap();
-            assert_eq!(receipt.status, "activated");
-            assert_eq!(
-                database_schema(&world.config.database_path).unwrap(),
-                schema.to_string()
+            assert!(
+                host.deployment_is_applying()
+                    .unwrap_err()
+                    .contains("schema")
             );
-            for unsupported in [
-                "14".to_owned(),
-                (DATABASE_SCHEMA_VERSION + 1).to_string(),
-                "invalid".to_owned(),
-            ] {
-                connection
-                    .execute(
-                        "UPDATE meta SET value=?1 WHERE key='schema_version'",
-                        [unsupported],
-                    )
-                    .unwrap();
-                assert!(open_database_read_only(&world.config.database_path).is_err());
-                assert!(!database_integrity(&world.config.database_path).unwrap());
-            }
+            assert!(
+                !runner
+                    .requests
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .any(|request| request.args.first().is_some_and(|action| action == "stop"))
+            );
         }
+        connection
+            .execute("UPDATE meta SET value='34' WHERE key='schema_version'", [])
+            .unwrap();
+        drop(connection);
+        let receipt = activate(&mut host).unwrap();
+        assert_eq!(receipt.status, "activated_awaiting_final_acceptance");
+        assert!(world.config.database_path.is_file());
+        assert!(
+            world
+                .config
+                .transaction_dir
+                .join("authority-before.pgdump")
+                .is_file()
+        );
+        assert!(
+            world
+                .config
+                .transaction_dir
+                .join("retirement-pending.json")
+                .is_file()
+        );
     }
 
     #[test]
@@ -2574,7 +3896,7 @@ mod tests {
 
         let receipt = activate(&mut host).unwrap();
 
-        assert_eq!(receipt.status, "activated");
+        assert_eq!(receipt.status, "activated_awaiting_final_acceptance");
         assert_eq!(
             runner
                 .requests
@@ -2595,7 +3917,8 @@ mod tests {
             ..HostFake::default()
         });
         let mut host =
-            HostCutover::new_owned(world.config.clone(), runner, world.expected_owner).unwrap();
+            HostCutover::new_owned(world.config.clone(), runner.clone(), world.expected_owner)
+                .unwrap();
         std::fs::create_dir_all(&world.config.transaction_dir).unwrap();
         let backup = world
             .config
@@ -2623,7 +3946,8 @@ mod tests {
             ..HostFake::default()
         });
         let mut host =
-            HostCutover::new_owned(world.config.clone(), runner, world.expected_owner).unwrap();
+            HostCutover::new_owned(world.config.clone(), runner.clone(), world.expected_owner)
+                .unwrap();
         host.backup_database().unwrap();
         let snapshot = host.capture_installation().unwrap();
         host.fence_legacy_socket().unwrap();
@@ -2706,7 +4030,7 @@ mod tests {
 
     #[test]
     fn all_supported_schemas_preserve_intact_data_after_failed_activation() {
-        for schema in MINIMUM_SUPPORTED_DATABASE_SCHEMA..=DATABASE_SCHEMA_VERSION {
+        for schema in [34] {
             let world = host_world();
             let connection = Connection::open(&world.config.database_path).unwrap();
             connection
@@ -2729,7 +4053,8 @@ mod tests {
                 ..HostFake::default()
             });
             let mut host =
-                HostCutover::new_owned(world.config.clone(), runner, world.expected_owner).unwrap();
+                HostCutover::new_owned(world.config.clone(), runner.clone(), world.expected_owner)
+                    .unwrap();
             let error = activate(&mut host).unwrap_err();
             assert!(
                 error.contains("without replacing the intact database"),
@@ -2769,7 +4094,8 @@ mod tests {
             ..HostFake::default()
         });
         let mut host =
-            HostCutover::new_owned(world.config.clone(), runner, world.expected_owner).unwrap();
+            HostCutover::new_owned(world.config.clone(), runner.clone(), world.expected_owner)
+                .unwrap();
         let error = activate(&mut host).unwrap_err();
         assert!(error.contains("without replacing the intact database"));
         assert_eq!(

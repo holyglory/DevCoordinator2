@@ -102,13 +102,13 @@ export async function verifyHealth({ page, browser, base, call, request, check, 
   },page);
   await check('Failure to persist never hides the incident or reports success',async()=>{
     await page.reload();await page.locator('#hi-incidents-toggle').click();await page.locator(`[data-hi-select="${web.incident_id}"]`).click();
-    await page.route('**/api/v2/health.incident.update',route=>route.fulfill({status:409,contentType:'application/json',body:JSON.stringify({ok:false,error:{code:'configuration_conflict',message:'Incident changed; refresh'}})}));
+    await page.route('**/api/v3/health.incident.update',route=>route.fulfill({status:409,contentType:'application/json',body:JSON.stringify({ok:false,error:{code:'configuration_conflict',message:'Incident changed; refresh'}})}));
     await page.locator('[data-hi-disposition]').click();
     const failure=page.locator('#hi-selected-detail .hi-action-result');
     await failure.filter({hasText:'[configuration_conflict]: Incident changed; refresh'}).waitFor();
     const expected=await page.evaluate(()=>window.DevCoordinatorI18n.t('common.error_conflict'));
     assert.equal(await failure.innerText(),`Could not save: ${expected} [configuration_conflict]: Incident changed; refresh`);
-    assert.equal((await list('attention')).attention_count,2);assert.equal(await page.locator('[data-hi-disposition]').isEnabled(),true);await page.unroute('**/api/v2/health.incident.update');
+    assert.equal((await list('attention')).attention_count,2);assert.equal(await page.locator('[data-hi-disposition]').isEnabled(),true);await page.unroute('**/api/v3/health.incident.update');
   },page);
   await check('Paging, recovery and recurrence keep exact incident identities',async()=>{
     const first=await call('health.incidents',{view:'attention',limit:1});assert.equal(first.incidents.length,1);assert.ok(first.next_before);const second=await call('health.incidents',{view:'attention',limit:1,before:first.next_before});assert.notEqual(first.incidents[0].incident_id,second.incidents[0].incident_id);

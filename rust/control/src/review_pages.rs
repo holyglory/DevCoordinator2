@@ -128,10 +128,10 @@ impl ReviewService {
             .map(|row| row.outcome_id.clone())
             .collect::<Vec<_>>();
         let repository_id = params.repository_id.clone();
-        let titles = self.database.call(move |connection| {
-            let mut query = connection.prepare("SELECT task_id,title,kind FROM tasks WHERE repository_id = ?1 AND task_id IN (SELECT value FROM json_each(?2))")?;
-            let ids = serde_json::to_string(&ids).map_err(|_| crate::database::DatabaseError::ResultType)?;
-            query.query_map(rusqlite::params![repository_id, ids], |row| Ok((row.get::<_, String>(0)?, (row.get::<_, String>(1)?, row.get::<_, String>(2)?))))?
+        let titles = self.database.read(move |connection| {
+            let mut query = connection.prepare("SELECT task_id,title,kind FROM tasks WHERE repository_id = $1 AND task_id IN (SELECT value FROM jsonb_array_elements_text($2::jsonb))")?;
+            let ids = serde_json::to_string(&ids).map_err(|_| crate::database::DatabaseError::Domain(invalid("Cannot encode review outcome identities")))?;
+            query.query_map(crate::database::params![repository_id, ids], |row| Ok((row.get::<_, String>(0)?, (row.get::<_, String>(1)?, row.get::<_, String>(2)?))))?
                 .collect::<Result<BTreeMap<_, _>, _>>().map_err(Into::into)
         }).map_err(database_error)?;
         for row in &mut usage.outcomes.rows {

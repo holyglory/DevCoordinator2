@@ -1,4 +1,5 @@
 //! Native storage observation and exact-target mutations; no shell commands.
+mod discovery;
 mod docker;
 mod docker_engine;
 mod evidence;
@@ -15,8 +16,8 @@ use crate::{
     metrics_source::run_bounded,
 };
 use devcoordinator2_api::{ProtocolError, storage as api};
+pub use discovery::{DiscoveryBudget, DiscoveryCursor};
 pub(crate) use mounts::execute as run_mount_helper;
-use std::collections::BTreeSet;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -24,6 +25,19 @@ use std::time::Duration;
 
 pub trait Backend: Send + Sync {
     fn discover(&self, context: &Context) -> Result<Discovery, ProtocolError>;
+    fn discover_step(
+        &self,
+        context: &Context,
+        cursor: &mut DiscoveryCursor,
+        _budget: DiscoveryBudget,
+    ) -> Result<Option<Discovery>, ProtocolError> {
+        if cursor.complete {
+            return Err(unavailable("discovery_already_complete"));
+        }
+        let result = self.discover(context)?;
+        cursor.complete = true;
+        Ok(Some(result))
+    }
     fn validate(
         &self,
         record: &Record,
@@ -39,6 +53,15 @@ pub trait Backend: Send + Sync {
     ) -> Result<(), ProtocolError>;
     /// Used only after a durable mutation intent exists, including restart.
     fn absent(&self, record: &Record, context: &Context) -> Result<bool, ProtocolError>;
+    fn absent_step(
+        &self,
+        record: &Record,
+        context: &Context,
+        _cursor: &mut Option<String>,
+        _budget: DiscoveryBudget,
+    ) -> Result<Option<bool>, ProtocolError> {
+        self.absent(record, context).map(Some)
+    }
     fn save_recovery(&self, record: &Record, job_id: &str) -> Result<(), ProtocolError>;
     fn resume(
         &self,
@@ -118,52 +141,38 @@ impl Backend for HostBackend {
         }
     }
 
+    fn absent_step(
+        &self,
+        record: &Record,
+        context: &Context,
+        cursor: &mut Option<String>,
+        budget: DiscoveryBudget,
+    ) -> Result<Option<bool>, ProtocolError> {
+        if matches!(record.locator, Locator::Evidence { .. }) {
+            self.evidence_absent_step(record, context, cursor, budget)
+        } else {
+            self.absent(record, context).map(Some)
+        }
+    }
+
     fn discover(&self, context: &Context) -> Result<Discovery, ProtocolError> {
-        let mut observation = context.clone();
-        observation.discovering = true;
-        match self.container_rows() {
-            Ok(rows) => observation.docker_snapshot = Some(Arc::new(rows)),
-            Err(_) => observation.docker_unavailable = true,
-        }
-        let context = &observation;
-        let mut result = Discovery {
-            repository_id: context.scan_repository_id.clone(),
-            ..Discovery::default()
-        };
-        self.discover_sources(context, &mut result)?;
-        self.discover_evidence(context, &mut result)?;
-        if !context.repositories.is_empty() {
-            match self.discover_docker(context, &mut result) {
-                Ok(()) => result.complete_kinds.extend([
-                    api::Kind::Container,
-                    api::Kind::Image,
-                    api::Kind::Network,
-                    api::Kind::Volume,
-                    api::Kind::Mount,
-                    api::Kind::BackingDirectory,
-                ]),
-                Err(_) => result
-                    .coverage_gaps
-                    .push("docker_discovery_incomplete".into()),
+        let mut cursor = DiscoveryCursor::default();
+        loop {
+            if let Some(result) =
+                self.discover_host_step(context, &mut cursor, DiscoveryBudget::default())?
+            {
+                return Ok(result);
             }
         }
-        self.discover_retained_backing(context, &mut result)?;
-        for record in &mut result.records {
-            let mut ancestors = BTreeSet::new();
-            for alias in &record.private_aliases {
-                for parent in alias.ancestors().skip(1) {
-                    if let Ok((device, inode)) = fs::identity(parent) {
-                        ancestors.insert(format!("fs:{device}:{inode}"));
-                    }
-                }
-            }
-            record.ancestor_keys = ancestors.into_iter().collect();
-        }
-        let mut filesystems = BTreeSet::new();
-        result
-            .filesystems
-            .retain(|f| filesystems.insert(f.filesystem_id.clone()));
-        Ok(result)
+    }
+
+    fn discover_step(
+        &self,
+        context: &Context,
+        cursor: &mut DiscoveryCursor,
+        budget: DiscoveryBudget,
+    ) -> Result<Option<Discovery>, ProtocolError> {
+        self.discover_host_step(context, cursor, budget)
     }
 
     fn validate(
@@ -184,6 +193,18 @@ impl Backend for HostBackend {
             || context.leased_ancestors.contains(&r.resource_key)
         {
             return Err(blocked("active_lease"));
+        }
+        if matches!(r.locator, Locator::Evidence { .. }) {
+            for alias in &r.private_aliases {
+                let (device, inode) = fs::identity(alias)?;
+                let key = format!("fs:{device}:{inode}");
+                if context.protected_ancestors.contains(&key) {
+                    return Err(blocked("protected_shared_data"));
+                }
+                if context.leased_ancestors.contains(&key) {
+                    return Err(blocked("active_lease"));
+                }
+            }
         }
         for alias in &r.private_aliases {
             for path in alias.ancestors() {
@@ -214,7 +235,7 @@ impl Backend for HostBackend {
                 root,
                 git_root,
             } => {
-                validate_root(path, &self.config)?;
+                validate_root(path, &self.config, &self.database)?;
                 if !path.starts_with(root) {
                     return Err(blocked("outside_registered_root"));
                 }
@@ -242,7 +263,16 @@ impl Backend for HostBackend {
                 if processes_reference(&r.private_aliases)? {
                     return Err(blocked("active_process"));
                 }
-                let measured = fs::measure(path)?;
+                let measured = if context.discovering {
+                    context
+                        .discovery_measurements
+                        .get(path)
+                        .cloned()
+                        .map(Ok)
+                        .unwrap_or_else(|| fs::measure(path))?
+                } else {
+                    fs::measure(path)?
+                };
                 if measured.protected_metadata && generated_kind(r.artifact.kind) {
                     return Err(blocked("protected_source_or_credentials"));
                 }
@@ -378,7 +408,11 @@ impl Backend for HostBackend {
     }
 }
 
-pub fn validate_root(path: &Path, config: &Config) -> Result<(), ProtocolError> {
+pub fn validate_root(
+    path: &Path,
+    config: &Config,
+    database: &crate::database::Database,
+) -> Result<(), ProtocolError> {
     if !path.is_absolute()
         || path.components().any(|p| {
             matches!(
@@ -392,11 +426,22 @@ pub fn validate_root(path: &Path, config: &Config) -> Result<(), ProtocolError> 
     if path.components().count() < 4 {
         return Err(blocked("protected_root"));
     }
+    let postgres_data = database
+        .data_directory()
+        .ok_or_else(|| unavailable("postgres_data_binding_unavailable"))?;
+    let postgres_root = postgres_data
+        .parent()
+        .ok_or_else(|| unavailable("postgres_data_binding_unavailable"))?;
+    if path.starts_with(postgres_root) || postgres_root.starts_with(path) {
+        return Err(blocked("protected_system_data"));
+    }
     let excluded = [
         "/etc", "/usr", "/bin", "/sbin", "/boot", "/dev", "/proc", "/sys", "/run",
     ];
     if excluded.iter().any(|p| path.starts_with(p))
         || path.starts_with("/var/lib/docker")
+        || path.starts_with("/var/lib/devcoordinator2-postgres")
+        || Path::new("/var/lib/devcoordinator2-postgres").starts_with(path)
         || path.starts_with(&config.state_dir)
         || config.state_dir.starts_with(path)
     {

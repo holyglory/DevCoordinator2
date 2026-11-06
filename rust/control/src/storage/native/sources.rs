@@ -5,8 +5,7 @@ use crate::storage::{
     unavailable,
 };
 use devcoordinator2_api::{ProtocolError, storage as api};
-use std::collections::BTreeSet;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 impl HostBackend {
     pub(super) fn discover_retained_backing(
@@ -16,7 +15,7 @@ impl HostBackend {
     ) -> Result<(), ProtocolError> {
         // Retiring fstab must not make the still-existing backing directory
         // disappear from inventory. The registry keeps that exact identity.
-        let rows=self.database.call(|c| {
+        let rows=self.database.read(|c| {
             let mut q=c.prepare("SELECT record_json FROM storage_artifacts WHERE kind='backing_directory' AND removed_at_ms IS NULL")?;
             Ok(q.query_map([],|r|r.get::<_,String>(0))?.collect::<Result<Vec<_>,_>>()?)
         }).map_err(crate::storage::db_error)?;
@@ -88,9 +87,9 @@ impl HostBackend {
             return Err(blocked("backup_in_progress"));
         }
         let scope = r.artifact.repository_id.clone().unwrap_or_default();
-        let floor=self.database.call(move|c|{
-            use rusqlite::OptionalExtension;
-            let value=c.query_row("SELECT policy_json FROM storage_policies WHERE scope=?1 OR scope='' ORDER BY CASE WHEN scope=?1 THEN 0 ELSE 1 END LIMIT 1",[scope],|r|r.get::<_,String>(0)).optional()?;
+        let floor=self.database.read(move|c|{
+            use crate::database::OptionalExtension;
+            let value=c.query_row("SELECT policy_json FROM storage_policies WHERE scope=$1 OR scope='' ORDER BY CASE WHEN scope=$1 THEN 0 ELSE 1 END LIMIT 1",[scope],|r|r.get::<_,String>(0)).optional()?;
             Ok(value)
         }).map_err(crate::storage::db_error)?.map(|v|crate::storage::parse::<api::Policy>(&v).map(|p|p.minimum_verified_backups)).transpose()?.unwrap_or(2);
         let mut newer = 0u32;
@@ -130,149 +129,6 @@ impl HostBackend {
         Err(blocked("required_recovery"))
     }
 
-    pub(super) fn discover_sources(
-        &self,
-        context: &Context,
-        out: &mut Discovery,
-    ) -> Result<(), ProtocolError> {
-        let mut visited = BTreeSet::new();
-        let mut generated = Vec::new();
-        for repo in context.repositories.iter().filter(|repo| {
-            context
-                .scan_repository_id
-                .as_ref()
-                .is_none_or(|id| id == &repo.id)
-        }) {
-            let mut roots = vec![repo.root.clone()];
-            roots.extend(
-                context
-                    .worktrees
-                    .iter()
-                    .filter(|(id, _)| id == &repo.id)
-                    .map(|(_, p)| p.clone()),
-            );
-            for root in roots {
-                if !visited.insert(root.clone()) {
-                    continue;
-                }
-                if let Ok(f) = fs::filesystem(&root, context.now_ms, "Project storage") {
-                    out.filesystems.push(f);
-                }
-                if let Err(e) = discover_generated(&root, &root, 0, &mut generated) {
-                    out.coverage_gaps.push(e.message);
-                }
-                for (path, kind, recognized) in generated.drain(..) {
-                    match self.directory_candidate(
-                        &path,
-                        &root,
-                        Some(&root),
-                        kind,
-                        recognized,
-                        context,
-                    ) {
-                        Ok(mut r) => {
-                            r.artifact.repository_id = Some(repo.id.clone());
-                            r.artifact.repository_name = Some(repo.name.clone());
-                            out.records.push(r);
-                        }
-                        Err(_) => out
-                            .coverage_gaps
-                            .push("generated_output_observation_incomplete".into()),
-                    }
-                }
-                if root != repo.root {
-                    match self.directory_candidate(
-                        &root,
-                        &root,
-                        Some(&repo.root),
-                        api::Kind::Worktree,
-                        true,
-                        context,
-                    ) {
-                        Ok(mut r) => {
-                            r.artifact.repository_id = Some(repo.id.clone());
-                            r.artifact.repository_name = Some(repo.name.clone());
-                            r.artifact.name = root
-                                .file_name()
-                                .unwrap_or_default()
-                                .to_string_lossy()
-                                .into_owned();
-                            out.records.push(r);
-                        }
-                        Err(_) => out
-                            .coverage_gaps
-                            .push("worktree_observation_incomplete".into()),
-                    }
-                }
-            }
-        }
-        for root in context.roots.iter().filter(|root| {
-            context
-                .scan_repository_id
-                .as_ref()
-                .is_none_or(|id| root.root.repository_id.as_ref() == Some(id))
-        }) {
-            if fs::identity(&root.path).ok() != Some((root.device, root.inode)) {
-                out.coverage_gaps
-                    .push("configured_root_identity_changed".into());
-                continue;
-            }
-            if let Ok(f) = fs::filesystem(&root.path, context.now_ms, &root.root.label) {
-                out.filesystems.push(f);
-            }
-            let children = std::fs::read_dir(&root.path)
-                .map_err(|_| unavailable("configured_root_unavailable"))?;
-            for child in children {
-                let child = child.map_err(|_| unavailable("configured_root_incomplete"))?;
-                if !child.file_type().is_ok_and(|k| k.is_dir()) {
-                    continue;
-                }
-                let recognized = root.root.kind != api::Kind::Unknown;
-                let git = context
-                    .repositories
-                    .iter()
-                    .find(|repo| child.path().starts_with(&repo.root))
-                    .map(|repo| repo.root.as_path());
-                match self.directory_candidate(
-                    &child.path(),
-                    &root.path,
-                    git,
-                    root.root.kind,
-                    recognized,
-                    context,
-                ) {
-                    Ok(mut r) => {
-                        r.artifact.repository_id = root.root.repository_id.clone();
-                        r.artifact.group_id = Some(root.root.root_id.clone());
-                        r.artifact.group_name = Some(root.root.label.clone());
-                        r.artifact.repository_name = context
-                            .repositories
-                            .iter()
-                            .find(|p| Some(&p.id) == r.artifact.repository_id.as_ref())
-                            .map(|p| p.name.clone());
-                        if r.artifact.kind == api::Kind::Backup {
-                            self.observe_backup(&mut r, context)?;
-                        }
-                        out.records.push(r);
-                    }
-                    Err(_) => out
-                        .coverage_gaps
-                        .push("configured_artifact_observation_incomplete".into()),
-                }
-            }
-        }
-        if out.coverage_gaps.is_empty() {
-            out.complete_kinds.extend([
-                api::Kind::BuildOutput,
-                api::Kind::DependencyCache,
-                api::Kind::Worktree,
-                api::Kind::Backup,
-                api::Kind::Unknown,
-            ]);
-        }
-        Ok(())
-    }
-
     pub(super) fn directory_candidate(
         &self,
         path: &Path,
@@ -282,7 +138,12 @@ impl HostBackend {
         recognized: bool,
         context: &Context,
     ) -> Result<Record, ProtocolError> {
-        let measured = fs::measure(path);
+        let measured = context
+            .discovery_measurements
+            .get(path)
+            .cloned()
+            .map(Ok)
+            .unwrap_or_else(|| fs::measure(path));
         let (device, inode) = fs::identity(path)?;
         let effect = if !recognized {
             api::Effect::Unknown
@@ -415,6 +276,14 @@ impl HostBackend {
         let Locator::Directory { path, root, .. } = &r.locator else {
             return Ok(());
         };
+        if path
+            .join("retirement-pending.json")
+            .symlink_metadata()
+            .is_ok()
+        {
+            r.blockers.push("activation_acceptance_pending".into());
+            return Ok(());
+        }
         if path.join("installation-snapshot.json").is_file() {
             let repository = r
                 .artifact
@@ -559,69 +428,4 @@ impl HostBackend {
             hash(&std::fs::read(manifest).map_err(|_| unavailable("backup_manifest_unavailable"))?);
         Ok(())
     }
-}
-
-fn discover_generated(
-    path: &Path,
-    root: &Path,
-    depth: usize,
-    out: &mut Vec<(PathBuf, api::Kind, bool)>,
-) -> Result<(), ProtocolError> {
-    if depth > 8 {
-        return Ok(());
-    }
-    if out.len() > 10_000 {
-        return Err(blocked("source_discovery_limit"));
-    }
-    for entry in std::fs::read_dir(path).map_err(|_| unavailable("source_discovery_unavailable"))? {
-        let entry = entry.map_err(|_| unavailable("source_discovery_incomplete"))?;
-        if !entry.file_type().is_ok_and(|t| t.is_dir()) {
-            continue;
-        }
-        let name = entry.file_name();
-        let n = name.to_string_lossy();
-        if matches!(
-            n.as_ref(),
-            ".git"
-                | ".devcoordinator"
-                | ".devcoordinator-test"
-                | ".ssh"
-                | "sessions"
-                | "archived_sessions"
-        ) {
-            continue;
-        }
-        let candidate = match n.as_ref() {
-            "target" => Some((
-                api::Kind::BuildOutput,
-                path.join("Cargo.toml").is_file()
-                    && entry.path().join(".rustc_info.json").is_file(),
-            )),
-            "node_modules" => Some((
-                api::Kind::DependencyCache,
-                path.join("package.json").is_file()
-                    && (entry.path().join(".package-lock.json").is_file()
-                        || entry.path().join(".modules.yaml").is_file()),
-            )),
-            ".venv" | ".venv-v3" | "venv" => Some((
-                api::Kind::DependencyCache,
-                entry.path().join("pyvenv.cfg").is_file(),
-            )),
-            ".pytest_cache" | ".ruff_cache" => Some((
-                api::Kind::DependencyCache,
-                entry.path().join("CACHEDIR.TAG").is_file(),
-            )),
-            "dist" | "build" | "bazel-out" | ".next" => Some((api::Kind::BuildOutput, false)),
-            _ => None,
-        };
-        if let Some((kind, recognized)) = candidate {
-            out.push((entry.path(), kind, recognized));
-            continue;
-        }
-        if entry.path() != root && entry.path().join(".git").exists() {
-            continue;
-        }
-        discover_generated(&entry.path(), root, depth + 1, out)?;
-    }
-    Ok(())
 }

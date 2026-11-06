@@ -15,7 +15,7 @@ generation and component separators. Ordinary errors point to this surface rathe
 than embedding build output. Read only the needed bounded portion:
 
 ```sh
-devcoordinator2 deployment logs --deployment-id <id> --component build --tail-lines 200
+devcoordinator2 call deployment.logs --params '{"deployment_id":"<id>","component":"build","tail_lines":200}'
 ```
 
 The log includes stdout and stderr even when the build fails, times out, or the

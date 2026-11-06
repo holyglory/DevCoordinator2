@@ -69,12 +69,12 @@ export async function verifyEvidenceLayout({ page, daemon, check, scenario, base
   verify('feedback can be saved without leaving full screen', (await (await saved).json()).ok === true && await fullButton.getAttribute('aria-pressed') === 'true');
   await page.locator('.evidence-thread').waitFor();
   verify('the saved feedback is shown inside full screen', await page.locator('.evidence-thread').isVisible());
-  await page.route('**/api/v2/test.evidence.feedback.reply', route => route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ ok: false, error: { code: 'temporary', message: 'Temporary reply failure' } }) }));
+  await page.route('**/api/v3/test.evidence.feedback.reply', route => route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ ok: false, error: { code: 'temporary', message: 'Temporary reply failure' } }) }));
   await page.locator('#evidence-feedback-reply textarea').fill('Retry this full-screen reply.');
   await page.locator('#evidence-feedback-reply button[type=submit]').click();
   await page.getByText('Temporary reply failure', { exact: false }).waitFor();
   verify('full-screen failures remain visible and keep the reply', await page.locator('.evidence-page #toasts').count() === 1 && await page.locator('#evidence-feedback-reply textarea').inputValue() === 'Retry this full-screen reply.');
-  await page.unroute('**/api/v2/test.evidence.feedback.reply');
+  await page.unroute('**/api/v3/test.evidence.feedback.reply');
   const replied = page.waitForResponse(response => response.url().endsWith('/test.evidence.feedback.reply'));
   await page.locator('#evidence-feedback-reply button[type=submit]').click();
   verify('a failed full-screen reply can be retried', (await (await replied).json()).ok === true);

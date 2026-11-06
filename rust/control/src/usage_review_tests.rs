@@ -336,25 +336,46 @@ fn worktree_selection_keeps_owner_deduplication_and_component_totals() {
     for (selected, unassigned, expected) in [
         (None, true, 350),
         (Some(vec!["worktree-a".to_owned()]), false, 100),
-        (Some(vec!["worktree-a".to_owned(), "worktree-b".to_owned()]), false, 300),
+        (
+            Some(vec!["worktree-a".to_owned(), "worktree-b".to_owned()]),
+            false,
+            300,
+        ),
         (Some(Vec::new()), true, 50),
         (Some(Vec::new()), false, 0),
     ] {
         let mut facts = performance::read(&connection, &["repository".into()], 1000, 2000)
-            .unwrap().unwrap();
+            .unwrap()
+            .unwrap();
         filter_worktree_facts(
-            &connection, &["repository".into()], &mut facts, selected.as_deref(), unassigned,
-        ).unwrap();
-        for category in ["total_tokens", "input_tokens", "input_tokens_details.cached_tokens"] {
+            &connection,
+            &["repository".into()],
+            &mut facts,
+            selected.as_deref(),
+            unassigned,
+        )
+        .unwrap();
+        for category in [
+            "total_tokens",
+            "input_tokens",
+            "input_tokens_details.cached_tokens",
+        ] {
             assert_eq!(
-                facts.tokens.iter().filter(|token| token.category == category)
-                    .filter_map(|token| token.value).sum::<u64>(),
+                facts
+                    .tokens
+                    .iter()
+                    .filter(|token| token.category == category)
+                    .filter_map(|token| token.value)
+                    .sum::<u64>(),
                 expected,
                 "{selected:?} / unassigned={unassigned} / {category}"
             );
         }
         let (report, _) = review_aggregate::display(&connection, facts, None, 1000, 2000).unwrap();
-        assert_eq!(report.tokens.get("total_tokens").copied().unwrap_or(0), expected);
+        assert_eq!(
+            report.tokens.get("total_tokens").copied().unwrap_or(0),
+            expected
+        );
         assert_eq!(report.activities.values().sum::<u64>(), expected);
     }
 }
@@ -453,7 +474,7 @@ fn review_resolves_mapping_titles_and_frozen_outcome_pages_without_dashboard_war
     environment.database.call(|connection| {
         for (index, id, title) in [(2, "outcome-a", "Implement accounting"), (3, "outcome-b", "Verify accounting")] {
             connection.execute("INSERT INTO tasks(task_id,repository_id,seq,position,title,outcome,kind,status,created_at,created_by,updated_at)
-                VALUES(?1,'project-alpha',?2,?2,?3,?3,'improvement','in_progress','1970-01-01T00:16:40Z','fixture','1970-01-01T00:16:40Z')", rusqlite::params![id,index,title])?;
+                VALUES($1,'project-alpha',$2,$2,$3,$3,'improvement','in_progress','1970-01-01T00:16:40Z','fixture','1970-01-01T00:16:40Z')", crate::database::params![id,index,title])?;
         }
         Ok(())
     }).unwrap();
@@ -565,7 +586,7 @@ fn review_resolves_mapping_titles_and_frozen_outcome_pages_without_dashboard_war
     live.execute("INSERT INTO repositories VALUES(?1)", [&stale_key])
         .unwrap();
     environment.database.call(move |connection| {
-        connection.execute("UPDATE codex_usage_repository_links SET codex_repository_id=?1 WHERE source_uid=?2", rusqlite::params![stale_key,uid])?;
+        connection.execute("UPDATE codex_usage_repository_links SET codex_repository_id=$1 WHERE source_uid=$2", crate::database::params![stale_key,uid])?;
         Ok(())
     }).unwrap();
     let repaired = environment

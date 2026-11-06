@@ -7,10 +7,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
+use crate::database::OptionalExtension;
 use devcoordinator2_api::results::{Capacity, CapacityAdjustment};
 use devcoordinator2_api::{ErrorCode, ProtocolError};
 use devcoordinator2_executor_protocol::ResourceClaim;
-use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
 use time::{format_description::FormatItem, macros::format_description};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -382,8 +382,8 @@ impl CapacityBroker {
                     return Ok(existing);
                 }
                 transaction.execute(
-                    "INSERT INTO test_capacity_state(singleton,learned_capacity,cap,updated_at) VALUES(1,?1,NULL,?2)",
-                    rusqlite::params![initial, now],
+                    "INSERT INTO test_capacity_state(singleton,learned_capacity,cap,updated_at) VALUES(1,$1,NULL,$2)",
+                    crate::database::params![initial, now],
                 )?;
                 Ok((initial, None))
             })
@@ -519,7 +519,7 @@ impl CapacityBroker {
         let last_adjustment = self
             .inner
             .database
-            .call(|connection| {
+            .read(|connection| {
                 connection
                     .query_row(
                         "SELECT event_id,at,actor,reason,previous_capacity,new_capacity,cap,p95_cpu_percent,p95_memory_percent,saturation_fraction,epoch_seconds FROM test_capacity_events ORDER BY event_id DESC LIMIT 1",
@@ -1087,12 +1087,12 @@ impl CapacityBroker {
             .database
             .transaction(move |transaction| {
                 transaction.execute(
-                    "UPDATE test_capacity_state SET learned_capacity=?1,cap=?2,updated_at=?3 WHERE singleton=1",
-                    rusqlite::params![learned, cap, at],
+                    "UPDATE test_capacity_state SET learned_capacity=$1,cap=$2,updated_at=$3 WHERE singleton=1",
+                    crate::database::params![learned, cap, at],
                 )?;
                 transaction.execute(
-                    "INSERT INTO test_capacity_events(at,actor,reason,previous_capacity,new_capacity,cap,p95_cpu_percent,p95_memory_percent,saturation_fraction,epoch_seconds) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
-                    rusqlite::params![
+                    "INSERT INTO test_capacity_events(at,actor,reason,previous_capacity,new_capacity,cap,p95_cpu_percent,p95_memory_percent,saturation_fraction,epoch_seconds) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)",
+                    crate::database::params![
                         at,
                         adjustment.actor,
                         adjustment.reason,
@@ -1751,7 +1751,7 @@ mod tests {
         broker.unregister_run("run-b").expect("finish b");
         assert_eq!(broker.snapshot().expect("learned").learned_capacity, 6);
         let persisted: u32 = database
-            .call(|connection| {
+            .read(|connection| {
                 Ok(connection.query_row(
                     "SELECT learned_capacity FROM test_capacity_state WHERE singleton=1",
                     [],

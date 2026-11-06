@@ -8,8 +8,11 @@ use std::time::{Duration as StdDuration, Instant};
 
 use devcoordinator2_api::results::{HealthHost, HostReconciliation, MetricSample};
 use devcoordinator2_api::{ErrorCode, ProtocolError};
+#[cfg(test)]
 use tokio::sync::watch;
+#[cfg(test)]
 use tokio::task::JoinHandle;
+#[cfg(test)]
 use tracing::warn;
 
 use crate::alerts::{AlertEngine, Condition};
@@ -25,6 +28,7 @@ use crate::systemd::SystemdControl;
 
 pub const SAMPLE_SECONDS: u32 = 15;
 pub const STORAGE_SECONDS: u32 = 300;
+#[cfg(test)]
 const STORAGE_START_DELAY_SECONDS: u64 = 1;
 
 // Directory and Docker storage probes walk user-controlled trees and can be
@@ -99,7 +103,6 @@ struct Working {
     previous: BTreeMap<SubjectKey, (u64, f64)>,
     previous_host: Option<(u64, u64)>,
     restart_history: BTreeMap<String, Vec<(f64, u32)>>,
-    last_expire: f64,
 }
 
 #[derive(Clone, Default)]
@@ -115,11 +118,13 @@ struct StorageScanState {
 /// next truthful observation, but an event burst must not start back-to-back
 /// filesystem walks while the previous one has just completed.
 #[derive(Clone, Copy)]
+#[cfg(test)]
 struct StorageSchedule {
     next_due: tokio::time::Instant,
     last_completed: Option<tokio::time::Instant>,
 }
 
+#[cfg(test)]
 impl StorageSchedule {
     fn new(now: tokio::time::Instant) -> Self {
         Self {
@@ -265,15 +270,6 @@ impl MetricSampler {
     }
 
     pub fn snapshot(&self) -> Result<SamplerSnapshot, ProtocolError> {
-        if self
-            .inner
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .is_none()
-        {
-            self.tick()?;
-        }
         self.inner
             .state
             .lock()
@@ -441,10 +437,43 @@ impl MetricSampler {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(snapshot.clone());
         self.evaluate_alerts(&host, &snapshot, &mut working, now_mono)?;
-        if now_mono - working.last_expire > 3_600.0 {
-            working.last_expire = now_mono;
-            let _ = self.inner.metrics.expire();
-        }
+
+        Ok(())
+    }
+
+    pub fn storage_cursor(&self) -> String {
+        let scan = self
+            .inner
+            .storage_scan
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        format!("[{},{}]", scan.worktree_cursor, scan.deployment_cursor)
+    }
+
+    pub fn resume_storage_cursor(&self, cursor: Option<&str>) -> Result<(), ProtocolError> {
+        let (worktree, deployment) = match cursor {
+            None => (0, 0),
+            Some(value) if value.len() <= 64 => serde_json::from_str::<(usize, usize)>(value)
+                .map_err(|_| {
+                    ProtocolError::new(
+                        ErrorCode::ParamsInvalid,
+                        "Metric storage cursor is invalid.",
+                    )
+                })?,
+            Some(_) => {
+                return Err(ProtocolError::new(
+                    ErrorCode::ParamsInvalid,
+                    "Metric storage cursor is invalid.",
+                ));
+            }
+        };
+        let mut scan = self
+            .inner
+            .storage_scan
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        scan.worktree_cursor = worktree;
+        scan.deployment_cursor = deployment;
         Ok(())
     }
 
@@ -516,7 +545,7 @@ impl MetricSampler {
         let scan_started = Instant::now();
         let half_budget = StdDuration::from_millis((STORAGE_SCAN_BUDGET.as_millis() / 2) as u64);
         let worktree_deadline = scan_started + half_budget;
-        let worktree_start = worktree_cursor;
+        let worktree_start = worktree_cursor % worktrees.len().max(1);
         let mut worktrees_scanned = 0;
         while !worktrees.is_empty()
             && worktrees_scanned < worktrees.len()
@@ -551,7 +580,7 @@ impl MetricSampler {
             .iter()
             .map(|deployment| (deployment.deployment_id.as_str(), deployment))
             .collect::<HashMap<_, _>>();
-        let deployment_start = deployment_cursor;
+        let deployment_start = deployment_cursor % deployments.len().max(1);
         let mut deployments_scanned = 0;
         let deployment_deadline = scan_started + STORAGE_SCAN_BUDGET;
         while !deployments.is_empty()
@@ -845,6 +874,7 @@ impl MetricSampler {
         Ok(())
     }
 
+    #[cfg(test)]
     pub async fn serve(&self, mut shutdown: watch::Receiver<bool>) {
         let mut next_sample = tokio::time::Instant::now();
         let mut storage_schedule = StorageSchedule::new(tokio::time::Instant::now());
@@ -1101,7 +1131,7 @@ impl MetricSampler {
     fn runtime_records(&self) -> Result<RuntimeRecords, ProtocolError> {
         self.inner
             .database
-            .call(|connection| {
+            .read(|connection| {
                 let worktrees = query_worktrees(connection)?;
                 let deployments = query_deployments(connection)?;
                 let components = query_components(connection)?;
@@ -1125,7 +1155,7 @@ impl MetricSampler {
     > {
         self.inner
             .database
-            .call(|connection| {
+            .read(|connection| {
                 let repositories = {
                     let mut statement = connection.prepare(
                         "SELECT repository_id,root_path FROM repositories WHERE archived_at IS NULL",
@@ -1160,13 +1190,13 @@ impl MetricSampler {
     fn component_records(&self) -> Result<Vec<ComponentRecord>, ProtocolError> {
         self.inner
             .database
-            .call(|connection| query_components(connection))
+            .read(|connection| query_components(connection))
             .map_err(database_error)
     }
 }
 
 fn query_worktrees(
-    connection: &rusqlite::Connection,
+    connection: &crate::database::Connection,
 ) -> Result<Vec<WorktreeRecord>, DatabaseError> {
     let mut statement =
         connection.prepare("SELECT worktree_id,repository_id,worktree_path FROM worktrees")?;
@@ -1182,7 +1212,7 @@ fn query_worktrees(
 }
 
 fn query_deployments(
-    connection: &rusqlite::Connection,
+    connection: &crate::database::Connection,
 ) -> Result<Vec<DeploymentRecord>, DatabaseError> {
     let mut statement =
         connection.prepare("SELECT deployment_id,repository_id FROM deployments")?;
@@ -1197,7 +1227,7 @@ fn query_deployments(
 }
 
 fn query_components(
-    connection: &rusqlite::Connection,
+    connection: &crate::database::Connection,
 ) -> Result<Vec<ComponentRecord>, DatabaseError> {
     let mut statement = connection.prepare(
         "SELECT c.deployment_id,c.name,c.type,c.desired_state,c.state,c.binding_kind,c.binding_identity,
@@ -1211,7 +1241,7 @@ fn query_components(
                       AND cc.component=c.name
                       AND cc.generation=COALESCE(c.generation,d.current_generation)
                       AND cc.exit_code != 0) AS failure_count
-                ,(SELECT GROUP_CONCAT(cc.service, '|') FROM compose_completions cc
+                ,(SELECT string_agg(cc.service, '|' ORDER BY cc.service) FROM compose_completions cc
                     WHERE cc.deployment_id=c.deployment_id
                       AND cc.component=c.name
                       AND cc.generation=COALESCE(c.generation,d.current_generation)) AS completion_services
@@ -1654,7 +1684,7 @@ mod tests {
                 INSERT INTO worktrees VALUES('w1','r1','/fixture','t','t');
                 INSERT INTO deployments(deployment_id,repository_id,worktree_id,name,source,spec_fingerprint,spec_json,state,current_generation,created_at,created_by_uid,client,updated_at) VALUES('d1','r1','w1','web','worktree','f', '{"components":[{"name":"bundle","type":"compose","services":["web-build"],"finite_services":["web-build"]},{"name":"finite_failed","type":"compose","services":["web-build"],"finite_services":["web-build"]},{"name":"mixed","type":"compose","services":["web-build","worker"],"finite_services":["web-build"]},{"name":"incomplete","type":"compose","services":["first","second"],"finite_services":["first","second"]}]}','failed',1,'t',1000,'fixture','t');"#)?;
             for (name,kind,desired,state) in [("bundle","compose","running","failed"),("worker","external","running","failed"),("finite_failed","compose","running","failed"),("mixed","compose","running","failed"),("incomplete","compose","running","failed"),("paused","external","stopped","stopped")] {
-                c.execute("INSERT INTO components(deployment_id,name,type,order_index,spec_fingerprint,desired_state,state,health,updated_at) VALUES('d1',?1,?2,0,'f',?3,?4,'none','t')",rusqlite::params![name,kind,desired,state])?;
+                c.execute("INSERT INTO components(deployment_id,name,type,order_index,spec_fingerprint,desired_state,state,health,updated_at) VALUES('d1',$1,$2,0,'f',$3,$4,'none','t')",crate::database::params![name,kind,desired,state])?;
             }
             c.execute("INSERT INTO compose_completions(deployment_id,component,service,generation,container_id,exit_code,recorded_at) VALUES('d1','bundle','web-build',1,'b',0,'t')", [])?;
             c.execute("INSERT INTO compose_completions(deployment_id,component,service,generation,container_id,exit_code,recorded_at) VALUES('d1','finite_failed','web-build',1,'f',7,'t')", [])?;
@@ -1692,6 +1722,47 @@ mod tests {
     #[test]
     fn storage_refresh_requested_during_a_scan_is_not_lost() {
         let (_temporary, sampler, source) = storage_fixture();
+        {
+            let mut scan = sampler.inner.storage_scan.lock().unwrap();
+            scan.worktree_cursor = 3;
+            scan.deployment_cursor = 5;
+            scan.container_sizes
+                .insert("private-cache-not-a-checkpoint".into(), 42);
+        }
+        let cursor = sampler.storage_cursor();
+        assert_eq!(cursor, "[3,5]");
+        let restarted = MetricSampler::with_adapters(
+            (*sampler.inner.config).clone(),
+            sampler.inner.database.clone(),
+            sampler.inner.docker.clone(),
+            sampler.inner.systemd.clone(),
+            sampler.inner.source.clone(),
+            Arc::new(FixedClock(datetime!(2026-09-04 00:00 UTC))),
+            Arc::new(StepMonotonic(AtomicU64::new(0))),
+        );
+        restarted.resume_storage_cursor(Some(&cursor)).unwrap();
+        assert_eq!(restarted.storage_cursor(), cursor);
+        assert!(
+            restarted
+                .inner
+                .storage_scan
+                .lock()
+                .unwrap()
+                .container_sizes
+                .is_empty()
+        );
+        for invalid in [
+            "[-1,0]",
+            "[1]",
+            "[1,2,3]",
+            "{\"private_path\":\"/private\"}",
+        ] {
+            assert!(restarted.resume_storage_cursor(Some(invalid)).is_err());
+            assert_eq!(restarted.storage_cursor(), cursor);
+        }
+        restarted.storage_tick().unwrap();
+        restarted.resume_storage_cursor(None).unwrap();
+        assert_eq!(restarted.storage_cursor(), "[0,0]");
         sampler.storage_tick().unwrap();
         assert!(!sampler.inner.storage_requested.load(Ordering::SeqCst));
         *source.request_during_scan.lock().unwrap() = Some(sampler.clone());

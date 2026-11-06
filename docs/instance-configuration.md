@@ -19,7 +19,8 @@ stripping one pair of surrounding quotes.
 |---|---|---|
 | `DEVCOORDINATOR2_SOCKET` | `/run/devcoordinator2/daemon.sock` | daemon Unix socket path |
 | `DEVCOORDINATOR2_SANDBOX_BRIDGE_DIR` | `/tmp/devcoordinator2-bridge` | daemon-owned file transport used only when a client sandbox denies socket syscalls |
-| `DEVCOORDINATOR2_STATE_DIR` | `/var/lib/devcoordinator2` | authority DB and runtime state |
+| `DEVCOORDINATOR2_STATE_DIR` | `/var/lib/devcoordinator2` | non-database runtime state; PostgreSQL has a separate dedicated data directory |
+| `DEVCOORDINATOR2_DATABASE_CONFIG` | `/etc/devcoordinator2/postgres.json` | mode-0600 service-owned JSON containing `{schema:1,connection:"host=/run/devcoordinator2-postgres dbname=devcoordinator2 user=devcoordinator2"}`; only daemon and installer read it |
 | `DEVCOORDINATOR2_UNIT_PREFIX` | `devcoordinator2-test` | transient test unit prefix (dev instances use e.g. `devcoordinator2-dev`) |
 | `DEVCOORDINATOR2_SLICE` | `devcoordinator2-tests.slice` | parent slice for test units; the installed slice applies `MemoryHigh=70%` and `MemoryMax=80%` to disposable test workloads |
 | `DEVCOORDINATOR2_CLIENT_GROUP` | `devcoordinator2-clients` | Unix group granted socket access |
@@ -48,7 +49,7 @@ these files is completion evidence for a check, contains a command, output,
 path, credential, or caller identity, or changes REQ-TEST-08 crash recovery.
 
 Clients that receive `EPERM` while creating or connecting a socket use the
-same protocol-2 request and response envelope through the daemon-owned
+same protocol-3 request and response envelope through the daemon-owned
 `DEVCOORDINATOR2_SANDBOX_BRIDGE_DIR`. The bridge directory is root-owned and
 sticky; request and response files are private (`0600`), bounded by the normal
 protocol limits, and responses are owned by the request file's UID/GID. The
@@ -97,11 +98,13 @@ server administrators can update one declared repository/file authorization
 without restarting the daemon or reinstalling the instance:
 
 ```sh
-devcoordinator2 config show
-devcoordinator2 deployment preflight /path/to/repository --name web
-devcoordinator2 config authorize /path/to/repository --name web --file deploy/dev.env --expected-revision REVISION
-devcoordinator2 config revoke /path/to/repository --name web --file deploy/dev.env --expected-revision REVISION
-devcoordinator2 config reload --expected-revision REVISION
+devcoordinator2 call config.get
+devcoordinator2 call deployment.preflight --params '{"path":"/path/to/repository","name":"web"}'
+devcoordinator2 schema config.env.set
+devcoordinator2 call config.env.set --params-file /absolute/authorization-request.json
+devcoordinator2 call config.env.set --params-file /absolute/revocation-request.json
+devcoordinator2 call config.reload --params '{"expected_revision":"REVISION"}'
+
 ```
 
 Use the current `active_revision` from `config show`. Authorize/revoke preserve

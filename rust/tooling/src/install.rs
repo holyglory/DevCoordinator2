@@ -22,6 +22,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
+#[path = "install/postgres.rs"]
+pub mod postgres;
+
 const OUTPUT_CAP: usize = 64 * 1024;
 const TEMPLATE_CAP: u64 = 256 * 1024;
 const MANIFEST_SCHEMA: u8 = 1;
@@ -29,6 +32,7 @@ const BINARY_NAMES: &[&str] = &[
     "devcoordinator2",
     "devcoordinator2-executor",
     "devcoordinator2-tooling",
+    "devcoordinator2-migrate-authority",
 ];
 
 const SELFTEST_BINARY_NAMES: &[&str] = &[
@@ -2695,7 +2699,9 @@ mod tests {
         let database = temporary.path().join("authority.sqlite3");
         let connection = Connection::open(&database).unwrap();
         connection
-            .execute_batch(include_str!("../../control/src/schema.sql"))
+            .execute_batch(include_str!(
+                "../../persistence/tests/fixtures/sqlite-schema-34/schema.sql"
+            ))
             .unwrap();
         connection
             .execute(

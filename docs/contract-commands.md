@@ -5,23 +5,21 @@ operations in the exhaustive Rust registry. Every listed operation has a
 typed implementation; the generated contract bundle is authoritative for
 input/output schemas, policies, CLI routes, and MCP exposure.
 
-The CLI maps `devcoordinator2 test start …` to operation `test.start`; the MCP
-server exposes applicable operations as tools such as `test_start`, `test_retry`,
-`test_status`, `test_log_catalog`, `test_log_tail`, `test_log_search`,
-`test_log_range`, `test_log_failure_context`, `test_log_retention_get`,
-`test_log_retention_set`, `test_stop`, `test_capacity_get`,
-`test_capacity_set`, and `repository_list`. All three
-surfaces return the identical result JSON. `event_wait` is the blocking
-multi-filter event/heartbeat tool described below.
+The CLI accepts `devcoordinator2 call <operation> --params JSON` or a bounded
+`--params-file FILE` (use `-` for stdin). `operations --prefix PREFIX` discovers
+names; `schema <operation>` gives its typed parameters and result. MCP exposes
+`operations`, `operation_schema`, and `call_operation`. Both use the exact
+operation name and typed JSON. There is no v2 command-tree compatibility.
+`event.wait` is the blocking multi-filter event/heartbeat operation below.
 
 ## ping
 
 Args: none.
-Result: `{"daemon_version": "<semver>", "schema_version": 34, "socket": "<path>"}`
+Result: `{"daemon_version": "<semver>", "schema_version": 35, "socket": "<path>"}`
 
 ## event.wait
 
-CLI: `event wait`; MCP: `event_wait`. The operation blocks until at least one
+CLI: `call event.wait`; MCP: `event_wait`. The operation blocks until at least one
 authorized retained/new event matches, or one or more filter deadlines become
 due. One request accepts 1..32 filters and returns at most 100 events.
 
@@ -790,13 +788,10 @@ and is refused); all mutations require administrator; local socket callers
 are unrestricted. New error codes: `task_not_found`, `release_not_found`,
 `decision_not_found`.
 
-MCP tools: `plan_overview`, `task_create`, `task_update`, `task_history`,
-`release_create`, `release_deliver`, `decision_record`, `decision_tail`,
-`decision_search`, `decision_summarize`. `release.request` and
-`release.update` are owner controls (Console + CLI only). CLI:
-`devcoordinator2 plan overview [--all]`, `task create|update|history`,
-`release create|update|request|deliver`, `decision
-record|tail|search|summarize`.
+CLI: `devcoordinator2 call plan.overview --params JSON` and the corresponding
+`task.*`, `release.*`, and `decision.*` operation names. MCP clients discover
+available names with `operations` and use `call_operation`. Owner-only operations
+remain excluded from MCP according to the generated catalog policy.
 
 All follow the same envelope, error model, and file-reference conventions.
 
