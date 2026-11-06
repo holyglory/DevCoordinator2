@@ -25,6 +25,50 @@ pub const ROUTE_SCHEMA: u8 = 2;
 const TIMESTAMP_FORMAT: &[FormatItem<'static>] =
     format_description!("[year]-[month]-[day]T[hour]:[minute]:[second]Z");
 
+/// Initialize only a genuinely first, empty projection during the single-owned
+/// daemon startup, before requests or maintenance can change route authority.
+/// Existing projections and nonempty authority require normal reconciliation.
+pub fn initialize_empty_projection(
+    database: &Database,
+    path: &Path,
+    base_domain: &str,
+) -> Result<Option<RouteDocument>, ProtocolError> {
+    let missing = |path: &Path| match path.symlink_metadata() {
+        Ok(_) => Ok(false),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(true),
+        Err(_) => Err(ProtocolError::new(
+            ErrorCode::InternalError,
+            "initial route projection path is unavailable",
+        )),
+    };
+    let floor = path
+        .parent()
+        .ok_or_else(|| ProtocolError::new(ErrorCode::InternalError, "invalid route path"))?
+        .join("route-generation.floor");
+    if !missing(path)? || !missing(&floor)? {
+        return Ok(None);
+    }
+    let existing = database
+        .read(|connection| {
+            Ok(connection.query_row(
+                "SELECT EXISTS(SELECT 1 FROM domain_routes) OR EXISTS(SELECT 1 FROM observed_routes) OR EXISTS(SELECT 1 FROM meta WHERE key='route_generation')",
+                [],
+                |row| row.get::<_, bool>(0),
+            )?)
+        })
+        .map_err(|_| {
+            ProtocolError::new(ErrorCode::InternalError, "initial route authority is unavailable")
+        })?;
+    if existing {
+        return Ok(None);
+    }
+    // No route records exist, so the publisher cannot withdraw any leases.
+    // Its only authority mutation is the first derived route_generation value.
+    RouteFilePublisher::new(database.clone(), path.to_owned(), base_domain.to_owned())
+        .publish_current()
+        .map(Some)
+}
+
 /// Verify native authority ownership against the snapshot actually accepted by
 /// the edge while activation remains fenced. This never repairs or publishes.
 pub fn verify_activation_routes(
@@ -567,6 +611,30 @@ mod tests {
     fn publication_is_complete_checksummed_and_monotonic() {
         let temporary = tempdir().unwrap();
         let database = Database::open(temporary.path().join("authority.sqlite3")).unwrap();
+        let path = temporary.path().join("public/routes.json");
+        let initial = initialize_empty_projection(&database, &path, "example.test")
+            .unwrap()
+            .expect("fresh empty startup must publish its first projection");
+        assert_eq!(initial.schema, ROUTE_SCHEMA);
+        assert!(initial.routes.is_empty());
+        assert!(initial.generation > 0);
+        let initial_bytes = std::fs::read(&path).unwrap();
+        assert!(
+            initialize_empty_projection(&database, &path, "example.test")
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), initial_bytes);
+        assert_eq!(
+            database
+                .read(|connection| Ok(connection.query_row(
+                    "SELECT value FROM meta WHERE key='route_generation'",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )?))
+                .unwrap(),
+            initial.generation.to_string()
+        );
         database
             .transaction(|transaction| {
                 transaction.execute("INSERT INTO repositories(repository_id,root_path,display_name,registered_at,registered_by_uid,last_seen_at) VALUES('r1','/x','x','t',1,'t')", [])?;
@@ -580,7 +648,6 @@ mod tests {
                 Ok(())
             })
             .unwrap();
-        let path = temporary.path().join("public/routes.json");
         let first = publish(
             &database,
             &path,
@@ -589,7 +656,7 @@ mod tests {
             "2026-09-03T12:00:00Z",
         )
         .unwrap();
-        assert!(first.generation > 0);
+        assert!(first.generation > initial.generation);
         assert_eq!(first.routes.len(), 1);
         assert_eq!(first.routes[0].domain, "app.example.test");
         let value = serde_json::to_value(&first).unwrap();
@@ -688,9 +755,75 @@ mod tests {
                 Ok(())
             })
             .unwrap();
+        let path = temporary.path().join("public/routes.json");
+        assert!(
+            initialize_empty_projection(&database, &path, "example.test")
+                .unwrap()
+                .is_none()
+        );
+        assert!(!path.exists());
+        database
+            .read(|connection| {
+                assert!(!connection.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM meta WHERE key='route_generation')",
+                    [],
+                    |row| row.get::<_, bool>(0)
+                )?);
+                assert_eq!(
+                    connection.query_row(
+                        "SELECT lease_id FROM domain_routes WHERE domain='app'",
+                        [],
+                        |row| row.get::<_, String>(0)
+                    )?,
+                    "wrong"
+                );
+                assert_eq!(
+                    connection.query_row(
+                        "SELECT state FROM deployments WHERE deployment_id='d1'",
+                        [],
+                        |row| row.get::<_, String>(0)
+                    )?,
+                    "running"
+                );
+                Ok(())
+            })
+            .unwrap();
+        database.transaction(|connection| {
+            connection.execute("DELETE FROM domain_routes", [])?;
+            connection.execute("INSERT INTO observed_deployments(observed_deployment_id,repository_id,name,native_project,state,health,source,evidence_json,observed_at,imported_at) VALUES('o1','r1','observed','fixture','running','healthy','fixture','{}','t','t')", [])?;
+            connection.execute("INSERT INTO observed_routes(domain,observed_deployment_id,component,port,public,evidence_json,observed_at) VALUES('observed','o1','api',20002,0,'{}','t')", [])?;
+            Ok(())
+        }).unwrap();
+        assert!(
+            initialize_empty_projection(&database, &path, "example.test")
+                .unwrap()
+                .is_none()
+        );
+        assert!(!path.exists());
+        database
+            .read(|connection| {
+                assert!(!connection.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM meta WHERE key='route_generation')",
+                    [],
+                    |row| row.get::<_, bool>(0)
+                )?);
+                assert_eq!(
+                    connection
+                        .query_row("SELECT COUNT(*) FROM observed_routes", [], |row| row
+                            .get::<_, u64>(0))?,
+                    1
+                );
+                Ok(())
+            })
+            .unwrap();
+        database.transaction(|connection| {
+            connection.execute("DELETE FROM observed_deployments WHERE observed_deployment_id='o1'", [])?;
+            connection.execute("INSERT INTO domain_routes(domain,deployment_id,component,port,generation,published_at,lease_id) VALUES('app','d1','api',20001,1,'t','wrong')", [])?;
+            Ok(())
+        }).unwrap();
         let document = publish(
             &database,
-            &temporary.path().join("public/routes.json"),
+            &path,
             "example.test",
             None,
             "2026-09-03T12:00:00Z",

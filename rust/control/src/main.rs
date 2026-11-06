@@ -305,6 +305,12 @@ async fn run_daemon(config: &Config) -> ExitCode {
         .spawn(move || -> Result<_, String> {
             let database =
                 Database::connect(&pg_config).map_err(|_| "PostgreSQL authority unavailable")?;
+            devcoordinator2_control::routes::initialize_empty_projection(
+                &database,
+                &plane_config.routes_path(),
+                &plane_config.base_domain,
+            )
+            .map_err(|_| "initial empty route projection unavailable")?;
             let plane = ControlPlane::new(plane_config, database.clone())
                 .map_err(|error| error.to_string())?;
             if !recovery_deferred && let Err(error) = plane.recover_tests() {

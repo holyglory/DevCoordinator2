@@ -23,6 +23,12 @@ While the fence remains, the candidate accepts read operations using exact
 identities; path-based reads that could register a repository are refused.
 Periodic maintenance, external delivery and deferred recovery wait for commit.
 One controlled initial health observation supports candidate health checks.
+For a fresh authority with no route records, document, generation floor or
+generation metadata, controlled startup also publishes its first empty route
+projection through the normal publisher. This creates one derived generation
+for the edge to acknowledge before admission. Existing projections and route
+authority remain unchanged by this initialization; the route verifier still
+requires the matching real edge acknowledgement.
 Keep the Console on its matching source during the freeze: changing the canonical
 checkout must never serve v3 JavaScript through the old live edge protocol.
 
