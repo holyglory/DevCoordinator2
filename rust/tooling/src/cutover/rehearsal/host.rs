@@ -107,6 +107,31 @@ fn binary(manifest: &InstallManifest, name: &str) -> Result<PathBuf, String> {
         .ok_or_else(|| format!("explicit fixture {name} binary is unavailable"))
 }
 
+fn fixture_unit_available(name: &str, output: &install::CommandOutput) -> bool {
+    if output.stdout_truncated || output.stderr_truncated {
+        return false;
+    }
+    let mut properties = BTreeMap::new();
+    for line in output.stdout.lines() {
+        let Some((key, value)) = line.split_once('=') else {
+            return false;
+        };
+        if properties.insert(key, value).is_some() {
+            return false;
+        }
+    }
+    let value = |key: &str| properties.get(key).copied();
+    properties.len() == 7
+        && value("ActiveState") == Some("inactive")
+        && value("FragmentPath") == Some("")
+        && value("SourcePath") == Some("")
+        && value("DropInPaths") == Some("")
+        && value("ControlGroup") == Some("")
+        && value("Transient") == Some("no")
+        && (value("LoadState") == Some("not-found")
+            || (name.ends_with(".slice") && output.success && value("LoadState") == Some("loaded")))
+}
+
 fn client_as(
     helper: &Path,
     socket: &Path,
@@ -251,9 +276,35 @@ impl Fixture {
         };
         if let Err(error) = fixture.initialize(&edge) {
             let cleanup = fixture.cleanup();
+            let report = Report {
+                schema: 1,
+                fixture_only: true,
+                status: "failed".into(),
+                source_commit: candidate.source_commit.clone(),
+                prior_source_commit: prior.source_commit.clone(),
+                namespace: fixture.marker.namespace.clone(),
+                checks: Vec::new(),
+                cleanup_complete: cleanup.is_ok(),
+                error: Some(format!(
+                    "fixture preparation failed: {error}{}",
+                    cleanup
+                        .as_ref()
+                        .err()
+                        .map(|error| format!("; cleanup: {error}"))
+                        .unwrap_or_default()
+                )),
+                report_path: input.report.clone(),
+            };
+            if retain_report(&report).is_err() {
+                return Err(format!(
+                    "fixture preparation failed: {error}; cleanup verified: {}; failed report could not be retained",
+                    cleanup.is_ok()
+                ));
+            }
             return Err(format!(
-                "fixture preparation failed: {error}; cleanup verified: {}",
-                cleanup.is_ok()
+                "fixture preparation failed: {error}; cleanup verified: {}; private report retained at {}",
+                cleanup.is_ok(),
+                input.report.display()
             ));
         }
         Ok(fixture)
@@ -452,20 +503,32 @@ impl Fixture {
                 &format!("{}-tests.slice", self.marker.namespace),
             ),
         ] {
-            if path.symlink_metadata().is_ok() {
-                return Err("fixture unit path already exists; foreign state was preserved".into());
+            match path.symlink_metadata() {
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                _ => {
+                    return Err(
+                        "fixture unit path already exists or is unavailable; foreign state was preserved"
+                            .into(),
+                    );
+                }
             }
             let loaded = execute(
                 self.runner.as_ref(),
                 &config.systemctl,
                 vec![
                     "show".into(),
+                    "--all".into(),
                     "--property=LoadState".into(),
-                    "--value".into(),
+                    "--property=ActiveState".into(),
+                    "--property=FragmentPath".into(),
+                    "--property=SourcePath".into(),
+                    "--property=DropInPaths".into(),
+                    "--property=ControlGroup".into(),
+                    "--property=Transient".into(),
                     name.into(),
                 ],
             )?;
-            if loaded.stdout.trim() != "not-found" {
+            if !fixture_unit_available(name, &loaded) {
                 return Err(
                     "fixture unit name is already loaded; foreign state was preserved".into(),
                 );
@@ -1052,4 +1115,71 @@ fn copy_cold(source: &Path, destination: &Path) -> Result<(), String> {
         return Err("fixture cold evidence has an unsupported type".into());
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fixture_unit_preflight_accepts_only_unbacked_inactive_slices() {
+        let implicit = install::CommandOutput {
+            success: true,
+            stdout: "LoadState=loaded\nActiveState=inactive\nFragmentPath=\nSourcePath=\nDropInPaths=\nControlGroup=\nTransient=no\n".into(),
+            stderr: String::new(),
+            stdout_truncated: false,
+            stderr_truncated: false,
+        };
+        let slice = "devcoordinator2-rustint-installer-fixture-tests.slice";
+        assert!(fixture_unit_available(slice, &implicit));
+        for name in ["fixture.service", "fixture.scope", "fixture.socket"] {
+            assert!(!fixture_unit_available(name, &implicit));
+        }
+        let mut absent = implicit.clone();
+        absent.stdout = absent
+            .stdout
+            .replace("LoadState=loaded", "LoadState=not-found");
+        // systemctl may return nonzero for an absent unit; complete properties
+        // must still prove that there is no active or configured resource.
+        absent.success = false;
+        assert!(fixture_unit_available("fixture.service", &absent));
+        for (from, to) in [
+            ("LoadState=loaded", "LoadState=masked"),
+            ("ActiveState=inactive", "ActiveState=active"),
+            ("ActiveState=inactive", "ActiveState=failed"),
+            (
+                "FragmentPath=\n",
+                "FragmentPath=/run/systemd/system/fixture.slice\n",
+            ),
+            (
+                "SourcePath=\n",
+                "SourcePath=/run/systemd/generator/fixture\n",
+            ),
+            (
+                "DropInPaths=\n",
+                "DropInPaths=/run/systemd/system/fixture.slice.d/local.conf\n",
+            ),
+            ("ControlGroup=\n", "ControlGroup=/fixture.slice\n"),
+            ("Transient=no", "Transient=yes"),
+            ("Transient=no\n", ""),
+            ("Transient=no", "Transient=no\nTransient=no"),
+        ] {
+            let mut foreign = implicit.clone();
+            foreign.stdout = foreign.stdout.replace(from, to);
+            assert!(!fixture_unit_available(slice, &foreign), "{from} -> {to}");
+        }
+        let mut failed = implicit.clone();
+        failed.success = false;
+        assert!(!fixture_unit_available(slice, &failed));
+        let mut truncated = implicit.clone();
+        truncated.stdout_truncated = true;
+        assert!(!fixture_unit_available(slice, &truncated));
+        truncated.stdout_truncated = false;
+        truncated.stderr_truncated = true;
+        assert!(!fixture_unit_available(slice, &truncated));
+        absent.stdout = absent
+            .stdout
+            .replace("ControlGroup=\n", "ControlGroup=/foreign\n");
+        assert!(!fixture_unit_available("fixture.service", &absent));
+    }
 }

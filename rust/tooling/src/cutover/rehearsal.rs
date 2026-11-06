@@ -279,6 +279,15 @@ pub fn request_stdin(socket: &Path) -> Result<Value, String> {
     request(socket, &value)
 }
 
+fn retain_report(report: &Report) -> Result<(), String> {
+    install::atomic_file(
+        &report.report_path,
+        &serde_json::to_vec_pretty(report).map_err(|_| "cannot retain fixture report")?,
+        0o600,
+        Some((0, 0)),
+    )
+}
+
 pub fn run(config: Config) -> Result<Report, String> {
     if rustix::process::geteuid().as_raw() != 0 || config.caller_uid == 0 || config.caller_gid == 0
     {
@@ -340,12 +349,7 @@ pub fn run(config: Config) -> Result<Report, String> {
             ))
         }
     }
-    install::atomic_file(
-        &config.report,
-        &serde_json::to_vec_pretty(&report).map_err(|_| "cannot retain fixture report")?,
-        0o600,
-        Some((0, 0)),
-    )?;
+    retain_report(&report)?;
     if report.status != "passed" {
         return Err(format!(
             "isolated installer rehearsal failed; private report retained at {}",
