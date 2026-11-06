@@ -97,6 +97,10 @@ pub enum DatabaseError {
 }
 
 impl Database {
+    pub(crate) fn in_maintenance_context() -> bool {
+        MAINTENANCE_CONTEXT.with(Cell::get)
+    }
+
     /// Create an isolated real PostgreSQL fixture selected by a scratch path.
     /// Daemon startup must use `connect`, with explicit private configuration.
     #[cfg(any(test, feature = "test-fixtures"))]

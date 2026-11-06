@@ -654,11 +654,18 @@ impl Fixture {
                         "--fail".into(),
                         "--max-time".into(),
                         "5".into(),
+                        "--request".into(),
+                        "POST".into(),
+                        "--header".into(),
+                        "Content-Type: application/json".into(),
+                        "--data-binary".into(),
+                        "{}".into(),
                         "--header".into(),
                         "Host: console.fixture.invalid".into(),
                         format!("http://127.0.0.1:8080/api/v{protocol}/ping").into(),
                     ],
-                )?;
+                )
+                .map_err(|_| "isolated edge POST ping failed; private command evidence retained")?;
                 let value: Value = serde_json::from_str(&output.stdout)
                     .map_err(|_| "isolated edge response is invalid")?;
                 if value["protocol"] != protocol

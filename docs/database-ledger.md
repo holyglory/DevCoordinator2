@@ -16,6 +16,15 @@ own non-root service identity, with a private Unix socket and no TCP listener.
 Root owns the daemon's mode-0600 connection configuration outside source.
 The approved trust boundary is recorded in `security-assumptions.md`.
 
+When maintenance holds a deployment's mutation guard, an authorized command
+can wait asynchronously for a handoff before entering normal execution.
+At most four such waits are pending, each with a 15-second deadline; they hold
+no database connection, preparation worker or execution slot. A pending command
+prevents maintenance from reacquiring that deployment's guard. Other requests
+continue, and conflicting foreground commands retain their existing admission
+and cancellation behavior. A handoff timeout reports that the mutation did not
+start.
+
 All 95 legacy authority tables, IDs, sequence high-water marks, timestamps,
 permissions, histories, current projections, attachments and relationships are
 preserved. Serialized records use JSONB; byte-signed hub payloads stay exact TEXT.

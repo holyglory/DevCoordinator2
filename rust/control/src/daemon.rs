@@ -33,6 +33,18 @@ pub trait OperationExecutor: Send + Sync + 'static {
         caller: &Caller,
     ) -> Result<Value, ProtocolError>;
 
+    /// Select optional blocking preparation without doing target I/O here.
+    /// The returned hold lives until execution finishes, including after a
+    /// finite request's caller disconnects.
+    fn prepare_admission(
+        &self,
+        _operation: &str,
+        _params: Value,
+        _caller: &Caller,
+    ) -> Option<AdmissionPreparation> {
+        None
+    }
+
     fn defer(
         &self,
         _operation: &str,
@@ -45,6 +57,17 @@ pub trait OperationExecutor: Send + Sync + 'static {
 
 pub type DeferredOperation =
     Pin<Box<dyn Future<Output = Result<Value, ProtocolError>> + Send + 'static>>;
+
+pub type AdmissionHold = Box<dyn Send>;
+pub type AdmissionWait =
+    Pin<Box<dyn Future<Output = Result<AdmissionHold, ProtocolError>> + Send + 'static>>;
+pub type AdmissionPreparation =
+    Box<dyn FnOnce() -> Result<Option<PreparedAdmission>, ProtocolError> + Send + 'static>;
+
+pub enum PreparedAdmission {
+    Ready(AdmissionHold),
+    Waiting(AdmissionWait),
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PeerCredentials {
@@ -98,6 +121,7 @@ pub struct App {
     request_slots: Arc<Semaphore>,
     action_slots: Arc<Semaphore>,
     wait_preparations: Arc<Semaphore>,
+    admission_handoffs: Arc<Semaphore>,
 }
 
 impl App {
@@ -110,6 +134,7 @@ impl App {
             request_slots: Arc::new(Semaphore::new(16)),
             action_slots: Arc::new(Semaphore::new(4)),
             wait_preparations: Arc::new(Semaphore::new(8)),
+            admission_handoffs: Arc::new(Semaphore::new(4)),
         }
     }
 
@@ -121,6 +146,7 @@ impl App {
             request_slots: Arc::new(Semaphore::new(16)),
             action_slots: Arc::new(Semaphore::new(4)),
             wait_preparations: Arc::new(Semaphore::new(8)),
+            admission_handoffs: Arc::new(Semaphore::new(4)),
         }
     }
 
@@ -181,15 +207,37 @@ impl App {
             peer.pid,
             peer.uid,
             peer.gid,
-            request.client,
+            request.client.clone(),
             self.edge_uid,
         ) {
             Ok(caller) => caller,
             Err(error) => return ResponseEnvelope::failure(id, error),
         };
-        let slots = if devcoordinator2_api::operation(&request.operation)
-            .is_some_and(|op| op.long_running())
+        let long_running =
+            devcoordinator2_api::operation(&request.operation).is_some_and(|op| op.long_running());
+        let admission = if long_running {
+            match self.admission(&request, &caller).await {
+                Ok(hold) => hold,
+                Err(error) => return ResponseEnvelope::failure(id, error),
+            }
+        } else {
+            None
+        };
+        if admission.is_some()
+            && self
+                .installation_endpoint
+                .as_ref()
+                .is_some_and(|path| path.with_file_name("daemon.pre-cutover.sock").exists())
         {
+            return ResponseEnvelope::failure(
+                id,
+                ProtocolError::new(
+                    ErrorCode::DaemonUnavailable,
+                    "installation began during admission; this mutation was not started",
+                ),
+            );
+        }
+        let slots = if long_running {
             &self.action_slots
         } else {
             &self.request_slots
@@ -205,10 +253,44 @@ impl App {
             id,
             blocking_operation(move || {
                 let _permit = permit;
+                let _admission = admission;
                 executor.execute(&operation, params, &caller)
             })
             .await,
         )
+    }
+
+    async fn admission(
+        &self,
+        request: &RequestEnvelope,
+        caller: &Caller,
+    ) -> Result<Option<AdmissionHold>, ProtocolError> {
+        let Some(prepare) =
+            self.executor
+                .prepare_admission(&request.operation, request.params.clone(), caller)
+        else {
+            return Ok(None);
+        };
+        let preparation = Arc::clone(&self.wait_preparations)
+            .try_acquire_owned()
+            .map_err(|_| overloaded())?;
+        // Preparation may resolve an authorized target, but its blocking task
+        // and every database connection finish before the returned wait runs.
+        let wait = blocking_operation(move || {
+            let _preparation = preparation;
+            prepare()
+        })
+        .await?;
+        match wait {
+            Some(PreparedAdmission::Ready(hold)) => Ok(Some(hold)),
+            Some(PreparedAdmission::Waiting(wait)) => {
+                let _handoff = Arc::clone(&self.admission_handoffs)
+                    .try_acquire_owned()
+                    .map_err(|_| overloaded())?;
+                wait.await.map(Some)
+            }
+            None => Ok(None),
+        }
     }
 
     async fn deferred(
@@ -1056,11 +1138,20 @@ mod tests {
     // executes, or at the failure ceiling so a regression cannot hang the suite.
     #[tokio::test(flavor = "current_thread")]
     async fn slow_wait_preparation_keeps_both_transports_responsive() {
+        struct IntentCount(Arc<std::sync::atomic::AtomicUsize>);
+        impl Drop for IntentCount {
+            fn drop(&mut self) {
+                self.0.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+            }
+        }
         struct SlowPreparation {
-            started: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+            started: Arc<Mutex<Option<tokio::sync::oneshot::Sender<()>>>>,
             release: Mutex<std::sync::mpsc::Receiver<()>>,
             ping: std::sync::mpsc::Sender<()>,
             fail: bool,
+            admission: bool,
+            admission_release: watch::Receiver<bool>,
+            intents: Arc<std::sync::atomic::AtomicUsize>,
         }
         impl OperationExecutor for SlowPreparation {
             fn execute(
@@ -1069,9 +1160,49 @@ mod tests {
                 _: Value,
                 _: &Caller,
             ) -> Result<Value, ProtocolError> {
-                assert_eq!(operation, "ping");
-                let _ = self.ping.send(());
+                if operation == "ping" {
+                    let _ = self.ping.send(());
+                } else {
+                    assert!(matches!(operation, "deployment.restart" | "plan.recovery"));
+                }
                 Ok(serde_json::json!({"responsive": true}))
+            }
+
+            fn prepare_admission(
+                &self,
+                operation: &str,
+                params: Value,
+                _: &Caller,
+            ) -> Option<AdmissionPreparation> {
+                if !self.admission || operation != "deployment.restart" {
+                    return None;
+                }
+                let intents = self.intents.clone();
+                let mut release = self.admission_release.clone();
+                let started = self.started.clone();
+                let fail = self.fail;
+                Some(Box::new(move || {
+                    if params["deployment_id"] == "independent" {
+                        return Ok(Some(PreparedAdmission::Ready(Box::new(()))));
+                    }
+                    intents.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    let intent = IntentCount(intents);
+                    let started = started.lock().unwrap().take();
+                    Ok(Some(PreparedAdmission::Waiting(Box::pin(async move {
+                        if let Some(started) = started {
+                            let _ = started.send(());
+                        }
+                        release.wait_for(|released| *released).await.unwrap();
+                        if fail {
+                            Err(ProtocolError::new(
+                                ErrorCode::Busy,
+                                "handoff was not admitted",
+                            ))
+                        } else {
+                            Ok(Box::new(intent) as AdmissionHold)
+                        }
+                    }))))
+                }))
             }
 
             fn defer(
@@ -1082,6 +1213,11 @@ mod tests {
             ) -> Option<Result<DeferredOperation, ProtocolError>> {
                 if operation != "test.wait" {
                     return None;
+                }
+                if self.admission {
+                    return Some(Ok(Box::pin(async {
+                        Ok(serde_json::json!({"completed": true}))
+                    })));
                 }
                 self.started
                     .lock()
@@ -1111,105 +1247,235 @@ mod tests {
         let mut outcomes = Vec::new();
         for bridge in [false, true] {
             for fail in [false, true] {
-                let temporary = tempdir().unwrap();
-                let socket = temporary.path().join("daemon.sock");
-                let directory = temporary.path().join("bridge");
-                let (started_tx, started_rx) = tokio::sync::oneshot::channel();
-                let (release_tx, release_rx) = std::sync::mpsc::channel();
-                let (ping_tx, ping_rx) = std::sync::mpsc::channel();
-                let watchdog = std::thread::spawn(move || {
-                    let responsive = ping_rx.recv_timeout(Duration::from_secs(2)).is_ok();
-                    release_tx.send(()).unwrap();
-                    responsive
-                });
-                let app = Arc::new(App::with_executor(
-                    None,
-                    Arc::new(SlowPreparation {
-                        started: Mutex::new(Some(started_tx)),
-                        release: Mutex::new(release_rx),
-                        ping: ping_tx,
-                        fail,
-                    }),
-                ));
-                let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
-                let endpoint = DaemonEndpoint::bind(&socket).await.unwrap();
-                let socket_app = app.clone();
-                let server =
-                    tokio::spawn(async move { endpoint.serve(&mut shutdown_rx, socket_app).await });
-                let bridge_directory = directory.clone();
-                let bridge_shutdown = shutdown_tx.subscribe();
-                let bridge_server = tokio::spawn(async move {
-                    crate::sandbox_bridge::serve(app, &bridge_directory, bridge_shutdown).await
-                });
-                while !directory.join("daemon.lock").exists() {
-                    assert!(!bridge_server.is_finished());
-                    tokio::task::yield_now().await;
-                }
+                for admission in [false, true] {
+                    let temporary = tempdir().unwrap();
+                    let socket = temporary.path().join("daemon.sock");
+                    let directory = temporary.path().join("bridge");
+                    let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+                    let (release_tx, release_rx) = std::sync::mpsc::channel();
+                    let (admission_release_tx, admission_release_rx) = watch::channel(false);
+                    let intents = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+                    let (ping_tx, ping_rx) = std::sync::mpsc::channel();
+                    let watchdog = std::thread::spawn(move || {
+                        let responsive = ping_rx.recv_timeout(Duration::from_secs(2)).is_ok();
+                        release_tx.send(()).unwrap();
+                        admission_release_tx.send_replace(true);
+                        responsive
+                    });
+                    let app = Arc::new(App::with_executor(
+                        None,
+                        Arc::new(SlowPreparation {
+                            started: Arc::new(Mutex::new(Some(started_tx))),
+                            release: Mutex::new(release_rx),
+                            ping: ping_tx,
+                            fail,
+                            admission,
+                            admission_release: admission_release_rx,
+                            intents: intents.clone(),
+                        }),
+                    ));
+                    let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
+                    let endpoint = DaemonEndpoint::bind(&socket).await.unwrap();
+                    let socket_app = app.clone();
+                    let server =
+                        tokio::spawn(
+                            async move { endpoint.serve(&mut shutdown_rx, socket_app).await },
+                        );
+                    let bridge_directory = directory.clone();
+                    let bridge_shutdown = shutdown_tx.subscribe();
+                    let bridge_app = app.clone();
+                    let bridge_server = tokio::spawn(async move {
+                        crate::sandbox_bridge::serve(bridge_app, &bridge_directory, bridge_shutdown)
+                            .await
+                    });
+                    while !directory.join("daemon.lock").exists() {
+                        assert!(!bridge_server.is_finished());
+                        tokio::task::yield_now().await;
+                    }
 
-                let request_socket = socket.clone();
-                let request_directory = directory.clone();
-                let waiting = tokio::spawn(async move {
-                    let params = serde_json::json!({"path":"/fixture", "run_id":"accepted-run", "deadline_at":"2099-01-01T00:00:00Z"});
-                    if bridge {
-                        let request = serde_json::json!({"protocol":3, "id":"aabbcc", "operation":"test.wait", "params":params, "client":{}});
-                        std::fs::write(
-                            request_directory.join("aabbcc.request"),
-                            serde_json::to_vec(&request).unwrap(),
-                        )
-                        .unwrap();
-                        timeout(Duration::from_secs(4), async {
-                            loop {
-                                if let Ok(raw) =
-                                    std::fs::read(request_directory.join("aabbcc.response"))
-                                {
-                                    break serde_json::from_slice::<ResponseEnvelope>(&raw)
-                                        .unwrap();
+                    let request_socket = socket.clone();
+                    let request_directory = directory.clone();
+                    let waiting = tokio::spawn(async move {
+                        let (operation, params) = if admission {
+                            (
+                                "deployment.restart",
+                                serde_json::json!({"deployment_id":"held"}),
+                            )
+                        } else {
+                            (
+                                "test.wait",
+                                serde_json::json!({"path":"/fixture", "run_id":"accepted-run", "deadline_at":"2099-01-01T00:00:00Z"}),
+                            )
+                        };
+                        if bridge {
+                            let request = serde_json::json!({"protocol":3, "id":"aabbcc", "operation":operation, "params":params, "client":{}});
+                            std::fs::write(
+                                request_directory.join("aabbcc.request"),
+                                serde_json::to_vec(&request).unwrap(),
+                            )
+                            .unwrap();
+                            timeout(Duration::from_secs(4), async {
+                                loop {
+                                    if let Ok(raw) =
+                                        std::fs::read(request_directory.join("aabbcc.response"))
+                                    {
+                                        break serde_json::from_slice::<ResponseEnvelope>(&raw)
+                                            .unwrap();
+                                    }
+                                    tokio::task::yield_now().await;
                                 }
+                            })
+                            .await
+                            .unwrap()
+                        } else {
+                            crate::client::call(
+                                &request_socket,
+                                operation,
+                                params,
+                                ClientContext::default(),
+                            )
+                            .await
+                            .unwrap()
+                        }
+                    });
+                    timeout(Duration::from_secs(4), started_rx)
+                        .await
+                        .unwrap()
+                        .unwrap();
+                    let mut extra = Vec::new();
+                    if admission {
+                        let cancellation_app = app.clone();
+                        let cancellation_request = serde_json::from_value(serde_json::json!({
+                        "protocol":3, "id":"cancelled-admission", "operation":"deployment.restart",
+                        "params":{"deployment_id":"held"}, "client":{}
+                    })).unwrap();
+                        let cancelled = tokio::spawn(async move {
+                            cancellation_app
+                                .dispatch(
+                                    cancellation_request,
+                                    PeerCredentials {
+                                        pid: 0,
+                                        uid: 1000,
+                                        gid: 1000,
+                                    },
+                                )
+                                .await
+                        });
+                        timeout(Duration::from_secs(1), async {
+                            while app.admission_handoffs.available_permits() != 2 {
                                 tokio::task::yield_now().await;
                             }
                         })
                         .await
-                        .unwrap()
-                    } else {
-                        crate::client::call(
-                            &request_socket,
-                            "test.wait",
-                            params,
+                        .unwrap();
+                        cancelled.abort();
+                        assert!(cancelled.await.unwrap_err().is_cancelled());
+                        assert_eq!(app.admission_handoffs.available_permits(), 3);
+                        assert_eq!(intents.load(std::sync::atomic::Ordering::SeqCst), 1);
+                        for _ in 0..3 {
+                            let socket = socket.clone();
+                            extra.push(tokio::spawn(async move {
+                                crate::client::call(
+                                    &socket,
+                                    "deployment.restart",
+                                    serde_json::json!({"deployment_id":"held"}),
+                                    ClientContext::default(),
+                                )
+                                .await
+                                .unwrap()
+                            }));
+                        }
+                        timeout(Duration::from_secs(1), async {
+                            while app.admission_handoffs.available_permits() != 0
+                                || app.wait_preparations.available_permits() != 8
+                            {
+                                tokio::task::yield_now().await;
+                            }
+                        })
+                        .await
+                        .unwrap();
+                        assert_eq!(app.action_slots.available_permits(), 4);
+                        assert_eq!(app.request_slots.available_permits(), 16);
+                        let excess = crate::client::call(
+                            &socket,
+                            "deployment.restart",
+                            serde_json::json!({"deployment_id":"held"}),
                             ClientContext::default(),
                         )
                         .await
-                        .unwrap()
+                        .unwrap();
+                        assert!(
+                            matches!(excess, ResponseEnvelope::Failure {error, ..} if error.code == ErrorCode::Busy)
+                        );
+                        let independent = crate::client::call(
+                            &socket,
+                            "deployment.restart",
+                            serde_json::json!({"deployment_id":"independent"}),
+                            ClientContext::default(),
+                        )
+                        .await
+                        .unwrap();
+                        assert!(independent.is_ok());
+                        let preparations = app
+                            .wait_preparations
+                            .clone()
+                            .try_acquire_many_owned(8)
+                            .unwrap();
+                        let unrelated = crate::client::call(
+                            &socket,
+                            "plan.recovery",
+                            serde_json::json!({"repository_id":"fixture", "transaction_dir":"/fixture", "backup_sha256":"a".repeat(64)}),
+                            ClientContext::default(),
+                        )
+                        .await
+                        .unwrap();
+                        assert!(
+                            unrelated.is_ok(),
+                            "unrelated finite action depended on handoff preparation capacity"
+                        );
+                        drop(preparations);
+                        let passive = crate::client::call(&socket, "test.wait", serde_json::json!({"path":"/fixture", "run_id":"accepted-run", "deadline_at":"2099-01-01T00:00:00Z"}), ClientContext::default()).await.unwrap();
+                        assert!(passive.is_ok());
                     }
-                });
-                timeout(Duration::from_secs(4), started_rx)
+                    let ping = crate::client::call(
+                        &socket,
+                        "ping",
+                        serde_json::json!({}),
+                        ClientContext::default(),
+                    )
                     .await
-                    .unwrap()
                     .unwrap();
-                let ping = crate::client::call(
-                    &socket,
-                    "ping",
-                    serde_json::json!({}),
-                    ClientContext::default(),
-                )
-                .await
-                .unwrap();
-                let waited = waiting.await.unwrap();
-                let responsive = watchdog.join().unwrap();
-                let expected_wait = if fail {
-                    matches!(waited, ResponseEnvelope::Failure { error, .. } if error.code == ErrorCode::ParamsInvalid)
-                } else {
-                    matches!(waited, ResponseEnvelope::Success { .. })
-                };
-                outcomes.push((bridge, fail, responsive, ping.is_ok(), expected_wait));
-                shutdown_tx.send(true).unwrap();
-                server.await.unwrap().unwrap();
-                bridge_server.await.unwrap().unwrap();
+                    let waited = waiting.await.unwrap();
+                    for waiting in extra {
+                        let response = waiting.await.unwrap();
+                        assert_eq!(response.is_ok(), !fail);
+                    }
+                    assert_eq!(app.admission_handoffs.available_permits(), 4);
+                    assert_eq!(intents.load(std::sync::atomic::Ordering::SeqCst), 0);
+                    let responsive = watchdog.join().unwrap();
+                    let expected_wait = if fail {
+                        matches!(waited, ResponseEnvelope::Failure { error, .. } if error.code == if admission { ErrorCode::Busy } else { ErrorCode::ParamsInvalid })
+                    } else {
+                        matches!(waited, ResponseEnvelope::Success { .. })
+                    };
+                    outcomes.push((
+                        bridge,
+                        fail,
+                        admission,
+                        responsive,
+                        ping.is_ok(),
+                        expected_wait,
+                    ));
+                    shutdown_tx.send(true).unwrap();
+                    server.await.unwrap().unwrap();
+                    bridge_server.await.unwrap().unwrap();
+                }
             }
         }
         assert!(
             outcomes
                 .iter()
-                .all(|(_, _, responsive, ping, waited)| *responsive && *ping && *waited),
+                .all(|(_, _, _, responsive, ping, waited)| *responsive && *ping && *waited),
             "slow preparation blocked unrelated requests: {outcomes:?}"
         );
     }

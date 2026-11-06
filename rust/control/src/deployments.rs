@@ -82,7 +82,7 @@ pub struct Deployments {
     files: DeploymentFiles,
     clock: Arc<dyn Clock>,
     port_availability: Arc<dyn crate::ports::PortAvailability>,
-    busy: Arc<Mutex<HashSet<String>>>,
+    busy: Arc<MutationLocks>,
     finite_operations: crate::deployment_cancellation::FiniteOperations,
     routes: RouteFilePublisher,
 }
@@ -132,15 +132,73 @@ type DesiredSnapshot = (
 
 struct BusyGuard {
     deployment_id: String,
-    active: Arc<Mutex<HashSet<String>>>,
+    locks: Arc<MutationLocks>,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum MutationOwner {
+    Foreground,
+    Maintenance,
+}
+
+#[derive(Default)]
+struct MutationEntry {
+    owner: Option<MutationOwner>,
+    pending: usize,
+}
+
+struct MutationLocks {
+    entries: Mutex<BTreeMap<String, MutationEntry>>,
+    changed: tokio::sync::watch::Sender<()>,
+}
+
+impl Default for MutationLocks {
+    fn default() -> Self {
+        Self {
+            entries: Mutex::new(BTreeMap::new()),
+            changed: tokio::sync::watch::channel(()).0,
+        }
+    }
+}
+
+struct ForegroundIntent {
+    deployment_id: String,
+    locks: Arc<MutationLocks>,
 }
 
 impl Drop for BusyGuard {
     fn drop(&mut self) {
-        self.active
+        let mut entries = self
+            .locks
+            .entries
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(&self.deployment_id);
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(entry) = entries.get_mut(&self.deployment_id) {
+            entry.owner = None;
+            if entry.pending == 0 {
+                entries.remove(&self.deployment_id);
+            }
+        }
+        drop(entries);
+        self.locks.changed.send_replace(());
+    }
+}
+
+impl Drop for ForegroundIntent {
+    fn drop(&mut self) {
+        let mut entries = self
+            .locks
+            .entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(entry) = entries.get_mut(&self.deployment_id) {
+            entry.pending -= 1;
+            if entry.pending == 0 && entry.owner.is_none() {
+                entries.remove(&self.deployment_id);
+            }
+        }
+        drop(entries);
+        self.locks.changed.send_replace(());
     }
 }
 
@@ -227,7 +285,7 @@ impl Deployments {
             files,
             clock,
             port_availability,
-            busy: Arc::new(Mutex::new(HashSet::new())),
+            busy: Arc::new(MutationLocks::default()),
             finite_operations: crate::deployment_cancellation::FiniteOperations::default(),
             routes,
         }
@@ -1483,20 +1541,107 @@ impl Deployments {
     }
 
     fn acquire_busy(&self, deployment_id: &str) -> Result<BusyGuard, ProtocolError> {
-        let mut active = self
+        let owner = if Database::in_maintenance_context() {
+            MutationOwner::Maintenance
+        } else {
+            MutationOwner::Foreground
+        };
+        self.acquire_mutation(deployment_id, owner)
+    }
+
+    fn acquire_mutation(
+        &self,
+        deployment_id: &str,
+        owner: MutationOwner,
+    ) -> Result<BusyGuard, ProtocolError> {
+        let mut entries = self
             .busy
+            .entries
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if !active.insert(deployment_id.to_owned()) {
+        let entry = entries.entry(deployment_id.to_owned()).or_default();
+        if entry.owner.is_some() || (owner == MutationOwner::Maintenance && entry.pending != 0) {
             return Err(ProtocolError::new(
                 ErrorCode::Busy,
                 format!("deployment {deployment_id} has a mutation in progress"),
             ));
         }
+        entry.owner = Some(owner);
         Ok(BusyGuard {
             deployment_id: deployment_id.to_owned(),
-            active: Arc::clone(&self.busy),
+            locks: Arc::clone(&self.busy),
         })
+    }
+
+    pub(crate) fn prepare_mutation_admission(
+        &self,
+        path: Option<&str>,
+        name: Option<&str>,
+        deployment_id: Option<&str>,
+        caller: &Caller,
+    ) -> Result<Option<crate::daemon::PreparedAdmission>, ProtocolError> {
+        let id = match deployment_id {
+            Some(id) => id.to_owned(),
+            None => {
+                self.resolve_target_readonly(path, name, None, caller)?
+                    .deployment_id
+            }
+        };
+        Ok(Some(
+            self.foreground_admission(&id, Duration::from_secs(15)),
+        ))
+    }
+
+    fn foreground_admission(
+        &self,
+        deployment_id: &str,
+        budget: Duration,
+    ) -> crate::daemon::PreparedAdmission {
+        let mut changed = self.busy.changed.subscribe();
+        let mut entries = self
+            .busy
+            .entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let entry = entries.entry(deployment_id.to_owned()).or_default();
+        entry.pending += 1;
+        let maintenance = entry.owner == Some(MutationOwner::Maintenance);
+        drop(entries);
+        self.busy.changed.send_replace(());
+        let intent = ForegroundIntent {
+            deployment_id: deployment_id.to_owned(),
+            locks: self.busy.clone(),
+        };
+        if !maintenance {
+            return crate::daemon::PreparedAdmission::Ready(Box::new(intent));
+        }
+        let id = deployment_id.to_owned();
+        // Creating the intent before waiting closes the race with the next
+        // maintenance turn. Foreground conflicts still reach acquire_busy.
+        crate::daemon::PreparedAdmission::Waiting(Box::pin(async move {
+            tokio::time::timeout(budget, async move {
+                loop {
+                    let maintenance = intent.locks.entries
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .get(&intent.deployment_id)
+                        .is_some_and(|entry| entry.owner == Some(MutationOwner::Maintenance));
+                    if !maintenance {
+                        return Ok(Box::new(intent) as crate::daemon::AdmissionHold);
+                    }
+                    changed.changed().await.map_err(|_| {
+                        ProtocolError::new(ErrorCode::InternalError, "deployment admission ended")
+                    })?;
+                }
+            })
+            .await
+            .map_err(|_| {
+                ProtocolError::new(
+                    ErrorCode::Busy,
+                    format!("deployment {id} maintenance handoff deadline reached; mutation was not started"),
+                )
+            })?
+        }))
     }
 
     fn control_compose_service(
@@ -4069,7 +4214,7 @@ impl Deployments {
         };
         let mut changed = false;
         for id in ids.into_iter().take(1) {
-            let Ok(_busy) = self.acquire_busy(&id) else {
+            let Ok(_busy) = self.acquire_mutation(&id, MutationOwner::Maintenance) else {
                 continue;
             };
             match routing_recovery::restore_route(self, &id) {

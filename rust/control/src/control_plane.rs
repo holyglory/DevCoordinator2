@@ -1904,6 +1904,39 @@ handlers! { self,params,caller,now,actor,administrator,repository,operation;
 }
 
 impl OperationExecutor for ControlPlane {
+    fn prepare_admission(
+        &self,
+        operation: &str,
+        params: Value,
+        caller: &Caller,
+    ) -> Option<crate::daemon::AdmissionPreparation> {
+        let definition = devcoordinator2_api::operation(operation)?;
+        // Admission follows the catalog's deployment scope and execution
+        // profile. Saved-runtime recovery is server-scoped but has the same
+        // exact deployment target and mutation exclusion.
+        if !definition.long_running()
+            || (definition.policy.scope != devcoordinator2_api::Scope::Deployment
+                && definition.id != OperationId::DeploymentRecovery)
+        {
+            return None;
+        }
+        let plane = self.clone();
+        let operation = operation.to_owned();
+        let caller = caller.clone();
+        Some(Box::new(move || {
+            let authorization = plane.access.authorize(&operation, &params, &caller)?;
+            plane.deployments.prepare_mutation_admission(
+                authorization.params.get("path").and_then(Value::as_str),
+                authorization.params.get("name").and_then(Value::as_str),
+                authorization
+                    .params
+                    .get("deployment_id")
+                    .and_then(Value::as_str),
+                &caller,
+            )
+        }))
+    }
+
     fn execute(
         &self,
         operation: &str,

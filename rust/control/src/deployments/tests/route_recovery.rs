@@ -444,6 +444,135 @@ fn reconcile_recovers_missing_saved_process_on_original_route_lease() {
             .iter()
             .any(|action| action == &format!("start:{unit}"))
     );
+
+    // Hold the real reconciliation path inside live listener validation. A
+    // healthy status can already be visible here; the next mutation must hand
+    // off asynchronously rather than report a foreground conflict.
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        *fixture.systemd.listener_hook.lock().unwrap() = Some(Box::new(move || {
+            entered_tx.send(()).unwrap();
+            release_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        }));
+        let service = fixture.deployments.clone();
+        let reconciliation = tokio::task::spawn_blocking(move || service.reconcile_routes());
+        tokio::time::timeout(Duration::from_secs(5), entered_rx)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            fixture
+                .status(&first.deployment_id)
+                .readiness
+                .unwrap()
+                .ready
+        );
+        let admission = fixture
+            .deployments
+            .prepare_mutation_admission(None, None, Some(&first.deployment_id), &fixture.caller)
+            .unwrap()
+            .unwrap();
+        let crate::daemon::PreparedAdmission::Waiting(wait) = admission else {
+            panic!("maintenance was not held by the reconciliation hook");
+        };
+        let admitted = tokio::spawn(wait);
+        release_tx.send(()).unwrap();
+        reconciliation.await.unwrap().unwrap();
+        let hold = admitted.await.unwrap().unwrap();
+        assert!(
+            fixture
+                .deployments
+                .acquire_mutation(&first.deployment_id, MutationOwner::Maintenance,)
+                .is_err(),
+            "maintenance reacquired ahead of the admitted foreground mutation"
+        );
+        let restarted = fixture
+            .deployments
+            .control(
+                "restart",
+                None,
+                None,
+                Some(&first.deployment_id),
+                Some("api"),
+                &fixture.caller,
+            )
+            .unwrap();
+        assert_eq!(restarted.current_generation, first.current_generation);
+        assert_eq!(restarted.route_port, first.route_port);
+        drop(hold);
+        assert!(fixture.deployments.busy.entries.lock().unwrap().is_empty());
+
+        // A true foreground overlap remains Busy, and even a rejected execution
+        // releases the intent that kept maintenance from barging in.
+        let foreground = fixture
+            .deployments
+            .acquire_busy(&first.deployment_id)
+            .unwrap();
+        let crate::daemon::PreparedAdmission::Ready(hold) = fixture
+            .deployments
+            .foreground_admission(&first.deployment_id, Duration::from_secs(15))
+        else {
+            panic!("foreground conflict was turned into a maintenance wait");
+        };
+        assert_eq!(
+            fixture
+                .deployments
+                .control(
+                    "restart",
+                    None,
+                    None,
+                    Some(&first.deployment_id),
+                    Some("api"),
+                    &fixture.caller,
+                )
+                .unwrap_err()
+                .code,
+            ErrorCode::Busy
+        );
+        drop(hold);
+        drop(foreground);
+        assert!(fixture.deployments.busy.entries.lock().unwrap().is_empty());
+
+        let maintenance = crate::database::maintenance_context(|| {
+            fixture.deployments.acquire_busy(&first.deployment_id)
+        })
+        .unwrap();
+        let crate::daemon::PreparedAdmission::Waiting(wait) = fixture
+            .deployments
+            .foreground_admission(&first.deployment_id, Duration::ZERO)
+        else {
+            panic!("missing maintenance wait");
+        };
+        let error = match wait.await {
+            Ok(_) => panic!("held maintenance was admitted"),
+            Err(error) => error,
+        };
+        assert_eq!(error.code, ErrorCode::Busy);
+        assert!(error.message.contains("mutation was not started"));
+        let crate::daemon::PreparedAdmission::Waiting(cancelled) = fixture
+            .deployments
+            .foreground_admission(&first.deployment_id, Duration::from_secs(15))
+        else {
+            panic!("missing cancellable maintenance wait");
+        };
+        let cancelled = tokio::spawn(cancelled);
+        cancelled.abort();
+        let Err(cancelled) = cancelled.await else {
+            panic!("cancelled admission completed");
+        };
+        assert!(cancelled.is_cancelled());
+        assert_eq!(
+            fixture.deployments.busy.entries.lock().unwrap()[&first.deployment_id].pending,
+            0
+        );
+        drop(maintenance);
+        assert!(fixture.deployments.busy.entries.lock().unwrap().is_empty());
+    });
 }
 
 #[test]
