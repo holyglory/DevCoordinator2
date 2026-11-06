@@ -284,6 +284,9 @@ impl HostBackend {
             r.blockers.push("activation_acceptance_pending".into());
             return Ok(());
         }
+        if super::native_backup_generation(path, root, r.artifact.kind, &self.config) {
+            fs::validate_native_snapshot(path)?;
+        }
         if path.join("installation-snapshot.json").is_file() {
             let repository = r
                 .artifact

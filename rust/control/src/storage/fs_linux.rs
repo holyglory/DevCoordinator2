@@ -342,6 +342,68 @@ pub fn remove_tree(
     allow_git: bool,
     preserve_metadata: bool,
 ) -> Result<(), ProtocolError> {
+    remove_tree_checked(path, expected, allow_git, preserve_metadata, None)
+}
+
+pub fn validate_native_snapshot(path: &Path) -> Result<(), ProtocolError> {
+    native_snapshot_entries(&open_directory(path)?)?;
+    Ok(())
+}
+
+fn native_snapshot_entries(dir: &File) -> Result<Vec<OsString>, ProtocolError> {
+    let entries = names(dir)?;
+    if !entries
+        .iter()
+        .any(|name| name == "installation-snapshot.json")
+        || !entries
+            .iter()
+            .any(|name| name == "authority-before.sqlite3")
+    {
+        return Err(blocked("backup_unverified"));
+    }
+    let device = dir
+        .metadata()
+        .map_err(|_| unavailable("directory_metadata_unavailable"))?
+        .dev();
+    for name in &entries {
+        if !matches!(
+            name.to_str(),
+            Some(
+                "installation-snapshot.json"
+                    | "authority-before.sqlite3"
+                    | "authority-before.sqlite3-wal"
+                    | "authority-before.sqlite3-shm"
+            )
+        ) {
+            return Err(blocked("native_backup_contents_changed"));
+        }
+        let st = unix::statat(dir, name, AtFlags::SYMLINK_NOFOLLOW)
+            .map_err(|_| blocked("directory_changed"))?;
+        if unix::FileType::from_raw_mode(st.st_mode) != unix::FileType::RegularFile
+            || st.st_dev != device
+            || st.st_nlink != 1
+        {
+            return Err(blocked("native_backup_contents_changed"));
+        }
+    }
+    Ok(entries)
+}
+
+pub fn remove_native_snapshot(
+    path: &Path,
+    expected: (u64, u64),
+    expected_parent: (u64, u64),
+) -> Result<(), ProtocolError> {
+    remove_tree_checked(path, expected, false, true, Some(expected_parent))
+}
+
+fn remove_tree_checked(
+    path: &Path,
+    expected: (u64, u64),
+    allow_git: bool,
+    preserve_metadata: bool,
+    native_parent: Option<(u64, u64)>,
+) -> Result<(), ProtocolError> {
     if path.parent().is_none() || path == Path::new("/") {
         return Err(blocked("protected_root"));
     }
@@ -352,6 +414,14 @@ pub fn remove_tree(
         return Err(blocked("mounted_path"));
     }
     let parent = open_directory(path.parent().ok_or_else(|| blocked("protected_root"))?)?;
+    if let Some(expected_parent) = native_parent {
+        let parent_metadata = parent
+            .metadata()
+            .map_err(|_| unavailable("directory_metadata_unavailable"))?;
+        if (parent_metadata.dev(), parent_metadata.ino()) != expected_parent {
+            return Err(blocked("configured_root_identity_changed"));
+        }
+    }
     let name = path.file_name().ok_or_else(|| blocked("protected_root"))?;
     let child = File::from(
         unix::openat(
@@ -368,7 +438,24 @@ pub fn remove_tree(
     if (st.dev(), st.ino()) != expected {
         return Err(blocked("identity_changed"));
     }
-    remove_children(&child, expected.0, allow_git, preserve_metadata, 0)?;
+    if native_parent.is_some() {
+        // Delete only this fixed native file set. Newly added entries are never
+        // traversed or removed; they make the final directory removal fail.
+        for entry in native_snapshot_entries(&child)? {
+            let st = unix::statat(&child, &entry, AtFlags::SYMLINK_NOFOLLOW)
+                .map_err(|_| blocked("directory_changed"))?;
+            if unix::FileType::from_raw_mode(st.st_mode) != unix::FileType::RegularFile
+                || st.st_dev != expected.0
+                || st.st_nlink != 1
+            {
+                return Err(blocked("native_backup_contents_changed"));
+            }
+            unix::unlinkat(&child, &entry, AtFlags::empty())
+                .map_err(|_| unavailable("directory_remove_failed"))?;
+        }
+    } else {
+        remove_children(&child, expected.0, allow_git, preserve_metadata, 0)?;
+    }
     let current = unix::statat(&parent, name, AtFlags::SYMLINK_NOFOLLOW)
         .map_err(|_| blocked("directory_changed"))?;
     if (current.st_dev, current.st_ino) != expected {

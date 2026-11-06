@@ -235,12 +235,17 @@ impl Backend for HostBackend {
                 root,
                 git_root,
             } => {
-                validate_root(path, &self.config, &self.database)?;
+                let native_backup =
+                    native_backup_generation(path, root, r.artifact.kind, &self.config);
+                validate_path(path, &self.config, native_backup, &self.database)?;
                 if !path.starts_with(root) {
                     return Err(blocked("outside_registered_root"));
                 }
                 if fs::identity(path)? != (*device, *inode) {
                     return Err(blocked("identity_changed"));
+                }
+                if native_backup {
+                    fs::validate_native_snapshot(path)?;
                 }
                 if r.artifact.kind == api::Kind::Backup && !context.discovering {
                     self.validate_backup_floor(r, context)?;
@@ -366,6 +371,12 @@ impl Backend for HostBackend {
                         return Err(unavailable("worktree_removal_unverified"));
                     }
                     Ok(())
+                } else if native_backup_generation(path, root, r.artifact.kind, &self.config) {
+                    fs::remove_native_snapshot(
+                        path,
+                        (*device, *inode),
+                        self.native_backup_root_identity(r, root, context)?,
+                    )
                 } else {
                     fs::remove_tree(
                         path,
@@ -413,6 +424,21 @@ pub fn validate_root(
     config: &Config,
     database: &crate::database::Database,
 ) -> Result<(), ProtocolError> {
+    validate_path(path, config, false, database)
+}
+
+fn native_backup_generation(path: &Path, root: &Path, kind: api::Kind, config: &Config) -> bool {
+    kind == api::Kind::Backup
+        && root == config.state_dir.join("cutover")
+        && path.parent() == Some(root)
+}
+
+fn validate_path(
+    path: &Path,
+    config: &Config,
+    native_backup: bool,
+    database: &crate::database::Database,
+) -> Result<(), ProtocolError> {
     if !path.is_absolute()
         || path.components().any(|p| {
             matches!(
@@ -442,7 +468,7 @@ pub fn validate_root(
         || path.starts_with("/var/lib/docker")
         || path.starts_with("/var/lib/devcoordinator2-postgres")
         || Path::new("/var/lib/devcoordinator2-postgres").starts_with(path)
-        || path.starts_with(&config.state_dir)
+        || (path.starts_with(&config.state_dir) && !native_backup)
         || config.state_dir.starts_with(path)
     {
         return Err(blocked("protected_system_data"));

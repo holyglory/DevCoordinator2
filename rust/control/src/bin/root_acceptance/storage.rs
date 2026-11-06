@@ -2066,6 +2066,372 @@ pub(super) fn worktrees_and_backup_floor(world: &mut World) -> Result<(), String
             == "authoritative fixture source\n",
         "cleanup changed the source repository"
     );
+    native_backup_retirement(world, &repo)?;
+    Ok(())
+}
+
+fn native_backup_retirement(world: &mut World, repo: &str) -> Result<(), String> {
+    let cutover = world.state.join("cutover");
+    fs::create_dir(&cutover).map_err(|e| e.to_string())?;
+    fs::set_permissions(&cutover, fs::Permissions::from_mode(0o700)).map_err(|e| e.to_string())?;
+    let authority = rusqlite::Connection::open_with_flags(
+        world.state.join("authority.sqlite3"),
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )
+    .map_err(|e| e.to_string())?;
+    let now = (time::OffsetDateTime::now_utc().unix_timestamp_nanos() / 1_000_000) as u64;
+    let generations = [
+        ("native-pinned", "rolled_back"),
+        ("native-active", "recovered"),
+        ("native-old", "committed"),
+        ("native-recent", "committed"),
+        ("native-latest", "committed"),
+        ("native-prepared", "prepared"),
+        ("native-rolling-back", "rolling_back"),
+        ("native-invalid", "committed"),
+        ("native-extra", "committed"),
+        ("native-nested", "committed"),
+        ("native-link", "committed"),
+    ];
+    for (index, (name, status)) in generations.iter().enumerate() {
+        let generation = cutover.join(name);
+        fs::create_dir(&generation).map_err(|e| e.to_string())?;
+        fs::set_permissions(&generation, fs::Permissions::from_mode(0o700))
+            .map_err(|e| e.to_string())?;
+        let backup = generation.join("authority-before.sqlite3");
+        authority
+            .backup(rusqlite::MAIN_DB, &backup, None)
+            .map_err(|e| e.to_string())?;
+        fs::set_permissions(&backup, fs::Permissions::from_mode(0o600))
+            .map_err(|e| e.to_string())?;
+        write_private_json(
+            &generation.join("installation-snapshot.json"),
+            &json!({"schema":2,"status":status,"transaction_dir":generation,
+                "entries":[],"backup_sha256":if *name == "native-invalid" {"0".repeat(64)} else {sha256_hex(&fs::read(&backup).map_err(|e|e.to_string())?)},
+                "candidate_commit":"0".repeat(40)}),
+        )?;
+        File::open(generation.join("installation-snapshot.json"))
+            .and_then(|file| {
+                file.set_times(fs::FileTimes::new().set_modified(
+                    std::time::UNIX_EPOCH
+                        + Duration::from_millis(now - 20_000 + index as u64 * 1000),
+                ))
+            })
+            .map_err(|e| e.to_string())?;
+    }
+    drop(authority);
+    fs::write(cutover.join("native-extra/.env"), "PRIVATE_EXTRA_FILE")
+        .map_err(|e| e.to_string())?;
+    fs::create_dir(cutover.join("native-nested/sessions")).map_err(|e| e.to_string())?;
+    fs::write(
+        cutover.join("native-nested/sessions/chat.jsonl"),
+        "PRIVATE_CHAT_HISTORY",
+    )
+    .map_err(|e| e.to_string())?;
+    fs::remove_file(cutover.join("native-link/authority-before.sqlite3"))
+        .map_err(|e| e.to_string())?;
+    std::os::unix::fs::symlink(
+        cutover.join("native-latest/authority-before.sqlite3"),
+        cutover.join("native-link/authority-before.sqlite3"),
+    )
+    .map_err(|e| e.to_string())?;
+    fs::create_dir(cutover.join("generic-disguise")).map_err(|e| e.to_string())?;
+    fs::write(cutover.join("generic-disguise/backup-manifest.json"), "{}")
+        .map_err(|e| e.to_string())?;
+    for suffix in ["-wal", "-shm"] {
+        fs::write(
+            cutover.join(format!("native-old/authority-before.sqlite3{suffix}")),
+            [],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    for (path, kind) in [
+        (world.state.clone(), "backup"),
+        (world.state.join("deployments"), "backup"),
+        (cutover.join("native-old"), "backup"),
+        (cutover.clone(), "dependency_cache"),
+    ] {
+        let denied = world.call(
+            "storage.roots.set",
+            json!({"repository_id":repo,
+            "expected_revision":0,"label":"Must remain protected","path":path,"kind":kind}),
+        )?;
+        ensure!(
+            denied["ok"] == false && denied["error"]["message"] == "protected_system_data",
+            "native backup exception admitted authority state or another root kind"
+        );
+    }
+    data(&world.call("storage.roots.set", json!({"repository_id":repo,
+        "expected_revision":0,"label":"Native recovery generations","path":cutover,"kind":"backup"}))?)?;
+
+    // An open file is real current use, even for a finalized old snapshot.
+    let active = File::open(cutover.join("native-active/authority-before.sqlite3"))
+        .map_err(|e| e.to_string())?;
+    let inventory = scanned(world, repo, "native-backup-inventory")?;
+    let rows = inventory["artifacts"]
+        .as_array()
+        .ok_or("native inventory missing")?;
+    let row = |name: &str| {
+        rows.iter()
+            .find(|r| r["name"] == name)
+            .cloned()
+            .ok_or_else(|| format!("native backup {name} missing"))
+    };
+    let old = row("native-old")?;
+    let in_use = row("native-active")?;
+    ensure!(
+        in_use["deletable"] == false
+            && in_use["reasons"]
+                .as_array()
+                .is_some_and(|v| v.contains(&json!("active_process"))),
+        "open native backup was removable"
+    );
+    for name in [
+        "native-prepared",
+        "native-rolling-back",
+        "native-invalid",
+        "native-extra",
+        "native-nested",
+        "native-link",
+        "generic-disguise",
+    ] {
+        ensure!(
+            row(name)?["deletable"] == false,
+            "unverified native generation was removable: {name}"
+        );
+    }
+    for name in ["native-recent", "native-latest"] {
+        ensure!(
+            row(name)?["reasons"]
+                .as_array()
+                .is_some_and(|v| v.contains(&json!("required_recovery"))),
+            "incomplete or damaged snapshots displaced a verified recovery generation"
+        );
+    }
+    let pin = mcp(
+        world,
+        "storage_protection_set",
+        json!({"artifact_id":row("native-pinned")?["artifact_id"],
+        "expected_revision":row("native-pinned")?["revision"],"protected":true}),
+    )?;
+    let protected_plan = mcp(
+        world,
+        "storage_cleanup_plan",
+        json!({"artifact_ids":[pin["artifact_id"]],"include_persistent_data":true}),
+    )?;
+    ensure!(
+        protected_plan["ready"] == false,
+        "native recovery pin was bypassed"
+    );
+    drop(active);
+
+    let expect_blocked =
+        |world: &World, plan: &Value, key: &str, code: &str| -> Result<(), String> {
+            ensure!(
+                plan["ready"] == true,
+                "replacement fixture did not bind its observed identity"
+            );
+            let job = mcp(
+                world,
+                "storage_cleanup_start",
+                json!({"plan_id":plan["plan_id"],"idempotency_key":key}),
+            )?;
+            let result = wait_job(
+                world,
+                job["job_id"]
+                    .as_str()
+                    .ok_or("blocked cleanup job missing")?,
+            )?;
+            ensure!(
+                result["state"] == "failed"
+                    && result["receipts"][0]["status"] == "blocked"
+                    && result["receipts"][0]["code"] == code,
+                "changed native backup was not blocked before removal: {}",
+                bounded_json(&result)
+            );
+            Ok(())
+        };
+
+    // Changing the root must not make the original child inode eligible.
+    let displaced = world.state.join("cutover-displaced");
+    fs::rename(&cutover, &displaced).map_err(|e| e.to_string())?;
+    fs::create_dir(&cutover).map_err(|e| e.to_string())?;
+    fs::rename(displaced.join("native-old"), cutover.join("native-old"))
+        .map_err(|e| e.to_string())?;
+    let replaced = mcp(
+        world,
+        "storage_cleanup_plan",
+        json!({"artifact_ids":[old["artifact_id"]],"include_persistent_data":true}),
+    )?;
+    expect_blocked(
+        world,
+        &replaced,
+        "native-root-replaced",
+        "configured_root_identity_changed",
+    )?;
+    ensure!(
+        cutover
+            .join("native-old/authority-before.sqlite3")
+            .is_file(),
+        "changed root was mutated"
+    );
+    fs::rename(cutover.join("native-old"), displaced.join("native-old"))
+        .map_err(|e| e.to_string())?;
+    fs::remove_dir(&cutover).map_err(|e| e.to_string())?;
+    std::os::unix::fs::symlink(&displaced, &cutover).map_err(|e| e.to_string())?;
+    let alias = world.call(
+        "storage.roots.set",
+        json!({"root_id":"native-alias", "repository_id":repo,
+        "expected_revision":0,"label":"Forbidden native alias","path":cutover,"kind":"backup"}),
+    )?;
+    ensure!(alias["ok"] == false, "symlinked native root was registered");
+    fs::remove_file(&cutover).map_err(|e| e.to_string())?;
+    fs::rename(&displaced, &cutover).map_err(|e| e.to_string())?;
+    scanned(world, repo, "native-root-restored")?;
+
+    let generation = cutover.join("native-old");
+    let displaced_generation = cutover.join("native-old-displaced");
+    fs::rename(&generation, &displaced_generation).map_err(|e| e.to_string())?;
+    fs::create_dir(&generation).map_err(|e| e.to_string())?;
+    let replaced = mcp(
+        world,
+        "storage_cleanup_plan",
+        json!({"artifact_ids":[old["artifact_id"]],"include_persistent_data":true}),
+    )?;
+    expect_blocked(
+        world,
+        &replaced,
+        "native-generation-replaced",
+        "identity_changed",
+    )?;
+    fs::remove_dir(&generation).map_err(|e| e.to_string())?;
+    fs::rename(&displaced_generation, &generation).map_err(|e| e.to_string())?;
+
+    scanned(world, repo, "native-generation-restored")?;
+    let changed = mcp(
+        world,
+        "storage_cleanup_plan",
+        json!({"artifact_ids":[old["artifact_id"]],"include_persistent_data":true}),
+    )?;
+    fs::write(generation.join(".env"), "PRIVATE_ADDED_AFTER_PLAN").map_err(|e| e.to_string())?;
+    expect_blocked(
+        world,
+        &changed,
+        "native-contents-changed",
+        "native_backup_contents_changed",
+    )?;
+    ensure!(
+        generation.join("authority-before.sqlite3").is_file(),
+        "unexpected content allowed partial native removal"
+    );
+    fs::remove_file(generation.join(".env")).map_err(|e| e.to_string())?;
+
+    scanned(world, repo, "native-contents-restored")?;
+    let changed = mcp(
+        world,
+        "storage_cleanup_plan",
+        json!({"artifact_ids":[old["artifact_id"]],"include_persistent_data":true}),
+    )?;
+    let backup_path = generation.join("authority-before.sqlite3");
+    let header_path = generation.join("installation-snapshot.json");
+    let backup_bytes = fs::read(&backup_path).map_err(|e| e.to_string())?;
+    let header_bytes = fs::read(&header_path).map_err(|e| e.to_string())?;
+    let header_time = fs::metadata(&header_path)
+        .and_then(|m| m.modified())
+        .map_err(|e| e.to_string())?;
+    let changed_backup = rusqlite::Connection::open(&backup_path).map_err(|e| e.to_string())?;
+    changed_backup
+        .execute("CREATE TABLE retirement_changed_fixture(value INTEGER)", [])
+        .map_err(|e| e.to_string())?;
+    drop(changed_backup);
+    let mut header: Value = serde_json::from_slice(&header_bytes).map_err(|e| e.to_string())?;
+    header["backup_sha256"] = json!(sha256_hex(
+        &fs::read(&backup_path).map_err(|e| e.to_string())?
+    ));
+    write_private_json(&header_path, &header)?;
+    expect_blocked(
+        world,
+        &changed,
+        "native-backup-bytes-changed",
+        "backup_changed",
+    )?;
+    fs::write(&backup_path, &backup_bytes).map_err(|e| e.to_string())?;
+    fs::write(&header_path, &header_bytes).map_err(|e| e.to_string())?;
+    File::open(&header_path)
+        .and_then(|file| file.set_times(fs::FileTimes::new().set_modified(header_time)))
+        .map_err(|e| e.to_string())?;
+
+    scanned(world, repo, "native-backup-bytes-restored")?;
+    let floor = mcp(
+        world,
+        "storage_cleanup_plan",
+        json!({"artifact_ids":[old["artifact_id"]],"include_persistent_data":true}),
+    )?;
+    let retained = cutover.join("native-latest/authority-before.sqlite3");
+    let retained_bytes = fs::read(&retained).map_err(|e| e.to_string())?;
+    fs::write(&retained, b"damaged after planning").map_err(|e| e.to_string())?;
+    expect_blocked(
+        world,
+        &floor,
+        "native-retention-floor-changed",
+        "required_recovery",
+    )?;
+    fs::write(&retained, &retained_bytes).map_err(|e| e.to_string())?;
+
+    let refreshed = scanned(world, repo, "native-backup-before-cleanup")?;
+    let active = refreshed["artifacts"]
+        .as_array()
+        .and_then(|rows| rows.iter().find(|r| r["name"] == "native-active"))
+        .ok_or("released native backup missing")?;
+    let plan = mcp(
+        world,
+        "storage_cleanup_plan",
+        json!({"artifact_ids":[old["artifact_id"], active["artifact_id"]],"include_persistent_data":true}),
+    )?;
+    ensure!(
+        plan["ready"] == true,
+        "native backup plan failed: {}",
+        bounded_json(&plan)
+    );
+    let job = mcp(
+        world,
+        "storage_cleanup_start",
+        json!({"plan_id":plan["plan_id"],"idempotency_key":"native-retirement"}),
+    )?;
+    let result = wait_job(
+        world,
+        job["job_id"].as_str().ok_or("native cleanup job missing")?,
+    )?;
+    ensure!(
+        result["state"] == "completed",
+        "native backup removal failed: {}",
+        bounded_json(&result)
+    );
+    ensure!(
+        !generation.exists() && !cutover.join("native-active").exists(),
+        "obsolete native generations remained"
+    );
+    for (name, _) in generations {
+        if name != "native-old" && name != "native-active" {
+            ensure!(
+                cutover.join(name).is_dir(),
+                "native cleanup removed a retained generation: {name}"
+            );
+        }
+    }
+    ensure!(
+        fs::read(cutover.join("native-extra/.env")).map_err(|e| e.to_string())?
+            == b"PRIVATE_EXTRA_FILE"
+            && fs::read(cutover.join("native-nested/sessions/chat.jsonl"))
+                .map_err(|e| e.to_string())?
+                == b"PRIVATE_CHAT_HISTORY",
+        "native retirement changed credential or chat files"
+    );
+    data(&world.call("repository.list", json!({}))?)?;
+    ensure!(
+        world.state.join("authority.sqlite3").is_file(),
+        "native retirement removed authority state"
+    );
     Ok(())
 }
 
