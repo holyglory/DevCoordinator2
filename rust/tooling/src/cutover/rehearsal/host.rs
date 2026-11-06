@@ -513,6 +513,11 @@ impl Fixture {
             (0, 0),
             self.runner.as_ref(),
         )?;
+        install::ensure_edge_source_access(
+            Path::new(&self.candidate.source_root),
+            "devcoordinator2-edge",
+            self.runner.as_ref(),
+        )?;
         let environment = format!(
             "EDGE_BASE_DOMAIN=fixture.invalid\nEDGE_HTTP_ONLY=1\nEDGE_HTTP_PORT=8080\nEDGE_TRUST_LOCAL_CONSOLE=1\nEDGE_ROUTES_FILE={}\nEDGE_STATE_DIR={}\nEDGE_DAEMON_SOCKET={}\nEDGE_CONSOLE_DIR={}\nEDGE_UI_SOURCE_REVISION=git:{}\n",
             root.join("state/public/routes.json").display(),
@@ -888,7 +893,9 @@ impl Fixture {
             .read_to_string(&mut failure_log)
             .map_err(|_| "real edge failure evidence is invalid")?;
         if !failure_log.contains("EDGE_BASE_DOMAIN is required") {
-            return Err("candidate failed outside the injected real edge startup boundary".into());
+            return Err(format!(
+                "candidate failed outside the injected real edge startup boundary: {error}"
+            ));
         }
         self.wait_ping(2, &self.prior.source_commit)?;
         self.edge_ping(2, &self.prior.source_commit)?;
