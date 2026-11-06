@@ -779,8 +779,44 @@ impl HostCutover {
             clear_environment: true,
         })?;
         if !output.success || output.stdout_truncated || output.stderr_truncated {
+            let retain = |extension: &str, bytes: &[u8]| {
+                let path = report.with_extension(extension);
+                match path.symlink_metadata() {
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                        install::atomic_file(&path, bytes, 0o600, Some(self.expected_owner)).is_ok()
+                    }
+                    _ => false,
+                }
+            };
+            let stdout_retained = retain("stdout", output.stdout.as_bytes());
+            let stderr_retained = retain("stderr", output.stderr.as_bytes());
+            let metadata = serde_json::to_vec(&serde_json::json!({
+                "schema":1,
+                "operation":mode,
+                "source_commit":self.manifest.source_commit,
+                "success":output.success,
+                "stdout_captured_bytes":output.stdout.len(),
+                "stderr_captured_bytes":output.stderr.len(),
+                "stdout_truncated":output.stdout_truncated,
+                "stderr_truncated":output.stderr_truncated,
+                "stdout_retained":stdout_retained,
+                "stderr_retained":stderr_retained
+            }));
+            let metadata_retained = metadata
+                .as_ref()
+                .is_ok_and(|bytes| retain("command.json", bytes));
+            let diagnostics = if stdout_retained && stderr_retained && metadata_retained {
+                "private helper diagnostics retained"
+            } else {
+                "private helper diagnostics incomplete"
+            };
+            let capture = if output.stdout_truncated || output.stderr_truncated {
+                "helper output capture truncated"
+            } else {
+                "helper output capture complete"
+            };
             return Err(format!(
-                "PostgreSQL authority {mode} failed; legacy source remains retained"
+                "PostgreSQL authority {mode} failed; {capture}; {diagnostics}; legacy source remains retained"
             ));
         }
         let metadata = report
@@ -3027,6 +3063,7 @@ mod tests {
         dirty_checkout: bool,
         dirty_checkout_after_stop: bool,
         fail_ping: bool,
+        backup_verification_failure: Option<crate::install::CommandOutput>,
         retryable_ping_failures: AtomicUsize,
         requests: Mutex<Vec<CommandRequest>>,
     }
@@ -3204,6 +3241,11 @@ mod tests {
                         .unwrap()
                 };
                 let mode = request.args[1].to_string_lossy();
+                if mode == "verify-backup"
+                    && let Some(output) = &self.backup_verification_failure
+                {
+                    return Ok(output.clone());
+                }
                 if mode == "backup" {
                     std::fs::write(
                         argument("--destination"),
@@ -4686,6 +4728,104 @@ mod tests {
         );
         assert!(database_integrity(&world.config.database_path).unwrap());
         assert!(!world.config.runtime_dir.join(DRAIN_FILE).exists());
+        for (success, stdout_truncated, stderr_truncated, existing_stderr) in [
+            (false, false, false, false),
+            (true, true, false, false),
+            (true, false, true, false),
+            (false, false, false, true),
+        ] {
+            let world = host_world();
+            let output = crate::install::CommandOutput {
+                success,
+                stdout: "private callback stdout\n".into(),
+                stderr: "private callback diagnosis\nprivate cleanup diagnosis\n".into(),
+                stdout_truncated,
+                stderr_truncated,
+            };
+            let runner = Arc::new(HostFake {
+                commit: world.commit.clone(),
+                backup_verification_failure: Some(output.clone()),
+                ..HostFake::default()
+            });
+            let mut host =
+                HostCutover::new_owned(world.config.clone(), runner, world.expected_owner).unwrap();
+            let report = world
+                .config
+                .transaction_dir
+                .join("postgres-backup-verified.json");
+            if existing_stderr {
+                install::ensure_owned_directory(
+                    &world.config.transaction_dir,
+                    0o700,
+                    world.expected_owner,
+                )
+                .unwrap();
+                install::atomic_file(
+                    &report.with_extension("stderr"),
+                    b"first retained diagnostic\n",
+                    0o600,
+                    Some(world.expected_owner),
+                )
+                .unwrap();
+            }
+            let error = activate(&mut host).unwrap_err();
+            assert!(error.contains("PostgreSQL authority verify-backup failed"));
+            assert!(error.contains(if existing_stderr {
+                "private helper diagnostics incomplete"
+            } else {
+                "private helper diagnostics retained"
+            }));
+            assert!(error.contains(if stdout_truncated || stderr_truncated {
+                "helper output capture truncated"
+            } else {
+                "helper output capture complete"
+            }));
+            assert!(error.contains("without replacing the intact database"));
+            assert!(!error.contains("private callback"));
+            assert!(!error.contains("private cleanup"));
+            assert!(!report.exists());
+            let stdout = report.with_extension("stdout");
+            let stderr = report.with_extension("stderr");
+            let metadata = report.with_extension("command.json");
+            assert_eq!(std::fs::read_to_string(&stdout).unwrap(), output.stdout);
+            assert_eq!(
+                std::fs::read_to_string(&stderr).unwrap(),
+                if existing_stderr {
+                    "first retained diagnostic\n"
+                } else {
+                    output.stderr.as_str()
+                }
+            );
+            let value = read_json_file(&metadata).unwrap().unwrap();
+            assert_eq!(value["operation"], "verify-backup");
+            assert_eq!(value["source_commit"], world.commit);
+            assert_eq!(value["success"], success);
+            assert_eq!(value["stdout_truncated"], stdout_truncated);
+            assert_eq!(value["stderr_truncated"], stderr_truncated);
+            assert_eq!(value["stdout_captured_bytes"], output.stdout.len());
+            assert_eq!(value["stderr_captured_bytes"], output.stderr.len());
+            assert_eq!(value["stdout_retained"], true);
+            assert_eq!(value["stderr_retained"], !existing_stderr);
+            for path in [&stdout, &stderr, &metadata] {
+                let retained = path.symlink_metadata().unwrap();
+                assert!(retained.is_file());
+                assert_eq!(retained.uid(), world.expected_owner.0);
+                assert_eq!(retained.mode() & 0o777, 0o600);
+            }
+            assert_eq!(
+                read_snapshot(&world.config.transaction_dir, world.expected_owner.0)
+                    .unwrap()
+                    .status,
+                "rolled_back"
+            );
+            assert_eq!(
+                std::fs::read_to_string(&world.config.daemon_unit_path).unwrap(),
+                world.old_daemon
+            );
+            assert!(world.config.socket_path.exists());
+            assert!(database_integrity(&world.config.database_path).unwrap());
+            assert!(!world.config.runtime_dir.join(DRAIN_FILE).exists());
+        }
     }
 
     #[test]

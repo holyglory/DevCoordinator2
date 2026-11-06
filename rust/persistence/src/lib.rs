@@ -253,6 +253,14 @@ pub enum Error {
     Postgres(#[from] postgres::Error),
     #[error("PostgreSQL migration failed: {0}")]
     Migration(String),
+    #[error(
+        "snapshot operation failed ({primary}); owned snapshot cleanup also failed ({cleanup})"
+    )]
+    SnapshotCleanup {
+        primary: String,
+        #[source]
+        cleanup: Box<Error>,
+    },
     #[error("database fixture failed: {0}")]
     Fixture(String),
     #[error("database is closed")]
@@ -288,6 +296,7 @@ impl Error {
     }
     pub fn is_timeout(&self) -> bool {
         matches!(self,Self::Postgres(e) if matches!(e.code(),Some(code) if code==&postgres::error::SqlState::QUERY_CANCELED || code==&postgres::error::SqlState::LOCK_NOT_AVAILABLE))
+            || matches!(self,Self::SnapshotCleanup {cleanup,..} if cleanup.is_timeout())
     }
 }
 

@@ -9,7 +9,33 @@ use std::time::{Duration, Instant};
 #[test]
 fn authority_schema_pools_timeouts_rollback_and_restart() {
     let cluster = FixtureCluster::start().expect("real PostgreSQL fixture");
-    let config = cluster.create_database("boundary").unwrap();
+    let mut config = cluster.create_database("boundary").unwrap();
+    {
+        let mut admin = cluster.client("postgres").unwrap();
+        admin.batch_execute("CREATE ROLE dc2_boundary LOGIN CREATEDB NOSUPERUSER NOCREATEROLE NOREPLICATION; ALTER DATABASE boundary OWNER TO dc2_boundary").unwrap();
+        admin
+            .batch_execute("ALTER SYSTEM SET autovacuum_naptime='1s'")
+            .unwrap();
+        admin.batch_execute("SELECT pg_reload_conf()").unwrap();
+        let role = admin.query_one("SELECT rolsuper,rolcreatedb,rolcreaterole,pg_has_role(oid,'pg_signal_backend','member') FROM pg_roles WHERE rolname='dc2_boundary'", &[]).unwrap();
+        assert!(
+            !role.get::<_, bool>(0)
+                && role.get::<_, bool>(1)
+                && !role.get::<_, bool>(2)
+                && !role.get::<_, bool>(3)
+        );
+        assert_eq!(
+            admin
+                .query_one("SHOW autovacuum", &[])
+                .unwrap()
+                .get::<_, String>(0),
+            "on"
+        );
+    }
+    config.url = format!(
+        "host='{}' port=5432 user=dc2_boundary dbname=boundary",
+        cluster.socket_directory().display()
+    );
     let private = tempfile::tempdir().unwrap();
     let private_path = private.path().join("postgres.json");
     std::fs::write(&private_path,serde_json::to_vec(&serde_json::json!({"schema":1,"connection":config.url,"data_directory":config.data_directory,"pools":{"reads":2,"writes":1,"maintenance":1},"timeouts_ms":{"connection":500,"statement":2000,"lock":300,"idle_transaction":3000}})).unwrap()).unwrap();
@@ -248,6 +274,24 @@ fn authority_schema_pools_timeouts_rollback_and_restart() {
                 )
                 .is_err()
         );
+        // A restore large enough for autovacuum exposed the production-role
+        // failure. Hold a real worker active, with no signalling privileges.
+        let mut writer = config.for_database(&snapshot_name).url.parse::<postgres::Config>()?.connect(postgres::NoTls)?;
+        writer.batch_execute("CREATE TABLE cleanup_pressure(id bigint,payload text) WITH(autovacuum_vacuum_threshold=0,autovacuum_vacuum_scale_factor=0,autovacuum_vacuum_cost_delay=100,autovacuum_vacuum_cost_limit=1); INSERT INTO cleanup_pressure SELECT n,repeat('x',200) FROM generate_series(1,100000) n; DELETE FROM cleanup_pressure WHERE id%2=0")?;
+        drop(writer);
+        let mut admin = cluster.client("postgres")?;
+        let started = Instant::now();
+        loop {
+            let active:bool=admin.query_one("SELECT EXISTS(SELECT 1 FROM pg_stat_progress_vacuum v JOIN pg_stat_activity a USING(pid) WHERE a.datname=$1 AND a.backend_type='autovacuum worker')", &[&snapshot_name])?.get(0);
+            if active { break; }
+            assert!(started.elapsed()<Duration::from_secs(30), "real autovacuum did not start");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        let mut owner = config.url.parse::<postgres::Config>()?.connect(postgres::NoTls)?;
+        let old_cleanup = owner.batch_execute(&format!("DROP DATABASE \"{snapshot_name}\" WITH(FORCE)"));
+        assert!(matches!(old_cleanup, Err(ref error) if error.code()==Some(&postgres::error::SqlState::INSUFFICIENT_PRIVILEGE)), "FORCE no longer reproduces the restricted-role autovacuum failure");
+        drop(owner);
+        drop(admin);
         connection.query_row("SELECT value FROM meta WHERE key='durable'", [], |r| {
             r.get::<_, String>(0)
         })
@@ -270,7 +314,7 @@ fn authority_schema_pools_timeouts_rollback_and_restart() {
         failed_name = connection.query_row("SELECT current_database()", [], |r| r.get(0))?;
         Err(Error::InvalidQuery)
     });
-    assert!(failure.is_err());
+    assert!(matches!(failure, Err(Error::InvalidQuery)));
     assert!(
         cluster
             .client("postgres")
@@ -278,6 +322,60 @@ fn authority_schema_pools_timeouts_rollback_and_restart() {
             .query_opt(
                 "SELECT 1 FROM pg_database WHERE datname=$1",
                 &[&failed_name]
+            )
+            .unwrap()
+            .is_none()
+    );
+    let mut blocked_name = String::new();
+    let mut blocker = config
+        .url
+        .parse::<postgres::Config>()
+        .unwrap()
+        .connect(postgres::NoTls)
+        .unwrap();
+    let cleanup_started = Instant::now();
+    let failure = backup::with_snapshot::<(), Error, _>(&config, &archive, |connection| {
+        blocked_name = connection.query_row("SELECT current_database()", [], |r| r.get(0))?;
+        blocker.batch_execute("BEGIN")?;
+        // COMMENT retains an object lock until rollback. This is
+        // an exact-owned lock conflict, not a session the helper may kill.
+        blocker.batch_execute(&format!(
+            "COMMENT ON DATABASE \"{blocked_name}\" IS 'cleanup lock fixture'"
+        ))?;
+        Err(Error::Migration("preserved callback failure".into()))
+    });
+    assert!(
+        cleanup_started.elapsed() < Duration::from_secs(20),
+        "cleanup lock deadline was not enforced"
+    );
+    assert!(
+        matches!(&failure,Err(Error::SnapshotCleanup {primary,cleanup}) if primary.contains("preserved callback failure") && cleanup.is_timeout())
+    );
+    assert!(failure.unwrap_err().is_timeout());
+    blocker.batch_execute("ROLLBACK").unwrap();
+    assert!(
+        cluster
+            .client("postgres")
+            .unwrap()
+            .query_opt(
+                "SELECT 1 FROM pg_database WHERE datname=$1",
+                &[&blocked_name]
+            )
+            .unwrap()
+            .is_some(),
+        "failed cleanup claimed the database was removed"
+    );
+    blocker
+        .batch_execute(&format!("DROP DATABASE \"{blocked_name}\""))
+        .unwrap();
+    drop(blocker);
+    assert!(
+        cluster
+            .client("postgres")
+            .unwrap()
+            .query_opt(
+                "SELECT 1 FROM pg_database WHERE datname=$1",
+                &[&blocked_name]
             )
             .unwrap()
             .is_none()

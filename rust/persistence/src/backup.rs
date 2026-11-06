@@ -149,7 +149,11 @@ impl OwnedSnapshot {
             return Ok(());
         }
         let mut client = self.authority.parsed()?.connect(postgres::NoTls)?;
-        client.batch_execute(&format!("DROP DATABASE \"{}\" WITH (FORCE)", self.name))?;
+        client.batch_execute("SET statement_timeout='15s'; SET lock_timeout='5s'")?;
+        // All clients owned by the inspection are already closed. Ordinary
+        // DROP handles conflicting autovacuum workers internally; FORCE would
+        // require signalling privileges that the authority role does not have.
+        client.batch_execute(&format!("DROP DATABASE \"{}\"", self.name))?;
         self.removed.set(true);
         Ok(())
     }
@@ -169,29 +173,35 @@ pub fn with_snapshot<T, E, F>(
     work: F,
 ) -> std::result::Result<T, E>
 where
-    E: From<Error>,
+    E: From<Error> + std::fmt::Display,
     F: FnOnce(&Connection) -> std::result::Result<T, E>,
 {
     let before = crate::migration::file_stamp(archive).map_err(E::from)?;
     let owned = OwnedSnapshot::create(authority).map_err(E::from)?;
     let config = authority.for_database(&owned.name);
-    if let Err(error) = restore(&config, archive) {
-        owned.remove().map_err(E::from)?;
-        return Err(E::from(error));
+    // Keep every owned client inside this scope so cleanup never races their
+    // shutdown, including on restore, acquisition, callback or stamp failure.
+    let result = (|| {
+        restore(&config, archive).map_err(E::from)?;
+        let database = Persistence::connect(&config).map_err(E::from)?;
+        let connection = database.acquire(Lane::Read).map_err(E::from)?;
+        let result = work(&connection);
+        let unchanged = crate::migration::file_stamp(archive).map_err(E::from)? == before;
+        if !unchanged {
+            return Err(E::from(Error::Migration(
+                "snapshot changed during inspection".into(),
+            )));
+        }
+        result
+    })();
+    match (result, owned.remove()) {
+        (result, Ok(())) => result,
+        (Ok(_), Err(cleanup)) => Err(E::from(cleanup)),
+        (Err(primary), Err(cleanup)) => Err(E::from(Error::SnapshotCleanup {
+            primary: primary.to_string(),
+            cleanup: Box::new(cleanup),
+        })),
     }
-    let database = Persistence::connect(&config).map_err(E::from)?;
-    let connection = database.acquire(Lane::Read).map_err(E::from)?;
-    let result = work(&connection);
-    let unchanged = crate::migration::file_stamp(archive).map_err(E::from)? == before;
-    drop(connection);
-    drop(database);
-    owned.remove().map_err(E::from)?;
-    if !unchanged {
-        return Err(E::from(Error::Migration(
-            "snapshot changed during inspection".into(),
-        )));
-    }
-    result
 }
 fn command(config: &DatabaseConfig, name: &str) -> Result<Command> {
     let parsed = config.parsed()?;
