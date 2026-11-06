@@ -1,6 +1,7 @@
 //! Real systemd/PG cutover using only synthetic, marker-owned authority.
 //! This admission proof is deliberately invalid for ordinary activation.
 use super::*;
+use devcoordinator2_api::OperationId;
 use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
 use std::time::{Duration, Instant};
@@ -229,8 +230,8 @@ pub(super) fn verify_fixture_inputs(
     install::hash_file(&config.candidate_acceptance)
 }
 
-fn envelope(protocol: u8, operation: &str, params: Value) -> Value {
-    serde_json::json!({"protocol":protocol,"id":"installer-rehearsal","client":{"kind":"other"},"operation":operation,"params":params})
+fn envelope(protocol: u8, operation: OperationId, params: Value) -> Value {
+    serde_json::json!({"protocol":protocol,"id":"installer-rehearsal","client":{"kind":"other"},"operation":operation.name(),"params":params})
 }
 fn request(socket: &Path, value: &Value) -> Result<Value, String> {
     let mut stream =

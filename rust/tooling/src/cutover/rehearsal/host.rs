@@ -1,7 +1,7 @@
 use super::*;
 use std::collections::BTreeMap;
 use std::io::Write;
-use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 
@@ -130,6 +130,46 @@ fn fixture_unit_available(name: &str, output: &install::CommandOutput) -> bool {
         && value("Transient") == Some("no")
         && (value("LoadState") == Some("not-found")
             || (name.ends_with(".slice") && output.success && value("LoadState") == Some("loaded")))
+}
+
+fn release_fixture_fifo(owned: &Marker, deadline: Instant) -> Result<(), String> {
+    if marker(&owned.root, 0)? != *owned {
+        return Err("fixture FIFO ownership changed; release refused".into());
+    }
+    let path = owned.root.join("release.fifo");
+    let before = path
+        .symlink_metadata()
+        .map_err(|_| "fixture release FIFO is unavailable")?;
+    if !before.file_type().is_fifo() || before.uid() != 0 {
+        return Err("fixture release path is not its owned FIFO".into());
+    }
+    loop {
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .custom_flags(libc::O_NONBLOCK | libc::O_NOFOLLOW)
+            .open(&path)
+        {
+            Ok(mut writer) => {
+                let current = writer
+                    .metadata()
+                    .map_err(|_| "fixture release identity is unavailable")?;
+                if !current.file_type().is_fifo()
+                    || (current.dev(), current.ino()) != (before.dev(), before.ino())
+                {
+                    return Err("fixture release FIFO identity changed".into());
+                }
+                return writer
+                    .write_all(b"fixture release\n")
+                    .map_err(|_| "accepted fixture release failed".into());
+            }
+            Err(error)
+                if error.raw_os_error() == Some(libc::ENXIO) && Instant::now() < deadline =>
+            {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            Err(_) => return Err("accepted fixture did not reach its bounded release".into()),
+        }
+    }
 }
 
 fn client_as(
@@ -414,7 +454,7 @@ impl Fixture {
             vec!["--mode=0666".into(), fifo.as_os_str().to_owned()],
         )?;
         let declaration = format!(
-            "schema = 2\n[test]\ndefault = \"unit\"\n[test.unit]\n[[test.unit.check]]\nname = \"main\"\ntier = \"release\"\ncommand = [\"/usr/bin/cat\", {:?}]\n",
+            "schema = 2\n[test]\ndefault = \"unit\"\n[test.unit]\ntimeout_seconds = 120\n[[test.unit.check]]\nname = \"main\"\ntier = \"release\"\ncommand = [\"/usr/bin/cat\", {:?}]\n",
             fifo.to_string_lossy()
         );
         install::atomic_file(
@@ -559,7 +599,7 @@ impl Fixture {
             &config.socket_path,
             &envelope(
                 2,
-                "decision.record",
+                OperationId::DecisionRecord,
                 serde_json::json!({"path":repository,"aspect":"testing","title":"Before migration fixture","body":"Synthetic authority history must survive the complete installer path.","ref":"INSTALLER-REHEARSAL-BEFORE"}),
             ),
         )?)?;
@@ -600,7 +640,7 @@ impl Fixture {
         loop {
             if request(
                 &self.layout.socket_path,
-                &envelope(protocol, "ping", serde_json::json!({})),
+                &envelope(protocol, OperationId::Ping, serde_json::json!({})),
             )
             .ok()
             .is_some_and(|value| {
@@ -737,14 +777,24 @@ impl Fixture {
             &first.socket_path,
             self.input.caller_uid,
             self.input.caller_gid,
-            &envelope(2, "test.start", serde_json::json!({"path":repository})),
+            &envelope(
+                2,
+                OperationId::TestStart,
+                serde_json::json!({"path":repository}),
+            ),
         )?)?;
+        let accepted_run = accepted["run_id"]
+            .as_str()
+            .filter(|_| accepted["attached"] == false)
+            .ok_or("fixture did not create its own accepted run")?
+            .to_owned();
         let client = self.input.work_root.join("bin/fixture-client");
         let socket = first.socket_path.clone();
         let runtime = first.runtime_dir.clone();
         let uid = self.input.caller_uid;
         let gid = self.input.caller_gid;
         let repo = repository.clone();
+        let owned = self.marker.clone();
         let drain = std::thread::spawn(move || -> Result<(), String> {
             let result = (|| -> Result<(), String> {
                 let deadline = Instant::now() + Duration::from_secs(60);
@@ -754,51 +804,70 @@ impl Fixture {
                     }
                     std::thread::sleep(Duration::from_millis(10));
                 }
-                let refused = client_as(
+                let attached = data(client_as(
                     &client,
                     &socket,
                     uid,
                     gid,
-                    &envelope(2, "test.start", serde_json::json!({"path":repo})),
-                )?;
-                if refused["error"]["code"] != "tests_draining" {
-                    return Err(
-                        "actual installer admission did not reject another fixture run".into(),
-                    );
+                    &envelope(2, OperationId::TestStart, serde_json::json!({"path":repo})),
+                )?)?;
+                if attached["attached"] != true || attached["run_id"] != accepted_run {
+                    return Err("installer drain changed the accepted fixture run identity".into());
                 }
-                loop {
-                    match std::fs::OpenOptions::new()
-                        .write(true)
-                        .custom_flags(libc::O_NONBLOCK)
-                        .open(repo.parent().unwrap().join("release.fifo"))
-                    {
-                        Ok(mut writer) => {
-                            writer
-                                .write_all(b"fixture release\n")
-                                .map_err(|_| "accepted fixture release failed")?;
-                            return Ok(());
-                        }
-                        Err(_) if Instant::now() < deadline => {
-                            std::thread::sleep(Duration::from_millis(20))
-                        }
-                        Err(_) => {
-                            return Err("accepted fixture did not reach its bounded release".into());
-                        }
-                    }
-                }
-            })();
-            if result.is_err() {
-                let _ = client_as(
+                let refused = client_as(
                     &client,
                     &socket,
                     uid,
                     gid,
                     &envelope(
                         2,
-                        "test.cancel",
-                        serde_json::json!({"path":repo,"reason":"isolated installer watchdog"}),
+                        OperationId::TestStart,
+                        serde_json::json!({"path":repo,"mode":"replace"}),
                     ),
-                );
+                )?;
+                if refused["error"]["code"] != "tests_draining" {
+                    return Err(
+                        "actual installer admission did not reject another fixture run".into(),
+                    );
+                }
+                Ok(())
+            })();
+            // Release the accepted run even when a drain assertion fails.
+            // Its explicit governed timeout remains the final bound if release
+            // and the normal cancellation API both fail.
+            if let Err(release) =
+                release_fixture_fifo(&owned, Instant::now() + Duration::from_secs(5))
+            {
+                let stopped = (|| -> Result<(), String> {
+                    if marker(&owned.root, 0)? != owned {
+                        return Err("fixture ownership changed; test.stop refused".into());
+                    }
+                    let stopped = data(client_as(
+                        &client,
+                        &socket,
+                        uid,
+                        gid,
+                        &envelope(
+                            2,
+                            OperationId::TestStop,
+                            serde_json::json!({"path":repo,"reason":"isolated installer fixture watchdog"}),
+                        ),
+                    )?)?;
+                    if stopped["run_id"] != accepted_run {
+                        return Err("fixture cancellation returned another run identity".into());
+                    }
+                    Ok(())
+                })();
+                return Err(format!(
+                    "{}; {release}; {}",
+                    result
+                        .err()
+                        .unwrap_or_else(|| "fixture drain observed".into()),
+                    stopped
+                        .err()
+                        .map(|error| format!("test.stop fallback failed: {error}"))
+                        .unwrap_or_else(|| "test.stop fallback verified".into())
+                ));
             }
             result
         });
@@ -825,7 +894,11 @@ impl Fixture {
         self.edge_ping(2, &self.prior.source_commit)?;
         let retained = data(request(
             &self.layout.socket_path,
-            &envelope(2, "test.status", serde_json::json!({"path":repository})),
+            &envelope(
+                2,
+                OperationId::TestStatus,
+                serde_json::json!({"path":repository}),
+            ),
         )?)?;
         if retained["run_id"] != accepted["run_id"] || retained["status"] != "passed" {
             return Err("actual installer did not drain and preserve accepted fixture work".into());
@@ -870,7 +943,7 @@ impl Fixture {
             &self.layout.socket_path,
             &envelope(
                 3,
-                "decision.record",
+                OperationId::DecisionRecord,
                 serde_json::json!({"repository_id":self.repository_id,"aspect":"testing","title":"Post admission fixture","body":"This accepted synthetic API write must survive the PostgreSQL service restart.","ref":"INSTALLER-REHEARSAL-AFTER"}),
             ),
         )?)?;
@@ -887,7 +960,7 @@ impl Fixture {
             &self.layout.socket_path,
             &envelope(
                 3,
-                "decision.tail",
+                OperationId::DecisionTail,
                 serde_json::json!({"repository_id":self.repository_id,"n":10}),
             ),
         )?)?;
@@ -920,7 +993,7 @@ impl Fixture {
             &self.layout.socket_path,
             &envelope(
                 3,
-                "decision.tail",
+                OperationId::DecisionTail,
                 serde_json::json!({"repository_id":self.repository_id,"n":10}),
             ),
         )?)?;
