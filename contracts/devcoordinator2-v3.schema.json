@@ -24063,6 +24063,14 @@
               "integer",
               "null"
             ]
+          },
+          "repository_id": {
+            "default": null,
+            "description": "Restrict the page to one exact registered repository ID.",
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "title": "TestList",
@@ -24089,6 +24097,14 @@
                 "minimum": 0,
                 "type": [
                   "integer",
+                  "null"
+                ]
+              },
+              "repository_id": {
+                "default": null,
+                "description": "Restrict the page to one exact registered repository ID.",
+                "type": [
+                  "string",
                   "null"
                 ]
               }

@@ -463,4 +463,84 @@ fn native_storage_pages_match_current_safety_without_loading_the_catalog() {
         })
         .unwrap();
     assert!(!automatic);
+
+    // A scan can publish a live-sized catalog before ANALYZE or VACUUM runs.
+    // Exercise metadata paging and every safety filter against those fresh
+    // writes, with exact totals and no test-only index maintenance.
+    let baseline = service.projected_records().unwrap();
+    let mut seed = record("catalog-seed", now);
+    seed.artifact.repository_id = Some("catalog-project".into());
+    seed.artifact.repository_name = Some("Catalog Project".into());
+    let encoded = json(&seed).unwrap();
+    for first in (0_i64..25_000).step_by(500) {
+        let last = (first + 499).min(24_999);
+        fixture.database.transaction(|connection| {
+            connection.execute("INSERT INTO storage_artifacts(artifact_id,repository_id,kind,revision,removed_at_ms,record_json,updated_at_ms)
+            SELECT 'catalog-'||lpad(n::text,5,'0'),'catalog-project','build_cache',1,NULL,
+              jsonb_set(jsonb_set(jsonb_set(jsonb_set(jsonb_set($1::jsonb,
+                '{artifact,artifact_id}',to_jsonb('catalog-'||lpad(n::text,5,'0'))),
+                '{artifact,name}',to_jsonb('Catalog '||lpad(n::text,5,'0'))),
+                '{artifact,protected}',to_jsonb(n%5=1)),
+                '{resource_key}',to_jsonb('catalog-resource-'||n::text)),
+                '{blockers}',CASE n%5 WHEN 2 THEN '[\"active_consumer\"]'::jsonb WHEN 3 THEN '[\"ownership_unknown\"]'::jsonb WHEN 4 THEN '[\"evidence_retention_pending\"]'::jsonb ELSE '[]'::jsonb END),$2
+            FROM generate_series($3::bigint,$4::bigint) n",crate::database::params![encoded,now,first,last])?;
+            Ok(())
+        }).unwrap();
+    }
+    for safety in [
+        None,
+        Some(api::Safety::Safe),
+        Some(api::Safety::Protected),
+        Some(api::Safety::InUse),
+        Some(api::Safety::NeedsReview),
+        Some(api::Safety::Observing),
+    ] {
+        let started = std::time::Instant::now();
+        let page = service
+            .inventory(api::List {
+                repository_id: Some("catalog-project".into()),
+                safety,
+                limit: Some(50),
+                ..Default::default()
+            })
+            .unwrap();
+        eprintln!(
+            "storage catalog filter {safety:?}: {} ms",
+            started.elapsed().as_millis()
+        );
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "catalog safety filter {safety:?} exceeded the bounded fixture budget"
+        );
+        assert_eq!(page.total, if safety.is_some() { 5_000 } else { 25_000 });
+        assert_eq!(page.artifacts.len(), 50);
+        assert_eq!(page.next_offset, Some(50));
+        if let Some(safety) = safety {
+            assert!(
+                page.artifacts
+                    .iter()
+                    .all(|artifact| artifact.safety == safety)
+            );
+        }
+    }
+    let started = std::time::Instant::now();
+    let page = service
+        .inventory(api::List {
+            limit: Some(50),
+            ..Default::default()
+        })
+        .unwrap();
+    eprintln!(
+        "storage catalog default: {} ms",
+        started.elapsed().as_millis()
+    );
+    assert!(started.elapsed() < std::time::Duration::from_secs(3));
+    assert_eq!(
+        page.total,
+        25_000
+            + baseline
+                .values()
+                .filter(|a| a.removed_at_ms.is_none())
+                .count() as u64
+    );
 }

@@ -1,6 +1,6 @@
 use super::*;
 use std::collections::BTreeMap;
-use std::io::Write;
+use std::io::{Seek, SeekFrom, Write};
 use std::os::unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
@@ -10,6 +10,7 @@ pub(super) struct Fixture {
     input: Config,
     layout: HostCutoverConfig,
     candidate: InstallManifest,
+    final_candidate: Option<InstallManifest>,
     prior: InstallManifest,
     artifacts: PathBuf,
     runner: Arc<Recorder>,
@@ -20,6 +21,19 @@ pub(super) struct Fixture {
 struct Recorder {
     directory: PathBuf,
     next: Mutex<u32>,
+}
+
+#[derive(PartialEq, Eq)]
+struct NativeState {
+    database_oid: u64,
+    migration: u64,
+    postgres_config_sha256: String,
+    authority_marker_sha256: String,
+    installed_manifest_sha256: String,
+    instance_env_sha256: String,
+    edge_env_sha256: String,
+    edge_unit_sha256: String,
+    retirement_targets: Value,
 }
 impl Recorder {
     fn retain(
@@ -222,6 +236,7 @@ impl Fixture {
         input: &Config,
         candidate: &InstallManifest,
         prior: &InstallManifest,
+        native_prior: Option<&InstallManifest>,
     ) -> Result<Self, String> {
         if input.work_root.parent() != Some(Path::new("/var/lib"))
             || !input
@@ -256,6 +271,7 @@ impl Fixture {
             root: input.work_root.clone(),
             namespace: namespace.clone(),
             source_commit: candidate.source_commit.clone(),
+            native_binding_sha256: None,
         };
         write(
             &input.work_root.join("ownership.json"),
@@ -305,6 +321,7 @@ impl Fixture {
             input: input.clone(),
             layout,
             candidate: candidate.clone(),
+            final_candidate: None,
             prior: prior.clone(),
             artifacts: artifacts.clone(),
             runner: Arc::new(Recorder {
@@ -314,7 +331,13 @@ impl Fixture {
             repository_id: String::new(),
             runtime_prepared: false,
         };
-        if let Err(error) = fixture.initialize(&edge) {
+        let initialized = (|| {
+            if let Some(native) = native_prior {
+                fixture.prepare_native_source(native)?;
+            }
+            fixture.initialize(&edge)
+        })();
+        if let Err(error) = initialized {
             let cleanup = fixture.cleanup();
             let report = Report {
                 schema: 1,
@@ -322,6 +345,7 @@ impl Fixture {
                 status: "failed".into(),
                 source_commit: candidate.source_commit.clone(),
                 prior_source_commit: prior.source_commit.clone(),
+                native_prior_source_commit: native_prior.map(|prior| prior.source_commit.clone()),
                 namespace: fixture.marker.namespace.clone(),
                 checks: Vec::new(),
                 cleanup_complete: cleanup.is_ok(),
@@ -348,6 +372,136 @@ impl Fixture {
             ));
         }
         Ok(fixture)
+    }
+
+    fn prepare_native_source(&mut self, bootstrap: &InstallManifest) -> Result<(), String> {
+        for manifest in [bootstrap, &self.candidate] {
+            let identity = required(
+                self.runner.as_ref(),
+                &binary(manifest, "devcoordinator2")?,
+                vec!["--build-identity".into()],
+            )?;
+            let identity: Value = serde_json::from_str(&identity.stdout)
+                .map_err(|_| "native rehearsal build identity is invalid")?;
+            if identity["source_commit"] != manifest.source_commit
+                || identity["protocol_version"] != 3
+                || identity["root_acceptance"] != false
+            {
+                return Err("native rehearsal requires exact normal v3 release binaries".into());
+            }
+        }
+        let source_commit = install::validate_live_checkout(
+            Path::new(&self.candidate.source_root),
+            false,
+            self.runner.as_ref(),
+        )?;
+        if source_commit != self.candidate.source_commit {
+            return Err("native rehearsal source checkout does not match its candidate".into());
+        }
+        required(
+            self.runner.as_ref(),
+            Path::new("/usr/bin/git"),
+            vec![
+                "-c".into(),
+                format!("safe.directory={}", self.candidate.source_root).into(),
+                "-C".into(),
+                self.candidate.source_root.clone().into(),
+                "merge-base".into(),
+                "--is-ancestor".into(),
+                bootstrap.source_commit.clone().into(),
+                self.candidate.source_commit.clone().into(),
+            ],
+        )?;
+        let root = &self.input.work_root;
+        let origin = root.join("origin.git");
+        let source = root.join("source");
+        required(
+            self.runner.as_ref(),
+            Path::new("/usr/bin/git"),
+            vec![
+                "clone".into(),
+                "--bare".into(),
+                "--no-hardlinks".into(),
+                "--".into(),
+                self.candidate.source_root.clone().into(),
+                origin.clone().into_os_string(),
+            ],
+        )?;
+        for (reference, commit) in [
+            ("refs/heads/candidate", &self.candidate.source_commit),
+            ("refs/heads/main", &bootstrap.source_commit),
+        ] {
+            required(
+                self.runner.as_ref(),
+                Path::new("/usr/bin/git"),
+                vec![
+                    "--git-dir".into(),
+                    origin.clone().into_os_string(),
+                    "update-ref".into(),
+                    reference.into(),
+                    commit.as_str().into(),
+                ],
+            )?;
+        }
+        required(
+            self.runner.as_ref(),
+            Path::new("/usr/bin/git"),
+            vec![
+                "clone".into(),
+                "--no-hardlinks".into(),
+                "--branch".into(),
+                "main".into(),
+                "--".into(),
+                origin.into_os_string(),
+                source.clone().into_os_string(),
+            ],
+        )?;
+        if install::validate_live_checkout(&source, false, self.runner.as_ref())?
+            != bootstrap.source_commit
+        {
+            return Err("native rehearsal bootstrap checkout identity is invalid".into());
+        }
+        let mut final_candidate = self.candidate.clone();
+        final_candidate.source_root = path_text(&source)?;
+        let mut bootstrap = bootstrap.clone();
+        bootstrap.source_root = final_candidate.source_root.clone();
+        self.prior.source_root = final_candidate.source_root.clone();
+        self.layout.candidate_manifest = root.join("bootstrap-candidate.json");
+        self.layout.candidate_acceptance = root.join("bootstrap-inputs.json");
+        install::write_manifest(&self.layout.candidate_manifest, &bootstrap, (0, 0))?;
+        install::write_manifest(&root.join("candidate.json"), &final_candidate, (0, 0))?;
+        let binding = NativeBinding {
+            schema: 1,
+            fixture_only: true,
+            original_bootstrap_manifest_sha256: install::hash_file(
+                self.input
+                    .native_prior_manifest
+                    .as_deref()
+                    .ok_or("native rehearsal prior manifest is unavailable")?,
+            )?,
+            original_candidate_manifest_sha256: install::hash_file(&self.input.candidate_manifest)?,
+            bootstrap_manifest_sha256: install::hash_file(&self.layout.candidate_manifest)?,
+            candidate_manifest_sha256: install::hash_file(&root.join("candidate.json"))?,
+            bootstrap: bootstrap.clone(),
+            candidate: final_candidate.clone(),
+        };
+        let binding_path = root.join("native-bootstrap.json");
+        write(
+            &binding_path,
+            &serde_json::to_vec_pretty(&binding)
+                .map_err(|_| "cannot encode native bootstrap binding")?,
+            0o600,
+        )?;
+        self.marker.native_binding_sha256 = Some(install::hash_file(&binding_path)?);
+        write(
+            &root.join("ownership.json"),
+            &serde_json::to_vec(&self.marker)
+                .map_err(|_| "cannot seal native fixture ownership")?,
+            0o600,
+        )?;
+        self.candidate = bootstrap;
+        self.final_candidate = Some(final_candidate);
+        Ok(())
     }
 
     fn initialize(&mut self, edge: &install::LocalAccount) -> Result<(), String> {
@@ -388,7 +542,10 @@ impl Fixture {
         write(&config.instance_env, values.as_bytes(), 0o600)?;
         write(&root.join("service-logs/daemon.log"), b"", 0o600)?;
         write(&root.join("service-logs/edge.log"), b"", 0o600)?;
-        let proof = serde_json::json!({"schema":1,"scope":KIND,"fixture_only":true,"result":"inputs_verified","work_root":root,"source_commit":self.candidate.source_commit,"binaries":self.candidate.binaries.iter().map(|binary|(binary.name.clone(),Value::String(binary.sha256.clone()))).collect::<serde_json::Map<_,_>>()});
+        let mut proof = serde_json::json!({"schema":1,"scope":KIND,"fixture_only":true,"result":"inputs_verified","work_root":root,"source_commit":self.candidate.source_commit,"binaries":self.candidate.binaries.iter().map(|binary|(binary.name.clone(),Value::String(binary.sha256.clone()))).collect::<serde_json::Map<_,_>>()});
+        if self.final_candidate.is_some() {
+            proof["phase"] = Value::String("bootstrap".into());
+        }
         write(
             &config.candidate_acceptance,
             &serde_json::to_vec(&proof).map_err(|_| "cannot retain fixture-only input proof")?,
@@ -977,12 +1134,31 @@ impl Fixture {
         report
             .checks
             .push("real_installer_admission_and_v3_edge_api_verified".into());
+        self.verify_admitted_write(
+            &mut host,
+            &second.transaction_dir,
+            &receipt.backup,
+            "INSTALLER-REHEARSAL-AFTER",
+        )?;
+        report.checks.push(
+            "native_write_survives_service_restart_and_post_admission_rollback_is_refused".into(),
+        );
+        Ok(())
+    }
+
+    fn verify_admitted_write(
+        &self,
+        host: &mut HostCutover,
+        transaction: &Path,
+        backup: &str,
+        reference: &str,
+    ) -> Result<(), String> {
         let written = data(request(
             &self.layout.socket_path,
             &envelope(
                 3,
                 OperationId::DecisionRecord,
-                serde_json::json!({"repository_id":self.repository_id,"aspect":"testing","title":"Post admission fixture","body":"This accepted synthetic API write must survive the PostgreSQL service restart.","ref":"INSTALLER-REHEARSAL-AFTER"}),
+                serde_json::json!({"repository_id":self.repository_id,"aspect":"testing","title":"Post admission fixture","body":"This accepted synthetic API write must survive the PostgreSQL service restart.","ref":reference}),
             ),
         )?)?;
         let decision = written["decision_id"]
@@ -1008,7 +1184,7 @@ impl Fixture {
                 "accepted history and native API write did not survive real service restart".into(),
             );
         }
-        let snapshot = read_snapshot(&second.transaction_dir, 0)?;
+        let snapshot = read_snapshot(transaction, 0)?;
         if snapshot.schema != 3
             || snapshot.status != "committed"
             || snapshot.candidate_commit != self.candidate.source_commit
@@ -1017,7 +1193,7 @@ impl Fixture {
             return Err("fixture has no committed native admission to protect".into());
         }
         let reason = "isolated fixture post-admission rollback proof";
-        let refused = rollback(&mut host, &snapshot, &receipt.backup, reason.into())
+        let refused = rollback(host, &snapshot, backup, reason.into())
             .err()
             .ok_or("admitted fixture allowed stale-source rollback")?;
         if refused
@@ -1039,9 +1215,361 @@ impl Fixture {
         if !after_refusal.to_string().contains(&decision) {
             return Err("refused rollback changed an accepted native API write".into());
         }
-        report.checks.push(
-            "native_write_survives_service_restart_and_post_admission_rollback_is_refused".into(),
+        Ok(())
+    }
+
+    fn native_config(&self) -> Result<devcoordinator2_control::database::DatabaseConfig, String> {
+        let config = devcoordinator2_control::database::DatabaseConfig::from_file(
+            &self.layout.postgres.config_path,
+        )
+        .map_err(|_| "fixture PostgreSQL binding is invalid")?;
+        let data = self
+            .layout
+            .postgres
+            .data_dir
+            .canonicalize()
+            .map_err(|_| "fixture PostgreSQL data is unavailable")?;
+        if config.data_directory.as_deref() != Some(data.as_path())
+            || !contained(&data, &self.input.work_root)
+        {
+            return Err("fixture PostgreSQL binding selects another data directory".into());
+        }
+        Ok(config)
+    }
+
+    fn native_database(&self, target: Option<&str>) -> Result<(u64, u64), String> {
+        let config = self.native_config()?;
+        let config = match target {
+            Some(name) => config.for_database(name),
+            None => config,
+        };
+        let database = devcoordinator2_control::database::Database::connect_existing(&config)
+            .map_err(|_| "fixture native authority observer could not connect")?;
+        database.read(|connection| {
+            Ok(connection.query_row("SELECT (SELECT oid::bigint FROM pg_database WHERE datname=current_database()),(SELECT coalesce(max(version),0) FROM dc2_schema_migrations)",[],|row|Ok((row.get::<_,u64>(0)?,row.get::<_,u64>(1)?)))?)
+        }).map_err(|error| {
+            let _ = write(&self.artifacts.join("native-observer-error.private.txt"),format!("{error:?}").as_bytes(),0o600);
+            "fixture native authority observation failed".to_owned()
+        })
+    }
+
+    fn native_state(&self) -> Result<NativeState, String> {
+        let (database_oid, migration) = self.native_database(None)?;
+        let current_path = self
+            .layout
+            .postgres
+            .data_dir
+            .parent()
+            .ok_or("fixture PostgreSQL parent is unavailable")?
+            .join("authority-current.json");
+        let current = finalize::private(&current_path, 0)?;
+        let transaction = Path::new(
+            current["transaction_dir"]
+                .as_str()
+                .ok_or("fixture native transaction binding is invalid")?,
         );
+        if !contained(transaction, &self.input.work_root)
+            || !transaction.starts_with(self.input.work_root.join("cutover"))
+        {
+            return Err("fixture native transaction is outside its owned root".into());
+        }
+        let pending = finalize::private(&transaction.join("retirement-pending.json"), 0)?;
+        let targets = pending["retirement_targets"]
+            .as_array()
+            .filter(|targets| targets.len() <= 32)
+            .ok_or("fixture native retirement targets are invalid")?;
+        Ok(NativeState {
+            database_oid,
+            migration,
+            postgres_config_sha256: install::hash_file(&self.layout.postgres.config_path)?,
+            authority_marker_sha256: install::hash_file(&current_path)?,
+            installed_manifest_sha256: install::hash_file(&self.layout.installed_manifest)?,
+            instance_env_sha256: install::hash_file(&self.layout.instance_env)?,
+            edge_env_sha256: install::hash_file(&self.layout.edge_env)?,
+            edge_unit_sha256: install::hash_file(&self.layout.edge_unit_path)?,
+            retirement_targets: Value::Array(targets.clone()),
+        })
+    }
+
+    fn decision_history(&self) -> Result<Value, String> {
+        data(request(
+            &self.layout.socket_path,
+            &envelope(
+                3,
+                OperationId::DecisionTail,
+                serde_json::json!({"repository_id":self.repository_id,"n":10}),
+            ),
+        )?)
+    }
+
+    fn select_native_upgrade(&mut self) -> Result<(), String> {
+        let binding =
+            native_binding(&self.marker, 0)?.ok_or("fixture has no sealed native bootstrap")?;
+        if self.final_candidate.as_ref() != Some(&binding.candidate)
+            || self.candidate != binding.bootstrap
+        {
+            return Err("fixture native phase identities changed".into());
+        }
+        install::edge_source::repair_host(
+            &install::edge_source::RepairConfig {
+                installed_manifest: self.layout.installed_manifest.clone(),
+                cache_root: self.layout.source_cache_dir.clone(),
+                edge_env: self.layout.edge_env.clone(),
+                edge_unit_path: self.layout.edge_unit_path.clone(),
+                edge_unit: self.layout.edge_unit.clone(),
+                edge_account: "devcoordinator2-edge".into(),
+                runtime_dir: self.layout.runtime_dir.clone(),
+                systemctl: self.layout.systemctl.clone(),
+            },
+            self.runner.as_ref(),
+            (0, 0),
+        )?;
+        self.edge_ping(3, &binding.bootstrap.source_commit)?;
+        let source = self.input.work_root.join("source");
+        let origin = self.input.work_root.join("origin.git");
+        if !contained(&source, &self.input.work_root) || !contained(&origin, &self.input.work_root)
+        {
+            return Err("fixture source clone identity changed".into());
+        }
+        required(
+            self.runner.as_ref(),
+            Path::new("/usr/bin/git"),
+            vec![
+                "--git-dir".into(),
+                origin.clone().into_os_string(),
+                "update-ref".into(),
+                "refs/heads/main".into(),
+                binding.candidate.source_commit.clone().into(),
+            ],
+        )?;
+        required(
+            self.runner.as_ref(),
+            Path::new("/usr/bin/git"),
+            vec![
+                "-C".into(),
+                source.clone().into_os_string(),
+                "fetch".into(),
+                "--no-tags".into(),
+                "origin".into(),
+                "refs/heads/main:refs/remotes/origin/main".into(),
+            ],
+        )?;
+        required(
+            self.runner.as_ref(),
+            Path::new("/usr/bin/git"),
+            vec![
+                "-C".into(),
+                source.clone().into_os_string(),
+                "merge".into(),
+                "--ff-only".into(),
+                "origin/main".into(),
+            ],
+        )?;
+        if install::validate_live_checkout(&source, false, self.runner.as_ref())?
+            != binding.candidate.source_commit
+        {
+            return Err("fixture native candidate checkout identity is invalid".into());
+        }
+        self.prior = binding.bootstrap;
+        self.candidate = binding.candidate;
+        self.layout.candidate_manifest = self.input.work_root.join("candidate.json");
+        self.layout.candidate_acceptance = self.input.work_root.join("inputs.json");
+        let proof = serde_json::json!({"schema":1,"scope":KIND,"fixture_only":true,"result":"inputs_verified","phase":"upgrade","work_root":self.input.work_root,"source_commit":self.candidate.source_commit,"binaries":self.candidate.binaries.iter().map(|binary|(binary.name.clone(),Value::String(binary.sha256.clone()))).collect::<serde_json::Map<_,_>>()});
+        write(
+            &self.layout.candidate_acceptance,
+            &serde_json::to_vec(&proof).map_err(|_| "cannot encode native upgrade proof")?,
+            0o600,
+        )?;
+        verify_fixture_inputs(&self.layout, &self.candidate, 0)?;
+        let mut foreign = self.layout.clone();
+        foreign.candidate_acceptance = self.input.work_root.join("bootstrap-inputs.json");
+        if verify_fixture_inputs(&foreign, &self.candidate, 0).is_ok() {
+            return Err("fixture bootstrap proof authorized the native upgrade phase".into());
+        }
+        let mut production = self.layout.clone();
+        production.transaction_dir = self.input.work_root.join("cutover/production-refusal");
+        if HostCutover::new_owned(production, self.runner.clone(), (0, 0)).is_ok() {
+            return Err("native fixture proof was accepted as production acceptance".into());
+        }
+        for link in [&self.layout.cli_link, &self.layout.tooling_link] {
+            let original =
+                std::fs::read_link(link).map_err(|_| "native prior managed link is unavailable")?;
+            std::fs::remove_file(link)
+                .map_err(|_| "cannot stage owned native link negative control")?;
+            std::os::unix::fs::symlink(self.input.work_root.join("bin/fixture-client"), link)
+                .map_err(|_| "cannot stage owned native link negative control")?;
+            let refused = verify_fixture_inputs(&self.layout, &self.candidate, 0).is_err();
+            std::fs::remove_file(link)
+                .map_err(|_| "cannot retire owned native link negative control")?;
+            std::os::unix::fs::symlink(original, link)
+                .map_err(|_| "cannot restore exact native prior link")?;
+            if !refused {
+                return Err("native fixture factory accepted an unverified prior link".into());
+            }
+        }
+        verify_fixture_inputs(&self.layout, &self.candidate, 0)?;
+        self.wait_ping(3, &self.prior.source_commit)?;
+        self.edge_ping(3, &self.prior.source_commit)
+    }
+
+    pub fn exercise_native(&mut self, report: &mut Report) -> Result<(), String> {
+        // Preserve the complete six-check legacy journey while bootstrapping
+        // the actual prior normal release, not a current-schema synthetic DB.
+        self.exercise(report)?;
+        if self.native_database(None)?.1 != 13 {
+            return Err("verified prior release did not bootstrap native migration13".into());
+        }
+        self.select_native_upgrade()?;
+        report
+            .checks
+            .push("native_fixture_phase_proofs_and_prior_link_identities_are_enforced".into());
+        let accepted = data(request(
+            &self.layout.socket_path,
+            &envelope(
+                3,
+                OperationId::DecisionRecord,
+                serde_json::json!({"repository_id":self.repository_id,"aspect":"testing","title":"Before native upgrade","body":"Accepted PostgreSQL13 history must survive candidate rollback and the admitted upgrade.","ref":"INSTALLER-NATIVE-BEFORE"}),
+            ),
+        )?)?;
+        let decision_id = accepted["decision_id"]
+            .as_str()
+            .ok_or("prior native write has no authority identity")?
+            .to_owned();
+        let history = self.decision_history()?;
+        let prior_record = history["decisions"]
+            .as_array()
+            .and_then(|records| {
+                records
+                    .iter()
+                    .find(|record| record["decision_id"] == decision_id)
+            })
+            .cloned()
+            .ok_or("prior native write was not readable")?;
+        let before = self.native_state()?;
+        report.checks.push(
+            "normal_prior_release_bootstraps_real_postgres13_with_accepted_api_history".into(),
+        );
+        let mut failed_config = self.layout.clone();
+        failed_config.transaction_dir = self.input.work_root.join("cutover/native-rollback");
+        let mut failing = HostCutover::new_owned_checked(
+            failed_config.clone(),
+            self.runner.clone(),
+            (0, 0),
+            true,
+        )?;
+        let failed_database = failing.config.postgres.database_name.clone();
+        let edge_log_path = self.input.work_root.join("service-logs/edge.log");
+        let edge_before = edge_log_path
+            .symlink_metadata()
+            .map_err(|_| "native edge log identity is unavailable")?;
+        if !edge_before.is_file() || edge_before.file_type().is_symlink() || edge_before.uid() != 0
+        {
+            return Err("native edge log is outside its owned evidence binding".into());
+        }
+        failing.rehearsal_fail_edge_start = true;
+        let error = activate(&mut failing)
+            .err()
+            .ok_or("native candidate fault did not trigger rollback")?;
+        let mut edge_log = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(&edge_log_path)
+            .map_err(|_| "native edge fault evidence is unavailable")?;
+        let edge_after = edge_log
+            .metadata()
+            .map_err(|_| "native edge log identity is unavailable")?;
+        if (edge_before.dev(), edge_before.ino()) != (edge_after.dev(), edge_after.ino())
+            || edge_after.len() < edge_before.len()
+        {
+            return Err("native edge log changed identity during the fault".into());
+        }
+        edge_log
+            .seek(SeekFrom::Start(edge_before.len()))
+            .map_err(|_| "cannot inspect bounded native edge fault evidence")?;
+        let mut fault = String::new();
+        edge_log
+            .take(1024 * 1024)
+            .read_to_string(&mut fault)
+            .map_err(|_| "native edge fault evidence is invalid")?;
+        if !error.contains("without replacing the intact database")
+            || !fault.contains("EDGE_BASE_DOMAIN is required")
+        {
+            return Err(format!(
+                "native candidate failed outside the injected edge startup boundary: {error}"
+            ));
+        }
+        let snapshot = read_snapshot(&failed_config.transaction_dir, 0)?;
+        let verified = finalize::private(
+            &failed_config
+                .transaction_dir
+                .join("native-source-rollback-verified.json"),
+            0,
+        )?;
+        if snapshot.schema != 3
+            || snapshot.status != "rolled_back"
+            || verified["verified"] != true
+            || before != self.native_state()?
+            || history != self.decision_history()?
+        {
+            return Err("native rollback did not restore the exact prior authority binding and accepted history".into());
+        }
+        self.wait_ping(3, &self.prior.source_commit)?;
+        self.edge_ping(3, &self.prior.source_commit)?;
+        let expected_migration = devcoordinator2_control::persistence::schema::MIGRATIONS
+            .last()
+            .ok_or("native migration catalog is empty")?
+            .0 as u64;
+        if expected_migration <= 13
+            || self.native_database(Some(&failed_database))?.1 != expected_migration
+        {
+            return Err(
+                "failed native candidate did not reach the candidate migration before rollback"
+                    .into(),
+            );
+        }
+        report.checks.push(
+            "real_native_pre_admission_failure_restores_postgres13_binding_data_and_edge".into(),
+        );
+        let mut retry = self.layout.clone();
+        retry.transaction_dir = self.input.work_root.join("cutover/native-success");
+        let mut host =
+            HostCutover::new_owned_checked(retry.clone(), self.runner.clone(), (0, 0), true)?;
+        if host.config.postgres.database_name == failed_database {
+            return Err("native retry reused the failed candidate database".into());
+        }
+        let receipt = activate(&mut host)?;
+        self.wait_ping(3, &self.candidate.source_commit)?;
+        self.edge_ping(3, &self.candidate.source_commit)?;
+        self.verify_service_isolation()?;
+        let after = self.native_state()?;
+        if receipt.status != "activated_awaiting_final_acceptance"
+            || after.migration != expected_migration
+            || after.database_oid == before.database_oid
+            || after.retirement_targets != before.retirement_targets
+        {
+            return Err("native retry did not admit a fresh migrated authority with inherited retirement targets".into());
+        }
+        report.checks.push(
+            "native_retry_admits_fresh_candidate_and_preserves_exact_retirement_targets".into(),
+        );
+        self.verify_admitted_write(
+            &mut host,
+            &retry.transaction_dir,
+            &receipt.backup,
+            "INSTALLER-NATIVE-AFTER",
+        )?;
+        let retained = self.decision_history()?;
+        if retained["decisions"].as_array().and_then(|records| {
+            records
+                .iter()
+                .find(|record| record["decision_id"] == decision_id)
+        }) != Some(&prior_record)
+        {
+            return Err("admitted native upgrade changed accepted prior PostgreSQL history".into());
+        }
+        report
+            .checks
+            .push("native_upgrade_writes_survive_restart_and_committed_rollback_is_refused".into());
         Ok(())
     }
 
@@ -1209,6 +1737,22 @@ impl Fixture {
             &self.artifacts.join("ownership.json"),
             (0, 0),
         )?;
+        if self.marker.native_binding_sha256.is_some() {
+            let _ = native_binding(&self.marker, 0)?
+                .ok_or("native fixture binding disappeared before cleanup")?;
+            for name in [
+                "native-bootstrap.json",
+                "bootstrap-candidate.json",
+                "candidate.json",
+                "bootstrap-inputs.json",
+                "inputs.json",
+            ] {
+                let source = self.input.work_root.join(name);
+                if source.symlink_metadata().is_ok() {
+                    atomic_copy(&source, &self.artifacts.join(name), (0, 0))?;
+                }
+            }
+        }
         marker(&self.input.work_root, 0)?;
         std::fs::remove_dir_all(&self.input.work_root)
             .map_err(|_| "cannot retire exact synthetic fixture root")?;

@@ -1113,17 +1113,37 @@ fn current_run_pages_bound_large_reports_and_keep_every_worktree_discoverable() 
     let (other, second) = world.start_named("other-page");
     world.systemd.finish(&second.unit);
     world.wait_status_at(&other, TestStatus::Passed);
+    for name in ["sparse-page-a", "sparse-page-b", "sparse-page-c"] {
+        let (path, started) = world.start_named(name);
+        world.systemd.finish(&started.unit);
+        world.wait_status_at(&path, TestStatus::Passed);
+    }
+    let complete = world.lifecycle.list_current().unwrap();
+    let sparse = complete.runs[1..complete.runs.len() - 1]
+        .iter()
+        .find(|row| row.worktree_path != world.worktree.to_string_lossy())
+        .unwrap();
+    std::fs::remove_file(
+        Path::new(&sparse.worktree_path).join(".devcoordinator/test/current/summary.json"),
+    )
+    .unwrap();
     let mut cursor = None;
     let mut seen = std::collections::BTreeSet::new();
+    let mut saw_sparse_continuation = false;
     loop {
         let page = world
             .lifecycle
             .list_current_page(devcoordinator2_api::params::TestList {
+                repository_id: None,
                 after_worktree_id: cursor,
                 limit: Some(1),
             })
             .unwrap();
         assert!(serde_json::to_vec(&page).unwrap().len() < 200 * 1024);
+        if page.runs.is_empty() && page.next_worktree_id.is_some() {
+            saw_sparse_continuation = true;
+            assert_eq!(page.next_worktree_id.as_ref(), Some(&sparse.worktree_id));
+        }
         for row in &page.runs {
             assert!(seen.insert(row.worktree_id.clone()));
             if row.worktree_path == world.worktree.to_str().unwrap() {
@@ -1137,7 +1157,42 @@ fn current_run_pages_bound_large_reports_and_keep_every_worktree_discoverable() 
             break;
         }
     }
-    assert_eq!(seen.len(), 2);
+    assert_eq!(seen.len(), 4);
+    assert!(
+        saw_sparse_continuation,
+        "empty pages still advance the scanned worktree cursor"
+    );
+    for expected in &complete.runs {
+        let page = world
+            .lifecycle
+            .list_current_page(devcoordinator2_api::params::TestList {
+                repository_id: Some(expected.repository_id.clone()),
+                after_worktree_id: None,
+                limit: Some(1),
+            })
+            .unwrap();
+        assert!(page.next_worktree_id.is_none());
+        if expected.worktree_id == sparse.worktree_id {
+            assert!(page.runs.is_empty());
+        } else {
+            assert_eq!(page.runs.len(), 1);
+            assert_eq!(page.runs[0].worktree_id, expected.worktree_id);
+            assert_eq!(page.runs[0].repository_id, expected.repository_id);
+        }
+    }
+    for invalid in [String::new(), "r".repeat(129), "r\0invalid".into()] {
+        assert_eq!(
+            world
+                .lifecycle
+                .list_current_page(devcoordinator2_api::params::TestList {
+                    repository_id: Some(invalid),
+                    ..Default::default()
+                })
+                .unwrap_err()
+                .code,
+            ErrorCode::ParamsInvalid
+        );
+    }
     let details = world
         .lifecycle
         .status(world.worktree.to_str().unwrap(), &world.caller)
@@ -1174,6 +1229,7 @@ fn current_run_list_skips_worktrees_with_replaced_state_paths() {
     let page = world
         .lifecycle
         .list_current_page(devcoordinator2_api::params::TestList {
+            repository_id: None,
             after_worktree_id: None,
             limit: Some(50),
         })

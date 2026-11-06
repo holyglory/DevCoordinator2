@@ -206,13 +206,18 @@ A mixed Compose component waits for safe finite siblings to settle even if
 another finite service exits unsuccessfully. Cancellation and the declared
 readiness deadline still stop the operation. To retrieve retained results after
 an unsuccessful apply, declare the evidence service in `independent_services`
-and use `deployment start --component <component>/<evidence-service>`
-with the exact deployment identity. This starts the existing evidence container
+and call `deployment.start` with the exact `deployment_id` and
+`component: "<component>/<evidence-service>"`. This starts the existing evidence container
 without rerunning the finite calculations; the failed apply remains failed.
 
 `test.list` returns compact current-run summaries and a `next_worktree_id` cursor.
 Pass it as `after_worktree_id`, with optional `limit` (1–50), for the next page.
+An optional `repository_id` restricts the scan to that exact registered repository.
+Each page bounds both the worktrees inspected and the returned summaries. A page
+can therefore contain no runs and still have a continuation cursor; continue
+until the cursor is absent, rather than treating an empty page as completion.
 Pages stay below the response budget; list rows include up to eight checks and
 omit case streams and detailed failure payloads. Truncation flags remain explicit.
 Use `test.status` for one current run's details. Console follows list cursors and
-loads additional check details when their disclosure opens.
+shows the initial scoped results before loading later pages. It loads additional
+check details when their disclosure opens.

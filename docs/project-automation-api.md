@@ -68,7 +68,8 @@ mirror; its review scheduler reads the canonical collector through bounded APIs.
 ## Parent integration: exact read-only receipts
 
 `devcoordinator2 call review.receipt --params '{"reference":"RECORD_ID@REVISION"}'` calls
-`review.receipt` / MCP `review_receipt` with `{"reference":"RECORD_ID@REVISION"}`.
+`review.receipt` with `{"reference":"RECORD_ID@REVISION"}`; MCP uses
+`call_operation` with the same dotted operation name and parameters.
 It returns the exact permanent revision, never an alias for the newest revision.
 Require envelope `ok: true`, `data.completed: true`, and matching
 `data.record.repositoryId`, `data.record.workstreamId` and review window
@@ -77,7 +78,7 @@ reference returned by `review.record`; do not substitute a decision ID or a
 caller-written statement. `data.record.projectId` equals `repositoryId`.
 
 `devcoordinator2 call release.evidence --params '{"reference":"RECEIPT_ID"}'` calls
-`release.evidence` / MCP `release_evidence` with `{"reference":"RECEIPT_ID"}`.
+`release.evidence` with `{"reference":"RECEIPT_ID"}`; MCP uses `call_operation`.
 Require envelope `ok: true`, `data.qualified: true`, matching
 `data.repository_id`, `data.target`, and expected `data.source_sha256`.
 `data.verified_at_ms` is the actual retained delivery observation timestamp;
@@ -184,7 +185,7 @@ window or hard-stop into new work. Historical clock actions are retained in
 Coordinator history. Legacy runtime state marked `schedulingActive:false` is
 migration evidence only and cannot block Coordinator implementation.
 
-`review.prepare` / `review_prepare` accepts:
+`review.prepare` accepts:
 
 ```json
 {"repository_id":"project-alpha","workstream_id":"spec","window_start_ms":1000000,"window_end_ms":605800000,"offset":0,"limit":10,"before_decision_seq":null}
@@ -237,7 +238,7 @@ User waits and intentional repeated release validation are not inferred waste.
 
 ## Record and revisions
 
-`review.record` / `review_record` accepts
+`review.record` accepts
 `{record_id?: string, expected_revision: integer, record: ReviewRecord}`.
 CLI: `devcoordinator2 call review.record --params-file /absolute/record-request.json`.
 Use `expected_revision:0` for creation, or `record_id` and the current
@@ -308,19 +309,19 @@ Dispositions: `proposed | applied | retained | reverted | inconclusive | unchang
 run/release evidence. Unchanged requires a specific reason and observations;
 "no change needed" alone fails. Review completion never marks an outcome or
 release delivered. Text/reference counts are bounded; each record is at most
-8 KiB. `review.show` / `review_show` takes
+8 KiB. `review.show` takes
 `{repository_id, record_id?, offset:0, limit:10}`; CLI
-`review list --repository-id ID [--record-id ID]`. Pages are at most ten
+`call review.show --params-file FILE`. Pages are at most ten
 revisions and 24 KiB of record bodies, ordered append-first, with `next_offset`.
 
 ## Delivery evidence
 
-The existing `release.deliver` / `release_deliver` deployment request and reply
-remain unchanged. New `release.deliver_evidence` / `release_deliver_evidence`
-and CLI `release deliver-evidence --file delivery.json` take:
+The `release.deliver` deployment request records release metadata.
+Qualified delivery uses `release.deliver_evidence` through MCP `call_operation`
+or CLI `call release.deliver_evidence --params-file FILE` with:
 
 ```json
-{"release_id":"RELEASE_ID","path":"/absolute/registered/worktree","run_id":"RUN_ID","check":"build","artifact":"package","manifest_sha256":"64-hex-digest","source_sha256":"64-hex-digest","target":"linux-cli","kind":"local-executable","verification_file":"delivery.json"}
+{"release_id":"RELEASE_ID","path":"/absolute/registered/worktree","run_id":"RUN_ID","check":"build","artifact":"package","manifest_sha256":"64-hex-digest","source_sha256":"64-hex-digest","target":"linux-cli","kind":"local-executable","verification_file":"delivery.json","completion_file":"completion.json"}
 ```
 
 Kinds: `artifact | registry-package | local-executable | web-deployment | native-console`.
@@ -372,8 +373,8 @@ the same receipt and original timestamps; new evidence cannot redeliver an
 already delivered release. Receipts survive retained-tree expiry as compact
 historical evidence, not a new usage/artifact mirror.
 
-`release.evidence_show` / `release_evidence_show` takes
-`{release_id, offset:0, limit:10}`; CLI `release evidence-show RELEASE_ID`.
+`release.evidence_show` takes
+`{release_id, offset:0, limit:10}`; CLI `call release.evidence_show --params-file FILE`.
 Use its returned receipt ID with the exact cheap lookup described first.
 
 All new operations retain trusted-local/administrator authorization, governed
@@ -400,7 +401,7 @@ immutable revisions through `usage.rate_card.list` and `usage.rate_card.set`;
 each card records model pattern, processing/context tiers, effective dates and
 the published source reference.
 
-Three read-only repository-administrator operations expose the existing review/accounting data. They are available through protocol v3 and matching `performance_overview`, `performance_reviews`, and `performance_review` MCP tools.
+Three read-only repository-administrator operations expose the existing review/accounting data. Protocol v3 and MCP `call_operation` use `performance.overview`, `performance.reviews`, and `performance.review`.
 
 - `performance.overview`: `{repository_id, window_start_ms, window_end_ms, outcome_cursor?, outcome_limit?, totals_only?}`. Windows are half-open UTC milliseconds. Normal results contain full-scope totals and paginated outcomes; `totals_only:true` uses the narrow provider-total reader (including an all-recorded window starting at zero), without loading outcome details.
 - `performance.reviews`: `{repository_id, before?, limit?, record_id?}`. Lists newest logical reviews, one latest revision each, or immutable revisions of one `record_id`. `total_reviews` counts logical records, not revisions. Pages have at most ten records and 24 KiB of record bodies; `next_before` continues the bounded read.

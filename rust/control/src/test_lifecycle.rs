@@ -1709,32 +1709,44 @@ impl TestLifecycle {
         let limit = usize::from(params.limit.unwrap_or(50));
         if !(1..=50).contains(&limit)
             || params
+                .repository_id
+                .as_ref()
+                .is_some_and(|id| id.is_empty() || id.len() > 128 || id.contains('\0'))
+            || params
                 .after_worktree_id
                 .as_ref()
-                .is_some_and(|id| id.len() > 128)
+                .is_some_and(|id| id.len() > 128 || id.contains('\0'))
         {
             return Err(ProtocolError::new(
                 ErrorCode::ParamsInvalid,
-                "test list requires limit 1..50 and a bounded worktree cursor",
+                "test list requires limit 1..50 and bounded repository and worktree IDs",
             ));
         }
         let rows = self
             .inner
             .database
             .read(move |connection| {
-                let mut statement = connection.prepare(
-                    "SELECT w.worktree_id,w.worktree_path,w.repository_id,r.display_name FROM worktrees w JOIN repositories r ON r.repository_id=w.repository_id WHERE r.archived_at IS NULL AND w.worktree_id > $1 ORDER BY w.worktree_id",
-                )?;
-                Ok(statement
-                    .query_map([params.after_worktree_id.as_deref().unwrap_or("")], |row| {
+                let sql = if params.repository_id.is_some() {
+                    "SELECT w.worktree_id,w.worktree_path,w.repository_id,r.display_name FROM worktrees w JOIN repositories r ON r.repository_id=w.repository_id WHERE r.archived_at IS NULL AND w.repository_id=$2 AND w.worktree_id>$1 ORDER BY w.worktree_id LIMIT $3"
+                } else {
+                    "SELECT w.worktree_id,w.worktree_path,w.repository_id,r.display_name FROM worktrees w JOIN repositories r ON r.repository_id=w.repository_id WHERE r.archived_at IS NULL AND w.worktree_id>$1 ORDER BY w.worktree_id LIMIT $2"
+                };
+                let mut statement = connection.prepare(sql)?;
+                let decode = |row: &crate::database::Row<'_>| {
                         Ok((
                             row.get::<_, String>(0)?,
                             row.get::<_, String>(1)?,
                             row.get::<_, String>(2)?,
                             row.get::<_, String>(3)?,
                         ))
-                    })?
-                    .collect::<Result<Vec<_>, _>>()?)
+                    };
+                let after = params.after_worktree_id.as_deref().unwrap_or("");
+                let rows = if let Some(repository) = params.repository_id {
+                    statement.query_map(crate::database::params![after, repository, limit + 1], decode)?
+                } else {
+                    statement.query_map(crate::database::params![after, limit + 1], decode)?
+                };
+                Ok(rows.collect::<Result<Vec<_>, _>>()?)
             })
             .map_err(database_error)?;
         let capacity = self.inner.capacity.snapshot()?;
@@ -1747,8 +1759,10 @@ impl TestLifecycle {
         let mut runs = Vec::new();
         let mut sources = HashMap::new();
         let mut bytes = 0usize;
-        let mut next_worktree_id = None;
-        for (worktree_id, path, repository_id, display_name) in rows {
+        let has_more = rows.len() > limit;
+        let mut next_worktree_id = has_more.then(|| rows[limit - 1].0.clone());
+        let mut last_visited = None;
+        for (worktree_id, path, repository_id, display_name) in rows.into_iter().take(limit) {
             let worktree = PathBuf::from(&path);
             let Some(mut summary) = self
                 .inner
@@ -1756,16 +1770,13 @@ impl TestLifecycle {
                 .read_current_summary(&worktree)
                 .map_err(state_error)?
             else {
+                last_visited = Some(worktree_id);
                 continue;
             };
             if let Some(handle) = active.get(&worktree_id)
                 && summary.status == TestStatus::Running
             {
                 self.project_live(&mut summary, handle)?;
-            }
-            if runs.len() >= limit {
-                next_worktree_id = runs.last().map(|run: &TestListRow| run.worktree_id.clone());
-                break;
             }
             summary.capacity = Some(capacity.clone());
             reconcile_terminal_checks(&mut summary);
@@ -1807,10 +1818,11 @@ impl TestLifecycle {
                 })?
                 .len();
             if !runs.is_empty() && bytes.saturating_add(row_bytes) > 160 * 1024 {
-                next_worktree_id = runs.last().map(|run| run.worktree_id.clone());
+                next_worktree_id = last_visited;
                 break;
             }
             bytes += row_bytes;
+            last_visited = Some(row.worktree_id.clone());
             runs.push(row);
         }
         Ok(TestList {

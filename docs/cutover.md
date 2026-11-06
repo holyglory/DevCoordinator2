@@ -90,6 +90,32 @@ explicitly `fixture_only`; it cannot satisfy the production acceptance-receipt
 parser or authorize live activation. Browser, live-source and full candidate
 acceptance remain separate obligations.
 
+To rehearse an upgrade from an existing PostgreSQL installation, add
+`--native-prior-manifest /absolute/verified-normal-v3-manifest.json`. Keep
+`--prior-manifest` bound to the historical v2 three-binary bundle. The additional
+manifest must name the verified normal release that applies native migration 13;
+the candidate must be a later normal v3 release. Neither binary bundle is rebuilt
+or modified by the rehearsal.
+
+This mode first runs the same six legacy checks against the prior normal release
+to create a real PostgreSQL 13 installation with accepted API history. It then
+pins that release's edge source and advances only a marker-owned source clone and
+its local bare origin to the candidate commit. Private phase manifests preserve
+the original binary paths, source stamps and hashes; their source roots point to
+that owned clone. The canonical checkout and installed services remain untouched.
+
+The native phase runs the actual installer, injects the real edge startup failure
+after migration, verifies rollback to the original PostgreSQL database and private
+bindings, and retries into a fresh candidate database. It checks inherited SQLite
+retirement targets, an accepted write after PostgreSQL and daemon restart, and the
+specific refusal to roll back an admitted PostgreSQL installation. Both phase
+proofs remain sealed, marker-bound and `fixture_only`; production receipt parsing
+continues to reject them. Run the ordinary mode and native mode on separate new
+roots when verifying both candidate installation paths. Native reports identify
+the bootstrap release separately from the final candidate, and cleanup retains
+the private bindings and command evidence before removing only the owned clone,
+bare origin, database cluster and units.
+
 Activation durably commits the PostgreSQL installation before admitting new
 mutations. Its result is `activated_awaiting_final_acceptance`; the old SQLite
 source and temporary rollback copy remain protected. A failure before admission

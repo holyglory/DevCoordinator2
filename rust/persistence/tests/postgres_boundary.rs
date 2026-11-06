@@ -6,6 +6,130 @@ use devcoordinator2_persistence::{
 };
 use std::time::{Duration, Instant};
 
+fn request_index_upgrade_preserves_native_rows(cluster: &FixtureCluster) {
+    use devcoordinator2_persistence::schema::MIGRATIONS;
+    use sha2::{Digest, Sha256};
+
+    let mut config = cluster.create_database("storage_upgrade").unwrap();
+    let mut observer = cluster.client("storage_upgrade").unwrap();
+    observer
+        .batch_execute(
+            "ALTER DATABASE storage_upgrade OWNER TO dc2_boundary; CREATE EXTENSION pgstattuple",
+        )
+        .unwrap();
+    config.url = format!(
+        "host='{}' port=5432 user=dc2_boundary dbname=storage_upgrade",
+        cluster.socket_directory().display()
+    );
+    let database = Persistence::connect(&config).unwrap();
+    // Install the actual immutable released SQL/checksums, not the candidate
+    // migration. The extension is an observer-only fixture in this database;
+    // the production role receives no extra privileges or extension grants.
+    database.maintenance_transaction::<_,Error,_>(|tx| {
+        tx.execute_batch("CREATE TABLE dc2_schema_migrations(version BIGINT PRIMARY KEY,name TEXT NOT NULL,sha256 TEXT NOT NULL,applied_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp())")?;
+        for (version,name,sql) in MIGRATIONS.iter().filter(|(version,_,_)|*version<=13) {
+            tx.execute_batch(sql)?;
+            let checksum=Sha256::digest(sql.as_bytes()).iter().map(|byte|format!("{byte:02x}")).collect::<String>();
+            tx.execute("INSERT INTO dc2_schema_migrations(version,name,sha256) VALUES($1,$2,$3)",params![version,name,checksum])?;
+        }
+        Ok(())
+    }).unwrap();
+    let pending = |observer: &mut postgres::Client| -> (i64, i64) {
+        let row = observer.query_one("SELECT (SELECT pending_pages::bigint FROM pgstatginindex('public.storage_artifacts_ancestors_live'::regclass)),(SELECT pending_pages::bigint FROM pgstatginindex('public.storage_leases_artifacts'::regclass))", &[]).unwrap();
+        (row.get(0), row.get(1))
+    };
+    let fingerprints =
+        |connection: &devcoordinator2_persistence::Connection| -> Result<Vec<String>> {
+            [
+            "SELECT md5(coalesce(string_agg(to_jsonb(t)::text,'' ORDER BY artifact_id),'')) FROM storage_artifacts t",
+            "SELECT md5(coalesce(string_agg(to_jsonb(t)::text,'' ORDER BY lease_id),'')) FROM storage_leases t",
+            "SELECT md5(coalesce(string_agg(to_jsonb(t)::text,'' ORDER BY lease_id,artifact_id),'')) FROM dc2_storage_lease_artifacts t",
+            "SELECT md5(coalesce(string_agg(to_jsonb(t)::text,'' ORDER BY repository_id),'')) FROM repositories t",
+            "SELECT md5(coalesce(string_agg(to_jsonb(t)::text,'' ORDER BY worktree_id),'')) FROM worktrees t",
+        ].into_iter().map(|sql|connection.query_row(sql,[],|row|row.get(0))).collect()
+        };
+    let insert = |connection: &devcoordinator2_persistence::Connection,
+                  first: i64,
+                  last: i64|
+     -> Result<()> {
+        connection.execute("INSERT INTO storage_artifacts(artifact_id,kind,revision,record_json,updated_at_ms) SELECT 'gin-artifact-'||g,'build_output',1,jsonb_build_object('resource_key','resource-'||g,'ancestor_keys',CASE WHEN g%10=0 THEN jsonb_build_array('ancestor-'||(g%11)) ELSE '[]'::jsonb END,'artifact',jsonb_build_object('name','artifact-'||g,'protected',g%17=0,'dependencies',jsonb_build_array('gin-artifact-'||(g-1))),'blockers','[]'::jsonb),1 FROM generate_series($1::bigint,$2::bigint) g",params![first,last])?;
+        connection.execute("INSERT INTO storage_leases(lease_id,actor,lease_json,expires_at_ms) SELECT 'gin-lease-'||g,'fixture',jsonb_build_object('artifact_ids',CASE WHEN g%10=0 THEN jsonb_build_array('gin-artifact-'||g) ELSE '[]'::jsonb END,'expires_at_ms',100000),100000 FROM generate_series($1::bigint,$2::bigint) g",params![first,last])?;
+        Ok(())
+    };
+    let before = database
+        .transaction::<_, Error, _>(|tx| {
+            tx.execute_batch(
+                "LOCK TABLE storage_artifacts,storage_leases IN SHARE ROW EXCLUSIVE MODE",
+            )?;
+            insert(tx, 1, 3000)?;
+            tx.execute_batch("INSERT INTO repositories(repository_id,root_path,display_name,registered_at,registered_by_uid,last_seen_at) VALUES('r-upgrade-bulk','/fixture/upgrade/bulk','Bulk','t','1000','t'),('r-upgrade-rare','/fixture/upgrade/rare','Rare','t','1000','t'); INSERT INTO worktrees(worktree_id,repository_id,worktree_path,registered_at,last_seen_at) SELECT 'w'||lpad(g::text,8,'0'),CASE WHEN g%1000=0 THEN 'r-upgrade-rare' ELSE 'r-upgrade-bulk' END,'/fixture/upgrade/worktree-'||g,'t','t' FROM generate_series(1,5000) g")?;
+            let pages = pending(&mut observer);
+            assert!(
+                pages.0 > 0 && pages.1 > 0,
+                "schema13 must contain real GIN pending pages before upgrade: {pages:?}"
+            );
+            fingerprints(tx)
+        })
+        .unwrap();
+    database.migrate().unwrap();
+    assert_eq!(pending(&mut observer), (0, 0));
+    assert_eq!(
+        database
+            .read::<_, Error, _>(|connection| fingerprints(connection))
+            .unwrap(),
+        before,
+        "stored JSON, generated safety inputs, derived leases and registry rows survive migration14 exactly"
+    );
+    database.transaction::<_,Error,_>(|tx| {
+        tx.execute_batch("SET LOCAL plan_cache_mode=force_generic_plan")?;
+        let query="SELECT w.worktree_id FROM worktrees w JOIN repositories r ON r.repository_id=w.repository_id WHERE r.archived_at IS NULL AND w.repository_id=$1 AND w.worktree_id>$2 ORDER BY w.worktree_id LIMIT $3";
+        let plan:String=tx.query_row(&format!("EXPLAIN (FORMAT JSON) {query}"),params!["r-upgrade-rare","w00002000",2_i64],|row|row.get(0))?;
+        let plan:serde_json::Value=serde_json::from_str(&plan).unwrap();
+        assert!(plan.to_string().contains("\"Index Name\":\"worktrees_repository_seek\""),"the generic scoped query must seek its composite index");
+        let rows=tx.prepare(query)?.query_map(params!["r-upgrade-rare","w00002000",2_i64],|row|row.get::<_,String>(0))?.collect::<Result<Vec<_>>>()?;
+        assert_eq!(rows,["w00003000","w00004000"]);
+        Ok(())
+    }).unwrap();
+    let indexes=observer.query("SELECT relname,reloptions FROM pg_class WHERE oid IN ('public.storage_artifacts_ancestors_live'::regclass,'public.storage_leases_artifacts'::regclass) ORDER BY relname",&[]).unwrap();
+    assert_eq!(indexes.len(), 2);
+    for index in indexes {
+        assert!(
+            index
+                .get::<_, Vec<String>>(1)
+                .iter()
+                .any(|option| option == "fastupdate=off")
+        );
+    }
+    let journal = || {
+        database.read::<_,Error,_>(|c|c.query_row("SELECT md5(string_agg(to_jsonb(m)::text,'' ORDER BY version)) FROM dc2_schema_migrations m",[],|r|r.get::<_,String>(0))).unwrap()
+    };
+    let applied = journal();
+    database.migrate().unwrap();
+    assert_eq!(
+        journal(),
+        applied,
+        "second native migration is a true no-op"
+    );
+    database
+        .transaction::<_, Error, _>(|tx| insert(tx, 3001, 3200))
+        .unwrap();
+    assert_eq!(
+        pending(&mut observer),
+        (0, 0),
+        "fresh inserts must not depend on later GIN cleanup"
+    );
+    assert_eq!(
+        database
+            .read::<_, Error, _>(|c| c.query_row(
+                "SELECT count(*) FROM storage_artifacts",
+                [],
+                |r| r.get::<_, u64>(0)
+            ))
+            .unwrap(),
+        3200
+    );
+}
+
 #[test]
 fn authority_schema_pools_timeouts_rollback_and_restart() {
     let cluster = FixtureCluster::start().expect("real PostgreSQL fixture");
@@ -36,6 +160,7 @@ fn authority_schema_pools_timeouts_rollback_and_restart() {
         "host='{}' port=5432 user=dc2_boundary dbname=boundary",
         cluster.socket_directory().display()
     );
+    request_index_upgrade_preserves_native_rows(&cluster);
     let private = tempfile::tempdir().unwrap();
     let private_path = private.path().join("postgres.json");
     std::fs::write(&private_path,serde_json::to_vec(&serde_json::json!({"schema":1,"connection":config.url,"data_directory":config.data_directory,"pools":{"reads":2,"writes":1,"maintenance":1},"timeouts_ms":{"connection":500,"statement":2000,"lock":300,"idle_transaction":3000}})).unwrap()).unwrap();
@@ -276,15 +401,25 @@ fn authority_schema_pools_timeouts_rollback_and_restart() {
         );
         // A restore large enough for autovacuum exposed the production-role
         // failure. Hold a real worker active, with no signalling privileges.
-        let mut writer = config.for_database(&snapshot_name).url.parse::<postgres::Config>()?.connect(postgres::NoTls)?;
-        writer.batch_execute("CREATE TABLE cleanup_pressure(id bigint,payload text) WITH(autovacuum_vacuum_threshold=0,autovacuum_vacuum_scale_factor=0,autovacuum_vacuum_cost_delay=100,autovacuum_vacuum_cost_limit=1); INSERT INTO cleanup_pressure SELECT n,repeat('x',200) FROM generate_series(1,100000) n; DELETE FROM cleanup_pressure WHERE id%2=0")?;
+        let writer = Persistence::connect(&config.for_database(&snapshot_name))?;
+        writer.write::<_,Error,_>(|client| {
+            assert_eq!(client.query_row("SELECT current_database()",[],|row|row.get::<_,String>(0))?,snapshot_name);
+            client.execute_batch("CREATE TABLE cleanup_pressure(id bigint,payload text) WITH(autovacuum_vacuum_threshold=0,autovacuum_vacuum_scale_factor=0,autovacuum_vacuum_cost_delay=100,autovacuum_vacuum_cost_limit=1); INSERT INTO cleanup_pressure SELECT n,repeat('x',200) FROM generate_series(1,100000) n; DELETE FROM cleanup_pressure WHERE id%2=0")
+        })?;
         drop(writer);
+        assert!(database.read::<_,Error,_>(|client|client.query_row("SELECT to_regclass('public.cleanup_pressure') IS NULL",[],|row|row.get::<_,bool>(0)))?,"pressure must never be written into the authority database");
         let mut admin = cluster.client("postgres")?;
         let started = Instant::now();
         loop {
             let active:bool=admin.query_one("SELECT EXISTS(SELECT 1 FROM pg_stat_progress_vacuum v JOIN pg_stat_activity a USING(pid) WHERE a.datname=$1 AND a.backend_type='autovacuum worker')", &[&snapshot_name])?.get(0);
             if active { break; }
-            assert!(started.elapsed()<Duration::from_secs(30), "real autovacuum did not start");
+            if started.elapsed()>=Duration::from_secs(30) {
+                let settings=admin.query_one("SELECT current_setting('autovacuum'),current_setting('autovacuum_naptime'),current_setting('autovacuum_max_workers'),current_setting('track_counts')",&[]).ok().map(|row|(row.get::<_,String>(0),row.get::<_,String>(1),row.get::<_,String>(2),row.get::<_,String>(3)));
+                let workers=admin.query("SELECT backend_type,coalesce(state,''),coalesce(wait_event_type,''),COUNT(*)::bigint FROM pg_stat_activity WHERE backend_type IN ('autovacuum launcher','autovacuum worker') GROUP BY backend_type,state,wait_event_type LIMIT 16",&[]).ok().map(|rows|rows.into_iter().map(|row|(row.get::<_,String>(0),row.get::<_,String>(1),row.get::<_,String>(2),row.get::<_,i64>(3))).collect::<Vec<_>>());
+                let pressure=cluster.client(&snapshot_name).ok().and_then(|mut client|client.query_opt("SELECT n_live_tup,n_dead_tup,autovacuum_count,autoanalyze_count FROM pg_stat_all_tables WHERE schemaname='public' AND relname='cleanup_pressure'",&[]).ok().flatten()).map(|row|(row.get::<_,i64>(0),row.get::<_,i64>(1),row.get::<_,i64>(2),row.get::<_,i64>(3)));
+                eprintln!("autovacuum_readiness_failure {}",serde_json::json!({"elapsed_ms":started.elapsed().as_millis(),"settings":settings,"workers":workers,"pressure_stats":pressure}));
+                panic!("real autovacuum did not start");
+            }
             std::thread::sleep(Duration::from_millis(50));
         }
         let mut owner = config.url.parse::<postgres::Config>()?.connect(postgres::NoTls)?;

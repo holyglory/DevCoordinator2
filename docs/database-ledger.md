@@ -33,6 +33,12 @@ search uses tsvector/GIN; time partitions and indexed batches retain metrics for
 30 days (low cardinality) or 7 days (runtime subjects). Append-only constraints
 and narrow invariant triggers preserve permanent ledger history.
 
+Native migration 14 adds the repository/worktree cursor index and disables
+deferred GIN updates for storage ancestor and lease membership lookups. It
+flushes those two indexes' existing pending entries once during migration.
+Storage writes maintain them directly so subsequent inventory requests do not
+repeatedly scan an insert backlog; stored records and safety rules are unchanged.
+
 The migration binary opens SQLite read-only, streams tables in dependency order,
 restores sequences, rebuilds search projections and verifies canonical typed
 hashes, row counts, foreign keys and invariants. Migration and recovery archives

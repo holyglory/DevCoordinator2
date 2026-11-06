@@ -98,44 +98,36 @@ fn projected_storage_row(
     }))
 }
 
-// PostgreSQL evaluates only the requested artifacts and reachable dependency
-// IDs. Shared pins/leases use indexed native identities; no global JSON graph
-// is copied into the request process.
+// ID predicates stay pushable to storage_artifacts. The small lateral barriers
+// evaluate shared flags and the classifier once instead of expanding their
+// subplans at each CASE reference. Dependencies still use indexed identities.
 fn storage_read_projection() -> String {
     format!(
         r#"
 WITH RECURSIVE base AS NOT MATERIALIZED (
- SELECT a.*, flags.shared_protection,COALESCE(leases.active_lease,false) active_lease,leases.lease_used,
- CASE
-  WHEN a.projection_protected OR flags.shared_protection OR reasons.items && ARRAY['required_recovery','required_evidence'] THEN 'protected'
-  WHEN reasons.items && ARRAY['current_deployment','active_consumer','active_process','active_lease','required_recovery','active_worktree','active_evidence'] THEN 'in_use'
-  WHEN cardinality(reasons.items)>0 AND reasons.items <@ ARRAY['evidence_retention_pending'] THEN 'observing'
-  WHEN cardinality(reasons.items)>0 THEN 'needs_review'
-  ELSE 'safe'
- END base_safety
+ SELECT a.*, flags.shared_protection,COALESCE(leases.active_lease,false) active_lease,leases.lease_used,classified.base_safety
  FROM storage_artifacts a
  CROSS JOIN LATERAL (
-  SELECT EXISTS(SELECT 1 FROM storage_artifacts p WHERE p.removed_at_ms IS NULL AND p.projection_protected AND (
-   p.projection_resource_key=a.projection_resource_key
-   OR p.projection_resource_key IN (SELECT value FROM jsonb_array_elements_text(a.projection_ancestors))
-   OR p.projection_ancestors @> jsonb_build_array(a.projection_resource_key)
-  )) shared_protection
+  SELECT EXISTS(
+   SELECT 1 FROM storage_artifacts p WHERE p.removed_at_ms IS NULL AND p.projection_protected AND p.projection_resource_key=a.projection_resource_key
+   UNION ALL
+   SELECT 1 FROM jsonb_array_elements_text(a.projection_ancestors) ancestor(id) JOIN storage_artifacts p ON p.projection_resource_key=ancestor.id WHERE p.removed_at_ms IS NULL AND p.projection_protected
+   UNION ALL
+   SELECT 1 FROM storage_artifacts p WHERE p.removed_at_ms IS NULL AND p.projection_protected AND p.projection_ancestors @> jsonb_build_array(a.projection_resource_key)
+  ) shared_protection OFFSET 0
  ) flags
  CROSS JOIN LATERAL (
   SELECT bool_or(l.projection_expires_at_ms>$1::bigint::numeric) active_lease,
          MAX(LEAST(l.projection_expires_at_ms,$1::bigint::numeric))::bigint lease_used
-  FROM storage_leases l
-  WHERE EXISTS(
-   SELECT 1 FROM (
-    SELECT a.artifact_id
-    UNION
-    SELECT related.artifact_id FROM storage_artifacts related WHERE related.removed_at_ms IS NULL AND (
-     related.projection_resource_key=a.projection_resource_key
-     OR related.projection_resource_key IN (SELECT value FROM jsonb_array_elements_text(a.projection_ancestors))
-     OR related.projection_ancestors @> jsonb_build_array(a.projection_resource_key)
-    )
-   ) owned WHERE l.projection_artifact_ids @> jsonb_build_array(owned.artifact_id)
-  )
+  FROM (
+   SELECT a.artifact_id
+   UNION
+   SELECT related.artifact_id FROM storage_artifacts related WHERE related.removed_at_ms IS NULL AND related.projection_resource_key=a.projection_resource_key
+   UNION
+   SELECT related.artifact_id FROM jsonb_array_elements_text(a.projection_ancestors) ancestor(id) JOIN storage_artifacts related ON related.projection_resource_key=ancestor.id WHERE related.removed_at_ms IS NULL
+   UNION
+   SELECT related.artifact_id FROM storage_artifacts related WHERE related.removed_at_ms IS NULL AND related.projection_ancestors @> jsonb_build_array(a.projection_resource_key)
+  ) owned JOIN storage_leases l ON l.projection_artifact_ids @> jsonb_build_array(owned.artifact_id)
  ) leases
  CROSS JOIN LATERAL (
   SELECT ARRAY(SELECT reason FROM jsonb_array_elements_text(a.projection_blockers) b(reason)
@@ -146,7 +138,16 @@ WITH RECURSIVE base AS NOT MATERIALIZED (
    || CASE WHEN a.removed_at_ms IS NOT NULL THEN ARRAY['already_removed'] ELSE ARRAY[]::text[] END
    || CASE WHEN COALESCE(leases.active_lease,false) THEN ARRAY['active_lease'] ELSE ARRAY[]::text[] END
    || CASE WHEN a.projection_verified_at_ms IS NULL OR $1::bigint::numeric-a.projection_verified_at_ms>{fresh} THEN ARRAY['checks_expired'] ELSE ARRAY[]::text[] END items
- ) reasons
+ OFFSET 0) reasons
+ CROSS JOIN LATERAL (
+  SELECT CASE
+   WHEN a.projection_protected OR flags.shared_protection OR reasons.items && ARRAY['required_recovery','required_evidence'] THEN 'protected'
+   WHEN reasons.items && ARRAY['current_deployment','active_consumer','active_process','active_lease','required_recovery','active_worktree','active_evidence'] THEN 'in_use'
+   WHEN cardinality(reasons.items)>0 AND reasons.items <@ ARRAY['evidence_retention_pending'] THEN 'observing'
+   WHEN cardinality(reasons.items)>0 THEN 'needs_review'
+   ELSE 'safe'
+  END base_safety OFFSET 0
+ ) classified
 ), projected AS NOT MATERIALIZED (
  SELECT b.*,CASE WHEN b.base_safety<>'safe' THEN b.base_safety ELSE COALESCE(blocked.base_safety,'safe') END safety
  FROM base b
@@ -154,16 +155,18 @@ WITH RECURSIVE base AS NOT MATERIALIZED (
   WITH RECURSIVE reachable(artifact_id,path,seen) AS (
    SELECT child.artifact_id,ARRAY[edge.ordinality],ARRAY[b.artifact_id,child.artifact_id]
    FROM jsonb_array_elements_text(b.projection_dependencies) WITH ORDINALITY edge(id,ordinality)
-   JOIN storage_artifacts child ON child.artifact_id=edge.id AND child.removed_at_ms IS NULL
+   CROSS JOIN LATERAL (SELECT artifact_id FROM storage_artifacts child WHERE child.artifact_id=edge.id AND child.removed_at_ms IS NULL OFFSET 0) child
    WHERE b.base_safety='safe' AND child.artifact_id<>b.artifact_id
    UNION ALL
    SELECT child.artifact_id,r.path||edge.ordinality,r.seen||child.artifact_id
-   FROM reachable r JOIN storage_artifacts parent ON parent.artifact_id=r.artifact_id
+   FROM reachable r
+   CROSS JOIN LATERAL (SELECT projection_dependencies FROM storage_artifacts parent WHERE parent.artifact_id=r.artifact_id OFFSET 0) parent
    CROSS JOIN LATERAL jsonb_array_elements_text(parent.projection_dependencies) WITH ORDINALITY edge(id,ordinality)
-   JOIN storage_artifacts child ON child.artifact_id=edge.id AND child.removed_at_ms IS NULL
+   CROSS JOIN LATERAL (SELECT artifact_id FROM storage_artifacts child WHERE child.artifact_id=edge.id AND child.removed_at_ms IS NULL OFFSET 0) child
    WHERE NOT child.artifact_id=ANY(r.seen)
   )
-  SELECT dependency.base_safety FROM reachable r JOIN base dependency ON dependency.artifact_id=r.artifact_id
+  SELECT dependency.base_safety FROM reachable r
+  CROSS JOIN LATERAL (SELECT base_safety FROM base dependency WHERE dependency.artifact_id=r.artifact_id OFFSET 0) dependency
   WHERE dependency.base_safety<>'safe'
   ORDER BY cardinality(r.path),r.path LIMIT 1
  ) blocked ON b.base_safety='safe'
@@ -176,6 +179,14 @@ WITH RECURSIVE base AS NOT MATERIALIZED (
 fn storage_read_columns(safety: &'static str) -> String {
     format!(
         "CASE WHEN p.artifact_id IS NULL THEN NULL ELSE jsonb_build_object('artifact',p.record_json->'artifact','resource_key',p.projection_resource_key,'ancestor_keys',p.projection_ancestors,'discovered_effect',p.projection_effect,'disposal_approved',p.projection_disposal_approved,'blockers',p.projection_blockers) END,p.shared_protection,p.active_lease,p.lease_used,p.base_safety,{safety}"
+    )
+}
+
+fn storage_inventory_sql() -> String {
+    format!(
+        "{} , filtered AS MATERIALIZED(SELECT artifact_id,projection_repository_name,projection_name FROM storage_artifacts a WHERE ($2::text IS NULL OR projection_repository_id=$2) AND ($3::text IS NULL OR projection_filesystem_id=$3) AND ($4::text IS NULL OR kind=$4) AND ($5::text IS NULL OR strpos(lower(projection_name COLLATE pg_catalog.\"unicode\"),$5)>0 OR strpos(lower(COALESCE(projection_repository_name,'') COLLATE pg_catalog.\"unicode\"),$5)>0) AND ($6::bigint<>0 OR removed_at_ms IS NULL) AND ($7::text IS NULL OR (SELECT safety FROM projected WHERE artifact_id=a.artifact_id)=$7)), selected AS MATERIALIZED(SELECT * FROM filtered ORDER BY projection_repository_name COLLATE \"C\" NULLS FIRST,projection_name COLLATE \"C\",artifact_id COLLATE \"C\" LIMIT $8 OFFSET $9), tally AS (SELECT COUNT(*) total FROM filtered) SELECT {},t.total FROM tally t LEFT JOIN selected s ON true LEFT JOIN LATERAL(SELECT p0.* FROM projected p0 WHERE p0.artifact_id=s.artifact_id OFFSET 0) p ON true ORDER BY s.projection_repository_name COLLATE \"C\" NULLS FIRST,s.projection_name COLLATE \"C\",s.artifact_id COLLATE \"C\"",
+        storage_read_projection(),
+        storage_read_columns("p.safety")
     )
 }
 
@@ -325,11 +336,10 @@ impl StorageService {
         }
         let now = self.now_ms();
         let query = request.query.as_ref().map(|query| query.to_lowercase());
-        let sql = format!(
-            "{} , filtered AS MATERIALIZED(SELECT artifact_id,projection_repository_name,projection_name FROM projected WHERE ($2::text IS NULL OR projection_repository_id=$2) AND ($3::text IS NULL OR projection_filesystem_id=$3) AND ($4::text IS NULL OR kind=$4) AND ($5::text IS NULL OR strpos(lower(projection_name COLLATE pg_catalog.\"unicode\"),$5)>0 OR strpos(lower(COALESCE(projection_repository_name,'') COLLATE pg_catalog.\"unicode\"),$5)>0) AND ($6::bigint<>0 OR removed_at_ms IS NULL) AND ($7::text IS NULL OR safety=$7)), selected AS (SELECT * FROM filtered ORDER BY projection_repository_name COLLATE \"C\" NULLS FIRST,projection_name COLLATE \"C\",artifact_id COLLATE \"C\" LIMIT $8 OFFSET $9), tally AS (SELECT COUNT(*) total FROM filtered) SELECT {},t.total FROM tally t LEFT JOIN selected s ON true LEFT JOIN projected p ON p.artifact_id=s.artifact_id ORDER BY s.projection_repository_name COLLATE \"C\" NULLS FIRST,s.projection_name COLLATE \"C\",s.artifact_id COLLATE \"C\"",
-            storage_read_projection(),
-            storage_read_columns("p.safety")
-        );
+        // Metadata count/page work must not run the safety graph. A safety
+        // filter classifies its metadata candidates; otherwise only the final
+        // selected IDs and their dependencies are classified and serialized.
+        let sql = storage_inventory_sql();
         let values = crate::database::params![
             now,
             request.repository_id,

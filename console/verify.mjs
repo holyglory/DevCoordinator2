@@ -366,6 +366,12 @@ const fixtures = (scenario) => {
         { task_id: P_UNSIZED_PARENT, parent_task_id: null, release_id: V_R1, seq: 7, position: 0, title: 'Check the release before people use it', impact: 'The final checks must be easy to inspect as one group.', status: 'planned', kind: 'goal', estimated_loc: null },
         { task_id: P_UNSIZED, parent_task_id: P_UNSIZED_PARENT, release_id: V_R1, seq: 8, position: 1, title: 'Check the complete release in a real browser', impact: 'A release can look finished in code while visible journeys still fail.', status: 'planned', kind: 'improvement', estimated_loc: null },
         { task_id: P_FB, parent_task_id: null, release_id: null, seq: 9, position: 1, title: 'Make the export faster', impact: 'Big exports take minutes.', status: 'planned', kind: 'user_feedback', estimated_loc: 150 },
+        ...(scenario.workspaceDeepPlan ? Array.from({ length: 3 }, (_, index) => ({
+          task_id: `p11111111111112${index}0`, parent_task_id: index ? `p11111111111112${index - 1}0` : P_G1,
+          release_id: V_R1, seq: 10 + index, position: 1,
+          title: 'Check the nested form field before completing the sign-in journey',
+          impact: null, status: index % 2 ? 'planned' : 'in_progress', kind: 'improvement', estimated_loc: 100,
+        })) : []),
         ...denseUnsizedTasks],
       tasks_truncated: false, preview_requested: [],
       elaboration_requests: scenario.empty ? [] : [{ task_id: P_D1, title: 'Show the welcome page', outcome: 'Show the welcome page', status: 'done', kind: 'goal', requested_at: '2026-08-30T12:00:00Z' }],
@@ -579,15 +585,48 @@ async function startFakeDaemon(dir) {
       if (scenario.denied && OPERATOR_ONLY.includes(cmd)) return reply({ ok: false, error: { code: 'permission_denied', message: `${cmd} requires operator`, detail: '' } });
       if (cmd === 'test.stop') { scenario = { ...scenario, testStopped: true }; return reply({ ok: true, data: { status: 'cancelled' } }); }
       if (cmd === 'test.start' && scenario.supersededRun) return reply({ ok: true, data: { run_id: 't20260101T000300Z-fed123', superseded_run_id: scenario.supersededRun } });
-      if (cmd === 'test.list' && scenario.testPaged) {
+      if (cmd === 'test.list') {
         const data = fixtures(scenario)['test.list'];
-        const page = req.params.after_worktree_id ? 1 : 0;
-        return reply({ ok: true, data: { runs: [data.runs[page]], next_worktree_id: page ? null : data.runs[0].worktree_id } });
+        if (scenario.testStopped && data.runs.length) data.runs[0] = { ...data.runs[0], status: 'cancelled', finished_at: new Date().toISOString() };
+        if (scenario.testEmptyContinuation && req.params.repository_id === REPO) {
+          if (req.params.after_worktree_id) {
+            if (!mutable.cacheReleased) await new Promise((resolve) => delayedReplies.add(resolve));
+            return reply({ ok: true, data: { runs: [], next_worktree_id: null } });
+          }
+          return reply({ ok: true, data: { runs: [], next_worktree_id: 'w-empty' } });
+        }
+        if (scenario.testSweepJourney && req.params.repository_id === REPO) {
+          const row = (worktree_id, run_id, status = 'passed') => ({ ...data.runs[0], worktree_id, worktree_path: worktree_id === 'w1' ? data.runs[0].worktree_path : `/srv/repos/repo-one/.worktrees/${worktree_id}`, run_id, status, started_at: '2026-01-01T00:00:00Z', earlier_visual_evidence: null });
+          if (req.params.after_worktree_id === 'w3') {
+            if (!mutable.cacheReleased) await new Promise((resolve) => delayedReplies.add(resolve));
+            return reply({ ok: true, data: { runs: [], next_worktree_id: null } });
+          }
+          if (req.params.after_worktree_id === 'w2') return reply({ ok: true, data: { runs: [row('w3', `t20260101T000030Z-complete${mutable.testSweepMutated ? '2' : '1'}`)], next_worktree_id: 'w3' } });
+          if (req.params.after_worktree_id === 'w1') return reply({ ok: true, data: { runs: mutable.testSweepMutated ? [row('w2', 't20260101T000020Z-external')] : [], next_worktree_id: 'w2' } });
+          if (mutable.testSweepMutated && !req.params.after_worktree_id) return reply({ ok: true, data: { runs: [row('w05', 't20260101T000005Z-inserted')], next_worktree_id: 'w05' } });
+          return reply({ ok: true, data: { runs: [row('w1', mutable.testSweepMutated ? 't20260101T000010Z-active2' : data.runs[0].run_id, 'running')], next_worktree_id: 'w1' } });
+        }
+        if (scenario.testPagingJourney && req.params.repository_id === REPO) {
+          if (req.params.after_worktree_id === 'w1') {
+            if (scenario.testPageFailure) return reply({ ok: false, error: { code: 'test_log_unavailable', message: 'Fixture next page unavailable.', detail: '' } });
+            if (!mutable.cacheReleased) await new Promise((resolve) => delayedReplies.add(resolve));
+            return reply({ ok: true, data: { runs: [], next_worktree_id: 'w1-sparse' } });
+          }
+          if (req.params.after_worktree_id === 'w1-sparse') return reply({ ok: true, data: { runs: [{ ...data.runs[0], worktree_id: 'w1z', worktree_path: '/srv/repos/repo-one/.worktrees/later', run_id: 't20260101T000050Z-later1', status: 'passed' }], next_worktree_id: null } });
+          return reply({ ok: true, data: { runs: [data.runs[0]], next_worktree_id: 'w1' } });
+        }
+        const rows = data.runs.filter((run) => (!req.params.repository_id || run.repository_id === req.params.repository_id) && run.worktree_id > (req.params.after_worktree_id || ''));
+        const limit = scenario.testPaged ? 1 : req.params.limit || 50;
+        return reply({ ok: true, data: { runs: rows.slice(0, limit), next_worktree_id: rows.length > limit ? rows[limit - 1].worktree_id : null } });
       }
-      if (cmd === 'test.list' && scenario.testStopped) {
-        const data = fixtures(scenario)['test.list'];
-        data.runs[0] = { ...data.runs[0], status: 'cancelled', finished_at: new Date().toISOString() };
-        return reply({ ok: true, data });
+      if (cmd === 'test.status') {
+        if (scenario.denied) return reply({ ok: false, error: { code: 'permission_denied', message: 'Test status requires administrator', detail: '' } });
+        const row = fixtures(scenario)['test.list'].runs.find((run) => run.worktree_path === req.params.path);
+        if (!row) return reply({ ok: false, error: { code: 'test_run_not_found', message: 'Fixture worktree unavailable', detail: '' } });
+        const { worktree_id, worktree_path, repository_id, display_name, repository_source, visual_evidence, earlier_visual_evidence, ...summary } = row;
+        if (scenario.testStopped) { summary.status = 'cancelled'; summary.finished_at = new Date().toISOString(); }
+        if (scenario.testSweepJourney) { summary.started_at = '2026-01-01T00:00:00Z'; if (mutable.testSweepMutated) summary.run_id = 't20260101T000010Z-active2'; }
+        return reply({ ok: true, data: summary });
       }
       if (cmd === 'deployment.stop' && req.params.component === 'stack/projection-worker') { mutable.serviceStopped = true; return reply({ ok: true, data: { state: 'degraded' } }); }
       if (cmd === 'deployment.start' && req.params.component === 'stack/projection-worker') { mutable.serviceStopped = false; return reply({ ok: true, data: { state: 'running' } }); }
@@ -726,10 +765,33 @@ async function startFakeDaemon(dir) {
       if (cmd === 'plan.overview' && !req.params.repository_id) {
         const result = fixtures(scenario)['plan.overview-list'];
         result.repositories = result.repositories.map((record) => ({ ...record, presentation: repositoryPresentations.get(record.repository_id) || null }));
+        if (scenario.workspacePaging) {
+          if (req.params.after_repository_id) {
+            if (!mutable.cacheReleased) await new Promise((resolve) => delayedReplies.add(resolve));
+            result.repositories = result.repositories.filter((row) => row.repository_id !== REPO);
+          } else { result.repositories = result.repositories.filter((row) => row.repository_id === REPO); result.next_repository_id = REPO; }
+        }
         return reply({ ok: true, data: result });
       }
+      if (cmd === 'plan.overview' && scenario.workspacePaging && ['rffffffffffffffff', 'release-clone'].includes(req.params.repository_id)) return reply({ ok: true, data: { ...planOverview(), repository_id: req.params.repository_id, display_name: 'Late repository', tasks: [], releases: [], elaboration_requests: [] } });
       if (cmd === 'plan.overview') return reply({ ok: true, data: planOverview() });
-      if (cmd === 'repository.list') return reply({ ok: true, data: { repositories: [{ repository_id: REPO, root_path: '/repo-one', display_name: 'repo-one', registered_at: '2026-01-01T00:00:00Z', last_seen_at: '2026-01-01T00:00:00Z', archived_at: null, archived_by_uid: null, archive_note: null, merged_into_repository_id: null, worktrees: [{ worktree_id: 'wmain', worktree_path: '/repo-one' }, { worktree_id: 'wfeature', worktree_path: '/repo-one/.worktrees/feature-ux' }, { worktree_id: 'wrelease', worktree_path: '/repo-one/.worktrees/release-candidate' }] }] } });
+      if (cmd === 'repository.list') {
+        const repository = { repository_id: REPO, root_path: '/repo-one', display_name: 'repo-one', registered_at: '2026-01-01T00:00:00Z', last_seen_at: '2026-01-01T00:00:00Z', archived_at: null, archived_by_uid: null, archive_note: null, merged_into_repository_id: null, worktrees: [{ worktree_id: 'wmain', worktree_path: '/repo-one' }, { worktree_id: 'wfeature', worktree_path: '/repo-one/.worktrees/feature-ux' }, { worktree_id: 'wrelease', worktree_path: '/repo-one/.worktrees/release-candidate' }] };
+        if (scenario.workspaceViewer) return reply({ ok: false, error: { code: 'permission_denied', message: 'Registry requires administrator', detail: '' } });
+        if (scenario.workspacePaging && ['rffffffffffffffff', 'release-clone'].includes(req.params.repository_id)) {
+          const alias = req.params.repository_id === 'release-clone';
+          return reply({ ok: true, data: { repositories: [{ ...repository, repository_id: req.params.repository_id, display_name: alias ? '0.1.3-generated' : 'Late repository', root_path: alias ? '/srv/releases/0.1.3-generated' : '/srv/repos/late-repository', repository_source: alias ? { key: 'repo-one-origin', name: 'repo-one' } : null, worktrees: [] }] } });
+        }
+        if (scenario.workspacePaging && req.params.after_repository_id) {
+          if (!mutable.cacheReleased) await new Promise((resolve) => delayedReplies.add(resolve));
+          return reply({ ok: true, data: { repositories: [], next_repository_id: null } });
+        }
+        if (scenario.workspaceLongList) {
+          if (req.params.after_worktree_id) repository.worktrees = repository.worktrees.slice(2);
+          else { repository.worktrees = repository.worktrees.slice(0, 2); repository.next_worktree_id = 'wfeature'; }
+        }
+        return reply({ ok: true, data: { repositories: [repository], ...(scenario.workspacePaging ? { next_repository_id: REPO } : {}) } });
+      }
       if (cmd === 'progress.repository') return reply({ ok: true, data: progressFixture(scenario, req.params.period || 'day') });
       if (cmd === 'progress.repositories') return reply({ ok: true, data: fixtures(scenario)['progress.repositories'] });
       if (cmd === 'usage.repository') {
@@ -772,9 +834,10 @@ async function startFakeDaemon(dir) {
   return {
     socketPath,
     calls,
-    setScenario: (s) => { for (const release of delayedReplies) release(); delayedReplies.clear(); scenario = s; mutable.cacheReleased = false; mutable.stopped = false; mutable.serviceStopped = false; mutable.taskUpdates.clear(); mutable.createdTasks.length = 0; mutable.previewRequested = false; mutable.failNextTaskUpdate = false; mutable.failNextLogCatalog = !!s.logCatalogError; mutable.failNextLogRead = !!s.logReadError; mutable.failNextLogPage = !!s.logPageError; mutable.usageCollectionReads = 0; mutable.capacityCap = 80; mutable.logAge = 86400; mutable.logDepth = 3; mutable.evidenceFeedback.length = 0; mutable.feedbackSequence = 0; calls.length = 0; },
+    setScenario: (s) => { for (const release of delayedReplies) release(); delayedReplies.clear(); scenario = s; mutable.cacheReleased = false; mutable.testSweepMutated = false; mutable.stopped = false; mutable.serviceStopped = false; mutable.taskUpdates.clear(); mutable.createdTasks.length = 0; mutable.previewRequested = false; mutable.failNextTaskUpdate = false; mutable.failNextLogCatalog = !!s.logCatalogError; mutable.failNextLogRead = !!s.logReadError; mutable.failNextLogPage = !!s.logPageError; mutable.usageCollectionReads = 0; mutable.capacityCap = 80; mutable.logAge = 86400; mutable.logDepth = 3; mutable.evidenceFeedback.length = 0; mutable.feedbackSequence = 0; calls.length = 0; },
     setEvidenceImage: (bytes, width, height) => { mutable.evidenceImage = Buffer.from(bytes); mutable.evidenceWidth = width; mutable.evidenceHeight = height; },
     failNextTaskUpdate: () => { mutable.failNextTaskUpdate = true; },
+    mutateTestSweep: () => { mutable.testSweepMutated = true; },
     releaseDelayed: () => { mutable.cacheReleased = true; for (const release of delayedReplies) release(); delayedReplies.clear(); },
     waitForReceivedAfter: (after) => {
       if (calls.length > after) return Promise.resolve(calls[after]);
