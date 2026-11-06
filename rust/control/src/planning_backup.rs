@@ -117,6 +117,42 @@ pub fn inspect_configured(
     inspect_with_config(config, request, |_| Ok(()), |_| Ok(())).map(|(inspection, ())| inspection)
 }
 
+#[cfg(test)]
+fn snapshot_error_diagnostic(error: &crate::database::DatabaseError) -> serde_json::Value {
+    fn native(error: &crate::database::Error) -> serde_json::Value {
+        use crate::database::Error;
+        let category = match error {
+            Error::Configuration(_) => "configuration",
+            Error::Pool(_) => "pool",
+            Error::Postgres(_) => "postgres",
+            Error::Migration(_) => "migration",
+            Error::SnapshotCleanup { .. } => "snapshot_cleanup",
+            Error::Fixture(_) => "fixture",
+            Error::Closed => "closed",
+            Error::QueryReturnedNoRows => "no_rows",
+            Error::InvalidQuery => "invalid_query",
+            Error::UserFunctionError(_) => "callback",
+            _ => "decode",
+        };
+        let sqlstate = match error {
+            Error::Postgres(error) => error.code().map(|code| code.code()),
+            _ => None,
+        };
+        let cleanup = match error {
+            Error::SnapshotCleanup { cleanup, .. } => Some(native(cleanup)),
+            _ => None,
+        };
+        serde_json::json!({"category":category,"timeout":error.is_timeout(),"sqlstate":sqlstate,"cleanup":cleanup})
+    }
+    use crate::database::DatabaseError;
+    match error {
+        DatabaseError::Query(error) => native(error),
+        _ => {
+            serde_json::json!({"category":"domain_or_startup","timeout":false,"sqlstate":null,"cleanup":null})
+        }
+    }
+}
+
 fn inspect_with_config<T>(
     config: &crate::database::DatabaseConfig,
     request: &InspectRequest,
@@ -181,9 +217,18 @@ fn inspect_with_config<T>(
                 },
             )
         })
-        .map_err(|error| match error {
-            crate::database::DatabaseError::Domain(error) => error.message,
-            _ => "cannot inspect the verified PostgreSQL archive in an isolated database".into(),
+        .map_err(|error| {
+            #[cfg(test)]
+            eprintln!(
+                "native_snapshot_error {}",
+                snapshot_error_diagnostic(&error)
+            );
+            match error {
+                crate::database::DatabaseError::Domain(error) => error.message,
+                _ => {
+                    "cannot inspect the verified PostgreSQL archive in an isolated database".into()
+                }
+            }
         })?;
     if hash(&mut backup_file)? != backup_sha256
         || hash(&mut header_file)? != hex(&Sha256::digest(&header_bytes))

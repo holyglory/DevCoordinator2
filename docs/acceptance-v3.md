@@ -20,7 +20,7 @@ Protocol 2 and the previous hand-written CLI grammar must be rejected.
 | Authorization | Existing trusted local and public edge identities, invitations, grants, viewer/operator/administrator boundaries, denied operations and private evidence rules are unchanged. |
 | Browser and edge | Formal rendered journeys, complete required viewport/state cells, manual screenshots, applicable existing mockup audit, actual authentication where required, and live v3 source identity. Earlier source or fixture-only evidence cannot prove the live cutover. |
 | Failure and recovery | Interrupted import is atomic; nonempty destination refused; failed cutover before new writes restores the old daemon and exact frozen state; accepted finite work survives drain; after admitting new writes all recovery uses PostgreSQL. |
-| Reduction | Compare tracked first-party source lines and catalog capability coverage with the original commit. Remove the SQLite actor, runtime SQLite schema, duplicated operation maps, repeated hand CLI converters and ad-hoc maintenance loops. Do not count moved fixtures as deleted functionality. |
+| Source size and capability | Compare tracked first-party source lines and catalog capability coverage with the original commit. Remove the SQLite actor, runtime SQLite schema, duplicated operation maps, repeated hand CLI converters and ad-hoc maintenance loops. Verified PostgreSQL/v3 delivery takes priority over total line reduction: report any net increase explicitly and preserve all capabilities. Do not count moved fixtures as deleted functionality. |
 
 One isolated full rehearsal precedes the live switch. Before the switch, stop
 new mutations with the installation fence, finish accepted finite work, flush

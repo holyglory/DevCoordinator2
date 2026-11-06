@@ -19,7 +19,8 @@ Result: `{"daemon_version": "<semver>", "schema_version": 35, "socket": "<path>"
 
 ## event.wait
 
-CLI: `call event.wait`; MCP: `event_wait`. The operation blocks until at least one
+CLI: `call event.wait`; MCP: `call_operation` with operation `event.wait`.
+The operation blocks until at least one
 authorized retained/new event matches, or one or more filter deadlines become
 due. One request accepts 1..32 filters and returns at most 100 events.
 
@@ -198,7 +199,8 @@ Both return `{learned_capacity, effective_capacity, cap, active, waiting,
 paused, last_adjustment}`. `last_adjustment` is null or `{event_id, at, actor,
 reason, previous_capacity, new_capacity, cap, p95_cpu_percent,
 p95_memory_percent, saturation_fraction, epoch_seconds}`. Evidence values may
-be null when unavailable. CLI equivalents are `test capacity show|set|clear`.
+be null when unavailable. Use `call test.capacity.get` to read and
+`call test.capacity.set --params '{"cap":null}'` to restore Auto admission.
 
 ## test.log.catalog
 
@@ -261,7 +263,7 @@ storage path.
 reopens every component without following links, verifies the complete file
 against its manifest receipt, and returns
 `{sha256,total_bytes,offset,bytes,base64,next_offset}`. Errors distinguish
-expired, unknown, and changed evidence. CLI `test artifact materialize` pages
+expired, unknown, and changed evidence. The local CLI `materialize` helper pages
 these two read-only operations, writes only a new caller-owned destination, and
 revalidates every file and tree digest locally.
 
@@ -358,11 +360,11 @@ commits, active use, changed identities, and unknown ownership remain blocked.
 
 Existing server administrators and trusted local callers can use:
 
-- `config.get {}` (CLI `config show`, MCP `config_get`) returns the configured
+- `config.get {}` returns the configured
   policy's active/stored revisions, reload state, entry count, supported live
   and restart-required settings, validation state, and bounded value-free history.
 - `config.env.set {path?, name?, deployment_id?, file, authorized,
-  expected_revision}` (CLI `config authorize|revoke`, MCP `config_env_set`)
+  expected_revision}`
   changes one exact declared repository/file pair and activates it atomically.
   A grant validates the ignored regular non-symlink file; revoke can remove an
   obsolete entry without requiring the file to remain present.
@@ -498,8 +500,9 @@ reports removed items without a space measurement, including interrupted steps
 whose absence was reconciled after restart. It is not an estimate from volume size.
 
 Progress uses `storage.job.started|progress|finished|failed` events in the
-existing `other` category. CLI `storage --help` describes the command grammar;
-MCP tool names replace dots with underscores, such as `storage_cleanup_plan`.
+existing `other` category. Use `operations --prefix storage.` and
+`schema storage.cleanup.plan` to discover the generated contract. CLI `call`
+and MCP `call_operation` both accept the dotted operation name.
 
 ## health.containers (Phase 3, implemented)
 
@@ -726,7 +729,7 @@ jargon — the register rule lives in the agent instructions).
   `title` or `outcome`, and appends `elaboration_completed` atomically with
   the `edited` event.
   `note` is stored on each appended event. Errors: `task_not_found`,
-  `release_not_found`, `args_invalid` ("nothing to change" when a no-op).
+  `release_not_found`, `params_invalid` ("nothing to change" when a no-op).
 - `task.history {task_id}` → `{task: <full row>, events: [{event, from, to,
   actor, at, note}], events_truncated, elaboration_requests}` — the bounded permanent history
   (last 200), loaded on concrete need.
@@ -764,9 +767,10 @@ jargon — the register rule lives in the agent instructions).
   summary + last N; `before_seq` pages older windows (decisions with a
   lower sequence).
 - `decision.search {path|repository_id, query, aspect?, n?}` →
-  `{repository_id, query, decisions: [...], has_more}` — FTS5 full-text
-  search over every decision (title, body, technical note, ref), bm25
-  ranked; user text is quoted so FTS operators are literal.
+  `{repository_id, query, decisions: [...], has_more}` — PostgreSQL full-text
+  search over every decision (title, body, technical note, ref), using the
+  indexed search vector and `plainto_tsquery('simple', ...)`. Text matches use
+  cover-density ranking; exact identifier lookups use descending sequence.
 - `decision.summarize {path|repository_id, body, covers_through_seq}` →
   `{repository_id, covers_through_seq, unsummarized_count, summary_due}`.
   Stores the agent-written rolling summary; all summaries are kept. When
@@ -820,10 +824,10 @@ the instruction while the Coordinator is temporarily unavailable.
 
 ## Agent hub
 
-The dedicated Agent hub uses `agent.hub.*` operations and MCP tools such as
-`agent_hub_register`, `agent_hub_heartbeat`, `agent_hub_directory`,
-`agent_hub_room_create`, `agent_hub_send`, `agent_hub_receive`,
-`agent_hub_ack`, and the bounded `agent_hub_upload_*` family. Profiles and
+The dedicated Agent hub uses `agent.hub.*` operations through CLI `call` and
+MCP `call_operation`, including `agent.hub.register`, `agent.hub.heartbeat`,
+`agent.hub.directory`, `agent.hub.room.create`, `agent.hub.send`,
+`agent.hub.receive`, `agent.hub.ack`, and the bounded `agent.hub.upload.*` family. Profiles and
 messages are isolated into private and opt-in public spaces. Remote
 installations use only `agent.hub.remote` through
 `/.well-known/devcoordinator2/agent-hub`; it accepts the explicit action

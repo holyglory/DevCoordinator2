@@ -71,6 +71,11 @@ pub const MIGRATIONS: &[(i64, &str, &str)] = &[
         "compact_json_restore_path",
         include_str!("../migrations/0013_compact_json_restore_path.sql"),
     ),
+    (
+        14,
+        "storage_gin_pending",
+        include_str!("../migrations/0014_storage_gin_pending.sql"),
+    ),
 ];
 
 pub fn migrate(database: &Persistence) -> Result<()> {

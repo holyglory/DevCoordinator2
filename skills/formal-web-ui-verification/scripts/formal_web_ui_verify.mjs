@@ -4120,19 +4120,26 @@ function pageVerifier() {
       clip = scrollAncestorClipBox(el);
       if (rect.width <= 1 || rect.height <= 1) return;
     }
-    const insetX = Math.min(8, Math.max(2, rect.width / 4));
-    const insetY = Math.min(8, Math.max(2, rect.height / 4));
+    // A wrapped inline's union includes empty areas occupied by neighboring
+    // badges or text. Sample its rendered text fragments instead. Controls
+    // and block/container candidates retain their full interaction boxes.
+    const textFragments = !isControl(el) && cs(el).display === "inline" ? directTextRects(el) : [];
+    const sampleRects = textFragments.length > 1 ? textFragments : [rect];
     const sampleLeft = Math.max(0, clip.left);
     const sampleTop = Math.max(0, clip.top);
     const sampleRight = Math.min(window.innerWidth, clip.right);
     const sampleBottom = Math.min(window.innerHeight, clip.bottom);
-    const points = [
-      { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 },
-      { x: rect.left + insetX, y: rect.top + insetY },
-      { x: rect.right - insetX, y: rect.top + insetY },
-      { x: rect.left + insetX, y: rect.bottom - insetY },
-      { x: rect.right - insetX, y: rect.bottom - insetY },
-    ].filter((point) => point.x >= sampleLeft && point.y >= sampleTop && point.x <= sampleRight && point.y <= sampleBottom);
+    const points = sampleRects.flatMap((fragment) => {
+      const insetX = Math.min(8, Math.max(2, fragment.width / 4));
+      const insetY = Math.min(8, Math.max(2, fragment.height / 4));
+      return [
+        { x: fragment.left + fragment.width / 2, y: fragment.top + fragment.height / 2 },
+        { x: fragment.left + insetX, y: fragment.top + insetY },
+        { x: fragment.right - insetX, y: fragment.top + insetY },
+        { x: fragment.left + insetX, y: fragment.bottom - insetY },
+        { x: fragment.right - insetX, y: fragment.bottom - insetY },
+      ];
+    }).filter((point) => point.x >= sampleLeft && point.y >= sampleTop && point.x <= sampleRight && point.y <= sampleBottom);
     if (points.length < 2) return;
     let covered = 0;
     const contextualCovers = new Map();

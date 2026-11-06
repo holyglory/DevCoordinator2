@@ -32,11 +32,11 @@ devcoordinator2 call test.start --params '{"path":"/absolute/repository","test":
 - Use `test.artifact.catalog`, `test.artifact.file` and the local `materialize` helper for declared hash-bound evidence
   trees. Catalogue first; materialization writes only a new caller-owned local
   destination and rechecks every file/tree hash.
-- Use the typed MCP operations `design_sketch_publish`, `design_sketch_list`,
-  `design_sketch_search`, `design_sketch_story`, `design_sketch_resolve`,
-  `design_sketch_get`, `design_sketch_image`, `design_sketch_record`,
-  `design_sketch_decision`, `design_sketch_activate`, and
-  `design_sketch_description` to retain and review project sketches. A
+- Use `call_operation` with `design.sketch.publish`, `design.sketch.list`,
+  `design.sketch.search`, `design.sketch.story`, `design.sketch.resolve`,
+  `design.sketch.get`, `design.sketch.image`, `design.sketch.record`,
+  `design.sketch.decision`, `design.sketch.activate`, and
+  `design.sketch.description` to retain and review project sketches. A
   generating skill must publish each image with an agent-authored manifest for
   one surface/window, state, theme, and viewport. A batch may contain many
   options, but each option is a distinct immutable file; preserve rejected

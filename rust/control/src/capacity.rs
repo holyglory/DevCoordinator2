@@ -1933,22 +1933,29 @@ mod tests {
         struct SampledPressure {
             cpu: Arc<AtomicU64>,
             percent: Arc<AtomicU64>,
-            sampled: std::sync::mpsc::Sender<()>,
+            sampled: std::sync::mpsc::Sender<(u64, u64)>,
+            high_samples: u32,
+            backlog_ready: std::sync::mpsc::Sender<()>,
         }
         impl Metrics for SampledPressure {
             fn sample(&mut self) -> (Option<f64>, Option<f64>) {
-                let value = self.percent.load(Ordering::SeqCst);
-                let _ = self.sampled.send(());
-                (
-                    Some(self.cpu.load(Ordering::SeqCst) as f64),
-                    Some(value as f64),
-                )
+                let cpu = self.cpu.load(Ordering::SeqCst);
+                let memory = self.percent.load(Ordering::SeqCst);
+                let _ = self.sampled.send((cpu, memory));
+                if memory == 92 {
+                    self.high_samples += 1;
+                    if self.high_samples == 16 {
+                        let _ = self.backlog_ready.send(());
+                    }
+                }
+                (Some(cpu as f64), Some(memory as f64))
             }
         }
         let temporary = tempdir().unwrap();
         let cpu = Arc::new(AtomicU64::new(99));
         let percent = Arc::new(AtomicU64::new(40));
         let (sampled, samples) = std::sync::mpsc::channel();
+        let (backlog_ready, backlog) = std::sync::mpsc::channel();
         let broker = CapacityBroker::with_adapters(
             Database::open(temporary.path().join("authority.sqlite3")).unwrap(),
             temporary.path().join("capacity.sock"),
@@ -1960,6 +1967,8 @@ mod tests {
                 cpu: cpu.clone(),
                 percent: percent.clone(),
                 sampled,
+                high_samples: 0,
+                backlog_ready,
             }),
             Duration::from_millis(25),
             600.0,
@@ -2015,16 +2024,38 @@ mod tests {
         .unwrap();
         assert_eq!(calls.load(Ordering::SeqCst), 1);
         assert!(broker.snapshot().unwrap().paused);
+        // Keep actual high-pressure observations queued, as a slow receiver
+        // can during a concurrent suite. Receiving three old notifications
+        // must not be mistaken for observing recovery.
+        tokio::task::spawn_blocking(move || backlog.recv_timeout(Duration::from_secs(5)))
+            .await
+            .unwrap()
+            .unwrap();
         percent.store(40, Ordering::SeqCst);
         cpu.store(20, Ordering::SeqCst);
         release.send(()).unwrap();
-        tokio::task::spawn_blocking(move || {
-            for _ in 0..3 {
-                samples.recv_timeout(Duration::from_secs(5)).unwrap();
+        let stale_samples = tokio::task::spawn_blocking(move || {
+            let deadline = std::time::Instant::now() + Duration::from_secs(5);
+            let mut recovered = 0;
+            let mut stale = 0;
+            while recovered < 3 {
+                let observed = samples
+                    .recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))
+                    .unwrap();
+                if observed == (20, 40) {
+                    recovered += 1;
+                } else {
+                    stale += 1;
+                }
             }
+            stale
         })
         .await
         .unwrap();
+        assert!(
+            stale_samples > 3,
+            "the fixture must exercise queued stale observations"
+        );
         shutdown.send(true).unwrap();
         server.await.unwrap().unwrap();
         assert_eq!(calls.load(Ordering::SeqCst), 1);

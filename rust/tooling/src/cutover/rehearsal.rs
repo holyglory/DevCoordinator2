@@ -15,6 +15,7 @@ const PREFIX: &str = "devcoordinator2-rustint-installer-";
 pub struct Config {
     pub candidate_manifest: PathBuf,
     pub prior_manifest: PathBuf,
+    pub native_prior_manifest: Option<PathBuf>,
     pub work_root: PathBuf,
     pub report: PathBuf,
     pub postgres_bin: PathBuf,
@@ -31,6 +32,44 @@ struct Marker {
     root: PathBuf,
     namespace: String,
     source_commit: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    native_binding_sha256: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NativeBinding {
+    schema: u8,
+    fixture_only: bool,
+    original_bootstrap_manifest_sha256: String,
+    original_candidate_manifest_sha256: String,
+    bootstrap_manifest_sha256: String,
+    candidate_manifest_sha256: String,
+    bootstrap: InstallManifest,
+    candidate: InstallManifest,
+}
+
+fn native_binding(owned: &Marker, owner: u32) -> Result<Option<NativeBinding>, String> {
+    let Some(expected) = &owned.native_binding_sha256 else {
+        return Ok(None);
+    };
+    let path = owned.root.join("native-bootstrap.json");
+    let binding: NativeBinding = serde_json::from_value(finalize::private(&path, owner)?)
+        .map_err(|_| "fixture native bootstrap binding is invalid")?;
+    let source = owned.root.join("source");
+    if install::hash_file(&path)? != *expected
+        || binding.schema != 1
+        || !binding.fixture_only
+        || binding.candidate.source_commit != owned.source_commit
+        || binding.bootstrap.source_root != source.to_string_lossy()
+        || binding.candidate.source_root != binding.bootstrap.source_root
+        || binding.bootstrap.binaries.len() != 4
+        || binding.candidate.binaries.len() != 4
+        || !contained(&source, &owned.root)
+    {
+        return Err("fixture native bootstrap identity changed".into());
+    }
+    Ok(Some(binding))
 }
 #[derive(Clone, Debug, Serialize)]
 pub struct Report {
@@ -39,6 +78,8 @@ pub struct Report {
     pub status: String,
     pub source_commit: String,
     pub prior_source_commit: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub native_prior_source_commit: Option<String>,
     pub namespace: String,
     pub checks: Vec<String>,
     pub cleanup_complete: bool,
@@ -174,12 +215,41 @@ pub(super) fn verify_fixture_inputs(
             .ok_or("fixture proof has no owned root")?,
     );
     let owned = marker(&root, owner)?;
+    let native = native_binding(&owned, owner)?;
+    let approved = match &native {
+        None => proof.get("phase").is_none() && owned.source_commit == candidate.source_commit,
+        Some(binding) => {
+            let phase = match proof["phase"].as_str() {
+                Some("bootstrap") => Some((
+                    &binding.bootstrap,
+                    &binding.bootstrap_manifest_sha256,
+                    "bootstrap-candidate.json",
+                    "bootstrap-inputs.json",
+                )),
+                Some("upgrade") => Some((
+                    &binding.candidate,
+                    &binding.candidate_manifest_sha256,
+                    "candidate.json",
+                    "inputs.json",
+                )),
+                _ => None,
+            };
+            if let Some((manifest, sha256, file, inputs)) = phase {
+                manifest == candidate
+                    && config.candidate_manifest == root.join(file)
+                    && config.candidate_acceptance == root.join(inputs)
+                    && install::hash_file(&config.candidate_manifest)? == *sha256
+            } else {
+                false
+            }
+        }
+    };
     if proof["schema"] != 1
         || proof["fixture_only"] != true
         || proof["scope"] != KIND
         || proof["result"] != "inputs_verified"
         || proof["source_commit"] != candidate.source_commit
-        || owned.source_commit != candidate.source_commit
+        || !approved
         || !config.ephemeral_services
         || !config.canary
     {
@@ -231,7 +301,15 @@ pub(super) fn verify_fixture_inputs(
             .iter()
             .find(|binary| binary.name == name)
             .ok_or_else(|| format!("fixture {field} has no verified candidate binary"))?;
-        if !managed_link_contained(path, &root, binary, owner) {
+        let installed_bootstrap = native.as_ref().filter(|binding| {
+            proof["phase"] == "upgrade"
+                && install::hash_file(&config.installed_manifest)
+                    .is_ok_and(|sha| sha == binding.bootstrap_manifest_sha256)
+        });
+        let prior_link = installed_bootstrap
+            .and_then(|binding| binding.bootstrap.binaries.iter().find(|b| b.name == name))
+            .is_some_and(|binary| managed_link_contained(path, &root, binary, owner));
+        if !managed_link_contained(path, &root, binary, owner) && !prior_link {
             return Err(format!(
                 "fixture {field} must be its owned path and exact verified candidate link"
             ));
@@ -369,20 +447,38 @@ pub fn run(config: Config) -> Result<Report, String> {
             "rehearsal source identities belong to different canonical repositories".into(),
         );
     }
-    let mut fixture = host::Fixture::prepare(&config, &candidate, &prior)?;
+    let native_prior = config
+        .native_prior_manifest
+        .as_ref()
+        .map(|path| install::read_and_verify_manifest(path, &install::HostRunner))
+        .transpose()?;
+    if native_prior
+        .as_ref()
+        .is_some_and(|prior| prior.source_commit == candidate.source_commit)
+    {
+        return Err("native rehearsal requires distinct prior and candidate releases".into());
+    }
+    let mut fixture = host::Fixture::prepare(&config, &candidate, &prior, native_prior.as_ref())?;
     let mut report = Report {
         schema: 1,
         fixture_only: true,
         status: "failed".into(),
         source_commit: candidate.source_commit.clone(),
         prior_source_commit: prior.source_commit.clone(),
+        native_prior_source_commit: native_prior
+            .as_ref()
+            .map(|prior| prior.source_commit.clone()),
         namespace: fixture.marker.namespace.clone(),
         checks: Vec::new(),
         cleanup_complete: false,
         error: None,
         report_path: config.report.clone(),
     };
-    let result = fixture.exercise(&mut report);
+    let result = if native_prior.is_some() {
+        fixture.exercise_native(&mut report)
+    } else {
+        fixture.exercise(&mut report)
+    };
     let cleanup = fixture.cleanup();
     report.cleanup_complete = cleanup.is_ok();
     match (result, cleanup) {

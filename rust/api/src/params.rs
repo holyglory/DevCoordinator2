@@ -1717,6 +1717,9 @@ mod tests {
 #[derive(Clone, Debug, Default, JsonSchema, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TestList {
+    /// Restrict the page to one exact registered repository ID.
+    #[serde(default)]
+    pub repository_id: Option<String>,
     #[serde(default)]
     pub after_worktree_id: Option<String>,
     #[serde(default)]

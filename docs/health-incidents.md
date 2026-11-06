@@ -28,8 +28,8 @@ actions actually performed. Development observations cannot be escalated;
 Escalation requires the response, reason, and next step. A missing history is
 not proof that no agent acted.
 
-The API/MCP equivalents are `health.incidents` / `health_incidents` and
-`health.incident.update` / `health_incident_update`. List accepts `view`
+The API and MCP `call_operation` use `health.incidents` and
+`health.incident.update`. List accepts `view`
 (`attention`, `dismissed`, `all`), `limit` (1–50, default 20), and the returned
 `before` cursor. `attention_count` and `dismissed_count` are independent of the
 current page. Update requires `incident_id`, `expected_revision`, and `status`;

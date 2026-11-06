@@ -16,6 +16,9 @@ enum Command {
         candidate_manifest: PathBuf,
         #[arg(long)]
         prior_manifest: PathBuf,
+        /// Bootstrap this verified normal v3 release, then rehearse a native upgrade.
+        #[arg(long)]
+        native_prior_manifest: Option<PathBuf>,
         #[arg(long)]
         work_root: PathBuf,
         #[arg(long)]
@@ -43,8 +46,8 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
     let result=match Cli::parse().command {
-        Command::Run{candidate_manifest,prior_manifest,work_root,report,postgres_bin,postgres_account,caller_uid,caller_gid}=>{
-            rehearsal::run(Config{candidate_manifest,prior_manifest,work_root,report,postgres_bin,postgres_account,caller_uid,caller_gid})
+        Command::Run{candidate_manifest,prior_manifest,native_prior_manifest,work_root,report,postgres_bin,postgres_account,caller_uid,caller_gid}=>{
+            rehearsal::run(Config{candidate_manifest,prior_manifest,native_prior_manifest,work_root,report,postgres_bin,postgres_account,caller_uid,caller_gid})
                 .map(|report|serde_json::json!({"schema":1,"fixture_only":true,"status":report.status,"checks":report.checks,"report":report.report_path}))
         },
         Command::Request{socket}=>rehearsal::request_stdin(&socket),

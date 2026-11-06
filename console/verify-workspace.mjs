@@ -6,7 +6,17 @@ export async function verifyWorkspace({ page, daemon, check, scenario, baseUrl, 
   const verify = (name, condition, detail = '') => check(`workspace ${theme} ${viewport.width}: ${name}`, condition, detail);
   const errors = [];
   page.on('pageerror', (error) => errors.push(error.message));
-  daemon.setScenario({ ...scenario, workspaceLongList: true });
+  for (const [target, viewer] of [['rffffffffffffffff', false], ['rffffffffffffffff', true], ['release-clone', false]]) {
+    daemon.setScenario({ ...scenario, admin: !viewer, workspacePaging: true, workspaceViewer: viewer });
+    await page.goto('about:blank');
+    await page.goto(`${baseUrl}#/plan/${target}`);
+    await page.locator('.plan-context').waitFor();
+    verify(`${viewer ? 'viewer' : 'administrator'} direct links beyond the first header page retain exact repository scope`, page.url().endsWith(target) && await page.locator('#workspace-heading').innerText() === (target === 'release-clone' ? 'repo-one' : 'Late repository') && daemon.calls.some((call) => call.operation === 'plan.overview' && call.params.repository_id === target) && await page.locator('.plan-task-select').count() === 0);
+    if (viewer) verify('viewer direct links use the authorized Plan point read', daemon.calls.some((call) => call.operation === 'plan.overview' && call.params.repository_id === target && call.params.limit === 1));
+    daemon.releaseDelayed();
+  }
+  daemon.setScenario({ ...scenario, workspaceLongList: true, workspaceDeepPlan: true });
+  await page.goto('about:blank');
   await page.goto(`${baseUrl}#/plan/${repositoryId}`);
   await page.waitForSelector('.plan-context');
   verify('direct plan links select the same repository', await page.locator('#workspace-heading').innerText() === 'repo-one');
@@ -53,6 +63,13 @@ export async function verifyWorkspace({ page, daemon, check, scenario, baseUrl, 
   await page.unroute('**/api/v3/repository.presentation.update');
   await appearance.locator('button[type=submit]').click();
   await appearance.waitFor({ state: 'detached' });
+  if (viewport.width <= 760) await page.locator('#repository-toggle').click();
+  await page.locator('#workspace-checkouts > summary').click();
+  await daemon.waitForCall((call) => call.operation === 'repository.list' && call.params.after_worktree_id === 'wfeature');
+  await page.waitForFunction(() => document.querySelector('#workspace-checkouts')?.textContent.includes('/repo-one/.worktrees/release-candidate'));
+  verify('background checkout pages retain the just-saved name and icon', await page.locator('#workspace-heading').innerText() === 'My project' && await page.locator('.workspace-repository[aria-current]').getAttribute('data-repository-icon') === 'rocket');
+  await page.locator('#workspace-checkouts > summary').click();
+  if (viewport.width <= 760) await page.locator('#repository-close').click();
   await page.reload(); await page.locator('.plan-context').waitFor();
   verify('name and icon persist through reload without changing repository identity', await page.locator('#workspace-heading').innerText() === 'My project' && await page.locator('.workspace-repository[aria-current]').getAttribute('data-repository-icon') === 'rocket' && (await page.url()).endsWith(repositoryId));
   await page.locator('#repository-presentation').click();
@@ -61,11 +78,41 @@ export async function verifyWorkspace({ page, daemon, check, scenario, baseUrl, 
   await appearance.locator('button[type=submit]').click();
   await appearance.waitFor({ state: 'detached' });
   verify('Use defaults restores the original name and folder icon', await page.locator('#workspace-heading').innerText() === 'repo-one' && await page.locator('.workspace-repository[aria-current]').getAttribute('data-repository-icon') === 'folder');
+  await page.locator('.plan-task-meta > .badge:visible').first().waitFor();
+  const statusCounts = { releases: await page.locator('.plan-release-meta > .badge:visible').count(), tasks: await page.locator('.plan-task-meta > .badge:visible').count() };
+  verify('plan readability checks cover populated release and task statuses', statusCounts.releases > 0 && statusCounts.tasks > 0, JSON.stringify(statusCounts));
   const compressedTitles = await page.locator('.plan-task-title').evaluateAll((elements) => elements.filter((element) => {
     const lineHeight = parseFloat(getComputedStyle(element).lineHeight);
     return element.getBoundingClientRect().height + 1 < Math.min(element.scrollHeight, lineHeight * 2);
   }).length);
   verify('plan metadata does not compress task titles into partial lines', compressedTitles === 0);
+  const clippedStatuses = await page.locator('.plan-release-meta > .badge, .plan-task-meta > .badge').evaluateAll((badges) => badges.flatMap((badge) => {
+    if (!badge.getClientRects().length) return [];
+    const row = badge.closest('.grow');
+    const walker = document.createTreeWalker(badge, NodeFilter.SHOW_TEXT);
+    const fragments = [badge.getBoundingClientRect()];
+    while (walker.nextNode()) {
+      if (!walker.currentNode.textContent.trim()) continue;
+      const range = document.createRange(); range.selectNodeContents(walker.currentNode);
+      fragments.push(...range.getClientRects());
+    }
+    for (let ancestor = badge; ancestor && row?.contains(ancestor); ancestor = ancestor.parentElement) {
+      const style = getComputedStyle(ancestor), rect = ancestor.getBoundingClientRect();
+      const clipsX = /hidden|clip/.test(style.overflowX), clipsY = /hidden|clip/.test(style.overflowY);
+      const clipped = fragments.find((fragment) => clipsX && (fragment.left < rect.left - 1 || fragment.right > rect.right + 1)
+        || clipsY && (fragment.top < rect.top - 1 || fragment.bottom > rect.bottom + 1));
+      if (clipped) return [{ row: row.className, status: badge.innerText.trim(), clip: ancestor.className, fragment: clipped.toJSON(), bounds: rect.toJSON() }];
+    }
+    return [];
+  }));
+  verify('release and task status badges remain readable inside their timeline rows', clippedStatuses.length === 0, JSON.stringify(clippedStatuses));
+  if (clippedStatuses.length) await page.screenshot({ path: path.join(output, `plan-status-clipping-${theme}-${viewport.width}.png`), fullPage: true });
+  const deepParent = page.locator('[data-collapse="p1111111111111200"]');
+  const deepChild = page.locator('[data-task-row="p1111111111111210"]');
+  await deepParent.click();
+  verify('deep task controls still collapse their descendants', await deepParent.getAttribute('aria-expanded') === 'false' && !await deepChild.isVisible());
+  await deepParent.click();
+  await deepChild.waitFor();
   const sidebar = await page.locator('#repository-sidebar').elementHandle();
   for (const [view, selector, operation] of [
     ['progress', '.progress-workspace', 'progress.repository'],

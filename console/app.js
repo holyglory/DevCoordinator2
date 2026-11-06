@@ -2589,10 +2589,13 @@ function bindTestPopovers() {
 const viewTests = guard(async (runId = null, settings = null) => {
   if (runId) return viewTestEvidence(runId);
   main.innerHTML = `${pageHeading('Tests', '#/tests')}${skeleton()}`;
-  const [{ runs }, capacity, retention] = await Promise.all([api('test.list', {}), api('test.capacity.get', {}), api('test.log.retention.get', {})]);
+  const repository = workspace.active ? { name: workspace.current()?.name,
+    get ids() { return [...new Set([workspace.repositoryId, ...(workspace.current()?.records.map((record) => record.repository_id) || [])].filter(Boolean))]; },
+    get complete() { return workspace.catalogueComplete; }, subscribe: workspace.subscribe } : null;
+  const listParams = (repository?.ids.length ? repository.ids : [null]).map((id) => ({ ...(id ? { repository_id: id } : {}), limit: 20 }));
+  const [initialPage, capacity, retention] = await Promise.all([apiPage('test.list', listParams[0]), api('test.capacity.get', {}), api('test.log.retention.get', {})]);
   await window.DevCoordinatorTests.render({
-    main, runs, capacity, retention, api, esc, badge, durationMs, bytes, signal: viewAbort.signal,
-    repository: workspace.active ? { name: workspace.current()?.name, ids: workspace.current()?.records.map((record) => record.repository_id) || [] } : null,
+    main, initialPage, listParams, capacity, retention, api, apiPage, esc, badge, durationMs, bytes, signal: viewAbort.signal, repository,
     openLogs: (run, opener) => openTestLogsDialog(run, retention, opener),
     openFiles: (run, opener, initialFile) => window.DevCoordinatorArtifacts.open(run, opener, { api, esc, bytes, signal: viewAbort.signal, highlight: highlightLogText, initialFile }),
     openCapacity: openTestCapacityDialog, openRetention: openTestLogRetentionDialog,
@@ -5069,7 +5072,7 @@ const viewDecisions = guard(async (repoId) => {
 // --- Router ----------------------------------------------------------------
 const languageReady = import("./i18n.mjs").then(({ i18n }) => i18n.ready);
 const performancePage = window.DevCoordinatorPerformance.create({ api, esc, compactNumber, durationMs, coverageText, identity: () => state.who });
-const workspace = window.DevCoordinatorWorkspace.create({ api, esc, identity: () => state.who });
+const workspace = window.DevCoordinatorWorkspace.create({ api, apiPage, esc, identity: () => state.who });
 window.addEventListener('resize', () => {
   const composer = $('#evidence-composer', main);
   if (!composer || composer.hidden) return;

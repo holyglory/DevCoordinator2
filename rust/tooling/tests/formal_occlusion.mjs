@@ -75,6 +75,83 @@ function occlusions(report) {
   return report.findings.filter((finding) => ["occluded", "partially-occluded"].includes(finding.rule));
 }
 
+for (const width of [390, 1440]) {
+  for (const covered of [false, true]) {
+    test(`wrapped inline metadata samples painted text fragments: width ${width}, covered ${covered}`, async () => {
+      const page = await browser.newPage({ viewport: { width, height: 844 } });
+      try {
+        await page.setContent(`<!doctype html><style>
+          body{margin:0;background:white;color:#111;font:13px/24.8px sans-serif}
+          main{margin:24px 27px;width:334px}
+          .badge{display:inline-block;box-sizing:border-box;height:25px;padding:0 6px;background:#ddd;vertical-align:baseline}
+          .before{width:180px}.after{width:160px}
+          #metadata{font-family:monospace;overflow-wrap:anywhere}
+        </style><main><span class="badge before">Verified record</span> <span id="metadata">saved/decision identifier-fragment</span> <span class="badge after">Review state</span></main>`);
+        const geometry = await page.locator("#metadata").evaluate((element, covered) => {
+          const range = document.createRange();
+          range.selectNodeContents(element);
+          const fragments = [...range.getClientRects()].filter(rect => rect.width > 0.5 && rect.height > 0.5);
+          const own = point => {
+            const top = document.elementFromPoint(point.x, point.y);
+            return top === element || element.contains(top) || top?.contains(element);
+          };
+          const rect = element.getBoundingClientRect();
+          const insetX = Math.min(8, Math.max(2, rect.width / 4));
+          const insetY = Math.min(8, Math.max(2, rect.height / 4));
+          const unionPoints = [
+            { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 },
+            { x: rect.left + insetX, y: rect.top + insetY },
+            { x: rect.right - insetX, y: rect.top + insetY },
+            { x: rect.left + insetX, y: rect.bottom - insetY },
+            { x: rect.right - insetX, y: rect.bottom - insetY },
+          ];
+          const visibleFragmentCenters = fragments.every(rect => own({ x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 }));
+          const unrelatedUnionPoints = unionPoints.filter(point => !own(point)).length;
+          if (covered) for (const rect of fragments) {
+            const cover = document.createElement("div");
+            cover.className = "text-cover";
+            cover.style.cssText = `position:fixed;left:${rect.left}px;top:${rect.top}px;width:${rect.width}px;height:${rect.height}px;background:#222;z-index:2`;
+            document.body.append(cover);
+          }
+          return { fragmentCount: fragments.length, visibleFragmentCenters, unrelatedUnionPoints, union: {x:rect.x,y:rect.y,width:rect.width,height:rect.height}, hits:unionPoints.map(point=>document.elementFromPoint(point.x,point.y)?.className) };
+        }, covered);
+        assert(geometry.fragmentCount >= 2, "fixture must wrap an inline element");
+        assert(geometry.visibleFragmentCenters, "adjacent badges must leave every painted text fragment visible");
+        assert(geometry.unrelatedUnionPoints >= 3, `fixture must expose the union-rectangle false positive: ${JSON.stringify(geometry)}`);
+        const report = await measure(page);
+        const findings = occlusions(report).filter(finding => finding.selector === "#metadata");
+        if (covered) assert(findings.some(finding => finding.severity === "critical"), "a real cover over the text fragments must remain critical");
+        else assert.deepEqual(findings, [], "adjacent badges in empty union-rectangle space do not cover text");
+      } finally { await page.close(); }
+    });
+  }
+}
+
+for (const tag of ["button", "div"]) {
+  test(`wrapped text does not shrink ${tag} occlusion to its text area`, async () => {
+    const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
+    try {
+      await page.setContent(`<!doctype html><style>
+        body{margin:20px;color:#111;background:white;font:16px/20px sans-serif}
+        #box{box-sizing:border-box;width:220px;height:100px;padding:0 130px 0 10px;font:inherit}
+      </style><${tag} id="box">Wrapped box label</${tag}>`);
+      const geometry = await page.locator("#box").evaluate(element => {
+        const range = document.createRange();
+        range.selectNodeContents(element);
+        const fragments = [...range.getClientRects()];
+        const rect = element.getBoundingClientRect();
+        const cover = document.createElement("div");
+        cover.style.cssText = `position:fixed;left:${rect.left + 100}px;top:${rect.top}px;width:${rect.width - 100}px;height:${rect.height}px;background:#222;z-index:2`;
+        document.body.append(cover);
+        return { fragmentCount: fragments.length, textUncovered: fragments.every(rect => document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2) === element) };
+      });
+      assert(geometry.fragmentCount >= 2 && geometry.textUncovered);
+      const report = await measure(page);
+      assert(occlusions(report).some(finding => finding.selector === "#box" && finding.severity === "critical"), "controls and block containers must retain box coverage");
+    } finally { await page.close(); }
+  });
+}
+
 for (const covered of [false, true]) {
   test(`fractional modal scroll edge checks reachable content: covered ${covered}`, async () => {
     const page = await browser.newPage({ viewport: { width: 927, height: 873 } });
