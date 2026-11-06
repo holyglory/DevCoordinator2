@@ -8,6 +8,29 @@ use devcoordinator2_api::{ProtocolError, storage as api};
 use std::path::Path;
 
 impl HostBackend {
+    pub(super) fn native_backup_root_identity(
+        &self,
+        r: &Record,
+        root: &Path,
+        context: &Context,
+    ) -> Result<(u64, u64), ProtocolError> {
+        let registered = context
+            .roots
+            .iter()
+            .find(|configured| {
+                configured.path == root
+                    && configured.root.kind == api::Kind::Backup
+                    && (context.discovering
+                        || r.artifact.group_id.as_ref() == Some(&configured.root.root_id))
+            })
+            .ok_or_else(|| blocked("native_backup_root_unverified"))?;
+        let expected = (registered.device, registered.inode);
+        if fs::identity(root)? != expected {
+            return Err(blocked("configured_root_identity_changed"));
+        }
+        Ok(expected)
+    }
+
     pub(super) fn discover_retained_backing(
         &self,
         context: &Context,

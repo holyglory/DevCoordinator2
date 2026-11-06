@@ -349,8 +349,8 @@ impl Backend for HostBackend {
                 path,
                 device,
                 inode,
+                root,
                 git_root,
-                ..
             } => {
                 if r.artifact.kind == api::Kind::Worktree {
                     let git = git_root
