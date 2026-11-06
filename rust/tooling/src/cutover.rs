@@ -439,6 +439,8 @@ pub struct HostCutover {
     postgres_started: bool,
     prior_edge_source: Option<install::edge_source::PinnedSource>,
     #[cfg(feature = "selftest-fixtures")]
+    rehearsal_inputs: bool,
+    #[cfg(feature = "selftest-fixtures")]
     rehearsal_fail_edge_start: bool,
 }
 
@@ -635,8 +637,26 @@ impl HostCutover {
             postgres_started: false,
             prior_edge_source: None,
             #[cfg(feature = "selftest-fixtures")]
+            rehearsal_inputs: fixture_only,
+            #[cfg(feature = "selftest-fixtures")]
             rehearsal_fail_edge_start: false,
         })
+    }
+
+    fn verify_acceptance_proof(&self) -> Result<String, String> {
+        #[cfg(feature = "selftest-fixtures")]
+        if self.rehearsal_inputs {
+            return rehearsal::verify_fixture_inputs(
+                &self.config,
+                &self.manifest,
+                self.expected_owner.0,
+            );
+        }
+        install::postgres::verify_acceptance(
+            &self.config.candidate_acceptance,
+            &self.manifest,
+            self.expected_owner.0,
+        )
     }
 
     fn systemctl(&self, arguments: &[&str]) -> Result<(), String> {
@@ -906,12 +926,7 @@ impl HostCutover {
                 }
             }
         }
-        if install::postgres::verify_acceptance(
-            &self.config.candidate_acceptance,
-            &self.manifest,
-            self.expected_owner.0,
-        )? != self.acceptance_sha256
-        {
+        if self.verify_acceptance_proof()? != self.acceptance_sha256 {
             return Err("candidate acceptance changed during activation".into());
         }
         self.verify_candidate_binaries()?;

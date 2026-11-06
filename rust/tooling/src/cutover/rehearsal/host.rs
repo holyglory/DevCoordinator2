@@ -977,25 +977,26 @@ impl Fixture {
                 "accepted history and native API write did not survive real service restart".into(),
             );
         }
-        let recovery = RecoveryConfig {
-            transaction_dir: second.transaction_dir.clone(),
-            runtime_dir: second.runtime_dir.clone(),
-            socket_path: second.socket_path.clone(),
-            database_path: second.database_path.clone(),
-            systemctl: second.systemctl.clone(),
-            daemon_unit: second.daemon_unit.clone(),
-            edge_unit: second.edge_unit.clone(),
-            edge_state_dir: second.edge_state_dir.clone(),
-            source_root: self.candidate.source_root.clone().into(),
-            edge_env: second.edge_env.clone(),
-        };
-        if recover_host(&recovery, self.runner.as_ref(), (0, 0)).is_ok() {
-            return Err("admitted fixture allowed stale-source rollback".into());
+        let snapshot = read_snapshot(&second.transaction_dir, 0)?;
+        if snapshot.schema != 3
+            || snapshot.status != "committed"
+            || snapshot.candidate_commit != self.candidate.source_commit
+            || !host.writes_admitted()
+        {
+            return Err("fixture has no committed native admission to protect".into());
+        }
+        let reason = "isolated fixture post-admission rollback proof";
+        let refused = rollback(&mut host, &snapshot, &receipt.backup, reason.into())
+            .err()
+            .ok_or("admitted fixture allowed stale-source rollback")?;
+        if refused
+            != format!(
+                "PostgreSQL authority is active; recovery must preserve its new writes and roll forward: {reason}"
+            )
+        {
+            return Err("fixture did not reach the committed PostgreSQL rollback guard".into());
         }
         self.wait_ping(3, &self.candidate.source_commit)?;
-        report
-            .checks
-            .push("native_write_survives_service_restart_and_stale_rollback_is_refused".into());
         let after_refusal = data(request(
             &self.layout.socket_path,
             &envelope(
@@ -1007,6 +1008,9 @@ impl Fixture {
         if !after_refusal.to_string().contains(&decision) {
             return Err("refused rollback changed an accepted native API write".into());
         }
+        report.checks.push(
+            "native_write_survives_service_restart_and_post_admission_rollback_is_refused".into(),
+        );
         Ok(())
     }
 
