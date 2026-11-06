@@ -909,7 +909,12 @@ fn request_over_socket_with_timeout(
     stream
         .write_all(&payload)
         .map_err(|error| error.to_string())?;
-    if request.get("operation").and_then(Value::as_str) != Some("event.wait") {
+    let passive_wait = request
+        .get("operation")
+        .and_then(Value::as_str)
+        .and_then(devcoordinator2_api::operation)
+        .is_some_and(|definition| definition.passive_wait());
+    if !passive_wait {
         stream
             .shutdown(std::net::Shutdown::Write)
             .map_err(|error| error.to_string())?;
@@ -3679,7 +3684,10 @@ fn case_postgres_removed_on_supersession_and_recovery(world: &mut World) -> Resu
         let output = DockerCli::default()
             .invoke(request)
             .map_err(|e| e.to_string())?;
-        ensure!(output.success(), "cannot inspect the exact orphan container");
+        ensure!(
+            output.success(),
+            "cannot inspect the exact orphan container"
+        );
         let identity = output.stdout.trim();
         ensure!(
             identity.is_empty() || identity == orphan.as_str(),
@@ -4002,7 +4010,7 @@ fn case_upgrade_drain_rejects_new_starts_and_stop_reason_is_operational(
         &fixture_command(world, &["sleep", "120"]),
         None,
     )?)?;
-    data(&world.call("test.start", json!({"path": world.repo}))?)?;
+    let started = data(&world.call("test.start", json!({"path": world.repo}))?)?.clone();
     let lease = begin_drain(
         world
             .socket
@@ -4012,7 +4020,12 @@ fn case_upgrade_drain_rejects_new_starts_and_stop_reason_is_operational(
     )
     .map_err(|error| error.to_string())?;
     let tested = (|| {
-        let refused = world.call("test.start", json!({"path": world.repo}))?;
+        let attached = data(&world.call("test.start", json!({"path": world.repo}))?)?.clone();
+        ensure!(
+            attached["attached"] == true && attached["run_id"] == started["run_id"],
+            "drain did not preserve access to the accepted run"
+        );
+        let refused = world.call("test.start", json!({"path": world.repo, "mode": "replace"}))?;
         ensure!(
             error_code(&refused) == Some("tests_draining"),
             "drain did not reject a new start"
@@ -4058,7 +4071,7 @@ fn case_repository_installer_drain_waits_then_restarts_and_reconnects(
         &fixture_command(world, &["wait-fifo", &release.to_string_lossy()]),
         None,
     )?)?;
-    data(&world.call("test.start", json!({"path": world.repo}))?)?;
+    let started = data(&world.call("test.start", json!({"path": world.repo}))?)?.clone();
     let lease = begin_drain(
         world
             .socket
@@ -4068,7 +4081,12 @@ fn case_repository_installer_drain_waits_then_restarts_and_reconnects(
     )
     .map_err(|error| error.to_string())?;
     let tested = (|| {
-        let refused = world.call("test.start", json!({"path": world.repo}))?;
+        let attached = data(&world.call("test.start", json!({"path": world.repo}))?)?.clone();
+        ensure!(
+            attached["attached"] == true && attached["run_id"] == started["run_id"],
+            "installer drain did not preserve the accepted run identity"
+        );
+        let refused = world.call("test.start", json!({"path": world.repo, "mode": "replace"}))?;
         ensure!(
             error_code(&refused) == Some("tests_draining"),
             "installer drain did not close admission"
