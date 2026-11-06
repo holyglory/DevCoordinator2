@@ -25,6 +25,15 @@ async fn main() -> ExitCode {
         println!("{}", devcoordinator2_control::SOURCE_COMMIT);
         return ExitCode::SUCCESS;
     }
+    if std::env::args_os().skip(1).collect::<Vec<_>>()
+        == [std::ffi::OsString::from("--build-identity")]
+    {
+        println!(
+            "{}",
+            serde_json::json!({"schema":1,"source_commit":devcoordinator2_control::SOURCE_COMMIT,"protocol_version":devcoordinator2_api::PROTOCOL_VERSION,"root_acceptance":cfg!(feature="root-acceptance")})
+        );
+        return ExitCode::SUCCESS;
+    }
     if let Some(path) = repository_config_validation_requested() {
         return validate_repository_config(&path);
     }

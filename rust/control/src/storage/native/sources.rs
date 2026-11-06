@@ -106,6 +106,9 @@ impl HostBackend {
         if !checked.recovery_verified {
             return Err(blocked("backup_unverified"));
         }
+        if checked.last_activity_signature != r.last_activity_signature {
+            return Err(blocked("backup_changed"));
+        }
         if checked.blockers.iter().any(|b| b == "backup_in_progress") {
             return Err(blocked("backup_in_progress"));
         }
@@ -138,6 +141,7 @@ impl HostBackend {
                 context,
             )?;
             other.artifact.repository_id = r.artifact.repository_id.clone();
+            other.artifact.group_id = r.artifact.group_id.clone();
             if self.observe_backup(&mut other, context).is_ok()
                 && other.recovery_verified
                 && other.recovery_lineage == checked.recovery_lineage
@@ -308,6 +312,7 @@ impl HostBackend {
             return Ok(());
         }
         if super::native_backup_generation(path, root, r.artifact.kind, &self.config) {
+            self.native_backup_root_identity(r, root, context)?;
             fs::validate_native_snapshot(path)?;
         }
         if path.join("installation-snapshot.json").is_file() {
@@ -317,14 +322,16 @@ impl HostBackend {
                 .as_ref()
                 .or_else(|| context.repositories.first().map(|r| &r.id))
                 .ok_or_else(|| blocked("backup_owner_unverified"))?;
-            let observation =
-                crate::planning_backup::inspect(&crate::planning_backup::InspectRequest {
+            let observation = crate::planning_backup::inspect_configured(
+                self.database.persistence().config(),
+                &crate::planning_backup::InspectRequest {
                     transaction_dir: path.clone(),
                     repository_id: repository.clone(),
                     task_ids: Vec::new(),
                     include_identities: false,
-                })
-                .map_err(|_| blocked("backup_unverified"))?;
+                },
+            )
+            .map_err(|_| blocked("backup_unverified"))?;
             if observation.provenance != "recorded_hash_matched" {
                 return Ok(());
             }

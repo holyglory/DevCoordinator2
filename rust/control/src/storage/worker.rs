@@ -723,7 +723,7 @@ impl StorageService {
                         .with_detail(error.to_string())
                     })
                 };
-                if !matches!(result, Ok(Ok(()))) && !(job.kind == "scan" && *shutdown.borrow()) {
+                if !(matches!(result, Ok(Ok(()))) || job.kind == "scan" && *shutdown.borrow()) {
                     let failed_job = job.clone();
                     let _ = self
                         .blocking(move |service| {
@@ -1095,7 +1095,7 @@ impl StorageService {
         for id in due {
             // A previously queued companion may have claimed this artifact
             // since the bounded candidate query.
-            if !self.cleanup_claimed(&[id.clone()])?.is_empty() {
+            if !self.cleanup_claimed(std::slice::from_ref(&id))?.is_empty() {
                 continue;
             }
             let plan = self.plan(

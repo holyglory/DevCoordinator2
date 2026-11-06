@@ -289,6 +289,11 @@ impl HostBackend {
             )
             .into(),
             "--setenv=DEVCOORDINATOR2_INSTANCE_ENV=/nonexistent".into(),
+            format!(
+                "--setenv=DEVCOORDINATOR2_DATABASE_CONFIG={}",
+                self.config.postgres_config_path().display()
+            )
+            .into(),
             executable.into_os_string(),
             "storage-maintenance".into(),
             "--job-id".into(),

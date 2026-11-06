@@ -622,7 +622,7 @@ fn copy_table(
         let mut writer = BinaryCopyInWriter::new(sink, &types);
         let mut copied=0_u64;
         while let Some(row) = rows.next().map_err(sqlite_error)? {
-            if copied%1024==0 && Instant::now()>=deadline{return Err(Error::Migration("offline migration exceeded its 30 minute operation deadline; target rolled back".into()));}
+            if copied.is_multiple_of(1024) && Instant::now()>=deadline{return Err(Error::Migration("offline migration exceeded its 30 minute operation deadline; target rolled back".into()));}
             let mut values = Vec::with_capacity(target_columns.len());
             for (index, (column, ty)) in target_columns.iter().enumerate() {
                 values.push(source_cell(

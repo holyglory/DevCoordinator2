@@ -27,112 +27,6 @@ pub(super) struct ReconcileCursor {
     index: usize,
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::automation_test_support::Fixture;
-    use crate::storage::read_tests::{record, save, service};
-
-    #[test]
-    fn paged_reconciliation_preserves_newer_tombstones_and_ignores_removed_history() {
-        let fixture = Fixture::new();
-        let service = service(&fixture);
-        let now = service.now_ms();
-        let mut removed = record("newer-tombstone", now);
-        removed.update_sequence = 20;
-        removed.artifact.removed_at_ms = Some(now);
-        save(&service, &removed);
-        let old_json = json(&removed).unwrap();
-        fixture.database.call(|connection| {
-            connection.execute("INSERT INTO storage_artifacts(artifact_id,repository_id,kind,revision,removed_at_ms,record_json,updated_at_ms) SELECT 'history-'||n,'project-alpha','build_cache',1,$1,jsonb_set($2::jsonb,'{artifact,artifact_id}',to_jsonb('history-'||n)),$1 FROM generate_series(1,2000) n",crate::database::params![now,old_json])?;
-            Ok(())
-        }).unwrap();
-        for index in 0..70 {
-            save(&service, &record(&format!("live-{index:03}"), now));
-        }
-        let mut rediscovered = removed.clone();
-        rediscovered.artifact.removed_at_ms = None;
-        let fresh = record("fresh-discovery", now);
-        let mut cursor = ReconcileCursor::new(
-            &service,
-            Discovery {
-                records: vec![rediscovered, fresh],
-                ..Discovery::default()
-            },
-            10,
-        )
-        .unwrap();
-        assert!(cursor.existing.is_empty());
-        let mut total_rows = 0;
-        let mut turns = 0;
-        loop {
-            let (complete, rows, _) = cursor.step(&service, Duration::from_millis(100)).unwrap();
-            total_rows += rows;
-            turns += 1;
-            assert!(
-                rows <= 128,
-                "one reconciliation phase exceeded its fixed batch"
-            );
-            assert!(
-                cursor.existing.len() <= 71,
-                "removed history entered reconciliation state"
-            );
-            assert!(turns < 40, "historical tombstones extended the scan");
-            if complete {
-                break;
-            }
-        }
-        assert!(total_rows < 200);
-        assert_eq!(
-            service.record("newer-tombstone").unwrap().update_sequence,
-            20
-        );
-        assert_eq!(
-            service
-                .record("newer-tombstone")
-                .unwrap()
-                .artifact
-                .removed_at_ms,
-            Some(now)
-        );
-        assert_eq!(
-            service.record("fresh-discovery").unwrap().update_sequence,
-            10
-        );
-        assert!(
-            service
-                .record("live-000")
-                .unwrap()
-                .blockers
-                .iter()
-                .any(|reason| reason == "observation_unavailable")
-        );
-        // A later legitimate observation can revive the same identity; its
-        // exact old revision still participates in the optimistic write.
-        let mut rediscovered = removed;
-        rediscovered.artifact.removed_at_ms = None;
-        let mut newer = ReconcileCursor::new(
-            &service,
-            Discovery {
-                repository_id: Some("project-alpha".into()),
-                records: vec![rediscovered],
-                ..Discovery::default()
-            },
-            30,
-        )
-        .unwrap();
-        for _ in 0..40 {
-            if newer.step(&service, Duration::from_millis(100)).unwrap().0 {
-                break;
-            }
-        }
-        let revived = service.record("newer-tombstone").unwrap();
-        assert_eq!(revived.update_sequence, 30);
-        assert!(revived.artifact.removed_at_ms.is_none());
-        assert_eq!(revived.artifact.revision, 2);
-    }
-}
-
 impl ReconcileCursor {
     pub(super) fn new(
         service: &StorageService,
@@ -341,13 +235,13 @@ impl ReconcileCursor {
                         break;
                     }
                     rows += 1;
-                    if record.recovery_verified {
-                        if let Some(lineage) = &record.recovery_lineage {
-                            self.recovery
-                                .entry(lineage.clone())
-                                .or_default()
-                                .push(index);
-                        }
+                    if record.recovery_verified
+                        && let Some(lineage) = &record.recovery_lineage
+                    {
+                        self.recovery
+                            .entry(lineage.clone())
+                            .or_default()
+                            .push(index);
                     }
                 }
                 self.index += rows as usize;
@@ -474,5 +368,111 @@ impl ReconcileCursor {
             }
         }
         Ok((false, rows, bytes))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::automation_test_support::Fixture;
+    use crate::storage::read_tests::{record, save, service};
+
+    #[test]
+    fn paged_reconciliation_preserves_newer_tombstones_and_ignores_removed_history() {
+        let fixture = Fixture::new();
+        let service = service(&fixture);
+        let now = service.now_ms();
+        let mut removed = record("newer-tombstone", now);
+        removed.update_sequence = 20;
+        removed.artifact.removed_at_ms = Some(now);
+        save(&service, &removed);
+        let old_json = json(&removed).unwrap();
+        fixture.database.call(|connection| {
+            connection.execute("INSERT INTO storage_artifacts(artifact_id,repository_id,kind,revision,removed_at_ms,record_json,updated_at_ms) SELECT 'history-'||n,'project-alpha','build_cache',1,$1,jsonb_set($2::jsonb,'{artifact,artifact_id}',to_jsonb('history-'||n)),$1 FROM generate_series(1,2000) n",crate::database::params![now,old_json])?;
+            Ok(())
+        }).unwrap();
+        for index in 0..70 {
+            save(&service, &record(&format!("live-{index:03}"), now));
+        }
+        let mut rediscovered = removed.clone();
+        rediscovered.artifact.removed_at_ms = None;
+        let fresh = record("fresh-discovery", now);
+        let mut cursor = ReconcileCursor::new(
+            &service,
+            Discovery {
+                records: vec![rediscovered, fresh],
+                ..Discovery::default()
+            },
+            10,
+        )
+        .unwrap();
+        assert!(cursor.existing.is_empty());
+        let mut total_rows = 0;
+        let mut turns = 0;
+        loop {
+            let (complete, rows, _) = cursor.step(&service, Duration::from_millis(100)).unwrap();
+            total_rows += rows;
+            turns += 1;
+            assert!(
+                rows <= 128,
+                "one reconciliation phase exceeded its fixed batch"
+            );
+            assert!(
+                cursor.existing.len() <= 71,
+                "removed history entered reconciliation state"
+            );
+            assert!(turns < 40, "historical tombstones extended the scan");
+            if complete {
+                break;
+            }
+        }
+        assert!(total_rows < 200);
+        assert_eq!(
+            service.record("newer-tombstone").unwrap().update_sequence,
+            20
+        );
+        assert_eq!(
+            service
+                .record("newer-tombstone")
+                .unwrap()
+                .artifact
+                .removed_at_ms,
+            Some(now)
+        );
+        assert_eq!(
+            service.record("fresh-discovery").unwrap().update_sequence,
+            10
+        );
+        assert!(
+            service
+                .record("live-000")
+                .unwrap()
+                .blockers
+                .iter()
+                .any(|reason| reason == "observation_unavailable")
+        );
+        // A later legitimate observation can revive the same identity; its
+        // exact old revision still participates in the optimistic write.
+        let mut rediscovered = removed;
+        rediscovered.artifact.removed_at_ms = None;
+        let mut newer = ReconcileCursor::new(
+            &service,
+            Discovery {
+                repository_id: Some("project-alpha".into()),
+                records: vec![rediscovered],
+                ..Discovery::default()
+            },
+            30,
+        )
+        .unwrap();
+        for _ in 0..40 {
+            if newer.step(&service, Duration::from_millis(100)).unwrap().0 {
+                break;
+            }
+        }
+        let revived = service.record("newer-tombstone").unwrap();
+        assert_eq!(revived.update_sequence, 30);
+        assert!(revived.artifact.removed_at_ms.is_none());
+        assert_eq!(revived.artifact.revision, 2);
     }
 }

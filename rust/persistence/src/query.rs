@@ -290,10 +290,8 @@ impl Connection {
     pub fn execute<P: Params>(&self, sql: &str, params: P) -> Result<usize> {
         let values = params.into_values();
         let refs: Vec<&(dyn ToSql + Sync)> = values.iter().map(|v| v as _).collect();
-        Ok(
-            usize::try_from(self.client.borrow_mut().execute(sql, &refs)?)
-                .map_err(|_| Error::InvalidQuery)?,
-        )
+        usize::try_from(self.client.borrow_mut().execute(sql, &refs)?)
+            .map_err(|_| Error::InvalidQuery)
     }
     pub fn prepare(&self, sql: &str) -> Result<Statement<'_>> {
         let statement = self.client.borrow_mut().prepare(sql)?;
@@ -515,11 +513,13 @@ impl Row<'_> {
             }
         })
     }
-    pub fn as_ref(&self) -> &Self {
-        self
-    }
     pub fn column_count(&self) -> usize {
         self.inner.len()
+    }
+}
+impl<'a> AsRef<Row<'a>> for Row<'a> {
+    fn as_ref(&self) -> &Self {
+        self
     }
 }
 pub trait RowIndex {

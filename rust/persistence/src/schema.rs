@@ -61,6 +61,11 @@ pub const MIGRATIONS: &[(i64, &str, &str)] = &[
         "protection_metadata",
         include_str!("../migrations/0011_protection_metadata.sql"),
     ),
+    (
+        12,
+        "compact_json_bounds",
+        include_str!("../migrations/0012_compact_json_bounds.sql"),
+    ),
 ];
 
 pub fn migrate(database: &Persistence) -> Result<()> {

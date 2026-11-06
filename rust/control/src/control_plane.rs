@@ -687,142 +687,136 @@ macro_rules! handlers {
     };
 }
 handlers! { self,params,caller,now,actor,administrator,repository,operation;
-    StorageInventory => Ok(self.storage.inventory(params)?);
+    StorageInventory => self.storage.inventory(params);
     StorageArtifactGet => {
                 let p: devcoordinator2_api::storage::Reference = params;
-                Ok(self.storage.artifact(&p.artifact_id)?)
+                self.storage.artifact(&p.artifact_id)
             };
-    StorageScan => Ok(self.storage.scan(params, caller)?);
-    StorageRegister => Ok(self.storage.register(params, caller)?);
+    StorageScan => self.storage.scan(params, caller);
+    StorageRegister => self.storage.register(params, caller);
     StorageLegacyRegister => {
-                Ok(self.storage.register_legacy(params, caller)?)
+                self.storage.register_legacy(params, caller)
             };
     StorageProtectionSet => {
-                Ok(self.storage.protect(params, caller)?)
+                self.storage.protect(params, caller)
             };
-    StoragePolicyGet => Ok(self.storage.policy(params)?);
+    StoragePolicyGet => self.storage.policy(params);
     StoragePolicySet => {
-                Ok(self.storage.set_policy(params, caller)?)
+                self.storage.set_policy(params, caller)
             };
-    StorageRootsList => Ok(self.storage.roots()?);
-    StorageRootsSet => Ok(self.storage.set_root(params, caller)?);
-    StorageCleanupPlan => Ok(self.storage.plan(params, caller)?);
+    StorageRootsList => self.storage.roots();
+    StorageRootsSet => self.storage.set_root(params, caller);
+    StorageCleanupPlan => self.storage.plan(params, caller);
     StorageCleanupStart => {
-                Ok(self.storage.start(params, caller)?)
+                self.storage.start(params, caller)
             };
     StorageJobStatus => {
                 let p: devcoordinator2_api::storage::JobReference = params;
-                Ok(self.storage.job(&p.job_id)?)
+                self.storage.job(&p.job_id)
             };
-    StorageJobCancel => Ok(self.storage.cancel(params, caller)?);
-    StorageHistory => Ok(self.storage.history(params)?);
-    StorageLeaseSet => Ok(self.storage.lease(params, caller)?);
+    StorageJobCancel => self.storage.cancel(params, caller);
+    StorageHistory => self.storage.history(params);
+    StorageLeaseSet => self.storage.lease(params, caller);
     StorageLeaseRelease => {
-                Ok(self.storage.release_lease(params, caller)?)
+                self.storage.release_lease(params, caller)
             };
     TicketRequest => {
-                Ok(self.tickets.request(params, administrator)?)
+                self.tickets.request(params, administrator)
             };
-    TicketSettings => Ok(self.tickets.settings(administrator)?);
-    TicketConfigure => Ok(self.tickets.configure(params)?);
-    TicketRemote => Ok(self.tickets.remote(params)?);
+    TicketSettings => self.tickets.settings(administrator);
+    TicketConfigure => self.tickets.configure(params);
+    TicketRemote => self.tickets.remote(params);
     GlossaryList => {
-                Ok(self.glossary.list(repository, params)?)
+                self.glossary.list(repository, params)
             };
     GlossaryResolve => {
-                Ok(self.glossary.list(repository, params)?)
+                self.glossary.list(repository, params)
             };
-    GlossaryGet => Ok(self.glossary.get(repository, params)?);
+    GlossaryGet => self.glossary.get(repository, params);
     GlossarySave => {
-                Ok(
-                    self.glossary
-                        .save(repository, params, &actor, &now)?,
-                )
+                self.glossary
+                        .save(repository, params, &actor, &now)
             };
     GlossaryConfigure => {
-                Ok(
-                    self.glossary
-                        .configure(repository, params, &actor, &now)?,
-                )
+                self.glossary
+                        .configure(repository, params, &actor, &now)
             };
     GlossaryInherit => {
-                Ok(
-                    self.glossary
-                        .inherit(repository, params, &actor, &now)?,
-                )
+                self.glossary
+                        .inherit(repository, params, &actor, &now)
             };
     GlossaryHistory => {
-                Ok(self.glossary.history(repository, params)?)
+                self.glossary.history(repository, params)
             };
-    GlossaryCheck => Ok(self.glossary.check(repository, params)?);
-    GlossaryImpact => Ok(self.glossary.impact(params)?);
+    GlossaryCheck => self.glossary.check(repository, params);
+    GlossaryImpact => self.glossary.impact(params);
     AgentHubRegister => {
-                Ok(self.agent_hub.register(params, caller)?)
+                self.agent_hub.register(params, caller)
             };
     AgentHubHeartbeat => {
-                Ok(self.agent_hub.heartbeat(params, caller)?)
+                self.agent_hub.heartbeat(params, caller)
             };
     AgentHubUnregister => {
-                Ok(self.agent_hub.unregister(params, caller)?)
+                self.agent_hub.unregister(params, caller)
             };
-    AgentHubDirectory => Ok(self.agent_hub.directory(params)?);
+    AgentHubDirectory => self.agent_hub.directory(params);
     AgentHubRoomCreate => {
-                Ok(self.agent_hub.room_create(params, caller)?)
+                self.agent_hub.room_create(params, caller)
             };
     AgentHubRoomList => {
-                Ok(self.agent_hub.room_list(params, caller)?)
+                self.agent_hub.room_list(params, caller)
             };
     AgentHubRoomMemberAdd => {
-                Ok(self.agent_hub.room_member_add(params, caller)?)
+                self.agent_hub.room_member_add(params, caller)
             };
     AgentHubRoomMemberRemove => {
-                Ok(self.agent_hub.room_member_remove(params, caller)?)
+                self.agent_hub.room_member_remove(params, caller)
             };
-    AgentHubSend => Ok(self.agent_hub.send(params, caller)?);
+    AgentHubSend => self.agent_hub.send(params, caller);
     AgentHubReceive => {
-                Ok(self.agent_hub.receive(params, caller)?)
+                self.agent_hub.receive(params, caller)
             };
-    AgentHubAck => Ok(self.agent_hub.ack(params, caller)?);
+    AgentHubAck => self.agent_hub.ack(params, caller);
     AgentHubUploadStart => {
-                Ok(self.agent_hub.upload_start(params, caller)?)
+                self.agent_hub.upload_start(params, caller)
             };
     AgentHubUploadChunk => {
-                Ok(self.agent_hub.upload_chunk(params, caller)?)
+                self.agent_hub.upload_chunk(params, caller)
             };
     AgentHubUploadFile => {
-                Ok(self.agent_hub.upload_file(params, caller)?)
+                self.agent_hub.upload_file(params, caller)
             };
     AgentHubUploadRemove => {
-                Ok(self.agent_hub.upload_remove(params, caller)?)
+                self.agent_hub.upload_remove(params, caller)
             };
     AgentHubConsoleDirectory => {
-                Ok(self.agent_hub.console_directory(params)?)
+                self.agent_hub.console_directory(params)
             };
     AgentHubConsoleReceive => {
-                Ok(self.agent_hub.console_receive(params)?)
+                self.agent_hub.console_receive(params)
             };
     AgentHubConsoleSend => {
-                Ok(self.agent_hub.console_send(params)?)
+                self.agent_hub.console_send(params)
             };
     AgentHubAdminAgentRemove => {
-                Ok(self.agent_hub.admin_remove_agent(params)?)
+                self.agent_hub.admin_remove_agent(params)
             };
     AgentHubAdminRoomRemove => {
-                Ok(self.agent_hub.admin_remove_room(params)?)
+                self.agent_hub.admin_remove_room(params)
             };
     AgentHubAdminMessageRemove => {
-                Ok(self.agent_hub.admin_remove_message(params)?)
+                self.agent_hub.admin_remove_message(params)
             };
     AgentHubSettingsGet => {
 
-                Ok(self.agent_hub.settings()?)
+                self.agent_hub.settings()
             };
     AgentHubSettingsSet => {
-                Ok(self.agent_hub.settings_set(params)?)
+                self.agent_hub.settings_set(params)
             };
-    AgentHubKeyRotate => Ok(self.agent_hub.key_rotate(params)?);
-    AgentHubActivity => Ok(self.agent_hub.activity(params)?);
-    AgentHubRemote => Ok(self.agent_hub.remote(params, caller)?);
+    AgentHubKeyRotate => self.agent_hub.key_rotate(params);
+    AgentHubActivity => self.agent_hub.activity(params);
+    AgentHubRemote => self.agent_hub.remote(params, caller);
     Ping => {
 
                 Ok(PingData {
@@ -848,10 +842,8 @@ handlers! { self,params,caller,now,actor,administrator,repository,operation;
                     )?;
                 }
                 let now_ms = (self.clock.now_utc().unix_timestamp_nanos() / 1_000_000) as u64;
-                Ok(
-                    self.agent_routing
-                        .settings(p.scope, p.repository_id, p.harness, now_ms)?,
-                )
+                self.agent_routing
+                        .settings(p.scope, p.repository_id, p.harness, now_ms)
             };
     AgentSettingsSave => {
                 let p: devcoordinator2_api::params::AgentSettingsSave = params;
@@ -867,7 +859,7 @@ handlers! { self,params,caller,now,actor,administrator,repository,operation;
                     )?;
                 }
                 let now_ms = (self.clock.now_utc().unix_timestamp_nanos() / 1_000_000) as u64;
-                Ok(self.agent_routing.save_settings(p, &actor, now_ms)?)
+                self.agent_routing.save_settings(p, &actor, now_ms)
             };
     AgentRolesSave => {
                 let p: devcoordinator2_api::params::AgentRolesSave = params;
@@ -883,61 +875,57 @@ handlers! { self,params,caller,now,actor,administrator,repository,operation;
                     ));
                 }
                 let now_ms = (self.clock.now_utc().unix_timestamp_nanos() / 1_000_000) as u64;
-                Ok(self.agent_routing.report_capabilities(
+                self.agent_routing.report_capabilities(
                     p,
                     caller.client_kind,
                     &actor,
                     now_ms,
-                )?)
+                )
             };
     AgentInstructionCurrent => {
                 let p: devcoordinator2_api::params::AgentInstructionCurrent = params;
                 let now_ms = (self.clock.now_utc().unix_timestamp_nanos() / 1_000_000) as u64;
-                Ok(self.agent_routing.instruction(
+                self.agent_routing.instruction(
                     p.repository_id,
                     caller.client_kind,
                     caller.model.clone(),
                     caller.effort.clone(),
                     now_ms,
-                )?)
+                )
             };
     ConfigGet => {
 
-                Ok(self.deployments.configuration().get()?)
+                self.deployments.configuration().get()
             };
     ConfigReload => {
                 let actor = caller
                     .identity
                     .clone()
                     .unwrap_or_else(|| format!("uid:{}", caller.uid));
-                Ok(
-                    self.deployments
-                        .configuration()
-                        .reload(&params.expected_revision, &actor)?,
-                )
-            };
-    ConfigEnvSet => Ok(
                 self.deployments
-                    .set_compose_authorization(params, caller)?,
-            );
+                        .configuration()
+                        .reload(&params.expected_revision, &actor)
+            };
+    ConfigEnvSet => self.deployments
+                    .set_compose_authorization(params, caller);
     DeploymentPreflight => {
-                Ok(self.deployments.preflight(
+                self.deployments.preflight(
                     params.path.as_deref(),
                     params.name.as_deref(),
                     params.deployment_id.as_deref(),
                     caller,
-                )?)
+                )
             };
     UserWhoami => {
 
-                Ok(self.access.who_am_i(caller)?)
+                self.access.who_am_i(caller)
             };
     UserAcceptInvitation => {
-                Ok(self.access.accept_invitation(params)?)
+                self.access.accept_invitation(params)
             };
     UserList => {
 
-                Ok(self.access.list_users()?)
+                self.access.list_users()
             };
     UserInvite => {
                 let result = self.access.invite(params, caller)?;
@@ -988,7 +976,7 @@ handlers! { self,params,caller,now,actor,administrator,repository,operation;
                 Ok(result)
             };
     RepositoryList => {
-                Ok(self.registry.list_repositories_page(params)?)
+                self.registry.list_repositories_page(params)
             };
     RepositoryStatus => {
                 let mut result = self
@@ -1071,21 +1059,21 @@ handlers! { self,params,caller,now,actor,administrator,repository,operation;
                 );
                 Ok(result)
             };
-    ServerRegister => Ok(self.servers.register(params)?);
-    ServerList => Ok(self.servers.list(params)?);
-    ServerStop => Ok(self.servers.stop(params)?);
-    DeploymentList => Ok(self.deployments.list(params, caller)?);
+    ServerRegister => self.servers.register(params);
+    ServerList => self.servers.list(params);
+    ServerStop => self.servers.stop(params);
+    DeploymentList => self.deployments.list(params, caller);
     DeploymentStatus => {
-                Ok(self.deployments.status(
+                self.deployments.status(
                     params.path.as_deref(),
                     params.name.as_deref(),
                     params.deployment_id.as_deref(),
                     caller,
-                )?)
+                )
             };
     TestAdmissionStatus => {
                 let _: params::TestAdmissionStatus = params;
-                Ok(self.tests.admission_status()?)
+                self.tests.admission_status()
             };
     DeploymentApply => {
                 let result = self.deployments.apply_with_candidate(
@@ -1111,14 +1099,14 @@ handlers! { self,params,caller,now,actor,administrator,repository,operation;
                 Ok(result)
             };
     DeploymentLogs => {
-                Ok(self.deployments.logs(
+                self.deployments.logs(
                     params.path.as_deref(),
                     params.name.as_deref(),
                     params.deployment_id.as_deref(),
                     &params.component,
                     params.tail_lines,
                     caller,
-                )?)
+                )
             };
     DeploymentStart => {
                 let action = operation.split('.').nth(1).unwrap_or_default();
@@ -1190,44 +1178,44 @@ handlers! { self,params,caller,now,actor,administrator,repository,operation;
                 Ok(result)
             };
     TestContainerCreate => {
-                Ok(self.test_containers.create(params, caller)?)
+                self.test_containers.create(params, caller)
             };
     TestContainerStart => {
-                Ok(self.test_containers.start(params, caller)?)
+                self.test_containers.start(params, caller)
             };
     TestContainerInspect => {
-                Ok(self.test_containers.inspect(params, caller)?)
+                self.test_containers.inspect(params, caller)
             };
     TestContainerRemove => {
-                Ok(self.test_containers.remove(params, caller)?)
+                self.test_containers.remove(params, caller)
             };
     TestContainerRetry => {
-                Ok(self.test_containers.retry(params, caller)?)
+                self.test_containers.retry(params, caller)
             };
     TestRetry => {
                 let result = self.tests.retry(params, caller)?;
                 Ok(result)
             };
     TestStatus => {
-                Ok(self.tests.status(&params.path, caller)?)
+                self.tests.status(&params.path, caller)
             };
     TestStop => {
-                Ok(self.tests.stop(&params.path, params.reason, caller)?)
+                self.tests.stop(&params.path, params.reason, caller)
             };
-    TestHistory => Ok(self.tests.history(params, caller)?);
+    TestHistory => self.tests.history(params, caller);
     TestList => {
                 let mut result = self.tests.list_current_page(params)?;
                 self.test_evidence.enrich_list(&mut result);
                 Ok(result)
             };
     TestEvidenceGet => {
-                Ok(self.test_evidence.get(params, caller)?)
+                self.test_evidence.get(params, caller)
             };
     TestEvidenceLookup => {
-                Ok(self.test_evidence.lookup(params, caller)?)
+                self.test_evidence.lookup(params, caller)
             };
     TestEvidenceImage => {
-                Ok(self.test_evidence.image(params, caller)?)
+                self.test_evidence.image(params, caller)
             };
     TestEvidenceFeedbackCreate => {
                 let repository_id = self
@@ -1342,15 +1330,15 @@ handlers! { self,params,caller,now,actor,administrator,repository,operation;
                 );
                 Ok(result)
             };
-    DesignSketchList => Ok(self.sketches.list(params)?);
-    DesignSketchSearch => Ok(self.sketches.search(params)?);
-    DesignSketchStory => Ok(self.sketches.story(params)?);
-    DesignSketchResolve => Ok(self.sketches.resolve(params)?);
+    DesignSketchList => self.sketches.list(params);
+    DesignSketchSearch => self.sketches.search(params);
+    DesignSketchStory => self.sketches.story(params);
+    DesignSketchResolve => self.sketches.resolve(params);
     DesignSketchGet => {
-                Ok(self.sketches.get(params, &caller.actor())?)
+                self.sketches.get(params, &caller.actor())
             };
-    DesignSketchImage => Ok(self.sketches.image(params)?);
-    DesignSketchRecord => Ok(self.sketches.record(params)?);
+    DesignSketchImage => self.sketches.image(params);
+    DesignSketchRecord => self.sketches.record(params);
     DesignSketchDecision => {
                 let repository_id = params.repository_id.clone();
                 let result = self.sketches.decision(params, caller)?;
@@ -1415,12 +1403,12 @@ handlers! { self,params,caller,now,actor,administrator,repository,operation;
                 );
                 Ok(result)
             };
-    AgentMessagePoll => Ok(self.sketches.message_poll(params)?);
+    AgentMessagePoll => self.sketches.message_poll(params);
     AgentMessageClaim => {
-                Ok(self.sketches.message_claim(params, caller)?)
+                self.sketches.message_claim(params, caller)
             };
     AgentMessageAck => {
-                Ok(self.sketches.message_ack(params, caller)?)
+                self.sketches.message_ack(params, caller)
             };
     TestLogCatalog => {
                 decode_result(self.logs.query(
@@ -1464,36 +1452,36 @@ handlers! { self,params,caller,now,actor,administrator,repository,operation;
             };
     TestLogRetentionGet => {
 
-                Ok(self.logs.retention()?)
+                self.logs.retention()
             };
     TestLogRetentionSet => {
-                Ok(self.logs.set_retention(
+                self.logs.set_retention(
                     params.max_age_seconds,
                     params.case_depth,
                     &actor,
                     &now,
-                )?)
+                )
             };
     TestArtifactCatalog => {
-                Ok(self.artifacts.catalog(params, caller)?)
+                self.artifacts.catalog(params, caller)
             };
-    TestArtifactFile => Ok(self.artifacts.file(params, caller)?);
+    TestArtifactFile => self.artifacts.file(params, caller);
     TestCapacityGet => {
 
-                Ok(self.capacity.snapshot()?)
+                self.capacity.snapshot()
             };
     TestCapacitySet => {
                 let cap = match params.cap {
                     params::CapacityCap::Value(cap) => Some(u32::from(cap)),
                     params::CapacityCap::Null => None,
                 };
-                Ok(self.capacity.set_cap(cap, &actor)?)
+                self.capacity.set_cap(cap, &actor)
             };
     HealthSummary => {
 
-                Ok(self.health.summary()?)
+                self.health.summary()
             };
-    HealthIncidents => Ok(self.incidents.list(params)?);
+    HealthIncidents => self.incidents.list(params);
     HealthIncidentUpdate => {
                 let incident = self.incidents.update(params, &caller.actor())?;
                 self.publish_owned(
@@ -1511,30 +1499,30 @@ handlers! { self,params,caller,now,actor,administrator,repository,operation;
             };
     HealthRepositories => {
 
-                Ok(self.health.repositories()?)
+                self.health.repositories()
             };
     HealthRepository => {
-                Ok(self.health.repository(&params.path, caller)?)
+                self.health.repository(&params.path, caller)
             };
-    HealthHistory => Ok(self.health.history(params)?);
+    HealthHistory => self.health.history(params);
     HealthContainers => {
 
-                Ok(self.health.containers()?)
+                self.health.containers()
             };
     HealthContainerRemove => {
-                Ok(self.health.remove_container(&params.container_id)?)
+                self.health.remove_container(&params.container_id)
             };
-    UsageRepositories => Ok(self.usage.repositories(params)?);
-    UsageRepository => Ok(self.usage.repository(params)?);
-    UsageRateCardList => Ok(self.rate_cards.list(params)?);
+    UsageRepositories => self.usage.repositories(params);
+    UsageRepository => self.usage.repository(params);
+    UsageRateCardList => self.rate_cards.list(params);
     UsageRateCardSet => {
-                Ok(self.rate_cards.set(params, &actor, &now)?)
+                self.rate_cards.set(params, &actor, &now)
             };
     ProgressRepositories => {
 
-                Ok(self.progress.repositories()?)
+                self.progress.repositories()
             };
-    ProgressRepository => Ok(self.progress.repository(params)?);
+    ProgressRepository => self.progress.repository(params);
     TelegramLink => {
                 let principal = self.access.principal(caller)?;
                 let email = params.email.or(principal.identity.clone()).ok_or_else(|| {
@@ -1550,16 +1538,16 @@ handlers! { self,params,caller,now,actor,administrator,repository,operation;
                         "may only link chats to yourself",
                     ));
                 }
-                Ok(self.telegram.link(&params.code, &email)?)
+                self.telegram.link(&params.code, &email)
             };
     TelegramSubscribe => {
                 self.authorize_telegram_chat(caller, params.chat_id)?;
                 self.authorize_telegram_scope(caller, &params.scope)?;
-                Ok(self.telegram.subscribe(params)?)
+                self.telegram.subscribe(params)
             };
     TelegramUnsubscribe => {
                 self.authorize_telegram_chat(caller, params.chat_id)?;
-                Ok(self.telegram.unsubscribe(params)?)
+                self.telegram.unsubscribe(params)
             };
     TelegramList => {
 
@@ -1567,15 +1555,13 @@ handlers! { self,params,caller,now,actor,administrator,repository,operation;
                 let email = (!principal.local && !principal.administrator)
                     .then_some(principal.identity)
                     .flatten();
-                Ok(self.telegram.list(email.as_deref())?)
+                self.telegram.list(email.as_deref())
             };
     DeploymentRecovery => {
                 let request: devcoordinator2_api::runtime_recovery::Request = params;
                 self.resolve_repository(None, Some(&request.repository_id), caller, false)?;
-                Ok(
-                    self.deployments
-                        .recover_saved_preview(request, caller, &actor, &now)?,
-                )
+                self.deployments
+                        .recover_saved_preview(request, caller, &actor, &now)
             };
     PlanRecovery => {
                 let request: devcoordinator2_api::recovery::Request = params;
@@ -1595,7 +1581,7 @@ handlers! { self,params,caller,now,actor,administrator,repository,operation;
             };
     PlanOverview => {
                 if params.path.is_none() && params.repository_id.is_none() {
-                    return Ok(self.plan.overview_page(None, params)?);
+                    return self.plan.overview_page(None, params);
                 }
                 let repository = self.resolve_repository(
                     params.path.as_deref(),
@@ -1603,10 +1589,8 @@ handlers! { self,params,caller,now,actor,administrator,repository,operation;
                     caller,
                     true,
                 )?;
-                Ok(
-                    self.plan
-                        .overview_page(Some(&repository.repository_id), params)?,
-                )
+                self.plan
+                        .overview_page(Some(&repository.repository_id), params)
             };
     CompletionCheck => {
                 let repository = self.resolve_repository(Some(&params.path), None, caller, true)?;
@@ -1625,10 +1609,10 @@ handlers! { self,params,caller,now,actor,administrator,repository,operation;
                     caller,
                     true,
                 )?;
-                Ok(self.plan.search_tasks(&repository.repository_id, params)?)
+                self.plan.search_tasks(&repository.repository_id, params)
             };
     TaskHistory => {
-                Ok(self.plan.task_history(&params.task_id)?)
+                self.plan.task_history(&params.task_id)
             };
     TaskCreate => {
                 let repository = self.resolve_repository(
@@ -1748,73 +1732,64 @@ handlers! { self,params,caller,now,actor,administrator,repository,operation;
                     caller,
                     true,
                 )?;
-                Ok(self.plan.decision_tail(&repository.repository_id, params)?)
+                self.plan.decision_tail(&repository.repository_id, params)
             };
-    PerformanceOverview => Ok(
-                self.reviews.performance_overview(
+    PerformanceOverview => self.reviews.performance_overview(
                     params,
                     self.clock
                         .now_utc()
                         .unix_timestamp_nanos()
                         .div_euclid(1_000_000) as u64,
-                )?,
-            );
+                );
     PerformanceReviews => {
-                Ok(self.reviews.performance_reviews(params)?)
+                self.reviews.performance_reviews(params)
             };
-    PerformanceReview => Ok(
-                self.reviews.performance_review(
+    PerformanceReview => self.reviews.performance_review(
                     params,
                     self.clock
                         .now_utc()
                         .unix_timestamp_nanos()
                         .div_euclid(1_000_000) as u64,
-                )?,
-            );
+                );
     ReviewDeliveryPending => {
                 self.deliver_review_reminders()?;
-                Ok(self.reviews.delivery_pending(
+                self.reviews.delivery_pending(
                     params,
                     (self.clock.now_utc().unix_timestamp_nanos() / 1_000_000) as u64,
-                )?)
+                )
             };
-    ReviewPolicySet => Ok(self.reviews.policy_set(
+    ReviewPolicySet => self.reviews.policy_set(
                 params,
                 (self.clock.now_utc().unix_timestamp_nanos() / 1_000_000) as u64,
-            )?);
-    ReviewPolicyStatus => Ok(self.reviews.policy_status(
+            );
+    ReviewPolicyStatus => self.reviews.policy_status(
                 params,
                 (self.clock.now_utc().unix_timestamp_nanos() / 1_000_000) as u64,
-            )?);
-    ReviewDeliveryRegister => Ok(self.reviews.delivery_register(
+            );
+    ReviewDeliveryRegister => self.reviews.delivery_register(
                 params,
                 (self.clock.now_utc().unix_timestamp_nanos() / 1_000_000) as u64,
                 crate::review::RegistrationMode::Replace,
-            )?);
-    ReviewPrepare => Ok(
-                self.reviews.prepare(
+            );
+    ReviewPrepare => self.reviews.prepare(
                     params,
                     self.clock
                         .now_utc()
                         .unix_timestamp_nanos()
                         .div_euclid(1_000_000) as u64,
-                )?,
-            );
-    ReviewRecord => Ok(
-                self.reviews.record(
+                );
+    ReviewRecord => self.reviews.record(
                     params,
                     &actor,
                     self.clock
                         .now_utc()
                         .unix_timestamp_nanos()
                         .div_euclid(1_000_000) as u64,
-                )?,
-            );
-    ReviewShow => Ok(self.reviews.show(params)?);
-    ReviewReceipt => Ok(self.reviews.receipt(params)?);
-    ReleaseEvidence => Ok(self.deliveries.receipt(params)?);
-    ReleaseDeliverEvidence => Ok(
-                self.deliveries.deliver(
+                );
+    ReviewShow => self.reviews.show(params);
+    ReviewReceipt => self.reviews.receipt(params);
+    ReleaseEvidence => self.deliveries.receipt(params);
+    ReleaseDeliverEvidence => self.deliveries.deliver(
                     params,
                     caller,
                     &actor,
@@ -1822,9 +1797,8 @@ handlers! { self,params,caller,now,actor,administrator,repository,operation;
                         .now_utc()
                         .unix_timestamp_nanos()
                         .div_euclid(1_000_000) as u64,
-                )?,
-            );
-    ReleaseEvidenceShow => Ok(self.deliveries.show(params)?);
+                );
+    ReleaseEvidenceShow => self.deliveries.show(params);
     DecisionSearch => {
                 let repository = self.resolve_repository(
                     params.path.as_deref(),
@@ -1832,10 +1806,8 @@ handlers! { self,params,caller,now,actor,administrator,repository,operation;
                     caller,
                     true,
                 )?;
-                Ok(
-                    self.plan
-                        .search_decisions(&repository.repository_id, params)?,
-                )
+                self.plan
+                        .search_decisions(&repository.repository_id, params)
             };
     DecisionRecord => {
                 let repository = self.resolve_repository(

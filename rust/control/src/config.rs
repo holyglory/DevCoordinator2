@@ -167,15 +167,18 @@ impl Config {
     /// Only the daemon/privileged installer loads the private database endpoint.
     /// The public Config remains credential-free for CLI/MCP clients.
     pub fn postgres_config(&self) -> Result<crate::database::DatabaseConfig, ConfigError> {
-        let path = std::env::var_os("DEVCOORDINATOR2_DATABASE_CONFIG")
+        Self::read_postgres_config(&self.postgres_config_path())
+    }
+
+    pub fn postgres_config_path(&self) -> PathBuf {
+        std::env::var_os("DEVCOORDINATOR2_DATABASE_CONFIG")
             .map(PathBuf::from)
             .or_else(|| {
                 instance_file_values()
                     .get("DEVCOORDINATOR2_DATABASE_CONFIG")
                     .map(PathBuf::from)
             })
-            .unwrap_or_else(|| PathBuf::from("/etc/devcoordinator2/postgres.json"));
-        Self::read_postgres_config(&path)
+            .unwrap_or_else(|| PathBuf::from("/etc/devcoordinator2/postgres.json"))
     }
 
     pub fn read_postgres_config(

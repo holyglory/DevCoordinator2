@@ -6,6 +6,7 @@ use rustix::fs::{self as unix, AtFlags, Dir, Mode, OFlags};
 use std::collections::HashSet;
 use std::ffi::OsString;
 use std::fs::File;
+use std::io::Read;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Component, Path, PathBuf};
 
@@ -352,13 +353,46 @@ pub fn validate_native_snapshot(path: &Path) -> Result<(), ProtocolError> {
 
 fn native_snapshot_entries(dir: &File) -> Result<Vec<OsString>, ProtocolError> {
     let entries = names(dir)?;
+    let postgres = entries.iter().any(|name| name == "authority-before.pgdump");
     if !entries
         .iter()
         .any(|name| name == "installation-snapshot.json")
-        || !entries
+        || entries
             .iter()
             .any(|name| name == "authority-before.sqlite3")
+            == postgres
     {
+        return Err(blocked("backup_unverified"));
+    }
+    let header = File::from(
+        unix::openat(
+            dir,
+            "installation-snapshot.json",
+            OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC | OFlags::NONBLOCK,
+            Mode::empty(),
+        )
+        .map_err(|_| blocked("backup_unverified"))?,
+    );
+    if !header
+        .metadata()
+        .is_ok_and(|metadata| metadata.is_file() && metadata.len() <= 64 * 1024)
+    {
+        return Err(blocked("backup_unverified"));
+    }
+    let mut encoded = Vec::new();
+    header
+        .take(64 * 1024 + 1)
+        .read_to_end(&mut encoded)
+        .map_err(|_| blocked("backup_unverified"))?;
+    let header: serde_json::Value =
+        serde_json::from_slice(&encoded).map_err(|_| blocked("backup_unverified"))?;
+    if !matches!(
+        (
+            postgres,
+            header.get("schema").and_then(serde_json::Value::as_u64)
+        ),
+        (true, Some(3)) | (false, Some(1 | 2))
+    ) {
         return Err(blocked("backup_unverified"));
     }
     let device = dir
@@ -373,8 +407,16 @@ fn native_snapshot_entries(dir: &File) -> Result<Vec<OsString>, ProtocolError> {
                     | "authority-before.sqlite3"
                     | "authority-before.sqlite3-wal"
                     | "authority-before.sqlite3-shm"
+                    | "authority-before.pgdump"
             )
         ) {
+            return Err(blocked("native_backup_contents_changed"));
+        }
+        if postgres
+            && name
+                .to_str()
+                .is_some_and(|name| name.starts_with("authority-before.sqlite3"))
+        {
             return Err(blocked("native_backup_contents_changed"));
         }
         let st = unix::statat(dir, name, AtFlags::SYMLINK_NOFOLLOW)

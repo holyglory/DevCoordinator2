@@ -56,9 +56,10 @@ struct Candidate {
     kind: api::Kind,
     recognized: bool,
 }
+type SourceTraversal = (SourceRoot, Vec<(PathBuf, std::fs::ReadDir, usize)>);
 struct SourceCursor {
     roots: VecDeque<SourceRoot>,
-    current: Option<(SourceRoot, Vec<(PathBuf, std::fs::ReadDir, usize)>)>,
+    current: Option<SourceTraversal>,
     pending: Option<(Candidate, fs::MeasurementCursor)>,
     candidates: usize,
     had_gap: bool,
@@ -186,12 +187,12 @@ impl SourceCursor {
                                     candidate.root.repository_name.clone();
                                 record.artifact.group_id = candidate.root.group_id.clone();
                                 record.artifact.group_name = candidate.root.group_name.clone();
-                                if record.artifact.kind == api::Kind::Backup {
-                                    if backend.observe_backup(&mut record, context).is_err() {
-                                        self.had_gap = true;
-                                        out.coverage_gaps
-                                            .push("backup_observation_incomplete".into());
-                                    }
+                                if record.artifact.kind == api::Kind::Backup
+                                    && backend.observe_backup(&mut record, context).is_err()
+                                {
+                                    self.had_gap = true;
+                                    out.coverage_gaps
+                                        .push("backup_observation_incomplete".into());
                                 }
                                 out.records.push(record);
                             }
@@ -230,12 +231,10 @@ impl SourceCursor {
                     .roots
                     .iter()
                     .find(|r| Some(&r.root.root_id) == root.group_id.as_ref())
+                    && fs::identity(&root.path).ok() != Some((configured.device, configured.inode))
                 {
-                    if fs::identity(&root.path).ok() != Some((configured.device, configured.inode))
-                    {
-                        self.gap(out, "configured_root_identity_changed");
-                        continue;
-                    }
+                    self.gap(out, "configured_root_identity_changed");
+                    continue;
                 }
                 if let Ok(filesystem) = fs::filesystem(
                     &root.path,

@@ -37,6 +37,10 @@ pub(crate) const STORAGE_SCAN_INTERVAL_MS: u64 = 3_600_000;
 pub(crate) const STORAGE_SCAN_MIN_GAP_MS: u64 = 300_000;
 const MAX_SELECTION: usize = 200;
 const MAX_PLAN_ITEMS: usize = 500;
+type ArtifactProjection = (
+    BTreeMap<String, api::Artifact>,
+    BTreeMap<Option<String>, api::Policy>,
+);
 
 struct ProjectedStorageRow {
     record: ProjectionInput,
@@ -711,7 +715,7 @@ impl StorageService {
             return Err(invalid("unsupported_root_kind"));
         }
         let path = std::path::PathBuf::from(&p.path);
-        native::validate_root(&path, &self.config, &self.database)?;
+        native::validate_configured_root(&path, p.kind, &self.config, &self.database)?;
         let (device, inode) = fs::identity(&path)?;
         let id = p
             .root_id
@@ -1165,13 +1169,7 @@ impl StorageService {
     fn base_artifacts(
         &self,
         records: &BTreeMap<String, Record>,
-    ) -> Result<
-        (
-            BTreeMap<String, api::Artifact>,
-            BTreeMap<Option<String>, api::Policy>,
-        ),
-        ProtocolError,
-    > {
+    ) -> Result<ArtifactProjection, ProtocolError> {
         let now = self.now_ms();
         let ids = json(&records.keys().collect::<Vec<_>>())?;
         let sql = format!(

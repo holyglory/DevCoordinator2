@@ -66,6 +66,21 @@ fn authority_schema_pools_timeouts_rollback_and_restart() {
             "off"
         );
     }
+    database.write::<_,Error,_>(|c|{
+        let document=serde_json::json!({"spaces":"a  b ","escaped":"quote\" slash\\ tab\t","utf8":"é中","nested":[{},[],true,false,serde_json::Value::Null]});
+        let compact=serde_json::to_string(&document).unwrap();
+        let measured:u64=c.query_row("SELECT dc2_jsonb_compact_bytes($1::jsonb)",[&compact],|r|r.get(0))?;
+        assert_eq!(measured,compact.len() as u64,"spaces and escapes inside strings count toward UTF-8 bytes");
+        for (number,bytes) in [("1e10000",7_u64),("-1e10000",8),("0.0001",4),("1.2000",3),("0.0",1)]{
+            assert_eq!(c.query_row("SELECT dc2_jsonb_compact_bytes($1::jsonb)",[number],|r|r.get::<_,u64>(0))?,bytes);
+        }
+        let within=serde_json::to_string(&"é".repeat(4095)).unwrap();
+        assert_eq!(within.len(),8192);
+        c.execute("INSERT INTO owned_events(occurred_at,category,kind,payload_json) VALUES('t','other','size-boundary',$1)",[within])?;
+        let too_big=serde_json::to_string(&"é".repeat(4096)).unwrap();
+        assert!(c.execute("INSERT INTO owned_events(occurred_at,category,kind,payload_json) VALUES('t','other','size-overflow',$1)",[too_big]).is_err());
+        Ok(())
+    }).unwrap();
     database
         .transaction::<_, Error, _>(|tx| {
             tx.execute(

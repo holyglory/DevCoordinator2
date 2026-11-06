@@ -312,6 +312,45 @@ fn native_storage_pages_match_current_safety_without_loading_the_catalog() {
         ));
     }
     assert!(service.roots().unwrap().roots.is_empty());
+    let cutover = fixture.config.state_dir.join("cutover");
+    std::fs::create_dir_all(&cutover).unwrap();
+    for (path, kind) in [
+        (fixture.config.state_dir.clone(), api::Kind::Backup),
+        (cutover.clone(), api::Kind::DependencyCache),
+        (cutover.join("generation"), api::Kind::Backup),
+    ] {
+        assert_eq!(
+            service
+                .set_root(
+                    api::RootSet {
+                        root_id: None,
+                        repository_id: Some("project-alpha".into()),
+                        expected_revision: 0,
+                        label: "Protected native authority".into(),
+                        path: path.to_string_lossy().into_owned(),
+                        kind
+                    },
+                    &caller
+                )
+                .unwrap_err()
+                .message,
+            "protected_system_data"
+        );
+    }
+    let root = service
+        .set_root(
+            api::RootSet {
+                root_id: None,
+                repository_id: Some("project-alpha".into()),
+                expected_revision: 0,
+                label: "Native recovery generations".into(),
+                path: cutover.to_string_lossy().into_owned(),
+                kind: api::Kind::Backup,
+            },
+            &caller,
+        )
+        .unwrap();
+    assert_eq!(root.kind, api::Kind::Backup);
     let plan = |id: &str| {
         service.plan(
             api::PlanRequest {

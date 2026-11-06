@@ -89,6 +89,7 @@ struct World {
     cleanup_volumes: Vec<String>,
     cleanup_storage_mount_units: Vec<String>,
     cleanup_fixture_units: Vec<String>,
+    builder_runtime: Option<tempfile::TempDir>,
     isolated_docker_network: Option<String>,
     measurements: std::collections::BTreeMap<String, u128>,
 }
@@ -211,6 +212,7 @@ impl World {
             cleanup_volumes: Vec::new(),
             cleanup_storage_mount_units: Vec::new(),
             cleanup_fixture_units: Vec::new(),
+            builder_runtime: None,
             isolated_docker_network: None,
             measurements: std::collections::BTreeMap::new(),
         };
@@ -3863,7 +3865,7 @@ fn case_upgrade_drain_rejects_new_starts_and_stop_reason_is_operational(
         None,
     )?)?;
     data(&world.call("test.start", json!({"path": world.repo}))?)?;
-    let lease = begin_drain(&world.base, "test upgrade").map_err(|error| error.to_string())?;
+    let lease = begin_drain(&world.state, "test upgrade").map_err(|error| error.to_string())?;
     let tested = (|| {
         let refused = world.call("test.start", json!({"path": world.repo}))?;
         ensure!(
@@ -3913,7 +3915,7 @@ fn case_repository_installer_drain_waits_then_restarts_and_reconnects(
     )?)?;
     data(&world.call("test.start", json!({"path": world.repo}))?)?;
     let lease =
-        begin_drain(&world.base, "repository install").map_err(|error| error.to_string())?;
+        begin_drain(&world.state, "repository install").map_err(|error| error.to_string())?;
     let tested = (|| {
         let refused = world.call("test.start", json!({"path": world.repo}))?;
         ensure!(
@@ -5830,7 +5832,9 @@ health = {{ tcp = true, timeout_seconds = 30 }}
     );
     let storage = wait_for_value(
         "repository storage attribution",
-        Duration::from_secs(90),
+        Duration::from_secs(
+            u64::from(devcoordinator2_control::metrics_sampler::STORAGE_SECONDS) + 30,
+        ),
         || {
             let response = world.call("health.repositories", json!({}))?;
             let value = data(&response)?.clone();
@@ -7158,6 +7162,45 @@ fn validate_run_inputs(
             path.is_absolute() && path.is_file(),
             format!("{label} must be an absolute regular file")
         );
+    }
+    let identity = Command::new(daemon)
+        .arg("--build-identity")
+        .output()
+        .map_err(|error| format!("cannot inspect candidate build identity: {error}"))?;
+    ensure!(
+        identity.status.success() && identity.stdout.len() <= 4096,
+        "candidate daemon must support the build-identity preflight"
+    );
+    let identity: Value = serde_json::from_slice(&identity.stdout)
+        .map_err(|_| "candidate daemon build identity is invalid")?;
+    ensure!(
+        identity["root_acceptance"] == true,
+        "candidate daemon must be built with --features root-acceptance; the suite uses isolated executor, clock, Docker and mount fixtures"
+    );
+    ensure!(
+        identity["protocol_version"] == devcoordinator2_api::PROTOCOL_VERSION
+            && identity["source_commit"] == devcoordinator2_control::SOURCE_COMMIT,
+        "candidate daemon and root harness must use the same source commit and protocol"
+    );
+    let (caller_uid, caller_gid) = caller_identity()?;
+    run_as(caller_uid,caller_gid,Path::new("/tmp"),daemon.to_str().ok_or("candidate path must be UTF-8")?,&["--build-identity"],Path::new("/tmp"))
+        .map_err(|_|"candidate daemon must be executable by the fixture caller; use an accessible test build without changing installed release permissions".to_owned())?;
+    for (path, label) in [(executor, "executor"), (fixture, "fixture")] {
+        run_as(
+            caller_uid,
+            caller_gid,
+            Path::new("/tmp"),
+            "/usr/bin/test",
+            &[
+                "-x",
+                path.to_str()
+                    .ok_or("fixture executable path must be UTF-8")?,
+            ],
+            Path::new("/tmp"),
+        )
+        .map_err(|_| {
+            format!("candidate {label} must be executable by the non-root fixture caller")
+        })?;
     }
     ensure!(work_root.is_absolute(), "work root must be absolute");
     ensure!(report.is_absolute(), "report path must be absolute");

@@ -45,6 +45,19 @@ fn source(path: &std::path::Path) {
       INSERT INTO agent_hub_deliveries VALUES('delivery1','message1','a1',NULL,0,'t','t',NULL);
       INSERT INTO agent_hub_outbox(delivery_id,callback_url,payload_json,signature,callback_nonce,signed_at,next_attempt_at,created_at) VALUES('delivery1','https://fixture.invalid/callback','{ "z" : 2, "a" : 1 }','opaque-signature','nonce','t','t','t');
     "#).unwrap();
+    // A compact record accepted by schema 34 can exceed its former limit
+    // solely because PostgreSQL's JSONB display inserts array separators.
+    let mut near_limit = serde_json::json!({"items":vec![0;256],"text":""});
+    let overhead = serde_json::to_string(&near_limit).unwrap().len();
+    near_limit["text"] = serde_json::Value::String("x".repeat(8192 - overhead));
+    let near_limit = serde_json::to_string(&near_limit).unwrap();
+    assert_eq!(near_limit.len(), 8192);
+    sqlite
+        .execute(
+            "INSERT INTO review_records VALUES('review-size-boundary',1,'r1',1,2,?1,'fixture',4)",
+            [near_limit],
+        )
+        .unwrap();
     sqlite.pragma_update(None, "journal_mode", "WAL").unwrap();
 }
 
@@ -93,6 +106,8 @@ fn full_schema_copy_preserves_ids_history_json_numbers_blobs_and_restart() {
         "valuable"
     );
     database.read::<_,Error,_>(|c| {
+        let (compact,formatted):(u64,u64)=c.query_row("SELECT dc2_jsonb_compact_bytes(record_json),octet_length(record_json::text) FROM review_records WHERE record_id='review-size-boundary'",[],|r|Ok((r.get(0)?,r.get(1)?)))?;
+        assert_eq!(compact,8192);assert!(formatted>8192);
         assert_eq!(c.query_row("SELECT rowid FROM repositories WHERE repository_id='r1'",[],|r|r.get::<_,i64>(0))?,17);
         assert_eq!(c.query_row("SELECT spec_json->>'huge' FROM deployments WHERE deployment_id='d1'",[],|r|r.get::<_,String>(0))?,"123456789012345678901234567890");
         assert_eq!(c.query_row("SELECT payload_json FROM agent_hub_outbox",[],|r|r.get::<_,String>(0))?,r#"{ "z" : 2, "a" : 1 }"#);

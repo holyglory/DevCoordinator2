@@ -10,6 +10,12 @@ use devcoordinator2_control::deployment_state::{
 const ORDERING_SCAN_BUDGET: Duration = Duration::from_secs(300);
 
 fn start_fixture_engine(world: &mut World) -> Result<String, String> {
+    let runtime = tempfile::Builder::new()
+        .prefix("dc2-builder-")
+        .tempdir_in("/tmp")
+        .map_err(|error| error.to_string())?;
+    let exec_root = runtime.path().join("exec");
+    world.builder_runtime = Some(runtime);
     let socket = world.base.join("builder.sock");
     let config = world.base.join("builder.json");
     write_private_json(&config, &json!({}))?;
@@ -42,7 +48,7 @@ fn start_fixture_engine(world: &mut World) -> Result<String, String> {
             "--data-root",
             world.base.join("builder-data").to_str().unwrap(),
             "--exec-root",
-            world.base.join("builder-exec").to_str().unwrap(),
+            exec_root.to_str().unwrap(),
             "--pidfile",
             world.base.join("builder.pid").to_str().unwrap(),
             "--containerd-namespace",
@@ -2074,11 +2080,22 @@ fn native_backup_retirement(world: &mut World, repo: &str) -> Result<(), String>
     let cutover = world.state.join("cutover");
     fs::create_dir(&cutover).map_err(|e| e.to_string())?;
     fs::set_permissions(&cutover, fs::Permissions::from_mode(0o700)).map_err(|e| e.to_string())?;
-    let authority = rusqlite::Connection::open_with_flags(
-        world.state.join("authority.sqlite3"),
-        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
-    )
-    .map_err(|e| e.to_string())?;
+    // Historical snapshots stay SQLite fixtures; the current authority is
+    // native PostgreSQL and is never opened through the legacy adapter.
+    let authority = rusqlite::Connection::open_in_memory().map_err(|e| e.to_string())?;
+    authority
+        .execute_batch(include_str!(
+            "../../../../persistence/tests/fixtures/sqlite-schema-34/schema.sql"
+        ))
+        .map_err(|e| e.to_string())?;
+    authority
+        .execute(
+            "INSERT OR REPLACE INTO meta(key,value) VALUES('schema_version','34')",
+            [],
+        )
+        .map_err(|e| e.to_string())?;
+    let (root_path,name,registered,uid,last_seen):(String,String,String,i64,String)=world.authority_connection()?.query_row("SELECT root_path,display_name,registered_at,registered_by_uid,last_seen_at FROM repositories WHERE repository_id=$1",[repo],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?))).map_err(|e|e.to_string())?;
+    authority.execute("INSERT INTO repositories(repository_id,root_path,display_name,registered_at,registered_by_uid,last_seen_at) VALUES(?1,?2,?3,?4,?5,?6)",rusqlite::params![repo,root_path,name,registered,uid,last_seen]).map_err(|e|e.to_string())?;
     let now = (time::OffsetDateTime::now_utc().unix_timestamp_nanos() / 1_000_000) as u64;
     let generations = [
         ("native-pinned", "rolled_back"),
@@ -2092,21 +2109,36 @@ fn native_backup_retirement(world: &mut World, repo: &str) -> Result<(), String>
         ("native-extra", "committed"),
         ("native-nested", "committed"),
         ("native-link", "committed"),
+        ("native-pending", "committed"),
     ];
     for (index, (name, status)) in generations.iter().enumerate() {
         let generation = cutover.join(name);
         fs::create_dir(&generation).map_err(|e| e.to_string())?;
         fs::set_permissions(&generation, fs::Permissions::from_mode(0o700))
             .map_err(|e| e.to_string())?;
-        let backup = generation.join("authority-before.sqlite3");
-        authority
-            .backup(rusqlite::MAIN_DB, &backup, None)
-            .map_err(|e| e.to_string())?;
+        // Keep native-old as a historical schema-2 snapshot to exercise the
+        // original retirement checks; the latest generations use real pg_dump.
+        let postgres = matches!(*name, "native-recent" | "native-latest");
+        let backup = generation.join(if postgres {
+            "authority-before.pgdump"
+        } else {
+            "authority-before.sqlite3"
+        });
+        if postgres {
+            world
+                .authority()?
+                .backup(backup.clone())
+                .map_err(|e| e.to_string())?;
+        } else {
+            authority
+                .backup(rusqlite::MAIN_DB, &backup, None)
+                .map_err(|e| e.to_string())?;
+        }
         fs::set_permissions(&backup, fs::Permissions::from_mode(0o600))
             .map_err(|e| e.to_string())?;
         write_private_json(
             &generation.join("installation-snapshot.json"),
-            &json!({"schema":2,"status":status,"transaction_dir":generation,
+            &json!({"schema":if postgres {3} else {2},"status":status,"transaction_dir":generation,
                 "entries":[],"backup_sha256":if *name == "native-invalid" {"0".repeat(64)} else {sha256_hex(&fs::read(&backup).map_err(|e|e.to_string())?)},
                 "candidate_commit":"0".repeat(40)}),
         )?;
@@ -2120,6 +2152,10 @@ fn native_backup_retirement(world: &mut World, repo: &str) -> Result<(), String>
             .map_err(|e| e.to_string())?;
     }
     drop(authority);
+    write_private_json(
+        &cutover.join("native-pending/retirement-pending.json"),
+        &json!({"status":"awaiting_acceptance"}),
+    )?;
     fs::write(cutover.join("native-extra/.env"), "PRIVATE_EXTRA_FILE")
         .map_err(|e| e.to_string())?;
     fs::create_dir(cutover.join("native-nested/sessions")).map_err(|e| e.to_string())?;
@@ -2131,7 +2167,7 @@ fn native_backup_retirement(world: &mut World, repo: &str) -> Result<(), String>
     fs::remove_file(cutover.join("native-link/authority-before.sqlite3"))
         .map_err(|e| e.to_string())?;
     std::os::unix::fs::symlink(
-        cutover.join("native-latest/authority-before.sqlite3"),
+        cutover.join("native-recent/authority-before.pgdump"),
         cutover.join("native-link/authority-before.sqlite3"),
     )
     .map_err(|e| e.to_string())?;
@@ -2193,6 +2229,7 @@ fn native_backup_retirement(world: &mut World, repo: &str) -> Result<(), String>
         "native-extra",
         "native-nested",
         "native-link",
+        "native-pending",
         "generic-disguise",
     ] {
         ensure!(
@@ -2367,7 +2404,7 @@ fn native_backup_retirement(world: &mut World, repo: &str) -> Result<(), String>
         "storage_cleanup_plan",
         json!({"artifact_ids":[old["artifact_id"]],"include_persistent_data":true}),
     )?;
-    let retained = cutover.join("native-latest/authority-before.sqlite3");
+    let retained = cutover.join("native-latest/authority-before.pgdump");
     let retained_bytes = fs::read(&retained).map_err(|e| e.to_string())?;
     fs::write(&retained, b"damaged after planning").map_err(|e| e.to_string())?;
     expect_blocked(
@@ -2429,7 +2466,14 @@ fn native_backup_retirement(world: &mut World, repo: &str) -> Result<(), String>
     );
     data(&world.call("repository.list", json!({}))?)?;
     ensure!(
-        world.state.join("authority.sqlite3").is_file(),
+        world
+            .authority_connection()?
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM repositories WHERE repository_id=$1)",
+                [repo],
+                |row| row.get::<_, bool>(0)
+            )
+            .map_err(|e| e.to_string())?,
         "native retirement removed authority state"
     );
     Ok(())

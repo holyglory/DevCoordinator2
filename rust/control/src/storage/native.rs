@@ -245,6 +245,14 @@ impl Backend for HostBackend {
                     return Err(blocked("identity_changed"));
                 }
                 if native_backup {
+                    self.native_backup_root_identity(r, root, context)?;
+                    if path
+                        .join("retirement-pending.json")
+                        .symlink_metadata()
+                        .is_ok()
+                    {
+                        return Err(blocked("activation_acceptance_pending"));
+                    }
                     fs::validate_native_snapshot(path)?;
                 }
                 if r.artifact.kind == api::Kind::Backup && !context.discovering {
@@ -425,6 +433,20 @@ pub fn validate_root(
     database: &crate::database::Database,
 ) -> Result<(), ProtocolError> {
     validate_path(path, config, false, database)
+}
+
+pub fn validate_configured_root(
+    path: &Path,
+    kind: api::Kind,
+    config: &Config,
+    database: &crate::database::Database,
+) -> Result<(), ProtocolError> {
+    validate_path(
+        path,
+        config,
+        kind == api::Kind::Backup && path == config.state_dir.join("cutover"),
+        database,
+    )
 }
 
 fn native_backup_generation(path: &Path, root: &Path, kind: api::Kind, config: &Config) -> bool {

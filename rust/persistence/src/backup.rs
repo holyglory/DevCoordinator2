@@ -354,7 +354,7 @@ fn table_fingerprints(connection: &Connection) -> Result<Vec<TableFingerprint>> 
             let mut digest = Sha256::new();
             let mut count = 0_u64;
             while let Some(row) = rows.next()? {
-                if count % 1024 == 0 {
+                if count.is_multiple_of(1024) {
                     crate::migration::check_offline_budget()?;
                 }
                 let value: String = row.try_get(0)?;

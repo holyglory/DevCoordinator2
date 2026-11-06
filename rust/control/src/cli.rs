@@ -226,7 +226,7 @@ impl Cli {
                             serde_json::from_value(params)
                                 .map_err(|_| invalid("Invalid bug report"))?;
                         Invocation::OfflineBug {
-                            action: OfflineBugAction::Report(p),
+                            action: OfflineBugAction::Report(Box::new(p)),
                         }
                     }
                     devcoordinator2_api::OperationId::BugList => Invocation::OfflineBug {
@@ -251,7 +251,7 @@ impl Cli {
 }
 #[derive(Debug)]
 pub enum OfflineBugAction {
-    Report(devcoordinator2_api::params::BugReport),
+    Report(Box<devcoordinator2_api::params::BugReport>),
     List,
     Close { bug_id: String },
 }
