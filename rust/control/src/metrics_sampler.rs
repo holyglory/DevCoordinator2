@@ -72,6 +72,7 @@ pub struct SamplerSnapshot {
     pub current: BTreeMap<SubjectKey, MetricSample>,
     pub storage: BTreeMap<SubjectKey, BTreeMap<String, u64>>,
     pub meta: BTreeMap<SubjectKey, SubjectMeta>,
+    pub container_counts: Option<BTreeMap<String, u32>>,
 }
 
 #[derive(Clone)]
@@ -109,6 +110,7 @@ struct Working {
 struct StorageScanState {
     worktree_cursor: usize,
     deployment_cursor: usize,
+    component_cursor: usize,
     container_sizes: BTreeMap<String, u64>,
     shared: DockerStorage,
 }
@@ -159,6 +161,11 @@ struct Subject {
     key: SubjectKey,
     meta: SubjectMeta,
     cgroup: Option<PathBuf>,
+}
+
+struct SubjectObservation {
+    subjects: Vec<Subject>,
+    container_counts: Option<BTreeMap<String, u32>>,
 }
 
 #[derive(Clone)]
@@ -321,13 +328,13 @@ impl MetricSampler {
         );
         record(&mut working, "host", "host", "load_1", load.0);
 
-        let subjects = self.subjects()?;
+        let observation = self.subjects()?;
         let mut current = BTreeMap::new();
         let mut meta = BTreeMap::new();
         let mut repositories: BTreeMap<String, MetricSample> = BTreeMap::new();
         let mut managed_cpu = 0.0;
         let mut managed_memory = 0_u64;
-        for subject in subjects {
+        for subject in observation.subjects {
             meta.insert(subject.key.clone(), subject.meta.clone());
             let Some(stats) = self.inner.source.cgroup_stats(subject.cgroup.as_deref()) else {
                 continue;
@@ -417,25 +424,29 @@ impl MetricSampler {
                 other_memory: other.memory_bytes,
             },
         };
-        let existing_storage = self
+        let mut state = self
             .inner
             .state
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let existing_storage = state
             .as_ref()
             .map(|snapshot| snapshot.storage.clone())
             .unwrap_or_default();
+        let container_counts = observation.container_counts.or_else(|| {
+            state
+                .as_ref()
+                .and_then(|snapshot| snapshot.container_counts.clone())
+        });
         let snapshot = SamplerSnapshot {
             host: host.clone(),
             current,
             storage: existing_storage,
             meta,
+            container_counts,
         };
-        *self
-            .inner
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(snapshot.clone());
+        *state = Some(snapshot.clone());
+        drop(state);
         self.evaluate_alerts(&host, &snapshot, &mut working, now_mono)?;
 
         Ok(())
@@ -447,14 +458,23 @@ impl MetricSampler {
             .storage_scan
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        format!("[{},{}]", scan.worktree_cursor, scan.deployment_cursor)
+        format!(
+            "[{},{},{}]",
+            scan.worktree_cursor, scan.deployment_cursor, scan.component_cursor
+        )
     }
 
     pub fn resume_storage_cursor(&self, cursor: Option<&str>) -> Result<(), ProtocolError> {
-        let (worktree, deployment) = match cursor {
-            None => (0, 0),
-            Some(value) if value.len() <= 64 => serde_json::from_str::<(usize, usize)>(value)
-                .map_err(|_| {
+        let (worktree, deployment, component) = match cursor {
+            None => (0, 0, 0),
+            Some(value) if value.len() <= 64 => serde_json::from_str::<Vec<usize>>(value)
+                .ok()
+                .and_then(|positions| match positions.as_slice() {
+                    [worktree, deployment] => Some((*worktree, *deployment, 0)),
+                    [worktree, deployment, component] => Some((*worktree, *deployment, *component)),
+                    _ => None,
+                })
+                .ok_or_else(|| {
                     ProtocolError::new(
                         ErrorCode::ParamsInvalid,
                         "Metric storage cursor is invalid.",
@@ -474,6 +494,7 @@ impl MetricSampler {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         scan.worktree_cursor = worktree;
         scan.deployment_cursor = deployment;
+        scan.component_cursor = component;
         Ok(())
     }
 
@@ -490,6 +511,10 @@ impl MetricSampler {
         worktrees.sort_by(|left, right| left.worktree_id.cmp(&right.worktree_id));
         let mut deployments = deployments;
         deployments.sort_by(|left, right| left.deployment_id.cmp(&right.deployment_id));
+        let mut components = components;
+        components.sort_by(|left, right| {
+            (&left.deployment_id, &left.name).cmp(&(&right.deployment_id, &right.name))
+        });
 
         let previous = self
             .inner
@@ -528,7 +553,13 @@ impl MetricSampler {
         let mut storage = previous;
         storage.retain(|key, _| current_keys.contains(key));
 
-        let (mut worktree_cursor, mut deployment_cursor, mut container_sizes, mut shared) = {
+        let (
+            mut worktree_cursor,
+            mut deployment_cursor,
+            mut component_cursor,
+            mut container_sizes,
+            mut shared,
+        ) = {
             let scan = self
                 .inner
                 .storage_scan
@@ -537,13 +568,16 @@ impl MetricSampler {
             (
                 scan.worktree_cursor,
                 scan.deployment_cursor,
+                scan.component_cursor,
                 scan.container_sizes.clone(),
                 scan.shared.clone(),
             )
         };
 
         let scan_started = Instant::now();
-        let half_budget = StdDuration::from_millis((STORAGE_SCAN_BUDGET.as_millis() / 2) as u64);
+        // Reserve six seconds for bounded container/managed-volume probes.
+        let directory_budget = STORAGE_SCAN_BUDGET.saturating_sub(STORAGE_DOCKER_TIMEOUT * 3);
+        let half_budget = directory_budget / 2;
         let worktree_deadline = scan_started + half_budget;
         let worktree_start = worktree_cursor % worktrees.len().max(1);
         let mut worktrees_scanned = 0;
@@ -582,7 +616,8 @@ impl MetricSampler {
             .collect::<HashMap<_, _>>();
         let deployment_start = deployment_cursor % deployments.len().max(1);
         let mut deployments_scanned = 0;
-        let deployment_deadline = scan_started + STORAGE_SCAN_BUDGET;
+        let deployment_deadline = scan_started + directory_budget;
+        let scan_deadline = scan_started + STORAGE_SCAN_BUDGET;
         while !deployments.is_empty()
             && deployments_scanned < deployments.len()
             && Instant::now() < deployment_deadline
@@ -610,7 +645,7 @@ impl MetricSampler {
             (deployment_start + deployments_scanned) % deployments.len()
         };
 
-        let remaining = deployment_deadline.saturating_duration_since(Instant::now());
+        let remaining = scan_deadline.saturating_duration_since(Instant::now());
         if !remaining.is_zero() {
             let fresh = self
                 .inner
@@ -618,16 +653,6 @@ impl MetricSampler {
                 .container_sizes(remaining.min(STORAGE_DOCKER_TIMEOUT));
             if !fresh.is_empty() || container_sizes.is_empty() {
                 container_sizes = fresh;
-            }
-        }
-        let remaining = deployment_deadline.saturating_duration_since(Instant::now());
-        if !remaining.is_zero() {
-            let fresh = self
-                .inner
-                .source
-                .docker_shared_sizes(remaining.min(STORAGE_DOCKER_TIMEOUT));
-            if fresh != DockerStorage::default() || shared == DockerStorage::default() {
-                shared = fresh;
             }
         }
 
@@ -662,7 +687,10 @@ impl MetricSampler {
 
         let mut volume_owners = BTreeMap::new();
         let mut postgres_probe_allowed = true;
-        for component in &components {
+        let component_start = component_cursor % components.len().max(1);
+        for offset in 0..components.len() {
+            let index = (component_start + offset) % components.len();
+            let component = &components[index];
             let Some(deployment) = deployment_map.get(component.deployment_id.as_str()) else {
                 continue;
             };
@@ -674,6 +702,38 @@ impl MetricSampler {
                 "devcoordinator2-{}-{}-",
                 component.deployment_id, component.name
             );
+            if component.kind == "postgres" {
+                let volume = crate::docker::managed_volume_name(
+                    &component.deployment_id,
+                    &component.name,
+                    "pgdata",
+                )
+                .to_string();
+                volume_owners.insert(
+                    volume.clone(),
+                    (deployment.repository_id.clone(), component.kind.clone()),
+                );
+                let previous = storage
+                    .get(&component_key)
+                    .and_then(|values| values.get("postgres_data"))
+                    .copied();
+                let remaining = scan_deadline.saturating_duration_since(Instant::now());
+                let measured = if remaining.is_zero() {
+                    None
+                } else {
+                    component_cursor = (index + 1) % components.len();
+                    self.inner
+                        .source
+                        .managed_volume_size(&volume, remaining.min(STORAGE_DOCKER_TIMEOUT))
+                };
+                if let Some(size) = measured.or(previous) {
+                    shared.volumes.insert(volume, size);
+                    storage
+                        .entry(component_key.clone())
+                        .or_default()
+                        .insert("postgres_data".into(), size);
+                }
+            }
             for volume in shared
                 .volumes
                 .keys()
@@ -715,7 +775,7 @@ impl MetricSampler {
                     .read_postgres_credentials(&component.deployment_id, &component.name)
                 && postgres_probe_allowed
             {
-                let remaining = deployment_deadline.saturating_duration_since(Instant::now());
+                let remaining = scan_deadline.saturating_duration_since(Instant::now());
                 if remaining.is_zero() {
                     postgres_probe_allowed = false;
                 } else if let Ok(Some(facts)) = self.inner.docker.postgres_facts(
@@ -735,6 +795,37 @@ impl MetricSampler {
                             metric,
                             value as f64,
                         ));
+                    }
+                }
+            }
+        }
+
+        let remaining = scan_deadline.saturating_duration_since(Instant::now());
+        if !remaining.is_zero() {
+            let fresh = self
+                .inner
+                .source
+                .docker_shared_sizes(remaining.min(STORAGE_DOCKER_TIMEOUT));
+            if fresh != DockerStorage::default() {
+                shared = fresh;
+                // A complete bulk result also resolves newly observed volume
+                // ownership; unavailable results retain the exact measurements.
+                for component in &components {
+                    if let Some(deployment) = deployment_map.get(component.deployment_id.as_str()) {
+                        let prefix = format!(
+                            "devcoordinator2-{}-{}-",
+                            component.deployment_id, component.name
+                        );
+                        for volume in shared
+                            .volumes
+                            .keys()
+                            .filter(|volume| volume.starts_with(&prefix))
+                        {
+                            volume_owners.insert(
+                                volume.clone(),
+                                (deployment.repository_id.clone(), component.kind.clone()),
+                            );
+                        }
                     }
                 }
             }
@@ -793,7 +884,7 @@ impl MetricSampler {
         let state_size = bounded_directory_size(
             self.inner.source.as_ref(),
             &self.inner.config.state_dir,
-            deployment_deadline,
+            scan_deadline,
         )
         .or_else(|| previous_host.get("devcoordinator_state").copied())
         .unwrap_or(0);
@@ -837,6 +928,7 @@ impl MetricSampler {
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             scan.worktree_cursor = worktree_cursor;
             scan.deployment_cursor = deployment_cursor;
+            scan.component_cursor = component_cursor;
             scan.container_sizes = container_sizes;
             scan.shared = shared;
         }
@@ -869,6 +961,7 @@ impl MetricSampler {
                 current: BTreeMap::new(),
                 storage,
                 meta: BTreeMap::new(),
+                container_counts: None,
             });
         }
         Ok(())
@@ -943,7 +1036,7 @@ impl MetricSampler {
         self.inner.metrics.flush(&minute, &aggregates)
     }
 
-    fn subjects(&self) -> Result<Vec<Subject>, ProtocolError> {
+    fn subjects(&self) -> Result<SubjectObservation, ProtocolError> {
         let (worktrees, deployments, components) = self.runtime_records()?;
         let worktrees = worktrees
             .into_iter()
@@ -1003,7 +1096,7 @@ impl MetricSampler {
                 cgroup,
             });
         }
-        if let Ok(inventory) = self.inner.inventory.containers() {
+        let container_counts = if let Ok(inventory) = self.inner.inventory.containers() {
             for container in inventory.containers {
                 subjects.push(Subject {
                     key: SubjectKey::new("container", &container.id),
@@ -1021,8 +1114,14 @@ impl MetricSampler {
                         .then(|| self.inner.source.container_cgroup(&container.id)),
                 });
             }
-        }
-        Ok(subjects)
+            Some(inventory.counts)
+        } else {
+            None
+        };
+        Ok(SubjectObservation {
+            subjects,
+            container_counts,
+        })
     }
 
     fn evaluate_alerts(
@@ -1550,6 +1649,7 @@ mod tests {
         request_during_scan: Mutex<Option<MetricSampler>>,
         scans: AtomicU64,
         observations: Mutex<Option<tokio::sync::mpsc::UnboundedSender<&'static str>>>,
+        volume_available: AtomicBool,
     }
     impl FakeSource {
         fn observe(&self, event: &'static str) {
@@ -1609,6 +1709,11 @@ mod tests {
         fn docker_shared_sizes(&self, _: StdDuration) -> DockerStorage {
             DockerStorage::default()
         }
+        fn managed_volume_size(&self, name: &str, _timeout: StdDuration) -> Option<u64> {
+            (self.volume_available.load(Ordering::Relaxed)
+                && name == "devcoordinator2-d1-db-pgdata")
+                .then_some(23)
+        }
         fn logical_cpus(&self) -> u32 {
             2
         }
@@ -1650,6 +1755,7 @@ mod tests {
             request_during_scan: Mutex::new(None),
             scans: AtomicU64::new(0),
             observations: Mutex::new(None),
+            volume_available: AtomicBool::new(true),
         });
         let sampler = MetricSampler::with_adapters(
             config,
@@ -1665,7 +1771,7 @@ mod tests {
 
     #[test]
     fn host_sampling_storage_and_minute_flush_are_consistent() {
-        let (_temporary, sampler, _source) = storage_fixture();
+        let (_temporary, sampler, source) = storage_fixture();
         sampler.tick().unwrap();
         sampler.storage_tick().unwrap();
         let snapshot = sampler.snapshot().unwrap();
@@ -1717,6 +1823,25 @@ mod tests {
             .unwrap();
         sampler.tick().unwrap();
         assert!(sampler.alerts().current().unwrap().is_empty());
+        // A bounded bulk Docker inventory may be unavailable on a large host.
+        // The exact managed PG volume still contributes real measured bytes.
+        sampler.inner.database.call(|connection| {
+            connection.execute("INSERT INTO components(deployment_id,name,type,order_index,spec_fingerprint,desired_state,state,health,updated_at) VALUES('d1','db','postgres',0,'f','running','running','healthy','t')",[])?;
+            Ok(())
+        }).unwrap();
+        sampler.storage_tick().unwrap();
+        let repository = SubjectKey::new("repository", "r1");
+        assert_eq!(
+            sampler.snapshot().unwrap().storage[&repository]["postgres_data"],
+            23
+        );
+        source.volume_available.store(false, Ordering::Relaxed);
+        sampler.storage_tick().unwrap();
+        assert_eq!(
+            sampler.snapshot().unwrap().storage[&repository]["postgres_data"],
+            23,
+            "a failed refresh must retain the previous measurement"
+        );
     }
 
     #[test]
@@ -1726,11 +1851,12 @@ mod tests {
             let mut scan = sampler.inner.storage_scan.lock().unwrap();
             scan.worktree_cursor = 3;
             scan.deployment_cursor = 5;
+            scan.component_cursor = 2;
             scan.container_sizes
                 .insert("private-cache-not-a-checkpoint".into(), 42);
         }
         let cursor = sampler.storage_cursor();
-        assert_eq!(cursor, "[3,5]");
+        assert_eq!(cursor, "[3,5,2]");
         let restarted = MetricSampler::with_adapters(
             (*sampler.inner.config).clone(),
             sampler.inner.database.clone(),
@@ -1754,7 +1880,7 @@ mod tests {
         for invalid in [
             "[-1,0]",
             "[1]",
-            "[1,2,3]",
+            "[1,2,3,4]",
             "{\"private_path\":\"/private\"}",
         ] {
             assert!(restarted.resume_storage_cursor(Some(invalid)).is_err());
@@ -1762,7 +1888,9 @@ mod tests {
         }
         restarted.storage_tick().unwrap();
         restarted.resume_storage_cursor(None).unwrap();
-        assert_eq!(restarted.storage_cursor(), "[0,0]");
+        assert_eq!(restarted.storage_cursor(), "[0,0,0]");
+        restarted.resume_storage_cursor(Some("[3,5]")).unwrap();
+        assert_eq!(restarted.storage_cursor(), "[3,5,0]");
         sampler.storage_tick().unwrap();
         assert!(!sampler.inner.storage_requested.load(Ordering::SeqCst));
         *source.request_during_scan.lock().unwrap() = Some(sampler.clone());

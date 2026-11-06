@@ -60,18 +60,17 @@ pub fn verify_activation_routes(
     let (document, acknowledgement) = loop {
         let document = read(&state.join("public/routes.json"));
         let acknowledgement = read(&edge_state.join("routes.accepted.json"));
-        if let (Ok(document), Ok(acknowledgement)) = (document, acknowledgement) {
-            if document["schema"] == 2
-                && acknowledgement["schema"] == 2
-                && document["generation"].as_u64().is_some()
-                && document["payload_sha256"]
-                    .as_str()
-                    .is_some_and(|hash| hash.len() == 64)
-                && document["generation"] == acknowledgement["generation"]
-                && document["payload_sha256"] == acknowledgement["payload_sha256"]
-            {
-                break (document, acknowledgement);
-            }
+        if let (Ok(document), Ok(acknowledgement)) = (document, acknowledgement)
+            && document["schema"] == 2
+            && acknowledgement["schema"] == 2
+            && document["generation"].as_u64().is_some()
+            && document["payload_sha256"]
+                .as_str()
+                .is_some_and(|hash| hash.len() == 64)
+            && document["generation"] == acknowledgement["generation"]
+            && document["payload_sha256"] == acknowledgement["payload_sha256"]
+        {
+            break (document, acknowledgement);
         }
         if std::time::Instant::now() >= deadline {
             return Err(invalid());

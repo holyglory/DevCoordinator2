@@ -735,7 +735,7 @@ mod tests {
             };
             assert_eq!(
                 directory.join("checks/unit/cases").join(case).exists(),
-                index == 0 || index >= 17 && index <= 19 || index == 21,
+                index == 0 || (17..=19).contains(&index) || index == 21,
                 "run index{index}"
             );
         }

@@ -593,6 +593,11 @@ impl World {
         if let Err(error) = self.stop_daemon(false) {
             failures.push(error);
         }
+        if (preserve_files || !failures.is_empty())
+            && let Err(error) = self.preserve_failed_authority()
+        {
+            failures.push(error);
+        }
         if let Some(mut child) = self.route_consumer.take() {
             let _ = child.kill();
             if let Err(error) = child.wait() {
@@ -626,10 +631,10 @@ impl World {
         }
         match docker_ids("instance", &self.unit_prefix) {
             Ok(ids) if !ids.is_empty() => {
-                let mut arguments = vec!["rm", "-f", "-v"];
-                arguments.extend(ids.iter().map(String::as_str));
-                if let Err(error) = run_status("docker", &arguments) {
-                    failures.push(error);
+                for id in ids {
+                    if let Err(error) = remove_fixture_container(&self.unit_prefix, &id) {
+                        failures.push(error);
+                    }
                 }
             }
             Ok(_) => {}
@@ -686,12 +691,19 @@ impl World {
                 }
             }
         }
-        if let Some(postgres) = self.postgres.take() {
-            if let Err(error) = postgres.stop() {
-                failures.push(error.to_string());
-            }
+        if !failures.is_empty()
+            && !self.base.join("failed-authority.pgdump").exists()
+            && let Err(error) = self.preserve_failed_authority()
+        {
+            failures.push(error);
+        }
+        if let Some(postgres) = self.postgres.take()
+            && let Err(error) = postgres.stop()
+        {
+            failures.push(error.to_string());
         }
         if !preserve_files
+            && failures.is_empty()
             && self.base.join(OWNERSHIP_MARKER).is_file()
             && let Err(error) = fs::remove_dir_all(&self.base)
         {
@@ -702,6 +714,14 @@ impl World {
         } else {
             Err(failures.join("; "))
         }
+    }
+
+    fn preserve_failed_authority(&self) -> Result<(), String> {
+        // PostgreSQL fixture teardown removes its cluster. Retain a private
+        // logical snapshot so a failed journey keeps its diagnostic state.
+        self.authority()?
+            .backup(self.base.join("failed-authority.pgdump"))
+            .map_err(|_| "could not retain failed fixture authority snapshot".to_owned())
     }
 
     fn cleanup_compose(&self) -> Result<(), String> {
@@ -1124,6 +1144,71 @@ fn docker_ids(key: &str, value: &str) -> Result<Vec<String>, String> {
         .filter(|line| !line.is_empty())
         .map(str::to_owned)
         .collect())
+}
+
+fn remove_fixture_container(instance: &str, value: &str) -> Result<(), String> {
+    use devcoordinator2_control::docker::{
+        DockerCli, DockerControl, DockerInvocation, DockerOutput, ExactContainerId,
+    };
+
+    let container = ExactContainerId::parse(value.to_owned()).map_err(|e| e.to_string())?;
+    let docker = DockerCli::default();
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let invoke = |arguments: &[&str]| -> Result<DockerOutput, String> {
+        let remaining = deadline
+            .checked_duration_since(Instant::now())
+            .ok_or_else(|| format!("fixture container {container} removal deadline reached"))?;
+        let request =
+            DockerInvocation::new(arguments.iter().map(OsString::from).collect(), remaining)
+                .map_err(|e| e.to_string())?;
+        docker.invoke(request).map_err(|e| e.to_string())
+    };
+    let present = || -> Result<bool, String> {
+        let output = invoke(&[
+            "inspect",
+            "--format",
+            "{{.Id}} {{index .Config.Labels \"devcoordinator2.instance\"}}",
+            container.as_str(),
+        ])?;
+        if output.success() {
+            let mut fields = output.stdout.split_whitespace();
+            ensure!(
+                fields.next() == Some(container.as_str())
+                    && fields.next() == Some(instance)
+                    && fields.next().is_none(),
+                "refusing cleanup of a container outside the exact owned fixture"
+            );
+            return Ok(true);
+        }
+        let error = output.stderr.to_ascii_lowercase();
+        if error.contains("no such container") || error.contains("no such object") {
+            return Ok(false);
+        }
+        Err("cannot verify exact fixture container absence".to_owned())
+    };
+    if !present()? {
+        return Ok(());
+    }
+    let output = invoke(&["rm", "--force", "--volumes", container.as_str()])?;
+    let error = output.stderr.to_ascii_lowercase();
+    ensure!(
+        output.success()
+            || error.contains("removal of container") && error.contains("already in progress")
+            || error.contains("no such container")
+            || error.contains("no such object"),
+        "cannot remove exact fixture container {container}"
+    );
+    // A concurrent executor cleanup may have started the same removal. Its
+    // acknowledgement is not completion; keep observing this exact owned ID.
+    loop {
+        if !present()? {
+            return Ok(());
+        }
+        let remaining = deadline
+            .checked_duration_since(Instant::now())
+            .ok_or_else(|| format!("fixture container {container} removal deadline reached"))?;
+        thread::sleep(remaining.min(Duration::from_millis(50)));
+    }
 }
 
 fn write_private_json(path: &Path, value: &Value) -> Result<(), String> {
@@ -3366,7 +3451,7 @@ user = "app"
         tcp_reachable(owner_port),
         "owner PostgreSQL host port is unreachable"
     );
-    world.track_volume(&format!("devcoordinator2-{owner_id}-db-pgdata"));
+    world.track_volume(format!("devcoordinator2-{owner_id}-db-pgdata"));
 
     world.write_config(&format!(
         r#"schema = 2
@@ -3513,6 +3598,10 @@ fn case_digest_pinned_postgis_fixture_is_pulled_injected_and_removed(
 }
 
 fn case_postgres_removed_on_supersession_and_recovery(world: &mut World) -> Result<(), String> {
+    use devcoordinator2_control::docker::{
+        DockerCli, DockerControl, DockerInvocation, ExactContainerId,
+    };
+
     let (listener, gate) = database_case_gate(world)?;
     let command = fixture_command(
         world,
@@ -3535,27 +3624,69 @@ fn case_postgres_removed_on_supersession_and_recovery(world: &mut World) -> Resu
         docker_ids("run", &first_id)?.len() == 1,
         "first PostgreSQL fixture did not start"
     );
-    let second = world.call("test.start", json!({"path": world.repo}))?;
-    let second_id = data(&second)?["run_id"]
+    let second = world.call("test.start", json!({"path": world.repo, "mode":"replace"}))?;
+    let second_data = data(&second)?;
+    let second_id = second_data["run_id"]
         .as_str()
         .ok_or_else(|| "second start omitted run_id".to_owned())?
         .to_owned();
+    ensure!(
+        second_id != first_id
+            && second_data["attached"] == json!(false)
+            && second_data["superseded_run_id"] == json!(first_id),
+        "PostgreSQL replacement did not supersede the first run"
+    );
     let second_ready = await_database_case(&listener)?;
     drop(first_ready);
     ensure!(
         docker_ids("run", &first_id)?.is_empty(),
         "superseded PostgreSQL fixture survived"
     );
+    let second_containers = docker_ids("run", &second_id)?;
     ensure!(
-        docker_ids("run", &second_id)?.len() == 1,
+        second_containers.len() == 1
+            && docker_ids("instance", &world.unit_prefix)?.contains(&second_containers[0]),
         "successor PostgreSQL fixture did not start"
     );
+    let orphan =
+        ExactContainerId::parse(second_containers[0].clone()).map_err(|e| e.to_string())?;
     world.stop_daemon(true)?;
     ensure!(
-        docker_ids("run", &second_id)?.len() == 1,
+        docker_ids("run", &second_id)? == second_containers,
         "hard daemon stop unexpectedly removed the orphan fixture"
     );
     world.start_daemon(None, None, None)?;
+    let recovery_timeout = Duration::from_secs(15);
+    let recovery_deadline = Instant::now() + recovery_timeout;
+    // Keep the command blocked until recovery proves this exact orphan absent.
+    // Releasing its socket first would allow ordinary completion to fake proof.
+    wait_for_value("orphan PostgreSQL recovery", recovery_timeout, || {
+        let remaining = recovery_deadline
+            .checked_duration_since(Instant::now())
+            .ok_or("orphan PostgreSQL recovery deadline reached")?;
+        let request = DockerInvocation::new(
+            vec![
+                "ps".into(),
+                "--all".into(),
+                "--no-trunc".into(),
+                "--quiet".into(),
+                "--filter".into(),
+                format!("id={orphan}").into(),
+            ],
+            remaining,
+        )
+        .map_err(|e| e.to_string())?;
+        let output = DockerCli::default()
+            .invoke(request)
+            .map_err(|e| e.to_string())?;
+        ensure!(output.success(), "cannot inspect the exact orphan container");
+        let identity = output.stdout.trim();
+        ensure!(
+            identity.is_empty() || identity == orphan.as_str(),
+            "orphan observation returned a different container identity"
+        );
+        Ok(identity.is_empty().then_some(json!(true)))
+    })?;
     drop(second_ready);
     ensure!(
         docker_ids("run", &second_id)?.is_empty(),
@@ -3872,7 +4003,14 @@ fn case_upgrade_drain_rejects_new_starts_and_stop_reason_is_operational(
         None,
     )?)?;
     data(&world.call("test.start", json!({"path": world.repo}))?)?;
-    let lease = begin_drain(&world.state, "test upgrade").map_err(|error| error.to_string())?;
+    let lease = begin_drain(
+        world
+            .socket
+            .parent()
+            .ok_or("daemon socket parent missing")?,
+        "test upgrade",
+    )
+    .map_err(|error| error.to_string())?;
     let tested = (|| {
         let refused = world.call("test.start", json!({"path": world.repo}))?;
         ensure!(
@@ -3921,8 +4059,14 @@ fn case_repository_installer_drain_waits_then_restarts_and_reconnects(
         None,
     )?)?;
     data(&world.call("test.start", json!({"path": world.repo}))?)?;
-    let lease =
-        begin_drain(&world.state, "repository install").map_err(|error| error.to_string())?;
+    let lease = begin_drain(
+        world
+            .socket
+            .parent()
+            .ok_or("daemon socket parent missing")?,
+        "repository install",
+    )
+    .map_err(|error| error.to_string())?;
     let tested = (|| {
         let refused = world.call("test.start", json!({"path": world.repo}))?;
         ensure!(
@@ -4090,12 +4234,25 @@ fn case_worktree_apply_stop_start_reapply_remove(world: &mut World) -> Result<()
     run_status("systemctl", &["stop", &api_unit])?;
     world.stop_daemon(true)?;
     world.start_daemon(None, None, None)?;
-    let recovered =
-        data(&world.call("deployment.status", json!({"deployment_id": deployment_id}))?)?.clone();
+    let deadline = (time::OffsetDateTime::now_utc() + time::Duration::seconds(20))
+        .format(&time::format_description::well_known::Rfc3339)
+        .map_err(|error| error.to_string())?;
+    let recovered = data(&world.call(
+        "deployment.wait",
+        json!({
+            "deployment_id": deployment_id, "state": "ready", "deadline_at": deadline
+        }),
+    )?)?
+    .clone();
+    ensure!(
+        recovered["completed"] == true && recovered["timed_out"] == false,
+        "restart recovery did not complete through the bounded deployment wait"
+    );
+    let recovered = &recovered["status"];
     ensure!(
         recovered["current_generation"] == 1
-            && component(&recovered, "api")?["binding"]["identity"] == api_unit
-            && component(&recovered, "api")?["port"] == json!(api_port)
+            && component(recovered, "api")?["binding"]["identity"] == api_unit
+            && component(recovered, "api")?["port"] == json!(api_port)
             && recovered["readiness"]["ready"] == true,
         "daemon restart did not recover the committed routed process"
     );

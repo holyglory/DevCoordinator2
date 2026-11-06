@@ -446,7 +446,7 @@ fn review_protocol_cli_and_mcp_preserve_exact_receipt_validation() {
         RequestEnvelope {
             protocol: 3,
             id: "show".into(),
-            operation: operation.into(),
+            operation,
             params,
             client: ClientContext::default(),
         },

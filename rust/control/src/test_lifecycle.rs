@@ -3176,7 +3176,7 @@ pub(crate) fn default_executor_path() -> PathBuf {
         .join("target/release/devcoordinator2-executor");
     #[cfg(not(test))]
     {
-        return resolve_executor_path(std::env::current_exe().ok().as_deref(), canonical);
+        resolve_executor_path(std::env::current_exe().ok().as_deref(), canonical)
     }
     #[cfg(test)]
     canonical

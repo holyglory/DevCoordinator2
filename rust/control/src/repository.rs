@@ -938,6 +938,10 @@ impl Registry {
             .map_err(database_error)
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "All existing retirement receipt fields are committed together at this boundary"
+    )]
     fn complete_retirement(
         &self,
         receipt_id: &str,

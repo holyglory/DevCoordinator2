@@ -35,6 +35,9 @@ use crate::install::{
 mod finalize;
 #[path = "cutover/native_recovery.rs"]
 mod native_recovery;
+#[cfg(feature = "selftest-fixtures")]
+#[path = "cutover/rehearsal.rs"]
+pub mod rehearsal;
 pub use finalize::{FinalizationConfig, FinalizationReceipt, LiveAcceptance, finalize_host};
 
 const DRAIN_FILE: &str = "test-drain.json";
@@ -289,6 +292,8 @@ pub struct HostCutoverConfig {
     pub edge_unit: String,
     pub edge_state_dir: PathBuf,
     pub canary: bool,
+    /// Runtime-only, private-network service units for an owned integration fixture.
+    pub ephemeral_services: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -356,6 +361,7 @@ impl Default for HostCutoverConfig {
             edge_unit: "devcoordinator2-edge.service".to_owned(),
             edge_state_dir: "/var/lib/devcoordinator2-edge".into(),
             canary: false,
+            ephemeral_services: false,
         }
     }
 }
@@ -432,6 +438,8 @@ pub struct HostCutover {
     frozen_source_sha256: Option<String>,
     postgres_started: bool,
     prior_edge_source: Option<install::edge_source::PinnedSource>,
+    #[cfg(feature = "selftest-fixtures")]
+    rehearsal_fail_edge_start: bool,
 }
 
 impl HostCutover {
@@ -440,9 +448,18 @@ impl HostCutover {
     }
 
     pub fn new_owned(
+        config: HostCutoverConfig,
+        runner: Arc<dyn CommandRunner>,
+        expected_owner: (u32, u32),
+    ) -> Result<Self, String> {
+        Self::new_owned_checked(config, runner, expected_owner, false)
+    }
+
+    fn new_owned_checked(
         mut config: HostCutoverConfig,
         runner: Arc<dyn CommandRunner>,
         expected_owner: (u32, u32),
+        fixture_only: bool,
     ) -> Result<Self, String> {
         match config.transaction_dir.symlink_metadata() {
             Ok(_) => return Err("cutover transaction directory already exists".to_owned()),
@@ -454,11 +471,22 @@ impl HostCutover {
             runner.as_ref(),
             expected_owner.0,
         )?;
-        let acceptance_sha256 = install::postgres::verify_acceptance(
-            &config.candidate_acceptance,
-            &manifest,
-            expected_owner.0,
-        )?;
+        let acceptance_sha256 = if fixture_only {
+            #[cfg(feature = "selftest-fixtures")]
+            {
+                rehearsal::verify_fixture_inputs(&config, &manifest, expected_owner.0)?
+            }
+            #[cfg(not(feature = "selftest-fixtures"))]
+            {
+                return Err("installer rehearsal support is not compiled".into());
+            }
+        } else {
+            install::postgres::verify_acceptance(
+                &config.candidate_acceptance,
+                &manifest,
+                expected_owner.0,
+            )?
+        };
         config
             .postgres
             .verify_binaries(runner.as_ref(), expected_owner)?;
@@ -583,9 +611,8 @@ impl HostCutover {
                 return Err("cutover requires exact service unit names".into());
             }
         }
-        let daemon_unit_text = render_daemon_unit_for_binary(source_root, &daemon_binary)?
-            .replace("devcoordinator2-postgres.service", &config.postgres.unit);
-        let edge_unit_text = render_edge_unit(source_root, config.canary)?;
+        let (daemon_unit_text, edge_unit_text) =
+            render_host_units(&config, source_root, &daemon_binary)?;
         let tests_slice_unit_text = render_tests_slice_unit(source_root)?;
         let tmpfiles_text = install::state_tmpfiles(source_root, &config.tmpfiles_path)?;
         Ok(Self {
@@ -607,13 +634,19 @@ impl HostCutover {
             frozen_source_sha256: None,
             postgres_started: false,
             prior_edge_source: None,
+            #[cfg(feature = "selftest-fixtures")]
+            rehearsal_fail_edge_start: false,
         })
     }
 
     fn systemctl(&self, arguments: &[&str]) -> Result<(), String> {
+        let mut arguments = arguments.iter().map(OsString::from).collect::<Vec<_>>();
+        if self.config.ephemeral_services && arguments.first().is_some_and(|arg| arg == "enable") {
+            arguments.insert(1, "--runtime".into());
+        }
         let output = self.runner.run(&CommandRequest {
             program: self.config.systemctl.clone(),
-            args: arguments.iter().map(OsString::from).collect(),
+            args: arguments,
             environment: std::collections::BTreeMap::from([(
                 OsString::from("PATH"),
                 OsString::from("/usr/bin:/bin"),
@@ -1235,6 +1268,12 @@ impl CutoverAdapter for HostCutover {
     }
 
     fn start_rust(&mut self) -> Result<(), String> {
+        #[cfg(feature = "selftest-fixtures")]
+        if self.rehearsal_fail_edge_start {
+            // Only the marker-validated fixture constructor can arm this. A
+            // real Node startup fails; no command or success response is mocked.
+            install::set_env_value(&self.config.edge_env, "EDGE_BASE_DOMAIN", "")?;
+        }
         self.systemctl_all(&[
             ("enable", &self.config.daemon_unit),
             ("restart", &self.config.daemon_unit),
@@ -1286,6 +1325,8 @@ impl CutoverAdapter for HostCutover {
         self.systemctl(&["is-active", "--quiet", &self.config.edge_unit])?;
         self.verify_native_routes()?;
         self.verify_critical_reads()?;
+        self.systemctl(&["is-active", "--quiet", &self.config.daemon_unit])?;
+        self.systemctl(&["is-active", "--quiet", &self.config.edge_unit])?;
         Ok(vec![
             "route-lease-edge-reconciled".to_owned(),
             "v3-cli-ping".to_owned(),
@@ -1479,6 +1520,121 @@ fn restore_prior_edge_source(
     )
 }
 
+fn render_host_units(
+    config: &HostCutoverConfig,
+    source: &Path,
+    daemon: &Path,
+) -> Result<(String, String), String> {
+    let path = |path: &Path| -> Result<String, String> {
+        let value = path_text(path)?;
+        if !path.is_absolute()
+            || path.components().any(|component| {
+                matches!(
+                    component,
+                    std::path::Component::ParentDir | std::path::Component::CurDir
+                )
+            })
+            || value.bytes().any(|byte| {
+                byte.is_ascii_whitespace() || matches!(byte, b'%' | b'\\' | b'\'' | b'"')
+            })
+        {
+            return Err("service bindings require exact absolute unit paths".into());
+        }
+        Ok(value)
+    };
+    let instance = path(&config.instance_env)?;
+    let state = path(
+        config
+            .database_path
+            .parent()
+            .ok_or("authority state directory is unavailable")?,
+    )?;
+    let runtime = path(&config.runtime_dir)?;
+    let etc = path(
+        config
+            .instance_env
+            .parent()
+            .ok_or("instance environment has no parent")?,
+    )?;
+    let daemon=render_daemon_unit_for_binary(source,daemon)?
+        .replace("devcoordinator2-postgres.service",&config.postgres.unit)
+        .replace("EnvironmentFile=-/etc/devcoordinator2/instance.env",&format!("EnvironmentFile=-{instance}\nEnvironment=DEVCOORDINATOR2_INSTANCE_ENV={instance}"))
+        .replace("ReadWritePaths=/home /var/lib/devcoordinator2 /run/devcoordinator2 /etc/devcoordinator2",&format!("ReadWritePaths=/home {state} {runtime} {etc}"));
+    let edge_env = path(&config.edge_env)?;
+    let edge_state = path(&config.edge_state_dir)?;
+    let credentials = config
+        .edge_env
+        .parent()
+        .ok_or("edge environment has no parent")?
+        .join("edge");
+    let credential = path(&credentials)?;
+    let mut edge = render_edge_unit(source, config.canary)?
+        .replace(
+            "EnvironmentFile=/etc/devcoordinator2/edge.env",
+            &format!("EnvironmentFile={edge_env}"),
+        )
+        .replace("/etc/devcoordinator2/edge/", &format!("{credential}/"))
+        .replace(
+            "Environment=EDGE_STATE_DIR=/var/lib/devcoordinator2-edge",
+            &format!("Environment=EDGE_STATE_DIR={edge_state}"),
+        )
+        .replace(
+            "ReadOnlyPaths=-/var/lib/devcoordinator2/public",
+            &format!("ReadOnlyPaths=-{state}/public"),
+        );
+    if config.edge_state_dir != Path::new("/var/lib/devcoordinator2-edge") {
+        edge = edge.replace(
+            "StateDirectory=devcoordinator2-edge\n",
+            &format!("ReadWritePaths={edge_state}\n"),
+        );
+    }
+    if !daemon.contains(&format!("EnvironmentFile=-{instance}\n"))
+        || !daemon.contains(&format!(
+            "Environment=DEVCOORDINATOR2_INSTANCE_ENV={instance}\n"
+        ))
+        || !edge.contains(&format!("EnvironmentFile={edge_env}\n"))
+        || !edge.contains(&format!("Environment=EDGE_STATE_DIR={edge_state}\n"))
+        || !edge.contains(&format!(
+            "LoadCredential=session.secret:{credential}/session.secret\n"
+        ))
+    {
+        return Err("source units do not bind the configured instance and credential paths".into());
+    }
+    let daemon = if config.ephemeral_services {
+        #[cfg(not(feature = "selftest-fixtures"))]
+        return Err("ephemeral service profiles require the installer rehearsal feature".into());
+        #[cfg(feature = "selftest-fixtures")]
+        {
+            let root = path(&rehearsal::service_root(config)?)?;
+            edge = edge.replace(
+                "[Service]\n",
+                &format!("[Service]\nPrivateNetwork=yes\nTimeoutStopSec=15\nStandardOutput=append:{root}/service-logs/edge.log\nStandardError=append:{root}/service-logs/edge.log\n"),
+            );
+            let daemon = daemon
+                .replace("ProtectSystem=full\n", "ProtectSystem=strict\n")
+                .replace(
+                    &format!("ReadWritePaths=/home {state} {runtime} {etc}\n"),
+                    &format!("ReadWritePaths={root}\n"),
+                )
+                .replace("[Service]\n", &format!("[Service]\nPrivateTmp=yes\nTimeoutStopSec=15\nStandardOutput=append:{root}/service-logs/daemon.log\nStandardError=append:{root}/service-logs/daemon.log\n"));
+            let writable = format!("ReadWritePaths={root}");
+            let mut writable_directives = daemon
+                .lines()
+                .filter(|line| line.starts_with("ReadWritePaths="));
+            if !daemon.lines().any(|line| line == "ProtectSystem=strict")
+                || writable_directives.next() != Some(writable.as_str())
+                || writable_directives.next().is_some()
+            {
+                return Err("fixture daemon does not isolate writes to its owned root".into());
+            }
+            daemon
+        }
+    } else {
+        daemon
+    };
+    Ok((daemon, edge))
+}
+
 fn successful_v3_ping(response: &Value) -> bool {
     response.get("protocol").and_then(Value::as_u64) == Some(3)
         && response.get("ok") == Some(&Value::Bool(true))
@@ -1489,7 +1645,7 @@ fn owned_fence_binding(path: &Path, owner: u32) -> Result<Value, String> {
         |_| "the exact committed activation fence is unavailable; preserve PostgreSQL authority",
     )?;
     if metadata.file_type().is_symlink()
-        || (!metadata.file_type().is_socket() && !(cfg!(test) && metadata.is_file()))
+        || !(metadata.file_type().is_socket() || cfg!(test) && metadata.is_file())
         || metadata.uid() != owner
     {
         return Err("committed activation fence is not owned by this installation".into());
@@ -3267,12 +3423,12 @@ mod tests {
         .unwrap();
         std::fs::write(
             source.join("deploy/devcoordinator2.service"),
-            "[Service]\nExecStart=/home/DevCoordinator2/target/release/devcoordinator2 daemon\n",
+            include_str!("../../../deploy/devcoordinator2.service"),
         )
         .unwrap();
         std::fs::write(
             source.join("deploy/devcoordinator2-edge.service"),
-            "[Service]\nExecStart=/usr/bin/node /home/DevCoordinator2/edge/devcoordinator2-edge.mjs\nProtectHome=read-only\nReadOnlyPaths=/home/DevCoordinator2\n",
+            include_str!("../../../deploy/devcoordinator2-edge.service"),
         )
         .unwrap();
         std::fs::write(
@@ -3494,6 +3650,7 @@ mod tests {
                 edge_unit: "devcoordinator2-edge.service".to_owned(),
                 edge_state_dir: root.join("edge-state"),
                 canary: false,
+                ephemeral_services: false,
             },
             expected_owner,
             old_daemon,
@@ -3546,6 +3703,47 @@ mod tests {
         }
         let receipt = activate(&mut host).unwrap();
         assert_candidate_read_calls(&runner.requests.lock().unwrap());
+        let daemon_unit = std::fs::read_to_string(&world.config.daemon_unit_path).unwrap();
+        assert!(daemon_unit.contains(&format!(
+            "EnvironmentFile=-{}\n",
+            world.config.instance_env.display()
+        )));
+        assert!(daemon_unit.contains(&format!(
+            "Environment=DEVCOORDINATOR2_INSTANCE_ENV={}\n",
+            world.config.instance_env.display()
+        )));
+        let edge_unit = std::fs::read_to_string(&world.config.edge_unit_path).unwrap();
+        assert!(edge_unit.contains(&format!(
+            "EnvironmentFile={}\n",
+            world.config.edge_env.display()
+        )));
+        assert!(edge_unit.contains(&format!(
+            "Environment=EDGE_STATE_DIR={}\n",
+            world.config.edge_state_dir.display()
+        )));
+        assert!(edge_unit.contains(&format!(
+            "ReadWritePaths={}\n",
+            world.config.edge_state_dir.display()
+        )));
+        let edge_directives = edge_unit
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty() && !line.starts_with('#'))
+            .collect::<Vec<_>>();
+        assert!(
+            edge_directives
+                .iter()
+                .all(|line| !line.contains("/etc/devcoordinator2/")
+                    && !line.contains("/var/lib/devcoordinator2")
+                    && *line != "StateDirectory=devcoordinator2-edge")
+        );
+        assert!(daemon_unit.lines().any(|line| line == "ProtectSystem=full"));
+        assert!(daemon_unit.contains(&format!(
+            "ReadWritePaths=/home {} {} {}\n",
+            world.config.database_path.parent().unwrap().display(),
+            world.config.runtime_dir.display(),
+            world.config.instance_env.parent().unwrap().display(),
+        )));
         assert_eq!(receipt.status, "activated_awaiting_final_acceptance");
         assert_eq!(
             std::fs::read_to_string(&edge_env).unwrap(),
@@ -4363,57 +4561,56 @@ mod tests {
 
     #[test]
     fn all_supported_schemas_preserve_intact_data_after_failed_activation() {
-        for schema in [34] {
-            let world = host_world();
-            let connection = Connection::open(&world.config.database_path).unwrap();
-            connection
-                .execute(
-                    "UPDATE meta SET value=?1 WHERE key='schema_version'",
-                    [schema.to_string()],
-                )
+        let schema = 34;
+        let world = host_world();
+        let connection = Connection::open(&world.config.database_path).unwrap();
+        connection
+            .execute(
+                "UPDATE meta SET value=?1 WHERE key='schema_version'",
+                [schema.to_string()],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO meta(key,value) VALUES('preserve-on-failure','current-data')",
+                [],
+            )
+            .unwrap();
+        drop(connection);
+        assert!(database_integrity(&world.config.database_path).unwrap());
+        let runner = Arc::new(HostFake {
+            commit: world.commit.clone(),
+            fail_ping: true,
+            ..HostFake::default()
+        });
+        let mut host =
+            HostCutover::new_owned(world.config.clone(), runner.clone(), world.expected_owner)
                 .unwrap();
+        let error = activate(&mut host).unwrap_err();
+        assert!(
+            error.contains("without replacing the intact database"),
+            "schema {schema}: {error}"
+        );
+        let backup = world
+            .config
+            .transaction_dir
+            .join("authority-before.sqlite3");
+        assert!(database_integrity(&backup).unwrap());
+        assert_eq!(
+            database_schema(&world.config.database_path).unwrap(),
+            schema.to_string()
+        );
+        let connection = Connection::open(&world.config.database_path).unwrap();
+        assert_eq!(
             connection
-                .execute(
-                    "INSERT INTO meta(key,value) VALUES('preserve-on-failure','current-data')",
+                .query_row(
+                    "SELECT value FROM meta WHERE key='preserve-on-failure'",
                     [],
+                    |r| r.get::<_, String>(0)
                 )
-                .unwrap();
-            drop(connection);
-            assert!(database_integrity(&world.config.database_path).unwrap());
-            let runner = Arc::new(HostFake {
-                commit: world.commit.clone(),
-                fail_ping: true,
-                ..HostFake::default()
-            });
-            let mut host =
-                HostCutover::new_owned(world.config.clone(), runner.clone(), world.expected_owner)
-                    .unwrap();
-            let error = activate(&mut host).unwrap_err();
-            assert!(
-                error.contains("without replacing the intact database"),
-                "schema {schema}: {error}"
-            );
-            let backup = world
-                .config
-                .transaction_dir
-                .join("authority-before.sqlite3");
-            assert!(database_integrity(&backup).unwrap());
-            assert_eq!(
-                database_schema(&world.config.database_path).unwrap(),
-                schema.to_string()
-            );
-            let connection = Connection::open(&world.config.database_path).unwrap();
-            assert_eq!(
-                connection
-                    .query_row(
-                        "SELECT value FROM meta WHERE key='preserve-on-failure'",
-                        [],
-                        |r| r.get::<_, String>(0)
-                    )
-                    .unwrap(),
-                "current-data"
-            );
-        }
+                .unwrap(),
+            "current-data"
+        );
     }
 
     #[test]

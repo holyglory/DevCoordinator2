@@ -60,6 +60,9 @@ pub trait MetricSource: Send + Sync + 'static {
     fn directory_size(&self, path: &Path, timeout: Duration) -> Option<u64>;
     fn container_sizes(&self, timeout: Duration) -> BTreeMap<String, u64>;
     fn docker_shared_sizes(&self, timeout: Duration) -> DockerStorage;
+    fn managed_volume_size(&self, _name: &str, _timeout: Duration) -> Option<u64> {
+        None
+    }
     fn logical_cpus(&self) -> u32;
 }
 
@@ -300,6 +303,43 @@ impl MetricSource for HostMetricSource {
             return DockerStorage::default();
         }
         parse_projected_docker_storage(&output.stdout)
+    }
+
+    fn managed_volume_size(&self, name: &str, timeout: Duration) -> Option<u64> {
+        if name.is_empty()
+            || name.len() > 200
+            || !name
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || b"_.-".contains(&byte))
+        {
+            return None;
+        }
+        let deadline = Instant::now() + timeout;
+        let invocation = DockerInvocation::new(
+            vec![
+                "volume".into(),
+                "inspect".into(),
+                "--format".into(),
+                "{{.Mountpoint}}".into(),
+                name.into(),
+            ],
+            timeout,
+        )
+        .ok()?;
+        let output = self.docker.invoke(invocation).ok()?;
+        if !output.success() || output.stdout_truncated {
+            return None;
+        }
+        let mount = Path::new(output.stdout.trim());
+        if !mount.is_absolute() {
+            return None;
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            None
+        } else {
+            self.directory_size(mount, remaining)
+        }
     }
 
     fn logical_cpus(&self) -> u32 {

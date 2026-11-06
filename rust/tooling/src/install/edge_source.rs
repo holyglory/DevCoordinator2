@@ -143,7 +143,7 @@ fn source_hash<R: CommandRunner + ?Sized>(
         let mut argument_bytes = 0;
         while end < files.len()
             && end - start < 128
-            && argument_bytes + files[end].0.len() + 1 <= 32 * 1024
+            && argument_bytes + files[end].0.len() < 32 * 1024
         {
             argument_bytes += files[end].0.len() + 1;
             end += 1;

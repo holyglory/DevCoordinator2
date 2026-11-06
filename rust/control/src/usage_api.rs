@@ -238,6 +238,10 @@ pub(super) struct Activity {
 }
 
 impl CollectorApi {
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "This external collector API keeps its existing explicit scope and time bounds"
+    )]
     pub(super) fn summary(
         &self,
         source: &CodexUsageSource,

@@ -109,6 +109,8 @@ pub struct UsageService {
     usage: CodexUsage,
 }
 
+type WorktreeKeyCache = BTreeMap<(u32, PathBuf), (Instant, Option<String>)>;
+
 #[derive(Clone)]
 pub struct CodexUsage {
     config: Arc<Config>,
@@ -117,7 +119,7 @@ pub struct CodexUsage {
     probe: Arc<dyn RepositoryProbe>,
     cache: cache::UsageCache,
     api: collector_api::CollectorApi,
-    worktree_keys: Arc<Mutex<BTreeMap<(u32, PathBuf), (Instant, Option<String>)>>>,
+    worktree_keys: Arc<Mutex<WorktreeKeyCache>>,
 }
 
 #[derive(Clone, Debug)]
@@ -1123,16 +1125,15 @@ impl CodexUsage {
         });
 
         let requested_set = requested.map(|ids| ids.iter().cloned().collect::<BTreeSet<_>>());
-        if let Some(ids) = &requested_set {
-            if ids
+        if let Some(ids) = &requested_set
+            && ids
                 .iter()
                 .any(|id| !rows.iter().any(|(known, _)| known == id))
-            {
-                return Err(ProtocolError::new(
-                    ErrorCode::ParamsInvalid,
-                    "usage worktree is not registered for this repository",
-                ));
-            }
+        {
+            return Err(ProtocolError::new(
+                ErrorCode::ParamsInvalid,
+                "usage worktree is not registered for this repository",
+            ));
         }
 
         let mut source_keys_by_worktree = BTreeMap::<String, BTreeMap<u32, Option<String>>>::new();
@@ -1990,6 +1991,10 @@ fn source_report(
     Ok(report)
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "This existing external collector boundary retains its explicit window and taxonomy inputs"
+)]
 fn cached_dimension_token_report(
     connection: &Connection,
     family: &[String],
@@ -3414,11 +3419,11 @@ pub(crate) fn run_probe_with_limit(
                 return Err("source_unavailable".into());
             }
         };
-        if child_status.is_some()
+        if let Some(status) = child_status
             && stdout_complete.load(Ordering::Acquire)
             && stderr_complete.load(Ordering::Acquire)
         {
-            break child_status.expect("child status was checked");
+            break status;
         }
         let now = Instant::now();
         if now >= deadline {

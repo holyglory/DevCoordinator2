@@ -1244,9 +1244,11 @@ impl Deployments {
                     )
                 })
                 .collect::<Vec<_>>();
-            let suffix = (shared_references.len() > shown.len())
-                .then(|| format!("; and {} more", shared_references.len() - shown.len()))
-                .unwrap_or_default();
+            let suffix = if shared_references.len() > shown.len() {
+                format!("; and {} more", shared_references.len() - shown.len())
+            } else {
+                Default::default()
+            };
             return Err(ProtocolError::new(
                 ErrorCode::DeploymentActionFailed,
                 format!(
@@ -7482,7 +7484,7 @@ shared_from="{owner_id}/db"
             .unwrap();
         assert_eq!(consumer.deployment_id, consumer_id);
         assert_eq!(consumer.components[0].port, None);
-        assert_eq!(consumer.components[0].owned, false);
+        assert!(!consumer.components[0].owned);
         assert_eq!(consumer.components[0].health, "healthy");
 
         crate::ports::release(&database, &owner_id, None, Some("db")).unwrap();

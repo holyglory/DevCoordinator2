@@ -130,6 +130,9 @@ pub struct Scheduler {
 #[derive(Clone)]
 pub struct PeriodicJob {
     pub job: Arc<dyn Job>,
+    /// Observe restart-sensitive runtime state promptly, retaining saved cursors
+    /// and honoring any live lease before the first bounded step.
+    pub run_on_start: bool,
     pub interval: Duration,
     pub budget: Duration,
     pub max_rows: u64,
@@ -333,7 +336,11 @@ impl Scheduler {
                 });
             }
         }
-        let mut expedited = BTreeSet::new();
+        let mut expedited = jobs
+            .iter()
+            .filter(|spec| spec.run_on_start)
+            .map(|spec| spec.job.key())
+            .collect::<BTreeSet<_>>();
         let mut tick = tokio::time::interval(Duration::from_millis(250));
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {

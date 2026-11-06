@@ -300,6 +300,7 @@ impl HostBackend {
         r: &mut Record,
         context: &Context,
     ) -> Result<(), ProtocolError> {
+        r.recovery_verified = false;
         let Locator::Directory { path, root, .. } = &r.locator else {
             return Ok(());
         };
@@ -354,6 +355,7 @@ impl HostBackend {
                 observation.snapshot_status.as_str(),
                 "prepared" | "rolling_back"
             ) {
+                r.recovery_verified = false;
                 r.blockers.push("backup_in_progress".into());
             }
             return Ok(());

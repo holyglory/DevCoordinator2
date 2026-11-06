@@ -111,7 +111,6 @@ impl HealthService {
                 deployment,
             });
         }
-        let inventory = self.sampler.inventory().containers();
         Ok(HealthSummary {
             host: snapshot.host,
             storage: host_storage(snapshot.storage.get(&SubjectKey::new("host", "storage"))),
@@ -122,7 +121,7 @@ impl HealthService {
                 .filter(|key| key.kind == "test")
                 .map(|key| key.id.clone())
                 .collect(),
-            container_counts: inventory.map_or_else(|_| BTreeMap::new(), |value| value.counts),
+            container_counts: snapshot.container_counts.unwrap_or_default(),
             alerts: self.sampler.alerts().current()?,
             sampling: SamplingSummary {
                 cpu_memory_seconds: super::metrics_sampler::SAMPLE_SECONDS,
@@ -527,11 +526,16 @@ mod tests {
     };
     use std::collections::HashSet;
     use std::path::PathBuf;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::time::Duration;
     use tempfile::tempdir;
     use time::macros::datetime;
 
-    struct FakeDocker;
+    #[derive(Default)]
+    struct FakeDocker {
+        inventory_queries: AtomicUsize,
+        inventory_fails: AtomicBool,
+    }
     impl DockerControl for FakeDocker {
         fn invoke(&self, invocation: DockerInvocation) -> Result<DockerOutput, DockerError> {
             let args = invocation
@@ -539,6 +543,14 @@ mod tests {
                 .iter()
                 .map(|value| value.to_string_lossy())
                 .collect::<Vec<_>>();
+            if args.first().is_some_and(|value| value == "ps")
+                && args.iter().any(|value| value == "{{json .}}")
+            {
+                self.inventory_queries.fetch_add(1, Ordering::Relaxed);
+                if self.inventory_fails.load(Ordering::Relaxed) {
+                    return Err(DockerError::Command("inventory unavailable".into()));
+                }
+            }
             Ok(DockerOutput {
                 exit_code: 0,
                 stdout: if args.first().is_some_and(|value| value == "system") {
@@ -684,18 +696,27 @@ mod tests {
             codex_usage_sources_file: None,
             codex_usage_sources: Vec::new(),
         };
+        let docker = Arc::new(FakeDocker::default());
         let health = HealthService::with_adapters(
             config,
             database,
             registry,
-            Arc::new(FakeDocker),
+            docker.clone(),
             Arc::new(FakeSystemd),
             Arc::new(FixedClock(datetime!(2026-09-04 00:00 UTC))),
         );
+        docker.inventory_fails.store(true, Ordering::Relaxed);
+        health.sampler().tick().unwrap();
+        let queries = docker.inventory_queries.load(Ordering::Relaxed);
+        assert!(health.summary().unwrap().container_counts.is_empty());
+        assert_eq!(docker.inventory_queries.load(Ordering::Relaxed), queries);
+        docker.inventory_fails.store(false, Ordering::Relaxed);
         health.sampler().tick().unwrap();
         health.sampler().storage_tick().unwrap();
         health.sampler().flush().unwrap();
+        let queries = docker.inventory_queries.load(Ordering::Relaxed);
         let summary = health.summary().unwrap();
+        assert_eq!(docker.inventory_queries.load(Ordering::Relaxed), queries);
         assert_eq!(summary.unhealthy_deployments.len(), 1);
         assert_eq!(
             summary.unhealthy_deployments[0].reasons[0]
@@ -704,6 +725,15 @@ mod tests {
             Some("boom")
         );
         assert_eq!(summary.container_counts["unmanaged"], 0);
+        docker.inventory_fails.store(true, Ordering::Relaxed);
+        health.sampler().tick().unwrap();
+        let queries = docker.inventory_queries.load(Ordering::Relaxed);
+        assert_eq!(
+            health.summary().unwrap().container_counts,
+            summary.container_counts,
+            "failed inventory must retain the last successful counts"
+        );
+        assert_eq!(docker.inventory_queries.load(Ordering::Relaxed), queries);
         let repositories = health.repositories().unwrap();
         assert_eq!(repositories.repositories[0].health, "unhealthy");
         let detail = health
@@ -720,6 +750,7 @@ mod tests {
             })
             .unwrap();
         assert!(!history.points.is_empty());
+        docker.inventory_fails.store(false, Ordering::Relaxed);
         assert!(health.containers().unwrap().containers.is_empty());
         assert_eq!(
             health.remove_container("short").unwrap_err().code,

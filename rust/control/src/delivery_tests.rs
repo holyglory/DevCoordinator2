@@ -543,7 +543,7 @@ fn delivery_parent_cli_and_protocol_getter_returns_qualified_receipt() {
         RequestEnvelope {
             protocol: 3,
             id: "evidence".into(),
-            operation: operation.into(),
+            operation,
             params,
             client: ClientContext::default(),
         },

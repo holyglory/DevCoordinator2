@@ -379,13 +379,13 @@ impl Statement<'_> {
     pub fn execute<P: Params>(&mut self, params: P) -> Result<usize> {
         let values = params.into_values();
         let refs: Vec<&(dyn ToSql + Sync)> = values.iter().map(|v| v as _).collect();
-        Ok(usize::try_from(
+        usize::try_from(
             self.connection
                 .client
                 .borrow_mut()
                 .execute(&self.statement, &refs)?,
         )
-        .map_err(|_| Error::InvalidQuery)?)
+        .map_err(|_| Error::InvalidQuery)
     }
     pub fn query<P: Params>(&mut self, params: P) -> Result<Rows> {
         let values = params.into_values();

@@ -1784,6 +1784,7 @@ mod tests {
         let jobs = [true, false]
             .into_iter()
             .map(|poll| PeriodicJob {
+                run_on_start: false,
                 job: Arc::new(Step {
                     service: world.service.clone(),
                     poll,

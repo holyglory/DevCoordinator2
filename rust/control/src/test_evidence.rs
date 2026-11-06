@@ -449,8 +449,8 @@ struct LoadedEvidence {
 
 #[derive(Clone)]
 enum EvidencePageUnit {
-    Bundle(EvidenceBundle),
-    Feedback(Feedback),
+    Bundle(Box<EvidenceBundle>),
+    Feedback(Box<Feedback>),
 }
 
 fn page_evidence(
@@ -512,13 +512,13 @@ fn evidence_page_units(bundles: &[EvidenceBundle], feedback: &[Feedback]) -> Vec
             .map(|bytes| bytes.len() > MAX_RESPONSE_BYTES / 2)
             .unwrap_or(true);
         if bundle.cells.is_empty() || !oversized {
-            units.push(EvidencePageUnit::Bundle(bundle.clone()));
+            units.push(EvidencePageUnit::Bundle(Box::new(bundle.clone())));
             continue;
         }
         for cell in &bundle.cells {
             let mut page = bundle.clone();
             page.cells = vec![cell.clone()];
-            units.push(EvidencePageUnit::Bundle(page));
+            units.push(EvidencePageUnit::Bundle(Box::new(page)));
         }
     }
     for row in feedback {
@@ -526,13 +526,13 @@ fn evidence_page_units(bundles: &[EvidenceBundle], feedback: &[Feedback]) -> Vec
             .map(|bytes| bytes.len() > MAX_RESPONSE_BYTES / 4)
             .unwrap_or(true);
         if row.comments.is_empty() || !oversized {
-            units.push(EvidencePageUnit::Feedback(row.clone()));
+            units.push(EvidencePageUnit::Feedback(Box::new(row.clone())));
             continue;
         }
         for comment in &row.comments {
             let mut page = row.clone();
             page.comments = vec![comment.clone()];
-            units.push(EvidencePageUnit::Feedback(page));
+            units.push(EvidencePageUnit::Feedback(Box::new(page)));
         }
     }
     units
@@ -550,8 +550,8 @@ fn evidence_page_result(
     let mut feedback = Vec::new();
     for unit in units {
         match unit {
-            EvidencePageUnit::Bundle(bundle) => bundles.push(bundle.clone()),
-            EvidencePageUnit::Feedback(row) => feedback.push(row.clone()),
+            EvidencePageUnit::Bundle(bundle) => bundles.push(bundle.as_ref().clone()),
+            EvidencePageUnit::Feedback(row) => feedback.push(row.as_ref().clone()),
         }
     }
     EvidenceGet {

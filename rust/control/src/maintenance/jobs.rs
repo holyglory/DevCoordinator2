@@ -207,6 +207,7 @@ pub fn periodic(plane: &ControlPlane) -> Vec<PeriodicJob> {
     ]
     .into_iter()
     .map(|(kind, interval, seconds)| PeriodicJob {
+        run_on_start: matches!(kind, Routes),
         job: Arc::new(ServiceJob {
             plane: plane.clone(),
             kind,

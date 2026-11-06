@@ -50,6 +50,40 @@ activate v3, change the daemon or close test admission. Verify the restored
 Console/API journey afterward; an active edge alone does not prove that journey.
 Missing or changed prior source, binaries or private bindings refuse repair.
 
+## Isolated installer rehearsal
+
+The feature-gated `devcoordinator2-install-rehearsal` binary exercises the real
+installer and systemd PostgreSQL configuration before live activation. It needs
+an explicit candidate manifest and prior schema-34/v2 binary manifest, a complete
+permanent PostgreSQL 17 tool directory, existing non-root test identities, and a
+new external root. No installed authority database or live-resource identities
+are copied into the fixture.
+
+```sh
+devcoordinator2-install-rehearsal run \
+  --candidate-manifest /tmp/candidate-manifest.json \
+  --prior-manifest /tmp/prior-manifest.json \
+  --work-root /var/lib/devcoordinator2-rustint-installer-proof \
+  --report /tmp/devcoordinator2-installer-proof.json \
+  --postgres-bin /usr/lib/postgresql/17/bin \
+  --postgres-account "$fixture_postgres_account" \
+  --caller-uid "$fixture_uid" --caller-gid "$fixture_gid"
+```
+
+The fixture uses unique runtime-only units and a network-private edge checked
+inside its own namespace. It drains a real accepted run, verifies a real
+pre-admission rollback after a deliberate Node startup failure, retries with a
+fresh candidate database, records a v3 API write, and checks persistence after
+PostgreSQL and daemon restart. It also verifies refusal of installed paths,
+foreign aliases, installed units, production use of fixture admission evidence,
+and stale SQLite rollback after admission.
+
+Only the owned fixture units and root are retired. Private command, service and
+migration evidence remains next to the report. Every report and input proof is
+explicitly `fixture_only`; it cannot satisfy the production acceptance-receipt
+parser or authorize live activation. Browser, live-source and full candidate
+acceptance remain separate obligations.
+
 Activation durably commits the PostgreSQL installation before admitting new
 mutations. Its result is `activated_awaiting_final_acceptance`; the old SQLite
 source and temporary rollback copy remain protected. A failure before admission

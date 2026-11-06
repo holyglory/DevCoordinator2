@@ -271,7 +271,10 @@ fn restart_resumes_saved_cursor_and_retry_does_not_advance_it() {
         })
         .unwrap();
     assert_eq!(
-        scheduler.submit(job, budget(), None).unwrap().status,
+        scheduler
+            .submit(job.clone(), budget(), None)
+            .unwrap()
+            .status,
         JobStatus::Complete
     );
     scheduler.shutdown_and_join();
@@ -293,4 +296,45 @@ fn restart_resumes_saved_cursor_and_retry_does_not_advance_it() {
         remaining, 0,
         "completed explicit jobs must not grow the scheduler state indefinitely"
     );
+
+    // Restart recovery must use a worker promptly even when the previous
+    // periodic observation scheduled its next visit a minute in the future.
+    fixture.database.transaction(|c| {
+        c.execute("INSERT INTO coordinator_maintenance(job_key,due_at_ms,cursor) VALUES('fixture-cursor',$1,'\"second-page\"'::jsonb)", [now_ms()+60_000])?;
+        Ok(())
+    }).unwrap();
+    let scheduler = Scheduler::new(fixture.database.clone(), 1, 2).unwrap();
+    let mut completed = scheduler.retry_events();
+    let (stop, receiver) = watch::channel(false);
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    runtime.block_on(async {
+        let worker = scheduler.clone();
+        let service = tokio::spawn(async move {
+            worker
+                .serve(
+                    vec![PeriodicJob {
+                        job,
+                        run_on_start: true,
+                        interval: Duration::from_secs(60),
+                        budget: Duration::from_secs(1),
+                        max_rows: 256,
+                        max_bytes: 65536,
+                    }],
+                    receiver,
+                )
+                .await;
+        });
+        let result = tokio::time::timeout(Duration::from_secs(2), completed.changed()).await;
+        stop.send(true).unwrap();
+        service.await.unwrap();
+        result
+            .expect("restart-sensitive job waited for the old periodic deadline")
+            .unwrap();
+    });
+    scheduler.shutdown_and_join();
+    assert_eq!(
+        observed.lock().unwrap().last(),
+        Some(&Some("second-page".into()))
+    );
+    assert_eq!(observed.lock().unwrap().len(), 4);
 }

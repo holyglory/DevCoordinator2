@@ -1978,19 +1978,18 @@ impl OperationExecutor for ControlPlane {
                 caller,
                 false,
             )
-        {
-            if let Ok(messages) = self.sketches.message_poll_kind(
+            && let Ok(messages) = self.sketches.message_poll_kind(
                 params::AgentMessagePoll {
                     repository_id: repository.repository_id,
                     after_id: None,
                     limit: 2,
                 },
                 Some("performance_review.reminder"),
-            ) && !messages.messages.is_empty()
-                && let Some(object) = result.as_object_mut()
-            {
-                object.insert("_agent_messages".into(), encode(messages.messages)?);
-            }
+            )
+            && !messages.messages.is_empty()
+            && let Some(object) = result.as_object_mut()
+        {
+            object.insert("_agent_messages".into(), encode(messages.messages)?);
         }
         Ok(result)
     }
