@@ -158,6 +158,8 @@ async function readJsonBody(req, limit = 65536) {
 
 export async function createEdge(config, { log = console } = {}) {
   const scheme = config.httpOnly ? 'http' : 'https';
+  const consoleStatic = config.consoleDir ? createStaticServer({ dir: config.consoleDir, log, sourceRevision: config.uiSourceRevision }) : null;
+  await consoleStatic?.prepare();
   const store = await createRoutesStore({ file: config.routesFile, stateDir: config.stateDir, log });
   const sessions = createSessionManager({ secret: config.sessionSecret, ttlMs: SESSION_TTL_MS,
     cookieName: SESSION_COOKIE, cookieDomain: `.${config.baseDomain}`, secure: !config.httpOnly });
@@ -178,7 +180,6 @@ export async function createEdge(config, { log = console } = {}) {
     renderBadGateway: (req, res, { kind, target }) => writePage(res, pages.forRequest(req).renderUpstreamError({ slug: target.slug, kind, consoleUrl: consoleOrigin })),
     renderUpstreamAuthFailure: (req, res, { target }) => writePage(res, pages.forRequest(req).renderUpstreamError({ slug: target.slug, kind: 'upstream_auth', consoleUrl: consoleOrigin })) });
   const daemon = createDaemonClient({ socketPath: config.daemonSocket });
-  const consoleStatic = config.consoleDir ? createStaticServer({ dir: config.consoleDir, log, sourceRevision: config.uiSourceRevision }) : null;
 
   function identityOf(req) {
     const session = sessions.parse(req.headers.cookie);
