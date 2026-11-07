@@ -444,6 +444,20 @@ fn authority_schema_pools_timeouts_rollback_and_restart() {
             .unwrap()
             .is_none()
     );
+    // Snapshot reads must honor the caller's statement budget, even though
+    // restoration itself uses the explicit offline archive boundary.
+    let mut short_inspection = config.clone();
+    short_inspection.statement_timeout = Duration::from_millis(90);
+    let timeout =
+        backup::with_snapshot::<(), Error, _>(&short_inspection, &archive, |connection| {
+            assert_eq!(
+                connection
+                    .query_row("SHOW statement_timeout", [], |row| row.get::<_, String>(0))?,
+                "90ms"
+            );
+            connection.query_row("SELECT pg_sleep(1)", [], |_| Ok(()))
+        });
+    assert!(timeout.as_ref().err().is_some_and(Error::is_timeout));
     let mut failed_name = String::new();
     let failure = backup::with_snapshot::<(), Error, _>(&config, &archive, |connection| {
         failed_name = connection.query_row("SELECT current_database()", [], |r| r.get(0))?;

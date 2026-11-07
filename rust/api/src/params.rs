@@ -940,6 +940,10 @@ pub struct PlanReference {
     pub path: Option<String>,
     #[serde(default)]
     pub repository_id: Option<String>,
+    /// Return bounded repository identity and presentation headers without Plan aggregates.
+    /// Valid only for a collection request, without path or repository_id.
+    #[serde(default)]
+    pub headers_only: bool,
     #[serde(default)]
     pub after_sequence: u32,
     #[serde(default)]
@@ -955,6 +959,7 @@ impl Default for PlanReference {
         Self {
             path: None,
             repository_id: None,
+            headers_only: false,
             after_sequence: 0,
             after_release_sequence: 0,
             after_repository_id: None,

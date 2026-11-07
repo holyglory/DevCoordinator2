@@ -361,6 +361,14 @@ impl HostBackend {
                 state.filesystem_complete = state.filesystem_cursor.is_none();
                 state.observations = discovered.observations.into();
             }
+            Err(LogQueryError::MaintenanceBusy) => {
+                // Another retention/protection turn owns the worktree. Keep
+                // this scan's exact continuation for the scheduler's retry.
+                return Err(ProtocolError::new(
+                    devcoordinator2_api::ErrorCode::Busy,
+                    "evidence_retention_busy",
+                ));
+            }
             Err(_) => {
                 state.incomplete = true;
                 state.filesystem_complete = true;
@@ -472,6 +480,22 @@ mod tests {
     };
     use std::collections::HashSet;
     use tempfile::TempDir;
+
+    struct NoHostDocker;
+    impl crate::docker::DockerControl for NoHostDocker {
+        fn invoke(
+            &self,
+            _: crate::docker::DockerInvocation,
+        ) -> Result<crate::docker::DockerOutput, crate::docker::DockerError> {
+            Err(crate::docker::DockerError::CliUnavailable)
+        }
+        fn spawn_follow_logs(
+            &self,
+            _: &crate::docker::ExactContainerId,
+        ) -> Result<crate::docker::LogFollower, crate::docker::DockerError> {
+            panic!("evidence discovery must not follow container logs")
+        }
+    }
 
     fn config(root: &Path) -> Config {
         Config {
@@ -614,7 +638,12 @@ mod tests {
             .unwrap()
             .set_len(512 * 1024 * 1024)
             .unwrap();
-        let database = Database::open(temporary.path().join("authority.sqlite3")).unwrap();
+        // EventService owns an asynchronous dispatcher Database clone. This
+        // integration owns its cluster explicitly so process exit cannot race
+        // the dispatcher's final shared-fixture release.
+        let cluster = devcoordinator2_persistence::fixture::FixtureCluster::start().unwrap();
+        let database =
+            Database::connect(&cluster.create_database("evidence_discovery").unwrap()).unwrap();
         let first_text = first.to_string_lossy().into_owned();
         let second_text = second.to_string_lossy().into_owned();
         let first_for_db = first.clone();
@@ -642,7 +671,11 @@ mod tests {
             })
             .unwrap();
 
-        let backend = HostBackend::new(config(temporary.path()), database.clone());
+        let backend = std::sync::Arc::new(HostBackend::with_docker(
+            config(temporary.path()),
+            database.clone(),
+            std::sync::Arc::new(NoHostDocker),
+        ));
         let context = Context {
             worktrees: vec![
                 ("r1111111111111111".into(), first.clone()),
@@ -674,7 +707,7 @@ mod tests {
             .unwrap();
         assert_eq!(preliminary.records.len(), 2);
         assert!(!preliminary.complete_kinds.contains(&api::Kind::Evidence));
-        let service = crate::storage::StorageService::new(
+        let service = crate::storage::StorageService::with_backend(
             config(temporary.path()),
             database.clone(),
             std::sync::Arc::new(crate::platform::HostClock),
@@ -684,6 +717,7 @@ mod tests {
             )
             .unwrap(),
             crate::events::EventService::new(database.clone()).unwrap(),
+            backend.clone(),
         );
         let caller = crate::access::Caller {
             via_edge: false,
@@ -714,16 +748,49 @@ mod tests {
         let mut discovery = Discovery::default();
         let mut cursor = EvidenceCursor::default();
         let mut turns = 0;
+        let budget = super::super::DiscoveryBudget {
+            entries: 1,
+            elapsed: std::time::Duration::from_millis(10),
+        };
+        // Contention after a real filesystem page must preserve both the
+        // continuation and the partially measured run, rather than skip it.
+        loop {
+            assert!(
+                !backend
+                    .discover_evidence_step(&context, &mut discovery, &mut cursor, budget)
+                    .unwrap()
+            );
+            turns += 1;
+            assert!(turns < 100);
+            if cursor.current.as_ref().is_some_and(|state| {
+                state.filesystem_cursor.is_some()
+                    && !state.filesystem_complete
+                    && state.run.is_some()
+                    && state.measurement.is_none()
+                    && state.observations.is_empty()
+            }) {
+                break;
+            }
+        }
+        let state = cursor.current.as_ref().unwrap();
+        assert_eq!(state.worktree, first);
+        let saved_cursor = state.filesystem_cursor.clone();
+        let saved_leaves = state.run.as_ref().unwrap().leaves;
+        let lock = devcoordinator2_executor_core::log_query::lock_retention(&first).unwrap();
+        let busy = backend
+            .discover_evidence_step(&context, &mut discovery, &mut cursor, budget)
+            .expect_err("real retention contention must remain retryable");
+        assert_eq!(busy.code, devcoordinator2_api::ErrorCode::Busy);
+        let state = cursor.current.as_ref().unwrap();
+        assert_eq!(cursor.worktree_index, 0);
+        assert_eq!(state.filesystem_cursor, saved_cursor);
+        assert_eq!(state.run.as_ref().unwrap().leaves, saved_leaves);
+        assert!(!state.filesystem_complete);
+        assert!(!state.incomplete);
+        assert!(!state.run.as_ref().unwrap().failed);
+        drop(lock);
         while !backend
-            .discover_evidence_step(
-                &context,
-                &mut discovery,
-                &mut cursor,
-                super::super::DiscoveryBudget {
-                    entries: 1,
-                    elapsed: std::time::Duration::from_millis(10),
-                },
-            )
+            .discover_evidence_step(&context, &mut discovery, &mut cursor, budget)
             .unwrap()
         {
             turns += 1;
@@ -778,5 +845,164 @@ mod tests {
                 )
                 .is_err()
         );
+
+        // Exercise the actual accepted scan job and persisted scheduler
+        // backoff too, without any host Docker operation or copied worker.
+        std::fs::remove_dir(first.join(".devcoordinator/test/logs/runs/malformed-sibling"))
+            .unwrap();
+        publish_run(&first, "run-one");
+        assert!(logs.drain_maintenance_for_test().unwrap().errors.is_empty());
+        let scan = service
+            .scan(
+                api::Scan {
+                    repository_id: None,
+                    idempotency_key: "retention-lock-retry".into(),
+                },
+                &caller,
+            )
+            .unwrap();
+        let lock = devcoordinator2_executor_core::log_query::lock_retention(&first).unwrap();
+        let mut scan_cursor = None;
+        let mut steps = 0;
+        loop {
+            steps += 1;
+            assert!(steps < 200);
+            match service.execute_scan_step(&scan.job_id, &mut scan_cursor, budget) {
+                Err(error) => {
+                    assert_eq!(error.code, devcoordinator2_api::ErrorCode::Busy);
+                    break;
+                }
+                Ok(false) => {}
+                Ok(true) => panic!("scan completed while the evidence lock was held"),
+            }
+        }
+        assert!(scan_cursor.is_some());
+        let job = crate::storage::worker::scan_job_for_test(
+            service.clone(),
+            scan.job_id.clone(),
+            scan_cursor,
+        );
+        let scheduler = crate::maintenance::Scheduler::new(database.clone(), 1, 2).unwrap();
+        let job_budget = || {
+            crate::maintenance::Budget::new(std::time::Duration::from_millis(25), 256, 256 * 1024)
+        };
+        let mut continuation = Some(scan.job_id.clone());
+        assert!(matches!(
+            scheduler
+                .submit(job.clone(), job_budget(), continuation.clone())
+                .unwrap()
+                .status,
+            crate::maintenance::JobStatus::Retry { .. }
+        ));
+        let key = format!("storage:{}", scan.job_id);
+        database.read(|connection| {
+            let (status,attempts,cursor):(String,u64,String)=connection.query_row("SELECT last_status,attempts,cursor::text FROM coordinator_maintenance WHERE job_key=$1",[&key],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?)))?;
+            assert_eq!(status,"retry");
+            assert_eq!(attempts,1);
+            assert_eq!(serde_json::from_str::<String>(&cursor).unwrap(),scan.job_id);
+            Ok(())
+        }).unwrap();
+        assert!(matches!(
+            scheduler
+                .submit(job.clone(), job_budget(), continuation.clone())
+                .unwrap()
+                .status,
+            crate::maintenance::JobStatus::Deferred { .. }
+        ));
+        drop(lock);
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let mut events = scheduler.retry_events();
+        let (_stop, mut shutdown) = tokio::sync::watch::channel(false);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            assert!(std::time::Instant::now() < deadline);
+            events.borrow_and_update();
+            match scheduler
+                .submit(job.clone(), job_budget(), continuation.clone())
+                .unwrap()
+                .status
+            {
+                crate::maintenance::JobStatus::Complete => break,
+                crate::maintenance::JobStatus::Continue { cursor } => continuation = Some(cursor),
+                crate::maintenance::JobStatus::Deferred { not_before_ms } => {
+                    assert!(runtime.block_on(scheduler.wait_retry(
+                        &mut events,
+                        Some(not_before_ms),
+                        &mut shutdown
+                    )))
+                }
+                status => panic!("unexpected scan retry outcome: {status:?}"),
+            }
+        }
+        scheduler.shutdown_and_join();
+        assert!(matches!(
+            service.job(&scan.job_id).unwrap().state,
+            api::JobState::Completed
+        ));
+        let page = service
+            .inventory(api::List {
+                kind: Some(api::Kind::Evidence),
+                limit: Some(10),
+                ..Default::default()
+            })
+            .unwrap();
+        // The two manually seeded protected artifacts remain conservative
+        // history; require both actual native observations as well.
+        assert_eq!(page.total, 4);
+        let expected_ids = discovery
+            .records
+            .iter()
+            .map(|record| record.artifact.artifact_id.as_str())
+            .collect::<std::collections::BTreeSet<_>>();
+        let observed = page
+            .artifacts
+            .iter()
+            .filter(|artifact| expected_ids.contains(artifact.artifact_id.as_str()))
+            .collect::<Vec<_>>();
+        assert_eq!(observed.len(), 2);
+        let repositories = observed
+            .iter()
+            .filter_map(|artifact| artifact.repository_id.as_deref())
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            repositories,
+            std::collections::BTreeSet::from(["r1111111111111111", "r2222222222222222"])
+        );
+        assert_eq!(
+            database
+                .read(|connection| Ok(connection.query_row(
+                    "SELECT count(*) FROM coordinator_maintenance WHERE job_key=$1",
+                    [&key],
+                    |row| row.get::<_, u64>(0)
+                )?))
+                .unwrap(),
+            0
+        );
+        drop(runtime);
+        drop(scheduler);
+        drop(job);
+        drop(logs);
+        drop(service);
+        drop(backend);
+        drop(database);
+        let mut admin = cluster.client("postgres").unwrap();
+        admin
+            .batch_execute("SET statement_timeout='500ms'; SET lock_timeout='100ms'")
+            .unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while admin
+            .query_one(
+                "SELECT count(*) FROM pg_stat_activity WHERE datname='evidence_discovery' AND backend_type='client backend'",
+                &[],
+            )
+            .unwrap()
+            .get::<_, i64>(0)
+            != 0
+        {
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        drop(admin);
+        cluster.stop().unwrap();
     }
 }

@@ -287,6 +287,7 @@ window.DevCoordinatorWorkspace = (() => {
         for (const control of form.elements) control.disabled = true;
         try {
           const result = await api('repository.presentation.update', values, false);
+          data.presentations.set(selected.repositoryId, result);
           for (const field of ['plans', 'registered', 'optional']) data[field] = data[field].map((record) => record.repository_id === selected.repositoryId ? { ...record, presentation: result } : record);
           rebuildCatalogue();
           paint(); close();
@@ -303,6 +304,7 @@ window.DevCoordinatorWorkspace = (() => {
     editPresentation.addEventListener('click', openPresentation);
 
     function rebuildCatalogue() {
+      for (const record of data.plans) if (data.presentations.has(record.repository_id)) record.presentation = data.presentations.get(record.repository_id);
       const registered = data.registered.flatMap((record) => {
         const planned = data.plans.find((row) => row.repository_id === record.repository_id);
         const source = planned?.repository_source || record.repository_source;
@@ -338,21 +340,23 @@ window.DevCoordinatorWorkspace = (() => {
           const operation = snapshot.nextRepositories ? 'repository.list' : snapshot.nextPlans ? 'plan.overview' : checkout ? 'repository.list' : null;
           if (!operation) break;
           const params = { limit: 200, ...(snapshot.nextRepositories ? { after_repository_id: snapshot.nextRepositories }
-            : snapshot.nextPlans ? { after_repository_id: snapshot.nextPlans }
+            : snapshot.nextPlans ? { headers_only: true, after_repository_id: snapshot.nextPlans }
               : { repository_id: checkout.repository_id, after_worktree_id: checkout.next_worktree_id }) };
           const key = JSON.stringify([operation, params]);
           if (seen.has(key)) throw new Error('Repository pagination did not advance');
           seen.add(key);
           const page = await apiPage(operation, params);
           if (signal.aborted || data !== snapshot) return;
-          if (checkout && !params.after_repository_id) {
+          if (operation === 'repository.list' && params.repository_id) {
             const next = page.repositories.find((row) => row.repository_id === checkout.repository_id);
             if (!next) throw new Error('Repository disappeared during pagination');
             checkout.worktrees.push(...next.worktrees); checkout.next_worktree_id = next.next_worktree_id;
           } else if (operation === 'repository.list') {
             mergeRegistered(page.repositories); snapshot.nextRepositories = page.next_repository_id;
           } else {
-            snapshot.plans.push(...page.repositories); snapshot.nextPlans = page.next_repository_id;
+            const plans = new Map(snapshot.plans.map((row) => [row.repository_id, row]));
+            for (const row of page.headers) plans.set(row.repository_id, row);
+            snapshot.plans = [...plans.values()]; snapshot.nextPlans = page.next_repository_id;
           }
           rebuildCatalogue();
           if (active) paintNavigation();
@@ -370,19 +374,18 @@ window.DevCoordinatorWorkspace = (() => {
     async function load(signal) {
       if (data) return;
       if (loading?.signal === signal) return loading.promise;
-      const read = async (operation) => {
-        try { return { value: await (['plan.overview', 'repository.list', 'test.list'].includes(operation) ? apiPage(operation, { limit: operation === 'test.list' ? 20 : 200 }) : api(operation, operation === 'usage.repositories' ? { range: '24h' } : {})) }; }
+      const read = async (operation, params) => {
+        try { return { value: await (['plan.overview', 'repository.list', 'test.list'].includes(operation) ? apiPage(operation, params || { limit: operation === 'test.list' ? 20 : 200 }) : api(operation, operation === 'usage.repositories' ? { range: '24h' } : {})) }; }
         catch (error) { if (signal.aborted || error.code === 'stale' || error.code === 'unauthenticated') throw error; return { error }; }
       };
       const updateStatus = (results) => {
         const unavailable = results.filter(([, result]) => result?.error && result.error.code !== 'permission_denied');
         window.DevCoordinatorI18n.bind(document.querySelector('#repository-status'), () => (unavailable.length ? window.DevCoordinatorI18n.t("shell.value1_repositories_unavailable_refresh_to_retry_426a76", {value1: unavailable.map(([label]) => label).join(', ')}) : ''));
       };
-      // Plan, Tests, and Deployments determine the initial repository
-      // navigation. Optional Usage and Progress projections may involve
-      // independent refresh work; do not hold the entire workspace on them.
+      // Navigation needs repository identity and presentation, not every
+      // repository's Plan aggregates. Continue bounded header pages in the background.
       const promise = Promise.all([
-        read('plan.overview'),
+        read('plan.overview', { headers_only: true, limit: 200 }),
         { value: { runs: [] } },
         read('deployment.list'),
         read('repository.list'),
@@ -390,7 +393,7 @@ window.DevCoordinatorWorkspace = (() => {
         if (plans.error) tests = await read('test.list');
         if (signal.aborted) return;
         if ([plans, tests, deploymentList].every((result) => result.error)) throw plans.error;
-        data = { plans: plans.value?.repositories || [], registered: repositoryList.value?.repositories || [], optional: [], runs: tests.value?.runs || [], deployments: deploymentList.value?.deployments || [], nextRepositories: repositoryList.value?.next_repository_id, nextPlans: plans.value?.next_repository_id, catalogueFailed: !!plans.error || !!repositoryList.error };
+        data = { plans: plans.value?.headers || [], registered: repositoryList.value?.repositories || [], optional: [], presentations: new Map(), runs: tests.value?.runs || [], deployments: deploymentList.value?.deployments || [], nextRepositories: repositoryList.value?.next_repository_id, nextPlans: plans.value?.next_repository_id, catalogueFailed: !!plans.error || !!repositoryList.error };
         rebuildCatalogue();
         updateStatus([['Plan', plans], ['Tests', tests], ['Deployments', deploymentList], ['Repositories', repositoryList]]);
         if (!canOperate()) return;
@@ -417,10 +420,11 @@ window.DevCoordinatorWorkspace = (() => {
       sidebar.hidden = false;
       document.querySelector('#workspace-context').hidden = false;
       if (!data) navigation.innerHTML = "<p class=\"muted\"><span data-i18n=\"shell.loading_repositories_460ca9\">Loading repositories…</span></p>";
+      const query = new URLSearchParams(queryString);
+      let requested = ['plan', 'progress', 'usage', 'performance', 'decisions', 'sketches', 'glossary'].includes(view) ? argument : query.get('repository');
       await load(signal);
       if (signal.aborted) return null;
       catalogueSignal = signal;
-      const query = new URLSearchParams(queryString);
       const matchesRun = run => (run.run_id === argument || run.earlier_visual_evidence?.run_id === argument) && (!query.get('worktree') || run.worktree_id === query.get('worktree'));
       if (view === 'tests' && argument && !data.runs.some(matchesRun)) {
         retainedEvidence = await api('test.evidence.lookup', { run_id: argument, image_id: query.get('image') || undefined, worktree_id: query.get('worktree') || undefined });
@@ -428,20 +432,19 @@ window.DevCoordinatorWorkspace = (() => {
         data.runs.push({ ...retainedEvidence.context, isEarlierEvidence: true });
         groups = catalogue(data.repositories, data.runs, data.deployments);
       }
-      let requested = ['plan', 'progress', 'usage', 'performance', 'decisions', 'sketches', 'glossary'].includes(view) ? argument : query.get('repository');
       if (view === 'tests' && argument) requested = data.runs.find(matchesRun)?.repository_id || requested;
       if (view === 'deployments' && argument) requested = data.deployments.find((deployment) => deployment.deployment_id === argument)?.repository_id || requested;
-      if (requested && !groupFor(requested)) {
+      if (requested && !data.plans.some((row) => row.repository_id === requested)) {
+        const plan = await apiPage('plan.overview', { repository_id: requested, limit: 1 });
+        if (signal.aborted) return null;
+        if (plan.repository_id !== requested) throw new Error('Repository identity did not match the requested Plan');
+        data.plans.push({ repository_id: plan.repository_id, display_name: plan.display_name, presentation: plan.presentation, repository_source: plan.repository_source });
         try {
           const found = await apiPage('repository.list', { repository_id: requested, limit: 200 });
           if (signal.aborted) return null;
           mergeRegistered(found.repositories);
         } catch (error) {
           if (error.code !== 'permission_denied') throw error;
-          const plan = await apiPage('plan.overview', { repository_id: requested, limit: 1 });
-          if (signal.aborted) return null;
-          if (plan.repository_id !== requested) throw new Error('Repository identity did not match the requested Plan');
-          data.plans.push({ repository_id: plan.repository_id, display_name: plan.display_name });
         }
         rebuildCatalogue();
       }

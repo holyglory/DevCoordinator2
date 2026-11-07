@@ -34,6 +34,21 @@ struct ScanJob {
     id: String,
     cursor: std::sync::Mutex<Option<ScanCursor>>,
 }
+
+#[cfg(test)]
+pub(super) fn scan_job_for_test(
+    service: StorageService,
+    id: String,
+    cursor: Option<ScanCursor>,
+) -> std::sync::Arc<dyn crate::maintenance::Job> {
+    assert!(service.begin_job(&id).unwrap().is_some());
+    std::sync::Arc::new(ScanJob {
+        service,
+        id,
+        cursor: std::sync::Mutex::new(cursor),
+    })
+}
+
 impl crate::maintenance::Job for ScanJob {
     fn name(&self) -> &'static str {
         "storage_discovery"
@@ -173,6 +188,9 @@ impl StorageService {
         let result = match result {
             Ok(Some(result)) => result,
             Ok(None) => return Ok(false),
+            // Retry transient ownership contention with the current scan
+            // intact. Reconciliation below is only for permanent failures.
+            Err(error) if error.code == devcoordinator2_api::ErrorCode::Busy => return Err(error),
             Err(error) => {
                 state.reconciliation = Some(super::reconcile::ReconcileCursor::new(
                     self,

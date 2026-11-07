@@ -11,8 +11,9 @@ use devcoordinator2_api::params::{
 use devcoordinator2_api::results::{
     CurrentReleaseSummary, Decision, DecisionRecorded, DecisionSearch, DecisionState,
     DecisionSummarized, DecisionSummary, DecisionTail, ElaborationRequest, PlanCollection,
-    PlanDetail, PlanEvent, PlanOverview, PlanRelease, PlanRepositoryRow, PlanTask, PreviewRequest,
-    ReleaseDelivered, ReleaseMutation, Task, TaskCreated, TaskHistory, TaskMutation,
+    PlanDetail, PlanEvent, PlanHeaderCollection, PlanOverview, PlanRelease, PlanRepositoryHeader,
+    PlanRepositoryRow, PlanTask, PreviewRequest, ReleaseDelivered, ReleaseMutation, Task,
+    TaskCreated, TaskHistory, TaskMutation,
 };
 use devcoordinator2_api::{ErrorCode, ProtocolError};
 use serde::Deserialize;
@@ -309,6 +310,17 @@ impl PlanService {
                 "plan page limit must be between 1 and 200",
             ));
         }
+        if params.headers_only {
+            if repository_id.is_some() || params.repository_id.is_some() || params.path.is_some() {
+                return Err(ProtocolError::new(
+                    ErrorCode::ParamsInvalid,
+                    "plan headers require a repository collection request",
+                ));
+            }
+            return self
+                .plan_headers(params.after_repository_id, params.limit)
+                .map(PlanOverview::Headers);
+        }
         match repository_id {
             Some(repository_id) => self
                 .plan_detail(
@@ -324,11 +336,11 @@ impl PlanService {
         }
     }
 
-    fn plan_collection(
+    fn plan_headers(
         &self,
         after: Option<String>,
         limit: u16,
-    ) -> Result<PlanCollection, ProtocolError> {
+    ) -> Result<PlanHeaderCollection, ProtocolError> {
         let repositories = self
             .database
             .read(move |connection| {
@@ -356,6 +368,61 @@ impl PlanService {
                     icon,
                 }
             });
+            rows.push(PlanRepositoryHeader {
+                repository_id,
+                display_name,
+                repository_source: crate::repository::repository_source_for_root(
+                    std::path::Path::new(&root_path),
+                ),
+                root_path,
+                presentation,
+            });
+        }
+        let mut has_more = has_more;
+        while serde_json::to_vec(&rows)
+            .map_err(|_| {
+                ProtocolError::new(ErrorCode::InternalError, "cannot encode plan headers")
+            })?
+            .len()
+            > 190 * 1024
+        {
+            if rows.len() <= 1 {
+                return Err(ProtocolError::new(
+                    ErrorCode::InternalError,
+                    "one repository exceeds the plan header response budget",
+                ));
+            }
+            rows.pop();
+            has_more = true;
+        }
+        let next_repository_id = has_more.then(|| {
+            rows.last()
+                .expect("nonempty header page")
+                .repository_id
+                .clone()
+        });
+        Ok(PlanHeaderCollection {
+            headers: rows,
+            next_repository_id,
+        })
+    }
+
+    fn plan_collection(
+        &self,
+        after: Option<String>,
+        limit: u16,
+    ) -> Result<PlanCollection, ProtocolError> {
+        let headers = self.plan_headers(after, limit)?;
+        let has_more = headers.next_repository_id.is_some();
+        let mut rows = Vec::with_capacity(headers.headers.len());
+        for header in headers.headers {
+            let PlanRepositoryHeader {
+                repository_id,
+                display_name,
+                root_path,
+                repository_source,
+                presentation,
+            } = header;
             let repository_id_for_query = repository_id.clone();
             let (aggregate, current_release, elaboration_request_count, preview_requested) = self
                 .database
@@ -384,9 +451,7 @@ impl PlanService {
             rows.push(PlanRepositoryRow {
                 repository_id,
                 display_name,
-                repository_source: crate::repository::repository_source_for_root(
-                    std::path::Path::new(&root_path),
-                ),
+                repository_source,
                 root_path,
                 presentation,
                 open_tasks: aggregate.tasks_total.saturating_sub(aggregate.tasks_done),
@@ -429,37 +494,46 @@ impl PlanService {
         limit: u16,
     ) -> Result<PlanDetail, ProtocolError> {
         let repository_id_owned = repository_id.to_owned();
-        let (display_name, archived, replacement, releases, mut tasks) = self
+        let (repository, releases, mut tasks) = self
             .database
             .read(move |connection| {
                 let repository = connection
                     .query_row(
-                        "SELECT display_name,archived_at IS NOT NULL,merged_into_repository_id FROM repositories WHERE repository_id=$1",
+                        "SELECT r.display_name,r.archived_at IS NOT NULL,r.merged_into_repository_id,r.root_path,p.display_name,p.icon FROM repositories r LEFT JOIN repository_presentation p USING(repository_id) WHERE r.repository_id=$1",
                         [&repository_id_owned],
                         |row| {
                             Ok((
                                 row.get::<_, String>(0)?,
                                 row.get::<_, i64>(1)? != 0,
                                 row.get::<_, Option<String>>(2)?,
+                                row.get::<_, String>(3)?,
+                                row.get::<_, Option<String>>(4)?,
+                                row.get::<_, Option<String>>(5)?,
                             ))
                         },
                     )
                     .optional()?;
-                let Some((display_name, archived, replacement)) = repository else {
+                let Some(repository) = repository else {
                     return Err(domain_error(
                         ErrorCode::RepositoryNotFound,
                         "repository is not registered",
                     ));
                 };
                 Ok((
-                    display_name,
-                    archived,
-                    replacement,
+                    repository,
                     read_release_overviews(connection, &repository_id_owned,after_release_sequence,limit)?,
                     read_tasks(connection, &repository_id_owned,after_sequence,limit)?,
                 ))
             })
             .map_err(database_or_domain)?;
+        let (display_name, archived, replacement, root_path, custom_name, icon) = repository;
+        let presentation = (custom_name.is_some() || icon.is_some()).then(|| {
+            devcoordinator2_api::results::RepositoryPresentation {
+                repository_id: repository_id.to_owned(),
+                display_name: custom_name,
+                icon,
+            }
+        });
         let mut releases = releases
             .into_iter()
             .map(|release| {
@@ -524,6 +598,10 @@ impl PlanService {
         let mut detail = PlanDetail {
             repository_id: repository_id.clone(),
             display_name,
+            repository_source: crate::repository::repository_source_for_root(std::path::Path::new(
+                &root_path,
+            )),
+            presentation,
             archived,
             merged_into_repository_id: replacement,
             releases,
@@ -2415,12 +2493,62 @@ mod tests {
             .as_ref()
             .unwrap();
         assert_eq!(source.name, "project");
+        let mut after_repository_id = None;
+        let mut header_ids = Vec::new();
+        loop {
+            let PlanOverview::Headers(headers) = service
+                .overview_page(
+                    None,
+                    devcoordinator2_api::params::PlanReference {
+                        headers_only: true,
+                        limit: 1,
+                        after_repository_id,
+                        ..Default::default()
+                    },
+                )
+                .unwrap()
+            else {
+                panic!("headers expected")
+            };
+            assert_eq!(headers.headers.len(), 1);
+            let header = &headers.headers[0];
+            assert_eq!(header.repository_source.as_ref(), Some(source));
+            let encoded = serde_json::to_value(header).unwrap();
+            assert!(encoded.get("open_tasks").is_none());
+            assert!(encoded.get("loc_total").is_none());
+            header_ids.push(header.repository_id.clone());
+            after_repository_id = headers.next_repository_id;
+            if after_repository_id.is_none() {
+                break;
+            }
+        }
+        assert_eq!(
+            header_ids,
+            collection
+                .repositories
+                .iter()
+                .map(|row| row.repository_id.clone())
+                .collect::<Vec<_>>()
+        );
         for row in &collection.repositories {
             assert_eq!(row.repository_source.as_ref(), Some(source));
             assert_eq!(row.open_tasks, 0);
             assert!(
                 row.root_path == root.to_string_lossy() || row.root_path == clone.to_string_lossy()
             );
+            let PlanOverview::Detail(detail) = service
+                .overview_page(
+                    Some(&row.repository_id),
+                    devcoordinator2_api::params::PlanReference {
+                        limit: 1,
+                        ..Default::default()
+                    },
+                )
+                .unwrap()
+            else {
+                panic!("detail expected")
+            };
+            assert_eq!(detail.repository_source.as_ref(), Some(source));
         }
         std::fs::remove_dir_all(&clone).unwrap();
         let PlanOverview::Collection(collection) = service.overview(None).unwrap() else {
@@ -2459,6 +2587,46 @@ mod tests {
         assert_eq!(
             row.presentation.as_ref().unwrap().icon.as_deref(),
             Some("rocket")
+        );
+        let PlanOverview::Detail(detail) = service
+            .overview_page(
+                Some(&request.repository_id),
+                devcoordinator2_api::params::PlanReference {
+                    limit: 1,
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+        else {
+            panic!("detail expected")
+        };
+        assert_eq!(detail.presentation, row.presentation);
+        assert_eq!(detail.display_name, row.display_name);
+        let PlanOverview::Headers(headers) = service
+            .overview_page(
+                None,
+                devcoordinator2_api::params::PlanReference {
+                    headers_only: true,
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+        else {
+            panic!("headers expected")
+        };
+        assert_eq!(headers.headers[0].presentation, row.presentation);
+        assert_eq!(
+            service
+                .overview_page(
+                    Some(&request.repository_id),
+                    devcoordinator2_api::params::PlanReference {
+                        headers_only: true,
+                        ..Default::default()
+                    }
+                )
+                .unwrap_err()
+                .code,
+            ErrorCode::ParamsInvalid
         );
         let reopened = Database::open(temporary.path().join("authority.sqlite3")).unwrap();
         let persisted: (String, String, String) = reopened.read(|connection| {
@@ -2515,6 +2683,11 @@ mod tests {
             panic!("collection expected")
         };
         assert!(collection.repositories[0].presentation.is_none());
+        let PlanOverview::Detail(detail) = service.overview(Some("r1111111111111111")).unwrap()
+        else {
+            panic!("detail expected")
+        };
+        assert!(detail.presentation.is_none());
     }
 
     fn seed(database: &Database, spec_json: String) {

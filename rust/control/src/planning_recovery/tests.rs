@@ -15,6 +15,8 @@ struct Fixture {
     _root: tempfile::TempDir,
     live: Database,
     request: Request,
+    // Drop the pools before stopping a dedicated archive round-trip cluster.
+    cluster: Option<devcoordinator2_persistence::fixture::FixtureCluster>,
 }
 
 fn seed_repositories(database: &Database) {
@@ -28,6 +30,16 @@ fn seed_repositories(database: &Database) {
 
 impl Fixture {
     fn new() -> Self {
+        Self::with_cluster(None)
+    }
+
+    fn isolated() -> Self {
+        Self::with_cluster(Some(
+            devcoordinator2_persistence::fixture::FixtureCluster::start().unwrap(),
+        ))
+    }
+
+    fn with_cluster(cluster: Option<devcoordinator2_persistence::fixture::FixtureCluster>) -> Self {
         let root = tempfile::tempdir().unwrap();
         let transaction = root.path().join("saved");
         fs::create_dir(&transaction).unwrap();
@@ -80,7 +92,12 @@ impl Fixture {
         )
         .unwrap();
         fs::set_permissions(header, fs::Permissions::from_mode(0o600)).unwrap();
-        let live = Database::open(root.path().join("live.sqlite3")).unwrap();
+        let live = match &cluster {
+            Some(cluster) => {
+                Database::connect(&cluster.create_database("planning_live").unwrap()).unwrap()
+            }
+            None => Database::open(root.path().join("live.sqlite3")).unwrap(),
+        };
         seed_repositories(&live);
         live.call(|c| {
             c.execute_batch("INSERT INTO releases(release_id,repository_id,seq,name,kind,status,created_at,created_by,updated_at,delivered_at) VALUES
@@ -106,6 +123,15 @@ impl Fixture {
             _root: root,
             live,
             request,
+            cluster,
+        }
+    }
+
+    fn finish(self) {
+        let Self { live, cluster, .. } = self;
+        drop(live);
+        if let Some(cluster) = cluster {
+            cluster.stop().unwrap();
         }
     }
 
@@ -167,7 +193,12 @@ impl Fixture {
         )
         .unwrap();
         let tables = read_legacy_tables(&legacy, REPO).unwrap();
-        let source = Database::open(self._root.path().join("native-source")).unwrap();
+        let source = match &self.cluster {
+            Some(cluster) => {
+                Database::connect(&cluster.create_database("planning_source").unwrap()).unwrap()
+            }
+            None => Database::open(self._root.path().join("native-source")).unwrap(),
+        };
         seed_repositories(&source);
         source
             .transaction(|connection| {
@@ -520,7 +551,11 @@ fn dry_run_is_private_scoped_and_does_not_change_either_database() {
 #[test]
 fn apply_preserves_identity_history_newer_state_and_current_release_and_is_repeatable() {
     for native in [false, true] {
-        let mut fixture = Fixture::new();
+        // Native inspection drops owned scratch databases and PostgreSQL must
+        // checkpoint the entire cluster for each DROP. Keep the real source
+        // and live authority together, without unrelated tests' hundreds of
+        // retained per-path databases participating in those checkpoints.
+        let mut fixture = Fixture::isolated();
         if native {
             fixture.use_native_snapshot();
         }
@@ -591,6 +626,7 @@ fn apply_preserves_identity_history_newer_state_and_current_release_and_is_repea
             "already_applied"
         );
         assert_eq!(fixture.live.call(|c| fingerprint(c, REPO)).unwrap(), post);
+        fixture.finish();
     }
 }
 

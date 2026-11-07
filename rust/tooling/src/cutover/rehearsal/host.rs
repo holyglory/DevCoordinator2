@@ -415,13 +415,44 @@ impl Fixture {
         let root = &self.input.work_root;
         let origin = root.join("origin.git");
         let source = root.join("source");
+        let source_git_dir = Path::new(&self.candidate.source_root)
+            .join(".git")
+            .canonicalize()
+            .map_err(|_| "native rehearsal source Git directory is unavailable")?;
+        if !source_git_dir.is_dir() {
+            return Err("native rehearsal source Git directory is not a directory".into());
+        }
+        let git_dir_text = path_text(&source_git_dir)?;
+        if [self.candidate.source_root.as_str(), git_dir_text.as_str()]
+            .iter()
+            .any(|path| {
+                path.bytes()
+                    .any(|byte| matches!(byte, b'\0' | b'\n' | b'\r'))
+            })
+        {
+            return Err("native rehearsal Git paths contain unsupported control characters".into());
+        }
+        let safe_git_dir = format!("safe.directory={git_dir_text}");
+        // Local clone starts upload-pack with its own protected configuration.
+        // Scope trust in both processes to this verified checkout only. Git
+        // interprets the upload-pack value as a shell command, so quote its
+        // sole dynamic argument instead of interpolating a path as syntax.
+        let upload_pack = format!(
+            "--upload-pack=/usr/bin/git -c '{}' upload-pack",
+            safe_git_dir.replace('\'', "'\\''")
+        );
         required(
             self.runner.as_ref(),
             Path::new("/usr/bin/git"),
             vec![
+                "-c".into(),
+                format!("safe.directory={}", self.candidate.source_root).into(),
+                "-c".into(),
+                safe_git_dir.into(),
                 "clone".into(),
                 "--bare".into(),
                 "--no-hardlinks".into(),
+                upload_pack.into(),
                 "--".into(),
                 self.candidate.source_root.clone().into(),
                 origin.clone().into_os_string(),

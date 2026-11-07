@@ -365,7 +365,11 @@ const fixtures = (scenario) => {
         { task_id: P_LT, parent_task_id: null, release_id: V_R2, seq: 6, position: 1, title: 'A very long task title that keeps going and going for quite a while so wrapping is exercised', impact: null, status: 'planned', kind: 'improvement', estimated_loc: 800 },
         { task_id: P_UNSIZED_PARENT, parent_task_id: null, release_id: V_R1, seq: 7, position: 0, title: 'Check the release before people use it', impact: 'The final checks must be easy to inspect as one group.', status: 'planned', kind: 'goal', estimated_loc: null },
         { task_id: P_UNSIZED, parent_task_id: P_UNSIZED_PARENT, release_id: V_R1, seq: 8, position: 1, title: 'Check the complete release in a real browser', impact: 'A release can look finished in code while visible journeys still fail.', status: 'planned', kind: 'improvement', estimated_loc: null },
-        { task_id: P_FB, parent_task_id: null, release_id: null, seq: 9, position: 1, title: 'Make the export faster', impact: 'Big exports take minutes.', status: 'planned', kind: 'user_feedback', estimated_loc: 150 },
+        { task_id: P_FB, parent_task_id: null, release_id: null, seq: 9, position: 1, title: scenario.workspaceDeepPlan ? 'Keep export status readable' : 'Make the export faster', impact: 'Big exports take minutes.', status: scenario.workspaceDeepPlan ? 'in_progress' : 'planned', kind: 'user_feedback', estimated_loc: 150 },
+        ...(scenario.workspaceDeepPlan ? [
+          { task_id: 'p1111111111111230', parent_task_id: P_FB, release_id: null, seq: 13, position: 1, title: 'Prepare the export', impact: null, status: 'in_progress', kind: 'improvement', estimated_loc: 775 },
+          { task_id: 'p1111111111111240', parent_task_id: P_FB, release_id: null, seq: 14, position: 2, title: 'Check the final export', impact: null, status: 'planned', kind: 'improvement', estimated_loc: null },
+        ] : []),
         ...(scenario.workspaceDeepPlan ? Array.from({ length: 3 }, (_, index) => ({
           task_id: `p11111111111112${index}0`, parent_task_id: index ? `p11111111111112${index - 1}0` : P_G1,
           release_id: V_R1, seq: 10 + index, position: 1,
@@ -401,6 +405,7 @@ const fixtures = (scenario) => {
 
 const SCENARIOS = {
   populated: { identity: 'owner@example.test', admin: true },
+  workspaceLarge: { identity: 'owner@example.test', admin: true, workspaceLargePlan: true, workspaceDeepPlan: true, targetedOnly: true },
   artifactFiles: { identity: 'owner@example.test', admin: true, artifactFiles: true, targetedOnly: true },
   empty: { identity: 'owner@example.test', admin: true, empty: true },
   error: { identity: 'owner@example.test', admin: true, error: true },
@@ -488,6 +493,15 @@ async function startFakeDaemon(dir) {
   });
   const planOverview = () => {
     const result = fixtures(scenario)['plan.overview'];
+    if (scenario.workspaceLargePlan) {
+      result.tasks.push(...Array.from({ length: 351 - result.tasks.length }, (_, index) => ({
+        task_id: `p222222222222${String(index).padStart(4, '0')}`, parent_task_id: null,
+        release_id: index % 2 ? V_R1 : V_R2, seq: 20 + index, position: index + 20,
+        title: `Review retained outcome ${index + 1} before delivering the complete release`,
+        status: index % 3 ? 'planned' : 'in_progress', kind: 'improvement', estimated_loc: 100,
+      })));
+      result.tasks.forEach((task, index) => { task.seq = index + 1; });
+    }
     result.tasks = result.tasks
       .map((task) => ({ ...task, ...(mutable.taskUpdates.get(task.task_id) || {}) }))
       .filter((task) => task.status !== 'dropped')
@@ -763,6 +777,10 @@ async function startFakeDaemon(dir) {
         return reply({ ok: true, data: req.params });
       }
       if (cmd === 'plan.overview' && !req.params.repository_id) {
+        if (scenario.workspacePaging && !req.params.headers_only && !mutable.cacheReleased) {
+          if (scenario.workspaceAggregateDelayMs) await new Promise((resolve) => setTimeout(resolve, scenario.workspaceAggregateDelayMs));
+          else await new Promise((resolve) => delayedReplies.add(resolve));
+        }
         const result = fixtures(scenario)['plan.overview-list'];
         result.repositories = result.repositories.map((record) => ({ ...record, presentation: repositoryPresentations.get(record.repository_id) || null }));
         if (scenario.workspacePaging) {
@@ -771,10 +789,31 @@ async function startFakeDaemon(dir) {
             result.repositories = result.repositories.filter((row) => row.repository_id !== REPO);
           } else { result.repositories = result.repositories.filter((row) => row.repository_id === REPO); result.next_repository_id = REPO; }
         }
+        if (req.params.headers_only) {
+          return reply({ ok: true, data: { headers: result.repositories.map(({ repository_id, display_name, root_path, repository_source, presentation }) => ({ repository_id, display_name, root_path, repository_source, presentation })), next_repository_id: result.next_repository_id } });
+        }
         return reply({ ok: true, data: result });
       }
-      if (cmd === 'plan.overview' && scenario.workspacePaging && ['rffffffffffffffff', 'release-clone'].includes(req.params.repository_id)) return reply({ ok: true, data: { ...planOverview(), repository_id: req.params.repository_id, display_name: 'Late repository', tasks: [], releases: [], elaboration_requests: [] } });
-      if (cmd === 'plan.overview') return reply({ ok: true, data: planOverview() });
+      if (cmd === 'plan.overview') {
+        const metadata = fixtures(scenario)['plan.overview-list'].repositories.find((row) => row.repository_id === req.params.repository_id);
+        const result = { ...planOverview(), repository_id: req.params.repository_id, display_name: metadata?.display_name || 'Late repository', repository_source: metadata?.repository_source, presentation: repositoryPresentations.get(req.params.repository_id) || null };
+        if (scenario.workspacePaging && ['rffffffffffffffff', 'release-clone'].includes(req.params.repository_id)) {
+          result.tasks = []; result.releases = []; result.elaboration_requests = [];
+          if (req.params.repository_id === 'release-clone') result.repository_source = { key: 'repo-one-origin', name: 'repo-one' };
+        }
+        if (scenario.workspaceLargePlan) {
+          const limit = req.params.limit || 100;
+          const remaining = result.tasks.filter((task) => task.seq > (req.params.after_sequence || 0));
+          result.tasks = remaining.slice(0, limit);
+          result.next_sequence = remaining.length > limit ? result.tasks.at(-1).seq : null;
+          result.tasks_truncated = remaining.length > limit;
+          const releases = result.releases.filter((release) => release.seq > (req.params.after_release_sequence || 0));
+          result.releases = releases.slice(0, limit);
+          result.next_release_sequence = releases.length > limit ? result.releases.at(-1).seq : null;
+          result.elaboration_requests = result.elaboration_requests.filter((request) => result.tasks.some((task) => task.task_id === request.task_id));
+        }
+        return reply({ ok: true, data: result });
+      }
       if (cmd === 'repository.list') {
         const repository = { repository_id: REPO, root_path: '/repo-one', display_name: 'repo-one', registered_at: '2026-01-01T00:00:00Z', last_seen_at: '2026-01-01T00:00:00Z', archived_at: null, archived_by_uid: null, archive_note: null, merged_into_repository_id: null, worktrees: [{ worktree_id: 'wmain', worktree_path: '/repo-one' }, { worktree_id: 'wfeature', worktree_path: '/repo-one/.worktrees/feature-ux' }, { worktree_id: 'wrelease', worktree_path: '/repo-one/.worktrees/release-candidate' }] };
         if (scenario.workspaceViewer) return reply({ ok: false, error: { code: 'permission_denied', message: 'Registry requires administrator', detail: '' } });
@@ -1041,6 +1080,7 @@ async function main() {
 
   if (process.env.CONSOLE_VERIFY_USAGE_ONLY) {
     try {
+      daemon.setScenario({ ...SCENARIOS.populated, workspaceLongList: true });
       const context = await browser.newContext({ viewport: VIEWPORTS.wide, reducedMotion: 'reduce', colorScheme: 'light' });
       const { cookie } = sessions.issue({ sub: 'sub', email: 'owner@example.test' });
       await context.addCookies([{ name: 'dc2_session', value: cookie.split(';')[0].split('=')[1], domain: '.' + BASE, path: '/' }]);
@@ -1049,6 +1089,13 @@ async function main() {
       await page.goto(`http://${HOST}:${port}/#/usage/${REPO}`);
       await page.waitForSelector('.usage-phase-chart');
       check('usage-only: scope control renders for the canonical repository', await page.locator('[data-usage-worktree-scope-toggle]').innerText() === 'Worktree scope · All worktrees');
+      check('usage-only: registry scope reads only this repository and follows its worktree cursor',
+        daemon.calls.some((call) => call.operation === 'repository.list' && call.params.repository_id === REPO && call.params.after_worktree_id === 'wfeature')
+        && daemon.calls.filter((call) => call.operation === 'repository.list' && !call.params.repository_id).length <= 1);
+      await page.click('[data-usage-coverage-hint-toggle]');
+      const explanation = page.locator('.usage-coverage-popover:not([hidden])');
+      check('usage-only: completeness explanation is a real focused contextual overlay', await explanation.getAttribute('role') === 'dialog' && !!await explanation.getAttribute('data-ui-contextual-overlay') && await explanation.evaluate((element) => document.activeElement === element && getComputedStyle(element).position === 'absolute'));
+      await page.keyboard.press('Escape');
       check('usage-only: phase chart fits without horizontal scrolling', await page.locator('.usage-chart-scroll').evaluate((element) => element.scrollWidth <= element.clientWidth + 1));
       await page.setViewportSize({ width: 810, height: 867 });
       await page.reload();

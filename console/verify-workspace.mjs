@@ -1,4 +1,5 @@
 import path from 'node:path';
+import fs from 'node:fs/promises';
 import { chooseRepository } from './verify-tests-pane.mjs';
 
 export async function verifyWorkspace({ page, daemon, check, scenario, baseUrl, output, theme, viewport }) {
@@ -6,6 +7,18 @@ export async function verifyWorkspace({ page, daemon, check, scenario, baseUrl, 
   const verify = (name, condition, detail = '') => check(`workspace ${theme} ${viewport.width}: ${name}`, condition, detail);
   const errors = [];
   page.on('pageerror', (error) => errors.push(error.message));
+  await page.addInitScript(() => {
+    window.workspaceTiming = { lcp: 0, longTasks: [] };
+    const ready = new MutationObserver(() => {
+      if (document.querySelectorAll('.plan-task-select').length !== 351) return;
+      ready.disconnect();
+      window.workspaceTiming.domReadyAt = performance.now();
+      requestAnimationFrame(() => requestAnimationFrame(() => { window.workspaceTiming.paintReadyAt = performance.now(); }));
+    });
+    ready.observe(document, { childList: true, subtree: true });
+    new PerformanceObserver((list) => { for (const entry of list.getEntries()) window.workspaceTiming.lcp = entry.startTime; }).observe({ type: 'largest-contentful-paint', buffered: true });
+    new PerformanceObserver((list) => { for (const entry of list.getEntries()) window.workspaceTiming.longTasks.push({ start: entry.startTime, duration: entry.duration }); }).observe({ type: 'longtask', buffered: true });
+  });
   for (const [target, viewer] of [['rffffffffffffffff', false], ['rffffffffffffffff', true], ['release-clone', false]]) {
     daemon.setScenario({ ...scenario, admin: !viewer, workspacePaging: true, workspaceViewer: viewer });
     await page.goto('about:blank');
@@ -13,7 +26,28 @@ export async function verifyWorkspace({ page, daemon, check, scenario, baseUrl, 
     await page.locator('.plan-context').waitFor();
     verify(`${viewer ? 'viewer' : 'administrator'} direct links beyond the first header page retain exact repository scope`, page.url().endsWith(target) && await page.locator('#workspace-heading').innerText() === (target === 'release-clone' ? 'repo-one' : 'Late repository') && daemon.calls.some((call) => call.operation === 'plan.overview' && call.params.repository_id === target) && await page.locator('.plan-task-select').count() === 0);
     if (viewer) verify('viewer direct links use the authorized Plan point read', daemon.calls.some((call) => call.operation === 'plan.overview' && call.params.repository_id === target && call.params.limit === 1));
+    verify('direct route content does not request global Plan aggregates', !daemon.calls.some((call) => call.operation === 'plan.overview' && !call.params.repository_id && !call.params.headers_only) && await page.locator('.plan-context').isVisible());
+    if (target === 'release-clone') verify('direct clone is grouped with its canonical source from first render', await page.locator('#repository-list .workspace-repository-name').allTextContents().then((names) => names.filter((name) => name === 'repo-one').length === 1 && !names.includes('0.1.3-generated')));
     daemon.releaseDelayed();
+  }
+  if ([1440, 390].includes(viewport.width)) {
+    const baseline = process.env.CONSOLE_VERIFY_BASELINE_WORKSPACE ? await fs.readFile(process.env.CONSOLE_VERIFY_BASELINE_WORKSPACE, 'utf8') : null;
+    for (const variant of baseline ? ['baseline', 'current'] : ['current']) {
+      if (variant === 'baseline') await page.route('**/workspace.js*', route => route.fulfill({ status: 200, contentType: 'application/javascript', body: baseline }));
+      daemon.setScenario({ ...scenario, workspaceLargePlan: true, workspaceDeepPlan: true, workspacePaging: true, workspaceAggregateDelayMs: 350 });
+      await page.goto('about:blank');
+      await page.goto(`${baseUrl}#/plan/${repositoryId}`);
+      await page.waitForFunction(() => document.querySelectorAll('.plan-task-select').length === 351);
+      await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+      const timing = await page.evaluate(() => ({ ...window.workspaceTiming, readyAt: performance.now(), rows: document.querySelectorAll('.plan-task-select').length }));
+      verify(`${variant} complete 351-task Plan renders all four scoped pages while catalogue continuation is held`,
+        [0, 100, 200, 300].every((after) => daemon.calls.some((call) => call.operation === 'plan.overview' && call.params.repository_id === repositoryId && (call.params.after_sequence || 0) === after && !call.params.limit))
+        && (variant === 'baseline' || !daemon.calls.some((call) => call.operation === 'plan.overview' && !call.params.repository_id && !call.params.headers_only)), JSON.stringify({ ...timing, aggregateDelayMs: 350 }));
+      await page.screenshot({ path: path.join(output, `workspace-large-${variant}-${theme}-${viewport.width}.png`), mask: [page.locator('#who-email')] });
+      await page.goto('about:blank');
+      daemon.releaseDelayed();
+      if (variant === 'baseline') await page.unroute('**/workspace.js*');
+    }
   }
   daemon.setScenario({ ...scenario, workspaceLongList: true, workspaceDeepPlan: true });
   await page.goto('about:blank');
@@ -23,7 +57,7 @@ export async function verifyWorkspace({ page, daemon, check, scenario, baseUrl, 
   verify('one shared selector replaces page-specific pickers', await page.locator('#repository-list').count() === 1 && await page.locator('[data-project-picker], .test-repository-list').count() === 0);
   verify('all aspects have real repository-scoped links', await page.locator('#workspace-aspects a').count() === 6 && await page.locator('#workspace-aspects a[href="#/tests?repository=r0123456789abcdef"]').count() === 1);
   verify('plan and progress are one destination with four views', await page.locator('#workspace-work-views a').allTextContents().then((labels) => labels.join() === 'Plan,Progress,Usage,Performance'));
-  verify('Plan uses one repository index and does not wait for Tests', daemon.calls.filter(call => call.operation === 'plan.overview' && !call.params.repository_id).length === 1 && !daemon.calls.some(call => call.operation === 'test.list'));
+  verify('Plan reads one metadata header page without aggregate or Tests barriers', daemon.calls.filter(call => call.operation === 'plan.overview' && !call.params.repository_id && call.params.headers_only).length === 1 && !daemon.calls.some(call => call.operation === 'plan.overview' && !call.params.repository_id && !call.params.headers_only) && !daemon.calls.some(call => call.operation === 'test.list'));
   if (viewport.width > 760) {
     verify('sidebar starts wide enough for ordinary repository names', (await page.locator('#repository-sidebar').boundingBox()).width >= 280);
     const resize = page.locator('#repository-resize');
@@ -81,6 +115,8 @@ export async function verifyWorkspace({ page, daemon, check, scenario, baseUrl, 
   await page.locator('.plan-task-meta > .badge:visible').first().waitFor();
   const statusCounts = { releases: await page.locator('.plan-release-meta > .badge:visible').count(), tasks: await page.locator('.plan-task-meta > .badge:visible').count() };
   verify('plan readability checks cover populated release and task statuses', statusCounts.releases > 0 && statusCounts.tasks > 0, JSON.stringify(statusCounts));
+  const feedback = page.locator('[data-task-row="p1111111111111106"] .plan-task-select');
+  verify('feedback fixture includes an estimate, work status and request status', await feedback.locator('.plan-task-meta > *').count() === 3 && /775.*1 not estimated/.test(await feedback.innerText()));
   const compressedTitles = await page.locator('.plan-task-title').evaluateAll((elements) => elements.filter((element) => {
     const lineHeight = parseFloat(getComputedStyle(element).lineHeight);
     return element.getBoundingClientRect().height + 1 < Math.min(element.scrollHeight, lineHeight * 2);
@@ -107,6 +143,10 @@ export async function verifyWorkspace({ page, daemon, check, scenario, baseUrl, 
   }));
   verify('release and task status badges remain readable inside their timeline rows', clippedStatuses.length === 0, JSON.stringify(clippedStatuses));
   if (clippedStatuses.length) await page.screenshot({ path: path.join(output, `plan-status-clipping-${theme}-${viewport.width}.png`), fullPage: true });
+  const timelineScroll = await page.locator('[data-plan-viewport]').evaluate(element => ({ top: element.scrollTop, left: element.scrollLeft }));
+  await feedback.scrollIntoViewIfNeeded();
+  await page.screenshot({ path: path.join(output, `plan-feedback-status-${theme}-${viewport.width}.png`), mask: [page.locator('#who-email')] });
+  await page.locator('[data-plan-viewport]').evaluate((element, scroll) => { element.scrollTop = scroll.top; element.scrollLeft = scroll.left; }, timelineScroll);
   const deepParent = page.locator('[data-collapse="p1111111111111200"]');
   const deepChild = page.locator('[data-task-row="p1111111111111210"]');
   await deepParent.click();
