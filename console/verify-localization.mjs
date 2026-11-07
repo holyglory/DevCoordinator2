@@ -107,6 +107,12 @@ export async function verifyLocalization({ page, daemon, check, baseUrl, output,
   await dialog.locator('[data-presentation-cancel]').click();
   await page.locator('.who #language-toggle').waitFor();
   verify('selector returns to header after modal closes', await page.locator('#language-toggle').count() === 1);
+  await page.locator('[data-plan-zoom="fit"]').click();
+  const taskBar = page.locator('[data-hover-task="p1111111111111104"]');
+  await taskBar.focus();
+  await page.locator('#plan-tooltip:not([hidden])').waitFor();
+  await page.evaluate(() => window.DevCoordinatorI18n.setLocale('fr'));
+  verify('focused task tooltip and cached estimate change language without replacing the task bar', await taskBar.evaluate(node => node === document.activeElement) && (await page.locator('#plan-tooltip').innerText()).includes('[fr]') && (await estimate.innerText()).includes('[fr]'));
   await page.goto(`${baseUrl}#/deployments`);
   const firstDeployment = page.locator('.deployment-record').first();
   await firstDeployment.waitFor();

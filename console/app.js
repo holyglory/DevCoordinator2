@@ -4085,9 +4085,16 @@ function openAgentRolesDialog(roles, revision) { document.getElementById('agent-
 // --- Plan (completion ledger, releases, previews) ------------------------
 function locN(n) { return window.DevCoordinatorI18n.number(Number(n)); }
 function loc(n) { return n == null ? '' : window.DevCoordinatorI18n.t('plan.estimatedLines', {count:n, value:locN(n)}); }
+const planEstimateCache = new WeakMap();
 function planEstimateText(row) {
-  if (!row.isParent) return loc(row.task.estimated_loc) || window.DevCoordinatorI18n.t('plan.not_estimated_dbbcf5');
-  return [row.subtreeLoc ? loc(row.subtreeLoc) : '', row.unsizedCount ? window.DevCoordinatorI18n.t('plan.unestimatedCount', {count:row.unsizedCount}) : ''].filter(Boolean).join(' + ');
+  const locale = window.DevCoordinatorI18n.locale;
+  const cached = planEstimateCache.get(row);
+  if (cached && cached.locale === locale && cached.parent === row.isParent && cached.estimate === row.task.estimated_loc && cached.subtree === row.subtreeLoc && cached.unsized === row.unsizedCount) return cached.text;
+  const text = !row.isParent
+    ? loc(row.task.estimated_loc) || window.DevCoordinatorI18n.t('plan.not_estimated_dbbcf5')
+    : [row.subtreeLoc ? loc(row.subtreeLoc) : '', row.unsizedCount ? window.DevCoordinatorI18n.t('plan.unestimatedCount', {count:row.unsizedCount}) : ''].filter(Boolean).join(' + ');
+  planEstimateCache.set(row, { locale, parent: row.isParent, estimate: row.task.estimated_loc, subtree: row.subtreeLoc, unsized: row.unsizedCount, text });
+  return text;
 }
 function planDoneText(progress) {
   return window.DevCoordinatorI18n.t('plan.doneSummary', {done:locN(progress.done), total:locN(progress.total), percent:window.DevCoordinatorI18n.percent(progress.percent / 100, {maximumFractionDigits:0})});
@@ -4364,7 +4371,7 @@ const viewPlan = guard(async (repoId, prefetchedModel) => {
       : '<span class="plan-drag-spacer" aria-hidden="true"></span>';
     const metaLoc = () => planEstimateText(row);
     const common = `role="button" tabindex="0" data-select-task="${esc(task.task_id)}" aria-pressed="${selected}" aria-label="${esc(window.DevCoordinatorI18n.t('plan.selectTask', {title:task.title}))}" data-i18n-attrs='{"aria-label":"plan.selectTask"}' data-i18n-args='${esc(JSON.stringify({title:task.title}))}'`;
-    const hover = `data-hover-task="${esc(task.task_id)}" data-hover-title="${esc(task.title)}" data-hover-status="${esc(task.status)}" data-hover-loc="${esc(metaLoc())}" data-hover-progress="${esc(row.isUnsized ? window.DevCoordinatorI18n.t('plan.progressNeedsEstimate') : planDoneText(progress))}" data-hover-elaboration="${task.elaboration_needed ? 'true' : 'false'}"`;
+    const hover = `data-hover-task="${esc(task.task_id)}" data-hover-title="${esc(task.title)}" data-hover-status="${esc(task.status)}" data-hover-elaboration="${task.elaboration_needed ? 'true' : 'false'}"`;
     const sizedBar = row.width ? (row.isParent
       ? `<div class="gbar parent${selected ? ' selected' : ''}" style="left:${pctOf(row.start)};width:${pctOf(row.width)}" ${common}><span class="gdone" style="width:${progress.percent}%"></span></div>`
       : `<div class="gbar ${esc(task.status)}${selected ? ' selected' : ''}" style="left:${pctOf(row.start)};width:${pctOf(row.width)}" ${common} ${hover}>
@@ -4848,13 +4855,9 @@ function bindPlanWorkspace(root, model, layout) {
 
   root.querySelectorAll('[data-hover-task]').forEach((bar) => {
     const row = layout.rows.find(row => row.task.task_id === bar.dataset.hoverTask);
-    if (row) {
-      window.DevCoordinatorI18n.bind(bar, () => planEstimateText(row), 'data-hover-loc');
-      window.DevCoordinatorI18n.bind(bar, () => row.isUnsized ? window.DevCoordinatorI18n.t('plan.progressNeedsEstimate') : planDoneText(planRowProgress(row)), 'data-hover-progress');
-    }
     const show = () => {
-      if (!tooltip) return;
-      tooltip.innerHTML = `<strong>${esc(bar.dataset.hoverTitle)}</strong>${planBadge(bar.dataset.hoverStatus)}${bar.dataset.hoverElaboration === 'true' ? badge('elaboration needed', 'warn') : ''}<span>${window.DevCoordinatorI18n.computedMarkup(() => bar.dataset.hoverLoc)}</span><span>${window.DevCoordinatorI18n.computedMarkup(() => bar.dataset.hoverProgress)}</span>`;
+      if (!tooltip || !row) return;
+      tooltip.innerHTML = `<strong>${esc(bar.dataset.hoverTitle)}</strong>${planBadge(bar.dataset.hoverStatus)}${bar.dataset.hoverElaboration === 'true' ? badge('elaboration needed', 'warn') : ''}<span>${window.DevCoordinatorI18n.computedMarkup(() => planEstimateText(row))}</span><span>${window.DevCoordinatorI18n.computedMarkup(() => row.isUnsized ? window.DevCoordinatorI18n.t('plan.progressNeedsEstimate') : planDoneText(planRowProgress(row)))}</span>`;
       tooltip.hidden = false;
       requestAnimationFrame(() => {
         const anchor = bar.getBoundingClientRect(); const box = tooltip.getBoundingClientRect();
