@@ -1211,17 +1211,17 @@ async function main() {
       page.on('dialog', (d) => d.accept());
       for (const view of VIEWS) {
         const label = `${scenarioName}-${view.replace(/[#/]+/g, '_').replace(/^_/, '')}-${vpName}`;
-        const delayedOperation=view==='#/tests'?'test.list':view.startsWith('#/tests/')?'test.evidence.get':null;
+        const delayedOperations=view==='#/tests'?['test.list']:view.startsWith('#/tests/')?['test.evidence.get','test.evidence.lookup']:null;
         // Hold the Tests collection response after shell/repository admission.
         // Holding an arbitrary earlier request measured a different loading state.
-        if (scenario.delayMs) daemon.setScenario(delayedOperation ? {...scenario,delayOperations:[delayedOperation]} : scenario);
+        if (scenario.delayMs) daemon.setScenario(delayedOperations ? {...scenario,delayOperations:delayedOperations} : scenario);
         const callsBeforeNavigation = daemon.calls.length;
         const scopedView = ['#/deployments', '#/tests'].includes(view) ? `${view}?repository=${REPO}` : ['#/plan', '#/progress', '#/usage', '#/decisions'].includes(view) ? `${view}/${REPO}` : view;
         await page.goto(`http://${HOST}:${port}/${scopedView}`);
         if (scenario.delayMs) {
-          if (delayedOperation) {
+          if (delayedOperations) {
             let cursor=callsBeforeNavigation;
-            while ((await daemon.waitForReceivedAfter(cursor++)).operation !== delayedOperation) {}
+            while (!delayedOperations.includes((await daemon.waitForReceivedAfter(cursor++)).operation)) {}
           } else {
             const firstPending = await daemon.waitForReceivedAfter(callsBeforeNavigation);
             if (firstPending.operation === 'user.whoami') {
