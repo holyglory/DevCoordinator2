@@ -9,7 +9,7 @@ export async function verifyWorkspace({ page, daemon, check, scenario, baseUrl, 
   await page.addInitScript(() => {
     window.workspaceTiming = { lcp: 0, longTasks: [] };
     const ready = new MutationObserver(() => {
-      if (document.querySelectorAll('.plan-task-select').length !== 351) return;
+      if (document.querySelectorAll('.plan-task-select').length !== 354) return;
       ready.disconnect();
       window.workspaceTiming.domReadyAt = performance.now();
       requestAnimationFrame(() => requestAnimationFrame(() => { window.workspaceTiming.paintReadyAt = performance.now(); }));
@@ -30,23 +30,36 @@ export async function verifyWorkspace({ page, daemon, check, scenario, baseUrl, 
     daemon.releaseDelayed();
   }
   if ([1440, 390].includes(viewport.width)) {
-    daemon.setScenario({ ...scenario, workspaceLargePlan: true, workspaceDeepPlan: true, workspacePaging: true });
+    daemon.setScenario({ ...scenario, workspaceLargePlan: true, workspaceDeepPlan: true, workspacePaging: true, workspaceHeaderPending: true });
     await page.goto('about:blank');
     await page.goto(`${baseUrl}#/plan/${repositoryId}`);
-    await page.waitForFunction(() => document.querySelectorAll('.plan-task-select').length === 351);
+    await page.waitForFunction(() => document.querySelectorAll('.plan-task-select').length === 354);
+    await page.evaluate(() => document.fonts.ready);
     await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
     const timing = await page.evaluate(() => ({ ...window.workspaceTiming, readyAt: performance.now(), rows: document.querySelectorAll('.plan-task-select').length }));
-    verify('complete 351-task Plan renders all four scoped pages while catalogue continuation is held',
+    verify('complete 354-task Plan renders all four scoped pages while catalogue continuation is held',
       [0, 100, 200, 300].every((after) => daemon.calls.some((call) => call.operation === 'plan.overview' && call.params.repository_id === repositoryId && (call.params.after_sequence || 0) === after && !call.params.limit))
       && !daemon.calls.some((call) => call.operation === 'plan.overview' && !call.params.repository_id && !call.params.headers_only), JSON.stringify(timing));
+    verify('selected Plan traversal starts before metadata and is consumed once after metadata settles', daemon.calls.findIndex(call => call.operation === 'plan.overview' && call.params.repository_id === repositoryId && !call.params.limit) < daemon.calls.findIndex(call => call.operation === 'plan.overview' && call.params.headers_only) && daemon.calls.filter(call => call.operation === 'plan.overview' && call.params.repository_id === repositoryId && !call.params.limit).length === 4 && await page.locator('.grow.grel').count() === 26 && await page.locator('.plan-preview-notice').isVisible());
     await page.screenshot({ path: path.join(output, `workspace-large-current-${theme}-${viewport.width}.png`), mask: [page.locator('#who-email')] });
     await page.goto('about:blank');
     daemon.releaseDelayed();
   }
-  daemon.setScenario({ ...scenario, workspaceLongList: true, workspaceDeepPlan: true });
+  daemon.setScenario({ ...scenario, workspaceLongList: true, workspaceDeepPlan: true, workspaceStableOptional: true });
   await page.goto('about:blank');
   await page.goto(`${baseUrl}#/plan/${repositoryId}`);
   await page.waitForSelector('.plan-context');
+  const initialHeading = await page.locator('#workspace-heading > span').elementHandle();
+  const initialAspect = await page.locator('#workspace-aspects a[aria-current]').elementHandle();
+  daemon.releaseDelayed();
+  await daemon.waitForCall('usage.repositories');
+  await daemon.waitForCall('progress.repositories');
+  await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  verify('unchanged optional totals retain navigation content and current aspect nodes', await initialHeading.evaluate(node => node.isConnected) && await initialAspect.evaluate(node => node.isConnected));
+  const planReads = daemon.calls.filter(call => call.operation === 'plan.overview' && call.params.repository_id === repositoryId && !call.params.limit).length;
+  const previousPlan = await page.locator('.plan-context').elementHandle();
+  await page.evaluate(() => window.render());
+  verify('refresh reads the current Plan again instead of reusing the consumed model', daemon.calls.filter(call => call.operation === 'plan.overview' && call.params.repository_id === repositoryId && !call.params.limit).length === planReads + 1 && !await previousPlan.evaluate(node => node.isConnected));
   verify('direct plan links select the same repository', await page.locator('#workspace-heading').innerText() === 'repo-one');
   verify('one shared selector replaces page-specific pickers', await page.locator('#repository-list').count() === 1 && await page.locator('[data-project-picker], .test-repository-list').count() === 0);
   verify('all aspects have real repository-scoped links', await page.locator('#workspace-aspects a').count() === 6 && await page.locator('#workspace-aspects a[href="#/tests?repository=r0123456789abcdef"]').count() === 1);
@@ -116,6 +129,14 @@ export async function verifyWorkspace({ page, daemon, check, scenario, baseUrl, 
     return element.getBoundingClientRect().height + 1 < Math.min(element.scrollHeight, lineHeight * 2);
   }).length);
   verify('plan metadata does not compress task titles into partial lines', compressedTitles === 0);
+  const croppedEstimates = await page.locator('.plan-task-meta > span:first-child > span').evaluateAll((elements) => elements.flatMap((element) => {
+    if (!element.getClientRects().length) return [];
+    const clip = element.parentElement.getBoundingClientRect();
+    const range = document.createRange(); range.selectNodeContents(element);
+    const cut = [...range.getClientRects()].find(rect => rect.top < clip.top - .5 || rect.bottom > clip.bottom + .5);
+    return cut ? [{ clip: clip.toJSON(), fragment: cut.toJSON() }] : [];
+  }));
+  verify('estimate text fragments fit the metadata line without vertical cropping', croppedEstimates.length === 0, JSON.stringify(croppedEstimates));
   const clippedStatuses = await page.locator('.plan-release-meta > .badge, .plan-task-meta > .badge').evaluateAll((badges) => badges.flatMap((badge) => {
     if (!badge.getClientRects().length) return [];
     const row = badge.closest('.grow');
@@ -253,5 +274,14 @@ export async function verifyWorkspace({ page, daemon, check, scenario, baseUrl, 
   await page.locator('#repository-search').fill('');
   await page.screenshot({ path: path.join(output, `repository-roots-${theme}-${viewport.width}.png`), fullPage: true, mask: [page.locator('#who-email')] });
   await page.unroute('**/api/v3/test.list');
+  daemon.setScenario({ ...scenario, delayMs: 1, delayOperations: ['plan.overview'] });
+  await page.goto('about:blank');
+  await page.goto(`${baseUrl}#/plan/${repositoryId}`);
+  await daemon.waitForCall('repository.list');
+  await page.goto(`${baseUrl}#/health`);
+  await page.locator('.hi-host').waitFor();
+  daemon.releaseDelayed();
+  await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  verify('navigation away aborts pending Plan data without overwriting the new route', page.url().endsWith('#/health') && await page.locator('.hi-host').isVisible() && await page.locator('.plan-context').count() === 0 && !await page.locator('#workspace-context').isVisible());
   verify('no uncaught browser errors', errors.length === 0, errors.join('; '));
 }

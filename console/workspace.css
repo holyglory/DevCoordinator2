@@ -115,6 +115,7 @@ body.plan-shell, body.evidence-shell { height: auto; min-height: 100dvh; overflo
 .repository-scoped .plan-release-meta .muted { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .repository-scoped .plan-task-meta > span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .repository-scoped .plan-task-meta > .badge { flex-shrink: 0; white-space: nowrap; }
+.repository-scoped .plan-task-meta { line-height: 1.25; }
 .repository-scoped .plan-task-title, .repository-scoped .plan-task-meta { flex-shrink: 0; }
 @media(max-width:720px) {
   .repository-scoped .grow.gtask { height: auto; min-height: 74px; }
