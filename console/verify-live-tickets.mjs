@@ -18,6 +18,12 @@ import {fileURLToPath} from 'node:url';
 import {constants} from 'node:fs';
 
 const mode=process.env.CONSOLE_VERIFY_MODE||'tickets';
+// Complete formal reports can include the 60-cell journey evidence and are
+// larger than the ordinary receipt bound. Keep the cap finite while allowing
+// the real successful artifacts; queues stay smaller but need room for every
+// changed cell's screenshot metadata.
+const MAX_FORMAL_REPORT_BYTES=32*1024*1024;
+const MAX_FORMAL_QUEUE_BYTES=8*1024*1024;
 const hash=bytes=>createHash('sha256').update(bytes).digest('hex');
 const digest=value=>/^[a-f0-9]{64}$/.test(value||'');
 const fail=stage=>{throw Object.assign(new Error('Native acceptance proof refused'),{stage});};
@@ -73,8 +79,8 @@ async function verifyV3({root,out,source,base,request,check}){
   if(!Array.isArray(input.formal)||!input.formal.length||input.formal.length>8)fail('formal');
   summaries.formal={schema:1,result:'passed',batches:[]};
   for(const [i,batch]of input.formal.entries()){
-    const report=await read(batch.report,`formal-report-${i}`,16777216);
-    await read(batch.queue,`formal-queue-${i}`);
+    const report=await read(batch.report,`formal-report-${i}`,MAX_FORMAL_REPORT_BYTES);
+    await read(batch.queue,`formal-queue-${i}`,MAX_FORMAL_QUEUE_BYTES);
     await read(batch.review,`formal-review-${i}`,4194304);
     if(!Array.isArray(report.pages)||!report.pages.length||report.pages.some(page=>page.sourceBinding?.status!=='matched'||page.sourceBinding.observed!==`git:${input.source_commit}`||page.sourceBinding.expected!==`git:${input.source_commit}`))fail('formal-source');
     let reviewed;

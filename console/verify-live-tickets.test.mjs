@@ -26,12 +26,13 @@ async function writeJson(filename, value) {
 
 // The existing formal-review CLI owns validation. This is its realistic sealed
 // receipt fixture, not an alternative formal or screenshot implementation.
-async function formalFixture(directory) {
+async function formalFixture(directory, { reportPaddingBytes = 0, queuePaddingBytes = 0 } = {}) {
   const viewport = path.join(directory, 'viewport.png'), full = path.join(directory, 'full.png');
   await fs.writeFile(viewport, 'isolated viewport fixture');
   await fs.writeFile(full, 'isolated full-page fixture');
   const queue = await writeJson(path.join(directory, 'review-queue.json'), {
     schemaVersion: 1, kind: 'formal-web-ui-review-queue', runId: 'formal-fixture', entries: [{ reviewCellKey: 'cell-1' }],
+    padding: 'q'.repeat(queuePaddingBytes),
   });
   const cell = {
     reviewCellKey: 'cell-1', cellId: 'cell-1', status: 'review-required', theme: 'light',
@@ -53,6 +54,7 @@ async function formalFixture(directory) {
     pages: [{ cellId: cell.cellId, outcome: 'checked', target: { name: cell.targetName, stateName: cell.stateName, theme: cell.theme }, viewport: cell.viewport,
       review: { sourceFingerprint: cell.sourceFingerprint, intentFingerprint: cell.intentFingerprint }, screenshots: cell.screenshots,
       sourceBinding: { status: 'matched', expected: `git:${commit}`, observed: `git:${commit}` } }],
+    padding: 'r'.repeat(reportPaddingBytes),
   };
   const report = await writeJson(path.join(directory, 'report.json'), reportValue);
   const files = [];
@@ -68,7 +70,7 @@ async function formalFixture(directory) {
   return { report, queue, review: { path: manual, sha256: sha(await fs.readFile(manual)) } };
 }
 
-async function fixture(t) {
+async function fixture(t, formalOptions = {}) {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'dc2-native-v3-proof-'));
   const outputs = [], requests = [];
   let server;
@@ -87,7 +89,7 @@ async function fixture(t) {
     await fs.writeFile(proofTooling, `#!${process.execPath}\nconst{spawnSync}=require('node:child_process');if(process.argv[2]==='--source-commit'){console.log(${JSON.stringify(commit)});}else{const r=spawnSync(${JSON.stringify(tooling)},process.argv.slice(2),{stdio:'inherit'});process.exit(r.status??1);}\n`, { mode: 0o700 });
   }
   execFileSync('/usr/bin/openssl', ['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-keyout', key, '-out', cert, '-days', '1', '-subj', '/CN=native-proof.fixture.test', '-addext', 'subjectAltName=DNS:native-proof.fixture.test'], { stdio: 'ignore' });
-  const formal = await formalFixture(directory);
+  const formal = await formalFixture(directory, formalOptions);
   const binaryHashes = Object.fromEntries(['devcoordinator2', 'devcoordinator2-tooling', 'devcoordinator2-executor', 'devcoordinator2-migrate-authority'].map((name, i) => [name, String(i + 5).repeat(64)]));
   const checked = Date.now();
   const live = await writeJson(path.join(directory, 'live.json'), { schema: 1, result: 'passed', source_commit: commit, edge_source_commit: commit, binaries: binaryHashes, checked_at_ms: checked, checks: ['browser', 'edge-source', 'critical-journeys', 'critical-api', 'mcp-reconnect'], evidence: ['private-original-not-for-copy'] });
@@ -171,6 +173,35 @@ test('explicit v3 proof binds real validator, native read-only traffic, complete
   assert.equal(index.inputs.find(row => row.id === 'critical-api').original_sha256, '0'.repeat(64));
   assert.equal(index.inputs.find(row => row.id === 'critical-api').original_bytes, 98765);
   assert.notEqual(index.governed_source_sha256, JSON.parse(await fs.readFile(path.join(result.output, 'evidence/formal.json'))).batches[0].formal_ui_source_sha256);
+});
+
+test('accepts complete production-sized formal report and queue artifacts within their bounded caps', { timeout: 60000 }, async t => {
+  const f = await fixture(t, { reportPaddingBytes: 17 * 1024 * 1024, queuePaddingBytes: 6 * 1024 * 1024 });
+  const result = await f.run();
+  assert.equal(result.code, 0, result.stderr);
+  assert.equal(f.requests.filter(request => request.path.startsWith('/api/v3/')).length, 7);
+  const reportBytes = (await fs.stat(f.acceptance.formal[0].report.path)).size;
+  const queueBytes = (await fs.stat(f.acceptance.formal[0].queue.path)).size;
+  assert.ok(reportBytes > 16 * 1024 * 1024 && reportBytes <= 32 * 1024 * 1024);
+  assert.ok(queueBytes > 2 * 1024 * 1024 && queueBytes <= 8 * 1024 * 1024);
+});
+
+test('refuses a formal report beyond the bounded production parser cap', { timeout: 60000 }, async t => {
+  const f = await fixture(t, { reportPaddingBytes: 32 * 1024 * 1024 + 1 });
+  const result = await f.run();
+  assert.notEqual(result.code, 0);
+  assert.equal(JSON.parse(result.stderr).stage, 'formal-report-0');
+  assert.equal(f.requests.length, 0);
+  await assert.rejects(fs.stat(path.join(result.output, 'delivery.json')), { code: 'ENOENT' });
+});
+
+test('refuses a review queue beyond the bounded production parser cap', { timeout: 60000 }, async t => {
+  const f = await fixture(t, { queuePaddingBytes: 8 * 1024 * 1024 + 1 });
+  const result = await f.run();
+  assert.notEqual(result.code, 0);
+  assert.equal(JSON.parse(result.stderr).stage, 'formal-queue-0');
+  assert.equal(f.requests.length, 0);
+  await assert.rejects(fs.stat(path.join(result.output, 'delivery.json')), { code: 'ENOENT' });
 });
 
 test('missing, stale or incomplete final gates refuse proof before native requests', { timeout: 30000 }, async t => {
