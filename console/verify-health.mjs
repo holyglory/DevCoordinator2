@@ -66,6 +66,24 @@ export async function verifyHealth({ page, browser, base, call, request, check, 
         assert.ok((await page.locator('.hi-host-pending .hi-capacity-cell strong').allTextContents()).every(value => value === '—'));
       } finally { await release(); }
     }, page);
+    await check(`Health ${width}: history starts before summary but renders only after authorized host data`, async () => {
+      const release = await holdHealthReads(page, ['health.summary']);
+      try {
+        await page.goto('about:blank');
+        const historyResponses = ['cpu_percent', 'memory_used', 'storage_bytes'].map(metric => page.waitForResponse(response => {
+          if (!response.url().endsWith('/api/v3/health.history')) return false;
+          try { return response.request().postDataJSON()?.metric === metric; } catch { return false; }
+        }));
+        await page.goto(`${base}#/health`);
+        const responses = await Promise.all(historyResponses);
+        await Promise.all(responses.map(response => response.finished()));
+        assert.equal(await page.locator('.hi-host').count(), 0);
+        assert.equal(await page.locator('#hi-history svg').count(), 0);
+        await release();
+        await page.locator('.hi-host').waitFor();
+        await page.locator('#hi-history svg').first().waitFor();
+      } finally { await release(); }
+    }, page);
     await check(`Health ${width}: history arrival keeps the chart and repository layout stable`, async () => {
       const release = await holdHealthReads(page, ['health.history']);
       try {
