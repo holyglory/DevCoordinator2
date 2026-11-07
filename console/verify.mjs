@@ -600,6 +600,8 @@ async function startFakeDaemon(dir) {
       if (cmd.startsWith('performance.') && !scenario.admin) return reply({ ok:false, error:{code:'permission_denied',message:'Administrator access required',detail:''} });
       if (cmd.startsWith('performance.')) return reply({ok:true,data:performanceFixture(cmd,req.params,scenario)});
       if (scenario.denied && OPERATOR_ONLY.includes(cmd)) return reply({ ok: false, error: { code: 'permission_denied', message: `${cmd} requires operator`, detail: '' } });
+      const artifacts = artifactResponse(cmd, req.params, scenario);
+      if (artifacts) return reply(artifacts);
       if (cmd === 'test.stop') { scenario = { ...scenario, testStopped: true }; return reply({ ok: true, data: { status: 'cancelled' } }); }
       if (cmd === 'test.start' && scenario.supersededRun) return reply({ ok: true, data: { run_id: 't20260101T000300Z-fed123', superseded_run_id: scenario.supersededRun } });
       if (cmd === 'test.list') {
@@ -703,8 +705,6 @@ async function startFakeDaemon(dir) {
         matches: [{ line_start: 41000, line_end: 41000, byte_start: 8200000, byte_end: 8200024, text: 'pending state persisted' }],
         next_cursor: null, response_truncated: false,
       } });
-      const artifacts = artifactResponse(cmd, req.params, scenario);
-      if (artifacts) return reply(artifacts);
       if (cmd === 'test.evidence.lookup') {
         if (scenario.identity !== 'owner@example.test') return reply({ ok: false, error: { code: 'permission_denied', message: 'Administrator access is required.', detail: '' } });
         const retained = req.params.run_id === 't20251101T000000Z-abcd12';
@@ -799,7 +799,9 @@ async function startFakeDaemon(dir) {
       }
       if (cmd === 'plan.overview') {
         const metadata = fixtures(scenario)['plan.overview-list'].repositories.find((row) => row.repository_id === req.params.repository_id);
-        const result = { ...planOverview(), repository_id: req.params.repository_id, display_name: metadata?.display_name || 'Late repository', repository_source: metadata?.repository_source, presentation: repositoryPresentations.get(req.params.repository_id) || null };
+        const relatedName = fixtures(scenario)['deployment.list'].deployments.find(row => row.repository_id === req.params.repository_id)?.repository_name
+          || fixtures(scenario)['usage.repositories'].repositories.find(row => row.repository_id === req.params.repository_id)?.display_name;
+        const result = { ...planOverview(), repository_id: req.params.repository_id, display_name: metadata?.display_name || relatedName || 'Late repository', repository_source: metadata?.repository_source, presentation: repositoryPresentations.get(req.params.repository_id) || null };
         if (scenario.workspacePaging && ['rffffffffffffffff', 'release-clone'].includes(req.params.repository_id)) {
           result.tasks = []; result.releases = []; result.elaboration_requests = [];
           if (req.params.repository_id === 'release-clone') result.repository_source = { key: 'repo-one-origin', name: 'repo-one' };
@@ -1933,10 +1935,12 @@ async function main() {
   await page.goto(`http://${HOST}:${port}/#/tests/${TEST_RUN}`);
   await page.waitForSelector('#evidence-image:not([hidden])');
   await page.waitForFunction(() => document.querySelector('#evidence-canvas')?.dataset.draftCount === '0');
+  const evidenceMetadataCalls = () => daemon.calls.filter(call => ['test.evidence.get', 'test.evidence.lookup'].includes(call.operation));
   check('visual evidence: metadata loads before bounded image chunks',
-    daemon.calls.findIndex((call) => call.operation === 'test.evidence.get') >= 0
+    evidenceMetadataCalls().length === 1
     && daemon.calls.findIndex((call) => call.operation === 'test.evidence.image')
-      > daemon.calls.findIndex((call) => call.operation === 'test.evidence.get'));
+      > daemon.calls.findIndex((call) => ['test.evidence.get', 'test.evidence.lookup'].includes(call.operation)),
+    JSON.stringify({ metadata: evidenceMetadataCalls().map(call => call.operation), imageChunks: daemon.calls.filter(call => call.operation === 'test.evidence.image').length }));
   check('visual evidence: the real screenshot is primary with journey and capture context',
     await page.locator('.evidence-step').count() === 2
     && await page.locator('#evidence-image').count() === 1
@@ -1947,14 +1951,14 @@ async function main() {
   await page.click('[data-evidence-step="step-2"]');
   await page.waitForFunction(() => /Step 2 of 2/.test(document.querySelector('#evidence-current')?.textContent || ''));
   check('interaction: selecting a journey step updates locally without another metadata read',
-    daemon.calls.filter((call) => call.operation === 'test.evidence.get').length === 1
+    evidenceMetadataCalls().length === 1
     && /Invalid password/.test(await page.innerText('#evidence-current')));
   await page.click('[data-evidence-prev]');
   await page.waitForFunction(() => /Step 1 of 2/.test(document.querySelector('#evidence-current')?.textContent || ''));
   await page.click('[data-evidence-next]');
   await page.waitForFunction(() => /Step 2 of 2/.test(document.querySelector('#evidence-current')?.textContent || ''));
   check('interaction: previous and next controls traverse the same ordered journey locally',
-    daemon.calls.filter((call) => call.operation === 'test.evidence.get').length === 1);
+    evidenceMetadataCalls().length === 1);
   await page.click('[data-evidence-viewport="mobile"]');
   await page.waitForFunction(() => /390 × 844/.test(document.querySelector('#evidence-inspector')?.textContent || ''));
   check('interaction: viewport comparison keeps the same journey moment',
@@ -1965,7 +1969,7 @@ async function main() {
   await page.click('[data-evidence-kind="full_page"]');
   await page.waitForSelector('#evidence-image:not([hidden])');
   check('interaction: full-page evidence switches without re-reading the journey manifest',
-    daemon.calls.filter((call) => call.operation === 'test.evidence.get').length === 1);
+    evidenceMetadataCalls().length === 1);
   await page.click('[data-evidence-kind="viewport"]');
   await page.waitForSelector('#evidence-image:not([hidden])');
   await page.click('[data-evidence-finding="insufficient-text-contrast"]');
@@ -2449,7 +2453,16 @@ async function main() {
   const anchoredTimelineScroll = await initialPlanViewport.evaluate((element) => element.scrollLeft);
   check('plan: vertical scrolling anchors the timeline to the earliest visible task', anchoredTimelineScroll > 0, String(anchoredTimelineScroll));
   await initialPlanViewport.evaluate((element) => element.scrollTo({ top: 0, left: 0, behavior: 'auto' }));
-  await page.waitForFunction(() => Number(document.querySelector('[data-plan-viewport]')?.scrollLeft || 0) <= 1);
+  await page.waitForFunction(() => {
+    const viewport = document.querySelector('[data-plan-viewport]'), box = viewport.getBoundingClientRect();
+    const row = [...viewport.querySelectorAll('.gtask:not(.ghidden)')].find(element => { const rect = element.getBoundingClientRect(); return rect.bottom > box.top + 82 && rect.top < box.bottom; });
+    const bar = row?.querySelector('.gbar'), style = getComputedStyle(viewport.closest('.plan-workspace'));
+    if (!bar) return false;
+    const barBox = bar.getBoundingClientRect(), timelineLeft = box.left + parseFloat(style.getPropertyValue('--glabel'));
+    const center = barBox.left + barBox.width / 2;
+    return viewport.scrollTop <= 1 && center >= timelineLeft && center <= box.right
+      && barBox.bottom > box.top + 82 && barBox.top < box.bottom;
+  });
   await initialPlanViewport.evaluate((element, taskId) => {
     const row = element.querySelector(`[data-task-row="${taskId}"]`);
     element.scrollTop = row?.offsetTop || 0;
@@ -2542,6 +2555,8 @@ async function main() {
   await page.locator('[data-plan-selection-toggle]').hover();
   check('interaction: leaving the task bar dismisses its detail badge',
     await page.locator('#plan-tooltip').isHidden());
+  await hoverTask.focus();
+  check('interaction: keyboard focus opens the same current estimate and progress tooltip', await page.locator('#plan-tooltip:not([hidden])').isVisible() && /100/.test(await page.innerText('#plan-tooltip')) && /0%/.test(await page.innerText('#plan-tooltip')));
 
   await page.click(`[data-task-row="${P_C2}"] .plan-task-select`);
   await page.waitForSelector(`[data-task-row="${P_C2}"].selected`);
@@ -2615,6 +2630,8 @@ async function main() {
     daemon.calls.some((call) => call.operation === 'task.update' && call.params.task_id === P_UNSIZED && call.params.estimated_loc === 240)
     && /~240 lines/.test(await page.innerText(`[data-task-row="${P_UNSIZED}"]`))
     && await page.locator(`.gbar.unsized[data-select-task="${P_UNSIZED}"]`).count() === 0);
+  await page.locator(`.gbar[data-hover-task="${P_UNSIZED}"]`).focus();
+  check('interaction: tooltip uses the newly edited estimate after a Plan refresh', await page.locator('#plan-tooltip:not([hidden])').isVisible() && /240/.test(await page.innerText('#plan-tooltip')));
 
   // Pointer resize persists through a full reload.
   await page.click(`[data-task-row="${P_C2}"] .plan-task-select`);
