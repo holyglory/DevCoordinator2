@@ -2524,8 +2524,37 @@ fn compose_state<D: DockerControl + ?Sized>(
 ) -> Result<ComposeState, DockerError> {
     validate_services(services)?;
     validate_services(finite_services)?;
-    let ids = docker.compose_container_ids(project)?;
-    if ids.is_empty() && completions.is_empty() {
+    let mut observed = Vec::new();
+    for attempt in 0..2 {
+        observed.clear();
+        let mut disappeared = false;
+        for container_id in docker.compose_container_ids(project)? {
+            let info = match docker.inspect(&container_id) {
+                Ok(info) => info,
+                Err(error) => {
+                    let missing = error.command_details().2.is_some_and(|stderr| {
+                        let stderr = stderr.to_ascii_lowercase();
+                        stderr.contains("no such container") || stderr.contains("no such object")
+                    });
+                    // Compose can remove a listed ID during replacement. Refresh once,
+                    // only after proving that exact ID vanished; other errors stay errors.
+                    if missing && matches!(docker.container_present(&container_id), Ok(false)) {
+                        disappeared = true;
+                        continue;
+                    }
+                    return Err(DockerError::Command(format!(
+                        "Compose container inspection failed ({:?})",
+                        error.kind()
+                    )));
+                }
+            };
+            observed.push((container_id, container_state_from_inspect(&info)));
+        }
+        if !disappeared || attempt == 1 {
+            break;
+        }
+    }
+    if observed.is_empty() && completions.is_empty() {
         return Ok(ComposeState {
             state: RuntimeState::Stopped,
             containers: 0,
@@ -2534,20 +2563,14 @@ fn compose_state<D: DockerControl + ?Sized>(
             completion_candidates: Vec::new(),
         });
     }
+    let containers = observed.len();
     let mut by_service = BTreeMap::<String, Vec<(ExactContainerId, ContainerState)>>::new();
-    for container_id in &ids {
-        let info = docker.inspect(container_id).map_err(|error| {
-            DockerError::Command(format!(
-                "Compose container inspection failed ({:?})",
-                error.kind()
-            ))
-        })?;
-        let state = container_state_from_inspect(&info);
+    for (container_id, state) in observed {
         if let Some(service) = state.compose_service.clone() {
             by_service
                 .entry(service)
                 .or_default()
-                .push((container_id.clone(), state));
+                .push((container_id, state));
         }
     }
     let expected = if services.is_empty() {
@@ -2682,7 +2705,7 @@ fn compose_state<D: DockerControl + ?Sized>(
     };
     Ok(ComposeState {
         state,
-        containers: u32::try_from(ids.len()).unwrap_or(u32::MAX),
+        containers: u32::try_from(containers).unwrap_or(u32::MAX),
         running: u32::try_from(
             by_service
                 .values()
@@ -3323,6 +3346,14 @@ mod tests {
                 DockerErrorKind::CommandFailed,
             ),
             (
+                output(1, "", "private permission denied"),
+                DockerErrorKind::CommandFailed,
+            ),
+            (
+                output(1, "", "private Cannot connect to the Docker daemon"),
+                DockerErrorKind::CommandFailed,
+            ),
+            (
                 output(0, "private invalid inspection body", ""),
                 DockerErrorKind::InvalidOutput,
             ),
@@ -3342,7 +3373,105 @@ mod tests {
             assert!(diagnostic.contains("inspection"), "{diagnostic}");
             assert!(diagnostic.contains(&format!("{kind:?}")), "{diagnostic}");
             assert!(!diagnostic.contains("private"), "{diagnostic}");
+            assert_eq!(
+                fake.calls().len(),
+                2,
+                "only a missing-object error may refresh"
+            );
         }
+
+        for (status, expected) in [
+            ("running", RuntimeState::Starting),
+            ("exited", RuntimeState::Completed),
+        ] {
+            let removed = id('d');
+            let replacement = id('e');
+            let info = serde_json::json!({
+                "State":{"Status":status,"ExitCode":0},
+                "Config":{"Labels":{"com.docker.compose.service":"probe"}}
+            });
+            let fake = FakeDocker::new(vec![
+                output(0, format!("{removed}\n"), ""),
+                output(1, "", format!("Error: No such object: {removed}")),
+                output(1, "", format!("Error: No such object: {removed}")),
+                output(0, format!("{replacement}\n"), ""),
+                output(0, info.to_string(), ""),
+            ]);
+            let state = fake
+                .compose_state(
+                    "dc2-finite-probe",
+                    &["probe".into()],
+                    &["probe".into()],
+                    &BTreeSet::new(),
+                    &BTreeMap::new(),
+                )
+                .expect("refresh a proven disappearance during replacement");
+            assert_eq!(state.state, expected);
+            assert_eq!(state.containers, 1);
+            assert_eq!(state.services[0].containers, 1);
+            assert!(
+                state
+                    .completion_candidates
+                    .iter()
+                    .all(|candidate| candidate.container_id == replacement)
+            );
+            let calls = fake.calls();
+            assert_eq!(&calls[2].args[..3], ["inspect", "--format", "{{.Id}}"]);
+            assert_eq!(calls[2].args[3], removed.as_str());
+            assert_eq!(calls[3].args[0], "ps");
+            assert_eq!(calls.len(), 5);
+        }
+
+        let removed = id('d');
+        for confirmation in [
+            output(0, removed.as_str(), ""),
+            output(0, id('e').as_str(), ""),
+            output(0, "private invalid identity", ""),
+            output(1, "", "private permission denied"),
+            output(1, "", "private Cannot connect to the Docker daemon"),
+        ] {
+            let fake = FakeDocker::new(vec![
+                output(0, format!("{removed}\n"), ""),
+                output(1, "", format!("Error: No such container: {removed}")),
+                confirmation,
+            ]);
+            let error = fake
+                .compose_state(
+                    "dc2-finite-probe",
+                    &["probe".into()],
+                    &["probe".into()],
+                    &BTreeSet::new(),
+                    &BTreeMap::new(),
+                )
+                .expect_err("absence must be proved before refreshing");
+            let diagnostic = error.to_string();
+            assert!(diagnostic.contains("inspection"), "{diagnostic}");
+            assert!(!diagnostic.contains("private"), "{diagnostic}");
+            assert_eq!(fake.calls().len(), 3);
+        }
+
+        let replacement = id('e');
+        let fake = FakeDocker::new(vec![
+            output(0, format!("{removed}\n"), ""),
+            output(1, "", format!("Error: No such container: {removed}")),
+            output(1, "", format!("Error: No such container: {removed}")),
+            output(0, format!("{replacement}\n"), ""),
+            output(1, "", format!("Error: No such object: {replacement}")),
+            output(1, "", format!("Error: No such object: {replacement}")),
+        ]);
+        let state = fake
+            .compose_state(
+                "dc2-finite-probe",
+                &["probe".into()],
+                &["probe".into()],
+                &BTreeSet::new(),
+                &BTreeMap::new(),
+            )
+            .expect("repeated disappearance must remain a bounded observation");
+        assert_eq!(state.state, RuntimeState::Stopped);
+        assert_eq!(state.containers, 0);
+        assert!(state.completion_candidates.is_empty());
+        assert_eq!(fake.calls().len(), 6);
 
         let container = id('d');
         let other_service = serde_json::json!({
