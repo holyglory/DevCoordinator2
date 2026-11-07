@@ -329,6 +329,7 @@ impl PlanService {
                     params.after_release_sequence,
                     params.limit,
                 )
+                .map(Box::new)
                 .map(PlanOverview::Detail),
             None => self
                 .plan_collection(params.after_repository_id, params.limit)

@@ -1,5 +1,4 @@
 import path from 'node:path';
-import fs from 'node:fs/promises';
 import { chooseRepository } from './verify-tests-pane.mjs';
 
 export async function verifyWorkspace({ page, daemon, check, scenario, baseUrl, output, theme, viewport }) {
@@ -31,23 +30,18 @@ export async function verifyWorkspace({ page, daemon, check, scenario, baseUrl, 
     daemon.releaseDelayed();
   }
   if ([1440, 390].includes(viewport.width)) {
-    const baseline = process.env.CONSOLE_VERIFY_BASELINE_WORKSPACE ? await fs.readFile(process.env.CONSOLE_VERIFY_BASELINE_WORKSPACE, 'utf8') : null;
-    for (const variant of baseline ? ['baseline', 'current'] : ['current']) {
-      if (variant === 'baseline') await page.route('**/workspace.js*', route => route.fulfill({ status: 200, contentType: 'application/javascript', body: baseline }));
-      daemon.setScenario({ ...scenario, workspaceLargePlan: true, workspaceDeepPlan: true, workspacePaging: true, workspaceAggregateDelayMs: 350 });
-      await page.goto('about:blank');
-      await page.goto(`${baseUrl}#/plan/${repositoryId}`);
-      await page.waitForFunction(() => document.querySelectorAll('.plan-task-select').length === 351);
-      await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
-      const timing = await page.evaluate(() => ({ ...window.workspaceTiming, readyAt: performance.now(), rows: document.querySelectorAll('.plan-task-select').length }));
-      verify(`${variant} complete 351-task Plan renders all four scoped pages while catalogue continuation is held`,
-        [0, 100, 200, 300].every((after) => daemon.calls.some((call) => call.operation === 'plan.overview' && call.params.repository_id === repositoryId && (call.params.after_sequence || 0) === after && !call.params.limit))
-        && (variant === 'baseline' || !daemon.calls.some((call) => call.operation === 'plan.overview' && !call.params.repository_id && !call.params.headers_only)), JSON.stringify({ ...timing, aggregateDelayMs: 350 }));
-      await page.screenshot({ path: path.join(output, `workspace-large-${variant}-${theme}-${viewport.width}.png`), mask: [page.locator('#who-email')] });
-      await page.goto('about:blank');
-      daemon.releaseDelayed();
-      if (variant === 'baseline') await page.unroute('**/workspace.js*');
-    }
+    daemon.setScenario({ ...scenario, workspaceLargePlan: true, workspaceDeepPlan: true, workspacePaging: true });
+    await page.goto('about:blank');
+    await page.goto(`${baseUrl}#/plan/${repositoryId}`);
+    await page.waitForFunction(() => document.querySelectorAll('.plan-task-select').length === 351);
+    await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    const timing = await page.evaluate(() => ({ ...window.workspaceTiming, readyAt: performance.now(), rows: document.querySelectorAll('.plan-task-select').length }));
+    verify('complete 351-task Plan renders all four scoped pages while catalogue continuation is held',
+      [0, 100, 200, 300].every((after) => daemon.calls.some((call) => call.operation === 'plan.overview' && call.params.repository_id === repositoryId && (call.params.after_sequence || 0) === after && !call.params.limit))
+      && !daemon.calls.some((call) => call.operation === 'plan.overview' && !call.params.repository_id && !call.params.headers_only), JSON.stringify(timing));
+    await page.screenshot({ path: path.join(output, `workspace-large-current-${theme}-${viewport.width}.png`), mask: [page.locator('#who-email')] });
+    await page.goto('about:blank');
+    daemon.releaseDelayed();
   }
   daemon.setScenario({ ...scenario, workspaceLongList: true, workspaceDeepPlan: true });
   await page.goto('about:blank');

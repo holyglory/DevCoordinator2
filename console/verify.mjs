@@ -778,8 +778,7 @@ async function startFakeDaemon(dir) {
       }
       if (cmd === 'plan.overview' && !req.params.repository_id) {
         if (scenario.workspacePaging && !req.params.headers_only && !mutable.cacheReleased) {
-          if (scenario.workspaceAggregateDelayMs) await new Promise((resolve) => setTimeout(resolve, scenario.workspaceAggregateDelayMs));
-          else await new Promise((resolve) => delayedReplies.add(resolve));
+          await new Promise((resolve) => delayedReplies.add(resolve));
         }
         const result = fixtures(scenario)['plan.overview-list'];
         result.repositories = result.repositories.map((record) => ({ ...record, presentation: repositoryPresentations.get(record.repository_id) || null }));

@@ -2155,7 +2155,7 @@ pub struct PlanDetail {
 pub enum PlanOverview {
     Collection(PlanCollection),
     Headers(PlanHeaderCollection),
-    Detail(PlanDetail),
+    Detail(Box<PlanDetail>),
 }
 
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
