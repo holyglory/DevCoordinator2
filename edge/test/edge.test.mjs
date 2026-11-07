@@ -22,6 +22,7 @@ import { startIssuer } from './fixture-issuer.mjs';
 import { createPageLocalization } from '../lib/localization.mjs';
 
 const BASE = 'example.test';
+const CONSOLE_DOCUMENT = '<!doctype html><title>Prepared Console fixture</title>';
 let tmp; let issuer; let upstream; let upstreamPort; let daemonSock; let daemon; let daemonCalls = []; let edge; let port; let pendingWaitHooks; let edgeConfig;
 
 function document(routes, access, generation) {
@@ -97,10 +98,13 @@ before(async () => {
     } });
   });
   await new Promise((r) => daemon.listen(daemonSock, r));
+  const consoleDir = path.join(tmp, 'console');
+  await fs.mkdir(consoleDir);
+  await fs.writeFile(path.join(consoleDir, 'index.html'), CONSOLE_DOCUMENT);
   edgeConfig = { baseDomain: BASE, consoleHost: `console.${BASE}`, httpPort: 0, httpOnly: true,
     sessionSecret: 'test-secret-at-least-16-bytes', oidcIssuer: issuer.url, oidcClientId: 'test-client',
     oidcClientSecret: 'test-secret', routesFile: path.join(tmp, 'routes.json'), stateDir: path.join(tmp, 'edge-state'),
-    daemonSocket: daemonSock, consoleDir: '' };
+    daemonSocket: daemonSock, consoleDir, uiSourceRevision: 'git:edge-static-fixture' };
   edge = await createEdge(edgeConfig, { log: { info() {}, warn() {}, error: (...a) => console.error('EDGE', ...a), debug() {} } });
   [port] = await edge.listen();
 });
@@ -159,8 +163,15 @@ test('public route proxies without sign-in; authenticated route demands sign-in'
 });
 
 test('sign-in admits the invited identity via the daemon and enforces grants per request', async () => {
+  const anonymousConsole = await get('/');
+  assert.equal(anonymousConsole.status, 302);
+  assert.ok(!anonymousConsole.body.includes(CONSOLE_DOCUMENT));
   const session = await signIn();
   assert.ok(session, 'session cookie issued');
+  const consoleDocument = await get('/', { cookie: session });
+  assert.equal(consoleDocument.status, 200);
+  assert.equal(consoleDocument.body, CONSOLE_DOCUMENT);
+  assert.equal(consoleDocument.headers['x-ui-source-revision'], 'git:edge-static-fixture');
   const accept = daemonCalls.find((c) => c.operation === 'user.accept_invitation');
   assert.equal(accept.protocol, 3);
   assert.equal(accept.client.identity, 'dev@example.test');
@@ -316,7 +327,9 @@ test('trusted Console access uses a direct loopback peer and never a forwarded i
     req.end(body);
   });
   try {
-    assert.equal((await call('/')).status, 200);
+    const consoleDocument = await call('/');
+    assert.equal(consoleDocument.status, 200);
+    assert.equal(consoleDocument.text, CONSOLE_DOCUMENT);
     const before = daemonCalls.length;
     const local = await call('/api/v3/user.whoami', { method: 'POST', body: '{}' });
     assert.equal(local.status, 200);
