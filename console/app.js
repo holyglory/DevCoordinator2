@@ -4249,7 +4249,7 @@ function planSelectionTray(selectedRow, releaseById, admin) {
   </section>`;
 }
 
-const viewPlan = guard(async (repoId) => {
+const viewPlan = guard(async (repoId, prefetchedModel) => {
   const requestedTaskId = state.planRequestedTaskId;
   state.planRequestedTaskId = null;
   const repositoryChanged = state.planRepositoryId !== repoId;
@@ -4270,7 +4270,7 @@ const viewPlan = guard(async (repoId) => {
   }
   main.innerHTML = `<div class="plan-loading">${pageHeading('Plan', '#/plan')}${skeleton(6)}</div>`;
   const [model, projectList] = await Promise.all([
-    api('plan.overview', { repository_id: repoId }),
+    prefetchedModel || api('plan.overview', { repository_id: repoId }),
     workspace.active ? {} : api('plan.overview', {}),
   ]);
   const projects = [...(projectList.repositories || []), {
@@ -5134,7 +5134,7 @@ async function render() {
   }
   if (view === 'deployments') return arg ? viewDeployment(arg) : viewDeployments();
   if (view === 'plan' && new URLSearchParams(location.hash.split('?')[1] || '').has('task')) state.planRequestedTaskId = new URLSearchParams(location.hash.split('?')[1]).get('task');
-  if (view === 'plan') return arg ? viewPlan(arg) : viewPlanPicker('plan');
+  if (view === 'plan') return arg ? viewPlan(arg, route.planModel) : viewPlanPicker('plan');
   if (view === 'progress') return arg ? viewProgress(arg) : viewProgressRepositories();
   if (view === 'performance') return performancePage.render(main, arg, signal);
   if (view === 'usage') return arg ? viewCodexUsage(arg) : viewCodexUsageRepositories();

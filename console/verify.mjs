@@ -456,6 +456,7 @@ async function startFakeDaemon(dir) {
   const settledWaiters = new Set();
   const receivedWaiters = new Set();
   const delayedReplies = new Set();
+  const headerReplies = new Set();
   const mutable = { stopped: false, serviceStopped: false, taskUpdates: new Map(), createdTasks: [], previewRequested: false, failNextTaskUpdate: false, failNextLogCatalog: false, failNextLogRead: false, failNextLogPage: false, usageCollectionReads: 0, capacityCap: 80, logAge: 86400, logDepth: 3, evidenceImage: ONE_PIXEL_PNG, evidenceWidth: 1, evidenceHeight: 1, evidenceFeedback: [], feedbackSequence: 0 };
   const evidenceImage = (imageId, kind = 'viewport') => ({
     status: 'available', image_id: imageId, kind, mime: 'image/png',
@@ -494,13 +495,15 @@ async function startFakeDaemon(dir) {
   const planOverview = () => {
     const result = fixtures(scenario)['plan.overview'];
     if (scenario.workspaceLargePlan) {
-      result.tasks.push(...Array.from({ length: 351 - result.tasks.length }, (_, index) => ({
+      result.tasks.push(...Array.from({ length: 354 - result.tasks.length }, (_, index) => ({
         task_id: `p222222222222${String(index).padStart(4, '0')}`, parent_task_id: null,
         release_id: index % 2 ? V_R1 : V_R2, seq: 20 + index, position: index + 20,
         title: `Review retained outcome ${index + 1} before delivering the complete release`,
         status: index % 3 ? 'planned' : 'in_progress', kind: 'improvement', estimated_loc: 100,
       })));
       result.tasks.forEach((task, index) => { task.seq = index + 1; });
+      result.releases.push(...Array.from({ length: 21 }, (_, index) => ({ release_id: `v222222222222${String(index).padStart(4, '0')}`, seq: index + 5, name: `Retained release ${index + 1}`, kind: 'preview', status: 'delivered', tasks_total: 0, tasks_done: 0, loc_total: 0, loc_done: 0 })));
+      result.preview_requested = [{ release_id: V_R1, name: 'Release 1', requested_at: '2026-08-30T12:00:00Z', note: null }];
     }
     result.tasks = result.tasks
       .map((task) => ({ ...task, ...(mutable.taskUpdates.get(task.task_id) || {}) }))
@@ -777,6 +780,7 @@ async function startFakeDaemon(dir) {
         return reply({ ok: true, data: req.params });
       }
       if (cmd === 'plan.overview' && !req.params.repository_id) {
+        if (scenario.workspaceHeaderPending && req.params.headers_only && !req.params.after_repository_id && !mutable.headersReleased) await new Promise(resolve => headerReplies.add(resolve));
         if (scenario.workspacePaging && !req.params.headers_only && !mutable.cacheReleased) {
           await new Promise((resolve) => delayedReplies.add(resolve));
         }
@@ -810,6 +814,7 @@ async function startFakeDaemon(dir) {
           result.releases = releases.slice(0, limit);
           result.next_release_sequence = releases.length > limit ? result.releases.at(-1).seq : null;
           result.elaboration_requests = result.elaboration_requests.filter((request) => result.tasks.some((task) => task.task_id === request.task_id));
+          if (scenario.workspaceHeaderPending && !req.params.limit && !result.next_sequence) { mutable.headersReleased = true; for (const release of headerReplies) release(); headerReplies.clear(); }
         }
         return reply({ ok: true, data: result });
       }
@@ -831,6 +836,12 @@ async function startFakeDaemon(dir) {
         return reply({ ok: true, data: { repositories: [repository], ...(scenario.workspacePaging ? { next_repository_id: REPO } : {}) } });
       }
       if (cmd === 'progress.repository') return reply({ ok: true, data: progressFixture(scenario, req.params.period || 'day') });
+      if (scenario.workspaceStableOptional && ['usage.repositories', 'progress.repositories'].includes(cmd)) {
+        if (!mutable.cacheReleased) await new Promise(resolve => delayedReplies.add(resolve));
+        const result = fixtures(scenario)[cmd];
+        result.repositories = result.repositories.filter(row => [REPO, 'r2'].includes(row.repository_id));
+        return reply({ ok: true, data: result });
+      }
       if (cmd === 'progress.repositories') return reply({ ok: true, data: fixtures(scenario)['progress.repositories'] });
       if (cmd === 'usage.repository') {
         if (scenario.dashboardUsagePending) await new Promise((resolve) => delayedReplies.add(resolve));
@@ -872,11 +883,11 @@ async function startFakeDaemon(dir) {
   return {
     socketPath,
     calls,
-    setScenario: (s) => { for (const release of delayedReplies) release(); delayedReplies.clear(); scenario = s; mutable.cacheReleased = false; mutable.testSweepMutated = false; mutable.stopped = false; mutable.serviceStopped = false; mutable.taskUpdates.clear(); mutable.createdTasks.length = 0; mutable.previewRequested = false; mutable.failNextTaskUpdate = false; mutable.failNextLogCatalog = !!s.logCatalogError; mutable.failNextLogRead = !!s.logReadError; mutable.failNextLogPage = !!s.logPageError; mutable.usageCollectionReads = 0; mutable.capacityCap = 80; mutable.logAge = 86400; mutable.logDepth = 3; mutable.evidenceFeedback.length = 0; mutable.feedbackSequence = 0; calls.length = 0; },
+    setScenario: (s) => { for (const release of headerReplies) release(); headerReplies.clear(); mutable.headersReleased = false; for (const release of delayedReplies) release(); delayedReplies.clear(); scenario = s; mutable.cacheReleased = false; mutable.testSweepMutated = false; mutable.stopped = false; mutable.serviceStopped = false; mutable.taskUpdates.clear(); mutable.createdTasks.length = 0; mutable.previewRequested = false; mutable.failNextTaskUpdate = false; mutable.failNextLogCatalog = !!s.logCatalogError; mutable.failNextLogRead = !!s.logReadError; mutable.failNextLogPage = !!s.logPageError; mutable.usageCollectionReads = 0; mutable.capacityCap = 80; mutable.logAge = 86400; mutable.logDepth = 3; mutable.evidenceFeedback.length = 0; mutable.feedbackSequence = 0; calls.length = 0; },
     setEvidenceImage: (bytes, width, height) => { mutable.evidenceImage = Buffer.from(bytes); mutable.evidenceWidth = width; mutable.evidenceHeight = height; },
     failNextTaskUpdate: () => { mutable.failNextTaskUpdate = true; },
     mutateTestSweep: () => { mutable.testSweepMutated = true; },
-    releaseDelayed: () => { mutable.cacheReleased = true; for (const release of delayedReplies) release(); delayedReplies.clear(); },
+    releaseDelayed: () => { mutable.cacheReleased = true; mutable.headersReleased = true; for (const release of headerReplies) release(); headerReplies.clear(); for (const release of delayedReplies) release(); delayedReplies.clear(); },
     waitForReceivedAfter: (after) => {
       if (calls.length > after) return Promise.resolve(calls[after]);
       return new Promise((resolve,reject) => {

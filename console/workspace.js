@@ -303,7 +303,10 @@ window.DevCoordinatorWorkspace = (() => {
 
     editPresentation.addEventListener('click', openPresentation);
 
+    const navigationIdentity = () => JSON.stringify(groups.map(group => [group.key, group.repositoryId, group.name, group.defaultName, group.icon, group.rootPath, group.paths, group.records.map(record => [record.repository_id, record.display_name, record.paths])]));
+
     function rebuildCatalogue() {
+      const before = navigationIdentity();
       for (const record of data.plans) if (data.presentations.has(record.repository_id)) record.presentation = data.presentations.get(record.repository_id);
       const registered = data.registered.flatMap((record) => {
         const planned = data.plans.find((row) => row.repository_id === record.repository_id);
@@ -316,6 +319,7 @@ window.DevCoordinatorWorkspace = (() => {
       data.repositories = [...data.plans, ...registered, ...data.optional];
       groups = catalogue(data.repositories, data.runs, data.deployments);
       for (const listener of catalogueListeners) listener();
+      return before !== navigationIdentity();
     }
 
     function mergeRegistered(rows) {
@@ -400,9 +404,9 @@ window.DevCoordinatorWorkspace = (() => {
         void Promise.all([read('usage.repositories'), read('progress.repositories')]).then(([usage, progress]) => {
           if (signal.aborted) return;
           data.optional = [...(usage.value?.repositories || []), ...(progress.value?.repositories || [])];
-          rebuildCatalogue();
+          const navigationChanged = rebuildCatalogue();
           updateStatus([['Plan', plans], ['Tests', tests], ['Deployments', deploymentList], ['Repositories', repositoryList], ['Usage', usage], ['Progress', progress]]);
-          if (active) paint();
+          if (active && navigationChanged) paint();
         }).catch(() => {});
       });
       loading = { signal, promise };
@@ -422,6 +426,8 @@ window.DevCoordinatorWorkspace = (() => {
       if (!data) navigation.innerHTML = "<p class=\"muted\"><span data-i18n=\"shell.loading_repositories_460ca9\">Loading repositories…</span></p>";
       const query = new URLSearchParams(queryString);
       let requested = ['plan', 'progress', 'usage', 'performance', 'decisions', 'sketches', 'glossary'].includes(view) ? argument : query.get('repository');
+      const planModel = view === 'plan' && requested ? api('plan.overview', { repository_id: requested }) : null;
+      planModel?.catch(() => {}); // Navigation may fail or abort before the scoped view consumes this read.
       await load(signal);
       if (signal.aborted) return null;
       catalogueSignal = signal;
@@ -471,7 +477,7 @@ window.DevCoordinatorWorkspace = (() => {
       }
       paint();
       void continueCatalogue(signal);
-      return { view, arg: view === 'tests' ? argument && `${argument}${queryString ? `?${queryString}` : ''}` : view === 'deployments' ? argument : argument || selectedId, empty: !selectedId && !argument, settings: query.get('settings') };
+      return { view, arg: view === 'tests' ? argument && `${argument}${queryString ? `?${queryString}` : ''}` : view === 'deployments' ? argument : argument || selectedId, empty: !selectedId && !argument, settings: query.get('settings'), planModel };
     }
 
     toggle.addEventListener('click', () => {
