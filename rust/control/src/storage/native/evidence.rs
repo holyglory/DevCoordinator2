@@ -7,7 +7,7 @@ use crate::storage::{
 use devcoordinator2_api::{ProtocolError, storage as api};
 use devcoordinator2_executor_core::log_query::{
     LogPruneRequest, LogQueryError, RetentionObservation, discover_retention_run_step,
-    discover_retention_step, remove_retained_run, retention_runs,
+    discover_retention_step, remove_retained_run, retained_run_observations,
 };
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
@@ -416,13 +416,12 @@ impl HostBackend {
             .as_deref()
             .ok_or_else(|| blocked("ownership_unknown"))?;
         let query = request(worktree, repository, context)?;
-        let runs = retention_runs(worktree, &query)
+        let observations = retained_run_observations(worktree, &query, run_id)
             .map_err(|_| unavailable("evidence_inventory_unavailable"))?;
-        let run = runs
-            .iter()
-            .find(|run| &run.run_id == run_id)
-            .ok_or_else(|| blocked("evidence_already_removed"))?;
-        if run.active {
+        if observations.is_empty() {
+            return Err(blocked("evidence_already_removed"));
+        }
+        if observations.iter().any(|observation| observation.active) {
             return Err(blocked("active_evidence"));
         }
         Ok(())
@@ -455,11 +454,7 @@ impl HostBackend {
             run_id,
         )
         .map_err(|_| unavailable("evidence_removal_incomplete"))?;
-        if retention_runs(worktree, &query)
-            .map_err(|_| unavailable("evidence_inventory_unavailable"))?
-            .iter()
-            .any(|run| &run.run_id == run_id)
-        {
+        if !self.evidence_absent(r, context)? {
             return Err(blocked("evidence_still_retained"));
         }
         Ok(())
@@ -831,6 +826,28 @@ mod tests {
             .find(|record| record.artifact.repository_id.as_deref() == Some("r1111111111111111"))
             .unwrap();
         assert!(!backend.evidence_absent(first_record, &context).unwrap());
+        let unpinned = service
+            .protect(
+                api::Protection {
+                    expected_revision: pinned.revision,
+                    protected: false,
+                    ..protection()
+                },
+                &caller,
+            )
+            .unwrap();
+        backend
+            .validate_evidence(first_record, &context)
+            .expect("an unrelated malformed run cannot block an exact cleanup target");
+        let pinned = service
+            .protect(
+                api::Protection {
+                    expected_revision: unpinned.revision,
+                    ..protection()
+                },
+                &caller,
+            )
+            .unwrap();
         let leaf = first.join(".devcoordinator/test/logs/runs/run-one/checks/check/cases/case");
         std::fs::remove_dir_all(&leaf).unwrap();
         assert!(backend.evidence_absent(first_record, &context).unwrap());
@@ -977,6 +994,27 @@ mod tests {
                 )?))
                 .unwrap(),
             0
+        );
+        service
+            .protect(
+                api::Protection {
+                    expected_revision: pinned.revision,
+                    protected: false,
+                    ..protection()
+                },
+                &caller,
+            )
+            .unwrap();
+        let malformed = first.join(".devcoordinator/test/logs/runs/malformed-sibling");
+        std::fs::create_dir(&malformed).unwrap();
+        backend.validate_evidence(first_record, &context).unwrap();
+        backend.remove_evidence(first_record, &context).unwrap();
+        assert!(backend.evidence_absent(first_record, &context).unwrap());
+        assert!(malformed.is_dir());
+        assert!(
+            second
+                .join(".devcoordinator/test/logs/runs/run-two/checks/check/cases/case/stdout.log")
+                .is_file()
         );
         drop(runtime);
         drop(scheduler);

@@ -796,6 +796,32 @@ pub fn discover_retention_run_step(
     discover_retention_inner(worktree, request, Some(run_id), cursor, max_entries, budget)
 }
 
+/// Observe only the named run through the same metadata and identity checks as
+/// bounded retention. Explicit cleanup never needs another run's stream bytes.
+pub fn retained_run_observations(
+    worktree: &Path,
+    request: &LogPruneRequest,
+    run_id: &str,
+) -> Result<Vec<RetentionObservation>, LogQueryError> {
+    let mut cursor = None;
+    let mut observations = Vec::new();
+    loop {
+        let step = discover_retention_run_step(
+            worktree,
+            request,
+            run_id,
+            cursor.as_deref(),
+            256,
+            Duration::from_millis(25),
+        )?;
+        observations.extend(step.observations);
+        cursor = step.next_cursor;
+        if cursor.is_none() {
+            return Ok(observations);
+        }
+    }
+}
+
 fn discover_retention_inner(
     worktree: &Path,
     request: &LogPruneRequest,
@@ -1006,12 +1032,24 @@ pub fn prune_retention_observation(
     protected: impl FnOnce() -> Result<bool, LogQueryError>,
 ) -> Result<RetentionPruneOutcome, LogQueryError> {
     validate_prune_request(request)?;
+    let guard = lock_retention(worktree)?;
+    prune_retention_observation_locked(worktree, request, observation, protected, &guard, false)
+}
+
+fn prune_retention_observation_locked(
+    worktree: &Path,
+    request: &LogPruneRequest,
+    observation: &RetentionObservation,
+    protected: impl FnOnce() -> Result<bool, LogQueryError>,
+    _guard: &RetentionLock,
+    remove_payload: bool,
+) -> Result<RetentionPruneOutcome, LogQueryError> {
+    validate_prune_request(request)?;
     let selector = retention_selector(&observation.components)?;
     if observation.components[0] != observation.run_id {
         return Err(LogQueryError::StoreMalformed);
     }
     let (logs, runs) = retention_roots(worktree)?;
-    let _guard = lock_retention(worktree)?;
     if protected()? {
         return Ok(RetentionPruneOutcome::Protected);
     }
@@ -1062,12 +1100,21 @@ pub fn prune_retention_observation(
         return Ok(RetentionPruneOutcome::Changed);
     }
     let garbage = ensure_dir(&logs, ".garbage")?;
-    let _ = rename_leaf_to_garbage_only(
-        &runs,
-        &garbage,
-        &observation.components,
-        observation.leaf_identity,
-    )?;
+    if remove_payload {
+        rename_leaf_to_garbage(
+            &runs,
+            &garbage,
+            &observation.components,
+            observation.leaf_identity,
+        )?;
+    } else {
+        let _ = rename_leaf_to_garbage_only(
+            &runs,
+            &garbage,
+            &observation.components,
+            observation.leaf_identity,
+        )?;
+    }
     Ok(RetentionPruneOutcome::Removed)
 }
 
@@ -1197,8 +1244,36 @@ pub fn remove_retained_run(
     protected_runs: impl FnOnce() -> Result<std::collections::BTreeSet<String>, LogQueryError>,
     run_id: &str,
 ) -> Result<LogPruneResult, LogQueryError> {
-    validate_run_id(run_id)?;
-    prune_logs_internal(worktree, request, protected_runs, Some(run_id), true).map(|r| r.summary)
+    let observations = retained_run_observations(worktree, &request, run_id)?;
+    let mut result = LogPruneResult {
+        removed_leaf_folders: 0,
+        retained_active: 0,
+        next_expiry_at: None,
+        recovered_garbage: 0,
+    };
+    if observations.is_empty() {
+        return Ok(result);
+    }
+    let guard = lock_retention(worktree)?;
+    let protected = protected_runs()?;
+    let (logs, _) = retention_roots(worktree)?;
+    result.recovered_garbage = recover_garbage(&ensure_dir(&logs, ".garbage")?)?;
+    for observation in observations {
+        match prune_retention_observation_locked(
+            worktree,
+            &request,
+            &observation,
+            || Ok(protected.contains(&observation.run_id)),
+            &guard,
+            true,
+        )? {
+            RetentionPruneOutcome::Removed => result.removed_leaf_folders += 1,
+            RetentionPruneOutcome::Active => result.retained_active += 1,
+            RetentionPruneOutcome::Protected | RetentionPruneOutcome::Missing => {}
+            RetentionPruneOutcome::Changed => return Err(LogQueryError::CursorStale),
+        }
+    }
+    Ok(result)
 }
 
 fn prune_logs_internal(
@@ -5344,6 +5419,89 @@ mod tests {
         assert_eq!(removed, 45);
         assert!(gc_turns > 45);
         assert_eq!(fs::read(outside).unwrap(), b"valuable");
+        assert!(
+            fs::read_dir(root.join(".devcoordinator/test/logs/.garbage"))
+                .unwrap()
+                .next()
+                .is_none()
+        );
+        // Explicit cleanup shares the bounded retention guards and touches
+        // only its selected run, even when another run cannot be decoded.
+        let malformed = runs.join(run_id(48)).join("run.json");
+        fs::write(&malformed, b"malformed unrelated metadata").unwrap();
+        let (manual, _) = create_run(&root, 50, "manual", b"manual evidence\n", now, false);
+        let manual_run = runs.join(&manual);
+        let manual_leaf = manual_run.join("checks/unit/cases/manual");
+        assert_eq!(
+            remove_retained_run(
+                &root,
+                request.clone(),
+                || Ok(BTreeSet::from([manual.clone()])),
+                &manual
+            )
+            .unwrap()
+            .removed_leaf_folders,
+            0
+        );
+        assert!(manual_leaf.is_dir());
+        let pending = manual_run.join("finalization.pending");
+        fs::write(&pending, b"pending").unwrap();
+        assert_eq!(
+            remove_retained_run(&root, request.clone(), || Ok(BTreeSet::new()), &manual)
+                .unwrap()
+                .retained_active,
+            1
+        );
+        fs::remove_file(pending).unwrap();
+        assert_eq!(
+            remove_retained_run(&root, request.clone(), || Ok(BTreeSet::new()), &active)
+                .unwrap()
+                .retained_active,
+            1
+        );
+        let metadata_path = manual_run.join("run.json");
+        let metadata = fs::read(&metadata_path).unwrap();
+        fs::write(&metadata_path, b"malformed selected metadata").unwrap();
+        assert_eq!(
+            remove_retained_run(&root, request.clone(), || Ok(BTreeSet::new()), &manual),
+            Err(LogQueryError::StoreMalformed)
+        );
+        assert!(manual_leaf.is_dir());
+        fs::write(metadata_path, metadata).unwrap();
+        // Stream diagnostics are disposable payloads, not cleanup ownership.
+        // The retained lifecycle metadata and exact filesystem identities
+        // still have to pass, and links inside payloads are never followed.
+        fs::write(
+            manual_leaf.join("stdout.meta.json"),
+            b"damaged stream metadata",
+        )
+        .unwrap();
+        let manual_evidence = manual_leaf.join("evidence");
+        fs::create_dir(&manual_evidence).unwrap();
+        symlink(root.join("outside"), manual_evidence.join("link")).unwrap();
+        assert_eq!(
+            remove_retained_run(&root, request.clone(), || Ok(BTreeSet::new()), &manual)
+                .unwrap()
+                .removed_leaf_folders,
+            1
+        );
+        assert!(!manual_leaf.exists());
+        assert!(
+            retained_run_observations(&root, &request, &manual)
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(fs::read(root.join("outside")).unwrap(), b"valuable");
+        assert_eq!(
+            fs::read(malformed).unwrap(),
+            b"malformed unrelated metadata"
+        );
+        assert_eq!(
+            remove_retained_run(&root, request, || Ok(BTreeSet::new()), &manual)
+                .unwrap()
+                .removed_leaf_folders,
+            0
+        );
         assert!(
             fs::read_dir(root.join(".devcoordinator/test/logs/.garbage"))
                 .unwrap()

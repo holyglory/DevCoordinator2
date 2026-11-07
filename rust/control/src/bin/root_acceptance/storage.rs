@@ -590,6 +590,12 @@ pub(super) fn retained_evidence_after_run(world: &World, run_id: &str) -> Result
         "manual evidence plan remained blocked: {}",
         bounded_json(&plan)
     );
+    // Another run may be half-published or damaged after this exact plan was
+    // prepared. Its metadata must neither block nor join the selected cleanup.
+    let sibling = world
+        .repo
+        .join(".devcoordinator/test/logs/runs/malformed-cleanup-sibling");
+    fs::create_dir(&sibling).map_err(|error| error.to_string())?;
     let job = mcp(
         world,
         "storage_cleanup_start",
@@ -615,6 +621,11 @@ pub(super) fn retained_evidence_after_run(world: &World, run_id: &str) -> Result
         !after["removed_at_ms"].is_null(),
         "evidence receipt did not persist"
     );
+    ensure!(
+        sibling.is_dir(),
+        "cleanup removed an unselected evidence run"
+    );
+    fs::remove_dir(&sibling).map_err(|error| error.to_string())?;
     let tail = world.log_tail(run_id, "main", "stdout");
     ensure!(
         tail.is_err()
