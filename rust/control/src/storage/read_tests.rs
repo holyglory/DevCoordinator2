@@ -509,7 +509,7 @@ fn native_storage_pages_match_current_safety_without_loading_the_catalog() {
             started.elapsed().as_millis()
         );
         assert!(
-            started.elapsed() < std::time::Duration::from_secs(5),
+            started.elapsed() < std::time::Duration::from_secs(3),
             "catalog safety filter {safety:?} exceeded the bounded fixture budget"
         );
         assert_eq!(page.total, if safety.is_some() { 5_000 } else { 25_000 });

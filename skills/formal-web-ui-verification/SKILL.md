@@ -30,6 +30,10 @@ background, traverses discoverable open shadow roots, evaluates every
 Playwright-reachable iframe, records any reachable context it could not inspect, and lists
 allowed ellipsis/line-clamp truncations, hidden text-like elements, and
 still-loading media, even when the page has no critical layout findings.
+Nested labels under a boxed absolute or fixed ancestor's zero-area CSS `clip` remain
+in the hidden-content inventory; their larger layout boxes do not make them
+painted text. A `display: contents` ancestor has no clipping box. Nonzero partial
+clips and visible controls remain checked.
 Native modal dialogs exclude their browser-inert background from active-content
 defects. Fixed descendants count as reachable only when an actual inner scroll
 range on the cut axis can expose them within the viewport. Locked scroll regions,
@@ -486,6 +490,13 @@ Critical findings by default:
   do not fail. Inside carousel/slider-marked containers the finding is
   downgraded to a warning; fully hidden content becomes a `clipped-hidden`
   warning because closed accordions/tabs/slides are often intentional.
+  In non-strict mode, intentional single-line ellipsis also permits an inline
+  font fragment to extend vertically beyond its line only when browser font and
+  glyph metrics agree with the rendered fragment and the actual glyph bounds
+  fit inside the clip. This requires unpositioned, same-font inline text.
+  Controls, genuine vertical crops, unsupported metrics and painted effects
+  omitted by those metrics (shadow, stroke or decoration) retain clipping
+  checks. `strictTruncation` continues to reject the ellipsis.
 - Unrelated overlap/occlusion of meaningful text or controls: fully covered
   (`occluded`) or covered on ≥60% of sampled points (`partially-occluded`).
   Every candidate starts from the verification state's original document and

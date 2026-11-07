@@ -120,6 +120,34 @@ struct OwnedSnapshot {
     name: String,
     removed: std::cell::Cell<bool>,
 }
+
+// Fixture-only stage diagnostics retain enough typed information to locate a
+// timeout without exposing SQL, connection configuration, paths or records.
+fn snapshot_stage<T>(stage: &'static str, result: Result<T>) -> Result<T> {
+    #[cfg(feature = "test-fixtures")]
+    if let Err(error) = &result {
+        let category = match error {
+            Error::Postgres(_) => "postgres",
+            Error::Pool(_) => "pool",
+            Error::Configuration(_) => "configuration",
+            Error::Migration(_) => "migration",
+            Error::SnapshotCleanup { .. } => "snapshot_cleanup",
+            _ => "other",
+        };
+        let sqlstate = match error {
+            Error::Postgres(error) => error.code().map(|code| code.code()),
+            _ => None,
+        };
+        eprintln!(
+            "native_snapshot_stage {}",
+            serde_json::json!({"stage":stage,"category":category,"timeout":error.is_timeout(),"sqlstate":sqlstate})
+        );
+    }
+    #[cfg(not(feature = "test-fixtures"))]
+    let _ = stage;
+    result
+}
+
 impl OwnedSnapshot {
     fn create(authority: &DatabaseConfig) -> Result<Self> {
         use std::sync::atomic::{AtomicU64, Ordering};
@@ -134,10 +162,21 @@ impl OwnedSnapshot {
             nonce,
             NEXT.fetch_add(1, Ordering::Relaxed)
         );
-        let mut client = authority.parsed()?.connect(postgres::NoTls)?;
-        client.batch_execute(&format!(
-            "CREATE DATABASE \"{name}\" TEMPLATE template0 ENCODING 'UTF8'"
-        ))?;
+        let mut client = snapshot_stage(
+            "create_connect",
+            authority
+                .parsed()?
+                .connect(postgres::NoTls)
+                .map_err(Error::from),
+        )?;
+        snapshot_stage(
+            "create_database",
+            client
+                .batch_execute(&format!(
+                    "CREATE DATABASE \"{name}\" TEMPLATE template0 ENCODING 'UTF8'"
+                ))
+                .map_err(Error::from),
+        )?;
         Ok(Self {
             authority: authority.clone(),
             name,
@@ -148,15 +187,24 @@ impl OwnedSnapshot {
         if self.removed.get() {
             return Ok(());
         }
-        let mut client = self.authority.parsed()?.connect(postgres::NoTls)?;
-        // Cleanup is still finite, but may wait for an autovacuum worker or
-        // an unrelated fixture connection to release the database. This is
-        // maintenance work and must not inherit the request-read deadline.
-        client.batch_execute("SET statement_timeout='120s'; SET lock_timeout='30s'")?;
+        let mut client = snapshot_stage(
+            "cleanup_connect",
+            self.authority
+                .parsed()?
+                .connect(postgres::NoTls)
+                .map_err(Error::from),
+        )?;
+        snapshot_stage(
+            "cleanup_settings",
+            client
+                .batch_execute("SET statement_timeout='15s'; SET lock_timeout='5s'")
+                .map_err(Error::from),
+        )?;
         // All clients owned by the inspection are already closed. Ordinary
         // DROP handles conflicting autovacuum workers internally; FORCE would
         // require signalling privileges that the authority role does not have.
-        client.batch_execute(&format!("DROP DATABASE \"{}\"", self.name))?;
+        let removed = client.batch_execute(&format!("DROP DATABASE \"{}\"", self.name));
+        snapshot_stage("cleanup_drop", removed.map_err(Error::from))?;
         self.removed.set(true);
         Ok(())
     }
@@ -179,30 +227,22 @@ where
     E: From<Error> + std::fmt::Display,
     F: FnOnce(&Connection) -> std::result::Result<T, E>,
 {
-    let before = crate::migration::file_stamp(archive).map_err(E::from)?;
+    let before =
+        snapshot_stage("archive_stamp", crate::migration::file_stamp(archive)).map_err(E::from)?;
     let owned = OwnedSnapshot::create(authority).map_err(E::from)?;
-    // Snapshot restore and verification run on the maintenance boundary. Keep
-    // their finite database statement budget independent from the shorter
-    // request-read budget, so concurrent request traffic cannot cancel an
-    // otherwise bounded recovery inspection.
-    let mut config = authority.for_database(&owned.name);
-    config.statement_timeout = config
-        .statement_timeout
-        .max(std::time::Duration::from_secs(300));
+    let config = authority.for_database(&owned.name);
     // Keep every owned client inside this scope so cleanup never races their
     // shutdown, including on restore, acquisition, callback or stamp failure.
     let result = (|| {
-        restore(&config, archive).map_err(E::from)?;
-        let database = Persistence::connect(&config).map_err(E::from)?;
-        let connection = database.acquire(Lane::Read).map_err(E::from)?;
-        // Archive inspection is an offline maintenance operation. Override
-        // the request lane's finite timeout for this callback while retaining
-        // an explicit upper bound; ordinary request reads never use it.
-        connection
-            .execute_batch("SET SESSION statement_timeout='30min'; SET SESSION idle_in_transaction_session_timeout='30min'")
+        snapshot_stage("restore", restore(&config, archive)).map_err(E::from)?;
+        let database =
+            snapshot_stage("snapshot_pool", Persistence::connect(&config)).map_err(E::from)?;
+        let connection = snapshot_stage("snapshot_read_acquire", database.acquire(Lane::Read))
             .map_err(E::from)?;
         let result = work(&connection);
-        let unchanged = crate::migration::file_stamp(archive).map_err(E::from)? == before;
+        let unchanged = snapshot_stage("archive_recheck", crate::migration::file_stamp(archive))
+            .map_err(E::from)?
+            == before;
         if !unchanged {
             return Err(E::from(Error::Migration(
                 "snapshot changed during inspection".into(),

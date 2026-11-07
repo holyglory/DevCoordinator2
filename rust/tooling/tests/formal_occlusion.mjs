@@ -64,10 +64,10 @@ async function scrollCoordinates(page) {
   });
 }
 
-async function measure(page) {
-  await page.evaluate(() => {
-    window.__FORMAL_WEB_UI_CONFIG__ = { rules: { strictTruncation: false }, inspectThemePalette: false };
-  });
+async function measure(page, strictTruncation = false) {
+  await page.evaluate((strictTruncation) => {
+    window.__FORMAL_WEB_UI_CONFIG__ = { rules: { strictTruncation }, inspectThemePalette: false };
+  }, strictTruncation);
   return page.evaluate(pageVerifier);
 }
 
@@ -339,9 +339,52 @@ for (const obstruction of ["oversized-gutter", "absolute-overlay", "fixed-overla
 test("non-scrollable clipped content stays critical", async () => {
   const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
   try {
-    await page.setContent('<main style="width:70px;overflow:hidden"><span style="white-space:nowrap;color:#111;background:#fff">source_identifier_that_cannot_be_reached</span></main>');
+    await page.setContent(`<!doctype html><style>
+      body{margin:0;color:#111;background:white;font:11px/14.7px Arial}
+      main{padding:12px}.crop{width:70px;overflow:hidden;white-space:nowrap;margin-bottom:12px}
+      button{width:36px;height:36px;position:relative}
+      .label{position:absolute;width:1px;height:1px;clip:rect(0,0,0,0);overflow:hidden;white-space:nowrap}
+    </style><main>
+      <div class="crop"><span id="real-clipped">source_identifier_that_cannot_be_reached</span></div>
+      <button aria-label="Elaborate">?<span class="label"><span id="hidden-label">Elaborate</span></span></button>
+      <div class="crop"><button id="clipped-control" style="width:120px">Visible action</button></div>
+      <div class="crop" style="position:absolute;top:160px;height:18px;clip:rect(0,70px,18px,0)"><span id="partial-legacy-clip">another_identifier_that_is_partially_painted</span></div>
+      <div style="clip:rect(0,0,0,0)"><span id="inactive-clip">Visible sibling label</span></div>
+    </main>`);
     const report = await measure(page);
-    assert(report.findings.some((finding) => finding.severity === "critical" && finding.rule === "clipped-by-ancestor"));
+    for (const selector of ["#real-clipped", "#clipped-control", "#partial-legacy-clip"]) {
+      assert(report.findings.some((finding) => finding.selector === selector && finding.severity === "critical" && finding.rule === "clipped-by-ancestor"));
+    }
+    assert.equal(report.findings.filter((finding) => finding.selector === "#hidden-label").length, 0,
+      "a nested label inside a zero-area CSS clip does not paint");
+    assert(report.metrics.hiddenTextLike.zeroSize >= 2, "hidden parent and child remain counted");
+    assert.equal(report.findings.filter((finding) => finding.selector === "#inactive-clip").length, 0,
+      "clip on a static box does not hide a visible descendant");
+    for (const variant of ["fixed", "absolute", "contents-absolute", "static-absolute"]) {
+      await page.setContent(`<!doctype html><style>
+        body{margin:0;background:white;color:#111}main{position:relative;width:390px;height:340px}
+        .owner{position:${variant === "static-absolute" ? "static" : "absolute"};display:${variant === "contents-absolute" ? "contents" : "block"};width:1px;height:1px;left:10px;top:10px;clip:rect(0,0,0,0);overflow:hidden}
+        button{position:${variant === "fixed" ? "fixed" : "absolute"};left:150px;top:150px;width:150px;height:50px}
+      </style><main><div class="owner"><button id="escaped-control">Visible action</button></div></main>`);
+      const painted = await page.locator("#escaped-control").evaluate(el => {
+        const rect = el.getBoundingClientRect();
+        return document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2) === el;
+      });
+      const escapes = variant === "contents-absolute" || variant === "static-absolute";
+      assert.equal(painted, escapes, `${variant} must agree with actual browser hit-testing`);
+      if (escapes) {
+        await page.locator("#escaped-control").evaluate(el => {
+          const rect = el.getBoundingClientRect();
+          const cover = document.createElement("div");
+          cover.style.cssText = `position:fixed;left:${rect.left}px;top:${rect.top}px;width:${rect.width}px;height:${rect.height}px;background:#ccc;z-index:10`;
+          document.body.append(cover);
+        });
+      }
+      const measured = await measure(page);
+      const failures = measured.findings.filter(item => item.selector === "#escaped-control");
+      if (escapes) assert(failures.some(item => item.rule === "occluded" && item.severity === "critical"), `${variant} stays checked after it visibly escapes`);
+      else assert.equal(failures.length, 0, `${variant} is actually hidden by the ancestor clip`);
+    }
   } finally {
     await page.close();
   }
@@ -431,7 +474,7 @@ test("the gutter itself is not exempt from unrelated occlusion", async () => {
   }
 });
 
-const selectedCases = new Set(["occluded", "partial-overlap", "overlay-in-scroll", "scroll-panel-neighbor", "details-closed-neighbor", "dev-overlay-badge", "modal-active-occlusion", "modal-shadow-occlusion", "modal-scroll-locked", "fixed-unscrollable-cut"]);
+const selectedCases = new Set(["occluded", "partial-overlap", "overlay-in-scroll", "scroll-panel-neighbor", "details-closed-neighbor", "dev-overlay-badge", "modal-active-occlusion", "modal-shadow-occlusion", "modal-scroll-locked", "fixed-unscrollable-cut", "truncate-inner-span"]);
 for (const fixture of matrix.cases.filter((entry) => selectedCases.has(entry.name) || entry.name.startsWith("custom-modal-"))) {
   test(`existing detector guard: ${fixture.name}`, async () => {
     const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
@@ -445,6 +488,33 @@ for (const fixture of matrix.cases.filter((entry) => selectedCases.has(entry.nam
         assert(!report.findings.some((finding) => finding.rule === rule), `${fixture.name} falsely reported ${rule}`);
       }
       if (!fixture.critical) assert(!report.findings.some((finding) => finding.severity === "critical"), JSON.stringify(report.findings));
+      if (fixture.name === "truncate-inner-span") {
+        assert(report.metrics.ellipsisTruncations.some(item => item.selector === "#compact-identifier"));
+        const strict = await measure(page, true);
+        assert(strict.findings.some(item => item.selector === "#compact-identifier" && item.rule === "clipped-by-ancestor" && item.severity === "critical"));
+        for (const changed of ["height", "position", "control", "shadow", "decoration", "font-mismatch", "unsupported-metrics"]) {
+          await page.setContent(pages[fixture.path]);
+          await page.evaluate((changed) => {
+            const cell = document.querySelector(".compact-cell");
+            const text = document.querySelector("#compact-identifier");
+            if (changed === "height") cell.style.height = "5px";
+            else if (changed === "position") { text.style.position = "relative"; text.style.top = "-6px"; }
+            else if (changed === "control") { const button = document.createElement("button"); button.id = text.id; button.textContent = text.textContent; text.replaceWith(button); }
+            else if (changed === "shadow") cell.style.textShadow = "0 3px 1px black";
+            else if (changed === "decoration") cell.style.textDecoration = "underline";
+            else if (changed === "font-mismatch") text.style.fontSize = "13px";
+            else {
+              const original = CanvasRenderingContext2D.prototype.measureText;
+              CanvasRenderingContext2D.prototype.measureText = function (...args) {
+                const metrics = original.apply(this, args);
+                return new Proxy(metrics, { get(target, key) { return key === "actualBoundingBoxAscent" ? Number.NaN : Reflect.get(target, key, target); } });
+              };
+            }
+          }, changed);
+          const clipped = await measure(page);
+          assert(clipped.findings.some(item => item.selector === "#compact-identifier" && item.rule === "clipped-by-ancestor" && item.severity === "critical"), `${changed} must not inherit an ellipsis exception`);
+        }
+      }
     } finally {
       await page.close();
     }

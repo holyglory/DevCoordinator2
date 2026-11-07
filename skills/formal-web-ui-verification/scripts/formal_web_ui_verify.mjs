@@ -3080,6 +3080,23 @@ function pageVerifier() {
   while (modalFocus?.shadowRoot?.activeElement) modalFocus = modalFocus.shadowRoot.activeElement;
   const nativeModals = allElements.filter((element) => element.matches('dialog:modal'));
   const activeModal = nativeModals.findLast((modal) => modalContains(modal, modalFocus)) || nativeModals.at(-1);
+  const hasEmptyPaintClip = (el) => {
+    for (let node = el; node; node = composedParent(node)) {
+      const style = cs(node);
+      // Legacy clip only applies to absolutely/fixed-positioned boxes. A
+      // zero-area clip also hides descendants whose layout boxes stay large,
+      // as with nested text in a screen-reader-only label.
+      if (style.display === "contents" || !["absolute", "fixed"].includes(style.position)) continue;
+      const match = /^rect\(([^)]+)\)$/.exec(style.clip);
+      if (!match) continue;
+      const edges = match[1].split(/[,\s]+/).filter(Boolean);
+      if (edges.length !== 4) continue;
+      const values = edges.map(value => /^-?(?:\d+(?:\.\d*)?|\.\d+)px$/.test(value) ? Number.parseFloat(value) : null);
+      if ((values[0] !== null && values[2] !== null && values[2] <= values[0]) ||
+          (values[1] !== null && values[3] !== null && values[1] <= values[3])) return true;
+    }
+    return false;
+  };
   const rendered = (el) => {
     const style = cs(el);
     if (style.display === "none" || style.visibility === "hidden" || style.visibility === "collapse") return false;
@@ -3088,6 +3105,7 @@ function pageVerifier() {
     // boxes for content the browser does not render; checkVisibility() is the
     // only reliable signal that such content is not actually shown.
     if (typeof el.checkVisibility === "function" && !el.checkVisibility()) return false;
+    if (hasEmptyPaintClip(el)) return false;
     const rect = nowRect(el);
     return rect.width > 1 && rect.height > 1;
   };
@@ -3650,6 +3668,51 @@ function pageVerifier() {
     return false;
   };
 
+  const textInkFitsEllipsisLine = (el, owner, clip) => {
+    const ownerStyle = cs(owner);
+    // Decorations can paint through descendants without appearing in the
+    // descendant's computed text-decoration. Canvas glyph metrics omit them.
+    for (let node = el; node; node = composedParent(node)) {
+      const style = cs(node);
+      if (style.textShadow !== "none" || style.textDecorationLine !== "none" ||
+          px(style.webkitTextStrokeWidth) > 0) return false;
+    }
+    for (let node = el; node && node !== owner; node = composedParent(node)) {
+      const style = cs(node);
+      if (isControl(node) || style.display !== "inline" || style.position !== "static" ||
+          style.verticalAlign !== "baseline" || style.transform !== "none" ||
+          [style.translate, style.rotate, style.scale].some(value => value && value !== "none") ||
+          style.writingMode !== "horizontal-tb" || style.direction !== "ltr" ||
+          style.textTransform !== "none" || style.fontFeatureSettings !== "normal" ||
+          style.fontVariationSettings !== "normal" || style.fontVariantCaps !== "normal" ||
+          ["fontFamily", "fontSize", "fontWeight", "fontStyle", "lineHeight"].some(key => style[key] !== ownerStyle[key])) return false;
+    }
+    const context = document.createElement("canvas").getContext("2d");
+    if (!context) return false;
+    const style = cs(el);
+    context.font = `${style.fontStyle} ${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;
+    context.textBaseline = "alphabetic";
+    let measured = false;
+    for (const node of el.childNodes) {
+      if (node.nodeType !== Node.TEXT_NODE || !node.textContent?.trim()) continue;
+      const range = document.createRange();
+      range.selectNodeContents(node);
+      const fragments = [...range.getClientRects()];
+      range.detach?.();
+      if (!fragments.length || fragments.some(rect => rect.top !== fragments[0].top || rect.bottom !== fragments[0].bottom)) return false;
+      const rect = fragments[0];
+      const metrics = context.measureText(node.textContent);
+      const { fontBoundingBoxAscent: ascent, fontBoundingBoxDescent: descent,
+        actualBoundingBoxAscent: inkAscent, actualBoundingBoxDescent: inkDescent } = metrics;
+      if (![ascent, descent, inkAscent, inkDescent].every(Number.isFinite) ||
+          rect.height !== ascent + descent) return false;
+      const baseline = rect.top + ascent;
+      if (baseline - inkAscent < clip.top || baseline + inkDescent > clip.bottom) return false;
+      measured = true;
+    }
+    return measured;
+  };
+
   // Walks ancestors and reports content cut off by an ancestor's overflow
   // clipping. This is the common real-world crop: the element itself has
   // overflow visible, but a parent with overflow hidden/clip cuts it. Scrollable
@@ -3704,6 +3767,11 @@ function pageVerifier() {
         const visY = clipsY ? Math.max(0, Math.min(box.bottom, clip.bottom) - Math.max(box.top, clip.top)) / height : 1;
         const cutFraction = 1 - visX * visY;
         if (maxCut > 4 && cutFraction > 0.08) {
+          const ellipsisText = style.textOverflow === "ellipsis" && style.whiteSpace === "nowrap" && !isControl(el);
+          // Inline font fragments can extend beyond the line even when every
+          // glyph is painted inside it. Measure ink before excusing a vertical
+          // fragment cut; line-height or a one-pixel tolerance is not proof.
+          const inlineInkWithinClip = ellipsisText && (cutTop > 0 || cutBottom > 0) && textInkFitsEllipsisLine(el, node, clip);
           report.cut = {
             clipperSelector: selectorPath(node),
             cutLeft: round(cutLeft),
@@ -3713,7 +3781,8 @@ function pageVerifier() {
             cutFraction: round(cutFraction),
             fullyHidden: visX <= 0 || visY <= 0,
             singleLineEllipsis:
-              style.textOverflow === "ellipsis" && style.whiteSpace === "nowrap" && cutTop === 0 && cutBottom === 0,
+              ellipsisText && ((cutTop === 0 && cutBottom === 0) || inlineInkWithinClip),
+            inlineInkWithinClip,
             lineClamp: Boolean(style.webkitLineClamp && style.webkitLineClamp !== "none"),
             carouselContext,
             overflowX: style.overflowX,
@@ -3786,7 +3855,7 @@ function pageVerifier() {
       const cut = geo.cut;
       if (cut) {
         const evidence = { evidence: cut };
-        if (cut.singleLineEllipsis && !config.rules.strictTruncation && cut.cutTop === 0 && cut.cutBottom === 0) {
+        if (cut.singleLineEllipsis && !config.rules.strictTruncation) {
           if (ellipsisTruncations.length < 100) {
             ellipsisTruncations.push({ selector: selectorPath(el), textSnippet: snippet(el), kind: "ancestor-text-overflow-ellipsis" });
           }

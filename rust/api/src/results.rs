@@ -2058,6 +2058,26 @@ pub struct PlanCollection {
 
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct PlanRepositoryHeader {
+    pub repository_id: String,
+    pub display_name: String,
+    pub root_path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repository_source: Option<TestRepositorySource>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub presentation: Option<RepositoryPresentation>,
+}
+
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PlanHeaderCollection {
+    pub headers: Vec<PlanRepositoryHeader>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_repository_id: Option<String>,
+}
+
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PlanRelease {
     pub release_id: String,
     pub name: String,
@@ -2112,6 +2132,10 @@ pub struct DecisionState {
 pub struct PlanDetail {
     pub repository_id: String,
     pub display_name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repository_source: Option<TestRepositorySource>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub presentation: Option<RepositoryPresentation>,
     pub archived: bool,
     pub merged_into_repository_id: Option<String>,
     pub releases: Vec<PlanRelease>,
@@ -2130,7 +2154,8 @@ pub struct PlanDetail {
 #[serde(untagged)]
 pub enum PlanOverview {
     Collection(PlanCollection),
-    Detail(PlanDetail),
+    Headers(PlanHeaderCollection),
+    Detail(Box<PlanDetail>),
 }
 
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]

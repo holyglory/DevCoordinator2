@@ -72,6 +72,13 @@ Collection endpoints return continuation cursors; callers must follow them to
 claim complete coverage. Repository pages also include per-repository worktree
 cursors. Plan detail has independent task and release sequence cursors.
 
+For repository navigation, `plan.overview` with `headers_only: true` returns a
+bounded `headers` collection with repository identity, presentation and source
+grouping, without calculating or returning Plan totals. This mode accepts no
+repository ID or path and uses the usual repository cursor and viewer access
+filter. The default overview still returns full aggregates; scoped detail also
+includes saved presentation and source grouping.
+
 ## Request
 
 ```json

@@ -295,11 +295,12 @@ async function api(operation, params = {}, abortable = true) {
       const page = await apiPage(operation, { ...params, after_worktree_id: cursor }, abortable);
       result.runs.push(...page.runs); result.next_worktree_id = page.next_worktree_id;
     }
-  } else if (operation === 'repository.list' || (operation === 'plan.overview' && result.repositories)) {
+  } else if (operation === 'repository.list' || (operation === 'plan.overview' && (result.repositories || result.headers))) {
+    const collection = result.headers ? 'headers' : 'repositories';
     while (result.next_repository_id) {
       const cursor = result.next_repository_id; advance(cursor);
       const page = await apiPage(operation, { ...params, after_repository_id: cursor }, abortable);
-      result.repositories.push(...page.repositories); result.next_repository_id = page.next_repository_id;
+      result[collection].push(...page[collection]); result.next_repository_id = page.next_repository_id;
     }
     if (operation === 'repository.list') {
       for (const repository of result.repositories) {
@@ -3338,7 +3339,7 @@ function coverageHint(coverage) {
   const titleId = `${hintId}-title`;
   const state = coverageKind(coverage);
   const summary = coverageText(coverage);
-  return `<div class="usage-coverage-line"><span class="usage-coverage-indicator ${state}" title="${esc(summary)}" aria-hidden="true"></span><button type="button" class="usage-coverage-hint-toggle" aria-label="${esc(summary)}" aria-haspopup="dialog" aria-expanded="false" aria-controls="${hintId}" data-usage-coverage-hint-toggle data-i18n-attrs='{"aria-label":"usage.explain_codex_usage_data_completeness_63247d"}'>${planIcon('info-circle')}</button><div class="usage-coverage-popover" id="${hintId}" role="dialog" aria-labelledby="${titleId}" tabindex="-1" data-ui-allow-overlap="Open information hint intentionally overlays dashboard content" hidden><strong id="${titleId}" data-ui-continuation-anchor><span data-i18n="usage.about_codex_environments_4a2e3e">About Codex environments</span></strong><p>${window.DevCoordinatorI18n.computedMarkup(() => coverageExplanation(coverage))}</p></div></div>`;
+  return `<div class="usage-coverage-line"><span class="usage-coverage-indicator ${state}" title="${esc(summary)}" aria-hidden="true"></span><button type="button" class="usage-coverage-hint-toggle" aria-label="${esc(summary)}" aria-haspopup="dialog" aria-expanded="false" aria-controls="${hintId}" data-usage-coverage-hint-toggle data-i18n-attrs='{"aria-label":"usage.explain_codex_usage_data_completeness_63247d"}'>${planIcon('info-circle')}</button><div class="usage-coverage-popover" id="${hintId}" role="dialog" aria-labelledby="${titleId}" tabindex="-1" data-ui-allow-overlap="Open information hint intentionally overlays dashboard content" data-ui-contextual-overlay="Open usage explanation overlays dashboard content while its dialog is focused" hidden><strong id="${titleId}" data-ui-continuation-anchor><span data-i18n="usage.about_codex_environments_4a2e3e">About Codex environments</span></strong><p>${window.DevCoordinatorI18n.computedMarkup(() => coverageExplanation(coverage))}</p></div></div>`;
 }
 
 function bindCoverageHint(root = main) {
@@ -3614,7 +3615,7 @@ const viewCodexUsage = guard(async (repositoryId, waitForRefresh = false) => {
   const [data, projectList, repositoryList] = await Promise.all([
     api('usage.repository', { repository_id: repositoryId, range: state.codexUsageRange, ...usageWorktreeRequest(repositoryId), ...(waitForRefresh ? { wait_for_refresh: true } : {}) }),
     workspace.active ? {} : api('plan.overview', {}),
-    api('repository.list', {}),
+    api('repository.list', { repository_id: repositoryId }),
   ]);
   const projects = [...(projectList.repositories || []), {
     repository_id: repositoryId, display_name: data.display_name,
@@ -4082,7 +4083,7 @@ const viewAgentSettings = guard(async () => {
 function openAgentRolesDialog(roles, revision) { document.getElementById('agent-roles-dialog')?.remove(); const dialog = document.createElement('dialog'); dialog.id = 'agent-roles-dialog'; dialog.className = 'agent-roles-dialog'; dialog.innerHTML = `<div class="dialog-head"><h2>${agentText('roles_title')}</h2><button class="dialog-close" type="button" aria-label="${agentText('close')}">×</button></div><form class="dialog-form"><div class="agent-role-editor">${roles.map((role) => `<div class="agent-role-editor-row"><span>${esc(role.role_id)}</span><input name="title:${esc(role.role_id)}" value="${esc(role.title)}" maxlength="200"><label class="agent-retired"><input type="checkbox" name="retired:${esc(role.role_id)}"${role.retired ? ' checked' : ''}> ${agentText('retired')}</label></div>`).join('')}</div><fieldset class="agent-new-role"><legend>${agentText('add_role')}</legend><input name="new_role_id" placeholder="${agentText('role_id_placeholder')}" maxlength="80"><input name="new_role_title" placeholder="${agentText('role_title_placeholder')}" maxlength="200"></fieldset><div class="dialog-actions"><button class="btn" type="button" data-agent-role-cancel>${agentText('cancel')}</button><button class="btn btn-primary" type="submit">${agentText('save_roles')}</button></div></form></dialog>`; document.body.appendChild(dialog); dialog.showModal(); const close = () => { dialog.close(); dialog.remove(); }; $('.dialog-close', dialog).addEventListener('click', close); $('[data-agent-role-cancel]', dialog).addEventListener('click', close); $('form', dialog).addEventListener('submit', async (event) => { event.preventDefault(); const form = new FormData(event.target); const result = roles.map((role, index) => ({ role_id: role.role_id, title: form.get(`title:${role.role_id}`), position: index, retired: form.get(`retired:${role.role_id}`) === 'on' })); const newId = String(form.get('new_role_id') || '').trim(); const newTitle = String(form.get('new_role_title') || '').trim(); if (newId || newTitle) result.push({ role_id: newId, title: newTitle, position: result.length, retired: false }); await act($('button[type=submit]', dialog), 'agent.roles.save', { expected_revision: revision, roles: result }, () => { close(); render(); }); }); requestAnimationFrame(() => $('input', dialog)?.focus()); }
 
 // --- Plan (completion ledger, releases, previews) ------------------------
-function locN(n) { return Number(n).toLocaleString(window.DevCoordinatorI18n.locale); }
+function locN(n) { return window.DevCoordinatorI18n.number(Number(n)); }
 function loc(n) { return n == null ? '' : window.DevCoordinatorI18n.t('plan.estimatedLines', {count:n, value:locN(n)}); }
 function planEstimateText(row) {
   if (!row.isParent) return loc(row.task.estimated_loc) || window.DevCoordinatorI18n.t('plan.not_estimated_dbbcf5');

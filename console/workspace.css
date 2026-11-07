@@ -117,7 +117,9 @@ body.plan-shell, body.evidence-shell { height: auto; min-height: 100dvh; overflo
 .repository-scoped .plan-task-meta > .badge { flex-shrink: 0; white-space: nowrap; }
 .repository-scoped .plan-task-title, .repository-scoped .plan-task-meta { flex-shrink: 0; }
 @media(max-width:720px) {
+  .repository-scoped .grow.gtask { height: auto; min-height: 74px; }
   .repository-scoped .gtask .glabel { padding-left: calc(5px + min(var(--task-depth, 0), 3) * 4px); }
+  .repository-scoped .plan-task-select { height: auto; max-height: none; min-height: 73px; }
   .repository-scoped .plan-task-meta { gap: 2px; font-size: 10px; line-height: 1.2; }
   .repository-scoped .plan-task-meta .badge { font-size: inherit; line-height: inherit; }
 }

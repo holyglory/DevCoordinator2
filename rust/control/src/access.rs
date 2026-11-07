@@ -261,8 +261,19 @@ impl ResultFilter {
             }
             Self::RepositoryCollection { repository_ids } => {
                 let object = result_object(&mut result, "repository collection")?;
+                if object.contains_key("headers") && object.contains_key("repositories") {
+                    return Err(malformed_filtered_result(
+                        "repository collection",
+                        "multiple collection shapes",
+                    ));
+                }
+                let collection = if object.contains_key("headers") {
+                    "headers"
+                } else {
+                    "repositories"
+                };
                 retain_rows(
-                    object.get_mut("repositories"),
+                    object.get_mut(collection),
                     "repository_id",
                     repository_ids,
                     "repository collection",
@@ -2069,6 +2080,27 @@ mod tests {
             plan["repositories"],
             serde_json::json!([{"repository_id":"r1"}])
         );
+        let headers = world
+            .access
+            .authorize(
+                "plan.overview",
+                &serde_json::json!({"headers_only":true}),
+                &viewer,
+            )
+            .expect("plan header picker")
+            .apply_result(
+                serde_json::json!({"headers":[{"repository_id":"r1"},{"repository_id":"r2"}]}),
+            )
+            .expect("header filter");
+        assert_eq!(
+            headers["headers"],
+            serde_json::json!([{"repository_id":"r1"}])
+        );
+        assert_permission_denied(world.access.authorize(
+            "plan.overview",
+            &serde_json::json!({"repository_id":"r2","limit":1}),
+            &viewer,
+        ));
         world
             .access
             .authorize(

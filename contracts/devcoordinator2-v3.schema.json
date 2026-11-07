@@ -38160,6 +38160,11 @@
             "minimum": 0,
             "type": "integer"
           },
+          "headers_only": {
+            "default": false,
+            "description": "Return bounded repository identity and presentation headers without Plan aggregates.\nValid only for a collection request, without path or repository_id.",
+            "type": "boolean"
+          },
           "limit": {
             "default": 100,
             "format": "uint16",
@@ -38210,6 +38215,11 @@
                 "format": "uint32",
                 "minimum": 0,
                 "type": "integer"
+              },
+              "headers_only": {
+                "default": false,
+                "description": "Return bounded repository identity and presentation headers without Plan aggregates.\nValid only for a collection request, without path or repository_id.",
+                "type": "boolean"
               },
               "limit": {
                 "default": 100,
@@ -38376,6 +38386,16 @@
                   "null"
                 ]
               },
+              "presentation": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/RepositoryPresentation"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
               "preview_requested": {
                 "items": {
                   "$ref": "#/$defs/PreviewRequest"
@@ -38390,6 +38410,16 @@
               },
               "repository_id": {
                 "type": "string"
+              },
+              "repository_source": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/TestRepositorySource"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
               },
               "tasks": {
                 "items": {
@@ -38411,6 +38441,27 @@
               "elaboration_requests",
               "preview_requested",
               "decisions"
+            ],
+            "type": "object"
+          },
+          "PlanHeaderCollection": {
+            "additionalProperties": false,
+            "properties": {
+              "headers": {
+                "items": {
+                  "$ref": "#/$defs/PlanRepositoryHeader"
+                },
+                "type": "array"
+              },
+              "next_repository_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "headers"
             ],
             "type": "object"
           },
@@ -38498,6 +38549,46 @@
               "tasks_done",
               "loc_total",
               "loc_done"
+            ],
+            "type": "object"
+          },
+          "PlanRepositoryHeader": {
+            "additionalProperties": false,
+            "properties": {
+              "display_name": {
+                "type": "string"
+              },
+              "presentation": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/RepositoryPresentation"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "repository_id": {
+                "type": "string"
+              },
+              "repository_source": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/TestRepositorySource"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "root_path": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "repository_id",
+              "display_name",
+              "root_path"
             ],
             "type": "object"
           },
@@ -38750,6 +38841,9 @@
         "anyOf": [
           {
             "$ref": "#/$defs/PlanCollection"
+          },
+          {
+            "$ref": "#/$defs/PlanHeaderCollection"
           },
           {
             "$ref": "#/$defs/PlanDetail"
