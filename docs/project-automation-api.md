@@ -122,11 +122,13 @@ does not publish a private deployment or alter access policy. Other origins,
 ports, credentials, query strings and fragments are refused. The service validates
 retained evidence and owned routing metadata; it does not perform network requests.
 
-Use the existing `release deliver-evidence --file request.json` operation with a
-new planned/requested release and the real retained catalog identities. Its
-qualified receipt is then read by `release evidence RECEIPT_ID`, including by
-native delivery clocks. A legacy `release deliver` record is not silently
-upgraded; new qualification requires retained verification evidence. Existing
+Use `devcoordinator2 call release.deliver_evidence --params-file request.json`
+with a new planned/requested release and the real retained catalog identities.
+Read its qualified receipt with
+`devcoordinator2 call release.evidence --params '{"reference":"RECEIPT_ID"}'`.
+Native delivery clocks consume that receipt. A legacy `release.deliver`
+metadata record is not silently upgraded; new qualification requires retained
+verification evidence. Existing
 artifact, registry-package and local-executable contracts are unchanged.
 
 ### Native Console observations
