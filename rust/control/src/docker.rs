@@ -2536,7 +2536,13 @@ fn compose_state<D: DockerControl + ?Sized>(
     }
     let mut by_service = BTreeMap::<String, Vec<(ExactContainerId, ContainerState)>>::new();
     for container_id in &ids {
-        let state = docker.container_state(container_id);
+        let info = docker.inspect(container_id).map_err(|error| {
+            DockerError::Command(format!(
+                "Compose container inspection failed ({:?})",
+                error.kind()
+            ))
+        })?;
+        let state = container_state_from_inspect(&info);
         if let Some(service) = state.compose_service.clone() {
             by_service
                 .entry(service)
@@ -3310,6 +3316,55 @@ mod tests {
             assert_eq!(state.state, expected);
             assert_ne!(state.state, RuntimeState::Running);
         }
+
+        for (inspection, kind) in [
+            (
+                output(23, "", "private Docker diagnostic"),
+                DockerErrorKind::CommandFailed,
+            ),
+            (
+                output(0, "private invalid inspection body", ""),
+                DockerErrorKind::InvalidOutput,
+            ),
+        ] {
+            let container = id('d');
+            let fake = FakeDocker::new(vec![output(0, format!("{container}\n"), ""), inspection]);
+            let error = fake
+                .compose_state(
+                    "dc2-finite-probe",
+                    &["probe".into()],
+                    &["probe".into()],
+                    &BTreeSet::new(),
+                    &BTreeMap::new(),
+                )
+                .expect_err("an unobserved container cannot be classified as missing");
+            let diagnostic = error.to_string();
+            assert!(diagnostic.contains("inspection"), "{diagnostic}");
+            assert!(diagnostic.contains(&format!("{kind:?}")), "{diagnostic}");
+            assert!(!diagnostic.contains("private"), "{diagnostic}");
+        }
+
+        let container = id('d');
+        let other_service = serde_json::json!({
+            "State":{"Status":"exited","ExitCode":0},
+            "Config":{"Labels":{"com.docker.compose.service":"other"}}
+        });
+        let fake = FakeDocker::new(vec![
+            output(0, format!("{container}\n"), ""),
+            output(0, other_service.to_string(), ""),
+        ]);
+        let missing = fake
+            .compose_state(
+                "dc2-finite-probe",
+                &["probe".into()],
+                &["probe".into()],
+                &BTreeSet::new(),
+                &BTreeMap::new(),
+            )
+            .expect("successful inspection still checks the expected service");
+        assert_eq!(missing.state, RuntimeState::Failed);
+        assert_eq!(missing.services[0].state, RuntimeState::Missing);
+        assert!(missing.completion_candidates.is_empty());
     }
 
     #[test]
