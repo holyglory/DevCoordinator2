@@ -233,7 +233,7 @@
     }
     function drawHistory() {
       const el=main()?.querySelector('#hi-history'), saved=history.get(s.range);
-      if(!el||!saved)return;
+      if(!el||!saved||summaryResult?.status!=='fulfilled')return;
       el.dataset.state=saved.error?'failed':'ready';el.setAttribute('aria-busy','false');
       if(saved.error){el.innerHTML=fault(tr('history_unavailable','History unavailable.')+' '+saved.error.message,'history');bindRetries(el);return;}
       el.innerHTML=saved.results.map((r,i)=>chart(r.points,i?pctBytes:pct,[tr('cpu_db9a4c','CPU'),tr('memory_c3963a','Memory'),tr('storage_a69c4d','Storage')][i], {scale:tr('scale','scale'),now:tr('now_ed5eb9','now')})).join('');
@@ -256,7 +256,8 @@
         return apply(result);
       });
       await Promise.all([
-        settle(api('health.summary',{}),summary=>{summaryResult=summary;drawHost();if(summary.status==='fulfilled')return loadHistory();}),
+        settle(api('health.summary',{}),summary=>{summaryResult=summary;drawHost();}),
+        loadHistory(),
         settle(api('health.repositories',{}),repos=>{repositoriesReady=true;s.repos=repos.status==='fulfilled'?repos.value.repositories:[];repositoryError=repos.status==='rejected'?repos.reason:null;drawRepositorySection();}),
         loadIncidents(),
       ]);
