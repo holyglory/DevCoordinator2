@@ -21,6 +21,7 @@ mod deployment_cancellation;
 pub mod deployment_files;
 pub mod deployment_git;
 pub mod deployment_health;
+mod deployment_origin;
 pub mod deployment_state;
 pub mod deployments;
 pub mod docker;

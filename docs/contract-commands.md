@@ -448,7 +448,17 @@ Reference args on every command except `list`: `path` (required) plus
   are refused before runtime mutation. The deployment keeps its identity,
   domain override, data ownership and generation history. The CLI exposes
   `--candidate-path` and `--candidate-commit` together with `--deployment-id`.
+  Each new explicit-candidate generation retains its validated source worktree
+  identity and path separately from the deployment's declaration. Status and
+  waits by deployment ID compare that actual origin with the applied receipt;
+  a removed/replaced origin is unverified, never substituted with another
+  checkout. Delivery qualification retains the same source, generation and
+  route checks and also verifies this origin. Rollback carries the retained
+  generation's binding and configuration. Older receipts have no inferred
+  origin and keep their existing behavior.
   Omitting `candidate` preserves the existing declared-source behavior.
+  A later ordinary apply records no candidate binding and resumes tracking
+  the declared checkout, even when its content matches the previous candidate.
 - `deployment.remove {delete_data=false}` → `{removed, data_deleted,
   deleted_volumes}`. Stops everything, removes containers/units/generation
   checkouts and records; named volumes and PostgreSQL data survive unless

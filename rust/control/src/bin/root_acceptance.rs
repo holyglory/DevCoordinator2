@@ -4748,6 +4748,26 @@ fn case_exact_candidate_keeps_data_route_and_rollback(world: &mut World) -> Resu
         fs::read_to_string(world.repo.join("marker.txt")).map_err(|e| e.to_string())? == "v1\n",
         "candidate changed shared source"
     );
+    let current = data(&world.call("deployment.status", json!({"deployment_id":id}))?)?.clone();
+    ensure!(
+        current["readiness"]["ready"] == true && current["readiness"]["source_state"] == "current",
+        "status by ID did not retain the distinct candidate origin"
+    );
+    world.stop_daemon(false)?;
+    world.start_daemon(None, None, None)?;
+    let recovered = data(&world.call("deployment.status", json!({"deployment_id":id}))?)?.clone();
+    ensure!(
+        recovered["current_generation"] == 2 && recovered["readiness"]["ready"] == true,
+        "daemon reconstruction lost the candidate source binding"
+    );
+    fs::write(candidate.join("marker.txt"), "unreviewed after apply\n")
+        .map_err(|e| e.to_string())?;
+    let changed = data(&world.call("deployment.status", json!({"deployment_id":id}))?)?.clone();
+    ensure!(
+        changed["readiness"]["pending_apply"] == true && changed["readiness"]["ready"] == false,
+        "candidate edits were not detected after daemon reconstruction"
+    );
+    fs::write(candidate.join("marker.txt"), "v2\n").map_err(|e| e.to_string())?;
     let repeated = data(&world.call("deployment.apply", request)?)?.clone();
     ensure!(
         repeated["current_generation"] == 2,
@@ -4760,6 +4780,11 @@ fn case_exact_candidate_keeps_data_route_and_rollback(world: &mut World) -> Resu
     ensure!(
         http_get_json(port)?["version"] == "v1",
         "rollback lost the healthy source"
+    );
+    ensure!(
+        data(&world.call("deployment.status", json!({"deployment_id":id}))?)?["readiness"]["ready"]
+            == true,
+        "rollback did not restore ordinary declared-source comparison"
     );
     ensure!(
         docker_exec(

@@ -76,6 +76,11 @@ pub const MIGRATIONS: &[(i64, &str, &str)] = &[
         "storage_gin_pending",
         include_str!("../migrations/0014_storage_gin_pending.sql"),
     ),
+    (
+        15,
+        "generation_source_origins",
+        include_str!("../migrations/0015_generation_source_origins.sql"),
+    ),
 ];
 
 pub fn migrate(database: &Persistence) -> Result<()> {

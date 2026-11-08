@@ -1,6 +1,346 @@
 use super::*;
 
 #[test]
+fn explicit_linked_candidate_status_tracks_its_origin_by_deployment_id() {
+    let fixture = RouteWorld::new("checkout");
+    for args in [
+        vec!["add", ".devcoordinator.toml"],
+        vec![
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.invalid",
+            "commit",
+            "--quiet",
+            "-m",
+            "Fixture source",
+        ],
+    ] {
+        assert!(
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(&fixture.world.worktree)
+                .status()
+                .unwrap()
+                .success()
+        );
+    }
+    let linked = fixture.world._temporary.path().join("linked-candidate");
+    assert!(
+        std::process::Command::new("git")
+            .args(["worktree", "add", "--quiet", "--detach"])
+            .arg(&linked)
+            .current_dir(&fixture.world.worktree)
+            .status()
+            .unwrap()
+            .success()
+    );
+    fixture.git.snapshots.lock().unwrap().insert(
+        linked.clone(),
+        crate::deployment_git::GitSnapshot {
+            commit: Some("b".repeat(40)),
+            dirty: false,
+            source_digest: "b".repeat(64),
+        },
+    );
+    let first = fixture.apply().unwrap();
+    let candidate = devcoordinator2_api::params::DeploymentCandidateSource {
+        path: linked.to_string_lossy().into_owned(),
+        commit: "b".repeat(40),
+    };
+    let applied = fixture
+        .deployments
+        .apply_with_candidate(
+            None,
+            None,
+            Some(&first.deployment_id),
+            Some(&candidate),
+            &fixture.caller,
+        )
+        .unwrap();
+    assert!(applied.readiness.unwrap().ready);
+    assert!(
+        fixture
+            .status(&first.deployment_id)
+            .readiness
+            .unwrap()
+            .ready,
+        "status by ID must compare the selected candidate origin, not the older declared checkout"
+    );
+    let id = &first.deployment_id;
+    let stored = fixture.deployments.store.get(id).unwrap().unwrap();
+    let origin = fixture
+        .deployments
+        .store
+        .generation_origin(id, 2)
+        .unwrap()
+        .unwrap();
+    assert_eq!(origin.path, linked);
+    assert_ne!(stored.worktree_id, origin.worktree_id);
+    assert!(
+        fixture
+            .reopen()
+            .status(None, None, Some(id), &fixture.caller)
+            .unwrap()
+            .readiness
+            .unwrap()
+            .ready
+    );
+    assert!(
+        fixture
+            .deployments
+            .status(
+                Some(fixture.world.worktree.to_str().unwrap()),
+                Some("web"),
+                None,
+                &fixture.caller
+            )
+            .unwrap()
+            .readiness
+            .unwrap()
+            .ready
+    );
+    fixture.git.snapshot.lock().unwrap().dirty = true;
+    assert!(
+        fixture.status(id).readiness.unwrap().ready,
+        "edits to the declared checkout must not rebind a candidate"
+    );
+    fixture
+        .git
+        .snapshots
+        .lock()
+        .unwrap()
+        .get_mut(&linked)
+        .unwrap()
+        .dirty = true;
+    assert_eq!(
+        fixture.status(id).readiness.unwrap().pending_apply,
+        Some(true)
+    );
+    assert!(
+        fixture
+            .deployments
+            .apply_with_candidate(None, None, Some(id), Some(&candidate), &fixture.caller)
+            .is_err()
+    );
+    assert_eq!(fixture.status(id).current_generation, Some(2));
+    fixture
+        .git
+        .snapshots
+        .lock()
+        .unwrap()
+        .get_mut(&linked)
+        .unwrap()
+        .dirty = false;
+    let missing = linked.with_extension("temporarily-moved");
+    std::fs::rename(&linked, &missing).unwrap();
+    let unavailable = fixture.status(id).readiness.unwrap();
+    assert!(!unavailable.ready);
+    assert_eq!(unavailable.source_state, "unknown");
+    assert!(!unavailable.blockers.is_empty());
+    std::fs::rename(&missing, &linked).unwrap();
+    fixture.git.snapshot.lock().unwrap().dirty = false;
+    let ordinary = fixture
+        .deployments
+        .apply(None, None, Some(id), &fixture.caller)
+        .unwrap();
+    assert_eq!(ordinary.current_generation, Some(3));
+    assert!(
+        fixture
+            .deployments
+            .store
+            .generation_origin(id, 3)
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        fixture.deployments.store.generation_origin(id, 2).unwrap(),
+        Some(origin)
+    );
+    fixture.git.snapshot.lock().unwrap().dirty = true;
+    assert_eq!(
+        fixture.status(id).readiness.unwrap().pending_apply,
+        Some(true)
+    );
+}
+
+#[test]
+fn mixed_candidate_rollback_uses_retained_configuration_and_restores_failed_snapshot() {
+    let fixture = RouteWorld::new("checkout");
+    let config_path = fixture.world.worktree.join(".devcoordinator.toml");
+    let original = std::fs::read_to_string(&config_path).unwrap();
+    let first = fixture.apply().unwrap();
+    let id = &first.deployment_id;
+    let candidate_spec = original.replace("[\"serve\"]", "[\"serve-candidate\"]");
+    std::fs::write(&config_path, &candidate_spec).unwrap();
+    fixture.change();
+    let candidate = devcoordinator2_api::params::DeploymentCandidateSource {
+        path: fixture.world.worktree.to_string_lossy().into_owned(),
+        commit: "b".repeat(40),
+    };
+    fixture
+        .deployments
+        .apply_with_candidate(None, None, Some(id), Some(&candidate), &fixture.caller)
+        .unwrap();
+    let before = fixture.deployments.store.get(id).unwrap().unwrap();
+    std::fs::write(
+        &config_path,
+        original.replace("[\"serve\"]", "[\"unapplied-command\"]"),
+    )
+    .unwrap();
+    let route_path = fixture.deployments.config.routes_path();
+    let blocked_path = route_path.clone();
+    *fixture.systemd.listener_hook.lock().unwrap() = Some(Box::new(move || {
+        std::fs::rename(&blocked_path, blocked_path.with_extension("retained")).unwrap();
+        std::fs::create_dir(&blocked_path).unwrap();
+    }));
+    assert!(
+        fixture
+            .deployments
+            .rollback(None, None, Some(id), &fixture.caller)
+            .is_err()
+    );
+    let restored = fixture.deployments.store.get(id).unwrap().unwrap();
+    assert_eq!(restored.spec_json, before.spec_json);
+    assert_eq!(restored.spec_fingerprint, before.spec_fingerprint);
+    assert_eq!(restored.current_generation, before.current_generation);
+    assert_eq!(restored.previous_generation, before.previous_generation);
+    std::fs::remove_dir(&route_path).unwrap();
+    std::fs::rename(route_path.with_extension("retained"), &route_path).unwrap();
+    let to_ordinary = fixture
+        .deployments
+        .rollback(None, None, Some(id), &fixture.caller)
+        .unwrap();
+    assert!(
+        fixture
+            .deployments
+            .store
+            .generation_origin(id, to_ordinary.current_generation.unwrap())
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        stored_deployment_specification(&fixture.deployments.store.get(id).unwrap().unwrap())
+            .unwrap()
+            .components[0]
+            .command,
+        ["serve"]
+    );
+    let to_candidate = fixture
+        .deployments
+        .rollback(None, None, Some(id), &fixture.caller)
+        .unwrap();
+    assert!(
+        fixture
+            .deployments
+            .store
+            .generation_origin(id, to_candidate.current_generation.unwrap())
+            .unwrap()
+            .is_some()
+    );
+    assert_eq!(
+        stored_deployment_specification(&fixture.deployments.store.get(id).unwrap().unwrap())
+            .unwrap()
+            .components[0]
+            .command,
+        ["serve-candidate"]
+    );
+    assert_eq!(to_candidate.route_port, first.route_port);
+    fixture
+        .deployments
+        .control("restart", None, None, Some(id), None, &fixture.caller)
+        .unwrap();
+    assert_eq!(
+        stored_deployment_specification(&fixture.deployments.store.get(id).unwrap().unwrap())
+            .unwrap()
+            .components[0]
+            .command,
+        ["serve-candidate"]
+    );
+}
+
+#[test]
+fn explicit_candidate_origin_changes_require_a_new_generation_even_for_identical_content() {
+    let fixture = RouteWorld::new("checkout");
+    let first = fixture.apply().unwrap();
+    let id = &first.deployment_id;
+    let candidate = devcoordinator2_api::params::DeploymentCandidateSource {
+        path: fixture.world.worktree.to_string_lossy().into_owned(),
+        commit: "a".repeat(40),
+    };
+    let bind = || {
+        fixture
+            .deployments
+            .apply_with_candidate(None, None, Some(id), Some(&candidate), &fixture.caller)
+            .unwrap()
+    };
+    assert_eq!(bind().current_generation, Some(2));
+    assert!(
+        fixture
+            .deployments
+            .store
+            .generation_origin(id, 1)
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        fixture
+            .deployments
+            .store
+            .generation_origin(id, 2)
+            .unwrap()
+            .is_some()
+    );
+    assert_eq!(bind().current_generation, Some(2));
+    let ordinary = fixture
+        .deployments
+        .apply(None, None, Some(id), &fixture.caller)
+        .unwrap();
+    assert_eq!(ordinary.current_generation, Some(3));
+    assert!(
+        fixture
+            .deployments
+            .store
+            .generation_origin(id, 3)
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        fixture
+            .deployments
+            .apply(None, None, Some(id), &fixture.caller)
+            .unwrap()
+            .current_generation,
+        Some(3)
+    );
+    assert_eq!(bind().current_generation, Some(4));
+    let before = fixture.deployments.store.generation_origin(id, 4).unwrap();
+    let rolled = fixture
+        .deployments
+        .rollback(None, None, Some(id), &fixture.caller)
+        .unwrap();
+    assert_eq!(rolled.current_generation, Some(5));
+    assert!(
+        fixture
+            .deployments
+            .store
+            .generation_origin(id, 5)
+            .unwrap()
+            .is_none()
+    );
+    let rolled = fixture
+        .deployments
+        .rollback(None, None, Some(id), &fixture.caller)
+        .unwrap();
+    assert_eq!(rolled.current_generation, Some(6));
+    assert_eq!(
+        fixture.deployments.store.generation_origin(id, 6).unwrap(),
+        before
+    );
+    assert!(fixture.status(id).readiness.unwrap().ready);
+}
+
+#[test]
 fn explicit_candidate_keeps_deployment_identity_and_previous_generation() {
     let fixture = RouteWorld::new("checkout");
     let first = fixture.apply().unwrap();
@@ -106,6 +446,23 @@ struct RouteWorld {
 }
 
 impl RouteWorld {
+    fn reopen(&self) -> Deployments {
+        let config = (*self.world.deployments.config).clone();
+        Deployments::with_runtime_adapters(
+            config.clone(),
+            self.world.database.clone(),
+            Registry::new(self.world.database.clone()),
+            Arc::new(MutationDocker::new()),
+            self.systemd.clone(),
+            Arc::new(ReadyNetwork),
+            self.git.clone(),
+            Arc::new(FixtureHealth),
+            DeploymentFiles::new(config.deployments_dir(), config.secrets_dir()),
+            Arc::new(FixturePorts),
+            Arc::new(HostClock),
+        )
+    }
+
     fn new(source: &str) -> Self {
         let mut world = World::new();
         // Let the real registry assign identities; World::new seeds synthetic IDs.

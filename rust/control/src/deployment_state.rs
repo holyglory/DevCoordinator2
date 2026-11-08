@@ -83,6 +83,12 @@ pub struct GenerationRow {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GenerationSourceOrigin {
+    pub worktree_id: String,
+    pub path: PathBuf,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RegisteredDeploymentTarget {
     pub repository_id: String,
     pub worktree_id: String,
@@ -107,6 +113,7 @@ pub struct DeploymentRuntimePatch {
     pub current_generation: Option<Option<u32>>,
     pub previous_generation: Option<Option<u32>>,
     pub spec_fingerprint: Option<String>,
+    pub spec_json: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -545,7 +552,7 @@ impl DeploymentStore {
         self.database
             .transaction(move |transaction| {
                 let changed = transaction.execute(
-                    "UPDATE deployments SET state=COALESCE($1,state),current_generation=CASE WHEN $2 THEN $3 ELSE current_generation END,previous_generation=CASE WHEN $4 THEN $5 ELSE previous_generation END,spec_fingerprint=COALESCE($6,spec_fingerprint),updated_at=$7 WHERE deployment_id=$8",
+                    "UPDATE deployments SET state=COALESCE($1,state),current_generation=CASE WHEN $2 THEN $3 ELSE current_generation END,previous_generation=CASE WHEN $4 THEN $5 ELSE previous_generation END,spec_fingerprint=COALESCE($6,spec_fingerprint),updated_at=$7,spec_json=COALESCE($9,spec_json) WHERE deployment_id=$8",
                     crate::database::params![
                         patch.state,
                         patch.current_generation.is_some(),
@@ -555,6 +562,7 @@ impl DeploymentStore {
                         patch.spec_fingerprint,
                         now,
                         deployment_id,
+                        patch.spec_json,
                     ],
                 )?;
                 if changed == 0 {
@@ -721,20 +729,69 @@ impl DeploymentStore {
         path: &Path,
         fingerprint: &str,
     ) -> Result<(), ProtocolError> {
+        self.add_generation_with_origin(
+            deployment_id,
+            number,
+            commit_hash,
+            dirty,
+            path,
+            fingerprint,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn add_generation_with_origin(
+        &self,
+        deployment_id: &str,
+        number: u32,
+        commit_hash: Option<&str>,
+        dirty: bool,
+        path: &Path,
+        fingerprint: &str,
+        origin: Option<&GenerationSourceOrigin>,
+    ) -> Result<(), ProtocolError> {
         let now = self.timestamp()?;
         let deployment_id = deployment_id.to_owned();
         let commit_hash = commit_hash.map(str::to_owned);
         let path = path.to_string_lossy().into_owned();
         let fingerprint = fingerprint.to_owned();
+        let origin = origin.cloned();
         self.database
             .transaction(move |transaction| {
+                let recorded: bool = transaction.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM generation_source_origins WHERE deployment_id=$1 AND number=$2)",
+                    crate::database::params![deployment_id, number], |row| row.get(0))?;
+                if recorded {
+                    return Err(domain_error(ErrorCode::ConfigurationConflict, "a generation with a recorded source origin cannot be replaced"));
+                }
                 transaction.execute(
                     "INSERT INTO generations(deployment_id,number,commit_hash,dirty,path,fingerprint,created_at,state) VALUES($1,$2,$3,$4,$5,$6,$7,'candidate') ON CONFLICT(deployment_id,number) DO UPDATE SET commit_hash=excluded.commit_hash,dirty=excluded.dirty,path=excluded.path,fingerprint=excluded.fingerprint,created_at=excluded.created_at,state=excluded.state",
                     crate::database::params![deployment_id,number,commit_hash,i64::from(dirty),path,fingerprint,now],
                 )?;
+                if let Some(origin) = origin {
+                    transaction.execute(
+                        "INSERT INTO generation_source_origins(deployment_id,number,worktree_id,path) VALUES($1,$2,$3,$4)",
+                        crate::database::params![deployment_id, number, origin.worktree_id, origin.path.to_string_lossy().into_owned()],
+                    )?;
+                }
                 Ok(())
             })
             .map_err(database_error)
+    }
+
+    pub fn generation_origin(
+        &self,
+        deployment_id: &str,
+        number: u32,
+    ) -> Result<Option<GenerationSourceOrigin>, ProtocolError> {
+        let deployment_id = deployment_id.to_owned();
+        self.database.read(move |connection| {
+            connection.query_row("SELECT worktree_id,path FROM generation_source_origins WHERE deployment_id=$1 AND number=$2",
+                crate::database::params![deployment_id,number], |row| Ok(GenerationSourceOrigin {
+                    worktree_id: row.get(0)?, path: PathBuf::from(row.get::<_,String>(1)?),
+                })).optional().map_err(DatabaseError::from)
+        }).map_err(database_error)
     }
 
     pub fn generation(
@@ -1824,6 +1881,93 @@ independent_services=["worker"]
                 component_name: "db".into(),
             }]
         );
+    }
+
+    #[test]
+    fn generation_source_origins_are_atomic_optional_and_pruned_with_receipts() {
+        let (temporary, _database, store, specification) = world();
+        let id = DeploymentStore::deployment_id("w1111111111111111", "web", "checkout");
+        store
+            .upsert(
+                &id,
+                &target(),
+                &specification,
+                "checkout",
+                None,
+                "stopped",
+                1000,
+                "fixture",
+                None,
+            )
+            .unwrap();
+        store
+            .add_generation(&id, 1, Some("a"), false, temporary.path(), "first")
+            .unwrap();
+        assert!(store.generation_origin(&id, 1).unwrap().is_none());
+        let origin = GenerationSourceOrigin {
+            worktree_id: "w2222222222222222".into(),
+            path: temporary.path().join("candidate"),
+        };
+        store
+            .add_generation_with_origin(
+                &id,
+                2,
+                Some("b"),
+                false,
+                temporary.path(),
+                "second",
+                Some(&origin),
+            )
+            .unwrap();
+        assert_eq!(
+            store.generation_origin(&id, 2).unwrap(),
+            Some(origin.clone())
+        );
+        assert!(
+            store
+                .add_generation_with_origin(
+                    &id,
+                    2,
+                    Some("changed"),
+                    false,
+                    temporary.path(),
+                    "changed",
+                    Some(&origin)
+                )
+                .is_err()
+        );
+        assert_eq!(
+            store.generation(&id, 2).unwrap().unwrap().fingerprint,
+            "second"
+        );
+        assert_eq!(store.generation_origin(&id, 2).unwrap(), Some(origin));
+        assert!(
+            store
+                .add_generation(&id, 2, None, false, temporary.path(), "replacement")
+                .is_err()
+        );
+        let invalid = GenerationSourceOrigin {
+            worktree_id: "w2222222222222222".into(),
+            path: PathBuf::from("relative"),
+        };
+        assert!(
+            store
+                .add_generation_with_origin(
+                    &id,
+                    3,
+                    None,
+                    false,
+                    temporary.path(),
+                    "invalid",
+                    Some(&invalid)
+                )
+                .is_err()
+        );
+        assert!(store.generation(&id, 3).unwrap().is_none());
+        let pruned = store.prune_generations(&id, &BTreeSet::from([1])).unwrap();
+        assert_eq!(pruned.len(), 1);
+        assert!(store.generation_origin(&id, 2).unwrap().is_none());
+        assert!(store.generation(&id, 1).unwrap().is_some());
     }
 
     #[test]

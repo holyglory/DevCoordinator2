@@ -323,7 +323,7 @@ impl DeliveryService {
         text(&web.deployment_id, 1, 100)?;
         let deployment_id = web.deployment_id.clone();
         let row = self.database.read(move |connection| {
-            Ok(connection.query_row("SELECT deployment.repository_id,deployment.state,deployment.current_generation,deployment.spec_json,generation.commit_hash,generation.dirty,generation.fingerprint,generation.created_at,generation.state FROM deployments deployment JOIN generations generation ON generation.deployment_id=deployment.deployment_id AND generation.number=deployment.current_generation WHERE deployment.deployment_id=$1", [&deployment_id], |row| Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?,row.get::<_,u32>(2)?,row.get::<_,String>(3)?,row.get::<_,Option<String>>(4)?,row.get::<_,i64>(5)? != 0,row.get::<_,String>(6)?,row.get::<_,String>(7)?,row.get::<_,String>(8)?))).optional()?)
+            Ok(connection.query_row("SELECT deployment.repository_id,deployment.state,deployment.current_generation,deployment.spec_json,generation.commit_hash,generation.dirty,generation.fingerprint,generation.created_at,generation.state,deployment.created_by_uid,deployment.name,deployment.source FROM deployments deployment JOIN generations generation ON generation.deployment_id=deployment.deployment_id AND generation.number=deployment.current_generation WHERE deployment.deployment_id=$1", [&deployment_id], |row| Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?,row.get::<_,u32>(2)?,row.get::<_,String>(3)?,row.get::<_,Option<String>>(4)?,row.get::<_,i64>(5)? != 0,row.get::<_,String>(6)?,row.get::<_,String>(7)?,row.get::<_,String>(8)?,row.get::<_,u32>(9)?,row.get::<_,String>(10)?,row.get::<_,String>(11)?))).optional()?)
         }).map_err(database_error)?.ok_or_else(|| invalid("Web deployment has no current generation"))?;
         let created =
             time::OffsetDateTime::parse(&row.7, &time::format_description::well_known::Rfc3339)
@@ -349,6 +349,36 @@ impl DeliveryService {
             return Err(invalid(
                 "Retained source does not match the applied web deployment",
             ));
+        }
+        if let Some(origin) = DeploymentStore::new(self.database.clone())
+            .generation_origin(&web.deployment_id, row.2)?
+        {
+            if row.11 != "checkout" || row.9 == 0 {
+                return Err(invalid(
+                    "Web deployment candidate source binding is invalid",
+                ));
+            }
+            let gid = crate::systemd::primary_gid(row.9)
+                .map_err(|_| invalid("Cannot verify web deployment source owner"))?;
+            let path = crate::deployment_origin::resolve(&origin, repository_id, row.9, gid)?;
+            let spec = crate::repository_config::load_deployment_spec(&path, &row.10)
+                .map_err(|_| invalid("Cannot verify current web candidate specification"))?;
+            let snapshot = crate::deployment_git::DeploymentGit::snapshot(
+                &crate::deployment_git::GitCli,
+                &path,
+                row.9,
+                gid,
+            )
+            .map_err(|_| invalid("Cannot verify current web candidate source"))?;
+            let current = DeploymentStore::fingerprint(&serde_json::json!({
+                "spec": spec.canonical(&row.11), "commit": snapshot.commit,
+                "dirty": snapshot.dirty, "source_digest": snapshot.source_digest,
+            }));
+            if !spec.sources.contains(&row.11) || current != row.6 {
+                return Err(invalid(
+                    "Recorded candidate origin no longer matches the applied web generation",
+                ));
+            }
         }
         let owned =
             PostgresDeploymentEvidence::new(self.database.clone(), self.base_domain.clone())

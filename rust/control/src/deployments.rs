@@ -28,7 +28,7 @@ use crate::deployment_git::{DeploymentGit, GitCli};
 use crate::deployment_health::{DeploymentHealth, HostDeploymentHealth, Readiness};
 use crate::deployment_state::{
     ComponentRow, ComponentRuntimePatch, ComposeCompletionInput, DeploymentRow,
-    DeploymentRuntimePatch, DeploymentStore, RegisteredDeploymentTarget,
+    DeploymentRuntimePatch, DeploymentStore, GenerationSourceOrigin, RegisteredDeploymentTarget,
 };
 use crate::docker::{
     ComposeContext, CreateContainerRequest, DockerCli, DockerControl, DockerErrorKind,
@@ -524,7 +524,44 @@ impl Deployments {
                 .observed_status(deployment_id)?
                 .ok_or_else(|| not_found(deployment_id));
         }
+        // Only explicit candidate receipts have this durable comparison binding.
+        // Ordinary and historical deployments still track their declared source.
+        if let Some(id) = deployment_id
+            && let Some(row) = self.store.get(id)?
+            && let Some(generation) = row.current_generation
+            && let Some(origin) = self.store.generation_origin(id, generation)?
+        {
+            let specification = stored_deployment_specification(&row)?;
+            let mut status = self.managed_status(&ResolvedDeployment {
+                row: row.clone(),
+                specification,
+            })?;
+            match self.origin_target(&row, &origin, caller) {
+                Ok(target) => self.refresh_readiness(&target, &mut status)?,
+                Err(error) => {
+                    if let Some(readiness) = &mut status.readiness {
+                        readiness.ready = false;
+                        readiness.pending_apply = None;
+                        readiness.source_state = "unknown".into();
+                        readiness.blockers.push(devcoordinator2_api::results::DeploymentBlocker {
+                            component: String::new(), code: error.code, file: None,
+                            message: "recorded candidate source origin cannot be verified; no substitute checkout was selected".into(),
+                        });
+                    }
+                }
+            }
+            return Ok(status);
+        }
         let resolved = self.resolve(path, name, deployment_id, caller)?;
+        if deployment_id.is_none()
+            && let Some(number) = resolved.row.current_generation
+            && self
+                .store
+                .generation_origin(&resolved.row.deployment_id, number)?
+                .is_some()
+        {
+            return self.status(None, None, Some(&resolved.row.deployment_id), caller);
+        }
         let mut status = self.managed_status(&resolved)?;
         match self.resolve_target_readonly(path, name, deployment_id, caller) {
             Ok(target) => self.refresh_readiness(&target, &mut status)?,
@@ -694,6 +731,7 @@ impl Deployments {
             ));
         }
         let mut target = self.resolve_target(path, name, deployment_id, caller)?;
+        let mut source_origin = None;
         if let Some(candidate) = candidate {
             if caller.identity.is_some() || caller.via_edge {
                 return Err(ProtocolError::new(
@@ -749,6 +787,15 @@ impl Deployments {
             }
             // Keep the target identity, owner, leases and generation history. Only
             // the immutable generation's source/configuration comes from the candidate.
+            source_origin = Some(GenerationSourceOrigin {
+                worktree_id: crate::ids::worktree_id(&resolved.worktree_root).map_err(|_| {
+                    ProtocolError::new(
+                        ErrorCode::RepositoryNotFound,
+                        "cannot resolve candidate worktree identity",
+                    )
+                })?,
+                path: resolved.worktree_root.clone(),
+            });
             target.worktree = resolved.worktree_root;
             target.specification = specification;
         }
@@ -845,6 +892,12 @@ impl Deployments {
             && row.spec_fingerprint == fingerprint
             && matches!(row.state.as_str(), "running" | "completed")
             && !snapshot.dirty
+            && row
+                .current_generation
+                .map(|number| self.store.generation_origin(&target.deployment_id, number))
+                .transpose()?
+                .flatten()
+                == source_origin
         {
             let resolved = ResolvedDeployment {
                 row: row.clone(),
@@ -921,13 +974,14 @@ impl Deployments {
                     return Err(error);
                 }
             };
-        self.store.add_generation(
+        self.store.add_generation_with_origin(
             &target.deployment_id,
             generation,
             snapshot.commit.as_deref(),
             snapshot.dirty,
             &generation_path,
             &fingerprint,
+            source_origin.as_ref(),
         )?;
         if let Err(error) = self.run_build(&target, generation, &generation_path) {
             self.remove_generation_path(&target, generation, &generation_path);
@@ -957,7 +1011,7 @@ impl Deployments {
         deployment_id: Option<&str>,
         caller: &Caller,
     ) -> Result<DeploymentStatus, ProtocolError> {
-        let target = self.resolve_target(path, name, deployment_id, caller)?;
+        let mut target = self.resolve_target(path, name, deployment_id, caller)?;
         let row = target
             .row
             .as_ref()
@@ -991,6 +1045,20 @@ impl Deployments {
                 "deployment has no current generation",
             )
         })?;
+        let source_origin = self
+            .store
+            .generation_origin(&target.deployment_id, previous)?;
+        if source_origin.is_some()
+            || self
+                .store
+                .generation_origin(&target.deployment_id, current)?
+                .is_some()
+        {
+            // The selected source may have advanced; runtime rollback must use
+            // the immutable retained generation's configuration, not that edit.
+            target.specification = load_deployment_spec(&retained.path, &target.specification.name)
+                .map_err(config_error)?;
+        }
         let generation = self.next_generation(&target)?;
         let old_components = self
             .store
@@ -1004,16 +1072,26 @@ impl Deployments {
             DeploymentRuntimePatch {
                 state: Some("applying".into()),
                 spec_fingerprint: Some(retained.fingerprint.clone()),
+                spec_json: Some(
+                    serde_json::to_string(&target.specification.canonical(&target.source))
+                        .map_err(|_| {
+                            ProtocolError::new(
+                                ErrorCode::InternalError,
+                                "cannot retain rolled-back specification",
+                            )
+                        })?,
+                ),
                 ..Default::default()
             },
         )?;
-        self.store.add_generation(
+        self.store.add_generation_with_origin(
             &target.deployment_id,
             generation,
             retained.commit_hash.as_deref(),
             retained.dirty,
             &retained.path,
             &retained.fingerprint,
+            source_origin.as_ref(),
         )?;
         self.converge(
             &target,
@@ -3056,6 +3134,12 @@ impl Deployments {
             .collect::<BTreeSet<_>>();
         keep.insert(0);
         keep.insert(generation);
+        if let Some(row) = &target.row {
+            // Failure restores both selected pointers; preserve their receipts
+            // and optional source origins until that snapshot is restored.
+            keep.extend(row.current_generation);
+            keep.extend(row.previous_generation);
+        }
         self.store.prune_generations(&target.deployment_id, &keep)?;
         if let Some(row) = &target.row {
             self.store.restore_apply_snapshot(
@@ -4334,6 +4418,50 @@ impl Deployments {
             .map_err(database_error)?;
         self.routes.publish_current()?;
         Ok(false)
+    }
+
+    fn origin_target(
+        &self,
+        row: &DeploymentRow,
+        origin: &GenerationSourceOrigin,
+        caller: &Caller,
+    ) -> Result<DeploymentTarget, ProtocolError> {
+        let (caller_uid, caller_gid) = if caller.is_console() {
+            (
+                row.created_by_uid,
+                primary_gid(row.created_by_uid).map_err(systemd_error)?,
+            )
+        } else {
+            (caller.uid, caller.gid)
+        };
+        if row.source != "checkout" {
+            return Err(ProtocolError::new(
+                ErrorCode::DeploymentApplyFailed,
+                "candidate origin is only valid for a versioned checkout generation",
+            ));
+        }
+        let worktree =
+            crate::deployment_origin::resolve(origin, &row.repository_id, caller_uid, caller_gid)?;
+        let specification = load_deployment_spec(&worktree, &row.name).map_err(config_error)?;
+        if !specification.sources.contains(&row.source) {
+            return Err(ProtocolError::new(
+                ErrorCode::RepositoryConfigInvalid,
+                "recorded candidate source is no longer declared",
+            ));
+        }
+        Ok(DeploymentTarget {
+            row: Some(row.clone()),
+            deployment_id: row.deployment_id.clone(),
+            repository_id: row.repository_id.clone(),
+            worktree_id: row.worktree_id.clone(),
+            worktree,
+            specification,
+            source: row.source.clone(),
+            caller_uid,
+            caller_gid,
+            client: client_kind_name(caller.client_kind).into(),
+            session: caller.client_session.clone(),
+        })
     }
 
     fn resolve(
@@ -6031,6 +6159,7 @@ mod tests {
 
     struct CheckoutGit {
         snapshot: Mutex<crate::deployment_git::GitSnapshot>,
+        snapshots: Mutex<BTreeMap<PathBuf, crate::deployment_git::GitSnapshot>>,
         actions: Mutex<Vec<String>>,
     }
 
@@ -6042,6 +6171,7 @@ mod tests {
                     dirty: false,
                     source_digest: "a".repeat(64),
                 }),
+                snapshots: Mutex::new(BTreeMap::new()),
                 actions: Mutex::new(Vec::new()),
             }
         }
@@ -6050,17 +6180,23 @@ mod tests {
     impl DeploymentGit for CheckoutGit {
         fn snapshot(
             &self,
-            _worktree: &Path,
+            worktree: &Path,
             _caller_uid: u32,
             _caller_gid: u32,
         ) -> Result<crate::deployment_git::GitSnapshot, crate::deployment_git::DeploymentGitError>
         {
-            Ok(self.snapshot.lock().unwrap().clone())
+            Ok(self
+                .snapshots
+                .lock()
+                .unwrap()
+                .get(worktree)
+                .cloned()
+                .unwrap_or_else(|| self.snapshot.lock().unwrap().clone()))
         }
 
         fn add_detached_worktree(
             &self,
-            _worktree: &Path,
+            worktree: &Path,
             target: &Path,
             commit: &str,
             _caller_uid: u32,
@@ -6072,6 +6208,15 @@ mod tests {
             std::fs::write(target.join("commit"), commit).map_err(|error| {
                 crate::deployment_git::DeploymentGitError::Invocation(error.to_string())
             })?;
+            if worktree.join(".devcoordinator.toml").is_file() {
+                std::fs::copy(
+                    worktree.join(".devcoordinator.toml"),
+                    target.join(".devcoordinator.toml"),
+                )
+                .map_err(|error| {
+                    crate::deployment_git::DeploymentGitError::Invocation(error.to_string())
+                })?;
+            }
             self.actions
                 .lock()
                 .unwrap()
