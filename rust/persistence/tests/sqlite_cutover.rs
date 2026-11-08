@@ -24,6 +24,7 @@ fn source(path: &std::path::Path) {
       INSERT INTO repositories(rowid,repository_id,root_path,display_name,registered_at,registered_by_uid,last_seen_at) VALUES(17,'r1','/fixture/source','Source','t',1000,'t');
       INSERT INTO worktrees VALUES('w1','r1','/fixture/worktree','t','t');
       INSERT INTO deployments(deployment_id,repository_id,worktree_id,name,source,spec_fingerprint,spec_json,state,created_at,created_by_uid,client,updated_at) VALUES('d1','r1','w1','Preview','fixture','f','{"huge":123456789012345678901234567890,"decimal":1.200e10,"nested":{"z":2,"a":1}}','running','t',1000,'fixture','t');
+      INSERT INTO generations VALUES('d1',7,'legacy-source',0,'/fixture/retained','legacy-fingerprint','t','current');
       INSERT INTO port_assignments VALUES(23456,'d1','web',0,'t','lease1');
       INSERT INTO domain_routes VALUES('fixture.invalid','d1','web',23456,0,'t','lease1');
       INSERT INTO tasks(task_id,repository_id,seq,position,title,outcome,kind,status,created_at,created_by,updated_at) VALUES('p1','r1',19,3,'Preserve tasks','Keep every row','improvement','open','t','fixture','t');
@@ -86,9 +87,39 @@ fn full_schema_copy_preserves_ids_history_json_numbers_blobs_and_restart() {
     assert!(receipt.checks.iter().all(|c| c.matched));
     assert_eq!(before, receipt.source);
     assert!(receipt.source_retained);
+    database
+        .read::<_, Error, _>(|c| {
+            assert_eq!(
+                c.query_row("SELECT count(*) FROM generation_source_origins", [], |r| {
+                    r.get::<_, i64>(0)
+                })?,
+                0
+            );
+            assert_eq!(
+                c.query_row(
+                    "SELECT commit_hash FROM generations WHERE deployment_id='d1' AND number=7",
+                    [],
+                    |r| r.get::<_, String>(0)
+                )?,
+                "legacy-source"
+            );
+            Ok(())
+        })
+        .unwrap();
     cluster.restart().unwrap();
     assert_eq!(verify_import(&database, &path).unwrap(), receipt);
     assert_eq!(inspect_sqlite(&path).unwrap(), before);
+    database
+        .read::<_, Error, _>(|c| {
+            assert_eq!(
+                c.query_row("SELECT count(*) FROM generation_source_origins", [], |r| {
+                    r.get::<_, i64>(0)
+                })?,
+                0
+            );
+            Ok(())
+        })
+        .unwrap();
     assert!(!path.with_file_name("frozen.sqlite3-wal").exists());
     assert!(!path.with_file_name("frozen.sqlite3-shm").exists());
     assert!(import_sqlite(&database, &path).is_err());

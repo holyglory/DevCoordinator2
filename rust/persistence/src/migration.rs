@@ -836,7 +836,7 @@ pub fn import_sqlite(database: &Persistence, path: &Path) -> Result<ImportReceip
         let known=target_tables.iter().map(String::as_str).collect::<BTreeSet<_>>();
         for table in &source_tables{if !known.contains(table.name.as_str()){return Err(Error::Migration(format!("source table {} has no reviewed target; refusing data loss",table.name)));}target_columns(tx,table)?;}
         let source_names=source_tables.iter().map(|t|t.name.as_str()).collect::<BTreeSet<_>>();
-        for table in &target_tables{if !matches!(table.as_str(),"coordinator_maintenance"|"test_log_retention_projection") && !source_names.contains(table.as_str()){return Err(Error::Migration(format!("source is missing required authority table {table}")));}}
+        for table in &target_tables{if !matches!(table.as_str(),"coordinator_maintenance"|"test_log_retention_projection"|"generation_source_origins") && !source_names.contains(table.as_str()){return Err(Error::Migration(format!("source is missing required authority table {table}")));}}
         tx.execute_batch(&format!("TRUNCATE {} RESTART IDENTITY",target_tables.iter().map(|t|quoted(t)).chain(["dc2_delivery_protection_heads","dc2_storage_lease_artifacts","dc2_review_run_refs","dc2_active_review_runs","dc2_test_log_retention_heads","dc2_test_log_retention_runs"].iter().map(|t|quoted(t))).collect::<Vec<_>>().join(",")))?;
         tx.execute_batch("SET CONSTRAINTS ALL DEFERRED")?;
         let mut partition_report=crate::maintenance::PartitionReport::default();
