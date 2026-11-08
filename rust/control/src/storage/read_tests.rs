@@ -1,3 +1,4 @@
+use super::model::Context;
 use super::*;
 use crate::automation_test_support::{Fixture, FixtureClock};
 use serde_json::json;
@@ -73,6 +74,143 @@ pub(super) fn save(service: &StorageService, record: &Record) {
         connection.execute("INSERT INTO storage_artifacts(artifact_id,repository_id,kind,revision,removed_at_ms,record_json,updated_at_ms) VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT(artifact_id) DO UPDATE SET record_json=excluded.record_json,revision=excluded.revision,removed_at_ms=excluded.removed_at_ms",crate::database::params![record.artifact.artifact_id,record.artifact.repository_id,atom(record.artifact.kind),record.artifact.revision,record.artifact.removed_at_ms,encoded,at])?;
         Ok(())
     }).unwrap();
+}
+
+#[test]
+fn selected_candidate_origins_block_worktree_cleanup_without_pinning_history_forever() {
+    let fixture = Fixture::new();
+    let service = service(&fixture);
+    let main = &fixture.repository;
+    let temporary = fixture._temporary.path();
+    let remote = temporary.join("origin.git");
+    let git = |path: &std::path::Path, args: &[&str]| {
+        assert!(
+            std::process::Command::new("git")
+                .current_dir(path)
+                .args(args)
+                .status()
+                .unwrap()
+                .success()
+        );
+    };
+    git(
+        temporary,
+        &[
+            "init",
+            "--quiet",
+            "--bare",
+            "--initial-branch=main",
+            remote.to_str().unwrap(),
+        ],
+    );
+    git(main, &["init", "--quiet", "--initial-branch=main"]);
+    std::fs::write(main.join(".devcoordinator.toml"), "schema=2\n[deployment.web]\nsource=\"checkout\"\ncomponents=[\"web\"]\n[deployment.web.component.web]\ntype=\"process\"\ncommand=[\"serve\"]\n").unwrap();
+    git(main, &["add", ".devcoordinator.toml"]);
+    git(
+        main,
+        &[
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.invalid",
+            "commit",
+            "--quiet",
+            "-m",
+            "Cleanup fixture",
+        ],
+    );
+    git(main, &["remote", "add", "origin", remote.to_str().unwrap()]);
+    git(main, &["push", "--quiet", "origin", "HEAD:refs/heads/main"]);
+    let origins = [
+        temporary.join("previous-origin"),
+        temporary.join("current-origin"),
+        temporary.join("historical-origin"),
+    ];
+    for path in &origins {
+        git(
+            main,
+            &[
+                "worktree",
+                "add",
+                "--quiet",
+                "--detach",
+                path.to_str().unwrap(),
+            ],
+        );
+    }
+    let uid = unsafe { libc::geteuid() };
+    let spec = crate::repository_config::load_deployment_spec(main, "web")
+        .unwrap()
+        .canonical("checkout");
+    let copied_origins = origins.clone();
+    fixture.database.transaction(move |db| {
+        db.execute("UPDATE repositories SET registered_by_uid=$1 WHERE repository_id='project-alpha'",[uid])?;
+        db.execute("INSERT INTO deployments(deployment_id,repository_id,worktree_id,name,source,spec_fingerprint,spec_json,state,current_generation,previous_generation,created_at,created_by_uid,client,updated_at) VALUES('d1111111111111111','project-alpha','w1111111111111111','web','checkout','fixture',$1,'running',2,1,'t',$2,'fixture','t')", crate::database::params![spec.to_string(),uid])?;
+        for (index, path) in copied_origins.iter().enumerate() {
+            let number=index as u32+1;
+            db.execute("INSERT INTO generations(deployment_id,number,commit_hash,dirty,path,fingerprint,created_at,state) VALUES('d1111111111111111',$1,'fixture',0,$2,'fixture','t','current')",crate::database::params![number,temporary.join(format!("immutable-{number}")).to_string_lossy().into_owned()])?;
+            db.execute("INSERT INTO generation_source_origins(deployment_id,number,worktree_id,path) VALUES('d1111111111111111',$1,$2,$3)", crate::database::params![number,crate::ids::worktree_id(path).unwrap(),path.to_string_lossy().into_owned()])?;
+        }
+        Ok(())
+    }).unwrap();
+    let backend = native::HostBackend::new(fixture.config.clone(), fixture.database.clone());
+    let candidate = |path: &std::path::Path| {
+        let mut row = record("candidate-origin", service.now_ms());
+        let (device, inode) = fs::identity(path).unwrap();
+        row.artifact.kind = api::Kind::Worktree;
+        row.artifact.effect = api::Effect::SourceWorktree;
+        row.locator = Locator::Directory {
+            path: path.into(),
+            device,
+            inode,
+            root: temporary.into(),
+            git_root: Some(main.clone()),
+        };
+        row
+    };
+    let released = |path: &std::path::Path, context: &Context| {
+        if let Err(error) = native::Backend::validate(&backend, &candidate(path), context, &[]) {
+            // Non-root checks cannot inspect unrelated root-owned /proc entries.
+            // This existing later guard may remain unavailable, but any cleanup
+            // protection refusal, including current_deployment, must fail here.
+            assert_eq!(error.code, ErrorCode::StorageUnavailable);
+            assert_eq!(error.message, "process_inventory_incomplete");
+        }
+    };
+    let context = service.context().unwrap();
+    for path in &origins[..2] {
+        assert!(context.current_paths.contains(path));
+        let error =
+            native::Backend::validate(&backend, &candidate(path), &context, &[]).unwrap_err();
+        assert!(error.message.contains("current_deployment"));
+    }
+    assert!(!context.current_paths.contains(&origins[2]));
+    released(&origins[2], &context);
+    // Removing the old checkout's declaration does not retire the actual
+    // selected candidate/rollback source references.
+    std::fs::write(main.join(".devcoordinator.toml"), "schema=2\n").unwrap();
+    let context = service.context().unwrap();
+    assert!(context.current_paths.contains(&origins[0]));
+    assert!(context.current_paths.contains(&origins[1]));
+    fixture.database.transaction(|db| {
+        db.execute("UPDATE deployments SET current_generation=3,previous_generation=NULL WHERE deployment_id='d1111111111111111'",[])?;
+        Ok(())
+    }).unwrap();
+    crate::deployment_state::DeploymentStore::new(fixture.database.clone())
+        .prune_generations("d1111111111111111", &std::collections::BTreeSet::from([3]))
+        .unwrap();
+    let context = service.context().unwrap();
+    for path in &origins[..2] {
+        assert!(!context.current_paths.contains(path));
+        released(path, &context);
+    }
+    assert!(context.current_paths.contains(&origins[2]));
+    assert!(
+        native::Backend::validate(&backend, &candidate(&origins[2]), &context, &[])
+            .unwrap_err()
+            .message
+            .contains("current_deployment")
+    );
 }
 
 #[test]

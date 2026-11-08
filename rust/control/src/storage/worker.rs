@@ -353,16 +353,17 @@ impl StorageService {
 
     pub(crate) fn context(&self) -> Result<Context, ProtocolError> {
         let now = self.now_ms();
-        let (repositories,worktrees,deployments,generations,components,observed,containers,leases)=self.database.read(move|c|{
+        let (repositories,worktrees,deployments,generations,source_origins,components,observed,containers,leases)=self.database.read(move|c|{
             let repositories={let mut q=c.prepare("SELECT repository_id,display_name,root_path,registered_by_uid FROM repositories ORDER BY repository_id")?;q.query_map([],|r|Ok(Repository {id:r.get(0)?,name:r.get(1)?,root:PathBuf::from(r.get::<_,String>(2)?),execution_uid:r.get(3)?}))?.collect::<Result<Vec<_>,_>>()?};
             let worktrees={let mut q=c.prepare("SELECT repository_id,worktree_path FROM worktrees ORDER BY worktree_id")?;q.query_map([],|r|Ok((r.get::<_,String>(0)?,PathBuf::from(r.get::<_,String>(1)?))))?.collect::<Result<Vec<_>,_>>()?};
             let deployments={let mut q=c.prepare("SELECT d.deployment_id,d.repository_id,d.name,d.source,d.spec_json,w.worktree_path FROM deployments d JOIN worktrees w ON w.worktree_id=d.worktree_id")?;q.query_map([],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,String>(3)?,r.get::<_,String>(4)?,PathBuf::from(r.get::<_,String>(5)?))))?.collect::<Result<Vec<_>,_>>()?};
             let generations={let mut q=c.prepare("SELECT g.deployment_id,g.path FROM generations g JOIN deployments d ON d.deployment_id=g.deployment_id WHERE g.number=d.current_generation OR g.number=d.previous_generation")?;q.query_map([],|r|Ok((r.get::<_,String>(0)?,PathBuf::from(r.get::<_,String>(1)?))))?.collect::<Result<Vec<_>,_>>()?};
+            let source_origins={let mut q=c.prepare("SELECT o.path FROM generation_source_origins o JOIN deployments d ON d.deployment_id=o.deployment_id WHERE o.number=d.current_generation OR o.number=d.previous_generation")?;q.query_map([],|r|Ok(PathBuf::from(r.get::<_,String>(0)?)))?.collect::<Result<Vec<_>,_>>()?};
             let components={let mut q=c.prepare("SELECT deployment_id,binding_kind,binding_identity FROM components WHERE binding_identity IS NOT NULL")?;q.query_map([],|r|Ok((r.get::<_,String>(0)?,r.get::<_,Option<String>>(1)?,r.get::<_,String>(2)?)))?.collect::<Result<Vec<_>,_>>()?};
             let observed={let mut q=c.prepare("SELECT observed_deployment_id,repository_id,native_project FROM observed_deployments")?;q.query_map([],|r|Ok((r.get::<_,String>(0)?,(r.get::<_,String>(1)?,r.get::<_,String>(2)?))))?.collect::<Result<BTreeMap<_,_>,_>>()?};
             let containers={let mut q=c.prepare("SELECT container_id,repository_id,observed_deployment_id FROM observed_containers")?;q.query_map([],|r|Ok((r.get::<_,String>(0)?,(r.get::<_,String>(1)?,r.get::<_,String>(2)?))))?.collect::<Result<BTreeMap<_,_>,_>>()?};
             let leases={let mut q=c.prepare("SELECT lease_json FROM storage_leases WHERE expires_at_ms>$1")?;q.query_map([now as i64],|r|r.get::<_,String>(0))?.collect::<Result<Vec<_>,_>>()?};
-            Ok((repositories,worktrees,deployments,generations,components,observed,containers,leases))
+            Ok((repositories,worktrees,deployments,generations,source_origins,components,observed,containers,leases))
         }).map_err(db_error)?;
         let mut context = Context {
             repositories,
@@ -437,6 +438,9 @@ impl StorageService {
                 context.current_paths.push(path);
             }
         }
+        // Candidate origins are selected-generation references even when the
+        // declared checkout has since removed its deployment declaration.
+        context.current_paths.extend(source_origins);
         for (id, kind, binding) in components {
             if context.deployment_repositories.contains_key(&id) {
                 match kind.as_deref() {
