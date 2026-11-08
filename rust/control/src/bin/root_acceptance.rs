@@ -7267,6 +7267,13 @@ fn cases() -> Vec<Case> {
 
 fn case_bridge_observer_cutover_and_restart_receipt(world: &mut World) -> Result<(), String> {
     let bridge = world.socket.with_file_name("sandbox-bridge");
+    // The API socket and filesystem bridge start independently. Observe the
+    // bridge's own initialization before staging a request in its directory.
+    let bridge_lock = bridge.join("daemon.lock");
+    world.wait_file(
+        bridge_lock.to_str().ok_or("invalid bridge lock path")?,
+        Duration::from_secs(3),
+    )?;
     let id = "eabbcdd0";
     let pending = bridge.join(format!("{id}.processing"));
     let output = bridge.join(format!("{id}.response"));
@@ -7285,27 +7292,32 @@ fn case_bridge_observer_cutover_and_restart_receipt(world: &mut World) -> Result
         &staged_request,
         serde_json::to_vec(&request_value).map_err(|e| e.to_string())?,
     )
-    .map_err(|e| e.to_string())?;
+    .map_err(|e| format!("cannot stage bridge cutover request: {e}"))?;
     chown_path(
         &staged_request,
         world.harness.caller_uid,
         world.harness.caller_gid,
     )?;
-    fs::rename(staged_request, request_path).map_err(|e| e.to_string())?;
+    fs::rename(staged_request, request_path)
+        .map_err(|e| format!("cannot publish bridge cutover request: {e}"))?;
     world.wait_file(
         pending.to_str().ok_or("invalid pending path")?,
         Duration::from_secs(3),
     )?;
     let fence = world.socket.with_file_name("daemon.pre-cutover.sock");
-    fs::rename(&world.socket, &fence).map_err(|e| e.to_string())?;
+    fs::rename(&world.socket, &fence)
+        .map_err(|e| format!("cannot fence bridge fixture socket: {e}"))?;
     let interrupted = world.wait_file(
         output.to_str().ok_or("invalid response path")?,
         Duration::from_secs(3),
     );
-    fs::rename(&fence, &world.socket).map_err(|e| e.to_string())?;
+    fs::rename(&fence, &world.socket)
+        .map_err(|e| format!("cannot restore bridge fixture socket: {e}"))?;
     interrupted?;
-    let response: Value = serde_json::from_slice(&fs::read(&output).map_err(|e| e.to_string())?)
-        .map_err(|e| e.to_string())?;
+    let response: Value = serde_json::from_slice(
+        &fs::read(&output).map_err(|e| format!("cannot read bridge cutover response: {e}"))?,
+    )
+    .map_err(|e| e.to_string())?;
     ensure!(
         error_code(&response) == Some("daemon_unavailable"),
         "bridge observer did not receive reconnectable cutover response"
@@ -7325,14 +7337,19 @@ fn case_bridge_observer_cutover_and_restart_receipt(world: &mut World) -> Result
         recovered.to_str().ok_or("invalid recovery path")?,
         Duration::from_secs(3),
     )?;
-    let response: Value = serde_json::from_slice(&fs::read(&recovered).map_err(|e| e.to_string())?)
-        .map_err(|e| e.to_string())?;
+    let response: Value = serde_json::from_slice(
+        &fs::read(&recovered).map_err(|e| format!("cannot read recovered bridge receipt: {e}"))?,
+    )
+    .map_err(|e| e.to_string())?;
     ensure!(
         error_code(&response) == Some("daemon_unavailable") && !stale.exists(),
         "interrupted read receipt did not recover truthfully"
     );
     ensure!(
-        fs::metadata(recovered).map_err(|e| e.to_string())?.uid() == world.harness.caller_uid,
+        fs::metadata(recovered)
+            .map_err(|e| format!("cannot inspect recovered bridge receipt: {e}"))?
+            .uid()
+            == world.harness.caller_uid,
         "response owner changed"
     );
     Ok(())
