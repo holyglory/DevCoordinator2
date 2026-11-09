@@ -287,6 +287,25 @@ fn explicit_work_context_rows_remain_attributed_in_the_review_projection() {
 }
 
 #[test]
+fn producer_bound_usage_v2_response_preserves_attributed_review_rows() {
+    let value: Value = serde_json::from_str(include_str!(
+        "../../../test-fixtures/usage-v2-bound-response.json"
+    ))
+    .expect("usage-v2 bound response fixture");
+    let summary: Summary = serde_json::from_value(value).expect("typed usage-v2 response");
+    validate(&summary, Some("repo-a"), 0, 3_000).expect("versioned response validation");
+    let review = summary.review.expect("producer review projection");
+    let merged = super::review_aggregate::from_api(&review.outcomes)
+        .finish(false)
+        .expect("review rows");
+    assert_eq!(merged.attributed.operations, 1);
+    assert_eq!(merged.unattributed.operations, 1);
+    assert_eq!(merged.rows.len(), 1);
+    assert_eq!(merged.rows[0].outcome_id, "outcome-one");
+    assert_eq!(merged.rows[0].workstream_id.as_deref(), Some("stream-one"));
+}
+
+#[test]
 fn repository_fast_projection_uses_the_bounded_api_summary() {
     let dir = tempfile::tempdir().unwrap();
     let home = dir.path().join("collector");
