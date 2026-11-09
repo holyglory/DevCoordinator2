@@ -1513,8 +1513,13 @@ fn validate_retention_binding(
         let current = unix_fs::fstat(actual).map_err(|_| LogQueryError::MaintenanceBusy)?;
         let named = unix_fs::statat(parent, name, AtFlags::SYMLINK_NOFOLLOW)
             .map_err(|_| LogQueryError::MaintenanceBusy)?;
+        let expected_type = if directory {
+            FileType::Directory
+        } else {
+            FileType::RegularFile
+        };
         if (named.st_dev, named.st_ino) != (current.st_dev, current.st_ino)
-            || (FileType::from_raw_mode(named.st_mode) == FileType::Directory) != directory
+            || FileType::from_raw_mode(named.st_mode) != expected_type
         {
             return Err(LogQueryError::MaintenanceBusy);
         }
