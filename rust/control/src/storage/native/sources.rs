@@ -651,7 +651,12 @@ impl HostBackend {
         if !ignored_stderr.is_empty() {
             return Err(blocked("ignored_files_unverified"));
         }
-        if !ignored.is_empty() {
+        if !ignored.is_empty()
+            || record
+                .ignored_review
+                .as_ref()
+                .is_some_and(|review| !review.files.is_empty())
+        {
             self.validate_ignored_review(path, record, &ignored, context)?;
         }
         if !ignored.is_empty() && record.ignored_review.is_none() {
