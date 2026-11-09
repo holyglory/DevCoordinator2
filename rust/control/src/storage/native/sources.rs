@@ -275,13 +275,67 @@ impl HostBackend {
         }
         let head = String::from_utf8(git_bytes(path, &["rev-parse", "HEAD"], context)?)
             .map_err(|_| blocked("git_baseline_unverified"))?;
-        let remote = String::from_utf8(git_bytes(main, &["ls-remote", "origin", "HEAD"], context)?)
+        let branch = String::from_utf8(git_bytes(
+            path,
+            &["rev-parse", "--abbrev-ref", "HEAD"],
+            context,
+        )?)
+        .map_err(|_| blocked("git_baseline_unverified"))?;
+        let branch = branch.trim();
+        let upstream = if branch == "HEAD" {
+            None
+        } else {
+            let remote_key = format!("branch.{branch}.remote");
+            let merge_key = format!("branch.{branch}.merge");
+            let remote = String::from_utf8(git_bytes(
+                path,
+                &["config", "--get", "--default=", &remote_key],
+                context,
+            )?)
             .map_err(|_| blocked("git_baseline_unverified"))?;
-        let remote_head = remote
-            .split_whitespace()
+            let merge = String::from_utf8(git_bytes(
+                path,
+                &["config", "--get", "--default=", &merge_key],
+                context,
+            )?)
+            .map_err(|_| blocked("git_baseline_unverified"))?;
+            let remote = remote.trim();
+            let merge = merge.trim();
+            if remote.is_empty() && merge.is_empty() {
+                None
+            } else if remote == "."
+                || remote.chars().any(char::is_whitespace)
+                || !merge.starts_with("refs/heads/")
+                || merge.chars().any(char::is_whitespace)
+            {
+                return Err(blocked("git_baseline_unverified"));
+            } else {
+                git_bytes(path, &["remote", "get-url", "--", remote], context)?;
+                Some((remote.to_owned(), merge.to_owned()))
+            }
+        };
+        let remote = if let Some((remote_name, remote_ref)) = upstream.as_ref() {
+            git_bytes(
+                path,
+                &["ls-remote", "--exit-code", "--", remote_name, remote_ref],
+                context,
+            )?
+        } else {
+            git_bytes(path, &["ls-remote", "origin", "HEAD"], context)?
+        };
+        let remote = String::from_utf8(remote).map_err(|_| blocked("git_baseline_unverified"))?;
+        let mut fields = remote.split_whitespace();
+        let remote_head = fields
             .next()
-            .filter(|h| h.len() == 40 || h.len() == 64)
+            .filter(|h| {
+                (h.len() == 40 || h.len() == 64) && h.chars().all(|c| c.is_ascii_hexdigit())
+            })
             .ok_or_else(|| blocked("git_baseline_unverified"))?;
+        if let Some((_, remote_ref)) = upstream.as_ref()
+            && (fields.next() != Some(remote_ref) || fields.next().is_some())
+        {
+            return Err(blocked("git_baseline_unverified"));
+        }
         git_bytes(main, &["cat-file", "-e", remote_head], context)?;
         git_bytes(
             main,

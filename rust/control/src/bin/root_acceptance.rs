@@ -132,6 +132,8 @@ macro_rules! ensure {
 
 #[path = "root_acceptance/storage.rs"]
 mod storage_cases;
+#[path = "root_acceptance/storage_upstream.rs"]
+mod storage_upstream_cases;
 
 impl World {
     fn new(harness: &Harness, name: &str) -> Result<Self, String> {
@@ -7058,6 +7060,10 @@ fn cases() -> Vec<Case> {
         (
             "storage_worktrees_and_backup_floor",
             storage_cases::worktrees_and_backup_floor,
+        ),
+        (
+            "storage_upstream_worktree_baselines",
+            storage_upstream_cases::upstream_worktree_baselines,
         ),
         (
             "storage_automatic_policy_boundaries",
