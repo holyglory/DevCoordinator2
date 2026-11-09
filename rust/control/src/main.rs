@@ -74,7 +74,13 @@ async fn main() -> ExitCode {
     }
     tracing_subscriber::fmt()
         .with_writer(std::io::stderr)
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::from_default_env().add_directive(
+                "devcoordinator2.agent_tool=info"
+                    .parse()
+                    .expect("agent tool log directive is valid"),
+            ),
+        )
         .init();
     let cli = Cli::parse();
     let format = cli.format;

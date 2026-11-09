@@ -14,6 +14,7 @@ use rmcp::service::{MaybeSendFuture, RequestContext};
 use rmcp::{ErrorData as McpError, RoleServer, ServerHandler, ServiceExt};
 use serde_json::{Map, Value};
 
+use crate::agent_request_log::McpToolObservation;
 use crate::client;
 
 #[derive(Clone, Debug)]
@@ -225,8 +226,10 @@ impl ServerHandler for McpAdapter {
         request: CallToolRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, McpError> {
+        let mut observation = McpToolObservation::new(&request.name);
         let arguments = request.arguments.unwrap_or_default();
         if let Some(result) = Self::discovery(&request.name, &arguments)? {
+            observation.record_returned();
             return Ok(result.into());
         }
         let (tool, arguments) = if request.name == "call_operation" {
@@ -295,10 +298,14 @@ impl ServerHandler for McpAdapter {
             .and_then(Value::as_str)
             .map(str::to_owned);
         let execution = self.execute(tool, arguments, kind, work, model, effort);
-        tokio::select! {
+        let result = tokio::select! {
             result = execution => Ok(result.into()),
             _ = context.ct.cancelled() => Err(McpError::internal_error("tool request cancelled", None)),
+        };
+        if result.is_ok() {
+            observation.record_returned();
         }
+        result
     }
 }
 
