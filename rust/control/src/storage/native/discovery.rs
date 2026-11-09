@@ -397,7 +397,20 @@ impl HostBackend {
             0 => {
                 match self.container_rows() {
                     Ok(rows) => state.context.docker_snapshot = Some(std::sync::Arc::new(rows)),
-                    Err(_) => state.context.docker_unavailable = true,
+                    Err(error) => {
+                        state.context.docker_unavailable = true;
+                        let category = match error.message.as_str() {
+                            "docker_unavailable" => "invocation_failed",
+                            "docker_observation_incomplete" => "command_or_output_incomplete",
+                            "docker_metadata_invalid" => "metadata_invalid",
+                            "docker_inventory_limit" => "inventory_limit",
+                            _ => "other",
+                        };
+                        tracing::error!(
+                            failure_category = category,
+                            "native Docker container snapshot failed"
+                        );
+                    }
                 };
                 state.phase = 1;
             }

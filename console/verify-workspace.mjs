@@ -1,5 +1,42 @@
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { chooseRepository } from './verify-tests-pane.mjs';
+
+// Leave the old document and settle its fixture work before clearing call evidence.
+export async function isolateScenario(page, daemon, scenario) {
+  await page.goto('about:blank');
+  await daemon.drain();
+  daemon.setScenario(scenario);
+}
+
+export function currentDocumentRequest(request, page, url, operations = null) {
+  const requestUrl = new URL(request.url());
+  const operation = requestUrl.pathname.match(/^\/api\/v3\/([a-z.]+)$/)?.[1];
+  return requestUrl.origin === new URL(url).origin && request.frame() === page.mainFrame() && request.frame().url() === url && request.method() === 'POST'
+    && Boolean(operation) && (operations ? operations.includes(operation) : operation !== 'user.whoami');
+}
+
+export function relevantCalls(calls) {
+  const keys = ['repository_id', 'headers_only', 'after_repository_id', 'after_sequence', 'limit'];
+  return calls.filter(call => ['user.whoami', 'plan.overview', 'repository.list', 'test.list', 'decision.tail', 'test.evidence.get', 'test.evidence.lookup'].includes(call.operation))
+    .slice(-16).map(call => ({ operation: call.operation, params: Object.fromEntries(keys.filter(key => key in call.params).map(key => {
+      const value = call.params[key];
+      return [key, typeof value === 'string' ? value.slice(0, 80) : value === null || ['boolean', 'number'].includes(typeof value) ? value : '[omitted]'];
+    })) }));
+}
+
+export function planReadEvidence(calls) {
+  const headerPages = calls.filter(call => call.operation === 'plan.overview' && !call.params.repository_id && call.params.headers_only).length;
+  const aggregateReads = calls.filter(call => call.operation === 'plan.overview' && !call.params.repository_id && !call.params.headers_only).length;
+  const testsReads = calls.filter(call => call.operation === 'test.list').length;
+  return { headerPages, aggregateReads, testsReads, valid: headerPages === 1 && aggregateReads === 0 && testsReads === 0, calls: relevantCalls(calls) };
+}
+
+export async function documentEvidence(page) {
+  return page.evaluate(() => ({ pathname: location.pathname, route: location.hash.split('?')[0], readyState: document.readyState,
+    appReady: typeof window.render === 'function', workspaceReady: Boolean(window.DevCoordinatorWorkspace),
+    headingLinks: document.querySelectorAll('main h1 a.destination-link').length, skeletons: document.querySelectorAll('main .skeleton').length }));
+}
 
 export async function verifyWorkspace({ page, daemon, check, scenario, baseUrl, output, theme, viewport }) {
   const repositoryId = 'r0123456789abcdef';
@@ -19,8 +56,7 @@ export async function verifyWorkspace({ page, daemon, check, scenario, baseUrl, 
     new PerformanceObserver((list) => { for (const entry of list.getEntries()) window.workspaceTiming.longTasks.push({ start: entry.startTime, duration: entry.duration }); }).observe({ type: 'longtask', buffered: true });
   });
   for (const [target, viewer] of [['rffffffffffffffff', false], ['rffffffffffffffff', true], ['release-clone', false]]) {
-    daemon.setScenario({ ...scenario, admin: !viewer, workspacePaging: true, workspaceViewer: viewer });
-    await page.goto('about:blank');
+    await isolateScenario(page, daemon, { ...scenario, admin: !viewer, workspacePaging: true, workspaceViewer: viewer });
     await page.goto(`${baseUrl}#/plan/${target}`);
     await page.locator('.plan-context').waitFor();
     verify(`${viewer ? 'viewer' : 'administrator'} direct links beyond the first header page retain exact repository scope`, page.url().endsWith(target) && await page.locator('#workspace-heading').innerText() === (target === 'release-clone' ? 'repo-one' : 'Late repository') && daemon.calls.some((call) => call.operation === 'plan.overview' && call.params.repository_id === target) && await page.locator('.plan-task-select').count() === 0);
@@ -30,8 +66,7 @@ export async function verifyWorkspace({ page, daemon, check, scenario, baseUrl, 
     daemon.releaseDelayed();
   }
   if ([1440, 390].includes(viewport.width)) {
-    daemon.setScenario({ ...scenario, workspaceLargePlan: true, workspaceDeepPlan: true, workspacePaging: true, workspaceHeaderPending: true });
-    await page.goto('about:blank');
+    await isolateScenario(page, daemon, { ...scenario, workspaceLargePlan: true, workspaceDeepPlan: true, workspacePaging: true, workspaceHeaderPending: true });
     await page.goto(`${baseUrl}#/plan/${repositoryId}`);
     await page.waitForFunction(() => document.querySelectorAll('.plan-task-select').length === 354);
     await page.evaluate(() => document.fonts.ready);
@@ -45,8 +80,7 @@ export async function verifyWorkspace({ page, daemon, check, scenario, baseUrl, 
     await page.goto('about:blank');
     daemon.releaseDelayed();
   }
-  daemon.setScenario({ ...scenario, workspaceLongList: true, workspaceDeepPlan: true, workspaceStableOptional: true });
-  await page.goto('about:blank');
+  await isolateScenario(page, daemon, { ...scenario, workspaceLongList: true, workspaceDeepPlan: true, workspaceStableOptional: true });
   await page.goto(`${baseUrl}#/plan/${repositoryId}`);
   await page.waitForSelector('.plan-context');
   const initialHeading = await page.locator('#workspace-heading > span').elementHandle();
@@ -58,13 +92,19 @@ export async function verifyWorkspace({ page, daemon, check, scenario, baseUrl, 
   verify('unchanged optional totals retain navigation content and current aspect nodes', await initialHeading.evaluate(node => node.isConnected) && await initialAspect.evaluate(node => node.isConnected));
   const planReads = daemon.calls.filter(call => call.operation === 'plan.overview' && call.params.repository_id === repositoryId && !call.params.limit).length;
   const previousPlan = await page.locator('.plan-context').elementHandle();
-  await page.evaluate(() => window.render());
+  const refreshUrl = page.url();
+  const [refreshRequest] = await Promise.all([
+    page.waitForRequest(request => currentDocumentRequest(request, page, refreshUrl, ['plan.overview']) && request.postDataJSON()?.repository_id === repositoryId),
+    page.evaluate(() => window.render()),
+  ]);
   verify('refresh reads the current Plan again instead of reusing the consumed model', daemon.calls.filter(call => call.operation === 'plan.overview' && call.params.repository_id === repositoryId && !call.params.limit).length === planReads + 1 && !await previousPlan.evaluate(node => node.isConnected));
   verify('direct plan links select the same repository', await page.locator('#workspace-heading').innerText() === 'repo-one');
   verify('one shared selector replaces page-specific pickers', await page.locator('#repository-list').count() === 1 && await page.locator('[data-project-picker], .test-repository-list').count() === 0);
   verify('all aspects have real repository-scoped links', await page.locator('#workspace-aspects a').count() === 6 && await page.locator('#workspace-aspects a[href="#/tests?repository=r0123456789abcdef"]').count() === 1);
   verify('plan and progress are one destination with four views', await page.locator('#workspace-work-views a').allTextContents().then((labels) => labels.join() === 'Plan,Progress,Usage,Performance'));
-  verify('Plan reads one metadata header page without aggregate or Tests barriers', daemon.calls.filter(call => call.operation === 'plan.overview' && !call.params.repository_id && call.params.headers_only).length === 1 && !daemon.calls.some(call => call.operation === 'plan.overview' && !call.params.repository_id && !call.params.headers_only) && !daemon.calls.some(call => call.operation === 'test.list'));
+  const reads = planReadEvidence(daemon.calls);
+  verify('Plan reads one metadata header page without aggregate or Tests barriers', reads.valid,
+    reads.valid ? '' : JSON.stringify({ ...reads, triggerRequest: { operation: 'plan.overview', method: refreshRequest.method(), currentDocument: refreshRequest.frame() === page.mainFrame() && refreshRequest.frame().url() === refreshUrl }, document: await documentEvidence(page) }));
   if (viewport.width > 760) {
     verify('sidebar starts wide enough for ordinary repository names', (await page.locator('#repository-sidebar').boundingBox()).width >= 280);
     const resize = page.locator('#repository-resize');
@@ -274,8 +314,7 @@ export async function verifyWorkspace({ page, daemon, check, scenario, baseUrl, 
   await page.locator('#repository-search').fill('');
   await page.screenshot({ path: path.join(output, `repository-roots-${theme}-${viewport.width}.png`), fullPage: true, mask: [page.locator('#who-email')] });
   await page.unroute('**/api/v3/test.list');
-  daemon.setScenario({ ...scenario, delayMs: 1, delayOperations: ['plan.overview'] });
-  await page.goto('about:blank');
+  await isolateScenario(page, daemon, { ...scenario, delayMs: 1, delayOperations: ['plan.overview'] });
   await page.goto(`${baseUrl}#/plan/${repositoryId}`);
   await daemon.waitForCall('repository.list');
   await page.goto(`${baseUrl}#/health`);
@@ -284,4 +323,43 @@ export async function verifyWorkspace({ page, daemon, check, scenario, baseUrl, 
   await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
   verify('navigation away aborts pending Plan data without overwriting the new route', page.url().endsWith('#/health') && await page.locator('.hi-host').isVisible() && await page.locator('.plan-context').count() === 0 && !await page.locator('#workspace-context').isVisible());
   verify('no uncaught browser errors', errors.length === 0, errors.join('; '));
+}
+
+// Non-browser guards for this existing acceptance harness; no installed daemon is used.
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url) && process.argv.includes('--self-test')) {
+  const { default: test } = await import('node:test');
+  const { default: assert } = await import('node:assert/strict');
+  await test('scenario reset follows document departure and completed fixture drain', async () => {
+    const order = [], scenario = {};
+    let finishDrain;
+    const isolation = isolateScenario({ goto: async url => { order.push(url); } }, {
+      drain: () => new Promise(resolve => { order.push('drain'); finishDrain = resolve; }),
+      setScenario: value => { assert.equal(value, scenario); order.push('reset'); },
+    }, scenario);
+    await Promise.resolve();
+    assert.deepEqual(order, ['about:blank', 'drain']);
+    finishDrain(); await isolation;
+    assert.deepEqual(order, ['about:blank', 'drain', 'reset']);
+    await assert.rejects(isolateScenario({ goto: async () => {} }, { drain: async () => { throw new Error('not idle'); }, setScenario: () => assert.fail('reset after failed drain') }, scenario), /not idle/);
+  });
+  await test('loading admission accepts only the intended document, origin, method and operation', () => {
+    const url = 'http://console.example.test/#/tests/fixture', frame = { url: () => url }, page = { mainFrame: () => frame };
+    const request = { url: () => 'http://console.example.test/api/v3/test.evidence.lookup', frame: () => frame, method: () => 'POST' };
+    const accepts = value => currentDocumentRequest(value, page, url, ['test.evidence.get', 'test.evidence.lookup']);
+    assert.equal(accepts(request), true);
+    for (const wrong of [{ frame: () => ({ url: () => url }) }, { method: () => 'GET' }, { url: () => 'http://other.example.test/api/v3/test.evidence.lookup' }, { url: () => 'http://console.example.test/api/v3/plan.overview' }]) assert.equal(accepts({ ...request, ...wrong }), false);
+    assert.equal(currentDocumentRequest(request, page, url + '-old'), false);
+    assert.equal(currentDocumentRequest({ ...request, url: () => 'http://console.example.test/api/v3/user.whoami' }, page, url), false);
+  });
+  await test('Plan guards catch missing/duplicate headers, aggregate reads and Tests barriers without rejecting scoped reads', () => {
+    const header = { operation: 'plan.overview', params: { headers_only: true } };
+    const scoped = { operation: 'plan.overview', params: { repository_id: 'fixture', after_sequence: 100 } };
+    assert.equal(planReadEvidence([header, scoped, scoped]).valid, true);
+    for (const calls of [[], [header, header], [header, { operation: 'plan.overview', params: {} }], [header, { operation: 'test.list', params: {} }]]) assert.equal(planReadEvidence(calls).valid, false);
+    const safe = relevantCalls(Array.from({ length: 20 }, () => ({ ...header, client: { identity: 'private' }, params: { ...header.params, query: 'private', cookie: 'private' } })));
+    assert.equal(safe.length, 16);
+    assert.equal(JSON.stringify(safe).includes('private'), false);
+    assert.equal(relevantCalls([{ ...header, params: { repository_id: 'x'.repeat(500), headers_only: { private: true } } }])[0].params.repository_id.length, 80);
+    assert.equal(JSON.stringify(relevantCalls([{ ...header, params: { headers_only: { private: true } } }])).includes('private'), false);
+  });
 }
