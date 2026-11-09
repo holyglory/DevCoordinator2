@@ -30,7 +30,9 @@ data. Review every returned consumer, mount, directory and blocking reason, then
 call `storage.cleanup.start` with `plan_id` and `idempotency_key`. Repeating the
 same key returns the original job. Follow its events and retain its terminal
 receipt. `storage.job.cancel` prevents subsequent steps and does not undo
-completed removals.
+completed removals. Running discovery checks cancellation before each batch and
+releases its execution slot between batches so queued cleanup can advance during
+a long scan.
 
 Selecting a directory also lists known nested directories affected by that
 removal. Their protection and ownership checks still apply. Aliases and nested

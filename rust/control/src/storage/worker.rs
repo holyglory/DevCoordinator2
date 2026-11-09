@@ -124,11 +124,24 @@ impl StorageService {
         cursor: &mut Option<ScanCursor>,
         budget: super::native::DiscoveryBudget,
     ) -> Result<bool, ProtocolError> {
-        if cursor.is_none() {
-            let job = self.job(id)?;
-            if job.kind != "scan" {
-                return Err(blocked("storage_job_is_not_scan"));
+        if cursor.as_ref().is_some_and(|state| state.job_id != id) {
+            return Err(blocked("storage_scan_cursor_mismatch"));
+        }
+        let job = self.job(id)?;
+        if job.kind != "scan" {
+            return Err(blocked("storage_job_is_not_scan"));
+        }
+        if matches!(
+            job.state,
+            api::JobState::Cancelling | api::JobState::Cancelled
+        ) {
+            if matches!(job.state, api::JobState::Cancelling) {
+                self.finish(id, api::JobState::Cancelled, None)?;
             }
+            *cursor = None;
+            return Ok(true);
+        }
+        if cursor.is_none() {
             let raw = self
                 .database
                 .read(|connection| {
@@ -161,9 +174,6 @@ impl StorageService {
             return Ok(false);
         }
         let state = cursor.as_mut().expect("scan cursor initialized");
-        if state.job_id != id {
-            return Err(blocked("storage_scan_cursor_mismatch"));
-        }
         state.last_rows = 0;
         state.last_bytes = 0;
         if let Some(reconciliation) = state.reconciliation.as_mut() {
@@ -673,6 +683,7 @@ impl StorageService {
                     .await;
                 return;
             }
+            let mut permit = Some(permit);
             let begin_id = job.job_id.clone();
             if let Ok(Some(current)) = self
                 .blocking(move |service| {
@@ -707,8 +718,19 @@ impl StorageService {
                                 if *shutdown.borrow() {
                                     break Ok(Err(blocked("storage_scan_interrupted")));
                                 }
+                                let step_permit = match permit.take() {
+                                    Some(permit) => permit,
+                                    None => match self
+                                        .capacity
+                                        .admit_native(&run, "storage", uid, shutdown.clone())
+                                        .await
+                                    {
+                                        Ok(permit) => permit,
+                                        Err(error) => break Ok(Err(error)),
+                                    },
+                                };
                                 retry_events.borrow_and_update();
-                                let retry_at = match scheduler
+                                let reply = scheduler
                                     .submit_async(
                                         scan.clone(),
                                         crate::maintenance::Budget::new(
@@ -718,8 +740,13 @@ impl StorageService {
                                         ),
                                         continuation.clone(),
                                     )
-                                    .await
-                                {
+                                    .await;
+                                // A resumable scan owns capacity only for this
+                                // batch, including when maintenance defers it.
+                                // Existing queued cleanup and tests get a turn
+                                // before the next discovery batch is admitted.
+                                drop(step_permit);
+                                let retry_at = match reply {
                                     Ok(reply) => match reply.status {
                                         crate::maintenance::JobStatus::Complete => {
                                             break Ok(Ok(()));
@@ -1386,7 +1413,213 @@ fn system_caller() -> Caller {
 
 #[cfg(test)]
 mod tests {
-    use super::{scan_after_completion, scan_after_request};
+    use super::*;
+    use crate::automation_test_support::{Fixture, FixtureClock};
+    use std::sync::{
+        Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
+        mpsc,
+    };
+    use tokio::sync::oneshot;
+
+    #[derive(Default)]
+    struct ScanDocker {
+        calls: AtomicUsize,
+        boundary: Mutex<Option<(oneshot::Sender<()>, mpsc::Receiver<()>)>>,
+    }
+
+    impl crate::docker::DockerControl for ScanDocker {
+        fn invoke(
+            &self,
+            _: crate::docker::DockerInvocation,
+        ) -> Result<crate::docker::DockerOutput, crate::docker::DockerError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            if let Some((entered, release)) = self.boundary.lock().unwrap().take() {
+                let _ = entered.send(());
+                release.recv_timeout(Duration::from_secs(10)).unwrap();
+            }
+            Err(crate::docker::DockerError::CliUnavailable)
+        }
+
+        fn spawn_follow_logs(
+            &self,
+            _: &crate::docker::ExactContainerId,
+        ) -> Result<crate::docker::LogFollower, crate::docker::DockerError> {
+            panic!("scan fixture must not follow container logs")
+        }
+    }
+
+    fn scan_service(fixture: &Fixture, docker: Arc<ScanDocker>) -> StorageService {
+        StorageService::with_backend(
+            fixture.config.clone(),
+            fixture.database.clone(),
+            Arc::new(FixtureClock),
+            crate::capacity::CapacityBroker::new(
+                fixture.database.clone(),
+                fixture.config.socket_path.clone(),
+            )
+            .unwrap(),
+            crate::events::EventService::new(fixture.database.clone()).unwrap(),
+            Arc::new(super::super::native::HostBackend::with_docker(
+                fixture.config.clone(),
+                fixture.database.clone(),
+                docker,
+            )),
+        )
+    }
+
+    #[test]
+    fn cancelled_storage_scan_stops_before_another_native_step() {
+        let fixture = Fixture::new();
+        let docker = Arc::new(ScanDocker::default());
+        let service = scan_service(&fixture, docker.clone());
+        let caller = system_caller();
+        let scan = service
+            .scan(
+                api::Scan {
+                    repository_id: Some("project-alpha".into()),
+                    idempotency_key: "cancel-initialized-scan".into(),
+                },
+                &caller,
+            )
+            .unwrap();
+        assert!(service.begin_job(&scan.job_id).unwrap().is_some());
+        let mut cursor = None;
+        let budget = super::super::native::DiscoveryBudget::default();
+        assert!(
+            !service
+                .execute_scan_step(&scan.job_id, &mut cursor, budget)
+                .unwrap()
+        );
+        assert!(cursor.is_some());
+        service
+            .cancel(
+                api::JobReference {
+                    job_id: scan.job_id.clone(),
+                },
+                &caller,
+            )
+            .unwrap();
+        let complete = service
+            .execute_scan_step(&scan.job_id, &mut cursor, budget)
+            .unwrap();
+        let job = service.job(&scan.job_id).unwrap();
+        assert!(
+            complete,
+            "a cancelled scan must finish at its next batch boundary"
+        );
+        assert!(cursor.is_none());
+        assert!(matches!(job.state, api::JobState::Cancelled));
+        assert!(job.completed_at_ms.is_some());
+        assert_eq!(docker.calls.load(Ordering::SeqCst), 0);
+        fixture
+            .database
+            .read(|c| {
+                let observed: Option<u64> = c.query_row(
+                    "SELECT last_scan_at_ms FROM storage_scan_state WHERE singleton=1",
+                    [],
+                    |r| r.get(0),
+                )?;
+                assert_eq!(observed, None, "incomplete discovery must not be published");
+                Ok(())
+            })
+            .unwrap();
+    }
+
+    // The real storage worker, native discovery and maintenance scheduler use
+    // PostgreSQL here. Only the Docker adapter pauses one bounded step; no host
+    // daemon, container or live authority database participates in this test.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn storage_scan_yields_capacity_to_waiting_cleanup_admission() {
+        use std::{future::Future, task::Poll};
+
+        let fixture = Fixture::new();
+        let (entered, ready) = oneshot::channel();
+        let (release, receiver) = mpsc::channel();
+        let docker = Arc::new(ScanDocker {
+            boundary: Mutex::new(Some((entered, receiver))),
+            ..Default::default()
+        });
+        let service = scan_service(&fixture, docker.clone());
+        let caller = system_caller();
+        service.capacity.set_cap(Some(1), "fixture").unwrap();
+        let scheduler =
+            Arc::new(crate::maintenance::Scheduler::new(fixture.database.clone(), 1, 4).unwrap());
+        service.set_maintenance_scheduler(Arc::downgrade(&scheduler));
+        let scan = service
+            .scan(
+                api::Scan {
+                    repository_id: Some("project-alpha".into()),
+                    idempotency_key: "yield-scan-capacity".into(),
+                },
+                &caller,
+            )
+            .unwrap();
+        let (_stop, shutdown) = watch::channel(false);
+        let worker = tokio::spawn({
+            let service = service.clone();
+            let scan = scan.clone();
+            let shutdown = shutdown.clone();
+            async move { service.run_job(scan, caller.uid, shutdown).await }
+        });
+        tokio::time::timeout(Duration::from_secs(5), ready)
+            .await
+            .unwrap()
+            .unwrap();
+        service
+            .capacity
+            .register_run("cleanup-admission", caller.uid)
+            .unwrap();
+        let mut admission = Box::pin(service.capacity.admit_native(
+            "cleanup-admission",
+            "storage",
+            caller.uid,
+            shutdown,
+        ));
+        assert!(matches!(
+            std::future::poll_fn(|cx| Poll::Ready(admission.as_mut().poll(cx))).await,
+            Poll::Pending
+        ));
+        assert_eq!(service.capacity.snapshot().unwrap().waiting, 1);
+        release.send(()).unwrap();
+        let permit = tokio::time::timeout(Duration::from_secs(5), admission)
+            .await
+            .unwrap()
+            .unwrap();
+        let state_when_admitted = service.job(&scan.job_id).unwrap().state;
+        service
+            .cancel(
+                api::JobReference {
+                    job_id: scan.job_id.clone(),
+                },
+                &caller,
+            )
+            .unwrap();
+        drop(permit);
+        tokio::time::timeout(Duration::from_secs(5), worker)
+            .await
+            .unwrap()
+            .unwrap();
+        service
+            .capacity
+            .unregister_run("cleanup-admission")
+            .unwrap();
+        scheduler.shutdown_and_join();
+        assert!(
+            matches!(state_when_admitted, api::JobState::Running),
+            "cleanup must receive capacity before discovery finishes"
+        );
+        assert!(matches!(
+            service.job(&scan.job_id).unwrap().state,
+            api::JobState::Cancelled
+        ));
+        assert_eq!(
+            docker.calls.load(Ordering::SeqCst),
+            1,
+            "cancelled discovery must not start another native batch"
+        );
+        assert_eq!(service.capacity.snapshot().unwrap().active, 0);
+    }
 
     #[test]
     fn storage_scan_requests_are_delayed_after_a_large_run() {
