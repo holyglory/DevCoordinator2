@@ -233,6 +233,7 @@ pub(crate) fn restore_route(
                 environment_file,
                 command: saved.command.iter().map(OsString::from).collect(),
                 log_path,
+                allow_new_privileges: saved.allow_new_privileges,
             })
             .map_err(|error| {
                 apply_runtime_error("saved routed process failed to restart", error)

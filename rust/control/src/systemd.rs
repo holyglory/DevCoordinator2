@@ -51,6 +51,7 @@ pub struct PersistentUnitSpec {
     pub environment_file: PathBuf,
     pub command: Vec<OsString>,
     pub log_path: PathBuf,
+    pub allow_new_privileges: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -440,7 +441,11 @@ pub fn build_persistent_systemd_run_argv(
         OsString::from("--property=RestartSec=2s"),
         OsString::from("--property=StartLimitIntervalSec=120"),
         OsString::from("--property=StartLimitBurst=5"),
-        OsString::from("--property=NoNewPrivileges=yes"),
+        OsString::from(if specification.allow_new_privileges {
+            "--property=NoNewPrivileges=no"
+        } else {
+            "--property=NoNewPrivileges=yes"
+        }),
         OsString::from("--property=UMask=0027"),
         prefixed(
             "--property=EnvironmentFile=",
@@ -1001,6 +1006,7 @@ mod tests {
             environment_file: temporary.path().join("environment"),
             command: vec![OsString::from("/usr/bin/true")],
             log_path: log.clone(),
+            allow_new_privileges: false,
         })
         .expect("persistent start");
         assert_eq!(
@@ -1012,6 +1018,25 @@ mod tests {
         assert!(arguments.contains("--property=NoNewPrivileges=yes"));
         assert!(arguments.contains("--property=StandardOutput=append:"));
         assert!(arguments.contains("/usr/bin/true"));
+    }
+
+    #[test]
+    fn persistent_unit_opt_in_disables_no_new_privileges_only_for_that_process() {
+        let root = Path::new("/tmp/fixture");
+        let spec = PersistentUnitSpec {
+            unit: "devcoordinator2-deploy-d1-api-g1.service".into(),
+            slice_name: "devcoordinator2-deploy-d1.slice".into(),
+            uid: rustix::process::getuid().as_raw(),
+            gid: rustix::process::getgid().as_raw(),
+            working_directory: root.to_owned(),
+            environment_file: root.join("environment"),
+            command: vec![OsString::from("/usr/bin/true")],
+            log_path: root.join("component.log"),
+            allow_new_privileges: true,
+        };
+        let argv = build_persistent_systemd_run_argv(&spec).expect("persistent argv");
+        assert!(argv.contains(&OsString::from("--property=NoNewPrivileges=no")));
+        assert!(!argv.contains(&OsString::from("--property=NoNewPrivileges=yes")));
     }
 
     #[test]
@@ -1076,6 +1101,7 @@ mod tests {
                     Vec::new()
                 },
                 log_path: log.clone(),
+                allow_new_privileges: false,
             });
             assert_eq!(
                 result.is_ok(),

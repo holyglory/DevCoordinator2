@@ -3395,6 +3395,7 @@ impl Deployments {
                         environment_file: environment_path,
                         command: component.command.iter().map(OsString::from).collect(),
                         log_path,
+                        allow_new_privileges: component.allow_new_privileges,
                     })
                     .map_err(|error| {
                         apply_runtime_error(
