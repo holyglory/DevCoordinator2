@@ -44,6 +44,15 @@ pub trait Backend: Send + Sync {
         context: &Context,
         selected: &[String],
     ) -> Result<(), ProtocolError>;
+    /// Validate a recognized source-worktree disposal intent without running
+    /// the unbounded discovery context or full native safety checks.
+    fn validate_disposal_intent(
+        &self,
+        record: &Record,
+        repository_id: &str,
+        now_ms: u64,
+        reviewed_ignored_files: Option<&[api::IgnoredFileReview]>,
+    ) -> Result<(String, Option<super::model::IgnoredReview>), ProtocolError>;
     fn remove(
         &self,
         record: &Record,
@@ -125,6 +134,16 @@ impl Backend for HostBackend {
             return self.save_mount_recovery(r, job_id);
         }
         self.save_private_definition(r, job_id)
+    }
+
+    fn validate_disposal_intent(
+        &self,
+        record: &Record,
+        repository_id: &str,
+        now_ms: u64,
+        reviewed_ignored_files: Option<&[api::IgnoredFileReview]>,
+    ) -> Result<(String, Option<super::model::IgnoredReview>), ProtocolError> {
+        self.validate_intent(record, repository_id, now_ms, reviewed_ignored_files)
     }
 
     fn absent(&self, r: &Record, context: &Context) -> Result<bool, ProtocolError> {
@@ -308,9 +327,24 @@ impl Backend for HostBackend {
                     return Err(blocked("nested_repository"));
                 }
                 if r.artifact.kind == api::Kind::Worktree {
-                    self.validate_worktree(path, git_root.as_deref(), context)?;
-                } else if let Some(git) = git_root
-                    && !git_bytes(
+                    self.validate_worktree(r, path, git_root.as_deref(), context)?;
+                } else if let Some(git) = git_root {
+                    let git = context
+                        .repositories
+                        .iter()
+                        .find(|repository| repository.root == *git)
+                        .and_then(|repository| {
+                            context
+                                .worktrees
+                                .iter()
+                                .filter(|(id, worktree)| {
+                                    id == &repository.id && path.starts_with(worktree)
+                                })
+                                .max_by_key(|(_, worktree)| worktree.components().count())
+                                .map(|(_, worktree)| worktree.as_path())
+                        })
+                        .unwrap_or(git);
+                    if !git_bytes(
                         git,
                         &[
                             "ls-files",
@@ -321,8 +355,9 @@ impl Backend for HostBackend {
                         context,
                     )?
                     .is_empty()
-                {
-                    return Err(blocked("tracked_source"));
+                    {
+                        return Err(blocked("tracked_source"));
+                    }
                 }
                 let allowed_mount = r
                     .artifact
@@ -455,7 +490,7 @@ fn native_backup_generation(path: &Path, root: &Path, kind: api::Kind, config: &
         && path.parent() == Some(root)
 }
 
-fn validate_path(
+pub(super) fn validate_path(
     path: &Path,
     config: &Config,
     native_backup: bool,
@@ -560,6 +595,7 @@ pub(super) fn candidate(
         recovery_created_at_ms: None,
         private_aliases: Vec::new(),
         retention_eligible: false,
+        ignored_review: None,
     })
 }
 
@@ -568,6 +604,14 @@ pub(super) fn git_bytes(
     args: &[&str],
     context: &Context,
 ) -> Result<Vec<u8>, ProtocolError> {
+    git_bytes_with_stderr(root, args, context).map(|(stdout, _)| stdout)
+}
+
+pub(super) fn git_bytes_with_stderr(
+    root: &Path,
+    args: &[&str],
+    context: &Context,
+) -> Result<(Vec<u8>, Vec<u8>), ProtocolError> {
     let uid = context
         .repositories
         .iter()
@@ -616,7 +660,7 @@ pub(super) fn git_bytes(
     if !output.status.success() || output.truncated {
         return Err(blocked("git_baseline_unverified"));
     }
-    Ok(output.stdout)
+    Ok((output.stdout, output.stderr))
 }
 
 pub(super) fn processes_reference(paths: &[PathBuf]) -> Result<bool, ProtocolError> {

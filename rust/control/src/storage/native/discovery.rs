@@ -336,8 +336,8 @@ impl SourceCursor {
                     selected_root.git = context
                         .repositories
                         .iter()
-                        .find(|r| entry.path().starts_with(&r.root))
-                        .map(|r| r.root.clone());
+                        .find(|repository| entry.path().starts_with(&repository.root))
+                        .map(|repository| repository.root.clone());
                 }
                 if self.candidates >= 10_000 {
                     return Err(blocked("source_discovery_limit"));

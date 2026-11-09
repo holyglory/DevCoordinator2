@@ -378,6 +378,15 @@ pub(super) fn step(
                     visited = garbage.visited_entries as u64;
                     cursor.filesystem = garbage.next_cursor;
                     if cursor.filesystem.is_none() {
+                        if let Err(error) = devcoordinator2_executor_core::log_query::prune_empty_retention_containers(
+                            &worktree,
+                        ) && !matches!(error, LogQueryError::LogNotFound) {
+                            push_maintenance_error(
+                                &mut result.errors,
+                                &mut 0,
+                                repository.clone(),
+                            );
+                        }
                         if cursor.restart_changed {
                             cursor.start(
                                 service,

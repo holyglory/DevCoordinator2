@@ -184,6 +184,9 @@ impl ReconcileCursor {
                         }
                         record.artifact.observed_since_ms = old.artifact.observed_since_ms;
                         record.artifact.protected = old.artifact.protected;
+                        if record.ignored_review.is_none() {
+                            record.ignored_review = old.ignored_review.clone();
+                        }
                         record.disposal_approved = old.disposal_approved;
                         record.disposal_reason = old.disposal_reason.clone();
                         if old.disposal_approved {

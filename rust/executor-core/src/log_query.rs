@@ -1229,6 +1229,36 @@ pub fn collect_retention_garbage_step(
     })
 }
 
+/// Remove only the known retention containers after their contents are empty.
+/// Every component is opened without following links and the existing
+/// retention lock serializes this maintenance with log pruning/protection.
+pub fn prune_empty_retention_containers(worktree: &Path) -> Result<u64, LogQueryError> {
+    let guard = lock_retention(worktree)?;
+    let logs = guard.logs();
+    let test = guard.test();
+    let names = retention_names(logs, 4)?;
+    let mut removed = 0;
+    for name in ["runs", ".garbage"] {
+        if !names.iter().any(|entry| entry == name) {
+            continue;
+        }
+        let child = open_dir(logs, name)?;
+        let mut cookie = 0;
+        if retention_next_name(&child, &mut cookie)?.is_some() {
+            continue;
+        }
+        unix_fs::unlinkat(logs, name, AtFlags::REMOVEDIR).map_err(map_open_error)?;
+        removed += 1;
+    }
+    let fresh = retention_names(logs, 4)?;
+    if fresh.as_slice() == ["maintenance.lock"] {
+        unix_fs::unlinkat(logs, "maintenance.lock", AtFlags::empty()).map_err(map_open_error)?;
+        unix_fs::unlinkat(test, "logs", AtFlags::REMOVEDIR).map_err(map_open_error)?;
+        removed += 1;
+    }
+    Ok(removed)
+}
+
 pub fn prune_logs_receipt(
     worktree: &Path,
     request: LogPruneRequest,
@@ -1465,7 +1495,50 @@ pub struct RetentionRunInfo {
 }
 
 pub struct RetentionLock {
+    _root: File,
+    _dev: File,
+    test: File,
+    logs: File,
     _file: File,
+}
+
+fn validate_retention_binding(
+    root: &File,
+    dev: &File,
+    test: &File,
+    logs: &File,
+    file: &File,
+) -> Result<(), LogQueryError> {
+    let same = |actual: &File, parent: &File, name: &str, directory: bool| {
+        let current = unix_fs::fstat(actual).map_err(|_| LogQueryError::MaintenanceBusy)?;
+        let named = unix_fs::statat(parent, name, AtFlags::SYMLINK_NOFOLLOW)
+            .map_err(|_| LogQueryError::MaintenanceBusy)?;
+        let expected_type = if directory {
+            FileType::Directory
+        } else {
+            FileType::RegularFile
+        };
+        if (named.st_dev, named.st_ino) != (current.st_dev, current.st_ino)
+            || FileType::from_raw_mode(named.st_mode) != expected_type
+        {
+            return Err(LogQueryError::MaintenanceBusy);
+        }
+        Ok(())
+    };
+    same(dev, root, ".devcoordinator", true)?;
+    same(test, dev, "test", true)?;
+    same(logs, test, "logs", true)?;
+    same(file, logs, "maintenance.lock", false)
+}
+
+impl RetentionLock {
+    pub fn logs(&self) -> &File {
+        &self.logs
+    }
+
+    pub fn test(&self) -> &File {
+        &self.test
+    }
 }
 
 /// Used by protection writes so they cannot acknowledge a pin during removal.
@@ -1477,7 +1550,14 @@ pub fn lock_retention(worktree: &Path) -> Result<RetentionLock, LogQueryError> {
     let file = open_or_create_file(&logs, "maintenance.lock")?;
     unix_fs::flock(&file, FlockOperation::NonBlockingLockExclusive)
         .map_err(|_| LogQueryError::MaintenanceBusy)?;
-    Ok(RetentionLock { _file: file })
+    validate_retention_binding(&root, &dev, &test, &logs, &file)?;
+    Ok(RetentionLock {
+        _root: root,
+        _dev: dev,
+        test,
+        logs,
+        _file: file,
+    })
 }
 
 /// Content-free, read-only inventory using the same leaf model as pruning.
@@ -5162,6 +5242,54 @@ mod tests {
         );
         drop(active_lease);
         fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn retention_lock_rejects_an_unlinked_stale_descriptor() {
+        let root = temporary("stale-lock");
+        let guard = lock_retention(&root).expect("initial retention lock");
+        let root_fd = open_directory_path(&root).expect("root fd");
+        let dev = open_dir(&root_fd, ".devcoordinator").expect("dev fd");
+        let test = open_dir(&dev, "test").expect("test fd");
+        let logs = guard.logs();
+        let stale = open_or_create_file(logs, "maintenance.lock").expect("stale fd");
+        unix_fs::unlinkat(logs, "maintenance.lock", AtFlags::empty()).expect("unlink old lock");
+        let replacement = open_or_create_file(logs, "maintenance.lock").expect("new lock");
+        unix_fs::flock(&replacement, FlockOperation::NonBlockingLockExclusive)
+            .expect("new lock acquisition");
+        assert!(matches!(
+            validate_retention_binding(&root_fd, &dev, &test, logs, &stale),
+            Err(LogQueryError::MaintenanceBusy)
+        ));
+        drop(replacement);
+        drop(stale);
+        drop(guard);
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn empty_retention_containers_are_removed_but_nonempty_or_linked_roots_remain() {
+        let root = temporary("empty-containers");
+        let (run, _) = create_run(&root, 51, "metadata", b"retained\n", epoch_ms(), false);
+        assert_eq!(prune_empty_retention_containers(&root).unwrap(), 0);
+        assert!(root.join(".devcoordinator/test/logs/runs").exists());
+        fs::remove_dir_all(root.join(".devcoordinator/test/logs/runs")).unwrap();
+        fs::create_dir(root.join(".devcoordinator/test/logs/runs")).unwrap();
+        assert!(prune_empty_retention_containers(&root).unwrap() >= 1);
+        assert!(!root.join(".devcoordinator/test/logs").exists());
+
+        let linked = temporary("linked-containers");
+        let logs = linked.join(".devcoordinator/test/logs");
+        fs::create_dir_all(&logs).unwrap();
+        fs::write(logs.join("maintenance.lock"), b"").unwrap();
+        let outside = linked.join("outside");
+        fs::create_dir(&outside).unwrap();
+        let _ = fs::remove_dir(logs.join("runs"));
+        symlink(&outside, logs.join("runs")).unwrap();
+        assert!(prune_empty_retention_containers(&linked).is_err());
+        assert!(outside.exists());
+        let _ = run;
+        fs::remove_dir_all(linked).expect("linked cleanup");
     }
 
     #[test]
