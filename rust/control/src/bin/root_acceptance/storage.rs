@@ -1890,7 +1890,10 @@ pub(super) fn worktrees_and_backup_floor(world: &mut World) -> Result<(), String
     world.write_config("schema = 2\n")?;
     world.write_owned("source.txt", "authoritative fixture source\n")?;
     world.write_owned("package.json", "{\"name\":\"storage-fixture\"}\n")?;
-    world.write_owned(".gitignore", "backups/\nnode_modules/\n")?;
+    world.write_owned(
+        ".gitignore",
+        "backups/\nnode_modules/\n.serena/\n.devcoordinator/\n.devcoordinator.toml\n",
+    )?;
     world.git(&["add", "."])?;
     world.git(&[
         "-c",
@@ -1940,6 +1943,7 @@ pub(super) fn worktrees_and_backup_floor(world: &mut World) -> Result<(), String
         "dirty-worktree",
         "unique-worktree",
         "cache-worktree",
+        "metadata-worktree",
     ] {
         let path = worktrees.join(name);
         fs::create_dir(&path).map_err(|e| e.to_string())?;
@@ -1969,19 +1973,68 @@ pub(super) fn worktrees_and_backup_floor(world: &mut World) -> Result<(), String
         world.harness.caller_uid,
         world.harness.caller_gid,
     )?;
-    let dirty_cache_path = trees[1].join("node_modules");
+    let dirty_cache_path = trees[1].join(".serena");
     fs::create_dir_all(&dirty_cache_path).map_err(|e| e.to_string())?;
-    fs::write(dirty_cache_path.join(".package-lock.json"), "{}\n").map_err(|e| e.to_string())?;
+    fs::write(dirty_cache_path.join("settings.json"), "{}\n").map_err(|e| e.to_string())?;
     chown_path(
         &dirty_cache_path,
         world.harness.caller_uid,
         world.harness.caller_gid,
     )?;
     chown_path(
-        &dirty_cache_path.join(".package-lock.json"),
+        &dirty_cache_path.join("settings.json"),
         world.harness.caller_uid,
         world.harness.caller_gid,
     )?;
+    let metadata_root = trees[4].join(".devcoordinator");
+    let current_root = metadata_root.join("test/current");
+    fs::create_dir_all(&current_root).map_err(|e| e.to_string())?;
+    chown_path(
+        &metadata_root,
+        world.harness.caller_uid,
+        world.harness.caller_gid,
+    )?;
+    chown_path(
+        &metadata_root.join("test"),
+        world.harness.caller_uid,
+        world.harness.caller_gid,
+    )?;
+    chown_path(
+        &current_root,
+        world.harness.caller_uid,
+        world.harness.caller_gid,
+    )?;
+    let metadata = [
+        (".devcoordinator.toml", "schema = 2\n"),
+        (".devcoordinator/test/current/check-plan.json", "{}\n"),
+        (".devcoordinator/test/current/check-report.json", "{}\n"),
+        (
+            ".devcoordinator/test/current/container-lifecycle.json",
+            "{}\n",
+        ),
+        (".devcoordinator/test/current/env", "fixture=1\n"),
+        (
+            ".devcoordinator/test/current/summary.json",
+            "{\"status\":\"completed\"}\n",
+        ),
+        (".devcoordinator/test/history.json", "[]\n"),
+        (".devcoordinator/test/evidence.json", "{}\n"),
+    ];
+    for (relative, body) in metadata {
+        let path = trees[4].join(relative);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        fs::write(&path, body).map_err(|e| e.to_string())?;
+        chown_path(&path, world.harness.caller_uid, world.harness.caller_gid)?;
+    }
+    let logs_root = metadata_root.join("test/logs");
+    let runs_root = logs_root.join("runs");
+    fs::create_dir_all(&runs_root).map_err(|e| e.to_string())?;
+    for path in [&logs_root, &runs_root] {
+        fs::set_permissions(path, fs::Permissions::from_mode(0o711)).map_err(|e| e.to_string())?;
+        chown_path(path, 0, 0)?;
+    }
     for name in ["protected-child", "leased-child"] {
         let path = trees[0].join(name);
         fs::create_dir(&path).map_err(|e| e.to_string())?;
@@ -2046,7 +2099,7 @@ pub(super) fn worktrees_and_backup_floor(world: &mut World) -> Result<(), String
     let clean = row("clean-worktree")?;
     let dirty = row("dirty-worktree")?;
     let unique = row("unique-worktree")?;
-    let ignored = row("cache-worktree")?;
+    let ignored = row("metadata-worktree")?;
     let cache = row("node_modules")?;
     ensure!(
         dirty["deletable"] == false && unique["deletable"] == false,
@@ -2079,13 +2132,96 @@ pub(super) fn worktrees_and_backup_floor(world: &mut World) -> Result<(), String
     let ignored_intent = mcp(
         world,
         "storage_register",
-        json!({"artifact_id":ignored["artifact_id"],"expected_revision":ignored["revision"],"repository_id":repo,"effect":"source_worktree","reason":"Preserve ignored worktree blockers while recording intent"}),
+        json!({"artifact_id":ignored["artifact_id"],"expected_revision":ignored["revision"],"repository_id":repo,"effect":"source_worktree","reviewed_ignored_files":metadata.iter().map(|(path,body)| json!({"path":path,"sha256":sha256_hex(body.as_bytes())})).collect::<Vec<_>>(),"reason":"Review exact generated worktree metadata before recording intent"}),
     )?;
     ensure!(
         ignored_intent["deletable"] == json!(false)
-            && reason_codes(&ignored_intent).contains(&json!("unreviewed_ignored_files")),
+            && (reason_codes(&ignored_intent).contains(&json!("unreviewed_ignored_files"))
+                || reason_codes(&ignored_intent).contains(&json!("ignored_files_unverified"))),
         "bounded ignored worktree registration did not preserve blockers: {}",
         bounded_json(&ignored_intent)
+    );
+    let history_path = trees[4].join(".devcoordinator/test/history.json");
+    fs::write(&history_path, "[\"changed\"]\n").map_err(|e| e.to_string())?;
+    let changed_inventory = scanned(world, &repo, "changed-reviewed-metadata")?;
+    let changed_worktree = changed_inventory["artifacts"]
+        .as_array()
+        .and_then(|rows| rows.iter().find(|row| row["name"] == "metadata-worktree"))
+        .cloned()
+        .ok_or("changed metadata worktree missing")?;
+    ensure!(
+        reason_codes(&changed_worktree).contains(&json!("ignored_review_file_changed"))
+            || reason_codes(&changed_worktree).contains(&json!("unreviewed_ignored_files")),
+        "changed reviewed metadata was accepted: {}",
+        bounded_json(&changed_worktree)
+    );
+    fs::write(&history_path, "[]\n").map_err(|e| e.to_string())?;
+    let refreshed = mcp(
+        world,
+        "storage_register",
+        json!({"artifact_id":changed_worktree["artifact_id"],"expected_revision":changed_worktree["revision"],"repository_id":repo,"effect":"source_worktree","reviewed_ignored_files":metadata.iter().map(|(path,body)| json!({"path":path,"sha256":sha256_hex(body.as_bytes())})).collect::<Vec<_>>(),"reason":"Refresh changed metadata review"}),
+    )?;
+    ensure!(
+        refreshed["deletable"] == json!(false)
+            && reason_codes(&refreshed).contains(&json!("ignored_review_pending")),
+        "changed metadata review was not invalidated before rescanning: {}",
+        bounded_json(&refreshed)
+    );
+    let database = world.authority()?;
+    let logs = devcoordinator2_control::test_logs::TestLogService::new(
+        database.clone(),
+        devcoordinator2_control::repository::Registry::new(database),
+    );
+    let mut retention_cursor = None;
+    for _ in 0..64 {
+        let step = logs
+            .run_maintenance_step(retention_cursor, 32, Duration::from_secs(2))
+            .map_err(|error| error.message)?;
+        retention_cursor = step.next_worktree_id;
+        if step.complete {
+            break;
+        }
+    }
+    let inventory = scanned(world, &repo, "reviewed-metadata-after-retention")?;
+    let rows = inventory["artifacts"]
+        .as_array()
+        .ok_or("reviewed metadata inventory missing")?;
+    let reviewed_worktree = rows
+        .iter()
+        .find(|row| row["name"] == "metadata-worktree")
+        .cloned()
+        .ok_or("reviewed worktree missing after retention")?;
+    ensure!(
+        !reason_codes(&reviewed_worktree).contains(&json!("unreviewed_ignored_files"))
+            && !reason_codes(&reviewed_worktree).contains(&json!("ignored_files_unverified")),
+        "exact reviewed metadata remained blocked after supported retention: {}",
+        bounded_json(&reviewed_worktree)
+    );
+    let reviewed_plan = mcp(
+        world,
+        "storage_cleanup_plan",
+        json!({"artifact_ids":[reviewed_worktree["artifact_id"]],"include_persistent_data":true}),
+    )?;
+    ensure!(
+        reviewed_plan["ready"] == json!(true),
+        "reviewed metadata worktree cleanup plan was not ready: {}",
+        bounded_json(&reviewed_plan)
+    );
+    let reviewed_job = mcp(
+        world,
+        "storage_cleanup_start",
+        json!({"plan_id":reviewed_plan["plan_id"],"idempotency_key":"remove-reviewed-metadata-worktree"}),
+    )?;
+    let reviewed_result = wait_job(
+        world,
+        reviewed_job["job_id"]
+            .as_str()
+            .ok_or("reviewed cleanup job missing")?,
+    )?;
+    ensure!(
+        reviewed_result["state"] == "completed" && !trees[4].exists(),
+        "reviewed metadata worktree cleanup failed: {}",
+        bounded_json(&reviewed_result)
     );
     let cache_intent = mcp(
         world,
@@ -2194,6 +2330,16 @@ pub(super) fn worktrees_and_backup_floor(world: &mut World) -> Result<(), String
         registered["deletable"] == true,
         "clean retired worktree remained blocked: {}",
         bounded_json(&registered)
+    );
+    let renewed = mcp(
+        world,
+        "storage_register",
+        json!({"artifact_id":clean["artifact_id"],"expected_revision":registered["revision"],"repository_id":repo,"effect":"source_worktree","reason":"Renew existing source-worktree disposal intent"}),
+    )?;
+    ensure!(
+        renewed["deletable"] == json!(true),
+        "existing cleanup-owned source-worktree intent was not bounded: {}",
+        bounded_json(&renewed)
     );
     fs::write(trees[0].join("source.txt"), "dirty after intent\n").map_err(|e| e.to_string())?;
     let guarded_plan = mcp(

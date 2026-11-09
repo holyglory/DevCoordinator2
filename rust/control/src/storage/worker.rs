@@ -1,7 +1,7 @@
 use super::{
     StorageService, blocked, conflict, db_error, hash, json,
     model::{Context, Discovery, Repository, atom},
-    parse,
+    parse, unavailable,
 };
 use crate::database::OptionalExtension;
 use crate::{access::Caller, database::DatabaseError, events::NewEvent};
@@ -374,6 +374,23 @@ impl StorageService {
             now_ms: now,
             ..Context::default()
         };
+        let reviewed = self.database.read(|connection| {
+            let mut query = connection.prepare(
+                "SELECT record_json FROM storage_artifacts WHERE kind='worktree' AND removed_at_ms IS NULL AND jsonb_typeof(record_json->'ignored_review')='object' ORDER BY artifact_id LIMIT 1025",
+            )?;
+            Ok(query
+                .query_map([], |row| row.get::<_, String>(0))?
+                .collect::<Result<Vec<_>, _>>()?)
+        }).map_err(db_error)?;
+        if reviewed.len() > 1024 {
+            return Err(unavailable("ignored_review_catalogue_too_large"));
+        }
+        for value in reviewed {
+            let record: super::model::Record = parse(&value)?;
+            if let Some(review) = record.ignored_review {
+                context.ignored_reviews.insert(record.resource_key, review);
+            }
+        }
         // Git also knows linked worktrees that have never run a Coordinator
         // command. Inspect it under the registered repository owner's identity.
         for repository in context.repositories.clone() {

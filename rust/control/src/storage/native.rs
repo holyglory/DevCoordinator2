@@ -51,7 +51,8 @@ pub trait Backend: Send + Sync {
         record: &Record,
         repository_id: &str,
         now_ms: u64,
-    ) -> Result<String, ProtocolError>;
+        reviewed_ignored_files: Option<&[api::IgnoredFileReview]>,
+    ) -> Result<(String, Option<super::model::IgnoredReview>), ProtocolError>;
     fn remove(
         &self,
         record: &Record,
@@ -140,8 +141,9 @@ impl Backend for HostBackend {
         record: &Record,
         repository_id: &str,
         now_ms: u64,
-    ) -> Result<String, ProtocolError> {
-        self.validate_intent(record, repository_id, now_ms)
+        reviewed_ignored_files: Option<&[api::IgnoredFileReview]>,
+    ) -> Result<(String, Option<super::model::IgnoredReview>), ProtocolError> {
+        self.validate_intent(record, repository_id, now_ms, reviewed_ignored_files)
     }
 
     fn absent(&self, r: &Record, context: &Context) -> Result<bool, ProtocolError> {
@@ -325,7 +327,7 @@ impl Backend for HostBackend {
                     return Err(blocked("nested_repository"));
                 }
                 if r.artifact.kind == api::Kind::Worktree {
-                    self.validate_worktree(path, git_root.as_deref(), context)?;
+                    self.validate_worktree(r, path, git_root.as_deref(), context)?;
                 } else if let Some(git) = git_root {
                     let git = context
                         .repositories
@@ -593,6 +595,7 @@ pub(super) fn candidate(
         recovery_created_at_ms: None,
         private_aliases: Vec::new(),
         retention_eligible: false,
+        ignored_review: None,
     })
 }
 
@@ -601,6 +604,14 @@ pub(super) fn git_bytes(
     args: &[&str],
     context: &Context,
 ) -> Result<Vec<u8>, ProtocolError> {
+    git_bytes_with_stderr(root, args, context).map(|(stdout, _)| stdout)
+}
+
+pub(super) fn git_bytes_with_stderr(
+    root: &Path,
+    args: &[&str],
+    context: &Context,
+) -> Result<(Vec<u8>, Vec<u8>), ProtocolError> {
     let uid = context
         .repositories
         .iter()
@@ -649,7 +660,7 @@ pub(super) fn git_bytes(
     if !output.status.success() || output.truncated {
         return Err(blocked("git_baseline_unverified"));
     }
-    Ok(output.stdout)
+    Ok((output.stdout, output.stderr))
 }
 
 pub(super) fn processes_reference(paths: &[PathBuf]) -> Result<bool, ProtocolError> {

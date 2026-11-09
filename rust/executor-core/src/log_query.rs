@@ -1229,6 +1229,38 @@ pub fn collect_retention_garbage_step(
     })
 }
 
+/// Remove only the known retention containers after their contents are empty.
+/// Every component is opened without following links and the existing
+/// retention lock serializes this maintenance with log pruning/protection.
+pub fn prune_empty_retention_containers(worktree: &Path) -> Result<u64, LogQueryError> {
+    let _guard = lock_retention(worktree)?;
+    let root = open_directory_path(worktree)?;
+    let dev = open_dir(&root, ".devcoordinator")?;
+    let test = open_dir(&dev, "test")?;
+    let logs = open_dir(&test, "logs")?;
+    let names = retention_names(&logs, 4)?;
+    let mut removed = 0;
+    for name in ["runs", ".garbage"] {
+        if !names.iter().any(|entry| entry == name) {
+            continue;
+        }
+        let child = open_dir(&logs, name)?;
+        let mut cookie = 0;
+        if retention_next_name(&child, &mut cookie)?.is_some() {
+            continue;
+        }
+        unix_fs::unlinkat(&logs, name, AtFlags::REMOVEDIR).map_err(map_open_error)?;
+        removed += 1;
+    }
+    let fresh = retention_names(&logs, 4)?;
+    if fresh.as_slice() == ["maintenance.lock"] {
+        unix_fs::unlinkat(&logs, "maintenance.lock", AtFlags::empty()).map_err(map_open_error)?;
+        unix_fs::unlinkat(&test, "logs", AtFlags::REMOVEDIR).map_err(map_open_error)?;
+        removed += 1;
+    }
+    Ok(removed)
+}
+
 pub fn prune_logs_receipt(
     worktree: &Path,
     request: LogPruneRequest,

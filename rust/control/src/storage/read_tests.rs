@@ -54,6 +54,7 @@ pub(super) fn record(id: &str, now: u64) -> Record {
         recovery_created_at_ms: None,
         private_aliases: vec![],
         retention_eligible: false,
+        ignored_review: None,
     }
 }
 
@@ -743,8 +744,9 @@ fn bounded_worktree_intent_preserves_blockers_and_live_safety_guards() {
     save(&service, &protected);
     save(&service, &descendant);
     let backend = native::HostBackend::new(fixture.config.clone(), fixture.database.clone());
-    let error = native::Backend::validate_disposal_intent(&backend, &target, "project-alpha", now)
-        .unwrap_err();
+    let error =
+        native::Backend::validate_disposal_intent(&backend, &target, "project-alpha", now, None)
+            .unwrap_err();
     assert_eq!(error.message, "protected_shared_data");
 
     protected.artifact.protected = false;
@@ -767,8 +769,9 @@ fn bounded_worktree_intent_preserves_blockers_and_live_safety_guards() {
             Ok(())
         })
         .unwrap();
-    let error = native::Backend::validate_disposal_intent(&backend, &target, "project-alpha", now)
-        .unwrap_err();
+    let error =
+        native::Backend::validate_disposal_intent(&backend, &target, "project-alpha", now, None)
+            .unwrap_err();
     assert_eq!(error.message, "active_lease");
     fixture
         .database
@@ -800,6 +803,7 @@ fn bounded_worktree_intent_preserves_blockers_and_live_safety_guards() {
                 expected_revision: target.artifact.revision,
                 repository_id: Some("project-alpha".into()),
                 effect: api::Effect::SourceWorktree,
+                reviewed_ignored_files: None,
                 reason: "Preserve source-worktree blockers".into(),
             },
             &caller,

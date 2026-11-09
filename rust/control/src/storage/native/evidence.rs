@@ -613,6 +613,7 @@ mod tests {
             recovery_created_at_ms: None,
             private_aliases: Vec::new(),
             retention_eligible: true,
+            ignored_review: None,
         })
         .unwrap()
     }

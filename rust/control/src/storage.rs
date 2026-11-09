@@ -676,20 +676,40 @@ impl StorageService {
             return Err(invalid("disposal_effect_required"));
         }
         let bounded_worktree = r.artifact.kind == api::Kind::Worktree
-            && r.artifact.ownership == "recognized"
+            && (r.artifact.ownership == "recognized"
+                || (r.artifact.ownership == "cleanup_owned"
+                    && r.disposal_approved
+                    && r.artifact.effect == api::Effect::SourceWorktree))
             && r.discovered_effect == api::Effect::SourceWorktree
             && p.effect == api::Effect::SourceWorktree
             && p.repository_id.is_some()
             && r.artifact.repository_id == p.repository_id;
+        if p.reviewed_ignored_files.is_some() && !bounded_worktree {
+            return Err(blocked("ignored_review_requires_recognized_worktree"));
+        }
         if bounded_worktree {
             let repository_id = p
                 .repository_id
                 .as_deref()
                 .expect("bounded worktree registration has a repository");
-            let repository_name =
-                self.backend
-                    .validate_disposal_intent(&r, repository_id, self.now_ms())?;
+            let (repository_name, ignored_review) = self.backend.validate_disposal_intent(
+                &r,
+                repository_id,
+                self.now_ms(),
+                p.reviewed_ignored_files.as_deref(),
+            )?;
             r.artifact.repository_name = Some(repository_name);
+            if p.reviewed_ignored_files.is_some() {
+                r.ignored_review = ignored_review;
+                r.artifact.verified_at_ms = None;
+                if !r
+                    .blockers
+                    .iter()
+                    .any(|blocker| blocker == "ignored_review_pending")
+                {
+                    r.blockers.push("ignored_review_pending".into());
+                }
+            }
         } else {
             let context = self.context()?;
             self.backend.validate(&r, &context, &[])?;
