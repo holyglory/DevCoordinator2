@@ -682,3 +682,142 @@ fn native_storage_pages_match_current_safety_without_loading_the_catalog() {
                 .count() as u64
     );
 }
+
+#[test]
+fn bounded_worktree_intent_preserves_blockers_and_live_safety_guards() {
+    let fixture = Fixture::new();
+    let service = service(&fixture);
+    let now = service.now_ms();
+    let worktree = fixture._temporary.path().join("linked-worktree");
+    let protected_alias = fixture._temporary.path().join("protected-alias");
+    let leased_descendant = worktree.join("leased-descendant");
+    for path in [&worktree, &protected_alias, &leased_descendant] {
+        std::fs::create_dir_all(path).unwrap();
+    }
+    let worktree_identity = fs::identity(&worktree).unwrap();
+    let mut target = record("bounded-worktree", now);
+    target.artifact.kind = api::Kind::Worktree;
+    target.artifact.effect = api::Effect::SourceWorktree;
+    target.artifact.ownership = "recognized".into();
+    target.artifact.repository_id = Some("project-alpha".into());
+    target.artifact.repository_name = Some("Project Alpha".into());
+    target.artifact.protected = false;
+    target.artifact.deletable = false;
+    target.locator = Locator::Directory {
+        path: worktree.clone(),
+        device: worktree_identity.0,
+        inode: worktree_identity.1,
+        root: worktree.clone(),
+        git_root: Some(fixture.repository.clone()),
+    };
+    target.resource_key = "worktree-resource".into();
+    target.ancestor_keys = vec!["protected-alias-resource".into()];
+    target.discovered_effect = api::Effect::SourceWorktree;
+    target.blockers = vec!["dirty_worktree".into()];
+    target.private_aliases = vec![worktree.clone()];
+
+    let mut protected = record("protected-alias", now);
+    protected.artifact.protected = true;
+    protected.resource_key = "protected-alias-resource".into();
+    protected.locator = Locator::Directory {
+        path: protected_alias.clone(),
+        device: fs::identity(&protected_alias).unwrap().0,
+        inode: fs::identity(&protected_alias).unwrap().1,
+        root: protected_alias.clone(),
+        git_root: None,
+    };
+    protected.private_aliases = vec![protected_alias];
+
+    let mut descendant = record("leased-descendant", now);
+    descendant.resource_key = "leased-descendant-resource".into();
+    descendant.ancestor_keys = vec![target.resource_key.clone()];
+    descendant.locator = Locator::Directory {
+        path: leased_descendant.clone(),
+        device: fs::identity(&leased_descendant).unwrap().0,
+        inode: fs::identity(&leased_descendant).unwrap().1,
+        root: worktree,
+        git_root: None,
+    };
+    descendant.private_aliases = vec![leased_descendant];
+    save(&service, &target);
+    save(&service, &protected);
+    save(&service, &descendant);
+    let backend = native::HostBackend::new(fixture.config.clone(), fixture.database.clone());
+    let error = native::Backend::validate_disposal_intent(&backend, &target, "project-alpha", now)
+        .unwrap_err();
+    assert_eq!(error.message, "protected_shared_data");
+
+    protected.artifact.protected = false;
+    save(&service, &protected);
+    fixture
+        .database
+        .call(|connection| {
+            connection.execute(
+                "INSERT INTO storage_leases(lease_id,actor,lease_json,expires_at_ms) VALUES('bounded-lease','fixture',$1,$2)",
+                crate::database::params![
+                    json!({
+                        "lease_id":"bounded-lease",
+                        "artifact_ids":["leased-descendant"],
+                        "expires_at_ms":now+60_000
+                    })
+                    .to_string(),
+                    (now + 60_000) as i64,
+                ],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    let error = native::Backend::validate_disposal_intent(&backend, &target, "project-alpha", now)
+        .unwrap_err();
+    assert_eq!(error.message, "active_lease");
+    fixture
+        .database
+        .call(|connection| {
+            connection.execute(
+                "DELETE FROM storage_leases WHERE lease_id='bounded-lease'",
+                [],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+
+    let caller = crate::access::Caller {
+        via_edge: false,
+        pid: 1,
+        uid: 1000,
+        gid: 1000,
+        client_kind: devcoordinator2_api::ClientKind::Codex,
+        model: None,
+        effort: None,
+        client_session: None,
+        work: None,
+        identity: None,
+    };
+    let result = service
+        .register(
+            api::Register {
+                artifact_id: target.artifact.artifact_id.clone(),
+                expected_revision: target.artifact.revision,
+                repository_id: Some("project-alpha".into()),
+                effect: api::Effect::SourceWorktree,
+                reason: "Preserve source-worktree blockers".into(),
+            },
+            &caller,
+        )
+        .unwrap();
+    assert!(!result.deletable);
+    assert!(
+        result
+            .reasons
+            .iter()
+            .any(|reason| reason == "dirty_worktree")
+    );
+    let saved = service.record("bounded-worktree").unwrap();
+    assert!(saved.disposal_approved);
+    assert!(
+        saved
+            .blockers
+            .iter()
+            .any(|blocker| blocker == "dirty_worktree")
+    );
+}

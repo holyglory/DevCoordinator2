@@ -675,23 +675,40 @@ impl StorageService {
         if p.effect == api::Effect::Unknown {
             return Err(invalid("disposal_effect_required"));
         }
-        let context = self.context()?;
-        self.backend.validate(&r, &context, &[])?;
-        if let Some(repo) = p.repository_id {
-            let owner = context
-                .repositories
-                .iter()
-                .find(|x| x.id == repo)
-                .ok_or_else(|| invalid("repository_not_registered"))?;
-            if r.artifact
+        let bounded_worktree = r.artifact.kind == api::Kind::Worktree
+            && r.artifact.ownership == "recognized"
+            && r.discovered_effect == api::Effect::SourceWorktree
+            && p.effect == api::Effect::SourceWorktree
+            && p.repository_id.is_some()
+            && r.artifact.repository_id == p.repository_id;
+        if bounded_worktree {
+            let repository_id = p
                 .repository_id
-                .as_ref()
-                .is_some_and(|id| id != &repo)
-            {
-                return Err(blocked("ownership_conflict"));
+                .as_deref()
+                .expect("bounded worktree registration has a repository");
+            let repository_name =
+                self.backend
+                    .validate_disposal_intent(&r, repository_id, self.now_ms())?;
+            r.artifact.repository_name = Some(repository_name);
+        } else {
+            let context = self.context()?;
+            self.backend.validate(&r, &context, &[])?;
+            if let Some(repo) = p.repository_id {
+                let owner = context
+                    .repositories
+                    .iter()
+                    .find(|x| x.id == repo)
+                    .ok_or_else(|| invalid("repository_not_registered"))?;
+                if r.artifact
+                    .repository_id
+                    .as_ref()
+                    .is_some_and(|id| id != &repo)
+                {
+                    return Err(blocked("ownership_conflict"));
+                }
+                r.artifact.repository_id = Some(repo);
+                r.artifact.repository_name = Some(owner.name.clone());
             }
-            r.artifact.repository_id = Some(repo);
-            r.artifact.repository_name = Some(owner.name.clone());
         }
         r.disposal_approved = true;
         r.disposal_reason = Some(p.reason);

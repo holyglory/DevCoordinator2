@@ -1,13 +1,123 @@
-use super::{Backend, HostBackend, candidate, git_bytes, processes_reference};
+use super::{Backend, HostBackend, candidate, git_bytes, processes_reference, validate_path};
+use crate::database::OptionalExtension;
 use crate::storage::{
-    blocked, fs, hash,
+    blocked, db_error, fs, hash, invalid,
     model::{Context, Discovery, Locator, Record},
     unavailable,
 };
 use devcoordinator2_api::{ProtocolError, storage as api};
-use std::path::Path;
+use std::path::{Component, Path, PathBuf};
 
 impl HostBackend {
+    pub(super) fn validate_intent(
+        &self,
+        r: &Record,
+        repository_id: &str,
+        now_ms: u64,
+    ) -> Result<String, ProtocolError> {
+        if r.artifact.kind != api::Kind::Worktree
+            || r.artifact.ownership != "recognized"
+            || r.discovered_effect != api::Effect::SourceWorktree
+        {
+            return Err(blocked("disposal_intent_not_recognized"));
+        }
+        if r.artifact.repository_id.as_deref() != Some(repository_id) {
+            return Err(blocked("ownership_conflict"));
+        }
+        let repository_id = repository_id.to_owned();
+        let owner = self
+            .database
+            .read(move |connection| {
+                Ok(connection
+                    .query_row(
+                        "SELECT display_name,root_path FROM repositories WHERE repository_id=$1 AND archived_at IS NULL",
+                        [&repository_id],
+                        |row| {
+                            Ok((
+                                row.get::<_, String>(0)?,
+                                PathBuf::from(row.get::<_, String>(1)?),
+                            ))
+                        },
+                    )
+                    .optional()?)
+            })
+            .map_err(db_error)?
+            .ok_or_else(|| invalid("repository_not_registered"))?;
+        let Locator::Directory {
+            path,
+            device,
+            inode,
+            root,
+            git_root,
+        } = &r.locator
+        else {
+            return Err(blocked("worktree_locator_invalid"));
+        };
+        let normal_absolute = |value: &Path| {
+            value.is_absolute()
+                && value
+                    .components()
+                    .all(|component| matches!(component, Component::RootDir | Component::Normal(_)))
+        };
+        if !normal_absolute(path) || !normal_absolute(root) {
+            return Err(blocked("invalid_storage_path"));
+        }
+        if !path.starts_with(root) {
+            return Err(blocked("outside_registered_root"));
+        }
+        let Some(git_root) = git_root else {
+            return Err(blocked("git_owner_unknown"));
+        };
+        if git_root != &owner.1 {
+            return Err(blocked("ownership_conflict"));
+        }
+        if path == git_root {
+            return Err(blocked("canonical_checkout"));
+        }
+        // Keep the existing system-data and metadata protections while
+        // avoiding a recursive measurement of the candidate tree.
+        validate_path(path, &self.config, false, &self.database)?;
+        fs::identity(root)?;
+        fs::identity(git_root)?;
+        if fs::identity(path)? != (*device, *inode) {
+            return Err(blocked("identity_changed"));
+        }
+
+        let resource = r.resource_key.clone();
+        let ancestors = crate::storage::json(&r.ancestor_keys)?;
+        let lease_resource = resource.clone();
+        let lease_ancestors = ancestors.clone();
+        let artifact_id = r.artifact.artifact_id.clone();
+        let protected = r.artifact.protected;
+        let safety = self
+            .database
+            .read(move |connection| {
+                let shared_protection = connection.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM storage_artifacts p WHERE p.removed_at_ms IS NULL AND p.projection_protected AND (p.projection_resource_key=$1 OR p.projection_resource_key IN (SELECT value FROM jsonb_array_elements_text($2::jsonb)) OR p.projection_ancestors @> jsonb_build_array($1)))",
+                    crate::database::params![resource, ancestors],
+                    |row| row.get::<_, bool>(0),
+                )?;
+                let active_lease = connection.query_row(
+                    "WITH owned(artifact_id) AS (SELECT $1::text UNION SELECT related.artifact_id FROM storage_artifacts related WHERE related.removed_at_ms IS NULL AND (related.projection_resource_key=$2 OR related.projection_resource_key IN (SELECT value FROM jsonb_array_elements_text($3::jsonb)) OR related.projection_ancestors @> jsonb_build_array($2))) SELECT EXISTS(SELECT 1 FROM owned JOIN storage_leases lease ON lease.projection_artifact_ids @> jsonb_build_array(owned.artifact_id) WHERE lease.projection_expires_at_ms>$4::bigint)",
+                    crate::database::params![artifact_id, lease_resource, lease_ancestors, now_ms as i64],
+                    |row| row.get::<_, bool>(0),
+                )?;
+                Ok((shared_protection, active_lease))
+            })
+            .map_err(db_error)?;
+        if protected || safety.0 {
+            return Err(blocked(if protected {
+                "explicitly_protected"
+            } else {
+                "protected_shared_data"
+            }));
+        }
+        if safety.1 {
+            return Err(blocked("active_lease"));
+        }
+        Ok(owner.0)
+    }
+
     pub(super) fn native_backup_root_identity(
         &self,
         r: &Record,

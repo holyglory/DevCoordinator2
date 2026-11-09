@@ -1889,7 +1889,8 @@ fn observation_age_and_plan_expiry(world: &World, row: &Value, now: u64) -> Resu
 pub(super) fn worktrees_and_backup_floor(world: &mut World) -> Result<(), String> {
     world.write_config("schema = 2\n")?;
     world.write_owned("source.txt", "authoritative fixture source\n")?;
-    world.write_owned(".gitignore", "backups/\n")?;
+    world.write_owned("package.json", "{\"name\":\"storage-fixture\"}\n")?;
+    world.write_owned(".gitignore", "backups/\nnode_modules/\n")?;
     world.git(&["add", "."])?;
     world.git(&[
         "-c",
@@ -1934,7 +1935,12 @@ pub(super) fn worktrees_and_backup_floor(world: &mut World) -> Result<(), String
         world.harness.caller_uid,
         world.harness.caller_gid,
     )?;
-    for name in ["clean-worktree", "dirty-worktree", "unique-worktree"] {
+    for name in [
+        "clean-worktree",
+        "dirty-worktree",
+        "unique-worktree",
+        "cache-worktree",
+    ] {
         let path = worktrees.join(name);
         fs::create_dir(&path).map_err(|e| e.to_string())?;
         chown_path(&path, world.harness.caller_uid, world.harness.caller_gid)?;
@@ -1950,6 +1956,47 @@ pub(super) fn worktrees_and_backup_floor(world: &mut World) -> Result<(), String
         }
         trees.push(path);
     }
+    let cache_path = trees[3].join("node_modules");
+    fs::create_dir_all(&cache_path).map_err(|e| e.to_string())?;
+    fs::write(cache_path.join(".package-lock.json"), "{}\n").map_err(|e| e.to_string())?;
+    chown_path(
+        &cache_path,
+        world.harness.caller_uid,
+        world.harness.caller_gid,
+    )?;
+    chown_path(
+        &cache_path.join(".package-lock.json"),
+        world.harness.caller_uid,
+        world.harness.caller_gid,
+    )?;
+    let dirty_cache_path = trees[1].join("node_modules");
+    fs::create_dir_all(&dirty_cache_path).map_err(|e| e.to_string())?;
+    fs::write(dirty_cache_path.join(".package-lock.json"), "{}\n").map_err(|e| e.to_string())?;
+    chown_path(
+        &dirty_cache_path,
+        world.harness.caller_uid,
+        world.harness.caller_gid,
+    )?;
+    chown_path(
+        &dirty_cache_path.join(".package-lock.json"),
+        world.harness.caller_uid,
+        world.harness.caller_gid,
+    )?;
+    for name in ["protected-child", "leased-child"] {
+        let path = trees[0].join(name);
+        fs::create_dir(&path).map_err(|e| e.to_string())?;
+        chown_path(&path, world.harness.caller_uid, world.harness.caller_gid)?;
+    }
+    data(&world.call(
+        "storage.roots.set",
+        json!({
+            "repository_id":repo,
+            "expected_revision":0,
+            "label":"Nested worktree fixtures",
+            "path":trees[0],
+            "kind":"unknown"
+        }),
+    )?)?;
     fs::write(trees[1].join("source.txt"), "valuable uncommitted changes")
         .map_err(|e| e.to_string())?;
     fs::write(trees[2].join("source.txt"), "valuable unique commit").map_err(|e| e.to_string())?;
@@ -1999,6 +2046,8 @@ pub(super) fn worktrees_and_backup_floor(world: &mut World) -> Result<(), String
     let clean = row("clean-worktree")?;
     let dirty = row("dirty-worktree")?;
     let unique = row("unique-worktree")?;
+    let ignored = row("cache-worktree")?;
+    let cache = row("node_modules")?;
     ensure!(
         dirty["deletable"] == false && unique["deletable"] == false,
         "valuable worktree was labelled safe"
@@ -2012,6 +2061,130 @@ pub(super) fn worktrees_and_backup_floor(world: &mut World) -> Result<(), String
         reason_codes(&unique).contains(&json!("unique_worktree_commits")),
         "unique commit reason missing"
     );
+    ensure!(
+        !reason_codes(&cache).contains(&json!("git_baseline_unverified")),
+        "linked-worktree cache used the canonical Git root"
+    );
+    let dirty_intent = mcp(
+        world,
+        "storage_register",
+        json!({"artifact_id":dirty["artifact_id"],"expected_revision":dirty["revision"],"repository_id":repo,"effect":"source_worktree","reason":"Preserve the dirty worktree blockers while recording intent"}),
+    )?;
+    ensure!(
+        dirty_intent["deletable"] == json!(false)
+            && reason_codes(&dirty_intent).contains(&json!("dirty_worktree")),
+        "bounded dirty worktree registration did not preserve blockers: {}",
+        bounded_json(&dirty_intent)
+    );
+    let ignored_intent = mcp(
+        world,
+        "storage_register",
+        json!({"artifact_id":ignored["artifact_id"],"expected_revision":ignored["revision"],"repository_id":repo,"effect":"source_worktree","reason":"Preserve ignored worktree blockers while recording intent"}),
+    )?;
+    ensure!(
+        ignored_intent["deletable"] == json!(false)
+            && reason_codes(&ignored_intent).contains(&json!("unreviewed_ignored_files")),
+        "bounded ignored worktree registration did not preserve blockers: {}",
+        bounded_json(&ignored_intent)
+    );
+    let cache_intent = mcp(
+        world,
+        "storage_register",
+        json!({"artifact_id":cache["artifact_id"],"expected_revision":cache["revision"],"repository_id":repo,"effect":"rebuildable","reason":"Validated linked-worktree dependency cache"}),
+    )?;
+    ensure!(
+        cache_intent["deletable"] == json!(true),
+        "linked-worktree cache registration remained blocked: {}",
+        bounded_json(&cache_intent)
+    );
+    let cache_plan = mcp(
+        world,
+        "storage_cleanup_plan",
+        json!({"artifact_ids":[cache["artifact_id"]]}),
+    )?;
+    ensure!(
+        cache_plan["ready"] == json!(true),
+        "linked-worktree cache cleanup plan was not ready: {}",
+        bounded_json(&cache_plan)
+    );
+    let cache_job = mcp(
+        world,
+        "storage_cleanup_start",
+        json!({"plan_id":cache_plan["plan_id"],"idempotency_key":"remove-linked-worktree-cache"}),
+    )?;
+    let cache_result = wait_job(
+        world,
+        cache_job["job_id"]
+            .as_str()
+            .ok_or("cache cleanup job missing")?,
+    )?;
+    ensure!(
+        cache_result["state"] == "completed"
+            && !cache_path.exists()
+            && trees[3].join("package.json").is_file(),
+        "linked-worktree cache cleanup did not preserve tracked source: {}",
+        bounded_json(&cache_result)
+    );
+    let protected_child = row("protected-child")?;
+    let leased_child = row("leased-child")?;
+    let protected = mcp(
+        world,
+        "storage_protection_set",
+        json!({"artifact_id":protected_child["artifact_id"],"expected_revision":protected_child["revision"],"protected":true}),
+    )?;
+    let refused = world.call(
+        "storage.register",
+        json!({"artifact_id":clean["artifact_id"],"expected_revision":clean["revision"],"repository_id":repo,"effect":"source_worktree","reason":"Protected nested fixture must remain blocked"}),
+    )?;
+    ensure!(
+        error_code(&refused) == Some("storage_blocked")
+            && refused["error"]["message"] == "protected_shared_data",
+        "protected nested worktree registration was accepted: {}",
+        bounded_json(&refused)
+    );
+    let protected_revision = protected["revision"]
+        .as_u64()
+        .ok_or("protected child revision missing")?;
+    data(&world.call(
+        "storage.protection.set",
+        json!({"artifact_id":protected_child["artifact_id"],"expected_revision":protected_revision,"protected":false}),
+    )?)?;
+    let lease = mcp(
+        world,
+        "storage_lease_set",
+        json!({"artifact_ids":[leased_child["artifact_id"]],"duration_seconds":3600}),
+    )?;
+    let refused = world.call(
+        "storage.register",
+        json!({"artifact_id":clean["artifact_id"],"expected_revision":clean["revision"],"repository_id":repo,"effect":"source_worktree","reason":"Leased nested fixture must remain blocked"}),
+    )?;
+    ensure!(
+        error_code(&refused) == Some("storage_blocked")
+            && refused["error"]["message"] == "active_lease",
+        "leased nested worktree registration was accepted: {}",
+        bounded_json(&refused)
+    );
+    data(&world.call(
+        "storage.lease.release",
+        json!({"lease_id":lease["lease_id"]}),
+    )?)?;
+    for child in [&protected_child, &leased_child] {
+        let current = mcp(
+            world,
+            "storage_artifact_get",
+            json!({"artifact_id":child["artifact_id"]}),
+        )?;
+        let registered_child = mcp(
+            world,
+            "storage_register",
+            json!({"artifact_id":child["artifact_id"],"expected_revision":current["revision"],"repository_id":repo,"effect":"rebuildable","reason":"Nested fixture is disposable after safety release"}),
+        )?;
+        ensure!(
+            registered_child["deletable"] == json!(true),
+            "nested fixture remained blocked after safety release: {}",
+            bounded_json(&registered_child)
+        );
+    }
     let registered = mcp(
         world,
         "storage_register",
@@ -2022,6 +2195,42 @@ pub(super) fn worktrees_and_backup_floor(world: &mut World) -> Result<(), String
         "clean retired worktree remained blocked: {}",
         bounded_json(&registered)
     );
+    fs::write(trees[0].join("source.txt"), "dirty after intent\n").map_err(|e| e.to_string())?;
+    let guarded_plan = mcp(
+        world,
+        "storage_cleanup_plan",
+        json!({"artifact_ids":[clean["artifact_id"]],"include_persistent_data":true}),
+    )?;
+    let guarded_job = mcp(
+        world,
+        "storage_cleanup_start",
+        json!({"plan_id":guarded_plan["plan_id"],"idempotency_key":"reject-changed-worktree-after-intent"}),
+    )?;
+    let guarded_result = wait_job(
+        world,
+        guarded_job["job_id"]
+            .as_str()
+            .ok_or("guarded cleanup job missing")?,
+    )?;
+    ensure!(
+        matches!(guarded_result["state"].as_str(), Some("failed" | "partial")) && trees[0].exists(),
+        "final worktree validation did not reject dirty data after intent: {}",
+        bounded_json(&guarded_result)
+    );
+    fs::write(
+        trees[0].join("source.txt"),
+        "authoritative fixture source\n",
+    )
+    .map_err(|e| e.to_string())?;
+    let inventory = scanned(world, &repo, "worktree-clean-after-intent-rejection")?;
+    let rows = inventory["artifacts"]
+        .as_array()
+        .ok_or("restored storage inventory missing")?;
+    let clean = rows
+        .iter()
+        .find(|row| row["name"] == "clean-worktree")
+        .cloned()
+        .ok_or("restored clean worktree missing")?;
     let old = row("old")?;
     let recent = row("recent")?;
     let latest = row("latest")?;
