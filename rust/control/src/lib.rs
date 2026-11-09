@@ -2,6 +2,7 @@
 
 pub mod access;
 pub mod agent_hub;
+mod agent_request_log;
 pub mod agent_routing;
 pub mod alerts;
 pub mod artifact_materialize;

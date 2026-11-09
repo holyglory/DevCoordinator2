@@ -17,6 +17,7 @@ use tokio::time::timeout;
 use tracing::{error, info};
 
 use crate::access::Caller;
+use crate::agent_request_log::RequestObservation;
 use crate::{DATABASE_SCHEMA_VERSION, SOURCE_COMMIT};
 
 const READ_DEADLINE: Duration = Duration::from_secs(5);
@@ -487,7 +488,14 @@ async fn serve_connection(
     app: Arc<App>,
     mut interruptions: watch::Receiver<bool>,
 ) -> std::io::Result<()> {
-    let credentials = stream.peer_cred()?;
+    let mut observation = RequestObservation::new();
+    let credentials = match stream.peer_cred() {
+        Ok(credentials) => credentials,
+        Err(error) => {
+            observation.record_transport_failure("peer_credentials");
+            return Err(error);
+        }
+    };
     let peer = PeerCredentials {
         pid: credentials
             .pid()
@@ -496,11 +504,19 @@ async fn serve_connection(
         uid: credentials.uid(),
         gid: credentials.gid(),
     };
-    let raw = timeout(READ_DEADLINE, read_frame(&mut stream))
-        .await
-        .map_err(|_| {
-            std::io::Error::new(std::io::ErrorKind::TimedOut, "request read timed out")
-        })??;
+    let raw = match timeout(READ_DEADLINE, read_frame(&mut stream)).await {
+        Ok(Ok(raw)) => raw,
+        Ok(Err(error)) => {
+            observation.record_transport_failure("read");
+            return Err(error);
+        }
+        Err(_) => {
+            let error = std::io::Error::new(std::io::ErrorKind::TimedOut, "request read timed out");
+            observation.record_transport_failure("read");
+            return Err(error);
+        }
+    };
+    observation.record_raw_request(&raw);
     let id = serde_json::from_slice::<serde_json::Value>(&raw)
         .ok()
         .and_then(|value| {
@@ -511,6 +527,7 @@ async fn serve_connection(
         })
         .unwrap_or_default();
     let response = if !raw.ends_with(b"\n") {
+        observation.record_protocol_failure("parse", ErrorCode::ProtocolInvalid);
         ResponseEnvelope::failure(
             id,
             ProtocolError::new(
@@ -521,6 +538,7 @@ async fn serve_connection(
     } else {
         match parse_request(&raw) {
             Ok(request) => {
+                observation.record_request(&request);
                 let id = request.id.clone();
                 let observer = crate::client::is_passive_wait_operation(&request.operation);
                 match app.deferred(&request, peer).await {
@@ -549,6 +567,7 @@ async fn serve_connection(
                             },
                         };
                         let Some(response) = result else {
+                            observation.record_transport_failure("wait");
                             return Ok(());
                         };
                         response
@@ -557,20 +576,40 @@ async fn serve_connection(
                     Err(error) => ResponseEnvelope::failure(id, error),
                 }
             }
-            Err(error) => ResponseEnvelope::failure(id, error),
+            Err(error) => {
+                observation.record_protocol_failure("parse", error.code);
+                ResponseEnvelope::failure(id, error)
+            }
         }
     };
-    timeout(
-        WRITE_DEADLINE,
-        stream.write_all(&encode_response(&response)),
-    )
-    .await
-    .map_err(|_| std::io::Error::new(std::io::ErrorKind::TimedOut, "response write timed out"))??;
-    timeout(WRITE_DEADLINE, stream.shutdown())
-        .await
-        .map_err(|_| {
-            std::io::Error::new(std::io::ErrorKind::TimedOut, "response shutdown timed out")
-        })?
+    let encoded = encode_response(&response);
+    observation.record_response(&response, encoded.len());
+    match timeout(WRITE_DEADLINE, stream.write_all(&encoded)).await {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => {
+            observation.record_transport_failure("write");
+            return Err(error);
+        }
+        Err(_) => {
+            let error =
+                std::io::Error::new(std::io::ErrorKind::TimedOut, "response write timed out");
+            observation.record_transport_failure("write");
+            return Err(error);
+        }
+    }
+    match timeout(WRITE_DEADLINE, stream.shutdown()).await {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(error)) => {
+            observation.record_transport_failure("shutdown");
+            Err(error)
+        }
+        Err(_) => {
+            let error =
+                std::io::Error::new(std::io::ErrorKind::TimedOut, "response shutdown timed out");
+            observation.record_transport_failure("shutdown");
+            Err(error)
+        }
+    }
 }
 
 async fn read_frame(stream: &mut UnixStream) -> std::io::Result<Vec<u8>> {
