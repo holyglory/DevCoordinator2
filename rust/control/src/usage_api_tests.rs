@@ -164,6 +164,129 @@ fn source_api_serves_whole_collection_once_and_keeps_missing_counts_unknown() {
 }
 
 #[test]
+fn fresh_usage_v2_source_uses_the_authenticated_snapshot_without_legacy_fallback() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("fresh-collector");
+    std::fs::create_dir_all(home.join("usage-v2")).unwrap();
+    std::fs::write(home.join("usage-v2/manifest.json"), b"manifest-v3").unwrap();
+    // A deliberately non-database sentinel makes an accidental legacy open
+    // fail loudly; the fresh path must complete through localUsage/summary.
+    std::fs::create_dir_all(home.join("usage")).unwrap();
+    std::fs::write(home.join("usage/usage.sqlite3"), b"retired-sentinel").unwrap();
+
+    let mut config = super::super::tests::config(dir.path(), home.clone());
+    let socket = dir.path().join("fresh-api.sock");
+    config.codex_usage_sources[0].api_socket = Some(socket.clone());
+    let uid = config.codex_usage_sources[0].uid;
+    let db = Database::open(dir.path().join("authority.sqlite3")).unwrap();
+    let key = "b".repeat(64);
+    db.transaction(move |tx| {
+        tx.execute(
+            "INSERT INTO repositories(repository_id,root_path,display_name,registered_at,registered_by_uid,last_seen_at) VALUES('project-alpha','/alpha','Alpha','t',1,'t')",
+            [],
+        )?;
+        tx.execute(
+            "INSERT INTO codex_usage_repository_links VALUES($1,'project-alpha',$2,3,1,'t')",
+            crate::database::params![uid, key],
+        )?;
+        Ok(())
+    })
+    .unwrap();
+    let usage = CodexUsage::with_probe(
+        config,
+        db,
+        Arc::new(FixedClock(
+            OffsetDateTime::from_unix_timestamp_nanos(1_700_000_000_000_000_000).unwrap(),
+        )),
+        Arc::new(DetailProbe),
+    );
+    let source = usage.config.codex_usage_sources[0].clone();
+    let (server, calls) = peer(&socket, &home, 1, |value| {
+        value["contractVersion"] = json!(1);
+        value["source"] = json!("usage-v2");
+        value["report"]["databaseSchemaVersion"] = json!(3);
+        value["snapshot"] = json!({
+            "sourceWatermark":"usage-v2:7:10:10",
+            "generatedAt":1700000000000u64,
+            "generation":7,
+            "watermark":10,
+            "journalWatermark":10,
+            "watermarkAtMs":1700000000000i64,
+            "updatedAtMs":1700000000000u64,
+            "freshness":"fresh",
+            "pendingEntries":0,
+            "pendingCorrections":0
+        });
+    });
+    let report = usage
+        .read_source(
+            &source,
+            &"b".repeat(64),
+            1_699_913_600_000,
+            1_700_000_000_000,
+            86_400_000,
+            1,
+            None,
+            Projection::PerformanceFast,
+            &[],
+            None,
+            Some(true),
+        )
+        .expect("fresh usage-v2 API response");
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert_eq!(report.tokens.get("total_tokens"), Some(&120));
+    assert_eq!(report.database_schema, 3);
+    server.join().unwrap();
+}
+
+#[test]
+fn explicit_work_context_rows_remain_attributed_in_the_review_projection() {
+    use devcoordinator2_api::outcomes::{
+        OutcomeEffort, OutcomeMeasurement, OutcomeReport, OutcomeRow,
+    };
+
+    let effort = OutcomeEffort {
+        operations: 1,
+        provider_total_tokens: OutcomeMeasurement {
+            measured: 120,
+            exact: Some(120),
+            unknown: 0,
+        },
+        ..OutcomeEffort::default()
+    };
+    let review = OutcomeReport {
+        kinds: BTreeMap::new(),
+        schema_version: 1,
+        coverage: "complete".into(),
+        totals: effort.clone(),
+        attributed: effort.clone(),
+        unattributed: OutcomeEffort::default(),
+        unattributed_reasons: BTreeMap::new(),
+        rows: vec![OutcomeRow {
+            kind: Some("task".into()),
+            title: Some("Coordinator usage contract".into()),
+            outcome_id: "T51".into(),
+            workstream_id: Some("implementation".into()),
+            effort,
+        }],
+        total_rows: 1,
+        next_cursor: None,
+        basis: "explicit operation work-context binding".into(),
+    };
+    let merged = super::review_aggregate::from_api(&review)
+        .finish(false)
+        .expect("attributed review projection");
+    assert_eq!(merged.coverage, "complete");
+    assert_eq!(merged.attributed.operations, 1);
+    assert_eq!(merged.rows.len(), 1);
+    assert_eq!(merged.rows[0].outcome_id, "T51");
+    assert_eq!(
+        merged.rows[0].workstream_id.as_deref(),
+        Some("implementation")
+    );
+}
+
+#[test]
 fn repository_fast_projection_uses_the_bounded_api_summary() {
     let dir = tempfile::tempdir().unwrap();
     let home = dir.path().join("collector");

@@ -115,6 +115,54 @@ impl Groups {
     }
 }
 
+/// Convert a producer-supplied finite outcome projection into the same merge
+/// representation used by the bounded SQLite reader. The producer owns the
+/// operation-to-work-context binding; this function only copies explicit rows
+/// and preserves its unattributed reasons.
+pub(super) fn from_api(report: &OutcomeReport) -> Groups {
+    let mut groups = Groups {
+        total: effort_from_api(&report.totals),
+        attributed: effort_from_api(&report.attributed),
+        unattributed: effort_from_api(&report.unattributed),
+        reasons: report.unattributed_reasons.clone(),
+        ..Default::default()
+    };
+    for row in &report.rows {
+        groups.rows.insert(
+            (row.outcome_id.clone(), row.workstream_id.clone()),
+            effort_from_api(&row.effort),
+        );
+    }
+    groups
+}
+
+fn effort_from_api(effort: &devcoordinator2_api::outcomes::OutcomeEffort) -> Effort {
+    Effort {
+        activities: effort
+            .activities
+            .iter()
+            .map(|(activity, measurement)| {
+                (
+                    activity.clone(),
+                    (measurement.measured, measurement.unknown),
+                )
+            })
+            .collect(),
+        operations: effort.operations,
+        retries: effort.retry_operations,
+        rework: effort.rework_operations,
+        tokens: effort.provider_total_tokens.measured,
+        unknown_tokens: effort.provider_total_tokens.unknown,
+        unknown_active: effort.active_agent_ms.unknown,
+        unknown_elapsed: effort.elapsed_execution_ms.unknown,
+        unknown_waits: effort.recorded_wait_ms.unknown,
+        aggregate_active_ms: effort.active_agent_ms.measured,
+        aggregate_elapsed_ms: effort.elapsed_execution_ms.measured,
+        aggregate_wait_ms: effort.recorded_wait_ms.measured,
+        ..Default::default()
+    }
+}
+
 fn mark_incomplete(effort: &mut devcoordinator2_api::outcomes::OutcomeEffort) {
     if effort.cost.status == "complete" {
         effort.cost.status = "partial".into();

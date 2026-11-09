@@ -1,8 +1,10 @@
 //! Bounded consumer of CodexMulti's existing localUsage/summary contract.
 //! This module never opens, migrates, or writes the producer's accounting store.
 use super::*;
+use devcoordinator2_api::review::ReviewUsage;
 use serde::Deserialize;
 use serde_json::{Value, json};
+use std::os::fd::AsRawFd;
 use std::os::unix::fs::{FileTypeExt, MetadataExt};
 use std::os::unix::net::UnixStream;
 use std::sync::Mutex;
@@ -61,11 +63,25 @@ struct Entry {
 #[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct Summary {
+    /// Version of the authenticated local usage contract. Older producers do
+    /// not send this field and remain valid for the compatibility API path.
+    #[serde(default)]
+    pub contract_version: Option<u32>,
     pub report: Report,
     pub generated_at: u64,
     #[serde(default)]
     pub snapshot: Option<Snapshot>,
+    /// Fresh usage-v2 identity and the exact pinned frontiers used to create
+    /// this response. These values are checked together before the report is
+    /// admitted into a cache or review.
+    #[serde(default)]
+    pub source: Option<Value>,
+    /// Optional producer-side review projection. Missing bindings remain
+    /// unattributed; the consumer never derives them from repository totals.
+    #[serde(default)]
+    pub review: Option<ReviewUsage>,
 }
+
 #[derive(Clone, Deserialize)]
 pub(super) struct Snapshot {
     #[serde(alias = "sourceWatermark")]
@@ -75,6 +91,20 @@ pub(super) struct Snapshot {
     pub freshness: String,
     #[serde(alias = "refreshId")]
     pub refresh_id: Option<String>,
+    #[serde(default)]
+    pub generation: Option<u64>,
+    #[serde(default)]
+    pub watermark: Option<u64>,
+    #[serde(default)]
+    pub journal_watermark: Option<u64>,
+    #[serde(default)]
+    pub watermark_at_ms: Option<i64>,
+    #[serde(default)]
+    pub updated_at_ms: Option<u64>,
+    #[serde(default)]
+    pub pending_entries: Option<u64>,
+    #[serde(default)]
+    pub pending_corrections: Option<u64>,
 }
 #[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -240,7 +270,7 @@ pub(super) struct Activity {
 impl CollectorApi {
     #[expect(
         clippy::too_many_arguments,
-        reason = "This external collector API keeps its existing explicit scope and time bounds"
+        reason = "Compatibility wrapper preserves the existing collector call shape"
     )]
     pub(super) fn summary(
         &self,
@@ -252,6 +282,33 @@ impl CollectorApi {
         end: u64,
         deadline: Instant,
     ) -> Result<Arc<Summary>, String> {
+        self.summary_with_workstream(
+            source,
+            repository,
+            worktree_keys,
+            include_unassigned,
+            None,
+            start,
+            end,
+            deadline,
+        )
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "This external collector API keeps its explicit scope, workstream, and time bounds"
+    )]
+    pub(super) fn summary_with_workstream(
+        &self,
+        source: &CodexUsageSource,
+        repository: Option<&str>,
+        worktree_keys: Option<&[String]>,
+        include_unassigned: bool,
+        workstream: Option<&str>,
+        start: u64,
+        end: u64,
+        deadline: Instant,
+    ) -> Result<Arc<Summary>, String> {
         let path = source.api_socket.as_ref().ok_or("api_not_configured")?;
         let key = format!(
             "{}:{path:?}:{}:{:?}:{include_unassigned}:{start}:{end}",
@@ -259,6 +316,7 @@ impl CollectorApi {
             repository.unwrap_or("all"),
             worktree_keys,
         );
+        let key = format!("{key}:{}", workstream.unwrap_or("all"));
         let mut state = self.0.try_lock().map_err(|_| "api_busy")?;
         if let Some(entry) = state
             .entries
@@ -280,6 +338,7 @@ impl CollectorApi {
             repository,
             worktree_keys,
             include_unassigned,
+            workstream,
             start,
             end,
             deadline,
@@ -328,6 +387,7 @@ fn fetch(
     repository: Option<&str>,
     worktree_keys: Option<&[String]>,
     include_unassigned: bool,
+    workstream: Option<&str>,
     start: u64,
     end: u64,
     deadline: Instant,
@@ -394,7 +454,7 @@ fn fetch(
         &mut socket,
         2,
         "localUsage/summary",
-        json!({"repositoryKey":repository,"worktreeKeys":worktree_keys,"includeUnassigned":include_unassigned,"fromAt":start,"toAt":end}),
+        json!({"schemaVersion":1,"repositoryKey":repository,"worktreeKeys":worktree_keys,"includeUnassigned":include_unassigned,"workstreamId":workstream,"fromAt":start,"toAt":end}),
         deadline,
     )?;
     let bytes = serde_json::to_vec(&value)
@@ -402,7 +462,9 @@ fn fetch(
         .len();
     let summary: Summary = serde_json::from_value(value).map_err(|_| "api_contract_unsupported")?;
     validate(&summary, repository, start, end)?;
-    // Dropping the connection cancels any pending source work on failures as well.
+    // Dropping the connection stops response delivery. The producer keeps its
+    // bounded read isolated in its local worker; this consumer does not claim
+    // that transport closure cancels that worker synchronously.
     Ok((summary, bytes.saturating_mul(4)))
 }
 
@@ -492,7 +554,33 @@ fn validate(
     start: u64,
     end: u64,
 ) -> Result<(), String> {
+    if let Some(source) = &summary.source {
+        // formatVersion=3 is the immutable journal/Parquet contract. Keep the
+        // version check at the authenticated boundary so a legacy producer
+        // can never be mistaken for a fresh source.
+        let object_format = source
+            .get("formatVersion")
+            .and_then(Value::as_u64)
+            .or_else(|| source.get("format_version").and_then(Value::as_u64));
+        let source_name_ok = source.as_str().is_some_and(|name| name == "usage-v2");
+        if summary.contract_version != Some(1)
+            || (!source_name_ok && object_format != Some(3))
+            || source
+                .get("identity")
+                .and_then(Value::as_str)
+                .is_some_and(|identity| {
+                    identity.len() > 128 || identity.chars().any(char::is_control)
+                })
+        {
+            return Err("api_contract_unsupported".into());
+        }
+    } else if summary.contract_version.is_some() {
+        return Err("api_contract_unsupported".into());
+    }
     let r = &summary.report;
+    if summary.source.is_some() && r.database_schema_version != 3 {
+        return Err("api_contract_unsupported".into());
+    }
     if r.schema_version != 1
         || r.taxonomy_version != i64::from(SUPPORTED_TAXONOMY)
         || r.kind != "usageSummary"
@@ -518,7 +606,7 @@ fn validate(
     if let Some(snapshot) = &summary.snapshot
         && (!matches!(
             snapshot.freshness.as_str(),
-            "fresh" | "stale" | "refreshing" | "failed"
+            "unknown" | "fresh" | "stale" | "refreshing" | "failed"
         ) || snapshot
             .source_watermark
             .as_ref()
@@ -526,6 +614,26 @@ fn validate(
             || snapshot.refresh_id.as_ref().is_some_and(|s| s.len() > 256))
     {
         return Err("api_contract_unsupported".into());
+    }
+    if let Some(snapshot) = &summary.snapshot {
+        if !matches!(
+            snapshot.freshness.as_str(),
+            "unknown" | "fresh" | "stale" | "refreshing" | "failed"
+        ) {
+            return Err("api_contract_unsupported".into());
+        }
+        if let (Some(watermark), Some(journal)) = (snapshot.watermark, snapshot.journal_watermark)
+            && journal < watermark
+        {
+            return Err("api_snapshot_inconsistent".into());
+        }
+        if snapshot
+            .generation
+            .is_some_and(|generation| generation == 0 && snapshot.watermark.unwrap_or(0) > 0)
+            || snapshot.watermark_at_ms.is_some_and(|at| at < 0)
+        {
+            return Err("api_snapshot_inconsistent".into());
+        }
     }
     if let Some(cost) = &summary.report.cost {
         let provider_total = summary
@@ -576,19 +684,32 @@ impl Summary {
         include_unassigned: bool,
     ) -> SourceReport {
         let r = &self.report;
-        let partial = r.coverage.has_gaps || r.coverage.state != "complete";
+        let source_partial = self.snapshot.as_ref().is_some_and(|snapshot| {
+            snapshot.freshness != "fresh"
+                || snapshot.pending_entries.unwrap_or_default() != 0
+                || snapshot.pending_corrections.unwrap_or_default() != 0
+        });
+        let partial = r.coverage.has_gaps || r.coverage.state != "complete" || source_partial;
         let mut result = SourceReport {
             supplied_cost: r.cost.as_ref().map(SourceCost::usage_cost),
             snapshot: Some(devcoordinator2_api::results::UsageSnapshot {
-                updated_at_ms: Some(
-                    self.snapshot
-                        .as_ref()
-                        .map_or(self.generated_at, |s| s.generated_at),
-                ),
+                updated_at_ms: self
+                    .snapshot
+                    .as_ref()
+                    .and_then(|s| {
+                        s.updated_at_ms
+                            .or_else(|| s.watermark_at_ms.and_then(|at| u64::try_from(at).ok()))
+                            .or(Some(s.generated_at))
+                    })
+                    .or(Some(self.generated_at)),
                 refreshing: self
                     .snapshot
                     .as_ref()
-                    .is_some_and(|s| s.freshness == "refreshing"),
+                    .is_some_and(|s| s.freshness == "refreshing")
+                    || self
+                        .snapshot
+                        .as_ref()
+                        .is_some_and(|s| s.pending_entries.unwrap_or_default() > 0),
                 refresh_failed: self
                     .snapshot
                     .as_ref()
@@ -599,11 +720,15 @@ impl Summary {
             }),
             database_schema: u32::try_from(r.database_schema_version).unwrap_or(u32::MAX),
             taxonomy_version: u32::try_from(r.taxonomy_version).unwrap_or(u32::MAX),
-            freshest_at_ms: Some(
-                self.snapshot
-                    .as_ref()
-                    .map_or(self.generated_at, |s| s.generated_at),
-            ),
+            freshest_at_ms: self
+                .snapshot
+                .as_ref()
+                .and_then(|s| {
+                    s.watermark_at_ms
+                        .and_then(|at| u64::try_from(at).ok())
+                        .or(Some(s.generated_at))
+                })
+                .or(Some(self.generated_at)),
             phase_series: vec![BTreeMap::new(); buckets],
             token_buckets_observed: vec![false; buckets],
             bucket_coverage: vec![CoverageState::Unobserved; buckets],
@@ -613,6 +738,9 @@ impl Summary {
             agent_unknown: 1,
             ..Default::default()
         };
+        if source_partial {
+            increment(&mut result.coverage_events, "partial");
+        }
         for t in &r.provider_tokens {
             if t.measurement_provenance != "provider_reported"
                 || repository.is_some_and(|key| t.repository_bucket != key)

@@ -18,6 +18,12 @@ pub(super) struct Effort {
     pub(super) unknown_active: u64,
     pub(super) unknown_elapsed: u64,
     pub(super) unknown_waits: u64,
+    /// Pre-aggregated measurements supplied by a fresh producer projection.
+    /// They are kept separate from intervals because an aggregate duration is
+    /// not an interval and must never be unioned with an invented range.
+    pub(super) aggregate_active_ms: u64,
+    pub(super) aggregate_elapsed_ms: u64,
+    pub(super) aggregate_wait_ms: u64,
 }
 
 impl Effort {
@@ -39,6 +45,15 @@ impl Effort {
         self.unknown_active += other.unknown_active;
         self.unknown_elapsed += other.unknown_elapsed;
         self.unknown_waits += other.unknown_waits;
+        self.aggregate_active_ms = self
+            .aggregate_active_ms
+            .saturating_add(other.aggregate_active_ms);
+        self.aggregate_elapsed_ms = self
+            .aggregate_elapsed_ms
+            .saturating_add(other.aggregate_elapsed_ms);
+        self.aggregate_wait_ms = self
+            .aggregate_wait_ms
+            .saturating_add(other.aggregate_wait_ms);
         self.elapsed.extend(other.elapsed);
         self.waits.extend(other.waits);
         for (agent, intervals) in other.active {
@@ -110,9 +125,18 @@ impl Effort {
             retry_operations: self.retries,
             rework_operations: self.rework,
             provider_total_tokens: measurement(self.tokens, self.unknown_tokens),
-            active_agent_ms: measurement(active, self.unknown_active),
-            elapsed_execution_ms: measurement(union_ms(&self.elapsed), self.unknown_elapsed),
-            recorded_wait_ms: measurement(union_ms(&self.waits), self.unknown_waits),
+            active_agent_ms: measurement(
+                active.saturating_add(self.aggregate_active_ms),
+                self.unknown_active,
+            ),
+            elapsed_execution_ms: measurement(
+                union_ms(&self.elapsed).saturating_add(self.aggregate_elapsed_ms),
+                self.unknown_elapsed,
+            ),
+            recorded_wait_ms: measurement(
+                union_ms(&self.waits).saturating_add(self.aggregate_wait_ms),
+                self.unknown_waits,
+            ),
             cost: if self.cost.models.is_empty() {
                 Default::default()
             } else {

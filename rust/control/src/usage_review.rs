@@ -110,6 +110,41 @@ impl CodexUsage {
         projection: Projection,
         rates: &[devcoordinator2_api::rate_card::RateCard],
     ) -> Result<(SourceReport, Groups), String> {
+        if super::has_usage_v2_manifest(source) {
+            let key = self
+                .repository_key_until(source, repository, now_ms, true, deadline)
+                .map_err(|error| error.message)?;
+            let summary = self
+                .api
+                .summary_with_workstream(
+                    source,
+                    Some(&key),
+                    None,
+                    true,
+                    workstream,
+                    start_ms,
+                    end_ms,
+                    deadline.min(Instant::now() + super::collector_api::API_BUDGET),
+                )
+                .map_err(|reason| {
+                    if workstream.is_some() && reason == "api_contract_unsupported" {
+                        "workstream_attribution_unavailable".to_owned()
+                    } else {
+                        reason
+                    }
+                })?;
+            let report = summary.source_report(Some(&key), 1, None, true);
+            let groups = summary
+                .review
+                .as_ref()
+                .map(|review| super::review_aggregate::from_api(&review.outcomes))
+                .unwrap_or_else(|| Groups::legacy(&report));
+            return if Instant::now() >= deadline {
+                Err("query_budget_exhausted".into())
+            } else {
+                Ok((report, groups))
+            };
+        }
         for attempt in 0..2 {
             if Instant::now() >= deadline {
                 return Err("query_budget_exhausted".into());

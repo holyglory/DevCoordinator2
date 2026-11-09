@@ -2,8 +2,10 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::ffi::{CStr, OsString};
+#[cfg(test)]
 use std::fs::File;
 use std::io::{self, Read};
+#[cfg(test)]
 use std::os::fd::AsRawFd;
 use std::os::unix::ffi::OsStringExt;
 use std::os::unix::process::CommandExt;
@@ -25,9 +27,10 @@ use devcoordinator2_api::results::{
     UsageTotals, UsageWorktree, UsageWorktreeScope,
 };
 use devcoordinator2_api::{ErrorCode, ProtocolError};
-use rusqlite::{
-    Connection, OpenFlags, OptionalExtension, params_from_iter, types::Value as SqlValue,
-};
+#[cfg(test)]
+use rusqlite::OpenFlags;
+use rusqlite::{Connection, OptionalExtension, params_from_iter, types::Value as SqlValue};
+#[cfg(test)]
 use rustix::fs::{FileType, Mode, OFlags, fstat, open};
 use time::{format_description::FormatItem, macros::format_description};
 
@@ -102,6 +105,23 @@ const TOKEN_CATEGORIES: &[(&str, TokenField)] = &[
 ];
 const TIMESTAMP_FORMAT: &[FormatItem<'static>] =
     format_description!("[year]-[month]-[day]T[hour]:[minute]:[second]Z");
+
+/// A source is fresh when its v2 manifest is present. The existence check is
+/// deliberately metadata-only; it never opens the retired SQLite database.
+fn has_usage_v2_manifest(source: &CodexUsageSource) -> bool {
+    source
+        .codex_home
+        .join("usage-v2/manifest.json")
+        .metadata()
+        .is_ok_and(|metadata| metadata.is_file())
+}
+
+/// The historical SQLite fixture remains available to unit tests that cover
+/// compatibility behavior. Production collectors never open that retired
+/// source; they use the authenticated localUsage API instead.
+fn legacy_fixture_reads_enabled() -> bool {
+    cfg!(test)
+}
 
 #[derive(Clone)]
 pub struct UsageService {
@@ -1050,6 +1070,15 @@ impl CodexUsage {
         if !resolve_missing {
             return cached.ok_or_else(|| source_error("mapping_pending"));
         }
+        if has_usage_v2_manifest(source) {
+            // v2 repository identity is supplied by the explicit authority
+            // link. It must never be guessed from a checkout path or probed
+            // through the retired CLI identity command.
+            return cached.ok_or_else(|| source_error("mapping_pending"));
+        }
+        if !legacy_fixture_reads_enabled() {
+            return cached.ok_or_else(|| source_error("legacy_source_unsupported"));
+        }
         if Instant::now() >= deadline {
             return Err(source_error("query_budget_exhausted"));
         }
@@ -1262,6 +1291,11 @@ impl CodexUsage {
         {
             return Ok(key.clone());
         }
+        if has_usage_v2_manifest(source) || !legacy_fixture_reads_enabled() {
+            // Worktree identities are a separate explicit binding in the v2
+            // contract. Do not fall back to the retired CLI probe.
+            return Ok(None);
+        }
         let Some(deadline) = deadline.filter(|deadline| *deadline > Instant::now()) else {
             return Ok(None);
         };
@@ -1328,6 +1362,46 @@ impl CodexUsage {
         let deadline = deadline.unwrap_or_else(|| Instant::now() + Duration::from_secs(120));
         if Instant::now() >= deadline {
             return Err("query_budget_exhausted".into());
+        }
+        if has_usage_v2_manifest(source) {
+            let summary = self
+                .api
+                .summary(
+                    source,
+                    Some(repository_key),
+                    worktree_keys.and_then(Option::as_deref),
+                    include_unassigned,
+                    start_ms,
+                    end_ms,
+                    deadline.min(Instant::now() + collector_api::API_BUDGET),
+                )
+                .map_err(|reason| {
+                    // A fresh store is available only through a successful,
+                    // versioned handshake. Never fall back to legacy SQLite.
+                    if filtered && reason == "api_contract_unsupported" {
+                        "worktree_attribution_unavailable".to_owned()
+                    } else {
+                        reason
+                    }
+                })?;
+            if filtered
+                && (summary.report.worktree_coverage.is_none()
+                    || summary.source.as_ref().is_some_and(|source| {
+                        source
+                            .get("coverageState")
+                            .or_else(|| source.get("coverage_state"))
+                            .and_then(serde_json::Value::as_str)
+                            == Some("unavailable")
+                    }))
+            {
+                return Err("worktree_attribution_unavailable".into());
+            }
+            return Ok(summary.source_report(
+                None,
+                bucket_count,
+                worktree_keys.and_then(Option::as_deref),
+                include_unassigned,
+            ));
         }
         if matches!(projection, Projection::PerformanceFast)
             && source.api_socket.is_some()
@@ -1545,6 +1619,12 @@ impl CodexUsage {
 }
 
 fn source_progress(source: &CodexUsageSource) -> Option<UsageSnapshot> {
+    if has_usage_v2_manifest(source) {
+        // Freshness and pending work are authenticated by the producer's
+        // localUsage handshake. Never inspect the retired SQLite progress
+        // table for a v2 source.
+        return None;
+    }
     let connection = open_source_until(source, Instant::now() + Duration::from_millis(100)).ok()?;
     let mut rows = connection
         .prepare("SELECT source,cursor,high_water FROM _usage_report_backfill")
@@ -1587,7 +1667,19 @@ fn open_source(source: &CodexUsageSource) -> Result<Connection, String> {
     open_source_until(source, Instant::now() + QUERY_TIMEOUT)
 }
 
+#[cfg(not(test))]
+fn open_source_until(_source: &CodexUsageSource, _deadline: Instant) -> Result<Connection, String> {
+    // The retired SQLite reader is deliberately absent from production
+    // builds. Fresh and unsupported legacy sources must use the authenticated
+    // localUsage/v2 contract or report an explicit gap.
+    Err("legacy_source_retired".into())
+}
+
+#[cfg(test)]
 fn open_source_until(source: &CodexUsageSource, deadline: Instant) -> Result<Connection, String> {
+    if has_usage_v2_manifest(source) {
+        return Err("legacy_source_retired".into());
+    }
     let path = source.codex_home.join("usage/usage.sqlite3");
     let descriptor = open(
         &path,
