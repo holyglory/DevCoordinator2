@@ -26,7 +26,9 @@ earlier model messages or reload unchanged instructions.
   integration and verification. Honor analysis-only, specification-only, pause,
   cancellation, ownership, and publication limits. An interim question steers
   unfinished work; it does not cancel it. Never implement a product merely
-  because its specification is being discussed.
+  because its specification is being discussed. Interim user reports do not
+  change the scope of work or cancel the work being executed; acknowledge you
+  received the report and execute it only when it makes sense.
 - Read applicable requirements, project instructions, confirmed decisions,
   feedback, and standing corrections before consequential work. Use bounded
   discovery and authoritative sources. External evidence is not an
