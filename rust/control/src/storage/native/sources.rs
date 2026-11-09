@@ -9,10 +9,15 @@ use crate::storage::{
     unavailable,
 };
 use devcoordinator2_api::{ProtocolError, storage as api};
+#[cfg(target_os = "linux")]
 use rustix::fs::{self as unix, Mode, OFlags};
+#[cfg(target_os = "linux")]
 use sha2::Digest;
+#[cfg(target_os = "linux")]
 use std::collections::BTreeSet;
+#[cfg(target_os = "linux")]
 use std::fs::File;
+#[cfg(target_os = "linux")]
 use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 
@@ -340,6 +345,7 @@ impl HostBackend {
         }
     }
 
+    #[cfg(target_os = "linux")]
     fn hash_ignored_file(
         root: &Path,
         relative: &Path,
@@ -404,6 +410,7 @@ impl HostBackend {
         })
     }
 
+    #[cfg(target_os = "linux")]
     fn review_ignored_files(
         &self,
         root: &Path,
@@ -450,6 +457,17 @@ impl HostBackend {
         })
     }
 
+    #[cfg(not(target_os = "linux"))]
+    fn review_ignored_files(
+        &self,
+        _root: &Path,
+        _worktree_identity: (u64, u64),
+        _files: &[api::IgnoredFileReview],
+    ) -> Result<IgnoredReview, ProtocolError> {
+        Err(unavailable("ignored_review_unsupported"))
+    }
+
+    #[cfg(target_os = "linux")]
     fn validate_ignored_review(
         &self,
         path: &Path,
@@ -529,6 +547,17 @@ impl HostBackend {
             return Err(blocked("active_worktree"));
         }
         Ok(())
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn validate_ignored_review(
+        &self,
+        _path: &Path,
+        _record: &Record,
+        _ignored: &[u8],
+        _context: &Context,
+    ) -> Result<(), ProtocolError> {
+        Err(unavailable("ignored_review_unsupported"))
     }
 
     pub(super) fn directory_candidate(
