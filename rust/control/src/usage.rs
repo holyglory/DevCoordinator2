@@ -247,6 +247,11 @@ impl UsageService {
         &self.usage
     }
 
+    #[cfg(test)]
+    pub(crate) fn wait_for_collector_refresh(&self, deadline: Instant) -> bool {
+        self.usage.api.wait_until_idle(deadline)
+    }
+
     pub fn repositories(
         &self,
         params: UsageRepositoriesParams,
@@ -1854,14 +1859,22 @@ fn combine(
         .iter()
         .filter_map(|(_, report)| report.snapshot.as_ref())
         .collect::<Vec<_>>();
-    let snapshot = (!snapshots.is_empty()).then(|| devcoordinator2_api::results::UsageSnapshot {
-        updated_at_ms: snapshots.iter().filter_map(|s| s.updated_at_ms).min(),
-        refreshing: snapshots.iter().any(|s| s.refreshing),
-        refresh_failed: snapshots.iter().any(|s| s.refresh_failed),
-        progress_completed: snapshots.iter().filter_map(|s| s.progress_completed).min(),
-        progress_total: snapshots.iter().filter_map(|s| s.progress_total).max(),
-        progress_stage: snapshots.iter().find_map(|s| s.progress_stage.clone()),
-    });
+    let pending = failures
+        .keys()
+        .any(|reason| collector_api::is_pending(reason));
+    let snapshot =
+        (!snapshots.is_empty() || pending).then(|| devcoordinator2_api::results::UsageSnapshot {
+            updated_at_ms: snapshots.iter().filter_map(|s| s.updated_at_ms).min(),
+            refreshing: pending || snapshots.iter().any(|s| s.refreshing),
+            refresh_failed: snapshots.iter().any(|s| s.refresh_failed),
+            progress_completed: snapshots.iter().filter_map(|s| s.progress_completed).min(),
+            progress_total: snapshots.iter().filter_map(|s| s.progress_total).max(),
+            progress_stage: if pending {
+                Some("source_read".into())
+            } else {
+                snapshots.iter().find_map(|s| s.progress_stage.clone())
+            },
+        });
     UsageRepository {
         repository_id: repository.repository_id.clone(),
         display_name: repository.display_name.clone(),

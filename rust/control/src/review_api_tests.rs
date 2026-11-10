@@ -470,6 +470,12 @@ fn review_prepare_against_candidate_usage_v2_app_server() {
     assert!(Path::new(&repository).is_absolute());
     let home = fixture._temporary.path().join("candidate-home");
     copy_fixture(&source.join("usage-v2"), &home.join("usage-v2"));
+    let copied_info: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(source.join("fixture-info.json")).unwrap()).unwrap();
+    assert_eq!(
+        info, copied_info,
+        "synthetic fixture changed while being copied"
+    );
     fixture.database.transaction(|tx| {
         tx.execute("UPDATE repositories SET root_path=$1 WHERE repository_id='project-alpha'",[&repository])?;
         tx.execute_batch("INSERT INTO tasks(task_id,repository_id,seq,position,title,outcome,kind,status,created_at,created_by,updated_at) VALUES('fixture-outcome','project-alpha',2,2,'Review scoped usage','Prove explicit operation attribution','improvement','in_progress','1970-01-01T00:00:00Z','fixture','1970-01-01T00:00:00Z')")?;
@@ -546,7 +552,52 @@ fn review_prepare_against_candidate_usage_v2_app_server() {
         workstream_id: Some("fixture-workstream".into()),
         ..input()
     };
+    let began = Instant::now();
+    let cold = fixture.service.prepare(scope.clone(), end).unwrap();
+    eprintln!(
+        "candidate_cold_prepare_ms={} reasons={:?}",
+        began.elapsed().as_millis(),
+        cold.usage.coverage.unavailable_reasons
+    );
+    assert!(
+        began.elapsed() < Duration::from_millis(750),
+        "cold review exceeded its bounded foreground window"
+    );
+    if cold.usage.coverage.available_collectors == 0 {
+        assert_eq!(cold.usage.totals.total_tokens, None);
+        assert_eq!(
+            cold.usage
+                .coverage
+                .unavailable_reasons
+                .get("api_refresh_pending"),
+            Some(&1)
+        );
+        let snapshot = cold
+            .usage
+            .coverage
+            .snapshot
+            .as_ref()
+            .expect("explicit pending snapshot");
+        assert!(snapshot.refreshing);
+        assert!(!snapshot.refresh_failed);
+        assert!(
+            fixture
+                .service
+                .usage
+                .wait_for_collector_refresh(Instant::now() + Duration::from_secs(15)),
+            "finite source read did not finish"
+        );
+    }
+    let warm_began = Instant::now();
     let prepared = fixture.service.prepare(scope, end).unwrap();
+    eprintln!(
+        "candidate_warm_prepare_ms={}",
+        warm_began.elapsed().as_millis()
+    );
+    assert!(
+        warm_began.elapsed() < Duration::from_millis(500),
+        "cached review exceeded foreground budget"
+    );
     assert_eq!(
         prepared.usage.coverage.available_collectors, 1,
         "{:?}",
@@ -603,4 +654,70 @@ fn review_prepare_against_candidate_usage_v2_app_server() {
             .unwrap(),
         saved
     );
+}
+
+#[test]
+fn delayed_collector_finishes_once_after_bounded_cold_review_and_supplies_attributed_receipt() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::{Duration, Instant};
+    let mut fixture = Fixture::new();
+    let root = fixture._temporary.path();
+    let home = root.join("slow-source");
+    let calls = Arc::new(AtomicUsize::new(0));
+    let observed = calls.clone();
+    let peer = Peer::start(root, &home, move |params| {
+        observed.fetch_add(1, Ordering::SeqCst);
+        std::thread::sleep(Duration::from_millis(1_200));
+        response(params, START + WEEK, 135)
+    });
+    let caller = caller();
+    crate::usage_context::ingest(
+        &fixture.database,
+        caller.uid,
+        "project-alpha",
+        caller.work.as_ref().unwrap(),
+        START + 1,
+    )
+    .unwrap();
+    fixture.service = service(&fixture, peer.source.clone());
+    let began = Instant::now();
+    let cold = fixture.service.prepare(input(), START + WEEK).unwrap();
+    assert!(began.elapsed() < Duration::from_millis(750));
+    assert_eq!(cold.usage.totals.total_tokens, None);
+    assert_eq!(
+        cold.usage
+            .coverage
+            .unavailable_reasons
+            .get("api_refresh_pending"),
+        Some(&1)
+    );
+    let snapshot = cold.usage.coverage.snapshot.unwrap();
+    assert!(snapshot.refreshing);
+    assert!(!snapshot.refresh_failed);
+    // A second request joins the same source read instead of poisoning the
+    // source with a timeout or starting a duplicate request.
+    let _ = fixture.service.prepare(input(), START + WEEK).unwrap();
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert!(
+        fixture
+            .service
+            .usage
+            .wait_for_collector_refresh(Instant::now() + Duration::from_secs(5))
+    );
+    let began = Instant::now();
+    let warm = fixture.service.prepare(input(), START + WEEK).unwrap();
+    assert!(began.elapsed() < Duration::from_millis(500));
+    assert_eq!(warm.usage.coverage.available_collectors, 1);
+    assert_eq!(warm.usage.totals.total_tokens, Some(135));
+    assert_eq!(warm.usage.outcomes.rows.len(), 1);
+    assert_eq!(warm.usage.outcomes.rows[0].outcome_id, "spec");
+    assert!(!warm.usage.coverage.snapshot.unwrap().refreshing);
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    let request = super::tests::record(&fixture);
+    let saved = fixture
+        .service
+        .record(request, "fixture", START + WEEK)
+        .unwrap();
+    assert!(saved.completed);
+    assert_eq!(saved.record.experiment.disposition, Disposition::Unchanged);
 }

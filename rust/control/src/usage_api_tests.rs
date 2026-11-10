@@ -12,6 +12,19 @@ fn api_contract_requires_negotiation_and_complete_consistent_fresh_metadata() {
     let value = response(&params, 20, 135);
     let summary: Summary = serde_json::from_value(value.clone()).unwrap();
     validate(&summary, Some(KEY), 10, 20).unwrap();
+    let mut later_response = value.clone();
+    later_response["generatedAt"] = json!(21);
+    let later: Summary = serde_json::from_value(later_response).unwrap();
+    validate(&later, Some(KEY), 10, 20).unwrap();
+    assert_eq!(later.snapshot.as_ref().unwrap().generated_at, 20);
+    assert_eq!(
+        later
+            .source_report(Some(KEY), 1, None, true)
+            .source_snapshot
+            .unwrap()
+            .generated_at_ms,
+        20
+    );
     assert_eq!(
         summary.snapshot.as_ref().unwrap().journal_watermark,
         Some(10)

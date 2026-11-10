@@ -8,7 +8,7 @@ use sha2::Digest;
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::{FileTypeExt, MetadataExt};
 use std::os::unix::net::UnixStream;
-use std::sync::Mutex;
+use std::sync::{Condvar, Mutex};
 use tungstenite::{Message, WebSocket, protocol::WebSocketConfig};
 
 const MAX_RESPONSE: usize = 2 * 1024 * 1024;
@@ -16,7 +16,16 @@ const MAX_CACHED_BYTES: usize = 16 * 1024 * 1024;
 const MAX_CACHED: usize = 96;
 const FRESH_FOR: Duration = Duration::from_secs(5);
 const RETRY_AFTER: Duration = Duration::from_secs(30);
+const SOURCE_READ_BUDGET: Duration = super::QUERY_TIMEOUT;
+const MAX_INFLIGHT_BYTES: usize = 16 * 1024 * 1024;
 pub(super) const API_BUDGET: Duration = Duration::from_millis(650);
+
+pub(super) fn is_pending(reason: &str) -> bool {
+    matches!(
+        reason,
+        "api_refresh_pending" | "api_source_busy" | "api_busy"
+    )
+}
 
 // Enforce the absolute deadline on every underlying I/O, including a peer
 // that slowly streams one frame. A socket timeout alone resets on each read.
@@ -49,13 +58,18 @@ impl io::Write for DeadlineStream {
 }
 
 #[derive(Clone, Default)]
-pub(super) struct CollectorApi(Arc<Mutex<State>>);
+pub(super) struct CollectorApi(Arc<(Mutex<State>, Condvar)>);
 #[derive(Default)]
 struct State {
     entries: HashMap<String, Entry>,
-    failed_until: HashMap<PathBuf, (Instant, String)>,
-    inflight: BTreeSet<String>,
+    failed_until: HashMap<String, (Instant, String)>,
+    inflight: HashMap<String, Flight>,
 }
+struct Flight {
+    source: PathBuf,
+    bytes: usize,
+}
+
 struct Entry {
     report: Arc<Summary>,
     loaded: Instant,
@@ -328,7 +342,19 @@ impl CollectorApi {
             .map(|b| format!("{b:02x}"))
             .collect::<String>();
         let key = format!("{key}:{}:{revision}", workstream.unwrap_or("all"));
-        let mut state = self.0.lock().map_err(|_| "api_busy")?;
+        if bindings.len() > crate::usage_context::MAX_BINDINGS {
+            return Err("api_contract_unsupported".into());
+        }
+        let request_bytes = serde_json::to_vec(bindings)
+            .map_err(|_| "work_context_unavailable")?
+            .len()
+            .saturating_add(key.len())
+            .saturating_add(source.codex_home.as_os_str().len());
+        let (guard, changed) = &*self.0;
+        let mut state = guard.lock().map_err(|_| "api_busy")?;
+        state
+            .failed_until
+            .retain(|_, (until, _)| *until > Instant::now());
         if let Some(entry) = state
             .entries
             .get(&key)
@@ -336,67 +362,171 @@ impl CollectorApi {
         {
             return Ok(entry.report.clone());
         }
-        if let Some((until, reason)) = state.failed_until.get(path)
-            && *until > Instant::now()
-        {
+        if let Some((_, reason)) = state.failed_until.get(&key) {
             return Err(reason.clone());
         }
-        if state.inflight.contains(&key) || state.inflight.len() >= MAX_CACHED {
-            return Err("api_busy".into());
+        if !state.inflight.contains_key(&key) {
+            if state.inflight.values().any(|flight| &flight.source == path) {
+                return Err("api_source_busy".into());
+            }
+            let inflight_bytes = state
+                .inflight
+                .values()
+                .map(|flight| flight.bytes)
+                .sum::<usize>();
+            if state.inflight.len() >= MAX_CACHED
+                || request_bytes > MAX_INFLIGHT_BYTES.saturating_sub(inflight_bytes)
+            {
+                return Err("api_busy".into());
+            }
+            state.inflight.insert(
+                key.clone(),
+                Flight {
+                    source: path.clone(),
+                    bytes: request_bytes,
+                },
+            );
+            let cache = self.clone();
+            let request_key = key.clone();
+            let source = source.clone();
+            let repository = repository.map(str::to_owned);
+            let worktree_keys = worktree_keys.map(<[String]>::to_vec);
+            let workstream = workstream.map(str::to_owned);
+            let bindings = bindings.to_vec();
+            drop(state);
+            // A bounded source read may outlive this foreground request. It
+            // remains owned by this exact-query cache until completion; another
+            // request for the same source cannot launch a competing cold read.
+            let spawned = std::thread::Builder::new()
+                .name("usage-api-refresh".into())
+                .spawn(move || {
+                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        fetch(
+                            &source,
+                            repository.as_deref(),
+                            worktree_keys.as_deref(),
+                            include_unassigned,
+                            workstream.as_deref(),
+                            &bindings,
+                            start,
+                            end,
+                            Instant::now() + SOURCE_READ_BUDGET,
+                        )
+                    }))
+                    .unwrap_or_else(|_| Err("api_refresh_failed".into()));
+                    cache.finish(request_key, result);
+                });
+            if spawned.is_err() {
+                self.finish(key.clone(), Err("api_refresh_failed".into()));
+            }
+            state = guard.lock().map_err(|_| "api_busy")?;
         }
-        state.inflight.insert(key.clone());
-        drop(state);
-        // Only identical queries coalesce; independent collectors perform IPC
-        // concurrently without holding the cache mutex.
-        let result = fetch(
-            source,
-            repository,
-            worktree_keys,
-            include_unassigned,
-            workstream,
-            bindings,
-            start,
-            end,
-            deadline,
-        );
-        let mut state = self.0.lock().map_err(|_| "api_busy")?;
+        loop {
+            if let Some(entry) = state
+                .entries
+                .get(&key)
+                .filter(|entry| entry.loaded.elapsed() < FRESH_FOR)
+            {
+                return Ok(entry.report.clone());
+            }
+            if let Some((_, reason)) = state.failed_until.get(&key) {
+                return Err(reason.clone());
+            }
+            let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+                return Err("api_refresh_pending".into());
+            };
+            if remaining.is_zero() {
+                return Err("api_refresh_pending".into());
+            }
+            let (updated, waited) = changed
+                .wait_timeout(state, remaining)
+                .map_err(|_| "api_busy")?;
+            state = updated;
+            if waited.timed_out() && state.inflight.contains_key(&key) {
+                return Err("api_refresh_pending".into());
+            }
+        }
+    }
+
+    fn finish(&self, key: String, result: Result<(Summary, usize), String>) {
+        let (guard, changed) = &*self.0;
+        let mut state = guard
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         state.inflight.remove(&key);
         match result {
-            Ok((report, bytes)) => {
-                state.failed_until.remove(path);
+            Ok((report, bytes)) if bytes <= MAX_CACHED_BYTES => {
+                state.failed_until.remove(&key);
                 while state.entries.len() >= MAX_CACHED
-                    || state.entries.values().map(|e| e.bytes).sum::<usize>() + bytes
+                    || state
+                        .entries
+                        .values()
+                        .map(|entry| entry.bytes)
+                        .sum::<usize>()
+                        .saturating_add(bytes)
                         > MAX_CACHED_BYTES
                 {
                     let oldest = state
                         .entries
                         .iter()
-                        .min_by_key(|(_, e)| e.loaded)
-                        .map(|(k, _)| k.clone());
+                        .min_by_key(|(_, entry)| entry.loaded)
+                        .map(|(key, _)| key.clone());
                     if let Some(oldest) = oldest {
                         state.entries.remove(&oldest);
                     } else {
                         break;
                     }
                 }
-                let report = Arc::new(report);
                 state.entries.insert(
                     key,
                     Entry {
-                        report: report.clone(),
+                        report: Arc::new(report),
                         loaded: Instant::now(),
                         bytes,
                     },
                 );
-                Ok(report)
             }
-            Err(reason) => {
+            result => {
+                let reason = result
+                    .err()
+                    .unwrap_or_else(|| "api_response_too_large".into());
+                let retry = if reason.ends_with("_timeout") || reason == "query_budget_exhausted" {
+                    Duration::from_secs(1)
+                } else {
+                    RETRY_AFTER
+                };
+                if state.failed_until.len() >= MAX_CACHED
+                    && let Some(oldest) = state
+                        .failed_until
+                        .iter()
+                        .min_by_key(|(_, (until, _))| until)
+                        .map(|(key, _)| key.clone())
+                {
+                    state.failed_until.remove(&oldest);
+                }
                 state
                     .failed_until
-                    .insert(path.clone(), (Instant::now() + RETRY_AFTER, reason.clone()));
-                Err(reason)
+                    .insert(key, (Instant::now() + retry, reason));
             }
         }
+        changed.notify_all();
+    }
+
+    #[cfg(test)]
+    pub(super) fn wait_until_idle(&self, deadline: Instant) -> bool {
+        let (guard, changed) = &*self.0;
+        let mut state = guard.lock().unwrap();
+        while !state.inflight.is_empty() {
+            let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+                return false;
+            };
+            let (updated, waited) = changed.wait_timeout(state, remaining).unwrap();
+            state = updated;
+            if waited.timed_out() && !state.inflight.is_empty() {
+                return false;
+            }
+        }
+        true
     }
 }
 
@@ -435,9 +565,9 @@ fn connect(
     deadline: Instant,
 ) -> Result<WebSocket<DeadlineStream>, String> {
     let path = source.api_socket.as_ref().ok_or("api_not_configured")?;
-    let metadata = path.metadata().map_err(|_| "api_unavailable")?;
+    let metadata = path.metadata().map_err(|_| "api_socket_unavailable")?;
     if !metadata.file_type().is_socket() || metadata.uid() != source.uid {
-        return Err("api_unavailable".into());
+        return Err("api_socket_identity_mismatch".into());
     }
     let budget = deadline
         .checked_duration_since(Instant::now())
@@ -461,7 +591,7 @@ fn connect(
         .map_err(|_| "api_unavailable")?;
     // Bind the configured same-owner source to the actual peer, including a replaced socket.
     if peer_uid(&stream)? != source.uid {
-        return Err("api_unavailable".into());
+        return Err("api_peer_identity_mismatch".into());
     }
     set_deadline(&stream, deadline)?;
     let config = WebSocketConfig::default()
@@ -475,7 +605,10 @@ fn connect(
         },
         Some(config),
     )
-    .map_err(|_| "api_unavailable")?;
+    .map_err(|error| match error {
+        tungstenite::HandshakeError::Failure(error) => transport_error(&error, "handshake"),
+        tungstenite::HandshakeError::Interrupted(_) => "api_handshake_incomplete".into(),
+    })?;
     let initialize = exchange(
         &mut socket,
         1,
@@ -485,7 +618,7 @@ fn connect(
     )?;
     // Do not route a configured source to another account's daemon.
     if initialize.get("codexHome").and_then(Value::as_str) != source.codex_home.to_str() {
-        return Err("api_unavailable".into());
+        return Err("api_source_identity_mismatch".into());
     }
     validate_capability(&initialize)?;
     socket
@@ -599,6 +732,15 @@ fn set_deadline(stream: &UnixStream, deadline: Instant) -> Result<(), String> {
         .and_then(|_| stream.set_write_timeout(Some(remaining)))
         .map_err(|_| "api_unavailable".into())
 }
+fn transport_error(error: &tungstenite::Error, stage: &str) -> String {
+    if matches!(error, tungstenite::Error::Io(io) if matches!(io.kind(),io::ErrorKind::TimedOut|io::ErrorKind::WouldBlock))
+    {
+        format!("api_{stage}_timeout")
+    } else {
+        format!("api_{stage}_failed")
+    }
+}
+
 fn exchange(
     socket: &mut WebSocket<DeadlineStream>,
     id: u64,
@@ -606,6 +748,11 @@ fn exchange(
     params: Value,
     deadline: Instant,
 ) -> Result<Value, String> {
+    let stage = match method {
+        "initialize" => "initialize",
+        "localUsage/repositoryIdentity" => "identity",
+        _ => "summary",
+    };
     set_deadline(socket.get_ref(), deadline)?;
     socket
         .send(Message::Text(
@@ -613,10 +760,13 @@ fn exchange(
                 .to_string()
                 .into(),
         ))
-        .map_err(|_| "api_unavailable")?;
+        .map_err(|error| transport_error(&error, stage))?;
     for _ in 0..64 {
         set_deadline(socket.get_ref(), deadline)?;
-        match socket.read().map_err(|_| "api_unavailable")? {
+        match socket
+            .read()
+            .map_err(|error| transport_error(&error, stage))?
+        {
             Message::Text(text) => {
                 let response: Value =
                     serde_json::from_str(&text).map_err(|_| "api_contract_unsupported")?;
@@ -704,7 +854,7 @@ fn validate(
         || snapshot
             .updated_at_ms
             .is_some_and(|at| at > snapshot.generated_at)
-        || snapshot.generated_at != summary.generated_at
+        || snapshot.generated_at > summary.generated_at
     {
         return Err("api_snapshot_inconsistent".into());
     }
