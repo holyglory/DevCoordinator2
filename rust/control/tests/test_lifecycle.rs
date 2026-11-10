@@ -2175,26 +2175,51 @@ fn equivalent_start_attaches_to_the_active_run_by_default() {
     let world = LifecycleWorld::new();
     let first = world.start();
     let starts = world.systemd.starts.load(Ordering::SeqCst);
+    let request = StartTest {
+        targets: Vec::new(),
+        cases: Default::default(),
+        path: world.worktree.to_string_lossy().into_owned(),
+        test: Some("all".into()),
+        checks: Vec::new(),
+        tier: ApiValidationTier::Release,
+        mode: devcoordinator2_api::params::StartMode::Attach,
+    };
     let attached = world
         .lifecycle
-        .start(
-            StartTest {
-                targets: Vec::new(),
-                cases: Default::default(),
-                path: world.worktree.to_string_lossy().into_owned(),
-                test: Some("all".into()),
-                checks: Vec::new(),
-                tier: ApiValidationTier::Release,
-                mode: devcoordinator2_api::params::StartMode::Attach,
-            },
-            &world.caller,
-        )
+        .start(request.clone(), &world.caller)
         .unwrap();
     assert_eq!(attached.run_id, first.run_id);
     assert!(attached.attached);
     assert_eq!(world.systemd.starts.load(Ordering::SeqCst), starts);
+
+    // Hold retirement after the terminal summary is published. A terminal
+    // status alone does not mean that the worktree's run slot is released.
+    let (finalizing, terminal_published) = std::sync::mpsc::channel();
+    let (release, retirement) = std::sync::mpsc::channel::<()>();
+    let retirement = Mutex::new(retirement);
+    world
+        .lifecycle
+        .set_event_sink(Arc::new(move |event: TestLifecycleEvent| {
+            if event.kind == "test.finished" {
+                let _ = finalizing.send(event.run_id);
+                let _ = retirement.lock().unwrap().recv();
+            }
+        }));
     world.systemd.finish(&first.unit);
-    world.wait_status(TestStatus::Passed);
+    assert_eq!(
+        terminal_published
+            .recv_timeout(Duration::from_secs(3))
+            .unwrap(),
+        first.run_id
+    );
+    let terminal = world.wait_status(TestStatus::Passed);
+    assert_eq!(terminal.run_id, first.run_id);
+    let attached = world.lifecycle.start(request, &world.caller).unwrap();
+    assert_eq!(attached.run_id, terminal.run_id);
+    assert!(attached.attached);
+    assert_eq!(world.systemd.starts.load(Ordering::SeqCst), starts);
+    // Dropping the sender also releases the supervisor if an assertion panics.
+    drop(release);
 }
 
 #[test]
