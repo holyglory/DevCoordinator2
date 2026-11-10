@@ -85,6 +85,13 @@ producer worker already executing a bounded query. Failed capability checks,
 expired snapshots, incomplete bindings and pending publication remain explicit
 coverage states.
 
+A cold exact-window read may take longer than the foreground review budget.
+The collector coalesces it in the existing cache, returns explicit refreshing
+coverage when the foreground wait expires, and retains the bounded background
+result for the next identical request. A foreground timeout is not a thirty-second
+source failure. Changing the window or work bindings selects a different cache
+entry; a warm result is never borrowed from another scope.
+
 ## Verification and activation
 
 Acceptance exercises authorized context ingestion and `review.prepare` through
