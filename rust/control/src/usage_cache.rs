@@ -195,6 +195,13 @@ impl UsageCache {
                 <= MAX_CACHE_BYTES
         });
         if let Some(entry) = state.entries.get_mut(key) {
+            let pending = result.as_ref().is_ok_and(|report| {
+                report
+                    .coverage
+                    .unavailable_reasons
+                    .keys()
+                    .any(|reason| super::collector_api::is_pending(reason))
+            });
             let usable = room
                 && result.as_ref().is_ok_and(|report| {
                     !report
@@ -226,9 +233,12 @@ impl UsageCache {
                 entry.bytes = bytes.unwrap_or(0);
                 entry.report = report;
             }
-            entry.refresh_failed = !usable;
+            entry.refresh_failed = !usable && !pending;
             entry.refreshing = false;
-            entry.completed = Some(Instant::now());
+            // A foreground pending response is not a completed display
+            // snapshot. The next read must consult the source query cache
+            // instead of retaining an empty result for thirty seconds.
+            entry.completed = (!pending).then(Instant::now);
         }
         changed.notify_all();
     }
@@ -341,6 +351,28 @@ mod tests {
                 progress_stage: None,
             })
         );
+
+        expire(&cache, "key");
+        cache.get("key".into(), report(None), || {
+            let mut pending = report(None);
+            pending.coverage.configured_collectors = 1;
+            pending
+                .coverage
+                .unavailable_reasons
+                .insert("api_refresh_pending".into(), 1);
+            Ok(pending)
+        });
+        cache.wait(None);
+        let retry = cache.get("key".into(), report(None), || Ok(report(Some(200))));
+        assert_eq!(retry.totals.total_tokens, Some(100));
+        let snapshot = retry.coverage.snapshot.unwrap();
+        assert!(snapshot.refreshing);
+        assert!(!snapshot.refresh_failed);
+        cache.wait(None);
+        let ready = cache.get("key".into(), report(None), || {
+            panic!("completed source loader")
+        });
+        assert_eq!(ready.totals.total_tokens, Some(200));
     }
 
     #[test]

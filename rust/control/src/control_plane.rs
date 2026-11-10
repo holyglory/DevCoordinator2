@@ -367,6 +367,32 @@ impl ControlPlane {
             .refresh_capabilities(&self.config, now_ms)
     }
 
+    fn capture_usage_context(&self, params: &Value, caller: &Caller) {
+        if !caller.via_edge
+            && let Some(work) = &caller.work
+            && let Ok(repository) = self.resolve_repository(
+                params.get("path").and_then(Value::as_str),
+                params.get("repository_id").and_then(Value::as_str),
+                caller,
+                false,
+            )
+        {
+            let now = (self.clock.now_utc().unix_timestamp_nanos() / 1_000_000) as u64;
+            if crate::usage_context::ingest(
+                &self.database,
+                caller.uid,
+                &repository.repository_id,
+                work,
+                now,
+            )
+            .is_err()
+            {
+                self.usage
+                    .binding_failed(caller.uid, repository.repository_id);
+            }
+        }
+    }
+
     fn dispatch_authorized(
         &self,
         operation: &str,
@@ -1944,6 +1970,7 @@ impl OperationExecutor for ControlPlane {
         caller: &Caller,
     ) -> Result<Value, ProtocolError> {
         let authorization = self.access.authorize(operation, &params, caller)?;
+        self.capture_usage_context(&authorization.params, caller);
         let result = self.dispatch_authorized(operation, authorization.params.clone(), caller)?;
         // Only an actual native capability selects the alarm route; client names do not.
         if !caller.via_edge
@@ -2041,6 +2068,7 @@ impl OperationExecutor for ControlPlane {
         }
         Some((|| {
             let authorization = self.access.authorize(operation, &params, caller)?;
+            self.capture_usage_context(&authorization.params, caller);
             if operation == "test.admission.wait" {
                 let request: params::TestAdmissionWait = decode(authorization.params)?;
                 let deadline = parse_deadline(&request.deadline_at)?;

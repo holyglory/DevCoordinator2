@@ -1176,24 +1176,10 @@ mod tests {
     use crate::config::Config;
     use crate::platform::FixedClock;
     use crate::test_state::{initial_summary, terminal_status};
-    use crate::usage::RepositoryProbe;
     use devcoordinator2_executor_protocol::{ProofKind, ValidationTier};
     use std::collections::HashSet;
-    use std::path::Path;
     use tempfile::tempdir;
     use time::macros::datetime;
-
-    struct NoProbe;
-    impl RepositoryProbe for NoProbe {
-        fn probe(
-            &self,
-            _source: &crate::config::CodexUsageSource,
-            _repository: &Path,
-            _now_ms: u64,
-        ) -> Result<(String, u32, u32), String> {
-            Err("source_unavailable".into())
-        }
-    }
 
     #[test]
     fn progress_uses_plan_order_test_history_and_truthful_missing_tokens() {
@@ -1288,8 +1274,7 @@ mod tests {
             codex_usage_sources: Vec::new(),
         };
         let clock = Arc::new(FixedClock(datetime!(2026-09-04 12:00 UTC)));
-        let usage =
-            CodexUsage::with_probe(config, database.clone(), clock.clone(), Arc::new(NoProbe));
+        let usage = CodexUsage::with_clock(config, database.clone(), clock.clone());
         let progress = ProgressService::with_clock(database, registry, usage, clock);
         let report = progress
             .repository(ProgressRepositoryParams {

@@ -155,7 +155,7 @@ fn review_requires_interpretation_and_honest_missing_measurements() {
             .usage
             .coverage
             .unavailable_reasons
-            .contains_key("query_budget_exhausted")
+            .contains_key("legacy_source_unsupported")
     );
     assert!(
         packet

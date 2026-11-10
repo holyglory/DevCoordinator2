@@ -433,3 +433,6 @@ mod tests;
 #[cfg(test)]
 #[path = "review_result_tests.rs"]
 mod result_tests;
+#[cfg(test)]
+#[path = "review_api_tests.rs"]
+mod api_tests;

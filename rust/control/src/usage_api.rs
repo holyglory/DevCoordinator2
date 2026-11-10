@@ -1,11 +1,14 @@
 //! Bounded consumer of CodexMulti's existing localUsage/summary contract.
 //! This module never opens, migrates, or writes the producer's accounting store.
 use super::*;
+use devcoordinator2_api::review::ReviewUsage;
 use serde::Deserialize;
 use serde_json::{Value, json};
+use sha2::Digest;
+use std::os::fd::AsRawFd;
 use std::os::unix::fs::{FileTypeExt, MetadataExt};
 use std::os::unix::net::UnixStream;
-use std::sync::Mutex;
+use std::sync::{Condvar, Mutex};
 use tungstenite::{Message, WebSocket, protocol::WebSocketConfig};
 
 const MAX_RESPONSE: usize = 2 * 1024 * 1024;
@@ -13,7 +16,16 @@ const MAX_CACHED_BYTES: usize = 16 * 1024 * 1024;
 const MAX_CACHED: usize = 96;
 const FRESH_FOR: Duration = Duration::from_secs(5);
 const RETRY_AFTER: Duration = Duration::from_secs(30);
+const SOURCE_READ_BUDGET: Duration = super::QUERY_TIMEOUT;
+const MAX_INFLIGHT_BYTES: usize = 16 * 1024 * 1024;
 pub(super) const API_BUDGET: Duration = Duration::from_millis(650);
+
+pub(super) fn is_pending(reason: &str) -> bool {
+    matches!(
+        reason,
+        "api_refresh_pending" | "api_source_busy" | "api_busy"
+    )
+}
 
 // Enforce the absolute deadline on every underlying I/O, including a peer
 // that slowly streams one frame. A socket timeout alone resets on each read.
@@ -46,12 +58,18 @@ impl io::Write for DeadlineStream {
 }
 
 #[derive(Clone, Default)]
-pub(super) struct CollectorApi(Arc<Mutex<State>>);
+pub(super) struct CollectorApi(Arc<(Mutex<State>, Condvar)>);
 #[derive(Default)]
 struct State {
     entries: HashMap<String, Entry>,
-    failed_until: HashMap<PathBuf, Instant>,
+    failed_until: HashMap<String, (Instant, String)>,
+    inflight: HashMap<String, Flight>,
 }
+struct Flight {
+    source: PathBuf,
+    bytes: usize,
+}
+
 struct Entry {
     report: Arc<Summary>,
     loaded: Instant,
@@ -61,12 +79,26 @@ struct Entry {
 #[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct Summary {
+    /// Negotiated version of the authenticated usage-v2 contract.
+    #[serde(default)]
+    pub contract_version: Option<u32>,
     pub report: Report,
     pub generated_at: u64,
     #[serde(default)]
     pub snapshot: Option<Snapshot>,
+    /// Fresh usage-v2 identity and the exact pinned frontiers used to create
+    /// this response. These values are checked together before the report is
+    /// admitted into a cache or review.
+    #[serde(default)]
+    pub source: Option<Value>,
+    /// Optional producer-side review projection. Missing bindings remain
+    /// unattributed; the consumer never derives them from repository totals.
+    #[serde(default)]
+    pub review: Option<ReviewUsage>,
 }
+
 #[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub(super) struct Snapshot {
     #[serde(alias = "sourceWatermark")]
     pub source_watermark: Option<String>,
@@ -75,6 +107,20 @@ pub(super) struct Snapshot {
     pub freshness: String,
     #[serde(alias = "refreshId")]
     pub refresh_id: Option<String>,
+    #[serde(default)]
+    pub generation: Option<u64>,
+    #[serde(default)]
+    pub watermark: Option<u64>,
+    #[serde(default)]
+    pub journal_watermark: Option<u64>,
+    #[serde(default)]
+    pub watermark_at_ms: Option<i64>,
+    #[serde(default)]
+    pub updated_at_ms: Option<u64>,
+    #[serde(default)]
+    pub pending_entries: Option<u64>,
+    #[serde(default)]
+    pub pending_corrections: Option<u64>,
 }
 #[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -89,6 +135,8 @@ pub(super) struct Report {
     pub counts: Counts,
     pub provider_tokens: Vec<Token>,
     pub provider_tokens_by_activity: Vec<Activity>,
+    #[serde(default)]
+    pub measured_execution_interval_sum_ms: Option<u64>,
     #[serde(default)]
     pub cost: Option<SourceCost>,
     #[serde(default)]
@@ -240,7 +288,7 @@ pub(super) struct Activity {
 impl CollectorApi {
     #[expect(
         clippy::too_many_arguments,
-        reason = "This external collector API keeps its existing explicit scope and time bounds"
+        reason = "Compatibility wrapper preserves the existing collector call shape"
     )]
     pub(super) fn summary(
         &self,
@@ -252,6 +300,35 @@ impl CollectorApi {
         end: u64,
         deadline: Instant,
     ) -> Result<Arc<Summary>, String> {
+        self.summary_with_workstream(
+            source,
+            repository,
+            worktree_keys,
+            include_unassigned,
+            None,
+            &[],
+            start,
+            end,
+            deadline,
+        )
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "This external collector API keeps its explicit scope, workstream, and time bounds"
+    )]
+    pub(super) fn summary_with_workstream(
+        &self,
+        source: &CodexUsageSource,
+        repository: Option<&str>,
+        worktree_keys: Option<&[String]>,
+        include_unassigned: bool,
+        workstream: Option<&str>,
+        bindings: &[crate::usage_context::Binding],
+        start: u64,
+        end: u64,
+        deadline: Instant,
+    ) -> Result<Arc<Summary>, String> {
         let path = source.api_socket.as_ref().ok_or("api_not_configured")?;
         let key = format!(
             "{}:{path:?}:{}:{:?}:{include_unassigned}:{start}:{end}",
@@ -259,7 +336,25 @@ impl CollectorApi {
             repository.unwrap_or("all"),
             worktree_keys,
         );
-        let mut state = self.0.try_lock().map_err(|_| "api_busy")?;
+        let revision = serde_json::to_vec(bindings).map_err(|_| "work_context_unavailable")?;
+        let revision = sha2::Sha256::digest(revision)
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>();
+        let key = format!("{key}:{}:{revision}", workstream.unwrap_or("all"));
+        if bindings.len() > crate::usage_context::MAX_BINDINGS {
+            return Err("api_contract_unsupported".into());
+        }
+        let request_bytes = serde_json::to_vec(bindings)
+            .map_err(|_| "work_context_unavailable")?
+            .len()
+            .saturating_add(key.len())
+            .saturating_add(source.codex_home.as_os_str().len());
+        let (guard, changed) = &*self.0;
+        let mut state = guard.lock().map_err(|_| "api_busy")?;
+        state
+            .failed_until
+            .retain(|_, (until, _)| *until > Instant::now());
         if let Some(entry) = state
             .entries
             .get(&key)
@@ -267,59 +362,171 @@ impl CollectorApi {
         {
             return Ok(entry.report.clone());
         }
-        if state
-            .failed_until
-            .get(path)
-            .is_some_and(|until| *until > Instant::now())
-        {
-            return Err("api_unavailable".into());
+        if let Some((_, reason)) = state.failed_until.get(&key) {
+            return Err(reason.clone());
         }
-        // The lock coalesces source requests; callers never queue unbounded work.
-        let result = fetch(
-            source,
-            repository,
-            worktree_keys,
-            include_unassigned,
-            start,
-            end,
-            deadline,
-        );
+        if !state.inflight.contains_key(&key) {
+            if state.inflight.values().any(|flight| &flight.source == path) {
+                return Err("api_source_busy".into());
+            }
+            let inflight_bytes = state
+                .inflight
+                .values()
+                .map(|flight| flight.bytes)
+                .sum::<usize>();
+            if state.inflight.len() >= MAX_CACHED
+                || request_bytes > MAX_INFLIGHT_BYTES.saturating_sub(inflight_bytes)
+            {
+                return Err("api_busy".into());
+            }
+            state.inflight.insert(
+                key.clone(),
+                Flight {
+                    source: path.clone(),
+                    bytes: request_bytes,
+                },
+            );
+            let cache = self.clone();
+            let request_key = key.clone();
+            let source = source.clone();
+            let repository = repository.map(str::to_owned);
+            let worktree_keys = worktree_keys.map(<[String]>::to_vec);
+            let workstream = workstream.map(str::to_owned);
+            let bindings = bindings.to_vec();
+            drop(state);
+            // A bounded source read may outlive this foreground request. It
+            // remains owned by this exact-query cache until completion; another
+            // request for the same source cannot launch a competing cold read.
+            let spawned = std::thread::Builder::new()
+                .name("usage-api-refresh".into())
+                .spawn(move || {
+                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        fetch(
+                            &source,
+                            repository.as_deref(),
+                            worktree_keys.as_deref(),
+                            include_unassigned,
+                            workstream.as_deref(),
+                            &bindings,
+                            start,
+                            end,
+                            Instant::now() + SOURCE_READ_BUDGET,
+                        )
+                    }))
+                    .unwrap_or_else(|_| Err("api_refresh_failed".into()));
+                    cache.finish(request_key, result);
+                });
+            if spawned.is_err() {
+                self.finish(key.clone(), Err("api_refresh_failed".into()));
+            }
+            state = guard.lock().map_err(|_| "api_busy")?;
+        }
+        loop {
+            if let Some(entry) = state
+                .entries
+                .get(&key)
+                .filter(|entry| entry.loaded.elapsed() < FRESH_FOR)
+            {
+                return Ok(entry.report.clone());
+            }
+            if let Some((_, reason)) = state.failed_until.get(&key) {
+                return Err(reason.clone());
+            }
+            let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+                return Err("api_refresh_pending".into());
+            };
+            if remaining.is_zero() {
+                return Err("api_refresh_pending".into());
+            }
+            let (updated, waited) = changed
+                .wait_timeout(state, remaining)
+                .map_err(|_| "api_busy")?;
+            state = updated;
+            if waited.timed_out() && state.inflight.contains_key(&key) {
+                return Err("api_refresh_pending".into());
+            }
+        }
+    }
+
+    fn finish(&self, key: String, result: Result<(Summary, usize), String>) {
+        let (guard, changed) = &*self.0;
+        let mut state = guard
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.inflight.remove(&key);
         match result {
-            Ok((report, bytes)) => {
-                state.failed_until.remove(path);
+            Ok((report, bytes)) if bytes <= MAX_CACHED_BYTES => {
+                state.failed_until.remove(&key);
                 while state.entries.len() >= MAX_CACHED
-                    || state.entries.values().map(|e| e.bytes).sum::<usize>() + bytes
+                    || state
+                        .entries
+                        .values()
+                        .map(|entry| entry.bytes)
+                        .sum::<usize>()
+                        .saturating_add(bytes)
                         > MAX_CACHED_BYTES
                 {
                     let oldest = state
                         .entries
                         .iter()
-                        .min_by_key(|(_, e)| e.loaded)
-                        .map(|(k, _)| k.clone());
+                        .min_by_key(|(_, entry)| entry.loaded)
+                        .map(|(key, _)| key.clone());
                     if let Some(oldest) = oldest {
                         state.entries.remove(&oldest);
                     } else {
                         break;
                     }
                 }
-                let report = Arc::new(report);
                 state.entries.insert(
                     key,
                     Entry {
-                        report: report.clone(),
+                        report: Arc::new(report),
                         loaded: Instant::now(),
                         bytes,
                     },
                 );
-                Ok(report)
             }
-            Err(reason) => {
+            result => {
+                let reason = result
+                    .err()
+                    .unwrap_or_else(|| "api_response_too_large".into());
+                let retry = if reason.ends_with("_timeout") || reason == "query_budget_exhausted" {
+                    Duration::from_secs(1)
+                } else {
+                    RETRY_AFTER
+                };
+                if state.failed_until.len() >= MAX_CACHED
+                    && let Some(oldest) = state
+                        .failed_until
+                        .iter()
+                        .min_by_key(|(_, (until, _))| until)
+                        .map(|(key, _)| key.clone())
+                {
+                    state.failed_until.remove(&oldest);
+                }
                 state
                     .failed_until
-                    .insert(path.clone(), Instant::now() + RETRY_AFTER);
-                Err(reason)
+                    .insert(key, (Instant::now() + retry, reason));
             }
         }
+        changed.notify_all();
+    }
+
+    #[cfg(test)]
+    pub(super) fn wait_until_idle(&self, deadline: Instant) -> bool {
+        let (guard, changed) = &*self.0;
+        let mut state = guard.lock().unwrap();
+        while !state.inflight.is_empty() {
+            let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+                return false;
+            };
+            let (updated, waited) = changed.wait_timeout(state, remaining).unwrap();
+            state = updated;
+            if waited.timed_out() && !state.inflight.is_empty() {
+                return false;
+            }
+        }
+        true
     }
 }
 
@@ -328,14 +535,39 @@ fn fetch(
     repository: Option<&str>,
     worktree_keys: Option<&[String]>,
     include_unassigned: bool,
+    workstream: Option<&str>,
+    bindings: &[crate::usage_context::Binding],
     start: u64,
     end: u64,
     deadline: Instant,
 ) -> Result<(Summary, usize), String> {
+    let mut socket = connect(source, deadline)?;
+    let value = exchange(
+        &mut socket,
+        2,
+        "localUsage/summary",
+        json!({"contractVersion":1,"repositoryKey":repository,"worktreeKeys":worktree_keys,"includeUnassigned":include_unassigned,"workstreamId":workstream,"fromAt":start,"toAt":end,"includeReview":true,"workContextBindings":bindings}),
+        deadline,
+    )?;
+    let bytes = serde_json::to_vec(&value)
+        .map_err(|_| "api_contract_unsupported")?
+        .len();
+    let summary: Summary = serde_json::from_value(value).map_err(|_| "api_contract_unsupported")?;
+    validate(&summary, repository, start, end)?;
+    // Dropping the connection stops response delivery. The producer keeps its
+    // bounded read isolated in its local worker; this consumer does not claim
+    // that transport closure cancels that worker synchronously.
+    Ok((summary, bytes.saturating_mul(4)))
+}
+
+fn connect(
+    source: &CodexUsageSource,
+    deadline: Instant,
+) -> Result<WebSocket<DeadlineStream>, String> {
     let path = source.api_socket.as_ref().ok_or("api_not_configured")?;
-    let metadata = path.metadata().map_err(|_| "api_unavailable")?;
+    let metadata = path.metadata().map_err(|_| "api_socket_unavailable")?;
     if !metadata.file_type().is_socket() || metadata.uid() != source.uid {
-        return Err("api_unavailable".into());
+        return Err("api_socket_identity_mismatch".into());
     }
     let budget = deadline
         .checked_duration_since(Instant::now())
@@ -359,7 +591,7 @@ fn fetch(
         .map_err(|_| "api_unavailable")?;
     // Bind the configured same-owner source to the actual peer, including a replaced socket.
     if peer_uid(&stream)? != source.uid {
-        return Err("api_unavailable".into());
+        return Err("api_peer_identity_mismatch".into());
     }
     set_deadline(&stream, deadline)?;
     let config = WebSocketConfig::default()
@@ -373,7 +605,10 @@ fn fetch(
         },
         Some(config),
     )
-    .map_err(|_| "api_unavailable")?;
+    .map_err(|error| match error {
+        tungstenite::HandshakeError::Failure(error) => transport_error(&error, "handshake"),
+        tungstenite::HandshakeError::Interrupted(_) => "api_handshake_incomplete".into(),
+    })?;
     let initialize = exchange(
         &mut socket,
         1,
@@ -383,27 +618,73 @@ fn fetch(
     )?;
     // Do not route a configured source to another account's daemon.
     if initialize.get("codexHome").and_then(Value::as_str) != source.codex_home.to_str() {
-        return Err("api_unavailable".into());
+        return Err("api_source_identity_mismatch".into());
     }
+    validate_capability(&initialize)?;
     socket
         .send(Message::Text(
             json!({"method":"initialized"}).to_string().into(),
         ))
         .map_err(|_| "api_unavailable")?;
+    Ok(socket)
+}
+
+fn validate_capability(initialize: &Value) -> Result<(), String> {
+    let cap = initialize
+        .get("localUsageAccounting")
+        .ok_or("api_contract_unsupported")?;
+    let methods = cap
+        .get("methods")
+        .and_then(Value::as_array)
+        .ok_or("api_contract_unsupported")?;
+    if cap.get("version").and_then(Value::as_u64) != Some(1)
+        || !cap
+            .get("supportedVersions")
+            .and_then(Value::as_array)
+            .is_some_and(|v| v.iter().any(|v| v.as_u64() == Some(1)))
+        || cap.get("storage").and_then(Value::as_str) != Some("usage-v2")
+        || cap
+            .get("supportsWorkContextBindings")
+            .and_then(Value::as_bool)
+            != Some(true)
+        || cap
+            .get("supportsWorkstreamOutcomes")
+            .and_then(Value::as_bool)
+            != Some(true)
+        || ["localUsage/summary", "localUsage/repositoryIdentity"]
+            .iter()
+            .any(|name| !methods.iter().any(|m| m.as_str() == Some(name)))
+    {
+        return Err("api_contract_unsupported".into());
+    }
+    Ok(())
+}
+
+pub(super) fn repository_identity(
+    source: &CodexUsageSource,
+    path: &Path,
+    deadline: Instant,
+) -> Result<String, String> {
+    let mut socket = connect(source, deadline)?;
     let value = exchange(
         &mut socket,
         2,
-        "localUsage/summary",
-        json!({"repositoryKey":repository,"worktreeKeys":worktree_keys,"includeUnassigned":include_unassigned,"fromAt":start,"toAt":end}),
+        "localUsage/repositoryIdentity",
+        json!({"contractVersion":1,"path":path}),
         deadline,
     )?;
-    let bytes = serde_json::to_vec(&value)
-        .map_err(|_| "api_contract_unsupported")?
-        .len();
-    let summary: Summary = serde_json::from_value(value).map_err(|_| "api_contract_unsupported")?;
-    validate(&summary, repository, start, end)?;
-    // Dropping the connection cancels any pending source work on failures as well.
-    Ok((summary, bytes.saturating_mul(4)))
+    if value.get("contractVersion").and_then(Value::as_u64) != Some(1)
+        || value.get("source").and_then(Value::as_str) != Some("usage-v2")
+        || value.get("formatVersion").and_then(Value::as_u64) != Some(3)
+    {
+        return Err("api_contract_unsupported".into());
+    }
+    value
+        .get("repositoryId")
+        .and_then(Value::as_str)
+        .filter(|key| super::valid_repository_key(key))
+        .map(str::to_owned)
+        .ok_or_else(|| "mapping_unavailable".into())
 }
 
 #[cfg(target_os = "linux")]
@@ -451,6 +732,15 @@ fn set_deadline(stream: &UnixStream, deadline: Instant) -> Result<(), String> {
         .and_then(|_| stream.set_write_timeout(Some(remaining)))
         .map_err(|_| "api_unavailable".into())
 }
+fn transport_error(error: &tungstenite::Error, stage: &str) -> String {
+    if matches!(error, tungstenite::Error::Io(io) if matches!(io.kind(),io::ErrorKind::TimedOut|io::ErrorKind::WouldBlock))
+    {
+        format!("api_{stage}_timeout")
+    } else {
+        format!("api_{stage}_failed")
+    }
+}
+
 fn exchange(
     socket: &mut WebSocket<DeadlineStream>,
     id: u64,
@@ -458,6 +748,11 @@ fn exchange(
     params: Value,
     deadline: Instant,
 ) -> Result<Value, String> {
+    let stage = match method {
+        "initialize" => "initialize",
+        "localUsage/repositoryIdentity" => "identity",
+        _ => "summary",
+    };
     set_deadline(socket.get_ref(), deadline)?;
     socket
         .send(Message::Text(
@@ -465,10 +760,13 @@ fn exchange(
                 .to_string()
                 .into(),
         ))
-        .map_err(|_| "api_unavailable")?;
+        .map_err(|error| transport_error(&error, stage))?;
     for _ in 0..64 {
         set_deadline(socket.get_ref(), deadline)?;
-        match socket.read().map_err(|_| "api_unavailable")? {
+        match socket
+            .read()
+            .map_err(|error| transport_error(&error, stage))?
+        {
             Message::Text(text) => {
                 let response: Value =
                     serde_json::from_str(&text).map_err(|_| "api_contract_unsupported")?;
@@ -492,7 +790,17 @@ fn validate(
     start: u64,
     end: u64,
 ) -> Result<(), String> {
+    if summary.contract_version != Some(1)
+        || summary.source.as_ref().and_then(Value::as_str) != Some("usage-v2")
+        || summary.snapshot.is_none()
+        || summary.review.is_none()
+    {
+        return Err("api_contract_unsupported".into());
+    }
     let r = &summary.report;
+    if summary.source.is_some() && r.database_schema_version != 3 {
+        return Err("api_contract_unsupported".into());
+    }
     if r.schema_version != 1
         || r.taxonomy_version != i64::from(SUPPORTED_TAXONOMY)
         || r.kind != "usageSummary"
@@ -515,17 +823,40 @@ fn validate(
     {
         return Err("api_contract_unsupported".into());
     }
-    if let Some(snapshot) = &summary.snapshot
-        && (!matches!(
-            snapshot.freshness.as_str(),
-            "fresh" | "stale" | "refreshing" | "failed"
-        ) || snapshot
-            .source_watermark
+    let snapshot = summary
+        .snapshot
+        .as_ref()
+        .ok_or("api_contract_unsupported")?;
+    if !matches!(
+        snapshot.freshness.as_str(),
+        "unknown" | "fresh" | "stale" | "refreshing" | "failed"
+    ) || snapshot.source_watermark.as_ref().is_none_or(|s| {
+        s.len() > 256 || !s.starts_with("usage-v2:") || s.chars().any(char::is_control)
+    }) || snapshot.generation.is_none()
+        || snapshot.watermark.is_none()
+        || snapshot.journal_watermark.is_none()
+        || snapshot.watermark_at_ms.is_none()
+        || snapshot.updated_at_ms.is_none()
+        || snapshot.pending_entries.is_none()
+        || snapshot.pending_corrections.is_none()
+        || snapshot
+            .refresh_id
             .as_ref()
-            .is_some_and(|s| s.len() > 256)
-            || snapshot.refresh_id.as_ref().is_some_and(|s| s.len() > 256))
+            .is_some_and(|s| s.len() > 256 || s.chars().any(char::is_control))
     {
         return Err("api_contract_unsupported".into());
+    }
+    if snapshot.journal_watermark < snapshot.watermark
+        || (snapshot.generation == Some(0) && snapshot.watermark != Some(0))
+        || snapshot
+            .watermark_at_ms
+            .is_some_and(|at| at < 0 || at as u64 > snapshot.generated_at)
+        || snapshot
+            .updated_at_ms
+            .is_some_and(|at| at > snapshot.generated_at)
+        || snapshot.generated_at > summary.generated_at
+    {
+        return Err("api_snapshot_inconsistent".into());
     }
     if let Some(cost) = &summary.report.cost {
         let provider_total = summary
@@ -576,19 +907,54 @@ impl Summary {
         include_unassigned: bool,
     ) -> SourceReport {
         let r = &self.report;
-        let partial = r.coverage.has_gaps || r.coverage.state != "complete";
+        let source_partial = self.snapshot.as_ref().is_some_and(|snapshot| {
+            snapshot.freshness != "fresh"
+                || snapshot.pending_entries.unwrap_or_default() != 0
+                || snapshot.pending_corrections.unwrap_or_default() != 0
+        });
+        let partial = r.coverage.has_gaps || r.coverage.state != "complete" || source_partial;
         let mut result = SourceReport {
+            source_snapshot: self.snapshot.as_ref().map(|s| {
+                devcoordinator2_api::results::UsageSourceSnapshot {
+                    source: "usage-v2".into(),
+                    contract_version: 1,
+                    format_version: 3,
+                    source_watermark: s.source_watermark.clone().unwrap_or_default(),
+                    generated_at_ms: s.generated_at,
+                    generation: s.generation.unwrap_or_default(),
+                    watermark: s.watermark.unwrap_or_default(),
+                    journal_watermark: s.journal_watermark.unwrap_or_default(),
+                    watermark_at_ms: s
+                        .watermark_at_ms
+                        .and_then(|v| u64::try_from(v).ok())
+                        .unwrap_or_default(),
+                    updated_at_ms: s.updated_at_ms.unwrap_or_default(),
+                    freshness: s.freshness.clone(),
+                    pending_entries: s.pending_entries.unwrap_or_default(),
+                    pending_corrections: s.pending_corrections.unwrap_or_default(),
+                    refresh_id: s.refresh_id.clone(),
+                    measured_execution_interval_sum_ms: r.measured_execution_interval_sum_ms,
+                }
+            }),
             supplied_cost: r.cost.as_ref().map(SourceCost::usage_cost),
             snapshot: Some(devcoordinator2_api::results::UsageSnapshot {
-                updated_at_ms: Some(
-                    self.snapshot
-                        .as_ref()
-                        .map_or(self.generated_at, |s| s.generated_at),
-                ),
+                updated_at_ms: self
+                    .snapshot
+                    .as_ref()
+                    .and_then(|s| {
+                        s.updated_at_ms
+                            .or_else(|| s.watermark_at_ms.and_then(|at| u64::try_from(at).ok()))
+                            .or(Some(s.generated_at))
+                    })
+                    .or(Some(self.generated_at)),
                 refreshing: self
                     .snapshot
                     .as_ref()
-                    .is_some_and(|s| s.freshness == "refreshing"),
+                    .is_some_and(|s| s.freshness == "refreshing")
+                    || self.snapshot.as_ref().is_some_and(|s| {
+                        s.pending_entries.unwrap_or_default() > 0
+                            || s.pending_corrections.unwrap_or_default() > 0
+                    }),
                 refresh_failed: self
                     .snapshot
                     .as_ref()
@@ -599,11 +965,15 @@ impl Summary {
             }),
             database_schema: u32::try_from(r.database_schema_version).unwrap_or(u32::MAX),
             taxonomy_version: u32::try_from(r.taxonomy_version).unwrap_or(u32::MAX),
-            freshest_at_ms: Some(
-                self.snapshot
-                    .as_ref()
-                    .map_or(self.generated_at, |s| s.generated_at),
-            ),
+            freshest_at_ms: self
+                .snapshot
+                .as_ref()
+                .and_then(|s| {
+                    s.watermark_at_ms
+                        .and_then(|at| u64::try_from(at).ok())
+                        .or(Some(s.generated_at))
+                })
+                .or(Some(self.generated_at)),
             phase_series: vec![BTreeMap::new(); buckets],
             token_buckets_observed: vec![false; buckets],
             bucket_coverage: vec![CoverageState::Unobserved; buckets],
@@ -613,6 +983,9 @@ impl Summary {
             agent_unknown: 1,
             ..Default::default()
         };
+        if source_partial {
+            increment(&mut result.coverage_events, "partial");
+        }
         for t in &r.provider_tokens {
             if t.measurement_provenance != "provider_reported"
                 || repository.is_some_and(|key| t.repository_bucket != key)
@@ -626,7 +999,7 @@ impl Summary {
                 continue;
             }
             result.evidence |= t.observation_count > 0;
-            if t.observation_count > 0 {
+            if t.observation_count > 0 && (t.exact_tokens.is_some() || t.measured_tokens > 0) {
                 *result.tokens.entry(t.category.clone()).or_default() += t.measured_tokens;
             }
             let state = if partial || t.unknown_observations > 0 || t.exact_tokens.is_none() {

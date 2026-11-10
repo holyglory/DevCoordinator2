@@ -1,67 +1,107 @@
 # Codex usage consumer
 
-DevCoordinator consumes CodexMulti's existing `localUsage/summary` operation.
-CodexMulti continues to own collection, raw facts, rollups, retention and their
-refresh workers. Coordinator keeps only repository identity links in its database
-and disposable, bounded display snapshots in memory.
+DevCoordinator reads the producer's versioned `usage-v2` API. CodexMulti owns
+the append-only journal, immutable segments, retention, publication and token
+observations. Coordinator does not open, migrate or fall back to
+`usage/usage.sqlite3`, and does not probe `codex usage`.
 
-An approved source can add `api_socket` to its private source policy. The socket
-is a local WebSocket endpoint using the existing `/rpc` handshake, followed by
-`initialize` with `experimentalApi: true`, `initialized`, and
-`localUsage/summary`. The connection verifies the configured source UID and
-`codexHome`. There is no TCP endpoint, credential import, or new source process.
-Omitting the socket retains the previous read-only SQLite behavior. An unavailable
-or incompatible API falls back to that same reader; it never rewrites a collector.
+## Local contract
 
-The consumer validates report schema 1, taxonomy 1, scope and the echoed half-open
-`[fromAt,toAt)` window. Producer database versions are not a wire compatibility
-gate. The SQLite fallback retains its separate, explicitly reviewed schema gate.
-The source-wide collection requests one all-scope summary per configured source,
-then projects its repository token buckets using saved opaque repository links.
-Unmapped repositories remain unavailable. Source-wide request/tool counts and
-elapsed time cannot be allocated to repositories from the current contract; these
-collection cells are null, never inferred zeroes. Opening a repository uses its
-scoped report. No account, raw source payload, socket path or collector identifier
-is returned to the Console.
+The private source policy selects a same-owner Unix socket. The consumer checks
+its owner, the connected peer UID and the `codexHome` returned by `initialize`.
+It requires the advertised usage-v2 capability and supported contract version
+before calling `localUsage/summary`. A successful transport alone does not make
+a collector available: the response must also have the negotiated version,
+format, scope, exact UTC window and consistent snapshot metadata.
 
-Optional snapshot metadata follows the handover contract: `source_watermark`,
-`generated_at`, `freshness` (`fresh`, `stale`, `refreshing`, `failed`) and
-`refresh_id`. Camel-case aliases are accepted. Observation time is distinct from
-the measurement window. Stale or failed source snapshots keep their actual date.
-A response may also supply a `cost` object using the existing Coordinator cost
-fields: API-equivalent USD, Standard processing basis, fixed integer USD micros,
-component/token values, status, unknown counts and versioned rate-card references.
-A source estimate takes precedence for that source. It is never added to a local
-estimate of the same facts. Without source pricing, the existing cost-capable
-SQLite enrichment uses the Coordinator rate-card catalog. Missing rate/model or
-component coverage stays partial or unavailable.
+`localUsage/repositoryIdentity` resolves the producer's opaque repository key
+for a registered local checkout. The path travels only as private IPC input;
+it is not retained in normal usage records or returned in reports. Existing
+repository mappings may be refreshed through this API. A retired source or an
+unsupported capability remains a separately identified unavailable collector.
 
-The API has a 650 ms shared read budget, a 2 MiB message limit, a 16 MiB source
-snapshot budget, at most 96 cached queries, and a 30-second failure backoff. Display
-collection queries share five-second observation windows. Exact review evidence
-continues to use its original canonical reader until producer contract parity is
-proved. Performance snapshot keys include the exact end boundary.
+The summary keeps the existing `generatedAt`, `report` and `snapshot` envelope.
+Its additive fields identify contract version 1 and source `usage-v2`. The
+manifest format is 3; `databaseSchemaVersion` retains its historical JSON name
+for compatibility. Snapshot generation, published watermark, represented
+journal watermark, publication time, freshness and pending work describe the
+same immutable view. The journal watermark may exceed the published watermark
+when the reader includes a complete bounded tail.
 
-The display cache admits one refresh at a time, queues at most 32 distinct reads,
-coalesces duplicate keys, and retains the last usable result on failure. Waiting
-for a refresh returns within 650 ms. It has at most 128 reports, a conservative
-64 MiB allocation budget and an 8 MiB limit per report. SQLite fallback connections
-use a 4 MiB page cache, disable memory mapping and permit temporary joins to spill
-to disk. OS filesystem cache is reported separately from anonymous process memory.
+Global, account, repository and thread queries use explicit producer filters.
+A global total cannot establish a repository total. Repository totals cannot
+establish task or workstream attribution. A continuation or comparison that
+requires a specific snapshot supplies the producer's `expectedSnapshot` value;
+an expired snapshot is an explicit failure rather than permission to combine
+different generations. Detailed performance reads use finite windows and
+bounded pages. Cached snapshots do not authorize a full-history foreground scan.
 
-## Producer acceptance still required
+## Explicit work context
 
-The current CodexMulti implementation does not yet provide the planned compact
-windowed rollups, model/component price inputs, activity/outcome costs, chart
-buckets or snapshot metadata. `localUsageRepository/list` is lifetime-only and is
-never used as a substitute for a requested time window. Existing source summary
-support therefore proves the transport and accounting boundary, not completion of
-the performance objective. The API mode is opt-in until a real producer build
-passes the recorded integration journey.
+Coordinator retains a content-free declaration when an authorized governed
+request supplies valid work context. The authority index is keyed by caller
+source and operation ID and includes the Coordinator repository, native project,
+thread, turn, workstream, outcome and experiment reference. It stores
+declarations, not a duplicate usage event history. Conflicting declarations do
+not overwrite the original context or silently acquire attribution.
 
-CodexMulti task `pc20ab013b8a118e7` owns the remaining producer work. Coordinator
-outcomes `p95cabc166aa543e4` and `p75bdcffb374e4e6c` remain open until populated cold
-and warm Usage/Performance journeys meet the under-one-second target and the
-256 MiB usage memory budget with real source data, concurrent navigation, collector
-failure/recovery, all supported ranges, and exact-window reconciliation. A new
-cache without those measurements is not completion evidence.
+The read-only producer request accepts a bounded `workContextBindings` array.
+Each entry has `schemaVersion`, `operationId`, `capturedAtMs`, and `workContext`.
+The context has `schemaVersion`, `id`, `repositoryId`, `nativeProjectId`,
+`threadId`, `turnId`, `workstreamId`, `outcomeId`, and `experimentRef`. Optional
+fields remain absent when undeclared. `repositoryId` inside the context names
+the Coordinator repository; the summary's repository selector names the
+producer repository. These are separate identity namespaces.
+
+Only exact operation IDs with matching recorded repository/thread/turn evidence
+can contribute attributed rows. Missing, conflicting or mismatched context
+remains explicitly unattributed. A binding alone creates no operation, token
+observation or delivery receipt. The optional producer-side binding file is
+not required for Coordinator ingestion and is never written by the collector.
+
+`includeReview` requests the finite review projection. Workstream selection
+applies to outcome effort and rows; the repository summary retains its stated
+scope. Unknown-context work remains visible. `review.prepare` preserves its
+existing JSON fields, and review acceptance still requires interpreted evidence.
+The integration does not change verdict rules to manufacture a completed review.
+
+## Coverage, timing and privacy
+
+Unavailable collectors are excluded, never counted as synthetic zeroes.
+Provider total tokens are not reconstructed by adding components. Cached input
+and reasoning output are subsets. Unknown measurements retain null exact values.
+Summed concurrent operation durations are not elapsed wall time or active-agent
+time; dimensions lacking the necessary intervals stay unknown.
+
+Ordinary reports omit credentials, raw arguments, prompts, response bodies,
+private paths and contributing account identities. Source references used by
+the collector remain internal; human-facing source labels do not expose UIDs or
+producer private identifiers. Existing operator/administrator access rules and
+same-owner IPC authentication remain unchanged.
+
+Reads retain response byte limits, bounded caches and deadlines. A transport
+deadline bounds the consumer's wait; disconnecting does not necessarily stop a
+producer worker already executing a bounded query. Failed capability checks,
+expired snapshots, incomplete bindings and pending publication remain explicit
+coverage states.
+
+A cold exact-window read may take longer than the foreground review budget.
+The collector coalesces it in the existing cache, returns explicit refreshing
+coverage when the foreground wait expires, and retains the bounded background
+result for the next identical request. A foreground timeout is not a thirty-second
+source failure. Changing the window or work bindings selects a different cache
+entry; a warm result is never borrowed from another scope.
+
+## Verification and activation
+
+Acceptance exercises authorized context ingestion and `review.prepare` through
+the real collector transport. The producer fixture uses a v3 manifest, journal
+and Parquet segments, including late facts and explicit bindings. Regressions
+cover available fresh sources beside unsupported legacy sources, unchanged
+review JSON, non-empty attributed rows, unattributed remainder, negotiation,
+snapshot consistency and refusal to open retired SQLite.
+
+Coordinator self-validation runs through its source executor's `run-local`
+surface. Codex producer checks use their governed repository graph. Live
+activation uses the reviewed root installer only after candidate acceptance;
+source commits or parsed fixture responses alone are not live-deployment proof.

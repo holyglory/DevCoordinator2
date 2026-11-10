@@ -81,6 +81,11 @@ pub const MIGRATIONS: &[(i64, &str, &str)] = &[
         "generation_source_origins",
         include_str!("../migrations/0015_generation_source_origins.sql"),
     ),
+    (
+        16,
+        "usage_operation_contexts",
+        include_str!("../migrations/0016_usage_operation_contexts.sql"),
+    ),
 ];
 
 pub fn migrate(database: &Persistence) -> Result<()> {

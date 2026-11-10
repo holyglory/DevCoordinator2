@@ -2264,6 +2264,8 @@ pub enum CoverageState {
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct UsageCoverage {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sources: Vec<UsageSourceSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub snapshot: Option<UsageSnapshot>,
     pub state: CoverageState,
@@ -2277,6 +2279,28 @@ pub struct UsageCoverage {
     pub unavailable_reasons: BTreeMap<String, u64>,
     pub database_schemas: Vec<u32>,
     pub taxonomy_versions: Vec<u32>,
+}
+
+/// A privacy-safe source label and the exact producer frontiers used by a report.
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UsageSourceSnapshot {
+    pub source: String,
+    pub contract_version: u32,
+    pub format_version: u32,
+    pub source_watermark: String,
+    pub generated_at_ms: u64,
+    pub generation: u64,
+    pub watermark: u64,
+    pub journal_watermark: u64,
+    pub watermark_at_ms: u64,
+    pub updated_at_ms: u64,
+    pub freshness: String,
+    pub pending_entries: u64,
+    pub pending_corrections: u64,
+    pub refresh_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub measured_execution_interval_sum_ms: Option<u64>,
 }
 
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
