@@ -1,754 +1,144 @@
-//! Extend the existing usage fixture through a real localUsage websocket peer.
 use super::*;
-use crate::platform::FixedClock;
-use std::os::unix::net::UnixListener;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use time::OffsetDateTime;
-
-fn response(repository: Option<&str>, start: u64, end: u64) -> Value {
-    let key = "b".repeat(64);
-    json!({"generatedAt":end,"report":{
-        "schemaVersion":1,"kind":"usageSummary","databaseSchemaVersion":99,"taxonomyVersion":1,
-        "scope":{"type":if repository.is_some(){"repository"}else{"all"},"id":repository},
-        "timeRange":{"startMs":start,"endMs":end},"coverage":{"state":"complete","hasGaps":false},
-        "counts":{"operations":2,"modelRequests":1,"tools":1},
-        "providerTokens":[
-            {"category":"total_tokens","repositoryBucket":key,"measurementProvenance":"provider_reported","measuredTokens":120,"exactTokens":120,"unknownObservations":0,"observationCount":1},
-            {"category":"input_tokens","repositoryBucket":key,"measurementProvenance":"provider_reported","measuredTokens":100,"exactTokens":100,"unknownObservations":0,"observationCount":1},
-            {"category":"input_tokens_details.cached_tokens","repositoryBucket":key,"measurementProvenance":"provider_reported","measuredTokens":80,"exactTokens":80,"unknownObservations":0,"observationCount":1},
-            {"category":"output_tokens","repositoryBucket":key,"measurementProvenance":"provider_reported","measuredTokens":20,"exactTokens":20,"unknownObservations":0,"observationCount":1},
-            {"category":"output_tokens_details.reasoning_tokens","repositoryBucket":key,"measurementProvenance":"provider_reported","measuredTokens":5,"exactTokens":5,"unknownObservations":0,"observationCount":1}
-        ],
-        "providerTokensByActivity":[{"phase":"implementation","activity":"coding","attributionProvenance":"agent_declared","measuredTokens":120,"exactTokens":120,"unknownObservations":0}],
-        "account":"private-account-must-not-escape","extraPrivate":"private-payload-must-not-escape"
-    }})
-}
-
-#[derive(Clone, Copy)]
-struct DetailProbe;
-
-impl RepositoryProbe for DetailProbe {
-    fn probe(
-        &self,
-        _source: &CodexUsageSource,
-        _repository: &Path,
-        _now_ms: u64,
-    ) -> Result<(String, u32, u32), String> {
-        Ok(("b".repeat(64), 5, 1))
-    }
-}
-
-fn peer(
-    path: &Path,
-    home: &Path,
-    count: usize,
-    mutate: fn(&mut Value),
-) -> (std::thread::JoinHandle<()>, Arc<AtomicUsize>) {
-    let listener = UnixListener::bind(path).unwrap();
-    let home = home.to_path_buf();
-    let calls = Arc::new(AtomicUsize::new(0));
-    let observed = calls.clone();
-    let worker = std::thread::spawn(move || {
-        for _ in 0..count {
-            let (stream, _) = listener.accept().unwrap();
-            stream
-                .set_read_timeout(Some(Duration::from_secs(3)))
-                .unwrap();
-            let mut socket = tungstenite::accept(stream).unwrap();
-            let init: Value =
-                serde_json::from_str(socket.read().unwrap().to_text().unwrap()).unwrap();
-            assert_eq!(init["method"], "initialize");
-            assert_eq!(init["params"]["capabilities"]["experimentalApi"], true);
-            socket
-                .send(Message::Text(
-                    json!({"id":1,"result":{"codexHome":home}})
-                        .to_string()
-                        .into(),
-                ))
-                .unwrap();
-            let initialized: Value =
-                serde_json::from_str(socket.read().unwrap().to_text().unwrap()).unwrap();
-            assert_eq!(initialized["method"], "initialized");
-            let request: Value =
-                serde_json::from_str(socket.read().unwrap().to_text().unwrap()).unwrap();
-            assert_eq!(request["method"], "localUsage/summary");
-            observed.fetch_add(1, Ordering::SeqCst);
-            let mut result = response(
-                request["params"]["repositoryKey"].as_str(),
-                request["params"]["fromAt"].as_u64().unwrap(),
-                request["params"]["toAt"].as_u64().unwrap(),
-            );
-            mutate(&mut result);
-            if result
-                .get("__wait_for_disconnect")
-                .and_then(Value::as_bool)
-                .unwrap_or(false)
-            {
-                let _ = socket.read();
-                continue;
-            }
-            let _ = socket.send(Message::Text(
-                json!({"id":2,"result":result}).to_string().into(),
-            ));
-        }
-    });
-    (worker, calls)
-}
+use crate::usage_api_fixture::{KEY, capability, response};
 
 #[test]
-fn source_api_serves_whole_collection_once_and_keeps_missing_counts_unknown() {
-    let dir = tempfile::tempdir().unwrap();
-    let home = dir.path().join("collector");
-    let (_, now) = super::super::tests::source_database(&home, 5);
-    let mut config = super::super::tests::config(dir.path(), home.clone());
-    let socket = dir.path().join("api.sock");
-    config.codex_usage_sources[0].api_socket = Some(socket.clone());
-    let uid = config.codex_usage_sources[0].uid;
-    let db = Database::open(dir.path().join("authority.sqlite3")).unwrap();
-    let key = "b".repeat(64);
-    db.transaction(move |tx|{
-        for id in ["project-alpha","project-beta"] {
-            tx.execute("INSERT INTO repositories(repository_id,root_path,display_name,registered_at,registered_by_uid,last_seen_at) VALUES($1,$2,$1,'t',1,'t')",crate::database::params![id,format!("/{id}")])?;
-        }
-        tx.execute("INSERT INTO codex_usage_repository_links VALUES($1,'project-alpha',$2,5,1,'t')",crate::database::params![uid,key])?;Ok(())
-    }).unwrap();
-    let usage = CodexUsage::with_probe(
-        config,
-        db,
-        Arc::new(FixedClock(
-            OffsetDateTime::from_unix_timestamp_nanos(i128::from(now) * 1_000_000).unwrap(),
-        )),
-        Arc::new(HostRepositoryProbe),
-    );
-    let repositories = [
-        RepositoryRecord {
-            repository_id: "project-alpha".into(),
-            display_name: "Alpha".into(),
-            root_path: "/alpha".into(),
-        },
-        RepositoryRecord {
-            repository_id: "project-beta".into(),
-            display_name: "Beta".into(),
-            root_path: "/beta".into(),
-        },
-    ];
-    let (server, calls) = peer(&socket, &home, 1, |_| {});
-    let began = Instant::now();
-    let first = usage
-        .repositories(&repositories, UsageRange::Hours24)
-        .unwrap();
-    assert!(began.elapsed() < Duration::from_secs(1));
-    let warm = usage
-        .repositories(&repositories, UsageRange::Hours24)
-        .unwrap();
-    assert_eq!(first, warm);
-    assert_eq!(calls.load(Ordering::SeqCst), 1);
-    assert_eq!(first.repositories[0].total_tokens, Some(120));
-    assert_eq!(first.repositories[0].model_requests, Some(1));
-    assert_eq!(first.repositories[0].tool_calls, Some(1));
-    assert_eq!(first.repositories[0].execution_wall_ms, Some(0));
-    assert_eq!(first.repositories[1].total_tokens, None);
-    let wire = serde_json::to_string(&first).unwrap();
-    for private in [
-        "private-account",
-        "private-payload",
-        home.to_str().unwrap(),
-        &"b".repeat(64),
-    ] {
-        assert!(!wire.contains(private));
-    }
-    // A new producer database schema is acceptable only through its stable API;
-    // the fallback's explicit SQLite schema gate is unchanged.
-    assert_eq!(first.repositories[0].coverage.database_schemas, vec![99]);
-    server.join().unwrap();
-}
-
-#[test]
-fn fresh_usage_v2_source_uses_the_authenticated_snapshot_without_legacy_fallback() {
-    let dir = tempfile::tempdir().unwrap();
-    let home = dir.path().join("fresh-collector");
-    std::fs::create_dir_all(home.join("usage-v2")).unwrap();
-    std::fs::write(home.join("usage-v2/manifest.json"), b"manifest-v3").unwrap();
-    // A deliberately non-database sentinel makes an accidental legacy open
-    // fail loudly; the fresh path must complete through localUsage/summary.
-    std::fs::create_dir_all(home.join("usage")).unwrap();
-    std::fs::write(home.join("usage/usage.sqlite3"), b"retired-sentinel").unwrap();
-
-    let mut config = super::super::tests::config(dir.path(), home.clone());
-    let socket = dir.path().join("fresh-api.sock");
-    config.codex_usage_sources[0].api_socket = Some(socket.clone());
-    let uid = config.codex_usage_sources[0].uid;
-    let db = Database::open(dir.path().join("authority.sqlite3")).unwrap();
-    let key = "b".repeat(64);
-    db.transaction(move |tx| {
-        tx.execute(
-            "INSERT INTO repositories(repository_id,root_path,display_name,registered_at,registered_by_uid,last_seen_at) VALUES('project-alpha','/alpha','Alpha','t',1,'t')",
-            [],
-        )?;
-        tx.execute(
-            "INSERT INTO codex_usage_repository_links VALUES($1,'project-alpha',$2,3,1,'t')",
-            crate::database::params![uid, key],
-        )?;
-        Ok(())
-    })
-    .unwrap();
-    let usage = CodexUsage::with_probe(
-        config,
-        db,
-        Arc::new(FixedClock(
-            OffsetDateTime::from_unix_timestamp_nanos(1_700_000_000_000_000_000).unwrap(),
-        )),
-        Arc::new(DetailProbe),
-    );
-    let source = usage.config.codex_usage_sources[0].clone();
-    let (server, calls) = peer(&socket, &home, 1, |value| {
-        value["contractVersion"] = json!(1);
-        value["source"] = json!("usage-v2");
-        value["report"]["databaseSchemaVersion"] = json!(3);
-        value["snapshot"] = json!({
-            "sourceWatermark":"usage-v2:7:10:10",
-            "generatedAt":1700000000000u64,
-            "generation":7,
-            "watermark":10,
-            "journalWatermark":10,
-            "watermarkAtMs":1700000000000i64,
-            "updatedAtMs":1700000000000u64,
-            "freshness":"fresh",
-            "pendingEntries":0,
-            "pendingCorrections":0
-        });
-    });
-    let report = usage
-        .read_source(
-            &source,
-            &"b".repeat(64),
-            1_699_913_600_000,
-            1_700_000_000_000,
-            86_400_000,
-            1,
-            None,
-            Projection::PerformanceFast,
-            &[],
-            None,
-            Some(true),
-        )
-        .expect("fresh usage-v2 API response");
-    assert_eq!(calls.load(Ordering::SeqCst), 1);
-    assert_eq!(report.tokens.get("total_tokens"), Some(&120));
-    assert_eq!(report.database_schema, 3);
-    server.join().unwrap();
-}
-
-#[test]
-fn explicit_work_context_rows_remain_attributed_in_the_review_projection() {
-    use devcoordinator2_api::outcomes::{
-        OutcomeEffort, OutcomeMeasurement, OutcomeReport, OutcomeRow,
-    };
-
-    let effort = OutcomeEffort {
-        operations: 1,
-        provider_total_tokens: OutcomeMeasurement {
-            measured: 120,
-            exact: Some(120),
-            unknown: 0,
-        },
-        ..OutcomeEffort::default()
-    };
-    let review = OutcomeReport {
-        kinds: BTreeMap::new(),
-        schema_version: 1,
-        coverage: "complete".into(),
-        totals: effort.clone(),
-        attributed: effort.clone(),
-        unattributed: OutcomeEffort::default(),
-        unattributed_reasons: BTreeMap::new(),
-        rows: vec![OutcomeRow {
-            kind: Some("task".into()),
-            title: Some("Coordinator usage contract".into()),
-            outcome_id: "T51".into(),
-            workstream_id: Some("implementation".into()),
-            effort,
-        }],
-        total_rows: 1,
-        next_cursor: None,
-        basis: "explicit operation work-context binding".into(),
-    };
-    let merged = super::review_aggregate::from_api(&review)
-        .finish(false)
-        .expect("attributed review projection");
-    assert_eq!(merged.coverage, "complete");
-    assert_eq!(merged.attributed.operations, 1);
-    assert_eq!(merged.rows.len(), 1);
-    assert_eq!(merged.rows[0].outcome_id, "T51");
+fn api_contract_requires_negotiation_and_complete_consistent_fresh_metadata() {
+    validate_capability(&json!({"localUsageAccounting":capability()})).unwrap();
+    assert!(validate_capability(&json!({})).is_err());
+    let mut cap = capability();
+    cap["version"] = json!(2);
+    assert!(validate_capability(&json!({"localUsageAccounting":cap})).is_err());
+    let params = json!({"repositoryKey":KEY,"fromAt":10,"toAt":20});
+    let value = response(&params, 20, 135);
+    let summary: Summary = serde_json::from_value(value.clone()).unwrap();
+    validate(&summary, Some(KEY), 10, 20).unwrap();
     assert_eq!(
-        merged.rows[0].workstream_id.as_deref(),
-        Some("implementation")
+        summary.snapshot.as_ref().unwrap().journal_watermark,
+        Some(10)
+    );
+    for field in [
+        "sourceWatermark",
+        "generation",
+        "journalWatermark",
+        "watermarkAtMs",
+        "updatedAtMs",
+        "pendingEntries",
+        "pendingCorrections",
+    ] {
+        let mut missing = value.clone();
+        missing["snapshot"].as_object_mut().unwrap().remove(field);
+        let summary: Summary = serde_json::from_value(missing).unwrap();
+        assert_eq!(
+            validate(&summary, Some(KEY), 10, 20).unwrap_err(),
+            "api_contract_unsupported",
+            "{field}"
+        );
+    }
+    for (field, bad) in [
+        ("journalWatermark", json!(9)),
+        ("generatedAt", json!(21)),
+        ("updatedAtMs", json!(21)),
+        ("generation", json!(0)),
+    ] {
+        let mut inconsistent = value.clone();
+        inconsistent["snapshot"][field] = bad;
+        let summary: Summary = serde_json::from_value(inconsistent).unwrap();
+        assert_eq!(
+            validate(&summary, Some(KEY), 10, 20).unwrap_err(),
+            "api_snapshot_inconsistent",
+            "{field}"
+        );
+    }
+}
+
+#[test]
+fn source_projection_keeps_unknown_only_tokens_unknown_and_preserves_snapshot() {
+    let mut value = response(&json!({"repositoryKey":KEY,"fromAt":10,"toAt":20}), 20, 135);
+    let summary: Summary = serde_json::from_value(value.clone()).unwrap();
+    let report = summary.source_report(Some(KEY), 1, None, true);
+    assert_eq!(report.tokens["total_tokens"], 135);
+    let metadata = report.source_snapshot.unwrap();
+    assert_eq!(metadata.generation, 7);
+    assert_eq!(metadata.pending_entries, 0);
+    for token in value["report"]["providerTokens"].as_array_mut().unwrap() {
+        token["measuredTokens"] = json!(0);
+        token["exactTokens"] = Value::Null;
+        token["unknownObservations"] = json!(2);
+    }
+    let summary: Summary = serde_json::from_value(value).unwrap();
+    assert!(
+        !summary
+            .source_report(Some(KEY), 1, None, true)
+            .tokens
+            .contains_key("total_tokens")
     );
 }
 
 #[test]
-fn producer_bound_usage_v2_response_preserves_attributed_review_rows() {
+fn explicit_review_rows_keep_unknown_precision_costs_and_truthful_time_basis() {
     let value: Value = serde_json::from_str(include_str!(
         "../../../test-fixtures/usage-v2-bound-response.json"
     ))
-    .expect("usage-v2 bound response fixture");
-    let summary: Summary = serde_json::from_value(value).expect("typed usage-v2 response");
-    validate(&summary, Some("repo-a"), 0, 3_000).expect("versioned response validation");
-    let review = summary.review.expect("producer review projection");
-    let merged = super::review_aggregate::from_api(&review.outcomes)
-        .finish(false)
-        .expect("review rows");
-    assert_eq!(merged.attributed.operations, 1);
-    assert_eq!(merged.unattributed.operations, 1);
-    assert_eq!(merged.rows.len(), 1);
-    assert_eq!(merged.rows[0].outcome_id, "outcome-one");
-    assert_eq!(merged.rows[0].workstream_id.as_deref(), Some("stream-one"));
-}
-
-#[test]
-fn repository_fast_projection_uses_the_bounded_api_summary() {
-    let dir = tempfile::tempdir().unwrap();
-    let home = dir.path().join("collector");
-    let (_, now) = super::super::tests::source_database(&home, 5);
-    let mut config = super::super::tests::config(dir.path(), home.clone());
-    let socket = dir.path().join("api.sock");
-    config.codex_usage_sources[0].api_socket = Some(socket.clone());
-    let uid = config.codex_usage_sources[0].uid;
-    let db = Database::open(dir.path().join("authority.sqlite3")).unwrap();
-    let key = "b".repeat(64);
-    db.transaction(move |tx| {
-        tx.execute(
-            "INSERT INTO repositories(repository_id,root_path,display_name,registered_at,registered_by_uid,last_seen_at) VALUES('project-alpha','/alpha','Alpha','t',1,'t')",
-            [],
-        )?;
-        tx.execute(
-            "INSERT INTO codex_usage_repository_links VALUES($1,'project-alpha',$2,5,1,'t')",
-            crate::database::params![uid, key],
-        )?;
-        Ok(())
-    })
     .unwrap();
-    let usage = CodexUsage::with_probe(
-        config,
-        db.clone(),
-        Arc::new(FixedClock(
-            OffsetDateTime::from_unix_timestamp_nanos(i128::from(now) * 1_000_000).unwrap(),
-        )),
-        Arc::new(DetailProbe),
-    );
-    let service = UsageService {
-        registry: Registry::new(db),
-        usage,
-    };
-    let repository = RepositoryRecord {
-        repository_id: "project-alpha".into(),
-        display_name: "Alpha".into(),
-        root_path: "/alpha".into(),
-    };
-    let (server, calls) = peer(&socket, &home, 1, |_| {});
-    assert!(
-        service.usage.config.codex_usage_sources[0]
-            .api_socket
-            .is_some()
-    );
-    let _initial = service
-        .usage
-        .repository_fast(&repository, UsageRange::Hours24)
+    let mut summary: Summary = serde_json::from_value(value).unwrap();
+    validate(&summary, Some("repo-a"), 0, 3000).unwrap();
+    let review = summary.review.as_mut().unwrap();
+    review.outcomes.totals.provider_total_tokens.exact = None;
+    review.outcomes.totals.provider_total_tokens.unknown = 0;
+    review.outcomes.totals.elapsed_execution_ms.measured = 1000;
+    review.outcomes.totals.cost.status = "partial".into();
+    review.outcomes.totals.cost.estimated_usd_micros = Some(7);
+    let mut groups = super::review_aggregate::from_api(&review.outcomes);
+    groups
+        .merge(super::review_aggregate::from_api(&review.outcomes), 1)
         .unwrap();
-    service.usage.wait_for_refresh(Some("project-alpha"));
-    let report = service
-        .usage
-        .repository_fast(&repository, UsageRange::Hours24)
-        .unwrap();
-    assert_eq!(calls.load(Ordering::SeqCst), 1);
-    assert_eq!(report.totals.total_tokens, Some(120));
-    assert_eq!(report.coverage.database_schemas, vec![99]);
-    server.join().unwrap();
-}
-
-#[test]
-fn initial_repository_detail_preserves_full_measurements() {
-    let dir = tempfile::tempdir().unwrap();
-    let home = dir.path().join("collector");
-    let (canonical, now) = super::super::tests::source_database(&home, 8);
-    let config = super::super::tests::config(dir.path(), home.clone());
-    let source = Connection::open(home.join("usage/usage.sqlite3")).unwrap();
-    source
-        .execute_batch(
-            "ALTER TABLE operations ADD COLUMN retry_of_operation_id TEXT;
-             ALTER TABLE operations ADD COLUMN rework_of_operation_id TEXT;
-             ALTER TABLE operation_events ADD COLUMN duration_ns INTEGER;
-             ALTER TABLE tool_invocations ADD COLUMN covering_model_request_id TEXT;
-             ALTER TABLE activity_spans ADD COLUMN activity_state TEXT NOT NULL DEFAULT 'external_wait';
-             ALTER TABLE model_requests ADD COLUMN provider_kind TEXT;
-             ALTER TABLE model_requests ADD COLUMN model TEXT;
-             UPDATE model_requests SET provider_kind='openai', model='gpt-6-sol';
-             UPDATE operation_events
-                SET duration_ns = (occurred_at_ms -
-                    (SELECT started_at_ms FROM operations
-                     WHERE operations.id = operation_events.operation_id)) * 1000000;
-             ALTER TABLE token_observations RENAME TO legacy_token_observations;
-             CREATE TABLE token_observations(
-                 source_event_id TEXT,
-                 model_request_id TEXT,
-                 tool_invocation_id TEXT,
-                 category_path TEXT,
-                 token_count INTEGER,
-                 measurement_provenance TEXT,
-                 coverage_state TEXT,
-                 observed_at_ms INTEGER,
-                 repository_bucket TEXT
-             );
-             INSERT INTO token_observations
-                 SELECT CASE WHEN model_request_id IS NOT NULL
-                             THEN 'event-model' ELSE 'event-tool' END,
-                        model_request_id, tool_invocation_id,
-                        category_path, token_count, measurement_provenance,
-                        coverage_state, observed_at_ms, repository_bucket
-                 FROM legacy_token_observations;
-             DROP TABLE legacy_token_observations;
-             CREATE INDEX token_model_lookup
-                 ON token_observations(model_request_id, source_event_id, category_path);
-             CREATE INDEX token_tool_lookup
-                 ON token_observations(tool_invocation_id, source_event_id, category_path);
-             CREATE INDEX operation_events_terminal_observed_idx
-                 ON operation_events(occurred_at_ms, operation_id) WHERE terminal = 1;
-             CREATE TABLE operation_work_contexts(
-                 operation_id TEXT,
-                 native_project_id TEXT,
-                 workstream_id TEXT,
-                 outcome_id TEXT
-             );",
-        )
-        .unwrap();
-    source
-        .execute(
-            "INSERT INTO operation_work_contexts VALUES('model-op','project-alpha','implementation','outcome-1')",
-            [],
-        )
-        .unwrap();
-    drop(source);
-
-    let db = Database::open(dir.path().join("authority.sqlite3")).unwrap();
-    let uid = config.codex_usage_sources[0].uid;
-    db.transaction(move |tx| {
-        tx.execute(
-            "INSERT INTO repositories(repository_id,root_path,display_name,registered_at,registered_by_uid,last_seen_at) VALUES('project-alpha','/alpha','Alpha','t',1,'t')",
-            [],
-        )?;
-        tx.execute(
-            "INSERT INTO codex_usage_repository_links VALUES($1,'project-alpha',$2,8,1,'t')",
-            crate::database::params![uid, canonical],
-        )?;
-        Ok(())
-    })
-    .unwrap();
-    let usage = CodexUsage::with_probe(
-        config,
-        db.clone(),
-        Arc::new(FixedClock(
-            OffsetDateTime::from_unix_timestamp_nanos(i128::from(now) * 1_000_000).unwrap(),
-        )),
-        Arc::new(DetailProbe),
-    );
-    let service = UsageService {
-        registry: Registry::new(db),
-        usage,
-    };
-    let params = UsageRepositoryParams {
-        wait_for_refresh: false,
-        repository_id: "project-alpha".into(),
-        range: UsageRange::Hours24,
-        worktree_ids: None,
-        include_unassigned: true,
-    };
-    let _initial = service.repository(params.clone()).unwrap();
-    service.usage.wait_for_refresh(Some("project-alpha"));
-    let report = service.repository(params).unwrap();
-    assert_eq!(report.totals.total_tokens, Some(100));
-    assert_eq!(report.totals.model_requests, 1);
-    assert_eq!(report.totals.tool_calls, 1);
-    assert_eq!(report.totals.cost.status, "complete");
-    assert_eq!(report.time.request_to_delivery.measured_ms, 10_000);
-    assert_eq!(report.time.request_to_delivery.unknown_intervals, 0);
+    let report = groups.finish(false).unwrap();
+    assert_eq!(report.totals.provider_total_tokens.exact, None);
+    assert_eq!(report.totals.cost.estimated_usd_micros, Some(14));
+    assert_eq!(report.totals.elapsed_execution_ms.exact, None);
     assert!(
         report
-            .activities
-            .iter()
-            .any(|activity| activity.activity == "coding" && activity.total_tokens == 100)
+            .basis
+            .contains("aggregate intervals cannot be unioned")
     );
-    assert!(report.outcomes.iter().any(|outcome| {
-        outcome.outcome_id == "outcome-1"
-            && outcome.total_tokens == 100
-            && outcome.cost.status == "complete"
-    }));
-    assert!(
-        report
-            .tools
-            .outcomes
-            .iter()
-            .any(|outcome| outcome.outcome == "completed" && outcome.count == 1)
-    );
+    assert_eq!(report.rows.len(), 1);
 }
 
 #[test]
-fn usage_worktree_filter_rejects_unknown_registered_id_before_source_read() {
+fn independent_healthy_collectors_do_not_hold_the_global_cache_lock_during_ipc() {
+    use crate::usage_api_fixture::Peer;
     let dir = tempfile::tempdir().unwrap();
-    let home = dir.path().join("collector");
-    let (_, now) = super::super::tests::source_database(&home, 5);
-    let config = super::super::tests::config(dir.path(), home);
-    let db = Database::open(dir.path().join("authority.sqlite3")).unwrap();
-    db.transaction(|tx| {
-        tx.execute(
-            "INSERT INTO repositories(repository_id,root_path,display_name,registered_at,registered_by_uid,last_seen_at) VALUES('project-alpha','/alpha','Alpha','t',1,'t')",
-            [],
-        )?;
-        Ok(())
-    })
-    .unwrap();
-    let usage = CodexUsage::with_probe(
-        config,
-        db.clone(),
-        Arc::new(FixedClock(
-            OffsetDateTime::from_unix_timestamp_nanos(i128::from(now) * 1_000_000).unwrap(),
-        )),
-        Arc::new(DetailProbe),
-    );
-    let service = UsageService {
-        registry: Registry::new(db),
-        usage,
-    };
-    let error = service
-        .repository(UsageRepositoryParams {
-            wait_for_refresh: false,
-            repository_id: "project-alpha".into(),
-            range: UsageRange::Hours24,
-            worktree_ids: Some(vec!["w-does-not-exist".into()]),
-            include_unassigned: true,
-        })
-        .expect_err("unknown worktree ids must be denied");
-    assert_eq!(error.code, ErrorCode::ParamsInvalid);
-}
-
-#[test]
-fn api_exact_windows_validate_and_unsupported_or_failed_sources_fall_back() {
-    let dir = tempfile::tempdir().unwrap();
-    let home = dir.path().join("collector");
-    let (_, now) = super::super::tests::source_database(&home, 5);
-    let mut config = super::super::tests::config(dir.path(), home.clone());
-    let socket = dir.path().join("api.sock");
-    config.codex_usage_sources[0].api_socket = Some(socket.clone());
-    let source = config.codex_usage_sources[0].clone();
-    let db = Database::open(dir.path().join("authority.sqlite3")).unwrap();
-    let usage = CodexUsage::new(config, db);
-    let (server, _) = peer(&socket, &home, 1, |v| {
-        v["report"]["timeRange"]["endMs"] = json!(0)
+    let root = dir.path();
+    let left = root.join("left");
+    let right = root.join("right");
+    std::fs::create_dir(&left).unwrap();
+    std::fs::create_dir(&right).unwrap();
+    let a = Peer::start(&left, &left.join("home"), |params| {
+        std::thread::sleep(Duration::from_millis(100));
+        response(params, 20, 135)
     });
-    let report = usage
-        .read_source(
-            &source,
-            &"b".repeat(64),
-            now - 86_400_000,
-            now,
-            86_400_000,
-            1,
-            None,
-            Projection::PerformanceFast,
-            &[],
-            None,
-            Some(true),
-        )
-        .unwrap();
-    assert_eq!(report.tokens["total_tokens"], 100);
-    server.join().unwrap();
-    // Failed source cooldown is bounded and does not repeat the socket request.
-    let source_report = usage
-        .read_source(
-            &source,
-            &"b".repeat(64),
-            now - 86_400_000,
-            now,
-            86_400_000,
-            1,
-            None,
-            Projection::PerformanceFast,
-            &[],
-            None,
-            Some(true),
-        )
-        .unwrap();
-    assert_eq!(source_report.tokens["total_tokens"], 100);
-}
-
-#[test]
-fn api_contract_preserves_subsets_cost_basis_and_optional_metadata() {
-    let mut value = response(Some(&"b".repeat(64)), 10, 20);
-    let summary: Summary = serde_json::from_value(value.clone()).unwrap();
-    validate(&summary, Some(&"b".repeat(64)), 10, 20).unwrap();
-    let report = summary.source_report(None, 1, None, true);
-    assert_eq!(report.tokens["total_tokens"], 120);
-    assert_eq!(report.tokens["input_tokens_details.cached_tokens"], 80);
-    assert_eq!(report.tokens["output_tokens_details.reasoning_tokens"], 5);
-    assert!(validate(&summary, Some(&"b".repeat(64)), 10, 21).is_err());
-    value["snapshot"] =
-        json!({"source_watermark":"42","generated_at":19,"freshness":"stale","refresh_id":null});
-    let mut cost = json!({
-        "status":"complete","basis":"api_equivalent","currency":"USD","processingTier":"standard",
-        "estimatedUsdMicros":20,"inputUsdMicros":4,"cachedInputUsdMicros":2,"cacheWriteUsdMicros":0,"outputUsdMicros":14,
-        "inputTokens":100,"uncachedInputTokens":10,"cachedInputTokens":80,"cacheWriteTokens":10,"outputTokens":20,"reasoningTokens":5,
-        "providerTotalTokens":120,"pricedObservations":1,"unknownObservations":0,"rateCardRefs":["fixture@1"]
+    let b = Peer::start(&right, &right.join("home"), |params| {
+        std::thread::sleep(Duration::from_millis(100));
+        response(params, 20, 135)
     });
-    value["report"]["cost"] = cost.clone();
-    let priced: Summary = serde_json::from_value(value.clone()).unwrap();
-    validate(&priced, Some(&"b".repeat(64)), 10, 20).unwrap();
-    assert_eq!(
-        priced
-            .source_report(None, 1, None, true)
-            .supplied_cost
-            .unwrap()
-            .estimated_usd_micros,
-        Some(20)
-    );
-    cost["basis"] = json!("subscription");
-    value["report"]["cost"] = cost;
-    assert!(
-        validate(
-            &serde_json::from_value(value).unwrap(),
-            Some(&"b".repeat(64)),
+    let api = CollectorApi::default();
+    let barrier = std::sync::Barrier::new(2);
+    let run = |source| {
+        barrier.wait();
+        api.summary(
+            source,
+            Some(KEY),
+            None,
+            true,
             10,
-            20
+            20,
+            Instant::now() + Duration::from_secs(2),
         )
-        .is_err()
-    );
-}
-
-#[test]
-fn slow_api_is_cancelled_within_the_shared_read_budget() {
-    let dir = tempfile::tempdir().unwrap();
-    let home = dir.path().join("collector");
-    let socket = dir.path().join("api.sock");
-    let source = CodexUsageSource {
-        uid: rustix::process::getuid().as_raw(),
-        codex_home: home.clone(),
-        executable: "/unused".into(),
-        api_socket: Some(socket.clone()),
     };
-    let (server, calls) = peer(&socket, &home, 1, |result| {
-        result["__wait_for_disconnect"] = Value::Bool(true);
+    std::thread::scope(|scope| {
+        let left = scope.spawn(|| run(&a.source));
+        let right = scope.spawn(|| run(&b.source));
+        assert!(left.join().unwrap().is_ok());
+        assert!(right.join().unwrap().is_ok());
     });
-    let began = Instant::now();
-    let result = CollectorApi::default().summary(
-        &source,
-        None,
-        None,
-        true,
-        10,
-        20,
-        Instant::now() + Duration::from_millis(100),
-    );
-    assert!(result.is_err());
-    assert!(began.elapsed() < Duration::from_millis(650));
-    assert_eq!(calls.load(Ordering::SeqCst), 1);
-    server.join().unwrap();
-}
-
-#[test]
-fn source_backfill_progress_is_reported_without_scanning_raw_usage() {
-    let dir = tempfile::tempdir().unwrap();
-    let home = dir.path().join("collector");
-    super::super::tests::source_database(&home, 5);
-    let connection = rusqlite::Connection::open(home.join("usage/usage.sqlite3")).unwrap();
-    connection
-        .execute_batch(
-            "CREATE TABLE _usage_report_backfill(source TEXT PRIMARY KEY,cursor INTEGER NOT NULL,high_water INTEGER NOT NULL);
-             INSERT INTO _usage_report_backfill VALUES('operations', 20, 20),('token_observations', 30, 100),('coverage_events', 5, 5);",
-        )
-        .unwrap();
-    let source = CodexUsageSource {
-        uid: rustix::process::getuid().as_raw(),
-        codex_home: home,
-        executable: "/unused".into(),
-        api_socket: None,
-    };
-    let snapshot = source_progress(&source).expect("progress row");
-    assert_eq!(snapshot.progress_completed, Some(55));
-    assert_eq!(snapshot.progress_total, Some(125));
-    assert_eq!(
-        snapshot.progress_stage.as_deref(),
-        Some("token_observations")
-    );
-    assert!(snapshot.refreshing);
-}
-
-#[test]
-fn unfinished_source_cache_skips_raw_fallback_reads() {
-    let dir = tempfile::tempdir().unwrap();
-    let home = dir.path().join("collector");
-    let (_, now) = super::super::tests::source_database(&home, 8);
-    let connection = rusqlite::Connection::open(home.join("usage/usage.sqlite3")).unwrap();
-    connection
-        .execute_batch(
-            "CREATE TABLE _usage_report_backfill(source TEXT PRIMARY KEY,cursor INTEGER NOT NULL,high_water INTEGER NOT NULL);
-             INSERT INTO _usage_report_backfill VALUES
-               ('operations', 2, 2),
-               ('token_observations', 0, 100),
-               ('coverage_events', 2, 2),
-               ('activity_spans', 1, 1);",
-        )
-        .unwrap();
-    let config = super::super::tests::config(dir.path(), home.clone());
-    let uid = config.codex_usage_sources[0].uid;
-    let authority = Database::open(dir.path().join("authority.sqlite3")).unwrap();
-    let key = "b".repeat(64);
-    authority
-        .transaction(move |tx| {
-            tx.execute(
-                "INSERT INTO repositories(repository_id,root_path,display_name,registered_at,registered_by_uid,last_seen_at) VALUES('project-alpha','/project-alpha','Alpha','t',1,'t')",
-                [],
-            )?;
-            tx.execute(
-                "INSERT INTO codex_usage_repository_links VALUES($1,'project-alpha',$2,8,1,'t')",
-                crate::database::params![uid, key],
-            )?;
-            Ok(())
-        })
-        .unwrap();
-    let usage = CodexUsage::with_probe(
-        config,
-        authority,
-        Arc::new(FixedClock(
-            OffsetDateTime::from_unix_timestamp_nanos(i128::from(now) * 1_000_000).unwrap(),
-        )),
-        Arc::new(HostRepositoryProbe),
-    );
-    let first = usage
-        .repository(
-            &RepositoryRecord {
-                repository_id: "project-alpha".into(),
-                display_name: "Alpha".into(),
-                root_path: "/project-alpha".into(),
-            },
-            UsageRange::Hours24,
-        )
-        .unwrap();
-    assert_eq!(first.totals.total_tokens, None);
-    assert!(first.coverage.snapshot.as_ref().unwrap().refreshing);
-    std::thread::sleep(Duration::from_millis(50));
-    let report = usage
-        .repository(
-            &RepositoryRecord {
-                repository_id: "project-alpha".into(),
-                display_name: "Alpha".into(),
-                root_path: "/project-alpha".into(),
-            },
-            UsageRange::Hours24,
-        )
-        .unwrap();
-    assert_eq!(report.totals.total_tokens, None);
-    assert!(
-        report.coverage.unavailable_reasons.contains_key("indexing"),
-        "unexpected unavailable reasons: {:?}",
-        report.coverage.unavailable_reasons
-    );
-    assert!(report.coverage.snapshot.as_ref().unwrap().refreshing);
 }

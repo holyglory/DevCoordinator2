@@ -70,6 +70,9 @@ pub mod test_state;
 pub mod ticket_service;
 pub mod tickets;
 pub mod usage;
+mod usage_context;
+#[cfg(test)]
+mod usage_api_fixture;
 
 #[cfg(test)]
 mod automation_test_support;

@@ -17,6 +17,7 @@ pub(super) struct Fixture {
     pub repository: PathBuf,
     pub config: Config,
     pub service: ReviewService,
+    pub usage_peer: Option<crate::usage_api_fixture::Peer>,
 }
 
 pub(super) struct FixtureClock;
@@ -74,6 +75,7 @@ impl Fixture {
             repository,
             config,
             service,
+            usage_peer: None,
         }
     }
 }

@@ -4,6 +4,7 @@ use super::*;
 use devcoordinator2_api::review::ReviewUsage;
 use serde::Deserialize;
 use serde_json::{Value, json};
+use sha2::Digest;
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::{FileTypeExt, MetadataExt};
 use std::os::unix::net::UnixStream;
@@ -52,7 +53,8 @@ pub(super) struct CollectorApi(Arc<Mutex<State>>);
 #[derive(Default)]
 struct State {
     entries: HashMap<String, Entry>,
-    failed_until: HashMap<PathBuf, Instant>,
+    failed_until: HashMap<PathBuf, (Instant, String)>,
+    inflight: BTreeSet<String>,
 }
 struct Entry {
     report: Arc<Summary>,
@@ -63,8 +65,7 @@ struct Entry {
 #[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct Summary {
-    /// Version of the authenticated local usage contract. Older producers do
-    /// not send this field and remain valid for the compatibility API path.
+    /// Negotiated version of the authenticated usage-v2 contract.
     #[serde(default)]
     pub contract_version: Option<u32>,
     pub report: Report,
@@ -83,6 +84,7 @@ pub(super) struct Summary {
 }
 
 #[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub(super) struct Snapshot {
     #[serde(alias = "sourceWatermark")]
     pub source_watermark: Option<String>,
@@ -119,6 +121,8 @@ pub(super) struct Report {
     pub counts: Counts,
     pub provider_tokens: Vec<Token>,
     pub provider_tokens_by_activity: Vec<Activity>,
+    #[serde(default)]
+    pub measured_execution_interval_sum_ms: Option<u64>,
     #[serde(default)]
     pub cost: Option<SourceCost>,
     #[serde(default)]
@@ -288,6 +292,7 @@ impl CollectorApi {
             worktree_keys,
             include_unassigned,
             None,
+            &[],
             start,
             end,
             deadline,
@@ -305,6 +310,7 @@ impl CollectorApi {
         worktree_keys: Option<&[String]>,
         include_unassigned: bool,
         workstream: Option<&str>,
+        bindings: &[crate::usage_context::Binding],
         start: u64,
         end: u64,
         deadline: Instant,
@@ -316,8 +322,13 @@ impl CollectorApi {
             repository.unwrap_or("all"),
             worktree_keys,
         );
-        let key = format!("{key}:{}", workstream.unwrap_or("all"));
-        let mut state = self.0.try_lock().map_err(|_| "api_busy")?;
+        let revision = serde_json::to_vec(bindings).map_err(|_| "work_context_unavailable")?;
+        let revision = sha2::Sha256::digest(revision)
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>();
+        let key = format!("{key}:{}:{revision}", workstream.unwrap_or("all"));
+        let mut state = self.0.lock().map_err(|_| "api_busy")?;
         if let Some(entry) = state
             .entries
             .get(&key)
@@ -325,24 +336,31 @@ impl CollectorApi {
         {
             return Ok(entry.report.clone());
         }
-        if state
-            .failed_until
-            .get(path)
-            .is_some_and(|until| *until > Instant::now())
+        if let Some((until, reason)) = state.failed_until.get(path)
+            && *until > Instant::now()
         {
-            return Err("api_unavailable".into());
+            return Err(reason.clone());
         }
-        // The lock coalesces source requests; callers never queue unbounded work.
+        if state.inflight.contains(&key) || state.inflight.len() >= MAX_CACHED {
+            return Err("api_busy".into());
+        }
+        state.inflight.insert(key.clone());
+        drop(state);
+        // Only identical queries coalesce; independent collectors perform IPC
+        // concurrently without holding the cache mutex.
         let result = fetch(
             source,
             repository,
             worktree_keys,
             include_unassigned,
             workstream,
+            bindings,
             start,
             end,
             deadline,
         );
+        let mut state = self.0.lock().map_err(|_| "api_busy")?;
+        state.inflight.remove(&key);
         match result {
             Ok((report, bytes)) => {
                 state.failed_until.remove(path);
@@ -375,7 +393,7 @@ impl CollectorApi {
             Err(reason) => {
                 state
                     .failed_until
-                    .insert(path.clone(), Instant::now() + RETRY_AFTER);
+                    .insert(path.clone(), (Instant::now() + RETRY_AFTER, reason.clone()));
                 Err(reason)
             }
         }
@@ -388,10 +406,34 @@ fn fetch(
     worktree_keys: Option<&[String]>,
     include_unassigned: bool,
     workstream: Option<&str>,
+    bindings: &[crate::usage_context::Binding],
     start: u64,
     end: u64,
     deadline: Instant,
 ) -> Result<(Summary, usize), String> {
+    let mut socket = connect(source, deadline)?;
+    let value = exchange(
+        &mut socket,
+        2,
+        "localUsage/summary",
+        json!({"contractVersion":1,"repositoryKey":repository,"worktreeKeys":worktree_keys,"includeUnassigned":include_unassigned,"workstreamId":workstream,"fromAt":start,"toAt":end,"includeReview":true,"workContextBindings":bindings}),
+        deadline,
+    )?;
+    let bytes = serde_json::to_vec(&value)
+        .map_err(|_| "api_contract_unsupported")?
+        .len();
+    let summary: Summary = serde_json::from_value(value).map_err(|_| "api_contract_unsupported")?;
+    validate(&summary, repository, start, end)?;
+    // Dropping the connection stops response delivery. The producer keeps its
+    // bounded read isolated in its local worker; this consumer does not claim
+    // that transport closure cancels that worker synchronously.
+    Ok((summary, bytes.saturating_mul(4)))
+}
+
+fn connect(
+    source: &CodexUsageSource,
+    deadline: Instant,
+) -> Result<WebSocket<DeadlineStream>, String> {
     let path = source.api_socket.as_ref().ok_or("api_not_configured")?;
     let metadata = path.metadata().map_err(|_| "api_unavailable")?;
     if !metadata.file_type().is_socket() || metadata.uid() != source.uid {
@@ -445,27 +487,71 @@ fn fetch(
     if initialize.get("codexHome").and_then(Value::as_str) != source.codex_home.to_str() {
         return Err("api_unavailable".into());
     }
+    validate_capability(&initialize)?;
     socket
         .send(Message::Text(
             json!({"method":"initialized"}).to_string().into(),
         ))
         .map_err(|_| "api_unavailable")?;
+    Ok(socket)
+}
+
+fn validate_capability(initialize: &Value) -> Result<(), String> {
+    let cap = initialize
+        .get("localUsageAccounting")
+        .ok_or("api_contract_unsupported")?;
+    let methods = cap
+        .get("methods")
+        .and_then(Value::as_array)
+        .ok_or("api_contract_unsupported")?;
+    if cap.get("version").and_then(Value::as_u64) != Some(1)
+        || !cap
+            .get("supportedVersions")
+            .and_then(Value::as_array)
+            .is_some_and(|v| v.iter().any(|v| v.as_u64() == Some(1)))
+        || cap.get("storage").and_then(Value::as_str) != Some("usage-v2")
+        || cap
+            .get("supportsWorkContextBindings")
+            .and_then(Value::as_bool)
+            != Some(true)
+        || cap
+            .get("supportsWorkstreamOutcomes")
+            .and_then(Value::as_bool)
+            != Some(true)
+        || ["localUsage/summary", "localUsage/repositoryIdentity"]
+            .iter()
+            .any(|name| !methods.iter().any(|m| m.as_str() == Some(name)))
+    {
+        return Err("api_contract_unsupported".into());
+    }
+    Ok(())
+}
+
+pub(super) fn repository_identity(
+    source: &CodexUsageSource,
+    path: &Path,
+    deadline: Instant,
+) -> Result<String, String> {
+    let mut socket = connect(source, deadline)?;
     let value = exchange(
         &mut socket,
         2,
-        "localUsage/summary",
-        json!({"schemaVersion":1,"repositoryKey":repository,"worktreeKeys":worktree_keys,"includeUnassigned":include_unassigned,"workstreamId":workstream,"fromAt":start,"toAt":end}),
+        "localUsage/repositoryIdentity",
+        json!({"contractVersion":1,"path":path}),
         deadline,
     )?;
-    let bytes = serde_json::to_vec(&value)
-        .map_err(|_| "api_contract_unsupported")?
-        .len();
-    let summary: Summary = serde_json::from_value(value).map_err(|_| "api_contract_unsupported")?;
-    validate(&summary, repository, start, end)?;
-    // Dropping the connection stops response delivery. The producer keeps its
-    // bounded read isolated in its local worker; this consumer does not claim
-    // that transport closure cancels that worker synchronously.
-    Ok((summary, bytes.saturating_mul(4)))
+    if value.get("contractVersion").and_then(Value::as_u64) != Some(1)
+        || value.get("source").and_then(Value::as_str) != Some("usage-v2")
+        || value.get("formatVersion").and_then(Value::as_u64) != Some(3)
+    {
+        return Err("api_contract_unsupported".into());
+    }
+    value
+        .get("repositoryId")
+        .and_then(Value::as_str)
+        .filter(|key| super::valid_repository_key(key))
+        .map(str::to_owned)
+        .ok_or_else(|| "mapping_unavailable".into())
 }
 
 #[cfg(target_os = "linux")]
@@ -554,27 +640,11 @@ fn validate(
     start: u64,
     end: u64,
 ) -> Result<(), String> {
-    if let Some(source) = &summary.source {
-        // formatVersion=3 is the immutable journal/Parquet contract. Keep the
-        // version check at the authenticated boundary so a legacy producer
-        // can never be mistaken for a fresh source.
-        let object_format = source
-            .get("formatVersion")
-            .and_then(Value::as_u64)
-            .or_else(|| source.get("format_version").and_then(Value::as_u64));
-        let source_name_ok = source.as_str().is_some_and(|name| name == "usage-v2");
-        if summary.contract_version != Some(1)
-            || (!source_name_ok && object_format != Some(3))
-            || source
-                .get("identity")
-                .and_then(Value::as_str)
-                .is_some_and(|identity| {
-                    identity.len() > 128 || identity.chars().any(char::is_control)
-                })
-        {
-            return Err("api_contract_unsupported".into());
-        }
-    } else if summary.contract_version.is_some() {
+    if summary.contract_version != Some(1)
+        || summary.source.as_ref().and_then(Value::as_str) != Some("usage-v2")
+        || summary.snapshot.is_none()
+        || summary.review.is_none()
+    {
         return Err("api_contract_unsupported".into());
     }
     let r = &summary.report;
@@ -603,37 +673,40 @@ fn validate(
     {
         return Err("api_contract_unsupported".into());
     }
-    if let Some(snapshot) = &summary.snapshot
-        && (!matches!(
-            snapshot.freshness.as_str(),
-            "unknown" | "fresh" | "stale" | "refreshing" | "failed"
-        ) || snapshot
-            .source_watermark
+    let snapshot = summary
+        .snapshot
+        .as_ref()
+        .ok_or("api_contract_unsupported")?;
+    if !matches!(
+        snapshot.freshness.as_str(),
+        "unknown" | "fresh" | "stale" | "refreshing" | "failed"
+    ) || snapshot.source_watermark.as_ref().is_none_or(|s| {
+        s.len() > 256 || !s.starts_with("usage-v2:") || s.chars().any(char::is_control)
+    }) || snapshot.generation.is_none()
+        || snapshot.watermark.is_none()
+        || snapshot.journal_watermark.is_none()
+        || snapshot.watermark_at_ms.is_none()
+        || snapshot.updated_at_ms.is_none()
+        || snapshot.pending_entries.is_none()
+        || snapshot.pending_corrections.is_none()
+        || snapshot
+            .refresh_id
             .as_ref()
-            .is_some_and(|s| s.len() > 256)
-            || snapshot.refresh_id.as_ref().is_some_and(|s| s.len() > 256))
+            .is_some_and(|s| s.len() > 256 || s.chars().any(char::is_control))
     {
         return Err("api_contract_unsupported".into());
     }
-    if let Some(snapshot) = &summary.snapshot {
-        if !matches!(
-            snapshot.freshness.as_str(),
-            "unknown" | "fresh" | "stale" | "refreshing" | "failed"
-        ) {
-            return Err("api_contract_unsupported".into());
-        }
-        if let (Some(watermark), Some(journal)) = (snapshot.watermark, snapshot.journal_watermark)
-            && journal < watermark
-        {
-            return Err("api_snapshot_inconsistent".into());
-        }
-        if snapshot
-            .generation
-            .is_some_and(|generation| generation == 0 && snapshot.watermark.unwrap_or(0) > 0)
-            || snapshot.watermark_at_ms.is_some_and(|at| at < 0)
-        {
-            return Err("api_snapshot_inconsistent".into());
-        }
+    if snapshot.journal_watermark < snapshot.watermark
+        || (snapshot.generation == Some(0) && snapshot.watermark != Some(0))
+        || snapshot
+            .watermark_at_ms
+            .is_some_and(|at| at < 0 || at as u64 > snapshot.generated_at)
+        || snapshot
+            .updated_at_ms
+            .is_some_and(|at| at > snapshot.generated_at)
+        || snapshot.generated_at != summary.generated_at
+    {
+        return Err("api_snapshot_inconsistent".into());
     }
     if let Some(cost) = &summary.report.cost {
         let provider_total = summary
@@ -691,6 +764,28 @@ impl Summary {
         });
         let partial = r.coverage.has_gaps || r.coverage.state != "complete" || source_partial;
         let mut result = SourceReport {
+            source_snapshot: self.snapshot.as_ref().map(|s| {
+                devcoordinator2_api::results::UsageSourceSnapshot {
+                    source: "usage-v2".into(),
+                    contract_version: 1,
+                    format_version: 3,
+                    source_watermark: s.source_watermark.clone().unwrap_or_default(),
+                    generated_at_ms: s.generated_at,
+                    generation: s.generation.unwrap_or_default(),
+                    watermark: s.watermark.unwrap_or_default(),
+                    journal_watermark: s.journal_watermark.unwrap_or_default(),
+                    watermark_at_ms: s
+                        .watermark_at_ms
+                        .and_then(|v| u64::try_from(v).ok())
+                        .unwrap_or_default(),
+                    updated_at_ms: s.updated_at_ms.unwrap_or_default(),
+                    freshness: s.freshness.clone(),
+                    pending_entries: s.pending_entries.unwrap_or_default(),
+                    pending_corrections: s.pending_corrections.unwrap_or_default(),
+                    refresh_id: s.refresh_id.clone(),
+                    measured_execution_interval_sum_ms: r.measured_execution_interval_sum_ms,
+                }
+            }),
             supplied_cost: r.cost.as_ref().map(SourceCost::usage_cost),
             snapshot: Some(devcoordinator2_api::results::UsageSnapshot {
                 updated_at_ms: self
@@ -706,10 +801,10 @@ impl Summary {
                     .snapshot
                     .as_ref()
                     .is_some_and(|s| s.freshness == "refreshing")
-                    || self
-                        .snapshot
-                        .as_ref()
-                        .is_some_and(|s| s.pending_entries.unwrap_or_default() > 0),
+                    || self.snapshot.as_ref().is_some_and(|s| {
+                        s.pending_entries.unwrap_or_default() > 0
+                            || s.pending_corrections.unwrap_or_default() > 0
+                    }),
                 refresh_failed: self
                     .snapshot
                     .as_ref()
@@ -754,7 +849,7 @@ impl Summary {
                 continue;
             }
             result.evidence |= t.observation_count > 0;
-            if t.observation_count > 0 {
+            if t.observation_count > 0 && (t.exact_tokens.is_some() || t.measured_tokens > 0) {
                 *result.tokens.entry(t.category.clone()).or_default() += t.measured_tokens;
             }
             let state = if partial || t.unknown_observations > 0 || t.exact_tokens.is_none() {
