@@ -374,6 +374,37 @@ fn authority_schema_pools_timeouts_rollback_and_restart() {
             .iter()
             .any(|table| table.table == "meta")
     );
+    let meta_head = archive_receipt
+        .sequences
+        .iter()
+        .find(|s| s.sequence == "meta_rowid_seq")
+        .unwrap();
+    database
+        .write::<_, Error, _>(|c| {
+            c.query_row("SELECT nextval('meta_rowid_seq')", [], |r| {
+                r.get::<_, i64>(0)
+            })
+        })
+        .unwrap();
+    let sequence_difference = backup::compare_archive(&config, &archive).unwrap();
+    assert!(!sequence_difference.verification.verified);
+    assert!(!sequence_difference.verification.matched_frozen_authority);
+    assert!(sequence_difference.verification.isolated_restore_removed);
+    let changed = sequence_difference.comparison.unwrap();
+    assert_eq!(changed.changed_table_count, 0);
+    assert_eq!(changed.changed_sequence_count, 1);
+    assert_eq!(changed.sequences[0].sequence, "meta_rowid_seq");
+    assert!(!changed.sequences[0].value_equal);
+    assert!(backup::verify_archive(&config, &archive).is_err());
+    database
+        .write::<_, Error, _>(|c| {
+            c.query_row(
+                "SELECT setval('meta_rowid_seq',$1,$2)",
+                params![meta_head.value, meta_head.called],
+                |r| r.get::<_, i64>(0),
+            )
+        })
+        .unwrap();
     let restored = cluster.create_database("restored").unwrap();
     backup::restore(&restored, &archive).unwrap();
     let restored = Persistence::connect(&restored).unwrap();
@@ -544,6 +575,14 @@ fn authority_schema_pools_timeouts_rollback_and_restart() {
         })
         .unwrap();
     assert!(backup::verify_archive(&config, &archive).is_err());
+    let table_difference = backup::compare_archive(&config, &archive).unwrap();
+    assert!(!table_difference.verification.verified);
+    let changed = table_difference.comparison.as_ref().unwrap();
+    let meta = changed.tables.iter().find(|t| t.table == "meta").unwrap();
+    assert!(meta.columns_equal && meta.source_present && meta.restored_present);
+    assert!(!meta.rows_equal && !meta.hash_equal);
+    let private_report = serde_json::to_string(&table_difference).unwrap();
+    assert!(!private_report.contains("live-write") && !private_report.contains("after-dump"));
     let recoverable = backup::verify_recoverable_archive(&config, &archive).unwrap();
     assert!(
         recoverable.verified

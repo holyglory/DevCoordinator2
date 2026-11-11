@@ -1,5 +1,6 @@
 //! Native private PostgreSQL archives; these are not SQLite database files.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, OpenOptions};
 use std::io::Read;
 use std::os::unix::fs::OpenOptionsExt;
@@ -345,9 +346,159 @@ pub struct ArchiveVerification {
     pub matched_frozen_authority: bool,
 }
 
+const MAX_COMPARISON_CHANGES: usize = 32;
+
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct TableComparisonChange {
+    pub table: String,
+    pub source_present: bool,
+    pub restored_present: bool,
+    pub source_rows: Option<u64>,
+    pub restored_rows: Option<u64>,
+    pub columns_equal: bool,
+    pub rows_equal: bool,
+    pub hash_equal: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct SequenceComparisonChange {
+    pub sequence: String,
+    pub source_present: bool,
+    pub restored_present: bool,
+    pub value_equal: bool,
+    pub called_equal: bool,
+}
+
+/// Bounded private mismatch metadata. Never includes row values or connection data.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct ArchiveComparisonChanges {
+    pub source_table_count: usize,
+    pub restored_table_count: usize,
+    pub table_order_equal: bool,
+    pub changed_table_count: usize,
+    pub tables: Vec<TableComparisonChange>,
+    pub source_sequence_count: usize,
+    pub restored_sequence_count: usize,
+    pub sequence_order_equal: bool,
+    pub changed_sequence_count: usize,
+    pub sequences: Vec<SequenceComparisonChange>,
+    pub truncated: bool,
+}
+
+/// Diagnostic view of the same strict comparison used by `verify_archive`.
+/// A mismatch remains `verified: false` and is never acceptance evidence.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct ArchiveComparison {
+    #[serde(flatten)]
+    pub verification: ArchiveVerification,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub comparison: Option<ArchiveComparisonChanges>,
+}
+
+fn comparison_changes(
+    source_tables: &[TableFingerprint],
+    restored_tables: &[TableFingerprint],
+    source_sequences: &[SequenceFingerprint],
+    restored_sequences: &[SequenceFingerprint],
+) -> ArchiveComparisonChanges {
+    let source = source_tables
+        .iter()
+        .map(|row| (row.table.as_str(), row))
+        .collect::<BTreeMap<_, _>>();
+    let restored = restored_tables
+        .iter()
+        .map(|row| (row.table.as_str(), row))
+        .collect::<BTreeMap<_, _>>();
+    let mut tables = Vec::new();
+    for name in source
+        .keys()
+        .chain(restored.keys())
+        .copied()
+        .collect::<BTreeSet<_>>()
+    {
+        let a = source.get(name).copied();
+        let b = restored.get(name).copied();
+        if a != b {
+            tables.push(TableComparisonChange {
+                table: name.to_owned(),
+                source_present: a.is_some(),
+                restored_present: b.is_some(),
+                source_rows: a.map(|row| row.rows),
+                restored_rows: b.map(|row| row.rows),
+                columns_equal: a.zip(b).is_some_and(|(a, b)| a.columns == b.columns),
+                rows_equal: a.zip(b).is_some_and(|(a, b)| a.rows == b.rows),
+                hash_equal: a.zip(b).is_some_and(|(a, b)| a.sha256 == b.sha256),
+            });
+        }
+    }
+    let source = source_sequences
+        .iter()
+        .map(|row| (row.sequence.as_str(), row))
+        .collect::<BTreeMap<_, _>>();
+    let restored = restored_sequences
+        .iter()
+        .map(|row| (row.sequence.as_str(), row))
+        .collect::<BTreeMap<_, _>>();
+    let mut sequences = Vec::new();
+    for name in source
+        .keys()
+        .chain(restored.keys())
+        .copied()
+        .collect::<BTreeSet<_>>()
+    {
+        let a = source.get(name).copied();
+        let b = restored.get(name).copied();
+        if a != b {
+            sequences.push(SequenceComparisonChange {
+                sequence: name.to_owned(),
+                source_present: a.is_some(),
+                restored_present: b.is_some(),
+                value_equal: a.zip(b).is_some_and(|(a, b)| a.value == b.value),
+                called_equal: a.zip(b).is_some_and(|(a, b)| a.called == b.called),
+            });
+        }
+    }
+    let changed_table_count = tables.len();
+    let changed_sequence_count = sequences.len();
+    tables.truncate(MAX_COMPARISON_CHANGES);
+    sequences.truncate(MAX_COMPARISON_CHANGES);
+    ArchiveComparisonChanges {
+        source_table_count: source_tables.len(),
+        restored_table_count: restored_tables.len(),
+        table_order_equal: source_tables
+            .iter()
+            .map(|row| &row.table)
+            .eq(restored_tables.iter().map(|row| &row.table)),
+        changed_table_count,
+        tables,
+        source_sequence_count: source_sequences.len(),
+        restored_sequence_count: restored_sequences.len(),
+        sequence_order_equal: source_sequences
+            .iter()
+            .map(|row| &row.sequence)
+            .eq(restored_sequences.iter().map(|row| &row.sequence)),
+        changed_sequence_count,
+        sequences,
+        truncated: changed_table_count > MAX_COMPARISON_CHANGES
+            || changed_sequence_count > MAX_COMPARISON_CHANGES,
+    }
+}
+
 /// Verify a native archive by restoring it and comparing every ordinary table
 /// and sequence with the frozen authority. Only fingerprints leave this API.
 pub fn verify_archive(config: &DatabaseConfig, archive: &Path) -> Result<ArchiveVerification> {
+    let report = compare_archive(config, archive)?;
+    if !report.verification.verified {
+        return Err(Error::Migration(
+            "restored archive differs from frozen authority data or identities".into(),
+        ));
+    }
+    Ok(report.verification)
+}
+
+/// Retain content-free differences after restoring the exact archive into its
+/// owned scratch database. Comparison, deadlines and cleanup remain strict.
+pub fn compare_archive(config: &DatabaseConfig, archive: &Path) -> Result<ArchiveComparison> {
     let _budget = crate::migration::OfflineBudget::enter();
     let stamp = crate::migration::file_stamp(archive)?;
     let database = Persistence::connect(config)?;
@@ -355,32 +506,35 @@ pub fn verify_archive(config: &DatabaseConfig, archive: &Path) -> Result<Archive
         tx.execute_batch("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY; SET LOCAL statement_timeout='30min'")?;
         Ok((table_fingerprints(tx)?,sequence_fingerprints(tx)?))
     })?;
-    with_snapshot::<_, Error, _>(config, archive, |connection| {
-        // This is an isolated restore; the read-only session gets the finite
-        // offline verification allowance rather than request deadlines.
-        connection.execute_batch("SET SESSION statement_timeout='30min'")?;
-        let restored_tables = table_fingerprints(connection)?;
-        let restored_sequences = sequence_fingerprints(connection)?;
-        if restored_tables != tables || restored_sequences != sequences {
-            return Err(Error::Migration(
-                "restored archive differs from frozen authority data or identities".into(),
-            ));
-        }
-        Ok(())
-    })?;
+    let (restored_tables, restored_sequences) =
+        with_snapshot::<_, Error, _>(config, archive, |connection| {
+            // This is an isolated restore; the read-only session gets the finite
+            // offline verification allowance rather than request deadlines.
+            connection.execute_batch("SET SESSION statement_timeout='30min'")?;
+            Ok((
+                table_fingerprints(connection)?,
+                sequence_fingerprints(connection)?,
+            ))
+        })?;
     if crate::migration::file_stamp(archive)? != stamp {
         return Err(Error::Migration(
             "archive changed during verification".into(),
         ));
     }
-    Ok(ArchiveVerification {
-        verified: true,
-        archive_sha256: stamp.sha256,
-        archive_bytes: stamp.bytes,
-        tables,
-        sequences,
-        isolated_restore_removed: true,
-        matched_frozen_authority: true,
+    let verified = restored_tables == tables && restored_sequences == sequences;
+    let comparison = (!verified)
+        .then(|| comparison_changes(&tables, &restored_tables, &sequences, &restored_sequences));
+    Ok(ArchiveComparison {
+        verification: ArchiveVerification {
+            verified,
+            archive_sha256: stamp.sha256,
+            archive_bytes: stamp.bytes,
+            tables,
+            sequences,
+            isolated_restore_removed: true,
+            matched_frozen_authority: verified,
+        },
+        comparison,
     })
 }
 fn identifier(name: &str) -> String {

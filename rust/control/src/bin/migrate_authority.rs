@@ -91,6 +91,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             .as_deref()
             .ok_or("--destination is required for archive operations")
     };
+    let mut comparison_failed = false;
     let document = match arguments.mode {
         Mode::Inspect => serde_json::to_value(inspect_sqlite(source()?)?)?,
         Mode::Import | Mode::Verify => {
@@ -107,7 +108,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             serde_json::json!({"schema":1,"verified":true,"verification":"private_archive_created_and_hashed","archive_sha256":stamp.sha256,"archive_bytes":stamp.bytes})
         }
         Mode::VerifyBackup => {
-            serde_json::to_value(backup::verify_archive(&config()?, destination()?)?)?
+            let comparison = backup::compare_archive(&config()?, destination()?)?;
+            comparison_failed = !comparison.verification.verified;
+            serde_json::to_value(comparison)?
         }
         Mode::VerifyRecoverableBackup => serde_json::to_value(backup::verify_recoverable_archive(
             &config()?,
@@ -178,6 +181,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         .persist_noclobber(&arguments.report)
         .map_err(|_| "cannot publish evidence without overwriting an existing path")?;
     std::fs::File::open(parent)?.sync_all()?;
+    if comparison_failed {
+        return Err("restored archive differs from frozen authority data or identities; private comparison report retained".into());
+    }
     println!(
         "Authority {:?} succeeded; private evidence written; source retained.",
         arguments.mode
