@@ -464,6 +464,22 @@ fn review_prepare_against_candidate_usage_v2_app_server() {
     let captured = info["capturedAtMs"]
         .as_u64()
         .expect("fixture context timestamp");
+    let fixture_tokens = info["providerTokens"]
+        .as_u64()
+        .expect("fixture token total");
+    let additional_operations = info["additionalOperations"]
+        .as_array()
+        .expect("fixture operation rows");
+    let unattributed_tokens = additional_operations
+        .iter()
+        .map(|operation| {
+            operation["providerTokens"]
+                .as_u64()
+                .expect("operation tokens")
+        })
+        .sum::<u64>();
+    let unattributed_operations = additional_operations.len() as u64;
+    assert_eq!(fixture_tokens, 120 + unattributed_tokens);
     let repository = std::env::var("CODEX_USAGE_V2_FIXTURE_REPOSITORY")
         .ok()
         .or_else(|| info["repositoryPath"].as_str().map(str::to_owned))
@@ -649,6 +665,9 @@ fn review_prepare_against_candidate_usage_v2_app_server() {
             .any(|row| row.outcome_id == "fixture-outcome"
                 && row.effort.provider_total_tokens.measured == 120)
     );
+    // This request captures only fixture-model. The retained bound-summary
+    // also bound fixture-other to other-stream and excluded its 40 tokens;
+    // here all four additional operations must remain unattributed.
     assert_eq!(
         prepared
             .usage
@@ -656,7 +675,7 @@ fn review_prepare_against_candidate_usage_v2_app_server() {
             .totals
             .provider_total_tokens
             .measured,
-        147
+        fixture_tokens
     );
     assert_eq!(
         prepared
@@ -674,9 +693,12 @@ fn review_prepare_against_candidate_usage_v2_app_server() {
             .unattributed
             .provider_total_tokens
             .measured,
-        27
+        unattributed_tokens
     );
-    assert_eq!(prepared.usage.outcomes.unattributed.operations, 3);
+    assert_eq!(
+        prepared.usage.outcomes.unattributed.operations,
+        unattributed_operations
+    );
     assert!(
         prepared
             .usage
