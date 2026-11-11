@@ -12,6 +12,7 @@ const FREEZING: &str = "freezing-context.json";
 #[serde(deny_unknown_fields)]
 struct FreezingContext {
     schema: u8,
+    source_root: PathBuf,
     transaction: PathBuf,
     runtime: PathBuf,
     socket: PathBuf,
@@ -28,6 +29,7 @@ struct FreezingContext {
     #[serde(default)]
     edge_dropins: Vec<SnapshotEntry>,
     native_sha256: Option<String>,
+    edge_source_before_sha256: Option<String>,
 }
 
 pub(super) fn require_freezing(snapshot: &InstallationSnapshot) -> Result<(), String> {
@@ -213,6 +215,7 @@ pub(super) fn capture_freezing(
     };
     let mut context = FreezingContext {
         schema: 1,
+        source_root: manifest.source_root.clone().into(),
         transaction: config.transaction_dir.clone(),
         runtime: config.runtime_dir.clone(),
         socket: config.socket_path.clone(),
@@ -228,6 +231,15 @@ pub(super) fn capture_freezing(
         dropins,
         edge_dropins,
         native_sha256: None,
+        edge_source_before_sha256: if exists(
+            &config.transaction_dir.join("edge-source-before.json"),
+        )? {
+            Some(install::hash_file(
+                &config.transaction_dir.join("edge-source-before.json"),
+            )?)
+        } else {
+            None
+        },
     };
     if native {
         let helper = manifest
@@ -269,6 +281,66 @@ pub(super) fn capture_freezing(
     write_snapshot(&snapshot, "freezing", owner)
 }
 
+/// Read-only canonical and pinned-source validation before any recovery mutation.
+pub(super) fn validate_freezing_source(
+    config: &RecoveryConfig,
+    snapshot: &InstallationSnapshot,
+    runner: &dyn CommandRunner,
+    owner: (u32, u32),
+) -> Result<(), String> {
+    require_freezing(snapshot)?;
+    let context: FreezingContext = serde_json::from_value(finalize::private(
+        &config.transaction_dir.join(FREEZING),
+        owner.0,
+    )?)
+    .map_err(|_| "freezing context is invalid")?;
+    if context.transaction != config.transaction_dir
+        || context.source_root != config.source_root
+        || context.edge_env != config.edge_env
+    {
+        return Err("freezing source belongs to another canonical installation".into());
+    }
+    install::validate_live_checkout(&context.source_root, false, runner).map_err(|error| {
+        format!(
+            "freezing recovery source is unverified; bindings and guards were preserved: {error}"
+        )
+    })?;
+    match context.edge_source_before_sha256 {
+        Some(expected) => {
+            if install::hash_file(&config.transaction_dir.join("edge-source-before.json"))?
+                != expected
+            {
+                return Err(
+                    "retained freezing edge-source binding changed; preserve both guards".into(),
+                );
+            }
+            let binding = read_prior_edge_source(
+                &config.transaction_dir,
+                &context.source_root,
+                &context.edge_env,
+                Some(snapshot),
+                runner,
+                owner,
+            )?;
+            if binding.installed_manifest != context.prior_manifest
+                || binding.edge_unit_path != context.edge_fragment
+            {
+                return Err(
+                    "retained freezing source selected another installation binding".into(),
+                );
+            }
+            install::edge_source::verify(&binding.source, runner)?;
+        }
+        None if exists(&context.prior_manifest)?
+            || exists(&config.transaction_dir.join("edge-source-before.json"))? =>
+        {
+            return Err("freezing recovery has no captured prior edge-source identity".into());
+        }
+        None => {}
+    }
+    Ok(())
+}
+
 /// Resume only unchanged original bindings. An incomplete backup is never used.
 pub(super) fn resume_freezing(
     config: &RecoveryConfig,
@@ -300,6 +372,7 @@ pub(super) fn resume_freezing(
         || context.daemon_unit != config.daemon_unit
         || context.edge_unit != config.edge_unit
         || context.edge_env != config.edge_env
+        || context.source_root != config.source_root
         || context.native != (snapshot.schema == 3)
         || expected != actual
         || expected.len() != 12
@@ -309,6 +382,7 @@ pub(super) fn resume_freezing(
     {
         return Err("freezing context belongs to another installation".into());
     }
+    validate_freezing_source(config, snapshot, runner, owner)?;
     unchanged(snapshot, owner.0)?;
     let no_prior = !exists(&context.prior_manifest)? && !exists(&context.daemon_fragment)?;
     apply(
@@ -388,6 +462,7 @@ pub(super) fn resume_freezing(
     }
     unchanged(snapshot, owner.0)?;
     unchanged_effective(snapshot, &config.systemctl, runner, owner.0)?;
+    validate_freezing_source(config, snapshot, runner, owner)?;
     restore_socket(&config.runtime_dir, &config.socket_path)?;
     release_services(
         &config.transaction_dir,
@@ -905,6 +980,8 @@ pub(super) fn release_services(
     runner: &dyn CommandRunner,
     owner: (u32, u32),
 ) -> Result<(), String> {
+    preflight_release(transaction, daemon, owner.0)?;
+    preflight_release(&edge_transaction(transaction), edge, owner.0)?;
     release(transaction, daemon, systemctl, runner, owner)?;
     release(
         &edge_transaction(transaction),
@@ -940,24 +1017,11 @@ pub(super) fn release(
     runner: &dyn CommandRunner,
     owner: (u32, u32),
 ) -> Result<(), String> {
-    let Some(mut receipt) = read(transaction, unit, owner.0)? else {
+    let Some(mut receipt) = preflight_release(transaction, unit, owner.0)? else {
         return Ok(());
     };
     let has_dropin = exists(&receipt.dropin)?;
     let has_active = exists(&receipt.active)?;
-    // Check every present component before unblocking any possible start.
-    if has_dropin {
-        owned(&receipt.dropin, owner.0, false)?;
-        if install::hash_file(&receipt.dropin)? != receipt.dropin_sha256 {
-            return Err("Coordinator guard configuration changed; preserve it".into());
-        }
-    }
-    if has_active {
-        owned(&receipt.active, owner.0, true)?;
-        if std::fs::read(&receipt.active).map_err(|_| "cannot read active guard")? != ACTIVE_BYTES {
-            return Err("active Coordinator guard changed".into());
-        }
-    }
     if has_dropin {
         std::fs::remove_file(&receipt.dropin)
             .map_err(|_| "cannot release owned Coordinator condition")?;
@@ -974,6 +1038,32 @@ pub(super) fn release(
         0o600,
         Some(owner),
     )
+}
+
+fn preflight_release(
+    transaction: &Path,
+    unit: &str,
+    owner: u32,
+) -> Result<Option<Receipt>, String> {
+    let Some(receipt) = read(transaction, unit, owner)? else {
+        return Ok(None);
+    };
+    let has_dropin = exists(&receipt.dropin)?;
+    let has_active = exists(&receipt.active)?;
+    // Check every component of both services before releasing either one.
+    if has_dropin {
+        owned(&receipt.dropin, owner, false)?;
+        if install::hash_file(&receipt.dropin)? != receipt.dropin_sha256 {
+            return Err("Coordinator guard configuration changed; preserve it".into());
+        }
+    }
+    if has_active {
+        owned(&receipt.active, owner, true)?;
+        if std::fs::read(&receipt.active).map_err(|_| "cannot read active guard")? != ACTIVE_BYTES {
+            return Err("active Coordinator guard changed".into());
+        }
+    }
+    Ok(Some(receipt))
 }
 
 #[cfg(test)]
@@ -1002,7 +1092,10 @@ mod tests {
                     serde_json::json!({"type":"o","data":["/org/freedesktop/systemd1/unit/fixture"]})
                 } else {
                     let name = args.last().unwrap();
-                    let directory = self.fragment.parent().unwrap().join("fixture.service.d");
+                    let directory = self.fragment.parent().unwrap().join(format!(
+                        "{}.d",
+                        self.fragment.file_name().unwrap().to_string_lossy()
+                    ));
                     let mut paths = if directory.is_dir() {
                         std::fs::read_dir(directory)
                             .unwrap()
@@ -1227,6 +1320,60 @@ mod tests {
             std::fs::read_to_string(&receipt.dropin).unwrap(),
             "foreign replacement\n"
         );
+    }
+    #[test]
+    fn paired_release_preflights_foreign_edge_state_before_unblocking_daemon() {
+        for fault in ["marker", "dropin", "receipt"] {
+            let (_root, systemd, tx, owner) = setup();
+            let (_edge_root, mut edge, _, _) = setup();
+            let edge_fragment = edge.fragment.with_file_name("edge.service");
+            std::fs::rename(&edge.fragment, &edge_fragment).unwrap();
+            edge.fragment = edge_fragment;
+            guard(&systemd, &tx, owner).unwrap();
+            let edge_tx = edge_transaction(&tx);
+            apply(
+                &edge_tx,
+                "edge.service",
+                Some(&edge.fragment),
+                false,
+                Path::new("systemctl"),
+                &edge,
+                owner,
+            )
+            .unwrap();
+            let daemon = read(&tx, "fixture.service", owner.0).unwrap().unwrap();
+            let edge = read(&edge_tx, "edge.service", owner.0).unwrap().unwrap();
+            let before = [
+                (&daemon.active, std::fs::read(&daemon.active).unwrap()),
+                (&daemon.dropin, std::fs::read(&daemon.dropin).unwrap()),
+                (&tx.join(RECEIPT), std::fs::read(tx.join(RECEIPT)).unwrap()),
+            ];
+            let changed = match fault {
+                "marker" => edge.active,
+                "dropin" => edge.dropin,
+                _ => edge_tx.join(RECEIPT),
+            };
+            std::fs::write(&changed, b"foreign edge state must be preserved").unwrap();
+            assert!(
+                release_services(
+                    &tx,
+                    "fixture.service",
+                    "edge.service",
+                    Path::new("systemctl"),
+                    &systemd,
+                    owner
+                )
+                .is_err()
+            );
+            for (file, bytes) in before {
+                assert_eq!(std::fs::read(file).unwrap(), bytes, "{fault}");
+            }
+            assert_eq!(
+                std::fs::read(changed).unwrap(),
+                b"foreign edge state must be preserved"
+            );
+            require_active(&tx, "fixture.service", &systemd, owner.0).unwrap();
+        }
     }
     #[test]
     fn dangling_entries_and_unknown_collisions_are_preserved() {

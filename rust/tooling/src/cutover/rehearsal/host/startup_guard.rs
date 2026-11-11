@@ -80,7 +80,7 @@ fn layout(input: &GuardConfig, namespace: &str) -> HostCutoverConfig {
 }
 
 impl GuardFixture {
-    fn prepare(input: GuardConfig) -> Result<Self, String> {
+    fn prepare(mut input: GuardConfig) -> Result<Self, String> {
         if rustix::process::geteuid().as_raw() != 0
             || input.caller_uid == 0
             || input.caller_gid == 0
@@ -166,6 +166,32 @@ impl GuardFixture {
             &serde_json::to_vec(&marker).map_err(|_| "cannot retain guard ownership")?,
             0o600,
         )?;
+        // Recovery refusal controls must never dirty the real source checkout.
+        // This independent repository owns its own pin registrations; it only
+        // borrows immutable objects from the reviewed candidate repository.
+        let source = input.work_root.join("source");
+        required(
+            &install::HostRunner,
+            Path::new("/usr/bin/git"),
+            vec![
+                "-c".into(),
+                "safe.directory=*".into(),
+                "clone".into(),
+                "--shared".into(),
+                "--no-hardlinks".into(),
+                "--branch".into(),
+                "main".into(),
+                "--".into(),
+                input.source_root.clone().into_os_string(),
+                source.clone().into_os_string(),
+            ],
+        )?;
+        if install::validate_live_checkout(&source, false, &install::HostRunner)?
+            != devcoordinator2_control::SOURCE_COMMIT
+        {
+            return Err("owned guard source clone differs from the reviewed candidate".into());
+        }
+        input.source_root = source;
         write(
             &input.work_root.join("guard-input.json"),
             &serde_json::to_vec(&input).map_err(|_| "cannot retain fixture inputs")?,
@@ -504,6 +530,34 @@ impl GuardFixture {
         install::manifest(&self.input.source_root, commit, "fixture-only", binaries)
     }
     fn capture_freezing(&self) -> Result<(), String> {
+        let before = self.layout.transaction_dir.join("edge-source-before.json");
+        if !before.exists() {
+            let prior = install::read_and_verify_prior_manifest_owned(
+                &self.layout.installed_manifest,
+                self.runner.as_ref(),
+                0,
+            )?;
+            let source = install::edge_source::prepare(
+                &prior,
+                &self.layout.source_cache_dir,
+                (0, 0),
+                self.runner.as_ref(),
+            )?;
+            let binding = PriorEdgeSource {
+                source,
+                installed_manifest: self.layout.installed_manifest.clone(),
+                manifest_sha256: install::hash_file(&self.layout.installed_manifest)?,
+                edge_unit_path: self.layout.edge_unit_path.clone(),
+                edge_env: self.layout.edge_env.clone(),
+            };
+            directory(&self.layout.transaction_dir, 0o700, (0, 0))?;
+            write(
+                &before,
+                &serde_json::to_vec_pretty(&binding)
+                    .map_err(|_| "cannot retain owned prior source")?,
+                0o600,
+            )?;
+        }
         let authority = self.input.work_root.join("postgres/authority-current.json");
         let targets = [
             authority.as_path(),
@@ -912,6 +966,81 @@ impl GuardFixture {
             write(&snapshot_path, &bytes, 0o600)?;
         }
         if case == "drift" {
+            for fault in ["dirty_source", "stale_source", "changed_pin"] {
+                let source = &self.input.source_root;
+                let git = |arguments: Vec<OsString>| -> Result<String, String> {
+                    let mut args = vec![
+                        "-c".into(),
+                        "safe.directory=*".into(),
+                        "-C".into(),
+                        source.clone().into_os_string(),
+                    ];
+                    args.extend(arguments);
+                    Ok(required(self.runner.as_ref(), Path::new("/usr/bin/git"), args)?.stdout)
+                };
+                let dirty = source.join("guard-recovery-dirty-control");
+                let before: PriorEdgeSource = serde_json::from_value(finalize::private(
+                    &self.layout.transaction_dir.join("edge-source-before.json"),
+                    0,
+                )?)
+                .map_err(|_| "owned prior source binding is invalid")?;
+                let pinned = before.source.checkout.join("console/index.html");
+                let original_pin =
+                    std::fs::read(&pinned).map_err(|_| "owned pinned source is unavailable")?;
+                let original_pin_mode = pinned
+                    .metadata()
+                    .map_err(|_| "owned pinned source mode is unavailable")?
+                    .mode()
+                    & 0o777;
+                let upstream = git(vec!["rev-parse".into(), "refs/remotes/origin/main".into()])?
+                    .trim()
+                    .to_owned();
+                match fault {
+                    "dirty_source" => {
+                        write(&dirty, b"owned untracked source must be preserved\n", 0o600)?
+                    }
+                    "stale_source" => {
+                        git(vec![
+                            "update-ref".into(),
+                            "refs/remotes/origin/main".into(),
+                            self.input.base_source_commit.clone().into(),
+                        ])?;
+                    }
+                    _ => write(
+                        &pinned,
+                        b"owned changed pin must be preserved\n",
+                        original_pin_mode,
+                    )?,
+                }
+                let rejected = child("startup-guard-recover");
+                let guarded = self.blocked_probe();
+                let mutation_preserved = match fault {
+                    "dirty_source" => std::fs::read(&dirty)
+                        .is_ok_and(|bytes| bytes == b"owned untracked source must be preserved\n"),
+                    "stale_source" => {
+                        git(vec!["rev-parse".into(), "refs/remotes/origin/main".into()])?.trim()
+                            == self.input.base_source_commit
+                    }
+                    _ => std::fs::read(&pinned)
+                        .is_ok_and(|bytes| bytes == b"owned changed pin must be preserved\n"),
+                };
+                match fault {
+                    "dirty_source" => std::fs::remove_file(&dirty)
+                        .map_err(|_| "cannot retire owned source refusal control")?,
+                    "stale_source" => {
+                        git(vec![
+                            "update-ref".into(),
+                            "refs/remotes/origin/main".into(),
+                            upstream.into(),
+                        ])?;
+                    }
+                    _ => write(&pinned, &original_pin, original_pin_mode)?,
+                }
+                if rejected?.success || !mutation_preserved {
+                    return Err("early recovery accepted or changed an unverified source".into());
+                }
+                guarded?;
+            }
             let path = self.layout.instance_env.clone();
             let original = std::fs::read(&path).map_err(|_| "cannot retain drift fixture")?;
             let mut changed = original.clone();

@@ -1236,6 +1236,9 @@ impl CutoverAdapter for HostCutover {
     }
 
     fn stop_legacy(&mut self) -> Result<(), String> {
+        if self.config.installed_manifest.symlink_metadata().is_ok() {
+            self.retain_prior_edge_source()?;
+        }
         startup_guard::capture_freezing(
             &self.config,
             &self.manifest,
@@ -1603,6 +1606,27 @@ fn restore_prior_edge_source(
     runner: &dyn CommandRunner,
     owner: (u32, u32),
 ) -> Result<(), String> {
+    let binding =
+        read_prior_edge_source(transaction, source_root, edge_env, snapshot, runner, owner)?;
+    install::edge_source::bind(
+        &binding.source,
+        &binding.edge_unit_path,
+        edge_env,
+        "devcoordinator2-edge",
+        owner.0,
+        runner,
+    )
+}
+
+/// Validate the retained binding without changing source, units or environment.
+fn read_prior_edge_source(
+    transaction: &Path,
+    source_root: &Path,
+    edge_env: &Path,
+    snapshot: Option<&InstallationSnapshot>,
+    runner: &dyn CommandRunner,
+    owner: (u32, u32),
+) -> Result<PriorEdgeSource, String> {
     let binding: PriorEdgeSource = serde_json::from_value(finalize::private(
         &transaction.join("edge-source-before.json"),
         owner.0,
@@ -1636,14 +1660,7 @@ fn restore_prior_edge_source(
     {
         return Err("prior edge manifest no longer matches its captured source".into());
     }
-    install::edge_source::bind(
-        &binding.source,
-        &binding.edge_unit_path,
-        edge_env,
-        "devcoordinator2-edge",
-        owner.0,
-        runner,
-    )
+    Ok(binding)
 }
 
 fn render_host_units(
@@ -1818,6 +1835,7 @@ pub fn recover_host(
         read_snapshot(&config.transaction_dir, expected_owner.0).map_err(invalid_target)?;
     if snapshot.status == "freezing" {
         startup_guard::require_freezing(&snapshot)?;
+        startup_guard::validate_freezing_source(config, &snapshot, runner, expected_owner)?;
         let drain = begin_drain(&config.runtime_dir, expected_owner)?;
         let receipt = startup_guard::resume_freezing(config, &snapshot, runner, expected_owner)?;
         end_drain(&drain)?;
@@ -5100,6 +5118,115 @@ mod tests {
 
     #[test]
     fn offline_recovery_replays_persisted_snapshot_after_interrupted_install() {
+        for fault in [
+            "dirty_source",
+            "stale_source",
+            "changed_pin",
+            "late_dirty_source",
+        ] {
+            let world = host_world();
+            let runner = Arc::new(HostFake {
+                commit: world.commit.clone(),
+                fragment: world.config.daemon_unit_path.clone(),
+                ..HostFake::default()
+            });
+            let mut host =
+                HostCutover::new_owned(world.config.clone(), runner.clone(), world.expected_owner)
+                    .unwrap();
+            host.stop_legacy().unwrap();
+            let source_root = PathBuf::from(&host.manifest.source_root);
+            let pin: PriorEdgeSource = serde_json::from_value(
+                finalize::private(
+                    &world.config.transaction_dir.join("edge-source-before.json"),
+                    world.expected_owner.0,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+            let pinned_file = pin.source.checkout.join("console/index.html");
+            if fault == "changed_pin" {
+                std::fs::write(&pinned_file, b"changed pinned source must be retained").unwrap();
+            }
+            let data_before = install::hash_file(&world.config.database_path).unwrap();
+            let static_before = host
+                .snapshot_targets()
+                .into_iter()
+                .map(|path| serde_json::to_value(capture_entry(path).unwrap()).unwrap())
+                .collect::<Vec<_>>();
+            let recovery_runner = HostFake {
+                commit: world.commit.clone(),
+                fragment: world.config.daemon_unit_path.clone(),
+                dirty_checkout: fault == "dirty_source",
+                dirty_checkout_after_stop: fault == "late_dirty_source",
+                upstream_commit: (fault == "stale_source").then(|| "e".repeat(40)),
+                ..HostFake::default()
+            };
+            let config = RecoveryConfig {
+                transaction_dir: world.config.transaction_dir.clone(),
+                runtime_dir: world.config.runtime_dir.clone(),
+                socket_path: world.config.socket_path.clone(),
+                database_path: world.config.database_path.clone(),
+                systemctl: world.config.systemctl.clone(),
+                daemon_unit: world.config.daemon_unit.clone(),
+                edge_unit: world.config.edge_unit.clone(),
+                edge_state_dir: world.config.edge_state_dir.clone(),
+                source_root,
+                edge_env: world.config.edge_env.clone(),
+            };
+            assert!(
+                recover_host(&config, &recovery_runner, world.expected_owner).is_err(),
+                "{fault}"
+            );
+            assert_eq!(
+                install::hash_file(&world.config.database_path).unwrap(),
+                data_before
+            );
+            let static_after = host
+                .snapshot_targets()
+                .into_iter()
+                .map(|path| serde_json::to_value(capture_entry(path).unwrap()).unwrap())
+                .collect::<Vec<_>>();
+            assert_eq!(static_after, static_before, "{fault}");
+            for (transaction, unit) in [
+                (
+                    world.config.transaction_dir.clone(),
+                    &world.config.daemon_unit,
+                ),
+                (
+                    startup_guard::edge_transaction(&world.config.transaction_dir),
+                    &world.config.edge_unit,
+                ),
+            ] {
+                startup_guard::require_active(
+                    &transaction,
+                    unit,
+                    runner.as_ref(),
+                    world.expected_owner.0,
+                )
+                .unwrap();
+            }
+            let calls = recovery_runner.requests.lock().unwrap();
+            assert!(
+                !calls
+                    .iter()
+                    .any(|request| request.args.first().is_some_and(|arg| arg == "restart")),
+                "{fault}"
+            );
+            if fault != "late_dirty_source" {
+                assert!(
+                    !calls.iter().any(|request| request.program.file_name()
+                        == Some(std::ffi::OsStr::new("systemctl"))
+                        || request.program.file_name() == Some(std::ffi::OsStr::new("busctl"))),
+                    "source must be checked before recovery changes services"
+                );
+            }
+            if fault == "changed_pin" {
+                assert_eq!(
+                    std::fs::read(pinned_file).unwrap(),
+                    b"changed pinned source must be retained"
+                );
+            }
+        }
         {
             let world = host_world();
             let runner = Arc::new(HostFake {
