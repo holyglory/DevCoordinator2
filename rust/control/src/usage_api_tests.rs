@@ -119,21 +119,30 @@ fn explicit_review_rows_keep_unknown_precision_costs_and_truthful_time_basis() {
 
 #[test]
 fn independent_healthy_collectors_do_not_hold_the_global_cache_lock_during_ipc() {
-    use crate::usage_api_fixture::Peer;
+    use crate::usage_api_fixture::{Peer, ResponseGate};
+    use std::sync::mpsc;
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
     let left = root.join("left");
     let right = root.join("right");
     std::fs::create_dir(&left).unwrap();
     std::fs::create_dir(&right).unwrap();
-    let a = Peer::start(&left, &left.join("home"), |params| {
-        std::thread::sleep(Duration::from_millis(100));
+    let gate = ResponseGate::default();
+    let (entered, responses) = mpsc::channel();
+    let left_gate = gate.clone();
+    let left_entered = entered.clone();
+    let a = Peer::start(&left, &left.join("home"), move |params| {
+        left_entered.send(()).unwrap();
+        left_gate.wait();
         response(params, 20, 135)
     });
-    let b = Peer::start(&right, &right.join("home"), |params| {
-        std::thread::sleep(Duration::from_millis(100));
+    let right_gate = gate.clone();
+    let b = Peer::start(&right, &right.join("home"), move |params| {
+        entered.send(()).unwrap();
+        right_gate.wait();
         response(params, 20, 135)
     });
+    let release = gate.release_on_drop();
     let api = CollectorApi::default();
     let barrier = std::sync::Barrier::new(2);
     let run = |source| {
@@ -151,6 +160,13 @@ fn independent_healthy_collectors_do_not_hold_the_global_cache_lock_during_ipc()
     std::thread::scope(|scope| {
         let left = scope.spawn(|| run(&a.source));
         let right = scope.spawn(|| run(&b.source));
+        let first = responses.recv_timeout(Duration::from_secs(1));
+        let second = responses.recv_timeout(Duration::from_secs(1));
+        release.release();
+        assert!(
+            first.is_ok() && second.is_ok(),
+            "both collectors must reach IPC before either response is released"
+        );
         assert!(left.join().unwrap().is_ok());
         assert!(right.join().unwrap().is_ok());
     });
