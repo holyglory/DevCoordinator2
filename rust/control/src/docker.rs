@@ -2524,7 +2524,41 @@ fn compose_state<D: DockerControl + ?Sized>(
 ) -> Result<ComposeState, DockerError> {
     validate_services(services)?;
     validate_services(finite_services)?;
-    let ids = docker.compose_container_ids(project)?;
+    let mut ids = docker.compose_container_ids(project)?;
+    let mut refreshed = false;
+    let observed = 'snapshot: loop {
+        let mut observed = Vec::new();
+        for container_id in &ids {
+            let info = match docker.inspect(container_id) {
+                Ok(info) => info,
+                Err(error) => {
+                    let missing = error.command_details().2.is_some_and(|stderr| {
+                        let stderr = stderr.to_ascii_lowercase();
+                        stderr.contains("no such container") || stderr.contains("no such object")
+                    });
+                    // A listed ID may disappear while Compose replaces a
+                    // container. Refresh once only after exact absence and a
+                    // new project list agree; discard the entire old snapshot.
+                    if !refreshed
+                        && missing
+                        && matches!(docker.container_present(container_id), Ok(false))
+                        && let Ok(current) = docker.compose_container_ids(project)
+                        && !current.contains(container_id)
+                    {
+                        ids = current;
+                        refreshed = true;
+                        continue 'snapshot;
+                    }
+                    return Err(DockerError::Command(format!(
+                        "Compose container inspection failed ({:?})",
+                        error.kind()
+                    )));
+                }
+            };
+            observed.push((container_id.clone(), container_state_from_inspect(&info)));
+        }
+        break observed;
+    };
     if ids.is_empty() && completions.is_empty() {
         return Ok(ComposeState {
             state: RuntimeState::Stopped,
@@ -2535,19 +2569,12 @@ fn compose_state<D: DockerControl + ?Sized>(
         });
     }
     let mut by_service = BTreeMap::<String, Vec<(ExactContainerId, ContainerState)>>::new();
-    for container_id in &ids {
-        let info = docker.inspect(container_id).map_err(|error| {
-            DockerError::Command(format!(
-                "Compose container inspection failed ({:?})",
-                error.kind()
-            ))
-        })?;
-        let state = container_state_from_inspect(&info);
+    for (container_id, state) in observed {
         if let Some(service) = state.compose_service.clone() {
             by_service
                 .entry(service)
                 .or_default()
-                .push((container_id.clone(), state));
+                .push((container_id, state));
         }
     }
     let expected = if services.is_empty() {
@@ -3323,6 +3350,14 @@ mod tests {
                 DockerErrorKind::CommandFailed,
             ),
             (
+                output(1, "", "private permission denied"),
+                DockerErrorKind::CommandFailed,
+            ),
+            (
+                output(1, "", "private Cannot connect to the Docker daemon"),
+                DockerErrorKind::CommandFailed,
+            ),
+            (
                 output(0, "private invalid inspection body", ""),
                 DockerErrorKind::InvalidOutput,
             ),
@@ -3342,6 +3377,128 @@ mod tests {
             assert!(diagnostic.contains("inspection"), "{diagnostic}");
             assert!(diagnostic.contains(&format!("{kind:?}")), "{diagnostic}");
             assert!(!diagnostic.contains("private"), "{diagnostic}");
+            assert_eq!(fake.calls().len(), 2, "arbitrary errors must not refresh");
+        }
+
+        for (status, expected) in [
+            ("running", RuntimeState::Starting),
+            ("exited", RuntimeState::Completed),
+        ] {
+            let old_completed = id('a');
+            let removed = id('d');
+            let replacement = id('e');
+            let old_info = serde_json::json!({
+                "State":{"Status":"exited","ExitCode":0},
+                "Config":{"Labels":{"com.docker.compose.service":"probe"}}
+            });
+            let info = serde_json::json!({
+                "State":{"Status":status,"ExitCode":0},
+                "Config":{"Labels":{"com.docker.compose.service":"probe"}}
+            });
+            let fake = FakeDocker::new(vec![
+                output(0, format!("{old_completed}\n{removed}\n"), ""),
+                output(0, old_info.to_string(), ""),
+                output(1, "", format!("Error: No such object: {removed}")),
+                output(1, "", format!("Error: No such container: {removed}")),
+                output(0, format!("{replacement}\n"), ""),
+                output(0, info.to_string(), ""),
+            ]);
+            let state = fake
+                .compose_state(
+                    "dc2-finite-probe",
+                    &["probe".into()],
+                    &["probe".into()],
+                    &BTreeSet::new(),
+                    &BTreeMap::new(),
+                )
+                .expect("refresh one project snapshot after proven exact disappearance");
+            assert_eq!(state.state, expected);
+            assert_eq!(state.containers, 1);
+            assert_eq!(state.services[0].containers, 1);
+            assert_eq!(
+                state.completion_candidates.len(),
+                usize::from(status == "exited")
+            );
+            assert!(
+                state
+                    .completion_candidates
+                    .iter()
+                    .all(|candidate| candidate.container_id == replacement)
+            );
+            let calls = fake.calls();
+            assert_eq!(&calls[3].args[..3], ["inspect", "--format", "{{.Id}}"]);
+            assert_eq!(calls[3].args[3], removed.as_str());
+            assert_eq!(
+                calls[4].args, calls[0].args,
+                "refresh the same scoped project"
+            );
+            assert_eq!(calls[5].args[3], replacement.as_str());
+            assert_eq!(calls.len(), 6);
+        }
+
+        let removed = id('d');
+        for confirmation in [
+            output(0, removed.as_str(), ""),
+            output(0, id('e').as_str(), ""),
+            output(0, "private invalid identity", ""),
+            output(1, "", "private permission denied"),
+            output(1, "", "private Cannot connect to the Docker daemon"),
+        ] {
+            let fake = FakeDocker::new(vec![
+                output(0, format!("{removed}\n"), ""),
+                output(1, "", format!("Error: No such container: {removed}")),
+                confirmation,
+            ]);
+            let error = fake
+                .compose_state(
+                    "dc2-finite-probe",
+                    &["probe".into()],
+                    &["probe".into()],
+                    &BTreeSet::new(),
+                    &BTreeMap::new(),
+                )
+                .expect_err("exact absence is required before refreshing");
+            assert!(
+                error
+                    .to_string()
+                    .contains("inspection failed (CommandFailed)")
+            );
+            assert!(!error.to_string().contains("private"));
+            assert_eq!(fake.calls().len(), 3);
+        }
+
+        for refreshed in [
+            vec![output(1, "", "private project listing failed")],
+            vec![output(0, format!("{removed}\n"), "")],
+            vec![
+                output(0, format!("{}\n", id('e')), ""),
+                output(1, "", format!("Error: No such object: {}", id('e'))),
+            ],
+        ] {
+            let mut outputs = vec![
+                output(0, format!("{removed}\n"), ""),
+                output(1, "", format!("Error: No such object: {removed}")),
+                output(1, "", format!("Error: No such object: {removed}")),
+            ];
+            outputs.extend(refreshed);
+            let expected_calls = outputs.len();
+            let fake = FakeDocker::new(outputs);
+            let error = fake
+                .compose_state(
+                    "dc2-finite-probe",
+                    &["probe".into()],
+                    &["probe".into()],
+                    &BTreeSet::new(),
+                    &BTreeMap::new(),
+                )
+                .expect_err("an unverified or unstable snapshot cannot become stopped or empty");
+            assert!(
+                error
+                    .to_string()
+                    .contains("inspection failed (CommandFailed)")
+            );
+            assert!(!error.to_string().contains("private"));
+            assert_eq!(fake.calls().len(), expected_calls, "refresh at most once");
         }
 
         let container = id('d');
