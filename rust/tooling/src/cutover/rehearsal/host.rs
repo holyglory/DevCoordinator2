@@ -35,6 +35,7 @@ pub(super) struct Fixture {
 struct Recorder {
     directory: PathBuf,
     next: Mutex<u32>,
+    owner: (u32, u32),
 }
 
 #[derive(PartialEq, Eq)]
@@ -61,12 +62,12 @@ impl Recorder {
             .map_err(|_| "fixture command catalog is unavailable")?;
         *next += 1;
         let stem = format!("command-{:05}", *next);
-        let metadata = serde_json::json!({"schema":1,"program":request.program,"args":request.args,"success":result.as_ref().is_ok_and(|output|output.success)});
+        let metadata = serde_json::json!({"schema":1,"program":request.program,"args":request.args,"success":result.as_ref().is_ok_and(|output|output.success),"error":result.as_ref().err(),"stdout_truncated":result.as_ref().ok().map(|output|output.stdout_truncated),"stderr_truncated":result.as_ref().ok().map(|output|output.stderr_truncated)});
         install::atomic_file(
             &self.directory.join(format!("{stem}.json")),
             &serde_json::to_vec(&metadata).map_err(|_| "cannot encode command evidence")?,
             0o600,
-            Some((0, 0)),
+            Some(self.owner),
         )?;
         if let Ok(output) = result {
             for (stream, text) in [("stdout", &output.stdout), ("stderr", &output.stderr)] {
@@ -74,7 +75,7 @@ impl Recorder {
                     &self.directory.join(format!("{stem}.{stream}")),
                     text.as_bytes(),
                     0o600,
-                    Some((0, 0)),
+                    Some(self.owner),
                 )?;
             }
         }
@@ -341,6 +342,7 @@ impl Fixture {
             runner: Arc::new(Recorder {
                 directory: artifacts,
                 next: Mutex::new(0),
+                owner: (0, 0),
             }),
             repository_id: String::new(),
             runtime_prepared: false,

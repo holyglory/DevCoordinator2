@@ -15,7 +15,7 @@ struct GuardFixture {
     reverse_unit: String,
 }
 
-fn normal(path: &Path, commit: &str) -> Result<String, String> {
+fn normal(path: &Path, commit: &str, runner: &dyn CommandRunner) -> Result<String, String> {
     if !exact(path)
         || !path.is_file()
         || path
@@ -24,7 +24,7 @@ fn normal(path: &Path, commit: &str) -> Result<String, String> {
     {
         return Err("guard scenario requires exact normal daemon files".into());
     }
-    let output = required(&install::HostRunner, path, vec!["--build-identity".into()])?;
+    let output = required(runner, path, vec!["--build-identity".into()])?;
     let identity: Value =
         serde_json::from_str(&output.stdout).map_err(|_| "guard daemon identity is invalid")?;
     if identity["source_commit"] != commit
@@ -36,6 +36,59 @@ fn normal(path: &Path, commit: &str) -> Result<String, String> {
         );
     }
     install::hash_file(path)
+}
+
+fn clone_source(
+    source: &Path,
+    destination: &Path,
+    runner: &dyn CommandRunner,
+) -> Result<(), String> {
+    let git_dir = source
+        .join(".git")
+        .canonicalize()
+        .map_err(|_| "guard source Git directory is unavailable")?;
+    if !git_dir.is_dir() {
+        return Err("guard source Git directory is not a directory".into());
+    }
+    let source_text = path_text(source)?;
+    let git_text = path_text(&git_dir)?;
+    if [source_text.as_str(), git_text.as_str()]
+        .iter()
+        .any(|path| {
+            path.bytes()
+                .any(|byte| matches!(byte, b'\0' | b'\n' | b'\r'))
+        })
+    {
+        return Err("guard source Git paths contain unsupported control characters".into());
+    }
+    let safe_git = format!("safe.directory={git_text}");
+    // Local clone starts upload-pack with separate protected configuration.
+    // Authorize only the verified source and its Git directory in each process;
+    // Git treats upload-pack as shell syntax, so quote the dynamic argument.
+    let upload_pack = format!(
+        "--upload-pack=/usr/bin/git -c '{}' upload-pack",
+        safe_git.replace('\'', "'\\''")
+    );
+    required(
+        runner,
+        Path::new("/usr/bin/git"),
+        vec![
+            "-c".into(),
+            format!("safe.directory={source_text}").into(),
+            "-c".into(),
+            safe_git.into(),
+            "clone".into(),
+            "--shared".into(),
+            "--no-hardlinks".into(),
+            upload_pack.into(),
+            "--branch".into(),
+            "main".into(),
+            "--".into(),
+            source.to_owned().into_os_string(),
+            destination.to_owned().into_os_string(),
+        ],
+    )?;
+    Ok(())
 }
 
 fn layout(input: &GuardConfig, namespace: &str) -> HostCutoverConfig {
@@ -114,6 +167,16 @@ impl GuardFixture {
         {
             return Err("guard fixture requires exact caller-owned source and data paths".into());
         }
+        let artifacts = input.report.with_extension("artifacts");
+        if artifacts.symlink_metadata().is_ok() {
+            return Err("guard evidence directory must be new".into());
+        }
+        directory(&artifacts, 0o700, (0, 0))?;
+        let runner = Arc::new(Recorder {
+            directory: artifacts.clone(),
+            next: Mutex::new(0),
+            owner: (0, 0),
+        });
         let source_git = |args: &[&str]| -> Result<String, String> {
             let mut command = vec![
                 format!("--reuid={}", input.caller_uid).into(),
@@ -121,11 +184,13 @@ impl GuardFixture {
                 "--clear-groups".into(),
                 "--".into(),
                 "/usr/bin/git".into(),
+                "-c".into(),
+                format!("safe.directory={}", input.source_root.display()).into(),
                 "-C".into(),
                 input.source_root.clone().into_os_string(),
             ];
             command.extend(args.iter().map(OsString::from));
-            Ok(required(&install::HostRunner, Path::new("/usr/bin/setpriv"), command)?.stdout)
+            Ok(required(runner.as_ref(), Path::new("/usr/bin/setpriv"), command)?.stdout)
         };
         if source_git(&["rev-parse", "HEAD"])?.trim() != devcoordinator2_control::SOURCE_COMMIT
             || !source_git(&["status", "--porcelain", "--untracked-files=all"])?
@@ -134,10 +199,15 @@ impl GuardFixture {
         {
             return Err("guard fixture source must be the actual clean candidate".into());
         }
-        normal(&input.base_daemon, &input.base_source_commit)?;
+        normal(
+            &input.base_daemon,
+            &input.base_source_commit,
+            runner.as_ref(),
+        )?;
         normal(
             &input.candidate_daemon,
             devcoordinator2_control::SOURCE_COMMIT,
+            runner.as_ref(),
         )?;
         let pg = install::account_by_name(&input.postgres_account)?;
         if pg.uid == 0 || pg.gid == 0 {
@@ -145,11 +215,6 @@ impl GuardFixture {
                 "guard fixture PostgreSQL account must already exist and be non-root".into(),
             );
         }
-        let artifacts = input.report.with_extension("artifacts");
-        if artifacts.symlink_metadata().is_ok() {
-            return Err("guard evidence directory must be new".into());
-        }
-        directory(&artifacts, 0o700, (0, 0))?;
         directory(&input.work_root, 0o711, (0, 0))?;
         let namespace = format!("{PREFIX}guard-{}-{}", std::process::id(), random_hex(4)?);
         let marker = Marker {
@@ -170,23 +235,8 @@ impl GuardFixture {
         // This independent repository owns its own pin registrations; it only
         // borrows immutable objects from the reviewed candidate repository.
         let source = input.work_root.join("source");
-        required(
-            &install::HostRunner,
-            Path::new("/usr/bin/git"),
-            vec![
-                "-c".into(),
-                "safe.directory=*".into(),
-                "clone".into(),
-                "--shared".into(),
-                "--no-hardlinks".into(),
-                "--branch".into(),
-                "main".into(),
-                "--".into(),
-                input.source_root.clone().into_os_string(),
-                source.clone().into_os_string(),
-            ],
-        )?;
-        if install::validate_live_checkout(&source, false, &install::HostRunner)?
+        clone_source(&input.source_root, &source, runner.as_ref())?;
+        if install::validate_live_checkout(&source, false, runner.as_ref())?
             != devcoordinator2_control::SOURCE_COMMIT
         {
             return Err("owned guard source clone differs from the reviewed candidate".into());
@@ -199,10 +249,6 @@ impl GuardFixture {
         )?;
         let layout = layout(&input, &namespace);
         let reverse_unit = format!("{namespace}-reverse.service");
-        let runner = Arc::new(Recorder {
-            directory: artifacts.clone(),
-            next: Mutex::new(0),
-        });
         let helper = input.work_root.join("bin/fixture-client");
         Ok(Self {
             input,
@@ -497,7 +543,7 @@ impl GuardFixture {
         } else {
             devcoordinator2_control::SOURCE_COMMIT
         };
-        normal(daemon, commit)?;
+        normal(daemon, commit, self.runner.as_ref())?;
         let directory = daemon
             .parent()
             .ok_or("fixture normal bundle has no directory")?;
@@ -1319,10 +1365,6 @@ fn existing(work_root: &Path, case: &str) -> Result<GuardFixture, String> {
     {
         return Err("guard child input belongs to another fixture".into());
     }
-    normal(
-        &input.candidate_daemon,
-        devcoordinator2_control::SOURCE_COMMIT,
-    )?;
     let mut layout = layout(&input, &marker.namespace);
     layout.transaction_dir = work_root.join(format!("cutover/early-{case}"));
     let artifacts = input
@@ -1330,16 +1372,23 @@ fn existing(work_root: &Path, case: &str) -> Result<GuardFixture, String> {
         .with_extension("artifacts")
         .join(format!("child-{case}-{}", random_hex(4)?));
     directory(&artifacts, 0o700, (0, 0))?;
+    let runner = Arc::new(Recorder {
+        directory: artifacts.clone(),
+        next: Mutex::new(0),
+        owner: (0, 0),
+    });
+    normal(
+        &input.candidate_daemon,
+        devcoordinator2_control::SOURCE_COMMIT,
+        runner.as_ref(),
+    )?;
     Ok(GuardFixture {
         helper: work_root.join("bin/fixture-client"),
         reverse_unit: format!("{}-reverse.service", marker.namespace),
         input,
         marker,
         layout,
-        runner: Arc::new(Recorder {
-            directory: artifacts.clone(),
-            next: Mutex::new(0),
-        }),
+        runner,
         artifacts,
         files: BTreeMap::new(),
     })
@@ -1391,5 +1440,157 @@ pub(super) fn run(input: GuardConfig) -> Result<Value, String> {
         Ok(report)
     } else {
         Err("guard-only scenario failed; private report and owned evidence retained".into())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct ForeignOwner<'a>(&'a dyn CommandRunner);
+    impl CommandRunner for ForeignOwner<'_> {
+        fn run(&self, request: &CommandRequest) -> Result<install::CommandOutput, String> {
+            let mut request = request.clone();
+            request
+                .environment
+                .insert("GIT_TEST_ASSUME_DIFFERENT_OWNER".into(), "1".into());
+            self.0.run(&request)
+        }
+    }
+
+    fn git(runner: &dyn CommandRunner, args: Vec<OsString>) -> install::CommandOutput {
+        required(runner, Path::new("/usr/bin/git"), args).unwrap()
+    }
+
+    fn check_clone(source: &Path, root: &Path, runner: &Recorder, foreign_owner: bool) {
+        let forced = ForeignOwner(runner);
+        let clone_runner: &dyn CommandRunner = if foreign_owner { &forced } else { runner };
+        let failed = root.join("outer-only-source");
+        assert!(
+            required(
+                clone_runner,
+                Path::new("/usr/bin/git"),
+                vec![
+                    "-c".into(),
+                    "safe.directory=*".into(),
+                    "clone".into(),
+                    "--shared".into(),
+                    "--no-hardlinks".into(),
+                    "--branch".into(),
+                    "main".into(),
+                    "--".into(),
+                    source.to_owned().into_os_string(),
+                    failed.into_os_string(),
+                ],
+            )
+            .is_err()
+        );
+        let stem = format!("command-{:05}", *runner.next.lock().unwrap());
+        let metadata: Value = serde_json::from_slice(
+            &std::fs::read(runner.directory.join(format!("{stem}.json"))).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(metadata["success"], false);
+        assert_eq!(metadata["stderr_truncated"], false);
+        assert!(
+            std::fs::read_to_string(runner.directory.join(format!("{stem}.stderr")))
+                .unwrap()
+                .contains("detected dubious ownership")
+        );
+        let destination = root.join("scoped-source");
+        clone_source(source, &destination, clone_runner).unwrap();
+        let expected = git(
+            &install::HostRunner,
+            vec![
+                "-c".into(),
+                format!("safe.directory={}", source.display()).into(),
+                "-C".into(),
+                source.to_owned().into_os_string(),
+                "rev-parse".into(),
+                "HEAD".into(),
+            ],
+        );
+        assert_eq!(
+            install::validate_live_checkout(&destination, false, runner).unwrap(),
+            expected.stdout.trim()
+        );
+    }
+
+    #[test]
+    fn source_clone_scopes_upload_pack_and_retains_setup_failures() {
+        // The real guard scenario requires root and systemd. Exercise its exact
+        // Git/recording boundary here without creating services or a database.
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path();
+        let artifacts = root.join("artifacts");
+        let owner = (
+            rustix::process::geteuid().as_raw(),
+            rustix::process::getegid().as_raw(),
+        );
+        directory(&artifacts, 0o700, owner).unwrap();
+        let runner = Recorder {
+            directory: artifacts.clone(),
+            next: Mutex::new(0),
+            owner,
+        };
+        assert!(
+            required(
+                &runner,
+                Path::new("/usr/bin/git"),
+                vec![
+                    "-C".into(),
+                    root.join("missing-source").into_os_string(),
+                    "rev-parse".into(),
+                    "HEAD".into(),
+                ],
+            )
+            .is_err()
+        );
+        assert!(
+            !std::fs::read(artifacts.join("command-00001.stderr"))
+                .unwrap()
+                .is_empty()
+        );
+        let metadata = artifacts.join("command-00001.json").metadata().unwrap();
+        assert_eq!(metadata.mode() & 0o777, 0o600);
+        assert_eq!((metadata.uid(), metadata.gid()), owner);
+
+        // Spaces and a quote also exercise the upload-pack argument escaping.
+        let source = root.join("source ' quoted");
+        git(
+            &install::HostRunner,
+            vec![
+                "init".into(),
+                "--initial-branch=main".into(),
+                source.clone().into_os_string(),
+            ],
+        );
+        git(
+            &install::HostRunner,
+            vec![
+                "-C".into(),
+                source.clone().into_os_string(),
+                "-c".into(),
+                "user.name=fixture".into(),
+                "-c".into(),
+                "user.email=fixture@example.invalid".into(),
+                "commit".into(),
+                "--no-gpg-sign".into(),
+                "--allow-empty".into(),
+                "-m".into(),
+                "fixture".into(),
+            ],
+        );
+        check_clone(&source, root, &runner, true);
+
+        // A source-executor companion may supply the actual shared checkout.
+        // It is read-only; the clone owns all new files and registrations.
+        if let Some(source) = std::env::var_os("DEVCOORDINATOR2_TEST_FOREIGN_SOURCE_ROOT") {
+            let source = PathBuf::from(source);
+            assert_ne!(source.metadata().unwrap().uid(), owner.0);
+            let companion = root.join("real-owner");
+            directory(&companion, 0o700, owner).unwrap();
+            check_clone(&source, &companion, &runner, false);
+        }
     }
 }
