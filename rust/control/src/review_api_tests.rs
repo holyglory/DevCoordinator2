@@ -414,6 +414,7 @@ fn review_context_window_is_indexed_bounded_uid_scoped_and_conflicts_stay_unattr
 #[test]
 #[ignore = "requires an explicit candidate binary and isolated synthetic usage-v2 fixture"]
 fn review_prepare_against_candidate_usage_v2_app_server() {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
     use std::os::unix::process::CommandExt;
     use std::path::Path;
     use std::process::{Child, Command, Stdio};
@@ -481,7 +482,13 @@ fn review_prepare_against_candidate_usage_v2_app_server() {
         tx.execute_batch("INSERT INTO tasks(task_id,repository_id,seq,position,title,outcome,kind,status,created_at,created_by,updated_at) VALUES('fixture-outcome','project-alpha',2,2,'Review scoped usage','Prove explicit operation attribution','improvement','in_progress','1970-01-01T00:00:00Z','fixture','1970-01-01T00:00:00Z')")?;
         Ok(())
     }).unwrap();
-    let socket = fixture._temporary.path().join("candidate.sock");
+    let socket_directory = fixture._temporary.path().join("private-socket");
+    std::fs::create_dir(&socket_directory).unwrap();
+    std::fs::set_permissions(&socket_directory, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let socket_metadata = std::fs::metadata(&socket_directory).unwrap();
+    assert_eq!(socket_metadata.uid(), rustix::process::geteuid().as_raw());
+    assert_eq!(socket_metadata.permissions().mode() & 0o777, 0o700);
+    let socket = socket_directory.join("candidate.sock");
     let child = Command::new(binary)
         .arg("--listen")
         .arg(format!("unix://{}", socket.display()))
