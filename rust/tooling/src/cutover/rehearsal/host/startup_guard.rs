@@ -91,6 +91,67 @@ fn clone_source(
     Ok(())
 }
 
+fn verify_database_identity(
+    config: &DatabaseConfig,
+    postgres: &install::postgres::PostgresSetup,
+    expected: &str,
+    runner: &dyn CommandRunner,
+) -> Result<Persistence, String> {
+    // The runtime and privileged observation must select the same owned socket,
+    // database and original runtime role. Never widen the runtime role to read a
+    // superuser-only setting.
+    if config.data_directory.as_deref() != Some(postgres.data_dir.as_path())
+        || config.url
+            != format!(
+                "host={} user=devcoordinator2 dbname={expected}",
+                postgres.socket_dir.display()
+            )
+    {
+        return Err("guard fixture selected another PostgreSQL binding".into());
+    }
+    let db = Persistence::connect(config).map_err(|_| "owned guard PostgreSQL is unavailable")?;
+    let identity = db
+        .read::<_, devcoordinator2_control::persistence::Error, _>(|connection| {
+            connection.query_row("SELECT current_database(),current_user", [], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+        })
+        .map_err(|_| "cannot verify owned guard runtime database identity")?;
+    if identity != (expected.into(), "devcoordinator2".into()) {
+        return Err("guard runtime database identity does not match owned bindings".into());
+    }
+    // Reuse the installer's existing root-peer admin identity for this one
+    // read-only observation. JSON avoids ambiguous path/column delimiters.
+    let output = required(
+        runner,
+        &postgres.bin_dir.join("psql"),
+        vec![
+            "--no-psqlrc".into(),
+            "--no-password".into(),
+            "--host".into(),
+            postgres.socket_dir.clone().into_os_string(),
+            "--username=devcoordinator2_admin".into(),
+            format!("--dbname={expected}").into(),
+            "--set=ON_ERROR_STOP=1".into(),
+            "--quiet".into(),
+            "--tuples-only".into(),
+            "--no-align".into(),
+            "--command".into(),
+            format!(
+                "BEGIN READ ONLY;SET LOCAL statement_timeout={};SELECT json_build_array(current_database(),current_setting('data_directory'));ROLLBACK;",
+                config.statement_timeout.as_millis().min(i32::MAX as u128)
+            )
+            .into(),
+        ],
+    )?;
+    let observed: (String, String) = serde_json::from_str(output.stdout.trim())
+        .map_err(|_| "owned guard admin database identity is invalid")?;
+    if observed != (expected.into(), path_text(&postgres.data_dir)?) {
+        return Err("guard PostgreSQL cluster identity does not match owned bindings".into());
+    }
+    Ok(db)
+}
+
 fn layout(input: &GuardConfig, namespace: &str) -> HostCutoverConfig {
     let root = &input.work_root;
     let unit = |name: &str| format!("{namespace}-{name}");
@@ -288,25 +349,12 @@ impl GuardFixture {
         .map_err(|_| "guard fixture database binding is invalid".into())
     }
     fn db_identity(&self, expected: &str) -> Result<Persistence, String> {
-        let config = self.config()?;
-        if config.data_directory.as_deref() != Some(self.layout.postgres.data_dir.as_path()) {
-            return Err("guard fixture selected another PostgreSQL cluster".into());
-        }
-        let db =
-            Persistence::connect(&config).map_err(|_| "owned guard PostgreSQL is unavailable")?;
-        let identity = db
-            .read::<_, devcoordinator2_control::persistence::Error, _>(|c| {
-                c.query_row(
-                    "SELECT current_database(),current_setting('data_directory')",
-                    [],
-                    |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
-                )
-            })
-            .map_err(|_| "cannot verify owned guard database identity")?;
-        if identity != (expected.into(), path_text(&self.layout.postgres.data_dir)?) {
-            return Err("guard fixture database identity does not match owned bindings".into());
-        }
-        Ok(db)
+        verify_database_identity(
+            &self.config()?,
+            &self.layout.postgres,
+            expected,
+            self.runner.as_ref(),
+        )
     }
     fn ping(&self, commit: &str) -> Result<(), String> {
         let deadline = Instant::now() + Duration::from_secs(30);
@@ -1514,6 +1562,85 @@ mod tests {
             install::validate_live_checkout(&destination, false, runner).unwrap(),
             expected.stdout.trim()
         );
+    }
+
+    #[test]
+    fn database_identity_preserves_the_runtime_privilege_boundary() {
+        use devcoordinator2_control::persistence::{Error, fixture::FixtureCluster};
+        let cluster = FixtureCluster::start().unwrap();
+        let expected = "guard_identity";
+        let mut config = cluster.create_database(expected).unwrap();
+        let mut admin = cluster.client(expected).unwrap();
+        admin.batch_execute("CREATE ROLE devcoordinator2_admin LOGIN SUPERUSER;CREATE ROLE devcoordinator2 LOGIN CREATEDB NOSUPERUSER NOCREATEROLE NOREPLICATION;ALTER DATABASE guard_identity OWNER TO devcoordinator2;").unwrap();
+        let postgres = install::postgres::PostgresSetup {
+            database_name: expected.into(),
+            data_dir: config.data_directory.clone().unwrap(),
+            socket_dir: cluster.socket_directory().into(),
+            bin_dir: std::env::var_os("DEVCOORDINATOR2_TEST_POSTGRES_BIN")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| install::postgres::PostgresSetup::default().bin_dir),
+            ..Default::default()
+        };
+        config.url = format!(
+            "host={} user=devcoordinator2 dbname={expected}",
+            postgres.socket_dir.display()
+        );
+        let runtime = Persistence::connect(&config).unwrap();
+        let setting_denied = |runtime: &Persistence| {
+            let error = runtime
+                .read::<String, Error, _>(|connection| {
+                    connection.query_row("SELECT current_setting('data_directory')", [], |row| {
+                        row.get(0)
+                    })
+                })
+                .unwrap_err();
+            assert!(
+                matches!(error, Error::Postgres(error) if error.code().is_some_and(|code| code.code() == "42501"))
+            );
+        };
+        setting_denied(&runtime);
+        let temporary = tempfile::tempdir().unwrap();
+        let owner = (
+            rustix::process::geteuid().as_raw(),
+            rustix::process::getegid().as_raw(),
+        );
+        let artifacts = temporary.path().join("artifacts");
+        directory(&artifacts, 0o700, owner).unwrap();
+        let runner = Recorder {
+            directory: artifacts,
+            next: Mutex::new(0),
+            owner,
+        };
+        let verified = verify_database_identity(&config, &postgres, expected, &runner).unwrap();
+        setting_denied(&verified);
+        let attributes = admin
+            .query_one(
+                "SELECT rolsuper,rolcreatedb,rolcreaterole,rolreplication FROM pg_roles WHERE rolname='devcoordinator2'",
+                &[],
+            )
+            .unwrap();
+        assert!(!attributes.get::<_, bool>(0));
+        assert!(attributes.get::<_, bool>(1));
+        assert!(!attributes.get::<_, bool>(2));
+        assert!(!attributes.get::<_, bool>(3));
+
+        let commands = *runner.next.lock().unwrap();
+        let mut foreign = config.clone();
+        foreign.url.push_str(" application_name=foreign");
+        assert!(verify_database_identity(&foreign, &postgres, expected, &runner).is_err());
+        assert_eq!(*runner.next.lock().unwrap(), commands);
+        assert!(verify_database_identity(&config, &postgres, "wrong_database", &runner).is_err());
+        assert_eq!(*runner.next.lock().unwrap(), commands);
+        let wrong_data = temporary.path().join("foreign-data");
+        directory(&wrong_data, 0o700, owner).unwrap();
+        let mut false_config = config.clone();
+        false_config.data_directory = Some(wrong_data.clone());
+        let mut false_cluster = postgres.clone();
+        false_cluster.data_dir = wrong_data;
+        assert!(
+            verify_database_identity(&false_config, &false_cluster, expected, &runner).is_err()
+        );
+        setting_denied(&runtime);
     }
 
     #[test]
