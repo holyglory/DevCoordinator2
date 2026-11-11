@@ -505,12 +505,24 @@ fn review_prepare_against_candidate_usage_v2_app_server() {
         );
         std::thread::sleep(Duration::from_millis(10));
     }
-    fixture.config.codex_usage_sources = vec![crate::config::CodexUsageSource {
-        uid: rustix::process::getuid().as_raw(),
-        codex_home: home,
-        api_socket: Some(socket),
-        executable: "/must-not-execute-retired-cli".into(),
-    }];
+    let legacy = fixture
+        ._temporary
+        .path()
+        .join("retired-source-must-not-open");
+    fixture.config.codex_usage_sources = vec![
+        crate::config::CodexUsageSource {
+            uid: rustix::process::getuid().as_raw(),
+            codex_home: home,
+            api_socket: Some(socket),
+            executable: "/must-not-execute-retired-cli".into(),
+        },
+        crate::config::CodexUsageSource {
+            uid: rustix::process::getuid().as_raw() + 1,
+            codex_home: legacy.clone(),
+            api_socket: None,
+            executable: "/must-not-execute-retired-cli".into(),
+        },
+    ];
     let clock = Arc::new(crate::platform::FixedClock(
         time::OffsetDateTime::from_unix_timestamp_nanos(i128::from(captured) * 1_000_000).unwrap(),
     ));
@@ -603,6 +615,16 @@ fn review_prepare_against_candidate_usage_v2_app_server() {
         "{:?}",
         prepared.usage.coverage.unavailable_reasons
     );
+    assert_eq!(prepared.usage.coverage.configured_collectors, 2);
+    assert_eq!(
+        prepared
+            .usage
+            .coverage
+            .unavailable_reasons
+            .get("legacy_source_unsupported"),
+        Some(&1)
+    );
+    assert!(!legacy.exists());
     assert!(
         prepared
             .usage
@@ -620,6 +642,34 @@ fn review_prepare_against_candidate_usage_v2_app_server() {
             .any(|row| row.outcome_id == "fixture-outcome"
                 && row.effort.provider_total_tokens.measured == 120)
     );
+    assert_eq!(
+        prepared
+            .usage
+            .outcomes
+            .totals
+            .provider_total_tokens
+            .measured,
+        147
+    );
+    assert_eq!(
+        prepared
+            .usage
+            .outcomes
+            .attributed
+            .provider_total_tokens
+            .measured,
+        120
+    );
+    assert_eq!(
+        prepared
+            .usage
+            .outcomes
+            .unattributed
+            .provider_total_tokens
+            .measured,
+        27
+    );
+    assert_eq!(prepared.usage.outcomes.unattributed.operations, 3);
     assert!(
         prepared
             .usage
@@ -665,11 +715,17 @@ fn delayed_collector_finishes_once_after_bounded_cold_review_and_supplies_attrib
     let home = root.join("slow-source");
     let calls = Arc::new(AtomicUsize::new(0));
     let observed = calls.clone();
+    let (entered_source, entered) = std::sync::mpsc::channel();
+    let (release_source, released) = std::sync::mpsc::channel();
     let peer = Peer::start(root, &home, move |params| {
         observed.fetch_add(1, Ordering::SeqCst);
-        std::thread::sleep(Duration::from_millis(1_200));
+        entered_source.send(()).unwrap();
+        // Dropping the sender also releases this owned reply during failure cleanup.
+        let _ = released.recv();
         response(params, START + WEEK, 135)
     });
+    // Release the reply before Peer joins its worker if an assertion unwinds.
+    let release = release_source;
     let caller = caller();
     crate::usage_context::ingest(
         &fixture.database,
@@ -694,10 +750,14 @@ fn delayed_collector_finishes_once_after_bounded_cold_review_and_supplies_attrib
     let snapshot = cold.usage.coverage.snapshot.unwrap();
     assert!(snapshot.refreshing);
     assert!(!snapshot.refresh_failed);
+    entered
+        .recv_timeout(Duration::from_secs(5))
+        .expect("the owned source request must enter its response gate");
     // A second request joins the same source read instead of poisoning the
     // source with a timeout or starting a duplicate request.
     let _ = fixture.service.prepare(input(), START + WEEK).unwrap();
     assert_eq!(calls.load(Ordering::SeqCst), 1);
+    release.send(()).unwrap();
     assert!(
         fixture
             .service
