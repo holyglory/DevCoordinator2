@@ -137,14 +137,51 @@ pub(super) fn finish_activation(
         .filter(|name| name.ends_with(".service") && !name.starts_with('-'))
         .ok_or("committed PostgreSQL service binding is unavailable")?;
     let drain = begin_drain(&config.runtime_dir, owner)?;
+    run_systemctl(runner, &config.systemctl, &["start", pg_unit])?;
+    let helper = manifest
+        .binaries
+        .iter()
+        .find(|binary| binary.name == "devcoordinator2-migrate-authority")
+        .ok_or("committed migration helper is unavailable")?;
+    let ready_report = config
+        .transaction_dir
+        .join(format!("commit-recovery-authority-{}.json", random_hex(8)?));
+    let ready = runner.run(&CommandRequest {
+        program: helper.path.clone().into(),
+        args: vec![
+            "--mode".into(),
+            "inspect-postgres".into(),
+            "--database-config".into(),
+            pg_config.as_os_str().to_owned(),
+            "--report".into(),
+            ready_report.as_os_str().to_owned(),
+        ],
+        environment: std::collections::BTreeMap::from([(
+            OsString::from("PATH"),
+            OsString::from("/usr/bin:/bin"),
+        )]),
+        clear_environment: true,
+    })?;
+    if !ready.success
+        || ready.stdout_truncated
+        || ready.stderr_truncated
+        || finalize::private(&ready_report, owner.0)?["verified"] != true
+    {
+        return Err("committed PostgreSQL authority is not ready; start guard remains".into());
+    }
+    check_bindings()?;
+    startup_guard::release_services(
+        &config.transaction_dir,
+        &config.daemon_unit,
+        &config.edge_unit,
+        &config.systemctl,
+        runner,
+        owner,
+    )?;
     run_systemctl_all(
         runner,
         &config.systemctl,
-        &[
-            ("start", pg_unit),
-            ("start", &config.daemon_unit),
-            ("start", &config.edge_unit),
-        ],
+        &[("start", &config.daemon_unit), ("start", &config.edge_unit)],
     )?;
     let control = manifest
         .binaries
@@ -322,11 +359,14 @@ pub(super) fn recover(
         format!("Console source binding is unverified; native authority was preserved: {error}")
     })?;
     let drain = begin_drain(&config.runtime_dir, owner)?;
+    startup_guard::apply_recovery(config, snapshot, runner, owner)?;
     run_systemctl_all(
         runner,
         &config.systemctl,
         &[("stop", &config.daemon_unit), ("stop", &config.edge_unit)],
     )?;
+    startup_guard::require_stopped(&config.systemctl, runner, &config.daemon_unit)?;
+    startup_guard::require_stopped(&config.systemctl, runner, &config.edge_unit)?;
     for entry in snapshot.entries.iter().rev() {
         restore_entry(entry)?;
     }
@@ -385,6 +425,14 @@ pub(super) fn recover(
         owner,
     )?;
     run_systemctl(runner, &config.systemctl, &["daemon-reload"])?;
+    startup_guard::release_services(
+        &config.transaction_dir,
+        &config.daemon_unit,
+        &config.edge_unit,
+        &config.systemctl,
+        runner,
+        owner,
+    )?;
     run_systemctl_all(
         runner,
         &config.systemctl,

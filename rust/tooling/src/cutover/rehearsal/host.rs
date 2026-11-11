@@ -5,6 +5,20 @@ use std::os::unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 
+#[path = "host/startup_guard.rs"]
+mod guard_scenario;
+
+pub(super) fn hold_startup_guard(work_root: &Path, case: &str) -> Result<(), String> {
+    guard_scenario::hold(work_root, case)
+}
+pub(super) fn recover_startup_guard(work_root: &Path, case: &str) -> Result<Value, String> {
+    guard_scenario::recover(work_root, case)
+}
+
+pub(super) fn run_startup_guard(config: GuardConfig) -> Result<Value, String> {
+    guard_scenario::run(config)
+}
+
 pub(super) struct Fixture {
     pub marker: Marker,
     input: Config,

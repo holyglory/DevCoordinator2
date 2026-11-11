@@ -38,6 +38,7 @@ mod native_recovery;
 #[cfg(feature = "selftest-fixtures")]
 #[path = "cutover/rehearsal.rs"]
 pub mod rehearsal;
+mod startup_guard;
 pub use finalize::{FinalizationConfig, FinalizationReceipt, LiveAcceptance, finalize_host};
 
 const DRAIN_FILE: &str = "test-drain.json";
@@ -218,7 +219,9 @@ fn rollback<A: CutoverAdapter>(
     }
     let mut failures = Vec::new();
     if let Err(error) = adapter.stop_rust() {
-        failures.push(format!("stop Rust: {error}"));
+        return Err(format!(
+            "Rust activation failed: {activation_error}; cannot stop candidate writers: {error}; restoration was not attempted"
+        ));
     }
     if let Err(error) = adapter.restore_installation(snapshot) {
         failures.push(format!("restore installation: {error}"));
@@ -235,7 +238,9 @@ fn rollback<A: CutoverAdapter>(
     if let Err(error) = adapter.restore_legacy_socket() {
         failures.push(format!("restore legacy socket: {error}"));
     }
-    if let Err(error) = adapter.start_legacy() {
+    if failures.is_empty()
+        && let Err(error) = adapter.start_legacy()
+    {
         failures.push(format!("restart prior service: {error}"));
     }
     if failures.is_empty()
@@ -436,6 +441,7 @@ pub struct HostCutover {
     admitted: bool,
     acceptance_sha256: String,
     frozen_source_sha256: Option<String>,
+    verified_backup_sha256: Option<String>,
     postgres_started: bool,
     prior_edge_source: Option<install::edge_source::PinnedSource>,
     #[cfg(feature = "selftest-fixtures")]
@@ -634,6 +640,7 @@ impl HostCutover {
             admitted: false,
             acceptance_sha256,
             frozen_source_sha256: None,
+            verified_backup_sha256: None,
             postgres_started: false,
             prior_edge_source: None,
             #[cfg(feature = "selftest-fixtures")]
@@ -1027,7 +1034,10 @@ impl CutoverAdapter for HostCutover {
 
     fn close_admission(&mut self) -> Result<Self::Drain, String> {
         self.verify_candidate_binaries()?;
-        self.retain_prior_edge_source()?;
+        match self.config.installed_manifest.symlink_metadata() {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            _ => self.retain_prior_edge_source()?,
+        }
         begin_drain(&self.config.runtime_dir, self.expected_owner)
     }
 
@@ -1088,11 +1098,40 @@ impl CutoverAdapter for HostCutover {
     }
 
     fn backup_database(&mut self) -> Result<String, String> {
+        startup_guard::require_active(
+            &self.config.transaction_dir,
+            &self.config.daemon_unit,
+            self.runner.as_ref(),
+            self.expected_owner.0,
+        )?;
+        startup_guard::require_active(
+            &startup_guard::edge_transaction(&self.config.transaction_dir),
+            &self.config.edge_unit,
+            self.runner.as_ref(),
+            self.expected_owner.0,
+        )?;
+        startup_guard::require_source_stopped(
+            &startup_guard::edge_transaction(&self.config.transaction_dir),
+            &self.config.systemctl,
+            self.runner.as_ref(),
+            &self.config.edge_unit,
+            self.expected_owner.0,
+        )?;
+        startup_guard::require_source_stopped(
+            &self.config.transaction_dir,
+            &self.config.systemctl,
+            self.runner.as_ref(),
+            &self.config.daemon_unit,
+            self.expected_owner.0,
+        )?;
         install::ensure_owned_directory(&self.config.transaction_dir, 0o700, self.expected_owner)
             .map_err(|error| format!("cannot prepare cutover transaction: {error}"))?;
         if self.authority == AuthorityKind::Postgres {
             self.migrate_authority("backup", "source-native-backup.json")?;
             self.migrate_authority("verify-backup", "source-native-backup-verified.json")?;
+            self.verified_backup_sha256 = Some(install::hash_file(
+                &self.config.transaction_dir.join("authority-before.pgdump"),
+            )?);
             return path_text(&self.config.transaction_dir.join("authority-before.pgdump"));
         }
         let backup = self.config.transaction_dir.join("authority-before.sqlite3");
@@ -1130,50 +1169,45 @@ impl CutoverAdapter for HostCutover {
             }
         }
 
+        self.verified_backup_sha256 = Some(install::hash_file(&backup)?);
         path_text(&backup)
     }
 
     fn capture_installation(&mut self) -> Result<Self::InstallationSnapshot, String> {
-        self.retain_prior_edge_source()?;
-        if self.authority == AuthorityKind::Postgres {
-            let helper = self
-                .manifest
-                .binaries
-                .iter()
-                .find(|binary| binary.name == "devcoordinator2-migrate-authority")
-                .ok_or("verified migration helper is unavailable")?;
-            let context = serde_json::json!({"schema":1,"postgres_config":self.config.postgres.config_path,"postgres_unit":self.config.postgres.unit,"helper_binary":helper.path,"helper_sha256":helper.sha256,"source_commit":self.manifest.source_commit});
-            install::atomic_file(
-                &self.config.transaction_dir.join("native-source.json"),
-                &serde_json::to_vec(&context)
-                    .map_err(|_| "cannot retain native recovery binding")?,
-                0o600,
-                Some(self.expected_owner),
-            )?;
+        let mut snapshot = read_snapshot(&self.config.transaction_dir, self.expected_owner.0)?;
+        startup_guard::require_freezing(&snapshot)?;
+        startup_guard::unchanged(&snapshot, self.expected_owner.0)?;
+        startup_guard::unchanged_effective(
+            &snapshot,
+            &self.config.systemctl,
+            self.runner.as_ref(),
+            self.expected_owner.0,
+        )?;
+        match self.config.installed_manifest.symlink_metadata() {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            _ => self.retain_prior_edge_source()?,
         }
-        let entries = self
-            .snapshot_targets()
-            .into_iter()
-            .map(capture_entry)
-            .collect::<Result<Vec<_>, _>>()?;
-        let snapshot = InstallationSnapshot {
-            schema: if self.authority == AuthorityKind::Postgres {
-                3
+        startup_guard::unchanged(&snapshot, self.expected_owner.0)?;
+        startup_guard::unchanged_effective(
+            &snapshot,
+            &self.config.systemctl,
+            self.runner.as_ref(),
+            self.expected_owner.0,
+        )?;
+        snapshot.backup_sha256 = install::hash_file(&self.config.transaction_dir.join(
+            if self.authority == AuthorityKind::Postgres {
+                "authority-before.pgdump"
             } else {
-                2
+                "authority-before.sqlite3"
             },
-            status: "prepared".to_owned(),
-            transaction_dir: path_text(&self.config.transaction_dir)?,
-            entries,
-            backup_sha256: install::hash_file(&self.config.transaction_dir.join(
-                if self.authority == AuthorityKind::Postgres {
-                    "authority-before.pgdump"
-                } else {
-                    "authority-before.sqlite3"
-                },
-            ))?,
-            candidate_commit: self.manifest.source_commit.clone(),
-        };
+        ))?;
+        if self.verified_backup_sha256.as_deref() != Some(snapshot.backup_sha256.as_str()) {
+            return Err(
+                "freezing snapshot has no matching verified backup; preserve the start guard"
+                    .into(),
+            );
+        }
+        snapshot.status = "prepared".into();
         write_snapshot(&snapshot, "prepared", self.expected_owner)?;
         Ok(snapshot)
     }
@@ -1202,10 +1236,15 @@ impl CutoverAdapter for HostCutover {
     }
 
     fn stop_legacy(&mut self) -> Result<(), String> {
-        self.systemctl_all(&[
-            ("stop", &self.config.edge_unit),
-            ("stop", &self.config.daemon_unit),
-        ])
+        startup_guard::capture_freezing(
+            &self.config,
+            &self.manifest,
+            self.authority == AuthorityKind::Postgres,
+            &self.snapshot_targets(),
+            self.runner.as_ref(),
+            self.expected_owner,
+        )?;
+        startup_guard::stop_services(&self.config, self.runner.as_ref(), self.expected_owner)
     }
 
     fn install_rust(&mut self) -> Result<(), String> {
@@ -1319,6 +1358,14 @@ impl CutoverAdapter for HostCutover {
     }
 
     fn start_rust(&mut self) -> Result<(), String> {
+        startup_guard::release_services(
+            &self.config.transaction_dir,
+            &self.config.daemon_unit,
+            &self.config.edge_unit,
+            &self.config.systemctl,
+            self.runner.as_ref(),
+            self.expected_owner,
+        )?;
         #[cfg(feature = "selftest-fixtures")]
         if self.rehearsal_fail_edge_start {
             // Only the marker-validated fixture constructor can arm this. A
@@ -1419,15 +1466,12 @@ impl CutoverAdapter for HostCutover {
     }
 
     fn stop_rust(&mut self) -> Result<(), String> {
-        let result = self.systemctl_all(&[
-            ("stop", &self.config.edge_unit),
-            ("stop", &self.config.daemon_unit),
-        ]);
+        startup_guard::stop_services(&self.config, self.runner.as_ref(), self.expected_owner)?;
         if self.postgres_started {
             self.systemctl(&["stop", &self.config.postgres.unit])?;
             self.postgres_started = false;
         }
-        result
+        Ok(())
     }
 
     fn restore_installation(
@@ -1500,6 +1544,29 @@ impl CutoverAdapter for HostCutover {
     }
 
     fn start_legacy(&mut self) -> Result<(), String> {
+        if let Ok(snapshot) = read_snapshot(&self.config.transaction_dir, self.expected_owner.0)
+            && snapshot.status == "freezing"
+        {
+            let config = RecoveryConfig {
+                transaction_dir: self.config.transaction_dir.clone(),
+                runtime_dir: self.config.runtime_dir.clone(),
+                socket_path: self.config.socket_path.clone(),
+                database_path: self.config.database_path.clone(),
+                systemctl: self.config.systemctl.clone(),
+                daemon_unit: self.config.daemon_unit.clone(),
+                edge_unit: self.config.edge_unit.clone(),
+                edge_state_dir: self.config.edge_state_dir.clone(),
+                source_root: self.manifest.source_root.clone().into(),
+                edge_env: self.config.edge_env.clone(),
+            };
+            startup_guard::resume_freezing(
+                &config,
+                &snapshot,
+                self.runner.as_ref(),
+                self.expected_owner,
+            )?;
+            return Ok(());
+        }
         restore_prior_edge_source(
             &self.config.transaction_dir,
             Path::new(&self.manifest.source_root),
@@ -1509,6 +1576,14 @@ impl CutoverAdapter for HostCutover {
             self.expected_owner,
         )?;
         self.systemctl(&["daemon-reload"])?;
+        startup_guard::release_services(
+            &self.config.transaction_dir,
+            &self.config.daemon_unit,
+            &self.config.edge_unit,
+            &self.config.systemctl,
+            self.runner.as_ref(),
+            self.expected_owner,
+        )?;
         self.systemctl_all(&[
             ("restart", &self.config.daemon_unit),
             ("restart", &self.config.edge_unit),
@@ -1741,6 +1816,13 @@ pub fn recover_host(
     let invalid_target = |error| format!("recovery target invalid: {error}");
     let snapshot =
         read_snapshot(&config.transaction_dir, expected_owner.0).map_err(invalid_target)?;
+    if snapshot.status == "freezing" {
+        startup_guard::require_freezing(&snapshot)?;
+        let drain = begin_drain(&config.runtime_dir, expected_owner)?;
+        let receipt = startup_guard::resume_freezing(config, &snapshot, runner, expected_owner)?;
+        end_drain(&drain)?;
+        return Ok(receipt);
+    }
     if snapshot.schema == 3 && snapshot.status == "committed" {
         return native_recovery::finish_activation(config, &snapshot, runner, expected_owner);
     }
@@ -1805,11 +1887,14 @@ pub fn recover_host(
     // Share activation's atomic admission boundary with edge maintenance, and
     // keep the recovery marker present until source and route checks finish.
     let recovery_drain = begin_drain(&config.runtime_dir, expected_owner)?;
+    startup_guard::apply_recovery(config, &snapshot, runner, expected_owner)?;
     run_systemctl_all(
         runner,
         &config.systemctl,
         &[("stop", &config.daemon_unit), ("stop", &config.edge_unit)],
     )?;
+    startup_guard::require_stopped(&config.systemctl, runner, &config.daemon_unit)?;
+    startup_guard::require_stopped(&config.systemctl, runner, &config.edge_unit)?;
     for entry in snapshot.entries.iter().rev() {
         restore_entry(entry)?;
     }
@@ -1846,6 +1931,14 @@ pub fn recover_host(
     )?;
     run_systemctl(runner, &config.systemctl, &["daemon-reload"])?;
     restore_socket(&config.runtime_dir, &config.socket_path)?;
+    startup_guard::release_services(
+        &config.transaction_dir,
+        &config.daemon_unit,
+        &config.edge_unit,
+        &config.systemctl,
+        runner,
+        expected_owner,
+    )?;
     run_systemctl_all(
         runner,
         &config.systemctl,
@@ -3057,6 +3150,7 @@ mod tests {
 
     #[derive(Default)]
     struct HostFake {
+        fragment: PathBuf,
         commit: String,
         checkout_commit: Option<String>,
         upstream_commit: Option<String>,
@@ -3064,6 +3158,7 @@ mod tests {
         dirty_checkout_after_stop: bool,
         fail_ping: bool,
         backup_verification_failure: Option<crate::install::CommandOutput>,
+        no_prior: bool,
         retryable_ping_failures: AtomicUsize,
         requests: Mutex<Vec<CommandRequest>>,
     }
@@ -3071,6 +3166,92 @@ mod tests {
     impl CommandRunner for HostFake {
         fn run(&self, request: &CommandRequest) -> Result<crate::install::CommandOutput, String> {
             self.requests.lock().unwrap().push(request.clone());
+            if request.program == Path::new("/usr/bin/busctl") {
+                if self.no_prior
+                    && request.args.iter().any(|a| a == "LoadUnit")
+                    && request
+                        .args
+                        .last()
+                        .is_some_and(|a| !self.fragment.with_file_name(a).exists())
+                {
+                    return Err("unconfigured unit cannot be loaded".into());
+                }
+                let data = if request.args.iter().any(|a| a == "LoadUnit") {
+                    serde_json::json!([format!(
+                        "/org/freedesktop/systemd1/unit/{}",
+                        request.args.last().unwrap().to_string_lossy()
+                    )])
+                } else {
+                    let unit = Path::new(&request.args[3]).file_name().unwrap();
+                    let fragment = self.fragment.with_file_name(unit);
+                    let directory = self
+                        .fragment
+                        .with_file_name(format!("{}.d", unit.to_string_lossy()));
+                    let paths = std::fs::read_dir(directory)
+                        .into_iter()
+                        .flatten()
+                        .map(|p| p.unwrap().path())
+                        .collect::<Vec<_>>();
+                    match request.args.last().and_then(|a| a.to_str()).unwrap() {
+                        "FragmentPath" => {
+                            serde_json::json!(fragment)
+                        }
+                        "LoadState" => serde_json::json!("loaded"),
+                        "DropInPaths" => serde_json::json!(paths),
+                        "Conditions" => serde_json::json!(
+                            paths
+                                .iter()
+                                .flat_map(|p| {
+                                    std::fs::read_to_string(p)
+                                        .unwrap_or_default()
+                                        .lines()
+                                        .filter_map(|line| {
+                                            line.strip_prefix("ConditionPathExists=!")
+                                        })
+                                        .map(|active| {
+                                            serde_json::json!([
+                                                "ConditionPathExists",
+                                                false,
+                                                true,
+                                                active,
+                                                0
+                                            ])
+                                        })
+                                        .collect::<Vec<_>>()
+                                })
+                                .collect::<Vec<_>>()
+                        ),
+                        _ => return Err("unexpected systemd fixture property".into()),
+                    }
+                };
+                return Ok(crate::install::CommandOutput {
+                    success: true,
+                    stdout: serde_json::json!({"data":data}).to_string(),
+                    stderr: String::new(),
+                    stdout_truncated: false,
+                    stderr_truncated: false,
+                });
+            }
+            if request.program.file_name() == Some(std::ffi::OsStr::new("systemctl"))
+                && request.args.first().is_some_and(|a| a == "show")
+            {
+                return Ok(crate::install::CommandOutput {
+                    success: true,
+                    stdout: if self.no_prior
+                        && request
+                            .args
+                            .last()
+                            .is_some_and(|a| !self.fragment.with_file_name(a).exists())
+                    {
+                        "LoadState=not-found\nActiveState=inactive\nMainPID=0\n".into()
+                    } else {
+                        "LoadState=loaded\nActiveState=inactive\nMainPID=0\n".into()
+                    },
+                    stderr: String::new(),
+                    stdout_truncated: false,
+                    stderr_truncated: false,
+                });
+            }
             if request.program == Path::new("/usr/bin/git") && request.args.len() >= 5 {
                 let args = &request.args[4..];
                 let git_root = Path::new(&request.args[3]);
@@ -3738,6 +3919,7 @@ mod tests {
         std::fs::write(&world.config.tmpfiles_path, prior_rule).unwrap();
         let runner = Arc::new(HostFake {
             commit: world.commit.clone(),
+            fragment: world.config.daemon_unit_path.clone(),
             ..HostFake::default()
         });
         let mut host =
@@ -3987,6 +4169,7 @@ mod tests {
         let world = host_world();
         let runner = Arc::new(HostFake {
             commit: world.commit.clone(),
+            fragment: world.config.daemon_unit_path.clone(),
             ..HostFake::default()
         });
         let mut first =
@@ -4034,6 +4217,7 @@ mod tests {
         std::fs::write(&candidate.socket_path, b"prior native daemon endpoint").unwrap();
         let failing = Arc::new(HostFake {
             commit: world.commit.clone(),
+            fragment: world.config.daemon_unit_path.clone(),
             fail_ping: true,
             ..HostFake::default()
         });
@@ -4079,9 +4263,9 @@ mod tests {
             HostCutover::new_owned(cold_config.clone(), runner.clone(), world.expected_owner)
                 .unwrap();
         cold.fence_legacy_socket().unwrap();
+        cold.stop_legacy().unwrap();
         cold.backup_database().unwrap();
         cold.capture_installation().unwrap();
-        cold.stop_legacy().unwrap();
         cold.install_rust().unwrap();
         assert_ne!(
             std::fs::read(&cold_config.postgres.config_path).unwrap(),
@@ -4243,6 +4427,7 @@ mod tests {
         std::fs::rename(&postgres, &saved_postgres).unwrap();
         let preflight_runner = Arc::new(HostFake {
             commit: world.commit.clone(),
+            fragment: world.config.daemon_unit_path.clone(),
             ..HostFake::default()
         });
         let error = HostCutover::new_owned(
@@ -4265,6 +4450,7 @@ mod tests {
         std::fs::rename(&saved_postgres, &postgres).unwrap();
         let runner = HostFake {
             commit: world.commit.clone(),
+            fragment: world.config.daemon_unit_path.clone(),
             ..HostFake::default()
         };
         let mut setup = world.config.postgres.clone();
@@ -4344,6 +4530,7 @@ mod tests {
             let changed_commit = "d".repeat(40);
             let runner = Arc::new(HostFake {
                 commit: world.commit.clone(),
+                fragment: world.config.daemon_unit_path.clone(),
                 checkout_commit: (failure == "source").then_some(changed_commit.clone()),
                 dirty_checkout: failure == "dirty",
                 ..HostFake::default()
@@ -4421,6 +4608,7 @@ mod tests {
         let connection = Connection::open(&world.config.database_path).unwrap();
         let runner = Arc::new(HostFake {
             commit: world.commit.clone(),
+            fragment: world.config.daemon_unit_path.clone(),
             ..HostFake::default()
         });
         let mut host =
@@ -4475,6 +4663,7 @@ mod tests {
         let world = host_world();
         let runner = Arc::new(HostFake {
             commit: world.commit.clone(),
+            fragment: world.config.daemon_unit_path.clone(),
             retryable_ping_failures: AtomicUsize::new(1),
             ..HostFake::default()
         });
@@ -4502,6 +4691,7 @@ mod tests {
         let world = host_world();
         let runner = Arc::new(HostFake {
             commit: world.commit.clone(),
+            fragment: world.config.daemon_unit_path.clone(),
             ..HostFake::default()
         });
         let mut host =
@@ -4531,11 +4721,13 @@ mod tests {
         let world = host_world();
         let runner = Arc::new(HostFake {
             commit: world.commit.clone(),
+            fragment: world.config.daemon_unit_path.clone(),
             ..HostFake::default()
         });
         let mut host =
             HostCutover::new_owned(world.config.clone(), runner.clone(), world.expected_owner)
                 .unwrap();
+        host.stop_legacy().unwrap();
         host.backup_database().unwrap();
         let snapshot = host.capture_installation().unwrap();
         host.fence_legacy_socket().unwrap();
@@ -4637,6 +4829,7 @@ mod tests {
         assert!(database_integrity(&world.config.database_path).unwrap());
         let runner = Arc::new(HostFake {
             commit: world.commit.clone(),
+            fragment: world.config.daemon_unit_path.clone(),
             fail_ping: true,
             ..HostFake::default()
         });
@@ -4677,6 +4870,7 @@ mod tests {
         let prior_edge_metadata = std::fs::metadata(&edge_env).unwrap();
         let runner = Arc::new(HostFake {
             commit: world.commit.clone(),
+            fragment: world.config.daemon_unit_path.clone(),
             fail_ping: true,
             ..HostFake::default()
         });
@@ -4744,6 +4938,7 @@ mod tests {
             };
             let runner = Arc::new(HostFake {
                 commit: world.commit.clone(),
+                fragment: world.config.daemon_unit_path.clone(),
                 backup_verification_failure: Some(output.clone()),
                 ..HostFake::default()
             });
@@ -4833,6 +5028,7 @@ mod tests {
         let world = host_world();
         let runner = Arc::new(HostFake {
             commit: world.commit.clone(),
+            fragment: world.config.daemon_unit_path.clone(),
             ..HostFake::default()
         });
         let missing = RecoveryConfig::default();
@@ -4855,6 +5051,7 @@ mod tests {
         let mut host =
             HostCutover::new_owned(world.config.clone(), runner.clone(), world.expected_owner)
                 .unwrap();
+        host.stop_legacy().unwrap();
         host.backup_database().unwrap();
         let snapshot = host.capture_installation().unwrap();
         write_snapshot(&snapshot, "committed", world.expected_owner).unwrap();
@@ -4903,6 +5100,175 @@ mod tests {
 
     #[test]
     fn offline_recovery_replays_persisted_snapshot_after_interrupted_install() {
+        {
+            let world = host_world();
+            let runner = Arc::new(HostFake {
+                commit: world.commit.clone(),
+                fragment: world.config.daemon_unit_path.clone(),
+                no_prior: true,
+                ..HostFake::default()
+            });
+            let mut host =
+                HostCutover::new_owned(world.config.clone(), runner, world.expected_owner).unwrap();
+            std::fs::remove_file(&world.config.daemon_unit_path).unwrap();
+            std::fs::remove_file(&world.config.installed_manifest).unwrap();
+            host.stop_legacy().unwrap();
+            host.backup_database().unwrap();
+            let prepared = host.capture_installation().unwrap();
+            assert_eq!(prepared.status, "prepared");
+            assert!(!prepared.backup_sha256.is_empty());
+        }
+        // Early recovery preserves static bindings and never accepts an
+        // unverified archive. Historical prepared snapshots keep their shape.
+        for drift in [false, true] {
+            let world = host_world();
+            let runner = Arc::new(HostFake {
+                commit: world.commit.clone(),
+                fragment: world.config.daemon_unit_path.clone(),
+                ..HostFake::default()
+            });
+            let mut host =
+                HostCutover::new_owned(world.config.clone(), runner.clone(), world.expected_owner)
+                    .unwrap();
+            host.stop_legacy().unwrap();
+            let frozen =
+                read_snapshot(&world.config.transaction_dir, world.expected_owner.0).unwrap();
+            assert_eq!(frozen.status, "freezing");
+            assert!(frozen.backup_sha256.is_empty());
+            startup_guard::require_active(
+                &startup_guard::edge_transaction(&world.config.transaction_dir),
+                &world.config.edge_unit,
+                runner.as_ref(),
+                world.expected_owner.0,
+            )
+            .unwrap();
+            let snapshot_path = world
+                .config
+                .transaction_dir
+                .join("installation-snapshot.json");
+            let original = std::fs::read(&snapshot_path).unwrap();
+            for schema in [2, 3] {
+                let mut historical = frozen.clone();
+                historical.schema = schema;
+                historical.backup_sha256 = "0".repeat(64);
+                write_snapshot(&historical, "prepared", world.expected_owner).unwrap();
+                let parsed =
+                    read_snapshot(&world.config.transaction_dir, world.expected_owner.0).unwrap();
+                assert_eq!(parsed.schema, schema);
+                assert_eq!(parsed.status, "prepared");
+                assert_eq!(
+                    serde_json::to_value(parsed.entries).unwrap(),
+                    serde_json::to_value(&frozen.entries).unwrap()
+                );
+            }
+            install::atomic_file(&snapshot_path, &original, 0o600, Some(world.expected_owner))
+                .unwrap();
+            let archive = world
+                .config
+                .transaction_dir
+                .join("authority-before.sqlite3");
+            if drift {
+                host.backup_database().unwrap();
+                std::fs::write(&world.config.instance_env, b"# changed original setting\n")
+                    .unwrap();
+            } else {
+                Connection::open(&world.config.database_path)
+                    .unwrap()
+                    .backup(rusqlite::MAIN_DB, &archive, None)
+                    .unwrap();
+            }
+            assert!(host.capture_installation().is_err());
+            assert_eq!(std::fs::read(&snapshot_path).unwrap(), original);
+            startup_guard::require_active(
+                &world.config.transaction_dir,
+                &world.config.daemon_unit,
+                runner.as_ref(),
+                world.expected_owner.0,
+            )
+            .unwrap();
+            let recovery = RecoveryConfig {
+                transaction_dir: world.config.transaction_dir.clone(),
+                runtime_dir: world.config.runtime_dir.clone(),
+                socket_path: world.config.socket_path.clone(),
+                database_path: world.config.database_path.clone(),
+                systemctl: world.config.systemctl.clone(),
+                daemon_unit: world.config.daemon_unit.clone(),
+                edge_unit: world.config.edge_unit.clone(),
+                edge_state_dir: world.config.edge_state_dir.clone(),
+                source_root: PathBuf::from(
+                    read_json_file(&world.config.candidate_manifest)
+                        .unwrap()
+                        .unwrap()["source_root"]
+                        .as_str()
+                        .unwrap(),
+                ),
+                edge_env: world.config.edge_env.clone(),
+            };
+            if drift {
+                assert!(recover_host(&recovery, runner.as_ref(), world.expected_owner).is_err());
+                assert_eq!(
+                    std::fs::read(&world.config.instance_env).unwrap(),
+                    b"# changed original setting\n"
+                );
+                startup_guard::require_active(
+                    &world.config.transaction_dir,
+                    &world.config.daemon_unit,
+                    runner.as_ref(),
+                    world.expected_owner.0,
+                )
+                .unwrap();
+                startup_guard::require_active(
+                    &startup_guard::edge_transaction(&world.config.transaction_dir),
+                    &world.config.edge_unit,
+                    runner.as_ref(),
+                    world.expected_owner.0,
+                )
+                .unwrap();
+            } else {
+                Connection::open(&world.config.database_path)
+                    .unwrap()
+                    .execute(
+                        "INSERT INTO meta(key,value) VALUES('early-recovery-live','retained')",
+                        [],
+                    )
+                    .unwrap();
+                let recovered =
+                    recover_host(&recovery, runner.as_ref(), world.expected_owner).unwrap();
+                assert!(!recovered.database_restored);
+                for transaction in [
+                    world.config.transaction_dir.clone(),
+                    startup_guard::edge_transaction(&world.config.transaction_dir),
+                ] {
+                    assert_eq!(
+                        finalize::private(
+                            &transaction.join("daemon-start-guard.json"),
+                            world.expected_owner.0
+                        )
+                        .unwrap()["released"],
+                        true
+                    );
+                }
+                assert_eq!(
+                    Connection::open(&world.config.database_path)
+                        .unwrap()
+                        .query_row(
+                            "SELECT value FROM meta WHERE key='early-recovery-live'",
+                            [],
+                            |r| r.get::<_, String>(0)
+                        )
+                        .unwrap(),
+                    "retained"
+                );
+                assert!(
+                    !runner
+                        .requests
+                        .lock()
+                        .unwrap()
+                        .iter()
+                        .any(|r| r.args.iter().any(|a| a == "inspect-postgres"))
+                );
+            }
+        }
         let mut failed_cases = Vec::new();
         for state in ["clean", "initial_dirty", "initial_stale", "late_dirty"] {
             let result = std::panic::catch_unwind(|| {
@@ -4910,6 +5276,7 @@ mod tests {
                 let prior_edge_metadata = std::fs::metadata(&world.config.edge_env).unwrap();
                 let runner = Arc::new(HostFake {
                     commit: world.commit.clone(),
+                    fragment: world.config.daemon_unit_path.clone(),
                     ..HostFake::default()
                 });
                 let mut host = HostCutover::new_owned(
@@ -4921,9 +5288,9 @@ mod tests {
                 let drain = host.close_admission().unwrap();
                 host.fence_legacy_socket().unwrap();
                 host.wait_for_quiescence(&drain).unwrap();
+                host.stop_legacy().unwrap();
                 host.backup_database().unwrap();
                 host.capture_installation().unwrap();
-                host.stop_legacy().unwrap();
                 host.install_rust().unwrap();
                 assert_eq!(
                     std::fs::read_to_string(&world.config.edge_env).unwrap(),
@@ -4954,6 +5321,7 @@ mod tests {
 
                 let recovery_runner = HostFake {
                     commit: world.commit.clone(),
+                    fragment: world.config.daemon_unit_path.clone(),
                     upstream_commit: (state == "initial_stale").then(|| "e".repeat(40)),
                     dirty_checkout: state == "initial_dirty",
                     dirty_checkout_after_stop: state == "late_dirty",

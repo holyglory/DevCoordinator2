@@ -23,6 +23,31 @@ pub struct Config {
     pub caller_uid: u32,
     pub caller_gid: u32,
 }
+
+/// Guard-only proof; it is never a full installer acceptance receipt.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct GuardConfig {
+    pub base_daemon: PathBuf,
+    pub base_source_commit: String,
+    pub candidate_daemon: PathBuf,
+    pub source_root: PathBuf,
+    pub work_root: PathBuf,
+    pub report: PathBuf,
+    pub postgres_bin: PathBuf,
+    pub postgres_account: String,
+    pub caller_uid: u32,
+    pub caller_gid: u32,
+}
+
+pub fn run_startup_guard(config: GuardConfig) -> Result<Value, String> {
+    host::run_startup_guard(config)
+}
+pub fn hold_startup_guard(work_root: &Path, case: &str) -> Result<(), String> {
+    host::hold_startup_guard(work_root, case)
+}
+pub fn recover_startup_guard(work_root: &Path, case: &str) -> Result<Value, String> {
+    host::recover_startup_guard(work_root, case)
+}
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 struct Marker {
