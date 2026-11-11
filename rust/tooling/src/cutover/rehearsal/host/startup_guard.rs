@@ -152,6 +152,37 @@ fn verify_database_identity(
     Ok(db)
 }
 
+fn require_uninitialized_source(database: &Persistence) -> Result<(), String> {
+    let empty = database
+        .read::<_, devcoordinator2_control::persistence::Error, _>(|connection| {
+            connection.query_row(
+                "SELECT NOT EXISTS(SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public')",
+                [],
+                |row| row.get::<_, bool>(0),
+            )
+        })
+        .map_err(|_| "cannot inspect fresh guard source schema")?;
+    if !empty {
+        return Err("guard source schema was initialized before the normal base daemon".into());
+    }
+    Ok(())
+}
+
+fn migration_version(database: &Persistence) -> Result<i64, String> {
+    let version = database
+        .read::<_, devcoordinator2_control::persistence::Error, _>(|connection| {
+            connection.query_row(
+                "SELECT max(version) FROM dc2_schema_migrations",
+                [],
+                |row| row.get::<_, Option<i64>>(0),
+            )
+        })
+        .map_err(|_| "cannot inspect owned guard migration version")?;
+    version
+        .filter(|version| *version > 0)
+        .ok_or_else(|| "normal guard daemon did not initialize its source schema".into())
+}
+
 fn layout(input: &GuardConfig, namespace: &str) -> HostCutoverConfig {
     let root = &input.work_root;
     let unit = |name: &str| format!("{namespace}-{name}");
@@ -490,9 +521,9 @@ impl GuardFixture {
         self.ctl(&["daemon-reload"])?;
         self.ctl(&["start", &self.layout.postgres.unit])?;
         self.layout.postgres.bootstrap(self.runner.as_ref())?;
-        self.db_identity("devcoordinator2_guard_source")?
-            .migrate()
-            .map_err(|_| "cannot migrate fresh owned guard fixture")?;
+        // The actual base executable owns its initial schema. Candidate
+        // migrations here would make an older normal base unable to start.
+        require_uninitialized_source(&self.db_identity("devcoordinator2_guard_source")?)?;
         let environment = format!(
             "DEVCOORDINATOR2_SOCKET={}\nDEVCOORDINATOR2_STATE_DIR={}\nDEVCOORDINATOR2_SANDBOX_BRIDGE_DIR={}\nDEVCOORDINATOR2_BUGS_DIR={}\nDEVCOORDINATOR2_UNIT_PREFIX={}-test\nDEVCOORDINATOR2_SLICE={}-tests.slice\nDEVCOORDINATOR2_CLIENT_GROUP=\nDEVCOORDINATOR2_PORT_RANGE=39000-39099\nDEVCOORDINATOR2_BASE_DOMAIN=fixture.invalid\nDEVCOORDINATOR2_DATABASE_CONFIG={}\nDEVCOORDINATOR2_CODEX_USAGE_SOURCES_FILE=\nDEVCOORDINATOR2_TELEGRAM_TOKEN_FILE=\n",
             self.layout.socket_path.display(),
@@ -552,7 +583,17 @@ impl GuardFixture {
         self.ctl(&["start", &self.layout.daemon_unit])?;
         self.ctl(&["start", &self.layout.edge_unit])?;
         self.ping(&self.input.base_source_commit)?;
-        self.db_identity("devcoordinator2_guard_source")?;
+        let base_version = migration_version(&self.db_identity("devcoordinator2_guard_source")?)?;
+        write(
+            &self.artifacts.join("source-schema-bootstrap.json"),
+            &serde_json::to_vec(&serde_json::json!({
+                "schema":1,"source_empty_before_base":true,
+                "initialized_by_source_commit":self.input.base_source_commit,
+                "migration_version":base_version
+            }))
+            .map_err(|_| "cannot retain base schema bootstrap evidence")?,
+            0o600,
+        )?;
         let isolation = self.ctl(&[
             "show",
             "--property=ProtectSystem",
@@ -760,6 +801,8 @@ impl GuardFixture {
     }
     fn exercise(&mut self, checks: &mut Vec<String>) -> Result<(), String> {
         self.init()?;
+        let base_version = migration_version(&self.db_identity("devcoordinator2_guard_source")?)?;
+        checks.push("fresh_source_schema_initialized_by_exact_normal_base".into());
         checks.push("normal_inputs_owned_socket_database_and_etc_unit_verified".into());
         self.write_decision("GUARD-BEFORE")?;
         self.seed_generations()?;
@@ -919,11 +962,39 @@ impl GuardFixture {
         if baseline.tables != restored.tables || baseline.sequences != restored.sequences {
             return Err("guard restore changed ordinary rows or identities".into());
         }
+        if migration_version(&self.db_identity("devcoordinator2_guard_candidate")?)? != base_version
+        {
+            return Err("candidate source was migrated before its normal daemon startup".into());
+        }
         self.check_generations("devcoordinator2_guard_candidate")?;
         self.resume(
             devcoordinator2_control::SOURCE_COMMIT,
             "devcoordinator2_guard_candidate",
         )?;
+        let candidate_version =
+            migration_version(&self.db_identity("devcoordinator2_guard_candidate")?)?;
+        let expected_version = devcoordinator2_control::persistence::schema::MIGRATIONS
+            .last()
+            .ok_or("candidate migration catalog is empty")?
+            .0;
+        if candidate_version != expected_version
+            || migration_version(&self.db_identity("devcoordinator2_guard_source")?)?
+                != base_version
+        {
+            return Err("normal candidate startup did not migrate only its own database".into());
+        }
+        write(
+            &self.artifacts.join("candidate-schema-upgrade.json"),
+            &serde_json::to_vec(&serde_json::json!({
+                "schema":1,"base_migration_version":base_version,
+                "candidate_migration_version":candidate_version,
+                "initialized_by_source_commit":devcoordinator2_control::SOURCE_COMMIT,
+                "original_source_migration_unchanged":true
+            }))
+            .map_err(|_| "cannot retain candidate schema upgrade evidence")?,
+            0o600,
+        )?;
+        checks.push("actual_candidate_migrates_restored_copy_after_base_initialization".into());
         checks.push("guard_spans_restore_then_resumes_exact_normal_candidate".into());
         self.write_decision("GUARD-CANDIDATE")?;
         self.freeze()?;
@@ -1565,7 +1636,7 @@ mod tests {
     }
 
     #[test]
-    fn database_identity_preserves_the_runtime_privilege_boundary() {
+    fn database_identity_preserves_runtime_privileges_and_base_bootstrap() {
         use devcoordinator2_control::persistence::{Error, fixture::FixtureCluster};
         let cluster = FixtureCluster::start().unwrap();
         let expected = "guard_identity";
@@ -1586,6 +1657,7 @@ mod tests {
             postgres.socket_dir.display()
         );
         let runtime = Persistence::connect(&config).unwrap();
+        require_uninitialized_source(&runtime).unwrap();
         let setting_denied = |runtime: &Persistence| {
             let error = runtime
                 .read::<String, Error, _>(|connection| {
@@ -1612,6 +1684,7 @@ mod tests {
             owner,
         };
         let verified = verify_database_identity(&config, &postgres, expected, &runner).unwrap();
+        require_uninitialized_source(&verified).unwrap();
         setting_denied(&verified);
         let attributes = admin
             .query_one(
@@ -1641,6 +1714,81 @@ mod tests {
             verify_database_identity(&false_config, &false_cluster, expected, &runner).is_err()
         );
         setting_denied(&runtime);
+
+        // The root fixture proves startup through the actual base daemon. A
+        // source-executor companion supplies its source-stamped offline sibling
+        // here to exercise that same migration entrypoint on an owned empty DB.
+        let mut base = None;
+        if let Some(binary) = std::env::var_os("DEVCOORDINATOR2_TEST_BASE_MIGRATOR") {
+            let binary = PathBuf::from(binary);
+            let expected_commit = "ac7f337edb74250438e6926700c4578218f350ec";
+            assert_eq!(
+                required(&runner, &binary, vec!["--source-commit".into()])
+                    .unwrap()
+                    .stdout
+                    .trim(),
+                expected_commit
+            );
+            let private = temporary.path().join("postgres.json");
+            install::atomic_file(
+                &private,
+                &serde_json::to_vec(&serde_json::json!({
+                    "schema":1,"connection":config.url,"data_directory":config.data_directory
+                }))
+                .unwrap(),
+                0o600,
+                Some(owner),
+            )
+            .unwrap();
+            let report = temporary.path().join("normal-base-migration.json");
+            required(
+                &runner,
+                &binary,
+                vec![
+                    "--mode=migrate".into(),
+                    "--database-config".into(),
+                    private.clone().into_os_string(),
+                    "--report".into(),
+                    report.into_os_string(),
+                ],
+            )
+            .unwrap();
+            assert_eq!(migration_version(&runtime).unwrap(), 14);
+            assert!(require_uninitialized_source(&runtime).is_err());
+            base = Some((binary, private));
+        }
+        runtime.migrate().unwrap();
+        assert_eq!(
+            migration_version(&runtime).unwrap(),
+            devcoordinator2_control::persistence::schema::MIGRATIONS
+                .last()
+                .unwrap()
+                .0
+        );
+        assert!(require_uninitialized_source(&runtime).is_err());
+        if let Some((binary, private)) = base {
+            let output = execute(
+                &runner,
+                &binary,
+                vec![
+                    "--mode=migrate".into(),
+                    "--database-config".into(),
+                    private.into_os_string(),
+                    "--report".into(),
+                    temporary
+                        .path()
+                        .join("too-new-refused.json")
+                        .into_os_string(),
+                ],
+            )
+            .unwrap();
+            assert!(!output.success);
+            assert!(
+                output
+                    .stderr
+                    .contains("target schema is newer than this executable")
+            );
+        }
     }
 
     #[test]
