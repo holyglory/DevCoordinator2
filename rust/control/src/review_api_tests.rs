@@ -737,6 +737,7 @@ fn review_prepare_against_candidate_usage_v2_app_server() {
 
 #[test]
 fn delayed_collector_finishes_once_after_bounded_cold_review_and_supplies_attributed_receipt() {
+    use crate::usage_api_fixture::ResponseGate;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::{Duration, Instant};
     let mut fixture = Fixture::new();
@@ -745,16 +746,16 @@ fn delayed_collector_finishes_once_after_bounded_cold_review_and_supplies_attrib
     let calls = Arc::new(AtomicUsize::new(0));
     let observed = calls.clone();
     let (entered_source, entered) = std::sync::mpsc::channel();
-    let (release_source, released) = std::sync::mpsc::channel();
+    let gate = ResponseGate::default();
+    let response_gate = gate.clone();
     let peer = Peer::start(root, &home, move |params| {
         observed.fetch_add(1, Ordering::SeqCst);
         entered_source.send(()).unwrap();
-        // Dropping the sender also releases this owned reply during failure cleanup.
-        let _ = released.recv();
+        response_gate.wait();
         response(params, START + WEEK, 135)
     });
-    // Release the reply before Peer joins its worker if an assertion unwinds.
-    let release = release_source;
+    // Release on assertion failure as well, before Peer joins its worker.
+    let release = gate.release_on_drop();
     let caller = caller();
     crate::usage_context::ingest(
         &fixture.database,
@@ -784,9 +785,11 @@ fn delayed_collector_finishes_once_after_bounded_cold_review_and_supplies_attrib
         .expect("the owned source request must enter its response gate");
     // A second request joins the same source read instead of poisoning the
     // source with a timeout or starting a duplicate request.
-    let _ = fixture.service.prepare(input(), START + WEEK).unwrap();
+    let pending = fixture.service.prepare(input(), START + WEEK).unwrap();
+    assert_eq!(pending.usage.coverage.available_collectors, 0);
+    assert!(pending.usage.coverage.snapshot.unwrap().refreshing);
     assert_eq!(calls.load(Ordering::SeqCst), 1);
-    release.send(()).unwrap();
+    release.release();
     assert!(
         fixture
             .service

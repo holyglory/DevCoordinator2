@@ -5,13 +5,48 @@ use devcoordinator2_api::review::ReviewUsage;
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::sync::{
-    Arc, Mutex,
+    Arc, Condvar, Mutex,
     atomic::{AtomicBool, Ordering},
 };
 use std::time::Duration;
 use tungstenite::Message;
 
 pub(crate) const KEY: &str = "repo_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+
+#[derive(Clone, Default)]
+pub(crate) struct ResponseGate(Arc<(Mutex<bool>, Condvar)>);
+
+impl ResponseGate {
+    pub(crate) fn wait(&self) {
+        let (state, changed) = &*self.0;
+        let (released, _) = changed
+            .wait_timeout_while(state.lock().unwrap(), Duration::from_secs(5), |released| {
+                !*released
+            })
+            .unwrap();
+        assert!(*released, "fixture response was not explicitly released");
+    }
+
+    pub(crate) fn release_on_drop(&self) -> ResponseRelease {
+        ResponseRelease(self.clone())
+    }
+}
+
+pub(crate) struct ResponseRelease(ResponseGate);
+
+impl ResponseRelease {
+    pub(crate) fn release(self) {
+        drop(self);
+    }
+}
+
+impl Drop for ResponseRelease {
+    fn drop(&mut self) {
+        let (state, changed) = &*self.0.0;
+        *state.lock().unwrap() = true;
+        changed.notify_all();
+    }
+}
 
 pub(crate) fn capability() -> Value {
     json!({"version":1,"supportedVersions":[1],"methods":["localUsage/summary","localUsage/repositoryIdentity"],"storage":"usage-v2","supportsWorkContextBindings":true,"supportsWorkstreamOutcomes":true,"snapshotRetentionMs":5000})
