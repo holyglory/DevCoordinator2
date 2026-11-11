@@ -1,6 +1,8 @@
 //! Bounded current-v3 guard proof; never full migration/activation acceptance.
 use super::*;
-use devcoordinator2_control::persistence::{DatabaseConfig, Persistence, backup};
+use devcoordinator2_control::persistence::{
+    DatabaseConfig, Error as DatabaseError, Persistence, backup,
+};
 use std::collections::BTreeMap;
 use std::sync::mpsc;
 
@@ -13,6 +15,56 @@ struct GuardFixture {
     files: BTreeMap<PathBuf, String>,
     helper: PathBuf,
     reverse_unit: String,
+}
+
+fn generation_error(action: &str, error: DatabaseError) -> String {
+    let DatabaseError::Postgres(error) = error else {
+        return action.into();
+    };
+    let Some(error) = error.as_db_error() else {
+        return action.into();
+    };
+    let constraint: String = error
+        .constraint()
+        .unwrap_or("none")
+        .chars()
+        .take(63)
+        .filter(|character| character.is_ascii_alphanumeric() || *character == '_')
+        .collect();
+    format!(
+        "{action} (SQLSTATE {}; constraint {constraint})",
+        error.code().code()
+    )
+}
+
+fn seed_generations(db: &Persistence, worktree: &Path) -> Result<(), String> {
+    let worktree = path_text(worktree)?;
+    db.maintenance_transaction::<_,DatabaseError,_>(|transaction| {
+        // DecisionRecord has already registered this exact worktree. Reuse its
+        // real binding rather than inserting its unique path a second time.
+        let (repository_id, worktree_id) = transaction.query_row(
+            "SELECT repository_id,worktree_id FROM worktrees WHERE worktree_path=$1",
+            [&worktree],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+        )?;
+        transaction.execute(
+            "INSERT INTO deployments(deployment_id,repository_id,worktree_id,name,source,spec_fingerprint,spec_json,state,current_generation,previous_generation,created_at,created_by_uid,client,updated_at) VALUES('guard-deployment',$1,$2,'guard','fixture','guard','{}','retired',7,6,'fixture',1000,'codex','fixture')",
+            (&repository_id, &worktree_id),
+        )?;
+        transaction.execute_batch("INSERT INTO generations(deployment_id,number,path,fingerprint,created_at,state) VALUES('guard-deployment',6,'fixture-6','six','fixture','retired'),('guard-deployment',7,'fixture-7','seven','fixture','retired')")
+    }).map_err(|error| generation_error("cannot seed owned deployment generations", error))?;
+    check_generations(db)
+}
+
+fn check_generations(db: &Persistence) -> Result<(), String> {
+    let value = db.read::<_,DatabaseError,_>(|c| {
+        c.query_row("SELECT current_generation,previous_generation,(SELECT count(*) FROM generations WHERE deployment_id='guard-deployment') FROM deployments WHERE deployment_id='guard-deployment'", [],
+            |r|Ok((r.get::<_,i64>(0)?,r.get::<_,i64>(1)?,r.get::<_,i64>(2)?)))
+    }).map_err(|error| generation_error("cannot read owned generation bindings", error))?;
+    if value != (7, 6, 2) {
+        return Err("owned deployment generations changed".into());
+    }
+    Ok(())
 }
 
 fn normal(path: &Path, commit: &str, runner: &dyn CommandRunner) -> Result<String, String> {
@@ -977,10 +1029,15 @@ impl GuardFixture {
             .last()
             .ok_or("candidate migration catalog is empty")?
             .0;
-        if candidate_version != expected_version
-            || migration_version(&self.db_identity("devcoordinator2_guard_source")?)?
-                != base_version
-        {
+        // The active configuration now selects the candidate. Observe the
+        // original source through its captured immutable binding instead.
+        let source_version = migration_version(&verify_database_identity(
+            &config,
+            &self.layout.postgres,
+            "devcoordinator2_guard_source",
+            self.runner.as_ref(),
+        )?)?;
+        if candidate_version != expected_version || source_version != base_version {
             return Err("normal candidate startup did not migrate only its own database".into());
         }
         write(
@@ -1286,24 +1343,12 @@ impl GuardFixture {
 
     fn seed_generations(&self) -> Result<(), String> {
         let db = self.db_identity("devcoordinator2_guard_source")?;
-        db.maintenance::<_,devcoordinator2_control::persistence::Error,_>(|c| {
-            c.execute_batch("BEGIN; INSERT INTO worktrees(worktree_id,repository_id,worktree_path,registered_at,last_seen_at) SELECT 'guard-worktree',repository_id,root_path,'fixture','fixture' FROM repositories LIMIT 1;
-                INSERT INTO deployments(deployment_id,repository_id,worktree_id,name,source,spec_fingerprint,spec_json,state,current_generation,previous_generation,created_at,created_by_uid,client,updated_at) SELECT 'guard-deployment',repository_id,'guard-worktree','guard','fixture','guard','{}','retired',7,6,'fixture',1000,'codex','fixture' FROM repositories LIMIT 1;
-                INSERT INTO generations(deployment_id,number,path,fingerprint,created_at,state) VALUES('guard-deployment',6,'fixture-6','six','fixture','retired'),('guard-deployment',7,'fixture-7','seven','fixture','retired'); COMMIT")
-        }).map_err(|_|"cannot seed owned deployment generations")?;
-        self.check_generations("devcoordinator2_guard_source")
+        seed_generations(&db, &self.input.work_root.join("repository"))
     }
 
     fn check_generations(&self, database: &str) -> Result<(), String> {
         let db = self.db_identity(database)?;
-        let value = db.read::<_,devcoordinator2_control::persistence::Error,_>(|c| {
-            c.query_row("SELECT current_generation,previous_generation,(SELECT count(*) FROM generations WHERE deployment_id='guard-deployment') FROM deployments WHERE deployment_id='guard-deployment'", [],
-                |r|Ok((r.get::<_,i64>(0)?,r.get::<_,i64>(1)?,r.get::<_,i64>(2)?)))
-        }).map_err(|_|"cannot read owned generation bindings")?;
-        if value != (7, 6, 2) {
-            return Err("owned deployment generations changed".into());
-        }
-        Ok(())
+        check_generations(&db)
     }
 
     fn held_restore(&self, config: &DatabaseConfig, archive: &Path) -> Result<(), String> {
@@ -1757,16 +1802,94 @@ mod tests {
             assert!(require_uninitialized_source(&runtime).is_err());
             base = Some((binary, private));
         }
-        runtime.migrate().unwrap();
+        if base.is_none() {
+            runtime.migrate().unwrap();
+        }
+        let repository = temporary.path().join("repository");
+        git(
+            &runner,
+            vec![
+                "init".into(),
+                "--quiet".into(),
+                repository.clone().into_os_string(),
+            ],
+        );
+        let registry = devcoordinator2_control::repository::Registry::new(
+            devcoordinator2_control::database::Database::connect_existing(&config).unwrap(),
+        );
+        let registered = registry.register(&repository, owner.0, owner.1).unwrap();
+        assert!(registered.registered);
+        let base_version = migration_version(&runtime).unwrap();
+        assert!(seed_generations(&runtime, &temporary.path().join("unregistered")).is_err());
+        seed_generations(&runtime, &repository).unwrap();
         assert_eq!(
-            migration_version(&runtime).unwrap(),
+            seed_generations(&runtime, &repository).unwrap_err(),
+            "cannot seed owned deployment generations (SQLSTATE 23505; constraint deployments_pkey)"
+        );
+        check_generations(&runtime).unwrap();
+        let binding = runtime
+            .read::<_, Error, _>(|connection| {
+                connection.query_row(
+                    "SELECT repository_id,worktree_id,(SELECT count(*) FROM worktrees) FROM deployments WHERE deployment_id='guard-deployment'",
+                    [],
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, i64>(2)?)),
+                )
+            })
+            .unwrap();
+        assert_eq!(
+            binding,
+            (registered.repository_id, registered.worktree_id, 1)
+        );
+
+        let archive = temporary.path().join("guard-generations.pgdump");
+        backup::dump(&config, &archive).unwrap();
+        let baseline = backup::verify_archive(&config, &archive).unwrap();
+        runtime.maintenance::<_, Error, _>(|connection| {
+            connection.execute_batch("CREATE DATABASE guard_candidate OWNER devcoordinator2 TEMPLATE template0 ENCODING 'UTF8' LC_COLLATE 'C' LC_CTYPE 'C'")
+        }).unwrap();
+        let restore_config = config.for_database("guard_candidate");
+        backup::restore(&restore_config, &archive).unwrap();
+        let restored = backup::verify_archive(&restore_config, &archive).unwrap();
+        assert_eq!(baseline.tables, restored.tables);
+        assert_eq!(baseline.sequences, restored.sequences);
+
+        let mut candidate_config = restore_config;
+        candidate_config.url = format!(
+            "host={} user=devcoordinator2 dbname=guard_candidate",
+            postgres.socket_dir.display()
+        );
+        assert!(verify_database_identity(&candidate_config, &postgres, expected, &runner).is_err());
+        let candidate =
+            verify_database_identity(&candidate_config, &postgres, "guard_candidate", &runner)
+                .unwrap();
+        assert_eq!(migration_version(&candidate).unwrap(), base_version);
+        check_generations(&candidate).unwrap();
+        candidate.migrate().unwrap();
+        assert_eq!(
+            migration_version(&candidate).unwrap(),
             devcoordinator2_control::persistence::schema::MIGRATIONS
                 .last()
                 .unwrap()
                 .0
         );
+        check_generations(&candidate).unwrap();
+        let source = verify_database_identity(&config, &postgres, expected, &runner).unwrap();
+        assert_eq!(migration_version(&source).unwrap(), base_version);
+        check_generations(&source).unwrap();
+        backup::verify_archive(&config, &archive).unwrap();
         assert!(require_uninitialized_source(&runtime).is_err());
-        if let Some((binary, private)) = base {
+        if let Some((binary, _source_private)) = base {
+            let private = temporary.path().join("candidate-postgres.json");
+            install::atomic_file(
+                &private,
+                &serde_json::to_vec(&serde_json::json!({
+                    "schema":1,"connection":candidate_config.url,"data_directory":candidate_config.data_directory
+                }))
+                .unwrap(),
+                0o600,
+                Some(owner),
+            )
+            .unwrap();
             let output = execute(
                 &runner,
                 &binary,
