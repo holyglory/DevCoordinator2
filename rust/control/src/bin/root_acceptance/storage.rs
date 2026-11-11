@@ -342,6 +342,9 @@ fn unavailable_engine_observations(world: &mut World, host: &str) -> Result<(), 
             "fixture storage jobs did not settle before outage"
         );
     }
+    let diagnostic_start = fs::metadata(world.base.join("daemon.log"))
+        .map_err(|error| error.to_string())?
+        .len() as usize;
     run_status(
         "systemctl",
         &[
@@ -365,6 +368,17 @@ fn unavailable_engine_observations(world: &mut World, host: &str) -> Result<(), 
     ensure!(
         blocked["deletable"] == false && blocked["verified_at_ms"].is_null(),
         "a failed observation left a previously safe network eligible"
+    );
+    let diagnostics = fs::read(world.base.join("daemon.log")).map_err(|error| error.to_string())?;
+    let diagnostics = String::from_utf8_lossy(
+        diagnostics
+            .get(diagnostic_start..)
+            .ok_or("fixture diagnostic log shrank")?,
+    );
+    ensure!(
+        diagnostics.contains("native Docker container snapshot failed")
+            && diagnostics.contains("command_failed"),
+        "failed Docker observation omitted its normalized failure category"
     );
     start_fixture_engine(world)?;
     let scan = world.call(
@@ -2442,6 +2456,47 @@ pub(super) fn worktrees_and_backup_floor(world: &mut World) -> Result<(), String
     Ok(())
 }
 
+fn require_ready_cleanup_plan(plan: &Value, step: &str) -> Result<(), String> {
+    let blockers = plan["items"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .flat_map(|item| item["blockers"].as_array().into_iter().flatten())
+        .filter_map(Value::as_str)
+        .filter(|code| {
+            !code.is_empty()
+                && code.len() <= 64
+                && code
+                    .bytes()
+                    .all(|byte| byte.is_ascii_lowercase() || byte == b'_')
+        })
+        .take(16)
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>()
+        .join(",");
+    ensure!(
+        plan["ready"] == true,
+        "cleanup prerequisite failed before {}: blockers=[{}]",
+        step,
+        blockers
+    );
+    Ok(())
+}
+
+#[test]
+fn cleanup_readiness_diagnostic_omits_non_code_content() {
+    let blocked = json!({"ready":false,"items":[{"name":"PRIVATE_NAME",
+        "blockers":["docker_observation_incomplete","PRIVATE_VALUE","private path/value"]}]});
+    assert_eq!(
+        require_ready_cleanup_plan(&blocked, "backup mutation").unwrap_err(),
+        "cleanup prerequisite failed before backup mutation: blockers=[docker_observation_incomplete]"
+    );
+    assert!(
+        require_ready_cleanup_plan(&json!({"ready":true,"items":[]}), "backup mutation").is_ok()
+    );
+}
+
 fn native_backup_retirement(world: &mut World, repo: &str) -> Result<(), String> {
     let cutover = world.state.join("cutover");
     fs::create_dir(&cutover).map_err(|e| e.to_string())?;
@@ -2630,10 +2685,7 @@ fn native_backup_retirement(world: &mut World, repo: &str) -> Result<(), String>
 
     let expect_blocked =
         |world: &World, plan: &Value, key: &str, code: &str| -> Result<(), String> {
-            ensure!(
-                plan["ready"] == true,
-                "replacement fixture did not bind its observed identity"
-            );
+            require_ready_cleanup_plan(plan, key)?;
             let job = mcp(
                 world,
                 "storage_cleanup_start",
@@ -2657,15 +2709,16 @@ fn native_backup_retirement(world: &mut World, repo: &str) -> Result<(), String>
 
     // Changing the root must not make the original child inode eligible.
     let displaced = world.state.join("cutover-displaced");
-    fs::rename(&cutover, &displaced).map_err(|e| e.to_string())?;
-    fs::create_dir(&cutover).map_err(|e| e.to_string())?;
-    fs::rename(displaced.join("native-old"), cutover.join("native-old"))
-        .map_err(|e| e.to_string())?;
     let replaced = mcp(
         world,
         "storage_cleanup_plan",
         json!({"artifact_ids":[old["artifact_id"]],"include_persistent_data":true}),
     )?;
+    require_ready_cleanup_plan(&replaced, "native-root-replaced")?;
+    fs::rename(&cutover, &displaced).map_err(|e| e.to_string())?;
+    fs::create_dir(&cutover).map_err(|e| e.to_string())?;
+    fs::rename(displaced.join("native-old"), cutover.join("native-old"))
+        .map_err(|e| e.to_string())?;
     expect_blocked(
         world,
         &replaced,
@@ -2694,13 +2747,14 @@ fn native_backup_retirement(world: &mut World, repo: &str) -> Result<(), String>
 
     let generation = cutover.join("native-old");
     let displaced_generation = cutover.join("native-old-displaced");
-    fs::rename(&generation, &displaced_generation).map_err(|e| e.to_string())?;
-    fs::create_dir(&generation).map_err(|e| e.to_string())?;
     let replaced = mcp(
         world,
         "storage_cleanup_plan",
         json!({"artifact_ids":[old["artifact_id"]],"include_persistent_data":true}),
     )?;
+    require_ready_cleanup_plan(&replaced, "native-generation-replaced")?;
+    fs::rename(&generation, &displaced_generation).map_err(|e| e.to_string())?;
+    fs::create_dir(&generation).map_err(|e| e.to_string())?;
     expect_blocked(
         world,
         &replaced,
@@ -2716,6 +2770,7 @@ fn native_backup_retirement(world: &mut World, repo: &str) -> Result<(), String>
         "storage_cleanup_plan",
         json!({"artifact_ids":[old["artifact_id"]],"include_persistent_data":true}),
     )?;
+    require_ready_cleanup_plan(&changed, "native-contents-changed")?;
     fs::write(generation.join(".env"), "PRIVATE_ADDED_AFTER_PLAN").map_err(|e| e.to_string())?;
     expect_blocked(
         world,
@@ -2735,6 +2790,7 @@ fn native_backup_retirement(world: &mut World, repo: &str) -> Result<(), String>
         "storage_cleanup_plan",
         json!({"artifact_ids":[old["artifact_id"]],"include_persistent_data":true}),
     )?;
+    require_ready_cleanup_plan(&changed, "native-backup-bytes-changed")?;
     let backup_path = generation.join("authority-before.sqlite3");
     let header_path = generation.join("installation-snapshot.json");
     let backup_bytes = fs::read(&backup_path).map_err(|e| e.to_string())?;
@@ -2770,6 +2826,7 @@ fn native_backup_retirement(world: &mut World, repo: &str) -> Result<(), String>
         "storage_cleanup_plan",
         json!({"artifact_ids":[old["artifact_id"]],"include_persistent_data":true}),
     )?;
+    require_ready_cleanup_plan(&floor, "native-retention-floor-changed")?;
     let retained = cutover.join("native-latest/authority-before.pgdump");
     let retained_bytes = fs::read(&retained).map_err(|e| e.to_string())?;
     fs::write(&retained, b"damaged after planning").map_err(|e| e.to_string())?;

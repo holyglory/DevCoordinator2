@@ -414,6 +414,7 @@ fn review_context_window_is_indexed_bounded_uid_scoped_and_conflicts_stay_unattr
 #[test]
 #[ignore = "requires an explicit candidate binary and isolated synthetic usage-v2 fixture"]
 fn review_prepare_against_candidate_usage_v2_app_server() {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
     use std::os::unix::process::CommandExt;
     use std::path::Path;
     use std::process::{Child, Command, Stdio};
@@ -463,6 +464,22 @@ fn review_prepare_against_candidate_usage_v2_app_server() {
     let captured = info["capturedAtMs"]
         .as_u64()
         .expect("fixture context timestamp");
+    let fixture_tokens = info["providerTokens"]
+        .as_u64()
+        .expect("fixture token total");
+    let additional_operations = info["additionalOperations"]
+        .as_array()
+        .expect("fixture operation rows");
+    let unattributed_tokens = additional_operations
+        .iter()
+        .map(|operation| {
+            operation["providerTokens"]
+                .as_u64()
+                .expect("operation tokens")
+        })
+        .sum::<u64>();
+    let unattributed_operations = additional_operations.len() as u64;
+    assert_eq!(fixture_tokens, 120 + unattributed_tokens);
     let repository = std::env::var("CODEX_USAGE_V2_FIXTURE_REPOSITORY")
         .ok()
         .or_else(|| info["repositoryPath"].as_str().map(str::to_owned))
@@ -481,7 +498,13 @@ fn review_prepare_against_candidate_usage_v2_app_server() {
         tx.execute_batch("INSERT INTO tasks(task_id,repository_id,seq,position,title,outcome,kind,status,created_at,created_by,updated_at) VALUES('fixture-outcome','project-alpha',2,2,'Review scoped usage','Prove explicit operation attribution','improvement','in_progress','1970-01-01T00:00:00Z','fixture','1970-01-01T00:00:00Z')")?;
         Ok(())
     }).unwrap();
-    let socket = fixture._temporary.path().join("candidate.sock");
+    let socket_directory = fixture._temporary.path().join("private-socket");
+    std::fs::create_dir(&socket_directory).unwrap();
+    std::fs::set_permissions(&socket_directory, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let socket_metadata = std::fs::metadata(&socket_directory).unwrap();
+    assert_eq!(socket_metadata.uid(), rustix::process::geteuid().as_raw());
+    assert_eq!(socket_metadata.permissions().mode() & 0o777, 0o700);
+    let socket = socket_directory.join("candidate.sock");
     let child = Command::new(binary)
         .arg("--listen")
         .arg(format!("unix://{}", socket.display()))
@@ -505,12 +528,24 @@ fn review_prepare_against_candidate_usage_v2_app_server() {
         );
         std::thread::sleep(Duration::from_millis(10));
     }
-    fixture.config.codex_usage_sources = vec![crate::config::CodexUsageSource {
-        uid: rustix::process::getuid().as_raw(),
-        codex_home: home,
-        api_socket: Some(socket),
-        executable: "/must-not-execute-retired-cli".into(),
-    }];
+    let legacy = fixture
+        ._temporary
+        .path()
+        .join("retired-source-must-not-open");
+    fixture.config.codex_usage_sources = vec![
+        crate::config::CodexUsageSource {
+            uid: rustix::process::getuid().as_raw(),
+            codex_home: home,
+            api_socket: Some(socket),
+            executable: "/must-not-execute-retired-cli".into(),
+        },
+        crate::config::CodexUsageSource {
+            uid: rustix::process::getuid().as_raw() + 1,
+            codex_home: legacy.clone(),
+            api_socket: None,
+            executable: "/must-not-execute-retired-cli".into(),
+        },
+    ];
     let clock = Arc::new(crate::platform::FixedClock(
         time::OffsetDateTime::from_unix_timestamp_nanos(i128::from(captured) * 1_000_000).unwrap(),
     ));
@@ -603,6 +638,16 @@ fn review_prepare_against_candidate_usage_v2_app_server() {
         "{:?}",
         prepared.usage.coverage.unavailable_reasons
     );
+    assert_eq!(prepared.usage.coverage.configured_collectors, 2);
+    assert_eq!(
+        prepared
+            .usage
+            .coverage
+            .unavailable_reasons
+            .get("legacy_source_unsupported"),
+        Some(&1)
+    );
+    assert!(!legacy.exists());
     assert!(
         prepared
             .usage
@@ -619,6 +664,40 @@ fn review_prepare_against_candidate_usage_v2_app_server() {
             .iter()
             .any(|row| row.outcome_id == "fixture-outcome"
                 && row.effort.provider_total_tokens.measured == 120)
+    );
+    // This request captures only fixture-model. The retained bound-summary
+    // also bound fixture-other to other-stream and excluded its 40 tokens;
+    // here all four additional operations must remain unattributed.
+    assert_eq!(
+        prepared
+            .usage
+            .outcomes
+            .totals
+            .provider_total_tokens
+            .measured,
+        fixture_tokens
+    );
+    assert_eq!(
+        prepared
+            .usage
+            .outcomes
+            .attributed
+            .provider_total_tokens
+            .measured,
+        120
+    );
+    assert_eq!(
+        prepared
+            .usage
+            .outcomes
+            .unattributed
+            .provider_total_tokens
+            .measured,
+        unattributed_tokens
+    );
+    assert_eq!(
+        prepared.usage.outcomes.unattributed.operations,
+        unattributed_operations
     );
     assert!(
         prepared
@@ -666,10 +745,12 @@ fn delayed_collector_finishes_once_after_bounded_cold_review_and_supplies_attrib
     let home = root.join("slow-source");
     let calls = Arc::new(AtomicUsize::new(0));
     let observed = calls.clone();
+    let (entered_source, entered) = std::sync::mpsc::channel();
     let gate = ResponseGate::default();
     let response_gate = gate.clone();
     let peer = Peer::start(root, &home, move |params| {
         observed.fetch_add(1, Ordering::SeqCst);
+        entered_source.send(()).unwrap();
         response_gate.wait();
         response(params, START + WEEK, 135)
     });
@@ -699,6 +780,9 @@ fn delayed_collector_finishes_once_after_bounded_cold_review_and_supplies_attrib
     let snapshot = cold.usage.coverage.snapshot.unwrap();
     assert!(snapshot.refreshing);
     assert!(!snapshot.refresh_failed);
+    entered
+        .recv_timeout(Duration::from_secs(5))
+        .expect("the owned source request must enter its response gate");
     // A second request joins the same source read instead of poisoning the
     // source with a timeout or starting a duplicate request.
     let pending = fixture.service.prepare(input(), START + WEEK).unwrap();

@@ -403,13 +403,15 @@ impl CollectorApi {
                     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                         fetch(
                             &source,
-                            repository.as_deref(),
-                            worktree_keys.as_deref(),
-                            include_unassigned,
-                            workstream.as_deref(),
-                            &bindings,
-                            start,
-                            end,
+                            SummaryQuery {
+                                repository: repository.as_deref(),
+                                worktree_keys: worktree_keys.as_deref(),
+                                include_unassigned,
+                                workstream: workstream.as_deref(),
+                                bindings: &bindings,
+                                start,
+                                end,
+                            },
                             Instant::now() + SOURCE_READ_BUDGET,
                         )
                     }))
@@ -530,17 +532,30 @@ impl CollectorApi {
     }
 }
 
-fn fetch(
-    source: &CodexUsageSource,
-    repository: Option<&str>,
-    worktree_keys: Option<&[String]>,
+struct SummaryQuery<'a> {
+    repository: Option<&'a str>,
+    worktree_keys: Option<&'a [String]>,
     include_unassigned: bool,
-    workstream: Option<&str>,
-    bindings: &[crate::usage_context::Binding],
+    workstream: Option<&'a str>,
+    bindings: &'a [crate::usage_context::Binding],
     start: u64,
     end: u64,
+}
+
+fn fetch(
+    source: &CodexUsageSource,
+    query: SummaryQuery<'_>,
     deadline: Instant,
 ) -> Result<(Summary, usize), String> {
+    let SummaryQuery {
+        repository,
+        worktree_keys,
+        include_unassigned,
+        workstream,
+        bindings,
+        start,
+        end,
+    } = query;
     let mut socket = connect(source, deadline)?;
     let value = exchange(
         &mut socket,

@@ -162,10 +162,9 @@ fn review_result_single_record_compares_real_windows_and_keeps_intentional_repea
             shown.comparisons[0].metrics[0].reduction_percent,
             Some(40.0)
         );
-        assert_eq!(
-            shown.comparisons[0].verified_improvement,
-            false // The API leaves wall/active timing unknown; a token reduction alone is not verified improvement.
-        );
+        // The API leaves wall/active timing unknown; a token reduction alone
+        // is not verified improvement.
+        assert!(!shown.comparisons[0].verified_improvement);
         assert!(
             shown
                 .evidence

@@ -483,12 +483,28 @@ impl World {
     }
 
     fn wait_status(&self, terminal: &[&str], timeout: Duration) -> Result<Value, String> {
-        self.wait_status_for(&self.repo, terminal, timeout)
+        self.wait_status_for(&self.repo, None, terminal, timeout)
+    }
+
+    fn start_fresh(&self, params: Value, previous_run_id: Option<&str>) -> Result<Value, String> {
+        wait_for_fresh_test_start(previous_run_id, Duration::from_secs(10), || {
+            data(&self.call("test.start", params.clone())?).cloned()
+        })
+    }
+
+    fn wait_run_status(
+        &self,
+        started: &Value,
+        terminal: &[&str],
+        timeout: Duration,
+    ) -> Result<Value, String> {
+        self.wait_status_for(&self.repo, Some(test_run_id(started)?), terminal, timeout)
     }
 
     fn wait_status_for(
         &self,
         path: &Path,
+        run_id: Option<&str>,
         terminal: &[&str],
         timeout: Duration,
     ) -> Result<Value, String> {
@@ -496,6 +512,9 @@ impl World {
         loop {
             let response = self.call("test.status", json!({"path": path}))?;
             let last = data(&response)?.clone();
+            if let Some(run_id) = run_id {
+                ensure_test_run(&last, run_id)?;
+            }
             if last
                 .get("status")
                 .and_then(Value::as_str)
@@ -1066,6 +1085,58 @@ fn wait_for_value(
         }
         thread::sleep(Duration::from_millis(100));
     }
+}
+
+fn test_run_id(value: &Value) -> Result<&str, String> {
+    value["run_id"]
+        .as_str()
+        .filter(|run_id| !run_id.is_empty())
+        .ok_or_else(|| "test response omitted run_id".to_owned())
+}
+
+fn ensure_test_run(value: &Value, expected: &str) -> Result<(), String> {
+    let actual = test_run_id(value)?;
+    ensure!(
+        actual == expected,
+        format!("test status belongs to {actual}, expected admitted run {expected}")
+    );
+    Ok(())
+}
+
+fn wait_for_fresh_test_start(
+    previous_run_id: Option<&str>,
+    timeout: Duration,
+    mut start: impl FnMut() -> Result<Value, String>,
+) -> Result<Value, String> {
+    wait_for_value("a distinct admitted test run", timeout, || {
+        let started = start()?;
+        let run_id = test_run_id(&started)?;
+        ensure!(
+            started["status"] == "running",
+            "test start did not report running"
+        );
+        ensure!(
+            started["superseded_run_id"].is_null(),
+            "fresh test start unexpectedly superseded a run"
+        );
+        let attached = started["attached"]
+            .as_bool()
+            .ok_or("test start omitted attached state")?;
+        if attached {
+            ensure!(
+                previous_run_id == Some(run_id),
+                format!("fresh test start attached to unexpected run {run_id}")
+            );
+            // Terminal evidence is published before the supervisor retires
+            // its handle. Attaching here does not admit another execution.
+            return Ok(None);
+        }
+        ensure!(
+            previous_run_id != Some(run_id),
+            "fresh test start reused the previous run identity"
+        );
+        Ok(Some(started))
+    })
 }
 
 fn run_status(program: &str, arguments: &[&str]) -> Result<(), String> {
@@ -2125,20 +2196,22 @@ cases=[{{id="first",args=[],postgres="seed"}},{{id="second",args=[],postgres="se
     world.git(&["commit", "-qm", "isolated database template fixture"])?;
     let mut instance = None;
     let mut last_fingerprint = String::new();
+    let mut previous_run_id = None;
     for (index, selection) in [vec!["first"], vec!["first", "second"]]
         .into_iter()
         .enumerate()
     {
-        let started = world.call(
-            "test.start",
+        let started = world.start_fresh(
             json!({"path":world.repo,"test":"database","cases":{"database-cases":selection}}),
+            previous_run_id.as_deref(),
         )?;
-        let run = data(&started)?["run_id"]
-            .as_str()
-            .ok_or("missing database run")?
-            .to_owned();
-        let status =
-            world.wait_status(&["passed", "failed", "timed-out"], Duration::from_secs(90))?;
+        let run = test_run_id(&started)?.to_owned();
+        let status = world.wait_run_status(
+            &started,
+            &["passed", "failed", "timed-out"],
+            Duration::from_secs(90),
+        )?;
+        previous_run_id = Some(run.clone());
         ensure!(
             status["status"] == "passed",
             format!("selected database run failed; run={run}")
@@ -2211,11 +2284,11 @@ cases=[{{id="first",args=[],postgres="seed"}},{{id="second",args=[],postgres="se
             "private database environment leaked into run status"
         );
     }
-    data(&world.call(
-        "test.start",
+    let started = world.start_fresh(
         json!({"path":world.repo,"test":"database","cases":{"database-cases":["first","unused"]}}),
-    )?)?;
-    let failed = world.wait_status(&["passed", "failed"], Duration::from_secs(90))?;
+        previous_run_id.as_deref(),
+    )?;
+    let failed = world.wait_run_status(&started, &["passed", "failed"], Duration::from_secs(90))?;
     ensure!(
         failed["status"] == "failed",
         "missing template input was accepted"
@@ -2258,11 +2331,12 @@ cases=[{{id="first",args=[],postgres="seed"}},{{id="second",args=[],postgres="se
             ),
         ],
     )?;
-    data(&world.call(
-        "test.start",
+    let started = world.start_fresh(
         json!({"path":world.repo,"test":"database","cases":{"database-cases":["first"]}}),
-    )?)?;
-    let restored = world.wait_status(&["passed", "failed"], Duration::from_secs(90))?;
+        Some(test_run_id(&failed)?),
+    )?;
+    let restored =
+        world.wait_run_status(&started, &["passed", "failed"], Duration::from_secs(90))?;
     ensure!(
         restored["status"] == "passed",
         "corrupt template was not recreated successfully"
@@ -2378,12 +2452,13 @@ fn case_database_template_failure_cancellation_and_restart(
     world.git(&["add", "."])?;
     world.git(&["commit", "-qm", "database recovery fixture"])?;
     let mut prior = None;
+    let mut previous_run_id = None;
     for fault in ["cleanup", "cancel", "restart"] {
-        let started = world.call("test.start", json!({"path":world.repo,"test":"database"}))?;
-        let run = data(&started)?["run_id"]
-            .as_str()
-            .ok_or("missing recovery run")?
-            .to_owned();
+        let started = world.start_fresh(
+            json!({"path":world.repo,"test":"database"}),
+            previous_run_id.as_deref(),
+        )?;
+        let run = test_run_id(&started)?.to_owned();
         let mut socket = await_database_case(&listener)?;
         let containers = template_containers(world)?;
         ensure!(
@@ -2402,7 +2477,11 @@ fn case_database_template_failure_cancellation_and_restart(
                 // This exact disposable instance is removed after the case writes and before cleanup.
                 run_status("docker", &["rm", "-f", &containers[0]])?;
                 socket.write_all(b"1").map_err(|e| e.to_string())?;
-                let failed = world.wait_status(&["passed", "failed"], Duration::from_secs(30))?;
+                let failed = world.wait_run_status(
+                    &started,
+                    &["passed", "failed"],
+                    Duration::from_secs(30),
+                )?;
                 let phases = &failed["checks"][0]["cases"][0]["phases"];
                 ensure!(
                     failed["status"] == "failed"
@@ -2413,7 +2492,8 @@ fn case_database_template_failure_cancellation_and_restart(
             }
             "cancel" => {
                 data(&world.call("test.stop", json!({"path":world.repo}))?)?;
-                let cancelled = world.wait_status(&["cancelled"], Duration::from_secs(30))?;
+                let cancelled =
+                    world.wait_run_status(&started, &["cancelled"], Duration::from_secs(30))?;
                 ensure!(
                     cancelled["checks"][0]["cases"][0]["phases"][2]["status"] == "passed",
                     "cancellation did not finish native cleanup"
@@ -2434,7 +2514,8 @@ fn case_database_template_failure_cancellation_and_restart(
             "restart" => {
                 world.stop_daemon(true)?;
                 world.start_daemon(None, None, None)?;
-                let recovered = world.wait_status(&["interrupted"], Duration::from_secs(30))?;
+                let recovered =
+                    world.wait_run_status(&started, &["interrupted"], Duration::from_secs(30))?;
                 ensure!(
                     recovered["run_id"] == run,
                     "restart recovered the wrong run"
@@ -2450,13 +2531,18 @@ fn case_database_template_failure_cancellation_and_restart(
             }
             _ => unreachable!(),
         }
+        previous_run_id = Some(run);
         drop(socket);
     }
-    data(&world.call("test.start", json!({"path":world.repo,"test":"database"}))?)?;
+    let started = world.start_fresh(
+        json!({"path":world.repo,"test":"database"}),
+        previous_run_id.as_deref(),
+    )?;
     await_database_case(&listener)?
         .write_all(b"1")
         .map_err(|e| e.to_string())?;
-    let healthy = world.wait_status(&["passed", "failed"], Duration::from_secs(30))?;
+    let healthy =
+        world.wait_run_status(&started, &["passed", "failed"], Duration::from_secs(30))?;
     ensure!(
         healthy["status"] == "passed",
         "fresh run failed after restart recovery"
@@ -2484,12 +2570,12 @@ fn case_database_template_concurrent_worktrees_and_input_drift(
         "HEAD",
     ])?;
     let cold = Instant::now();
-    data(&world.call("test.start", json!({"path":world.repo,"test":"database"}))?)?;
+    let first_run = world.start_fresh(json!({"path":world.repo,"test":"database"}), None)?;
     let first = await_database_case(&listener)?;
     let cold_ms = cold.elapsed().as_millis();
     let before = template_containers(world)?;
     let warm = Instant::now();
-    data(&world.call("test.start", json!({"path":other,"test":"database"}))?)?;
+    let second_run = world.start_fresh(json!({"path":other,"test":"database"}), None)?;
     let mut second = await_database_case(&listener)?;
     let warm_ms = warm.elapsed().as_millis();
     ensure!(
@@ -2511,7 +2597,7 @@ fn case_database_template_concurrent_worktrees_and_input_drift(
         "concurrent runs did not own separate writable databases"
     );
     data(&world.call("test.stop", json!({"path":world.repo}))?)?;
-    world.wait_status(&["cancelled"], Duration::from_secs(30))?;
+    world.wait_run_status(&first_run, &["cancelled"], Duration::from_secs(30))?;
     ensure!(
         data(&world.call("test.status", json!({"path":other}))?)?["status"] == "running",
         "stopping one worktree stopped its independent sibling"
@@ -2523,7 +2609,12 @@ fn case_database_template_concurrent_worktrees_and_input_drift(
     drop(first);
     second.write_all(b"1").map_err(|e| e.to_string())?;
     ensure!(
-        world.wait_status_for(&other, &["passed", "failed"], Duration::from_secs(30))?["status"]
+        world.wait_status_for(
+            &other,
+            Some(test_run_id(&second_run)?),
+            &["passed", "failed"],
+            Duration::from_secs(30)
+        )?["status"]
             == "passed",
         "independent sibling could not finish"
     );
@@ -2535,7 +2626,10 @@ fn case_database_template_concurrent_worktrees_and_input_drift(
         "seed.sql",
         format!("{SEED}-- changed initialization input\n"),
     )?;
-    data(&world.call("test.start", json!({"path":world.repo,"test":"database"}))?)?;
+    let changed_run = world.start_fresh(
+        json!({"path":world.repo,"test":"database"}),
+        Some(test_run_id(&first_run)?),
+    )?;
     let mut changed = await_database_case(&listener)?;
     ensure!(
         template_containers(world)?.len() == 2,
@@ -2543,7 +2637,8 @@ fn case_database_template_concurrent_worktrees_and_input_drift(
     );
     changed.write_all(b"1").map_err(|e| e.to_string())?;
     ensure!(
-        world.wait_status(&["passed", "failed"], Duration::from_secs(30))?["status"] == "passed",
+        world.wait_run_status(&changed_run, &["passed", "failed"], Duration::from_secs(30))?["status"]
+            == "passed",
         "changed template did not execute successfully"
     );
     world
@@ -2645,7 +2740,8 @@ command=["/usr/bin/true"]
     let mut beta = await_database_case(&listeners["beta"])?;
     beta.write_all(b"1").map_err(|e| e.to_string())?;
     gamma.write_all(b"1").map_err(|e| e.to_string())?;
-    let complete = world.wait_status_for(&other, &["passed", "failed"], Duration::from_secs(30))?;
+    let complete =
+        world.wait_status_for(&other, None, &["passed", "failed"], Duration::from_secs(30))?;
     ensure!(
         complete["status"] == "passed"
             && complete["checks"]
@@ -2939,6 +3035,8 @@ command=["/usr/bin/true"]
     ))?;
     world.git(&["add", "."])?;
     world.git(&["commit", "-qm", "cross-focused-run artifact reuse fixture"])?;
+    let mut previous_run_id = None;
+    let mut run_ids = BTreeSet::new();
     for (index, targets, expected_count) in [
         (0, vec!["build", "other"], 1),
         (1, vec!["build"], 1),
@@ -2951,8 +3049,17 @@ command=["/usr/bin/true"]
             )?;
         }
         let start = Instant::now();
-        data(&world.call("test.start", json!({"path":world.repo,"targets":targets,"checks":["build/consumer"],"tier":"development"}))?)?;
-        let status = world.wait_status(&["passed", "failed"], Duration::from_secs(30))?;
+        let started = world.start_fresh(
+            json!({"path":world.repo,"targets":targets,"checks":["build/consumer"],"tier":"development"}),
+            previous_run_id.as_deref(),
+        )?;
+        ensure!(
+            run_ids.insert(test_run_id(&started)?.to_owned()),
+            "focused build attempts reused a run identity"
+        );
+        let status =
+            world.wait_run_status(&started, &["passed", "failed"], Duration::from_secs(30))?;
+        previous_run_id = Some(test_run_id(&started)?.to_owned());
         ensure!(
             status["status"] == "passed",
             "focused build/consumer run failed"
@@ -3039,11 +3146,12 @@ command={independent}
     ))?;
     world.git(&["add", "."])?;
     world.git(&["commit", "-qm", "shared database setup failure fixture"])?;
-    data(&world.call(
-        "test.start",
+    let started = world.start_fresh(
         json!({"path":world.repo,"targets":["broken","independent"]}),
-    )?)?;
-    let status = world.wait_status(&["passed", "failed"], Duration::from_secs(120))?;
+        None,
+    )?;
+    let status =
+        world.wait_run_status(&started, &["passed", "failed"], Duration::from_secs(120))?;
     ensure!(
         status["status"] == "failed",
         "failed database setup was reported green"
@@ -3090,11 +3198,16 @@ command={independent}
         .and_then(|check| check["name"].as_str())
         .ok_or("cleanup identity missing")?
         .to_owned();
-    data(&world.call(
+    let started = data(&world.call(
         "test.retry",
         json!({"path":world.repo,"run_id":status["run_id"],"check":setup}),
-    )?)?;
-    let retry = world.wait_status(&["passed", "failed"], Duration::from_secs(120))?;
+    )?)?
+    .clone();
+    ensure!(
+        test_run_id(&started)? != test_run_id(&status)?,
+        "setup retry reused the originating run identity"
+    );
+    let retry = world.wait_run_status(&started, &["passed", "failed"], Duration::from_secs(120))?;
     ensure!(
         retry["status"] == "failed"
             && retry["proof"] == "retry"
@@ -3107,12 +3220,15 @@ command={independent}
         .map_err(|e| e.to_string())?
         .replace("pg_invalid_owner", "app");
     world.write_config(&corrected)?;
+    let mut previous_run_id = test_run_id(&retry)?.to_owned();
     for phase in [setup, cleanup] {
-        data(&world.call(
-            "test.start",
+        let started = world.start_fresh(
             json!({"path":world.repo,"targets":["broken","independent"],"checks":[phase]}),
-        )?)?;
-        let focused = world.wait_status(&["passed", "failed"], Duration::from_secs(120))?;
+            Some(&previous_run_id),
+        )?;
+        let focused =
+            world.wait_run_status(&started, &["passed", "failed"], Duration::from_secs(120))?;
+        previous_run_id = test_run_id(&started)?.to_owned();
         ensure!(
             focused["status"] == "passed"
                 && focused["readiness_eligible"] == false
@@ -3148,22 +3264,29 @@ fn case_console_test_requests_use_registered_source_without_edge_git_access(
     fs::copy(&world.harness.executable, &helper).map_err(|e| e.to_string())?;
     fs::set_permissions(&helper, fs::Permissions::from_mode(0o755)).map_err(|e| e.to_string())?;
     world.start_daemon(Some(edge_uid), Some("owner@example.test"), None)?;
+    let mut previous_run_id = None;
     for identity in [Some("owner@example.test"), None] {
-        let started = call_as(
-            &helper,
-            edge_uid,
-            edge_uid,
-            &world.socket,
-            request("test.start", json!({"path":world.repo}), "edge", identity),
-        )?;
-        ensure!(
-            started["ok"] == true,
-            format!(
-                "authorized Console test could not start: {}",
-                bounded_json(&started)
-            )
-        );
-        let finished = world.wait_status(&["passed", "failed"], Duration::from_secs(30))?;
+        let started =
+            wait_for_fresh_test_start(previous_run_id.as_deref(), Duration::from_secs(10), || {
+                let response = call_as(
+                    &helper,
+                    edge_uid,
+                    edge_uid,
+                    &world.socket,
+                    request("test.start", json!({"path":world.repo}), "edge", identity),
+                )?;
+                ensure!(
+                    response["ok"] == true,
+                    format!(
+                        "authorized Console test could not start: {}",
+                        bounded_json(&response)
+                    )
+                );
+                data(&response).cloned()
+            })?;
+        let finished =
+            world.wait_run_status(&started, &["passed", "failed"], Duration::from_secs(30))?;
+        previous_run_id = Some(test_run_id(&started)?.to_owned());
         ensure!(
             finished["status"] == "passed",
             "Console-requested check did not execute"
@@ -3237,16 +3360,18 @@ fn case_console_test_requests_use_registered_source_without_edge_git_access(
         ),
         None,
     )?)?;
-    let started = call_as(
-        &helper,
-        edge_uid,
-        edge_uid,
-        &world.socket,
-        request("test.start", json!({"path":world.repo}), "edge", None),
-    )?;
-    let run = data(&started)?["run_id"]
-        .as_str()
-        .ok_or("Console run identity missing")?;
+    let started =
+        wait_for_fresh_test_start(previous_run_id.as_deref(), Duration::from_secs(10), || {
+            data(&call_as(
+                &helper,
+                edge_uid,
+                edge_uid,
+                &world.socket,
+                request("test.start", json!({"path":world.repo}), "edge", None),
+            )?)
+            .cloned()
+        })?;
+    let run = test_run_id(&started)?;
     let ready = await_database_case(&listener)?;
     let catalog = call_as(
         &helper,
@@ -3274,7 +3399,7 @@ fn case_console_test_requests_use_registered_source_without_edge_git_access(
         request("test.stop", json!({"path":world.repo}), "edge", None),
     )?)?;
     drop(ready);
-    let stopped = world.wait_status(&["cancelled"], Duration::from_secs(30))?;
+    let stopped = world.wait_run_status(&started, &["cancelled"], Duration::from_secs(30))?;
     ensure!(
         stopped["caller_uid"] == edge_uid && stopped["execution_uid"] == world.harness.caller_uid,
         "cancellation lost original requester attribution"
@@ -3951,17 +4076,22 @@ fn case_selection_and_failed_check_retry_remain_non_readiness_proof(
         &[],
     )?);
     world.write_config(&config)?;
-    data(&world.call("test.start", json!({"path": world.repo, "mode":"replace"}))?)?;
-    let failed = world.wait_status(&["failed"], Duration::from_secs(120))?;
+    let started = world.start_fresh(json!({"path": world.repo, "mode":"replace"}), None)?;
+    let failed = world.wait_run_status(&started, &["failed"], Duration::from_secs(120))?;
     let origin = failed["run_id"]
         .as_str()
         .ok_or_else(|| "failed run omitted id".to_owned())?
         .to_owned();
-    data(&world.call(
+    let started = data(&world.call(
         "test.retry",
         json!({"path": world.repo, "run_id": origin, "check": "verify"}),
-    )?)?;
-    let retry = world.wait_status(&["failed"], Duration::from_secs(120))?;
+    )?)?
+    .clone();
+    ensure!(
+        test_run_id(&started)? != origin,
+        "check retry reused the originating run identity"
+    );
+    let retry = world.wait_run_status(&started, &["failed"], Duration::from_secs(120))?;
     ensure!(retry["proof"] == "retry", "retry proof drifted");
     ensure!(retry["origin_run_id"] == origin, "retry origin drifted");
     let states = retry["checks"]
@@ -3987,19 +4117,21 @@ fn case_selection_and_failed_check_retry_remain_non_readiness_proof(
                 .is_some_and(|message| message.to_ascii_lowercase().contains("stale")),
         "stale retry was not rejected"
     );
-    data(&world.call(
-        "test.start",
+    let started = world.start_fresh(
         json!({"path": world.repo, "checks": ["verify"]}),
-    )?)?;
-    let selected = world.wait_status(&["passed", "failed"], Duration::from_secs(120))?;
+        Some(test_run_id(&retry)?),
+    )?;
+    let selected =
+        world.wait_run_status(&started, &["passed", "failed"], Duration::from_secs(120))?;
     ensure!(selected["status"] == "passed", "selected run failed");
     ensure!(selected["proof"] == "selected", "selected proof drifted");
     ensure!(
         selected["selection"] == json!(["verify"]),
         "selection drifted"
     );
-    data(&world.call("test.start", json!({"path": world.repo, "mode":"replace"}))?)?;
-    let complete = world.wait_status(&["passed", "failed"], Duration::from_secs(120))?;
+    let started = world.start_fresh(json!({"path": world.repo}), Some(test_run_id(&selected)?))?;
+    let complete =
+        world.wait_run_status(&started, &["passed", "failed"], Duration::from_secs(120))?;
     ensure!(complete["status"] == "passed", "complete run failed");
     ensure!(complete["proof"] == "complete", "complete proof drifted");
     Ok(())
@@ -4146,8 +4278,9 @@ fn case_repository_installer_drain_waits_then_restarts_and_reconnects(
     let reopened = end_drain(&lease).map_err(|error| error.to_string());
     tested.and(reopened)?;
     world.write_config(&unit_config(&fixture_command(world, &["exit", "0"]), None)?)?;
-    data(&world.call("test.start", json!({"path": world.repo}))?)?;
-    let after = world.wait_status(&["passed", "failed"], Duration::from_secs(120))?;
+    let prior = data(&world.call("test.status", json!({"path": world.repo}))?)?.clone();
+    let started = world.start_fresh(json!({"path": world.repo}), Some(test_run_id(&prior)?))?;
+    let after = world.wait_run_status(&started, &["passed", "failed"], Duration::from_secs(120))?;
     ensure!(after["status"] == "passed", "post-drain start failed");
     Ok(())
 }
@@ -7660,6 +7793,53 @@ fn main() -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fresh_test_starts_wait_for_retirement_and_bind_the_accepted_identity() {
+        let retiring = json!({"run_id":"prior", "status":"running", "attached":true});
+        let fresh = json!({"run_id":"next", "status":"running", "attached":false});
+        let mut responses = [retiring, fresh.clone()].into_iter();
+        let started = wait_for_fresh_test_start(Some("prior"), Duration::from_secs(1), || {
+            responses
+                .next()
+                .ok_or_else(|| "unexpected extra start".into())
+        })
+        .unwrap();
+        assert_eq!(started, fresh);
+        assert!(responses.next().is_none());
+        assert!(ensure_test_run(&json!({"run_id":"next", "status":"passed"}), "next").is_ok());
+        assert!(ensure_test_run(&json!({"run_id":"prior", "status":"passed"}), "next").is_err());
+        assert!(ensure_test_run(&json!({"status":"passed"}), "next").is_err());
+
+        let initial =
+            wait_for_fresh_test_start(None, Duration::ZERO, || Ok(fresh.clone())).unwrap();
+        assert_eq!(initial, fresh);
+        for invalid in [
+            json!({"run_id":"other", "status":"running", "attached":true}),
+            json!({"run_id":"prior", "status":"running", "attached":false}),
+            json!({"run_id":"next", "status":"running", "attached":false, "superseded_run_id":"prior"}),
+            json!({"run_id":"next", "status":"passed", "attached":false}),
+            json!({"run_id":"next", "status":"running"}),
+            json!({"run_id":"", "status":"running", "attached":false}),
+        ] {
+            assert!(
+                wait_for_fresh_test_start(Some("prior"), Duration::ZERO, || Ok(invalid.clone()))
+                    .is_err(),
+                "accepted {invalid}"
+            );
+        }
+        assert!(
+            wait_for_fresh_test_start(None, Duration::ZERO, || {
+                Ok(json!({"run_id":"unexpected", "status":"running", "attached":true}))
+            })
+            .is_err()
+        );
+        let timeout = wait_for_fresh_test_start(Some("prior"), Duration::ZERO, || {
+            Ok(json!({"run_id":"prior", "status":"running", "attached":true}))
+        })
+        .unwrap_err();
+        assert!(timeout.contains("deadline"));
+    }
 
     #[test]
     fn fixture_ports_are_validated_before_runtime_work() {

@@ -25,7 +25,7 @@ import { verifyProgressCharts } from './verify-progress-charts.mjs';
 import { performanceFixture, verifyPerformance } from './verify-performance.mjs';
 import { verifyTranslatedConsole } from './verify-translated-console.mjs';
 import { verifyLocalization } from './verify-localization.mjs';
-import { verifyWorkspace } from './verify-workspace.mjs';
+import { currentDocumentRequest, documentEvidence, isolateScenario, relevantCalls, verifyWorkspace } from './verify-workspace.mjs';
 import { verifyAnnotations } from './verify-annotations.mjs';
 import { verifyEvidenceLayout } from './verify-evidence-layout.mjs';
 import { verifyAssetRefresh } from './verify-asset-refresh.mjs';
@@ -457,6 +457,9 @@ async function startFakeDaemon(dir) {
   const receivedWaiters = new Set();
   const delayedReplies = new Set();
   const headerReplies = new Set();
+  const connections = new Set(), idleWaiters = new Set();
+  let pendingHandlers = 0, draining = false;
+  const notifyIdle = () => { if (!connections.size && !pendingHandlers) for (const resolve of [...idleWaiters]) resolve(); };
   const mutable = { stopped: false, serviceStopped: false, taskUpdates: new Map(), createdTasks: [], previewRequested: false, failNextTaskUpdate: false, failNextLogCatalog: false, failNextLogRead: false, failNextLogPage: false, usageCollectionReads: 0, capacityCap: 80, logAge: 86400, logDepth: 3, evidenceImage: ONE_PIXEL_PNG, evidenceWidth: 1, evidenceHeight: 1, evidenceFeedback: [], feedbackSequence: 0 };
   const evidenceImage = (imageId, kind = 'viewport') => ({
     status: 'available', image_id: imageId, kind, mime: 'image/png',
@@ -517,10 +520,14 @@ async function startFakeDaemon(dir) {
     return result;
   };
   const server = net.createServer({ allowHalfOpen: true }, (socket) => {
+    connections.add(socket);
+    socket.on('close', () => { connections.delete(socket); notifyIdle(); });
     socket.on('error', (error) => { if (!['EPIPE', 'ECONNRESET'].includes(error.code)) throw error; });
     let buf = '';
     socket.on('data', async (c) => {
       buf += c; if (!buf.endsWith('\n')) return;
+      pendingHandlers++;
+      try {
       const req = JSON.parse(buf);
       const requestKeys = Object.keys(req).sort().join(',');
       if (req.protocol !== 3 || requestKeys !== 'client,id,operation,params,protocol'
@@ -570,7 +577,8 @@ async function startFakeDaemon(dir) {
         }
         socket.end(JSON.stringify({ protocol: 3, id: req.id, ...payload }) + '\n', markSettled);
       };
-      if (scenario.delayMs && (!scenario.delayOperations || scenario.delayOperations.includes(req.operation))) await new Promise((resolve) => delayedReplies.add(resolve));
+      if (!draining && scenario.delayMs && (!scenario.delayOperations || scenario.delayOperations.includes(req.operation))
+        && !scenario.delayExceptOperations?.includes(req.operation)) await new Promise((resolve) => delayedReplies.add(resolve));
       const cmd = req.operation;
       if ((scenario.cacheState || scenario.usageIndexing) && req.params.wait_for_refresh && !mutable.cacheReleased) await new Promise((resolve) => delayedReplies.add(resolve));
       if (cmd === 'user.whoami' && process.env.CONSOLE_VERIFY_RESET_PLAN_ON_SESSION === '1') {
@@ -879,17 +887,30 @@ async function startFakeDaemon(dir) {
       const data = fixtures({ ...scenario, stopped: mutable.stopped, serviceStopped: mutable.serviceStopped })[cmd];
       if (data === undefined) return reply({ ok: false, error: { code: 'operation_unknown', message: cmd, detail: '' } });
       return reply({ ok: true, data: data });
+      } finally { pendingHandlers--; notifyIdle(); }
     });
   });
   await new Promise((r) => server.listen(socketPath, r));
   return {
     socketPath,
     calls,
-    setScenario: (s) => { for (const release of headerReplies) release(); headerReplies.clear(); mutable.headersReleased = false; for (const release of delayedReplies) release(); delayedReplies.clear(); scenario = s; mutable.cacheReleased = false; mutable.testSweepMutated = false; mutable.stopped = false; mutable.serviceStopped = false; mutable.taskUpdates.clear(); mutable.createdTasks.length = 0; mutable.previewRequested = false; mutable.failNextTaskUpdate = false; mutable.failNextLogCatalog = !!s.logCatalogError; mutable.failNextLogRead = !!s.logReadError; mutable.failNextLogPage = !!s.logPageError; mutable.usageCollectionReads = 0; mutable.capacityCap = 80; mutable.logAge = 86400; mutable.logDepth = 3; mutable.evidenceFeedback.length = 0; mutable.feedbackSequence = 0; calls.length = 0; },
+    setScenario: (s) => { draining = false; for (const release of headerReplies) release(); headerReplies.clear(); mutable.headersReleased = false; for (const release of delayedReplies) release(); delayedReplies.clear(); scenario = s; mutable.cacheReleased = false; mutable.testSweepMutated = false; mutable.stopped = false; mutable.serviceStopped = false; mutable.taskUpdates.clear(); mutable.createdTasks.length = 0; mutable.previewRequested = false; mutable.failNextTaskUpdate = false; mutable.failNextLogCatalog = !!s.logCatalogError; mutable.failNextLogRead = !!s.logReadError; mutable.failNextLogPage = !!s.logPageError; mutable.usageCollectionReads = 0; mutable.capacityCap = 80; mutable.logAge = 86400; mutable.logDepth = 3; mutable.evidenceFeedback.length = 0; mutable.feedbackSequence = 0; calls.length = 0; },
     setEvidenceImage: (bytes, width, height) => { mutable.evidenceImage = Buffer.from(bytes); mutable.evidenceWidth = width; mutable.evidenceHeight = height; },
     failNextTaskUpdate: () => { mutable.failNextTaskUpdate = true; },
     mutateTestSweep: () => { mutable.testSweepMutated = true; },
     releaseDelayed: () => { mutable.cacheReleased = true; mutable.headersReleased = true; for (const release of headerReplies) release(); headerReplies.clear(); for (const release of delayedReplies) release(); delayedReplies.clear(); },
+    async drain() {
+      draining = true;
+      this.releaseDelayed();
+      if (!connections.size && !pendingHandlers) return;
+      await new Promise((resolve, reject) => {
+        const deadline = AbortSignal.timeout(30000);
+        const idle = () => { idleWaiters.delete(idle); deadline.removeEventListener('abort', expired); resolve(); };
+        const expired = () => { idleWaiters.delete(idle); reject(new Error(`Fixture isolation deadline reached: ${connections.size} connections, ${pendingHandlers} handlers`)); };
+        idleWaiters.add(idle);
+        deadline.addEventListener('abort', expired, { once: true });
+      });
+    },
     waitForReceivedAfter: (after) => {
       if (calls.length > after) return Promise.resolve(calls[after]);
       return new Promise((resolve,reject) => {
@@ -1211,34 +1232,30 @@ async function main() {
       page.on('dialog', (d) => d.accept());
       for (const view of VIEWS) {
         const label = `${scenarioName}-${view.replace(/[#/]+/g, '_').replace(/^_/, '')}-${vpName}`;
-        const delayedOperations=view==='#/tests'?['test.list']:view.startsWith('#/tests/')?['test.evidence.get','test.evidence.lookup']:null;
-        // Hold the Tests collection response after shell/repository admission.
+        const delayedOperations=view==='#/tests'?['test.list']:view.startsWith('#/tests/')?['test.evidence.get','test.evidence.lookup']:view.startsWith('#/decisions')?['decision.tail']:null;
+        // Hold collection/detail responses after shell/repository admission.
         // Holding an arbitrary earlier request measured a different loading state.
-        if (scenario.delayMs) daemon.setScenario(delayedOperations ? {...scenario,delayOperations:delayedOperations} : scenario);
+        if (scenario.delayMs) await isolateScenario(page, daemon, { ...scenario, delayExceptOperations: ['user.whoami'], ...(delayedOperations ? { delayOperations: delayedOperations } : {}) });
         const callsBeforeNavigation = daemon.calls.length;
         const scopedView = ['#/deployments', '#/tests'].includes(view) ? `${view}?repository=${REPO}` : ['#/plan', '#/progress', '#/usage', '#/decisions'].includes(view) ? `${view}/${REPO}` : view;
-        await page.goto(`http://${HOST}:${port}/${scopedView}`);
+        const targetUrl = `http://${HOST}:${port}/${scopedView}`;
+        const loadingRequest = scenario.delayMs ? page.waitForRequest(request => currentDocumentRequest(request, page, targetUrl, delayedOperations), { timeout: 30000 }) : null;
+        loadingRequest?.catch(() => {}); // Navigation failure must not leave an unobserved wait rejection.
+        let triggerRequest = null;
+        await page.goto(targetUrl);
         if (scenario.delayMs) {
-          if (delayedOperations) {
+          try {
+            const request = await loadingRequest;
+            triggerRequest = { operation: new URL(request.url()).pathname.split('/').at(-1), method: request.method(), currentDocument: request.frame() === page.mainFrame() && request.frame().url() === targetUrl };
             let cursor=callsBeforeNavigation;
-            while (!delayedOperations.includes((await daemon.waitForReceivedAfter(cursor++)).operation)) {}
-          } else {
-            const firstPending = await daemon.waitForReceivedAfter(callsBeforeNavigation);
-            if (firstPending.operation === 'user.whoami') {
-              daemon.releaseDelayed();
-              await daemon.waitForReceivedAfter(callsBeforeNavigation + 1);
-            }
+            while ((await daemon.waitForReceivedAfter(cursor++)).operation !== triggerRequest.operation) {}
+          } catch (error) {
+            throw new Error(`${label}: loading request was not admitted: ${JSON.stringify({ error: error.name, triggerRequest, document: await documentEvidence(page), calls: relevantCalls(daemon.calls.slice(callsBeforeNavigation)) })}`);
           }
           await waitForRenderFrame(page);
-          const loading = await page.evaluate(() => ({
-            visible: Boolean(document.querySelector('.skeleton')) || /Loading/.test(document.body.innerText),
-            hash: location.hash,
-            text: document.body.innerText.slice(0, 400),
-            html: document.querySelector('main')?.innerHTML.slice(0, 500),
-          }));
+          const loading = await page.evaluate(() => ({ visible: Boolean(document.querySelector('.skeleton')) || /Loading/.test(document.body.innerText) }));
           if (!loading.visible) {
-            loading.calls = daemon.calls.slice(callsBeforeNavigation).map((call) => call.operation);
-            throw new Error(`${label}: loading surface did not render: ${JSON.stringify(loading)}`);
+            throw new Error(`${label}: loading surface did not render: ${JSON.stringify({ ...loading, triggerRequest, document: await documentEvidence(page), calls: relevantCalls(daemon.calls.slice(callsBeforeNavigation)) })}`);
           }
         }
         else {
@@ -1314,7 +1331,9 @@ async function main() {
         check(`${label}: no horizontal document overflow`, metrics.overflow <= 0, `overflow ${metrics.overflow}px`);
         check(`${label}: no clipped headline text`, metrics.clipped.length === 0, metrics.clipped.join(' | '));
         check(`${label}: no off-canvas controls outside scroll containers`, metrics.offscreen === 0, `${metrics.offscreen} off-canvas`);
-        check(`${label}: destination remains reachable in context`, metrics.headingHref === metrics.expectedDestinationHref || view === '#/tests' && await page.locator('#workspace-aspects a[aria-current][href^="#/tests?repository="]').count() === 1, `${metrics.headingHref} != ${metrics.expectedDestinationHref}`);
+        const destinationReachable = metrics.headingHref === metrics.expectedDestinationHref || view === '#/tests' && await page.locator('#workspace-aspects a[aria-current][href^="#/tests?repository="]').count() === 1;
+        check(`${label}: destination remains reachable in context`, destinationReachable, destinationReachable ? `${metrics.headingHref} != ${metrics.expectedDestinationHref}`
+          : JSON.stringify({ headingHref: metrics.headingHref, expectedDestinationHref: metrics.expectedDestinationHref, triggerRequest, document: await documentEvidence(page), calls: relevantCalls(daemon.calls.slice(callsBeforeNavigation)) }));
         check(`${label}: global header stays on one row`, metrics.headerHeight <= 64 && metrics.headerCenterSpread <= 2, `height ${metrics.headerHeight}px, center spread ${metrics.headerCenterSpread}px`);
         check(`${label}: Console tools use one compact menu`, !metrics.navVisible && metrics.navToggleVisible);
         if (PROJECT_DETAIL_VIEWS.has(view) && ['populated', 'empty', 'applying'].includes(scenarioName)) {
@@ -1418,7 +1437,7 @@ async function main() {
         }
         if (scenario.delayMs) {
           await page.goto('about:blank');
-          daemon.releaseDelayed();
+          await daemon.drain();
         }
       }
       await context.close();

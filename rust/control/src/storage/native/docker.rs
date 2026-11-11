@@ -208,8 +208,21 @@ impl HostBackend {
         let output = self
             .docker
             .invoke(request)
-            .map_err(|_| unavailable("docker_unavailable"))?;
+            .map_err(|error| {
+                tracing::error!(failure_category = ?error.kind(), "native Docker observation invocation failed");
+                unavailable("docker_unavailable")
+            })?;
         if !output.success() || output.stdout_truncated {
+            let category = if output.stdout_truncated {
+                "stdout_truncated"
+            } else {
+                "command_failed"
+            };
+            tracing::error!(
+                failure_category = category,
+                exit_code = output.exit_code,
+                "native Docker observation output failed"
+            );
             return Err(unavailable("docker_observation_incomplete"));
         }
         Ok(output.stdout)

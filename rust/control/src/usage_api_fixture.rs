@@ -90,44 +90,43 @@ pub(crate) fn response(params: &Value, generated: u64, tokens: u64) -> Value {
     review.outcomes.unattributed = effort.clone();
     review.outcomes.attributed = OutcomeEffort::default();
     review.outcomes.unattributed_reasons = [("missing_work_context".into(), 2)].into();
-    if let Some(bindings) = params["workContextBindings"].as_array() {
-        if let Some(binding) = bindings.iter().find(|b| b["operationId"] == "governed-op") {
-            let context = &binding["workContext"];
-            if context["threadId"] == "fixture-thread"
-                && context["turnId"] == "fixture-turn"
-                && let Some(outcome) = context["outcomeId"].as_str()
-            {
-                let stream = context["workstreamId"].as_str();
-                if params["workstreamId"].is_null() || params["workstreamId"].as_str() == stream {
-                    let row_effort = OutcomeEffort {
-                        operations: 1,
-                        provider_total_tokens: OutcomeMeasurement {
-                            measured: tokens - 15,
-                            exact: Some(tokens - 15),
-                            unknown: 0,
-                        },
-                        ..Default::default()
-                    };
-                    review.outcomes.attributed = row_effort.clone();
-                    review.outcomes.unattributed = OutcomeEffort {
-                        operations: 1,
-                        provider_total_tokens: OutcomeMeasurement {
-                            measured: 15,
-                            exact: Some(15),
-                            unknown: 0,
-                        },
-                        ..Default::default()
-                    };
-                    review.outcomes.rows.push(OutcomeRow {
-                        outcome_id: outcome.into(),
-                        workstream_id: stream.map(str::to_owned),
-                        kind: None,
-                        title: None,
-                        effort: row_effort,
-                    });
-                    review.outcomes.unattributed_reasons =
-                        [("missing_work_context".into(), 1)].into();
-                }
+    if let Some(bindings) = params["workContextBindings"].as_array()
+        && let Some(binding) = bindings.iter().find(|b| b["operationId"] == "governed-op")
+    {
+        let context = &binding["workContext"];
+        if context["threadId"] == "fixture-thread"
+            && context["turnId"] == "fixture-turn"
+            && let Some(outcome) = context["outcomeId"].as_str()
+        {
+            let stream = context["workstreamId"].as_str();
+            if params["workstreamId"].is_null() || params["workstreamId"].as_str() == stream {
+                let row_effort = OutcomeEffort {
+                    operations: 1,
+                    provider_total_tokens: OutcomeMeasurement {
+                        measured: tokens - 15,
+                        exact: Some(tokens - 15),
+                        unknown: 0,
+                    },
+                    ..Default::default()
+                };
+                review.outcomes.attributed = row_effort.clone();
+                review.outcomes.unattributed = OutcomeEffort {
+                    operations: 1,
+                    provider_total_tokens: OutcomeMeasurement {
+                        measured: 15,
+                        exact: Some(15),
+                        unknown: 0,
+                    },
+                    ..Default::default()
+                };
+                review.outcomes.rows.push(OutcomeRow {
+                    outcome_id: outcome.into(),
+                    workstream_id: stream.map(str::to_owned),
+                    kind: None,
+                    title: None,
+                    effort: row_effort,
+                });
+                review.outcomes.unattributed_reasons = [("missing_work_context".into(), 1)].into();
             }
         }
     }
