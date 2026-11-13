@@ -132,6 +132,7 @@ impl DockerControl for FixtureDocker {
 struct PostgresDocker {
     removed: AtomicU64,
     provisioned: AtomicU64,
+    present: AtomicBool,
 }
 
 impl PostgresDocker {
@@ -139,6 +140,7 @@ impl PostgresDocker {
         Self {
             removed: AtomicU64::new(0),
             provisioned: AtomicU64::new(0),
+            present: AtomicBool::new(false),
         }
     }
 }
@@ -189,6 +191,7 @@ impl DockerControl for PostgresDocker {
         assert_eq!(request.label_context.purpose, "test");
         assert_eq!(request.label_context.data_class, "disposable");
         self.provisioned.fetch_add(1, Ordering::SeqCst);
+        self.present.store(true, Ordering::SeqCst);
         ExactContainerId::parse("d".repeat(64))
     }
 
@@ -234,6 +237,14 @@ impl DockerControl for PostgresDocker {
         Ok(Vec::new())
     }
 
+    fn container_present(&self, _container_id: &ExactContainerId) -> Result<bool, DockerError> {
+        Ok(self.present.load(Ordering::SeqCst))
+    }
+
+    fn container_name_present(&self, _name: &str) -> Result<bool, DockerError> {
+        Ok(self.present.load(Ordering::SeqCst))
+    }
+
     fn remove_container(
         &self,
         _container_id: &ExactContainerId,
@@ -241,6 +252,7 @@ impl DockerControl for PostgresDocker {
     ) -> Result<(), DockerError> {
         assert!(delete_volumes);
         self.removed.fetch_add(1, Ordering::SeqCst);
+        self.present.store(false, Ordering::SeqCst);
         Ok(())
     }
 }
