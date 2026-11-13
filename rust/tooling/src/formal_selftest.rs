@@ -1435,7 +1435,8 @@ fn run_state_and_wait_phase(
             root,
             json!({
                 "targets":[{"url":format!("{base}/interaction-states.html"),"includeBase":false,"states":[{
-                    "name":"missing-trigger","actions":[{"action":"fill","selector":"#does-not-exist","value":"SECRET_ACTION_VALUE_MUST_NOT_LEAK","timeoutMs":100}]
+                    "name":"missing-trigger","actions":[{"action":"fill","selector":"#does-not-exist","value":"SECRET_ACTION_VALUE_MUST_NOT_LEAK","timeoutMs":100}],
+                    "afterFailureWaitFor":{"selector":"#never-ready","timeoutMs":150}
                 }]}],"viewports":[{"name":"desktop","width":1280,"height":800}]
             }),
         ),
@@ -1458,6 +1459,14 @@ fn run_state_and_wait_phase(
         return Err(
             "failed interaction coverage, redaction, or zero-wait behavior regressed".to_owned(),
         );
+    }
+    if failed.pointer("/pages/0/interactionFailure/afterFailureObservation/checked")
+        != Some(&json!(false))
+        || failed
+            .pointer("/pages/0/interactionFailure/afterFailureObservation/waitEvidence/0/outcome")
+            != Some(&json!("timed_out"))
+    {
+        return Err("failed downstream observation lost its wait evidence".to_owned());
     }
     scenarios += 1;
 
@@ -1544,6 +1553,12 @@ fn run_state_and_wait_phase(
     if !["response", "ready-or-error-dom", "render-frames"]
         .iter()
         .all(|kind| wait_kinds.contains(kind))
+        || event_ready
+            .pointer("/pages/0/waitEvidence")
+            .and_then(Value::as_array)
+            .is_none_or(|items| {
+                items.len() != 4 || items.iter().any(|item| item["outcome"] != "completed")
+            })
     {
         return Err("event readiness evidence is incomplete".to_owned());
     }
@@ -1593,11 +1608,44 @@ fn run_state_and_wait_phase(
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
-        .find(|item| item.get("kind") == Some(&json!("selector")))
+        .find(|item| {
+            item["kind"] == "selector"
+                && item["selector"] == "#never-ready"
+                && item["outcome"] == "timed_out"
+        })
         .and_then(|item| item.get("durationMs"))
         .and_then(Value::as_u64);
-    if missing_event_wait.is_none_or(|duration| !(100..=500).contains(&duration)) {
+    if missing_event_wait.is_none_or(|duration| !(100..=500).contains(&duration))
+        || missing_event.pointer("/pages/0/outcome") != Some(&json!("interaction_error"))
+        || missing_event.pointer("/pages/0/waitEvidence/0/outcome") != Some(&json!("completed"))
+    {
         return Err("missing event did not fail at its bounded readiness deadline".to_owned());
+    }
+    scenarios += 1;
+
+    let initial_missing = run_verifier(
+        root,
+        &contracted_config(
+            root,
+            json!({
+                "targets":[{"url":format!("{base}/clean.html"),
+                    "waitFor":{"selector":"#never-ready","timeoutMs":150}}],
+                "viewports":[{"name":"desktop","width":1280,"height":800}]
+            }),
+        ),
+        &work.join("initial-readiness-missing"),
+        &[3],
+        timeout,
+        &[],
+    )?;
+    if initial_missing.pointer("/pages/0/outcome") != Some(&json!("navigation_error"))
+        || initial_missing.pointer("/pages/0/waitEvidence/0/outcome") != Some(&json!("timed_out"))
+        || initial_missing
+            .pointer("/pages/0/waitEvidence/0/durationMs")
+            .and_then(Value::as_u64)
+            .is_none_or(|duration| !(100..=500).contains(&duration))
+    {
+        return Err("initial readiness failure lost its bounded wait evidence".to_owned());
     }
     scenarios += 1;
 

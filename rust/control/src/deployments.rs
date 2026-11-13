@@ -12,7 +12,9 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::database::OptionalExtension;
-use devcoordinator2_api::params::{DeploymentList as DeploymentListParams, SetDomain};
+use devcoordinator2_api::params::{
+    DeploymentList as DeploymentListParams, DeploymentLogs as DeploymentLogsParams, SetDomain,
+};
 use devcoordinator2_api::results::{
     Component, ComponentBinding, ComposeService, DeclaredDeployment, DeploymentList, DeploymentLog,
     DeploymentSource, DeploymentStatus, DomainChanged,
@@ -1298,20 +1300,23 @@ impl Deployments {
 
     pub fn logs(
         &self,
-        path: Option<&str>,
-        name: Option<&str>,
-        deployment_id: Option<&str>,
-        component: &str,
-        generation: Option<u32>,
-        tail_lines: u16,
+        params: DeploymentLogsParams,
         caller: &Caller,
     ) -> Result<DeploymentLog, ProtocolError> {
-        if let Some(deployment_id) = deployment_id
+        let component = params.component.as_str();
+        let generation = params.generation;
+        let tail_lines = params.tail_lines;
+        if let Some(deployment_id) = params.deployment_id.as_deref()
             && self.store.observed_exists(deployment_id)?
         {
             return self.observed_logs(deployment_id, component, tail_lines);
         }
-        let target = self.resolve_target(path, name, deployment_id, caller)?;
+        let target = self.resolve_target(
+            params.path.as_deref(),
+            params.name.as_deref(),
+            params.deployment_id.as_deref(),
+            caller,
+        )?;
         let row = target
             .row
             .as_ref()
@@ -6952,7 +6957,17 @@ image="cache:2"
             .unwrap();
         assert_eq!(started.state, "running");
         let logs = deployments
-            .logs(None, None, Some(&deployment_id), "cache", None, 20, &caller)
+            .logs(
+                DeploymentLogsParams {
+                    path: None,
+                    name: None,
+                    deployment_id: Some(deployment_id.clone()),
+                    component: "cache".into(),
+                    generation: None,
+                    tail_lines: 20,
+                },
+                &caller,
+            )
             .unwrap();
         assert!(logs.tail.starts_with("managed log "));
 
@@ -7197,12 +7212,14 @@ command=["serve"]
         assert_eq!(first.components[0].binding.kind.as_deref(), Some("unit"));
         let build_log = deployments
             .logs(
-                None,
-                None,
-                Some(&first.deployment_id),
-                "build",
-                None,
-                20,
+                DeploymentLogsParams {
+                    path: None,
+                    name: None,
+                    deployment_id: Some(first.deployment_id.clone()),
+                    component: "build".into(),
+                    generation: None,
+                    tail_lines: 20,
+                },
                 &caller,
             )
             .unwrap();
@@ -7210,12 +7227,14 @@ command=["serve"]
         assert!(build_log.tail.contains("build stderr"));
         let process_log = deployments
             .logs(
-                None,
-                None,
-                Some(&first.deployment_id),
-                "api",
-                None,
-                20,
+                DeploymentLogsParams {
+                    path: None,
+                    name: None,
+                    deployment_id: Some(first.deployment_id.clone()),
+                    component: "api".into(),
+                    generation: None,
+                    tail_lines: 20,
+                },
                 &caller,
             )
             .unwrap();
@@ -7577,12 +7596,14 @@ route=true
         assert_eq!(started.state, "running");
         let logs = deployments
             .logs(
-                None,
-                None,
-                Some(&applied.deployment_id),
-                "stack",
-                None,
-                20,
+                DeploymentLogsParams {
+                    path: None,
+                    name: None,
+                    deployment_id: Some(applied.deployment_id.clone()),
+                    component: "stack".into(),
+                    generation: None,
+                    tail_lines: 20,
+                },
                 &caller,
             )
             .unwrap();
@@ -7615,12 +7636,14 @@ route=true
         assert!(!failure.message.contains("fixture-current-compose-failure"));
         let logs = deployments
             .logs(
-                None,
-                None,
-                Some(&applied.deployment_id),
-                "build",
-                None,
-                500,
+                DeploymentLogsParams {
+                    path: None,
+                    name: None,
+                    deployment_id: Some(applied.deployment_id.clone()),
+                    component: "build".into(),
+                    generation: None,
+                    tail_lines: 500,
+                },
                 &caller,
             )
             .unwrap();

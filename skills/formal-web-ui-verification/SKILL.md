@@ -315,7 +315,10 @@ candidate preliminary or blocked.
    - Readiness waits use observable events: response, URL/navigation, selector
      or ready/error selector race, server readback, load state, or one/two render
      frames. Longer timeouts are failure ceilings. Deliberate delays and polling
-     intervals above 100 ms are rejected.
+     intervals above 100 ms are rejected. Retain each attempted wait's duration
+     and outcome (`completed`, `timed_out`, or `failed`), including failed
+     initial readiness, interaction readiness, and observations after an action
+     fails. A failed wait must preserve preceding wait evidence.
    - Rendered-navigation performance is measured from the browser's Navigation
      Timing entry and a buffered LCP observer installed before navigation. The
      defaults are `TTFB < 10 ms` for localhost/loopback targets and `LCP < 800

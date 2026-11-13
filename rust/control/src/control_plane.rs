@@ -1126,15 +1126,7 @@ handlers! { self,params,caller,now,actor,administrator,repository,operation;
                 Ok(result)
             };
     DeploymentLogs => {
-                self.deployments.logs(
-                    params.path.as_deref(),
-                    params.name.as_deref(),
-                    params.deployment_id.as_deref(),
-                    &params.component,
-                    params.generation,
-                    params.tail_lines,
-                    caller,
-                )
+                self.deployments.logs(params, caller)
             };
     DeploymentStart => {
                 let action = operation.split('.').nth(1).unwrap_or_default();
