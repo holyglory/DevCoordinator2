@@ -939,14 +939,19 @@ async function waitForRenderFrames(page, count, timeoutMs = 10000) {
   }), { frames: count, timeout: timeoutMs });
 }
 
-async function applyWaitFor(page, waitFor, armed = null) {
-  const evidence = [];
+async function applyWaitFor(page, waitFor, armed = null, evidence = []) {
   const timeout = waitFor.timeoutMs ?? 10000;
   const record = async (kind, operation, detail = {}) => {
     const started = Date.now();
-    const value = await operation();
-    evidence.push({ kind, durationMs: Date.now() - started, ...detail });
-    return value;
+    let outcome = "completed";
+    try {
+      return await operation();
+    } catch (error) {
+      outcome = error?.name === "TimeoutError" ? "timed_out" : "failed";
+      throw error;
+    } finally {
+      evidence.push({ kind, durationMs: Date.now() - started, ...detail, outcome });
+    }
   };
   const handles = armed || armWaitFor(page, waitFor);
   if (waitFor.responseUrl) {
@@ -2345,14 +2350,17 @@ async function applyInteractionState(page, state, target = null) {
       // without copying action payloads (which can be credentials or PII).
       let afterFailureObservation = null;
       if (Object.keys(state.afterFailureWaitFor || {}).length) {
+        const observationEvidence = [];
         try {
+          await applyWaitFor(page, state.afterFailureWaitFor, failureArmed, observationEvidence);
           afterFailureObservation = {
             checked: true,
-            waitEvidence: await applyWaitFor(page, state.afterFailureWaitFor, failureArmed),
+            waitEvidence: observationEvidence,
           };
         } catch (observationError) {
           afterFailureObservation = {
             checked: false,
+            waitEvidence: observationEvidence,
             error: String(observationError?.message || observationError).slice(0, 512),
           };
         }
@@ -2378,7 +2386,7 @@ async function applyInteractionState(page, state, target = null) {
     }
   }
   try {
-    waitEvidence.push(...await applyWaitFor(page, state.waitFor || {}, armed));
+    await applyWaitFor(page, state.waitFor || {}, armed, waitEvidence);
   } catch (error) {
     return {
       beforeContinuation,
@@ -5144,10 +5152,10 @@ async function verifyTarget(page, target, viewport, config, cellId) {
       target.url,
       { waitUntil: "domcontentloaded", timeout: 15000 },
     ));
-    result.waitEvidence.push(...await stage(
+    await stage(
       "initial-readiness",
-      () => applyWaitFor(page, initialWait, initialArmed),
-    ));
+      () => applyWaitFor(page, initialWait, initialArmed, result.waitEvidence),
+    );
   } catch (error) {
     result.skipped = true;
     result.outcome = "navigation_error";
