@@ -1588,12 +1588,16 @@ fn run_state_and_wait_phase(
         timeout,
         &[],
     )?;
-    if missing_event
-        .pointer("/pages/0/durationMs")
-        .and_then(Value::as_u64)
-        .is_none_or(|duration| !(100..=1000).contains(&duration))
-    {
-        return Err("missing event did not fail at its bounded deadline".to_owned());
+    let missing_event_wait = missing_event
+        .pointer("/pages/0/waitEvidence")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .find(|item| item.get("kind") == Some(&json!("selector")))
+        .and_then(|item| item.get("durationMs"))
+        .and_then(Value::as_u64);
+    if missing_event_wait.is_none_or(|duration| !(100..=500).contains(&duration)) {
+        return Err("missing event did not fail at its bounded readiness deadline".to_owned());
     }
     scenarios += 1;
 

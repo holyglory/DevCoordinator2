@@ -841,7 +841,7 @@ operation_catalog! {
     ServerRegister, "server.register", "Adopt one systemd-supervised local listener into the server inventory.", IDEMPOTENT_APPEND_SERVER_ADMIN, Protocol, [], params::ServerRegister, results::ServerRow;
     ServerList, "server.list", "List exact systemd-supervised local listener registrations.", READ_SERVER_ADMIN, Protocol, [], params::ServerList, results::ServerList;
     ServerStop, "server.stop", "Mark one systemd-supervised listener registration as stopping.", REVERSIBLE_SERVER_ADMIN, Protocol, [], params::ServerStop, results::ServerRow;
-    TestStart, "test.start", "Attach to or replace one governed validation run.", DESTRUCTIVE_REPOSITORY_ADMIN, Protocol, ["test_start"], params::StartTest, results::TestStarted;
+    TestStart, "test.start", "Attach to or replace one governed validation run.", DESTRUCTIVE_REPOSITORY_ADMIN, Protocol, ["test_start"], params::StartTest, results::TestStarted, Finite;
     TestContainerCreate, "test.container.create", "Create one daemon-owned temporary container for a running governed check.", DESTRUCTIVE_REPOSITORY_ADMIN, Protocol, ["test_container_create"], test_containers::ContainerCreate, test_containers::ContainerOperationResult;
     TestContainerStart, "test.container.start", "Start one exact daemon-owned temporary test container.", DESTRUCTIVE_REPOSITORY_ADMIN, Protocol, ["test_container_start"], test_containers::ContainerReference, test_containers::ContainerOperationResult;
     TestContainerInspect, "test.container.inspect", "Inspect one exact daemon-owned temporary test container.", READ_REPOSITORY_ADMIN, Protocol, ["test_container_inspect"], test_containers::ContainerReference, test_containers::ContainerOperationResult;
@@ -850,13 +850,13 @@ operation_catalog! {
     TestAdmissionStatus, "test.admission.status", "Explain whether governed test admission is open or draining.", READ_SERVER_ADMIN, Protocol, ["test_admission_status"], params::TestAdmissionStatus, results::TestAdmissionStatus;
     TestAdmissionWait, "test.admission.wait", "Wait until governed test admission reopens or a deadline expires.", READ_SERVER_ADMIN, Protocol, ["test_admission_wait"], params::TestAdmissionWait, results::TestAdmissionStatus, PassiveWait;
     TestWait, "test.wait", "Wait for one governed validation run to reach a terminal state.", READ_REPOSITORY_ADMIN, Protocol, ["test_wait"], params::TestWait, results::TestWaitResult, PassiveWait;
-    TestRetry, "test.retry", "Retry one failed check from a completed run.", DESTRUCTIVE_REPOSITORY_ADMIN, Protocol, ["test_retry"], params::RetryTest, results::TestStarted;
-    TestStatus, "test.status", "Show the current governed validation result.", READ_REPOSITORY_ADMIN, Protocol, ["test_status"], params::PathOnly, results::TestSummary;
-    TestLogCatalog, "test.log.catalog", "List retained log metadata without content.", READ_REPOSITORY_ADMIN, Protocol, ["test_log_catalog"], params::LogCatalog, results::LogCatalog;
-    TestLogTail, "test.log.tail", "Read a bounded final-line log slice.", READ_REPOSITORY_ADMIN, Protocol, ["test_log_tail"], params::LogTail, results::LogContent;
-    TestLogSearch, "test.log.search", "Search one retained stream literally.", READ_REPOSITORY_ADMIN, Protocol, ["test_log_search"], params::LogSearch, results::LogSearch;
-    TestLogRange, "test.log.range", "Read one exact bounded log range.", READ_REPOSITORY_ADMIN, Protocol, ["test_log_range"], params::LogRange, results::LogContent;
-    TestLogFailureContext, "test.log.failure_context", "Read deterministic bounded failure context.", READ_REPOSITORY_ADMIN, Protocol, ["test_log_failure_context"], params::LogFailureContext, results::LogFailureContext;
+    TestRetry, "test.retry", "Retry one failed check from a completed run.", DESTRUCTIVE_REPOSITORY_ADMIN, Protocol, ["test_retry"], params::RetryTest, results::TestStarted, Finite;
+    TestStatus, "test.status", "Show the current governed validation result.", READ_REPOSITORY_ADMIN, Protocol, ["test_status"], params::PathOnly, results::TestSummary, Extended;
+    TestLogCatalog, "test.log.catalog", "List retained log metadata without content.", READ_REPOSITORY_ADMIN, Protocol, ["test_log_catalog"], params::LogCatalog, results::LogCatalog, Extended;
+    TestLogTail, "test.log.tail", "Read a bounded final-line log slice.", READ_REPOSITORY_ADMIN, Protocol, ["test_log_tail"], params::LogTail, results::LogContent, Extended;
+    TestLogSearch, "test.log.search", "Search one retained stream literally.", READ_REPOSITORY_ADMIN, Protocol, ["test_log_search"], params::LogSearch, results::LogSearch, Extended;
+    TestLogRange, "test.log.range", "Read one exact bounded log range.", READ_REPOSITORY_ADMIN, Protocol, ["test_log_range"], params::LogRange, results::LogContent, Extended;
+    TestLogFailureContext, "test.log.failure_context", "Read deterministic bounded failure context.", READ_REPOSITORY_ADMIN, Protocol, ["test_log_failure_context"], params::LogFailureContext, results::LogFailureContext, Extended;
     TestLogRetentionGet, "test.log.retention.get", "Show governed-log retention settings.", READ_SERVER_ADMIN, Protocol, ["test_log_retention_show"], params::Empty, results::Retention;
     TestLogRetentionSet, "test.log.retention.set", "Change governed-log retention settings.", DESTRUCTIVE_SERVER_ADMIN, Protocol, ["test_log_retention_set"], params::SetRetention, results::Retention;
     TestEvidenceGet, "test.evidence.get", "List retained journey evidence.", READ_REPOSITORY_ADMIN, Protocol, ["test_evidence_get"], params::EvidenceReference, results::EvidenceGet;
@@ -877,7 +877,7 @@ operation_catalog! {
     ConfigGet, "config.get", "Inspect live configuration revisions and bounded change history without exposing private settings.", READ_SERVER_ADMIN, Protocol, ["config_get"], EmptyParams, configuration::Snapshot;
     ConfigEnvSet, "config.env.set", "Grant or revoke one declared repository environment-file authorization and activate it without restart.", REVERSIBLE_SERVER_ADMIN, Protocol, ["config_env_set"], params::SetComposeEnvAuthorization, configuration::Snapshot;
     ConfigReload, "config.reload", "Validate and activate reloadable private settings, retaining the last working state on failure.", REVERSIBLE_SERVER_ADMIN, Protocol, ["config_reload"], configuration::Revision, configuration::Snapshot;
-    DeploymentPreflight, "deployment.preflight", "Check declared deployment prerequisites without registering or changing runtime resources.", READ_DEPLOYMENT_ADMIN, Protocol, ["deployment_preflight"], params::DeploymentReference, results::DeploymentPreflight;
+    DeploymentPreflight, "deployment.preflight", "Check declared deployment prerequisites without registering or changing runtime resources.", READ_DEPLOYMENT_ADMIN, Protocol, ["deployment_preflight"], params::DeploymentPreflight, results::DeploymentPreflight;
     DeploymentList, "deployment.list", "List visible deployments.", READ_DEPLOYMENT_VIEWER, Protocol, ["deployment_list"], params::DeploymentList, results::DeploymentList;
     DeploymentStatus, "deployment.status", "Show one deployment.", READ_DEPLOYMENT_VIEWER, Protocol, ["deployment_status"], params::DeploymentReference, results::DeploymentStatus;
     DeploymentWait, "deployment.wait", "Wait for a deployment state or source transition.", READ_DEPLOYMENT_VIEWER, Protocol, ["deployment_wait"], params::DeploymentWait, results::DeploymentWaitResult, PassiveWait;
@@ -889,7 +889,7 @@ operation_catalog! {
     DeploymentRestart, "deployment.restart", "Restart a deployment or selected service.", REVERSIBLE_DEPLOYMENT_OPERATOR, Protocol, ["deployment_restart"], params::DeploymentControl, results::DeploymentStatus, Finite;
     DeploymentSetDomain, "deployment.set_domain", "Set or clear a deployment route.", IDEMPOTENT_REVERSIBLE_DEPLOYMENT_ADMIN, Protocol, ["deployment_set_domain"], params::SetDomain, results::DomainChanged;
     DeploymentRemove, "deployment.remove", "Remove a deployment with an explicit data outcome.", DESTRUCTIVE_DEPLOYMENT_ADMIN, Protocol, [], params::RemoveDeployment, results::DeploymentRemoved, Finite;
-    HealthSummary, "health.summary", "Show host health and active alerts.", READ_SERVER_ADMIN, Protocol, ["health_summary"], params::Empty, results::HealthSummary;
+    HealthSummary, "health.summary", "Show host health and active alerts.", READ_SERVER_ADMIN, Protocol, ["health_summary"], params::Empty, results::HealthSummary, Extended;
     HealthIncidents, "health.incidents", "List escalated incidents, dismissed occurrences, or all observations for agent triage.", READ_SERVER_ADMIN, Protocol, ["health_incidents"], incidents::IncidentListParams, incidents::IncidentList;
     HealthIncidentUpdate, "health.incident.update", "Record handling, non-reporting, escalation or dismissal for one exact incident occurrence.", REVERSIBLE_SERVER_ADMIN, Protocol, ["health_incident_update"], incidents::IncidentUpdate, incidents::Incident;
     HealthRepositories, "health.repositories", "Show visible per-repository resource use.", READ_REPOSITORY_VIEWER, Protocol, ["health_repositories"], params::Empty, results::HealthRepositories;
@@ -1389,6 +1389,28 @@ mod tests {
                 .any(|tool| tool["name"] == "test_capacity_clear"
                     && tool["transform"] == "clear_capacity")
         );
+    }
+
+    #[test]
+    fn governed_test_operations_use_finite_and_extended_execution_profiles() {
+        for name in ["test.start", "test.retry"] {
+            let definition = operation(name).expect("test operation");
+            assert!(definition.long_running(), "{name} must be finite work");
+            assert_eq!(definition.response_timeout_seconds(), None);
+        }
+        for name in [
+            "test.status",
+            "test.log.catalog",
+            "test.log.tail",
+            "test.log.search",
+            "test.log.range",
+            "test.log.failure_context",
+            "health.summary",
+        ] {
+            let definition = operation(name).expect("read operation");
+            assert!(!definition.long_running(), "{name} must remain a read");
+            assert_eq!(definition.response_timeout_seconds(), Some(20));
+        }
     }
 
     #[test]

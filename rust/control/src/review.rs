@@ -431,8 +431,8 @@ fn unix_ms(value: &str) -> Option<u64> {
 mod tests;
 
 #[cfg(test)]
-#[path = "review_result_tests.rs"]
-mod result_tests;
-#[cfg(test)]
 #[path = "review_api_tests.rs"]
 mod api_tests;
+#[cfg(test)]
+#[path = "review_result_tests.rs"]
+mod result_tests;

@@ -123,6 +123,24 @@ impl DeploymentFiles {
             .join(format!("{component}.log")))
     }
 
+    pub fn generation_log_path(
+        &self,
+        deployment_id: &str,
+        component: &str,
+        generation: u32,
+    ) -> Result<PathBuf, DeploymentFileError> {
+        validate_component(component)?;
+        if generation == 0 {
+            return Err(DeploymentFileError::Invalid(
+                "generation must be positive".into(),
+            ));
+        }
+        Ok(self
+            .deployment_dir(deployment_id)?
+            .join("logs")
+            .join(format!("{component}-g{generation}.log")))
+    }
+
     pub fn scratch_path(
         &self,
         deployment_id: &str,
@@ -447,22 +465,45 @@ impl DeploymentFiles {
         component: &str,
         tail_lines: u16,
     ) -> Result<(String, bool), DeploymentFileError> {
+        let path = self.log_path(deployment_id, component)?;
+        self.read_log_tail_path(deployment_id, &path, tail_lines)
+    }
+
+    pub fn read_generation_log_tail(
+        &self,
+        deployment_id: &str,
+        component: &str,
+        generation: u32,
+        tail_lines: u16,
+    ) -> Result<(String, bool), DeploymentFileError> {
+        let path = self.generation_log_path(deployment_id, component, generation)?;
+        self.read_log_tail_path(deployment_id, &path, tail_lines)
+    }
+
+    fn read_log_tail_path(
+        &self,
+        deployment_id: &str,
+        path: &Path,
+        tail_lines: u16,
+    ) -> Result<(String, bool), DeploymentFileError> {
         if tail_lines == 0 || tail_lines > 5_000 {
             return Err(DeploymentFileError::Invalid(
                 "tail_lines must be in 1..5000".into(),
             ));
         }
-        validate_component_or_build(component)?;
         let Some(deployment) = self.open_deployment(deployment_id, false)? else {
             return Ok((String::new(), false));
         };
         let Some(logs) = open_child_directory(&deployment, "logs", false, 0o755)? else {
             return Ok((String::new(), false));
         };
-        let name = format!("{component}.log");
+        let name = path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .ok_or_else(|| DeploymentFileError::Invalid("deployment log path is invalid".into()))?;
         let descriptor = match unix_fs::openat(
             &logs,
-            name.as_str(),
+            name,
             OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK,
             Mode::empty(),
         ) {
@@ -1109,6 +1150,14 @@ mod tests {
         assert_eq!(
             files.read_log_tail(deployment, "api", 2).unwrap(),
             ("two\nthree".into(), true)
+        );
+        let generation_log = files.generation_log_path(deployment, "api", 7).unwrap();
+        fs::write(&generation_log, "candidate-start\nfailed\n").unwrap();
+        assert_eq!(
+            files
+                .read_generation_log_tail(deployment, "api", 7, 2)
+                .unwrap(),
+            ("candidate-start\nfailed".into(), false)
         );
     }
 

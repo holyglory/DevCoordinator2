@@ -165,6 +165,83 @@ fn explicit_linked_candidate_status_tracks_its_origin_by_deployment_id() {
 }
 
 #[test]
+fn explicit_worktree_candidate_keeps_identity_and_tracks_its_origin() {
+    let fixture = RouteWorld::new("worktree");
+    let first = fixture.apply().unwrap();
+    fixture.change();
+    let candidate = devcoordinator2_api::params::DeploymentCandidateSource {
+        path: fixture.world.worktree.to_string_lossy().into_owned(),
+        commit: "b".repeat(40),
+    };
+    let preflight = fixture
+        .deployments
+        .preflight(
+            None,
+            None,
+            Some(&first.deployment_id),
+            Some(&candidate),
+            &fixture.caller,
+        )
+        .unwrap();
+    assert!(preflight.ready);
+    fixture.git.snapshot.lock().unwrap().dirty = true;
+    let blocked = fixture
+        .deployments
+        .preflight(
+            None,
+            None,
+            Some(&first.deployment_id),
+            Some(&candidate),
+            &fixture.caller,
+        )
+        .unwrap();
+    assert!(!blocked.ready);
+    assert!(
+        blocked
+            .blockers
+            .iter()
+            .any(|blocker| blocker.message.contains("candidate source"))
+    );
+    fixture.git.snapshot.lock().unwrap().dirty = false;
+    let applied = fixture
+        .deployments
+        .apply_with_candidate(
+            None,
+            None,
+            Some(&first.deployment_id),
+            Some(&candidate),
+            &fixture.caller,
+        )
+        .unwrap();
+    assert_eq!(applied.deployment_id, first.deployment_id);
+    assert_eq!(applied.current_generation, Some(2));
+    assert!(applied.readiness.unwrap().ready);
+    let origin = fixture
+        .deployments
+        .store
+        .generation_origin(&first.deployment_id, 2)
+        .unwrap()
+        .unwrap();
+    assert_eq!(origin.path, fixture.world.worktree);
+    assert!(
+        fixture
+            .status(&first.deployment_id)
+            .readiness
+            .unwrap()
+            .ready
+    );
+}
+
+#[test]
+fn process_unit_readiness_waits_through_activation_within_health_budget() {
+    let fixture = RouteWorld::new("worktree");
+    fixture.systemd.activation_polls.store(12, Ordering::SeqCst);
+    let applied = fixture.apply().unwrap();
+    assert_eq!(applied.state, "running");
+    assert!(applied.readiness.unwrap().ready);
+}
+
+#[test]
 fn mixed_candidate_rollback_uses_retained_configuration_and_restores_failed_snapshot() {
     let fixture = RouteWorld::new("checkout");
     let config_path = fixture.world.worktree.join(".devcoordinator.toml");
@@ -378,18 +455,8 @@ fn explicit_candidate_keeps_deployment_identity_and_previous_generation() {
 
 #[test]
 fn invalid_candidate_source_never_changes_the_running_deployment() {
-    for failure in [
-        "dirty",
-        "commit",
-        "repository",
-        "worktree",
-        "missing-target",
-    ] {
-        let fixture = RouteWorld::new(if failure == "worktree" {
-            "worktree"
-        } else {
-            "checkout"
-        });
+    for failure in ["dirty", "commit", "repository", "missing-target"] {
+        let fixture = RouteWorld::new("checkout");
         let first = fixture.apply().unwrap();
         let foreign = RouteWorld::new("checkout");
         fixture.change();

@@ -898,7 +898,7 @@
         "role": "administrator",
         "scope": "server"
       },
-      "responseTimeoutSeconds": 10
+      "responseTimeoutSeconds": 20
     },
     "performance.overview": {
       "passiveWait": false,
@@ -1698,7 +1698,7 @@
         "role": "administrator",
         "scope": "repository"
       },
-      "responseTimeoutSeconds": 10
+      "responseTimeoutSeconds": 20
     },
     "test.log.failure_context": {
       "passiveWait": false,
@@ -1708,7 +1708,7 @@
         "role": "administrator",
         "scope": "repository"
       },
-      "responseTimeoutSeconds": 10
+      "responseTimeoutSeconds": 20
     },
     "test.log.range": {
       "passiveWait": false,
@@ -1718,7 +1718,7 @@
         "role": "administrator",
         "scope": "repository"
       },
-      "responseTimeoutSeconds": 10
+      "responseTimeoutSeconds": 20
     },
     "test.log.retention.get": {
       "passiveWait": false,
@@ -1748,7 +1748,7 @@
         "role": "administrator",
         "scope": "repository"
       },
-      "responseTimeoutSeconds": 10
+      "responseTimeoutSeconds": 20
     },
     "test.log.tail": {
       "passiveWait": false,
@@ -1758,7 +1758,7 @@
         "role": "administrator",
         "scope": "repository"
       },
-      "responseTimeoutSeconds": 10
+      "responseTimeoutSeconds": 20
     },
     "test.retry": {
       "passiveWait": false,
@@ -1768,7 +1768,7 @@
         "role": "administrator",
         "scope": "repository"
       },
-      "responseTimeoutSeconds": 10
+      "responseTimeoutSeconds": null
     },
     "test.start": {
       "passiveWait": false,
@@ -1778,7 +1778,7 @@
         "role": "administrator",
         "scope": "repository"
       },
-      "responseTimeoutSeconds": 10
+      "responseTimeoutSeconds": null
     },
     "test.status": {
       "passiveWait": false,
@@ -1788,7 +1788,7 @@
         "role": "administrator",
         "scope": "repository"
       },
-      "responseTimeoutSeconds": 10
+      "responseTimeoutSeconds": 20
     },
     "test.stop": {
       "passiveWait": false,
