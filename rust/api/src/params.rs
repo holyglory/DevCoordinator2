@@ -843,6 +843,10 @@ macro_rules! deployment_params {
 }
 
 deployment_params!(DeploymentReference {});
+deployment_params!(DeploymentPreflight {
+    #[serde(default)]
+    pub candidate: Option<DeploymentCandidateSource>,
+});
 deployment_params!(DeploymentWait {
     pub deadline_at: String,
     pub state: DeploymentWaitState,
@@ -880,6 +884,9 @@ deployment_params!(DeploymentControl {
 });
 deployment_params!(DeploymentLogs {
     pub component: String,
+    #[serde(default)]
+    #[schemars(range(min = 1))]
+    pub generation: Option<u32>,
     #[serde(default = "default_deployment_tail")]
     #[schemars(range(min = 1, max = 5000))]
     pub tail_lines: u16,

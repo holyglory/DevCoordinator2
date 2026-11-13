@@ -383,10 +383,12 @@ Reference args on every command except `list`: `path` (required) plus
 - `deployment.list {path?}` → `{deployments: [...], declared: [...]}` — all
   applied deployments; with `path`, also the declared-but-not-applied
   `name`/`source`/`deployment_id` triples of that repository.
-- `deployment.preflight` → `{repository_id, name, ready, blockers:
-  [{component, code, file, message}]}`. Deployment administrators can inspect
-  every declared environment-file and Docker host prerequisite without
-  registration, port reservation, or runtime changes. A
+- `deployment.preflight {candidate?: {path, commit}}` →
+  `{repository_id, name, ready, blockers: [{component, code, file, message}]}`.
+  Deployment administrators can inspect every declared environment-file and
+  Docker host prerequisite without registration, port reservation, or runtime
+  changes; a candidate preflight also verifies the candidate repository,
+  declared source, cleanliness, and exact commit before apply. A
   `docker_network_unavailable` blocker names the missing bridge/veth condition
   and the authorized host-repair boundary; retry `apply`, `start`, or
   `restart` only after preflight is clear. `authorization_required` names the
@@ -394,7 +396,7 @@ Reference args on every command except `list`: `path` (required) plus
 - `deployment.apply` → status (below) after: validate all environment-file
   prerequisites, fingerprint (spec + commit + dirty flag + source digest),
   reserve ports/domain transactionally, prepare the
-  candidate (checkout worktree + optional build), start components in
+  candidate (clean repository worktree + optional build), start components in
   declared order (blue/green for generation-scoped components, in-place for
   stable data-owning ones), prove health, publish the route atomically,
   retire the previous generation in reverse order. Errors:
@@ -437,15 +439,19 @@ Reference args on every command except `list`: `path` (required) plus
   setup are not started, and unrelated services/routes remain. Stop withdraws
   the route for a whole routed component, never for an unrelated Compose
   worker, and never deletes data.
-- `deployment.logs {component, tail_lines<=5000}` → `{component, tail,
-  log_path | container_id}`.
+- `deployment.logs {component, generation?, tail_lines<=5000}` → `{component,
+  tail, log_path | container_id}`. Process logs are generation-bound; omit
+  `generation` for the selected current component or provide a retained
+  generation when inspecting a failed candidate.
 - `deployment.rollback` → status with `rolled_back_from`/`rolled_back_to`;
   checkout source only (`rollback_unavailable` otherwise).
 - `deployment.apply` accepts an optional `candidate: {path, commit}` with an
   existing `deployment_id`. Trusted local callers can promote a clean linked
-  worktree at the full expected commit into the same versioned deployment.
-  Different repositories, changed/dirty candidates and live-source targets
-  are refused before runtime mutation. The deployment keeps its identity,
+  worktree at the full expected commit into the same deployment.
+  Different repositories and changed/dirty candidates are refused before
+  runtime mutation. Live-source targets can promote an exact candidate while
+  preserving the deployment identity and recorded source origin.
+  The deployment keeps its identity,
   domain override, data ownership and generation history. The CLI exposes
   `--candidate-path` and `--candidate-commit` together with `--deployment-id`.
   Each new explicit-candidate generation retains its validated source worktree

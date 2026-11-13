@@ -203,7 +203,7 @@ pub(crate) fn restore_route(
         .map_err(file_apply_error)?;
     let log_path = deployments
         .files
-        .log_path(deployment_id, &component_name)
+        .generation_log_path(deployment_id, &component_name, generation)
         .map_err(file_apply_error)?;
     let working_directory = generation_path
         .join(&saved.cwd)

@@ -478,9 +478,25 @@ fn rotate_log(path: &Path) -> Result<(), SystemdError> {
             ));
         }
         Ok(_) => {
+            // Keep a bounded attempt history. A single backup is insufficient:
+            // repeated recovery can otherwise overwrite the failed candidate's
+            // only startup evidence before it is inspected.
+            for index in (1..=8).rev() {
+                let mut source = path.as_os_str().to_owned();
+                source.push(format!(".{index}"));
+                let source = PathBuf::from(source);
+                if index == 8 {
+                    let _ = std::fs::remove_file(&source);
+                } else {
+                    let mut target = path.as_os_str().to_owned();
+                    target.push(format!(".{}", index + 1));
+                    let _ = std::fs::rename(&source, PathBuf::from(target));
+                }
+            }
             let mut previous = path.as_os_str().to_owned();
             previous.push(".1");
-            let _ = std::fs::rename(path, PathBuf::from(previous));
+            std::fs::rename(path, PathBuf::from(previous))
+                .map_err(|error| invocation_error(path, error))?;
         }
         Err(error) if error.kind() == io::ErrorKind::NotFound => {}
         Err(error) => return Err(invocation_error(path, error)),
@@ -1018,6 +1034,30 @@ mod tests {
         assert!(arguments.contains("--property=NoNewPrivileges=yes"));
         assert!(arguments.contains("--property=StandardOutput=append:"));
         assert!(arguments.contains("/usr/bin/true"));
+    }
+
+    #[test]
+    fn log_rotation_preserves_a_bounded_attempt_history() {
+        let temporary = tempdir().unwrap();
+        let log = temporary.path().join("component.log");
+        std::fs::write(&log, "current").unwrap();
+        for index in 1..=8 {
+            std::fs::write(
+                log.with_extension(format!("log.{index}")),
+                format!("old-{index}"),
+            )
+            .unwrap();
+        }
+        rotate_log(&log).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(log.with_extension("log.1")).unwrap(),
+            "current"
+        );
+        assert_eq!(
+            std::fs::read_to_string(log.with_extension("log.8")).unwrap(),
+            "old-7"
+        );
+        assert!(!log.with_extension("log.9").exists());
     }
 
     #[test]

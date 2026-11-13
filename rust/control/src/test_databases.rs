@@ -33,6 +33,7 @@ pub(crate) struct SharedFixtures {
 struct SharedDatabase {
     docker: Arc<dyn DockerControl>,
     container: Option<ExactContainerId>,
+    name: String,
     environment: BTreeMap<String, String>,
 }
 
@@ -40,8 +41,8 @@ impl SharedDatabase {
     fn remove(&mut self) -> Result<(), String> {
         if let Some(container) = &self.container {
             self.docker
-                .remove_container(container, true)
-                .map_err(|_| "shared database cleanup failed")?;
+                .remove_container_verified_named(container, &self.name, true)
+                .map_err(|error| format!("shared database cleanup failed: {error}"))?;
             self.container = None;
         }
         Ok(())
@@ -560,6 +561,7 @@ pub(crate) struct DatabasePool {
 struct Template {
     docker: Arc<dyn DockerControl>,
     container: ExactContainerId,
+    container_name: String,
     manager: String,
     name: String,
     user: String,
@@ -570,7 +572,11 @@ struct Template {
 
 impl Drop for Template {
     fn drop(&mut self) {
-        let _ = self.docker.remove_container(&self.container, true);
+        let _ = self.docker.remove_container_verified_named(
+            &self.container,
+            &self.container_name,
+            true,
+        );
     }
 }
 
@@ -722,13 +728,14 @@ impl DatabasePool {
             .run_id
             .as_deref()
             .ok_or("shared database run identity missing")?;
+        let name = format!(
+            "devcoordinator2-test-{}-postgres-{scope}",
+            run_id.trim_start_matches('t')
+        );
         let container = self
             .docker
             .run_detached(&RunDetachedRequest {
-                name: format!(
-                    "devcoordinator2-test-{}-postgres-{scope}",
-                    run_id.trim_start_matches('t')
-                ),
+                name: name.clone(),
                 image: spec.image.clone(),
                 label_context: labels,
                 labels: BTreeMap::new(),
@@ -752,6 +759,7 @@ impl DatabasePool {
         let mut database = SharedDatabase {
             docker: self.docker.clone(),
             container: Some(container.clone()),
+            name,
             environment: BTreeMap::new(),
         };
         let port = self
@@ -1034,14 +1042,15 @@ impl DatabasePool {
         labels.check = Some("database-template".into());
         labels.component = Some("database-template".into());
         let nonce = self.secret()?;
+        let container_name = format!(
+            "devcoordinator2-template-{}-{}",
+            &fingerprint[..16],
+            &nonce[..8]
+        );
         let container = self
             .docker
             .run_detached(&RunDetachedRequest {
-                name: format!(
-                    "devcoordinator2-template-{}-{}",
-                    &fingerprint[..16],
-                    &nonce[..8]
-                ),
+                name: container_name.clone(),
                 image: specification.image.clone(),
                 label_context: labels,
                 labels: BTreeMap::new(),
@@ -1065,6 +1074,7 @@ impl DatabasePool {
         let mut template = Template {
             docker: self.docker.clone(),
             container,
+            container_name,
             manager,
             name: format!("dc2_template_{}", &fingerprint[..24]),
             user: specification.user.clone(),

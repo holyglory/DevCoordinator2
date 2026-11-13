@@ -2528,6 +2528,22 @@
               "unknown"
             ],
             "type": "string"
+          },
+          "IgnoredFileReview": {
+            "additionalProperties": false,
+            "properties": {
+              "path": {
+                "type": "string"
+              },
+              "sha256": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "path",
+              "sha256"
+            ],
+            "type": "object"
           }
         },
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -2551,6 +2567,16 @@
           "repository_id": {
             "type": [
               "string",
+              "null"
+            ]
+          },
+          "reviewed_ignored_files": {
+            "default": null,
+            "items": {
+              "$ref": "#/$defs/IgnoredFileReview"
+            },
+            "type": [
+              "array",
               "null"
             ]
           }
@@ -2580,6 +2606,22 @@
                   "unknown"
                 ],
                 "type": "string"
+              },
+              "IgnoredFileReview": {
+                "additionalProperties": false,
+                "properties": {
+                  "path": {
+                    "type": "string"
+                  },
+                  "sha256": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "path",
+                  "sha256"
+                ],
+                "type": "object"
               }
             },
             "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -2603,6 +2645,16 @@
               "repository_id": {
                 "type": [
                   "string",
+                  "null"
+                ]
+              },
+              "reviewed_ignored_files": {
+                "default": null,
+                "items": {
+                  "$ref": "#/$defs/IgnoredFileReview"
+                },
+                "type": [
+                  "array",
                   "null"
                 ]
               }
@@ -9984,9 +10036,9 @@
         "scope": "repository"
       },
       "transport": {
-        "longRunning": false,
+        "longRunning": true,
         "passiveWait": false,
-        "responseTimeoutSeconds": 10
+        "responseTimeoutSeconds": null
       }
     },
     {
@@ -13860,9 +13912,9 @@
         "scope": "repository"
       },
       "transport": {
-        "longRunning": false,
+        "longRunning": true,
         "passiveWait": false,
-        "responseTimeoutSeconds": 10
+        "responseTimeoutSeconds": null
       }
     },
     {
@@ -15405,7 +15457,7 @@
       "transport": {
         "longRunning": false,
         "passiveWait": false,
-        "responseTimeoutSeconds": 10
+        "responseTimeoutSeconds": 20
       }
     },
     {
@@ -15794,7 +15846,7 @@
       "transport": {
         "longRunning": false,
         "passiveWait": false,
-        "responseTimeoutSeconds": 10
+        "responseTimeoutSeconds": 20
       }
     },
     {
@@ -16102,7 +16154,7 @@
       "transport": {
         "longRunning": false,
         "passiveWait": false,
-        "responseTimeoutSeconds": 10
+        "responseTimeoutSeconds": 20
       }
     },
     {
@@ -16436,7 +16488,7 @@
       "transport": {
         "longRunning": false,
         "passiveWait": false,
-        "responseTimeoutSeconds": 10
+        "responseTimeoutSeconds": 20
       }
     },
     {
@@ -16802,7 +16854,7 @@
       "transport": {
         "longRunning": false,
         "passiveWait": false,
-        "responseTimeoutSeconds": 10
+        "responseTimeoutSeconds": 20
       }
     },
     {
@@ -17541,7 +17593,7 @@
       "transport": {
         "longRunning": false,
         "passiveWait": false,
-        "responseTimeoutSeconds": 10
+        "responseTimeoutSeconds": 20
       }
     },
     {
@@ -26681,9 +26733,38 @@
       },
       "description": "Check declared deployment prerequisites without registering or changing runtime resources.",
       "inputSchema": {
+        "$defs": {
+          "DeploymentCandidateSource": {
+            "additionalProperties": false,
+            "properties": {
+              "commit": {
+                "type": "string"
+              },
+              "path": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "path",
+              "commit"
+            ],
+            "type": "object"
+          }
+        },
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "additionalProperties": false,
         "properties": {
+          "candidate": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/DeploymentCandidateSource"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
           "deployment_id": {
             "default": null,
             "type": [
@@ -26706,16 +26787,45 @@
             ]
           }
         },
-        "title": "DeploymentReference",
+        "title": "DeploymentPreflight",
         "type": "object"
       },
       "mcpExcludedReason": null,
       "mcpTools": [
         {
           "inputSchema": {
+            "$defs": {
+              "DeploymentCandidateSource": {
+                "additionalProperties": false,
+                "properties": {
+                  "commit": {
+                    "type": "string"
+                  },
+                  "path": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "path",
+                  "commit"
+                ],
+                "type": "object"
+              }
+            },
             "$schema": "https://json-schema.org/draft/2020-12/schema",
             "additionalProperties": false,
             "properties": {
+              "candidate": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/DeploymentCandidateSource"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
               "deployment_id": {
                 "default": null,
                 "type": [
@@ -26738,7 +26848,7 @@
                 ]
               }
             },
-            "title": "DeploymentReference",
+            "title": "DeploymentPreflight",
             "type": "object"
           },
           "name": "deployment_preflight",
@@ -28513,6 +28623,15 @@
               "null"
             ]
           },
+          "generation": {
+            "default": null,
+            "format": "uint32",
+            "minimum": 1,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
           "name": {
             "default": null,
             "type": [
@@ -28555,6 +28674,15 @@
                 "default": null,
                 "type": [
                   "string",
+                  "null"
+                ]
+              },
+              "generation": {
+                "default": null,
+                "format": "uint32",
+                "minimum": 1,
+                "type": [
+                  "integer",
                   "null"
                 ]
               },
@@ -32864,7 +32992,7 @@
       "transport": {
         "longRunning": false,
         "passiveWait": false,
-        "responseTimeoutSeconds": 10
+        "responseTimeoutSeconds": 20
       }
     },
     {
@@ -42582,6 +42710,12 @@
                   }
                 ]
               },
+              "sources": {
+                "items": {
+                  "$ref": "#/$defs/UsageSourceSnapshot"
+                },
+                "type": "array"
+              },
               "state": {
                 "$ref": "#/$defs/CoverageState"
               },
@@ -42690,6 +42824,101 @@
             "required": [
               "refreshing",
               "refresh_failed"
+            ],
+            "type": "object"
+          },
+          "UsageSourceSnapshot": {
+            "additionalProperties": false,
+            "description": "A privacy-safe source label and the exact producer frontiers used by a report.",
+            "properties": {
+              "contract_version": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "format_version": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "freshness": {
+                "type": "string"
+              },
+              "generated_at_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "generation": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "journal_watermark": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "measured_execution_interval_sum_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "pending_corrections": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "pending_entries": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "refresh_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "source": {
+                "type": "string"
+              },
+              "source_watermark": {
+                "type": "string"
+              },
+              "updated_at_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "watermark": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "watermark_at_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "source",
+              "contract_version",
+              "format_version",
+              "source_watermark",
+              "generated_at_ms",
+              "generation",
+              "watermark",
+              "journal_watermark",
+              "watermark_at_ms",
+              "updated_at_ms",
+              "freshness",
+              "pending_entries",
+              "pending_corrections"
             ],
             "type": "object"
           },
@@ -44455,6 +44684,12 @@
                   }
                 ]
               },
+              "sources": {
+                "items": {
+                  "$ref": "#/$defs/UsageSourceSnapshot"
+                },
+                "type": "array"
+              },
               "state": {
                 "$ref": "#/$defs/CoverageState"
               },
@@ -44563,6 +44798,101 @@
             "required": [
               "refreshing",
               "refresh_failed"
+            ],
+            "type": "object"
+          },
+          "UsageSourceSnapshot": {
+            "additionalProperties": false,
+            "description": "A privacy-safe source label and the exact producer frontiers used by a report.",
+            "properties": {
+              "contract_version": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "format_version": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "freshness": {
+                "type": "string"
+              },
+              "generated_at_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "generation": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "journal_watermark": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "measured_execution_interval_sum_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "pending_corrections": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "pending_entries": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "refresh_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "source": {
+                "type": "string"
+              },
+              "source_watermark": {
+                "type": "string"
+              },
+              "updated_at_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "watermark": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "watermark_at_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "source",
+              "contract_version",
+              "format_version",
+              "source_watermark",
+              "generated_at_ms",
+              "generation",
+              "watermark",
+              "journal_watermark",
+              "watermark_at_ms",
+              "updated_at_ms",
+              "freshness",
+              "pending_entries",
+              "pending_corrections"
             ],
             "type": "object"
           },
@@ -46579,6 +46909,12 @@
                   }
                 ]
               },
+              "sources": {
+                "items": {
+                  "$ref": "#/$defs/UsageSourceSnapshot"
+                },
+                "type": "array"
+              },
               "state": {
                 "$ref": "#/$defs/CoverageState"
               },
@@ -46687,6 +47023,101 @@
             "required": [
               "refreshing",
               "refresh_failed"
+            ],
+            "type": "object"
+          },
+          "UsageSourceSnapshot": {
+            "additionalProperties": false,
+            "description": "A privacy-safe source label and the exact producer frontiers used by a report.",
+            "properties": {
+              "contract_version": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "format_version": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "freshness": {
+                "type": "string"
+              },
+              "generated_at_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "generation": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "journal_watermark": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "measured_execution_interval_sum_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "pending_corrections": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "pending_entries": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "refresh_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "source": {
+                "type": "string"
+              },
+              "source_watermark": {
+                "type": "string"
+              },
+              "updated_at_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "watermark": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "watermark_at_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "source",
+              "contract_version",
+              "format_version",
+              "source_watermark",
+              "generated_at_ms",
+              "generation",
+              "watermark",
+              "journal_watermark",
+              "watermark_at_ms",
+              "updated_at_ms",
+              "freshness",
+              "pending_entries",
+              "pending_corrections"
             ],
             "type": "object"
           },
@@ -50668,6 +51099,12 @@
                   }
                 ]
               },
+              "sources": {
+                "items": {
+                  "$ref": "#/$defs/UsageSourceSnapshot"
+                },
+                "type": "array"
+              },
               "state": {
                 "$ref": "#/$defs/CoverageState"
               },
@@ -50823,6 +51260,101 @@
             "required": [
               "refreshing",
               "refresh_failed"
+            ],
+            "type": "object"
+          },
+          "UsageSourceSnapshot": {
+            "additionalProperties": false,
+            "description": "A privacy-safe source label and the exact producer frontiers used by a report.",
+            "properties": {
+              "contract_version": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "format_version": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "freshness": {
+                "type": "string"
+              },
+              "generated_at_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "generation": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "journal_watermark": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "measured_execution_interval_sum_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "pending_corrections": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "pending_entries": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "refresh_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "source": {
+                "type": "string"
+              },
+              "source_watermark": {
+                "type": "string"
+              },
+              "updated_at_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "watermark": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "watermark_at_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "source",
+              "contract_version",
+              "format_version",
+              "source_watermark",
+              "generated_at_ms",
+              "generation",
+              "watermark",
+              "journal_watermark",
+              "watermark_at_ms",
+              "updated_at_ms",
+              "freshness",
+              "pending_entries",
+              "pending_corrections"
             ],
             "type": "object"
           }
@@ -51378,6 +51910,12 @@
                   }
                 ]
               },
+              "sources": {
+                "items": {
+                  "$ref": "#/$defs/UsageSourceSnapshot"
+                },
+                "type": "array"
+              },
               "state": {
                 "$ref": "#/$defs/CoverageState"
               },
@@ -51629,6 +52167,101 @@
             "required": [
               "refreshing",
               "refresh_failed"
+            ],
+            "type": "object"
+          },
+          "UsageSourceSnapshot": {
+            "additionalProperties": false,
+            "description": "A privacy-safe source label and the exact producer frontiers used by a report.",
+            "properties": {
+              "contract_version": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "format_version": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "freshness": {
+                "type": "string"
+              },
+              "generated_at_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "generation": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "journal_watermark": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "measured_execution_interval_sum_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "pending_corrections": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "pending_entries": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "refresh_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "source": {
+                "type": "string"
+              },
+              "source_watermark": {
+                "type": "string"
+              },
+              "updated_at_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "watermark": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "watermark_at_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "source",
+              "contract_version",
+              "format_version",
+              "source_watermark",
+              "generated_at_ms",
+              "generation",
+              "watermark",
+              "journal_watermark",
+              "watermark_at_ms",
+              "updated_at_ms",
+              "freshness",
+              "pending_entries",
+              "pending_corrections"
             ],
             "type": "object"
           },

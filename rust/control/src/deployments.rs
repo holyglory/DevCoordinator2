@@ -341,10 +341,87 @@ impl Deployments {
         path: Option<&str>,
         name: Option<&str>,
         deployment_id: Option<&str>,
+        candidate: Option<&devcoordinator2_api::params::DeploymentCandidateSource>,
         caller: &Caller,
     ) -> Result<devcoordinator2_api::results::DeploymentPreflight, ProtocolError> {
-        let target = self.resolve_target_readonly(path, name, deployment_id, caller)?;
-        Ok(self.prerequisites(&target))
+        let mut target = self.resolve_target_readonly(path, name, deployment_id, caller)?;
+        if let Some(candidate) = candidate {
+            if caller.identity.is_some() || caller.via_edge {
+                return Err(ProtocolError::new(
+                    ErrorCode::PermissionDenied,
+                    "candidate source selection requires a trusted local caller",
+                ));
+            }
+            let row = target.row.as_ref().ok_or_else(|| {
+                ProtocolError::new(
+                    ErrorCode::ParamsInvalid,
+                    "candidate source requires an existing deployment_id",
+                )
+            })?;
+            let resolved = crate::repository::resolve_worktree(
+                Path::new(&candidate.path),
+                Some((target.caller_uid, target.caller_gid)),
+            )?;
+            let repository_id =
+                crate::ids::repository_id(&resolved.repository_root).map_err(|_| {
+                    ProtocolError::new(
+                        ErrorCode::RepositoryNotFound,
+                        "cannot resolve candidate repository identity",
+                    )
+                })?;
+            if repository_id != target.repository_id {
+                return Err(ProtocolError::new(
+                    ErrorCode::ParamsInvalid,
+                    "candidate source must belong to the deployment repository",
+                ));
+            }
+            let specification =
+                load_deployment_spec(&resolved.worktree_root, &row.name).map_err(config_error)?;
+            if !specification
+                .sources
+                .iter()
+                .any(|source| source == &target.source)
+            {
+                return Err(ProtocolError::new(
+                    ErrorCode::RepositoryConfigInvalid,
+                    "candidate no longer declares the deployment source",
+                ));
+            }
+            target.worktree = resolved.worktree_root;
+            target.specification = specification;
+            if !matches!(candidate.commit.len(), 40 | 64)
+                || !candidate
+                    .commit
+                    .bytes()
+                    .all(|byte| byte.is_ascii_hexdigit())
+            {
+                return Err(ProtocolError::new(
+                    ErrorCode::ParamsInvalid,
+                    "candidate commit must be one full hexadecimal object ID",
+                ));
+            }
+        }
+        let mut result = self.prerequisites(&target);
+        if let Some(candidate) = candidate {
+            let snapshot = self
+                .git
+                .snapshot(&target.worktree, target.caller_uid, target.caller_gid)
+                .map_err(git_apply_error)?;
+            if snapshot.dirty || snapshot.commit.as_deref() != Some(candidate.commit.as_str()) {
+                result.ready = false;
+                result
+                    .blockers
+                    .push(devcoordinator2_api::results::DeploymentBlocker {
+                        component: String::new(),
+                        code: ErrorCode::DeploymentApplyFailed,
+                        file: None,
+                        message:
+                            "candidate source is dirty or no longer matches the expected commit"
+                                .into(),
+                    });
+            }
+        }
+        Ok(result)
     }
 
     fn docker_component(component: &ComponentSpec) -> bool {
@@ -739,12 +816,6 @@ impl Deployments {
                     "candidate source selection requires a trusted local caller",
                 ));
             }
-            if target.source != "checkout" {
-                return Err(ProtocolError::new(
-                    ErrorCode::ParamsInvalid,
-                    "candidate source requires a versioned checkout deployment",
-                ));
-            }
             if !matches!(candidate.commit.len(), 40 | 64)
                 || !candidate.commit.bytes().all(|b| b.is_ascii_hexdigit())
             {
@@ -778,11 +849,11 @@ impl Deployments {
             if !specification
                 .sources
                 .iter()
-                .any(|source| source == "checkout")
+                .any(|source| source == &target.source)
             {
                 return Err(ProtocolError::new(
                     ErrorCode::RepositoryConfigInvalid,
-                    "candidate no longer declares the versioned deployment",
+                    "candidate no longer declares the deployment source",
                 ));
             }
             // Keep the target identity, owner, leases and generation history. Only
@@ -1231,6 +1302,7 @@ impl Deployments {
         name: Option<&str>,
         deployment_id: Option<&str>,
         component: &str,
+        generation: Option<u32>,
         tail_lines: u16,
         caller: &Caller,
     ) -> Result<DeploymentLog, ProtocolError> {
@@ -1282,10 +1354,33 @@ impl Deployments {
             stored.binding_identity.as_deref(),
         ) {
             (ComponentKind::Process, _, _) => {
-                let (tail, truncated) = self
+                let selected_generation = generation
+                    .or(stored.generation)
+                    .or(row.current_generation)
+                    .ok_or_else(|| {
+                        ProtocolError::new(
+                            ErrorCode::DeploymentActionFailed,
+                            "process component has no generation-bound log",
+                        )
+                    })?;
+                let (mut tail, mut truncated) = self
                     .files
-                    .read_log_tail(&target.deployment_id, component, tail_lines)
+                    .read_generation_log_tail(
+                        &target.deployment_id,
+                        component,
+                        selected_generation,
+                        tail_lines,
+                    )
                     .map_err(file_action_error)?;
+                // Deployments created before generation-bound process logs may
+                // still have the legacy component log. Keep reads compatible
+                // while every new attempt is isolated by generation.
+                if tail.is_empty() && !truncated {
+                    (tail, truncated) = self
+                        .files
+                        .read_log_tail(&target.deployment_id, component, tail_lines)
+                        .map_err(file_action_error)?;
+                }
                 Ok(DeploymentLog {
                     deployment_id: Some(target.deployment_id),
                     component: component.into(),
@@ -3380,7 +3475,7 @@ impl Deployments {
                 }
                 let log_path = self
                     .files
-                    .log_path(&target.deployment_id, &component.name)
+                    .generation_log_path(&target.deployment_id, &component.name, generation)
                     .map_err(file_apply_error)?;
                 self.systemd
                     .start_persistent(&PersistentUnitSpec {
@@ -3978,21 +4073,27 @@ impl Deployments {
         }
         match binding.0.as_str() {
             "unit" => {
-                while launched.elapsed() < Duration::from_secs(1) {
-                    if let Some(reason) = terminal() {
-                        return Ok(Readiness::failed(reason));
+                let deadline = launched + timeout;
+                loop {
+                    let state = self
+                        .systemd
+                        .process_state(&binding.1)
+                        .map_err(systemd_error)?;
+                    if state.state == "running" {
+                        return Ok(Readiness::ready(format!("unit {}", state.active_state)));
+                    }
+                    if matches!(state.state.as_str(), "failed" | "stopped") {
+                        return Ok(Readiness::failed(format!("unit {}", state.active_state)));
+                    }
+                    if Instant::now() >= deadline {
+                        return Ok(Readiness::failed(format!(
+                            "unit {} did not become running within {} seconds",
+                            state.active_state,
+                            timeout.as_secs()
+                        )));
                     }
                     thread::sleep(Duration::from_millis(100));
                 }
-                let state = self
-                    .systemd
-                    .process_state(&binding.1)
-                    .map_err(systemd_error)?;
-                Ok(if state.state == "running" {
-                    Readiness::ready(format!("unit {}", state.active_state))
-                } else {
-                    Readiness::failed(format!("unit {}", state.active_state))
-                })
             }
             "container" => {
                 let identity = ExactContainerId::parse(binding.1.clone()).map_err(|_| {
@@ -4435,12 +4536,6 @@ impl Deployments {
         } else {
             (caller.uid, caller.gid)
         };
-        if row.source != "checkout" {
-            return Err(ProtocolError::new(
-                ErrorCode::DeploymentApplyFailed,
-                "candidate origin is only valid for a versioned checkout generation",
-            ));
-        }
         let worktree =
             crate::deployment_origin::resolve(origin, &row.repository_id, caller_uid, caller_gid)?;
         let specification = load_deployment_spec(&worktree, &row.name).map_err(config_error)?;
@@ -5559,6 +5654,7 @@ mod tests {
     struct MutationSystemd {
         actions: Mutex<Vec<String>>,
         states: Mutex<HashMap<String, String>>,
+        activation_polls: std::sync::atomic::AtomicUsize,
         build_exit: std::sync::atomic::AtomicI32,
         listener_hook: Mutex<Option<Box<dyn FnOnce() + Send>>>,
         reject_running_starts: std::sync::atomic::AtomicBool,
@@ -5569,6 +5665,7 @@ mod tests {
             Self {
                 actions: Mutex::new(Vec::new()),
                 states: Mutex::new(HashMap::new()),
+                activation_polls: std::sync::atomic::AtomicUsize::new(0),
                 build_exit: std::sync::atomic::AtomicI32::new(0),
                 listener_hook: Mutex::new(None),
                 reject_running_starts: std::sync::atomic::AtomicBool::new(false),
@@ -5619,15 +5716,38 @@ mod tests {
                 .lock()
                 .unwrap()
                 .push(format!("start:{}", specification.unit));
-            self.states
-                .lock()
-                .unwrap()
-                .insert(specification.unit.clone(), "running".into());
+            self.states.lock().unwrap().insert(
+                specification.unit.clone(),
+                if self.activation_polls.load(Ordering::SeqCst) > 0 {
+                    "activating"
+                } else {
+                    "running"
+                }
+                .into(),
+            );
             std::fs::write(&specification.log_path, "process output\n")
                 .map_err(|error| SystemdError::Operation(error.to_string()))
         }
 
         fn process_state(&self, unit: &str) -> Result<ProcessState, SystemdError> {
+            if self
+                .states
+                .lock()
+                .unwrap()
+                .get(unit)
+                .is_some_and(|state| state == "activating")
+            {
+                let remaining = self.activation_polls.load(Ordering::SeqCst);
+                if remaining > 0 {
+                    self.activation_polls.fetch_sub(1, Ordering::SeqCst);
+                    if remaining == 1 {
+                        self.states
+                            .lock()
+                            .unwrap()
+                            .insert(unit.into(), "running".into());
+                    }
+                }
+            }
             let state = self
                 .states
                 .lock()
@@ -6832,7 +6952,7 @@ image="cache:2"
             .unwrap();
         assert_eq!(started.state, "running");
         let logs = deployments
-            .logs(None, None, Some(&deployment_id), "cache", 20, &caller)
+            .logs(None, None, Some(&deployment_id), "cache", None, 20, &caller)
             .unwrap();
         assert!(logs.tail.starts_with("managed log "));
 
@@ -7076,12 +7196,28 @@ command=["serve"]
         assert_eq!(first.current_generation, Some(1));
         assert_eq!(first.components[0].binding.kind.as_deref(), Some("unit"));
         let build_log = deployments
-            .logs(None, None, Some(&first.deployment_id), "build", 20, &caller)
+            .logs(
+                None,
+                None,
+                Some(&first.deployment_id),
+                "build",
+                None,
+                20,
+                &caller,
+            )
             .unwrap();
         assert!(build_log.tail.contains("build stdout"));
         assert!(build_log.tail.contains("build stderr"));
         let process_log = deployments
-            .logs(None, None, Some(&first.deployment_id), "api", 20, &caller)
+            .logs(
+                None,
+                None,
+                Some(&first.deployment_id),
+                "api",
+                None,
+                20,
+                &caller,
+            )
             .unwrap();
         assert_eq!(process_log.tail, "process output");
 
@@ -7445,6 +7581,7 @@ route=true
                 None,
                 Some(&applied.deployment_id),
                 "stack",
+                None,
                 20,
                 &caller,
             )
@@ -7482,6 +7619,7 @@ route=true
                 None,
                 Some(&applied.deployment_id),
                 "build",
+                None,
                 500,
                 &caller,
             )
@@ -7887,7 +8025,7 @@ env_file=".web.env"
         };
         let before = repository_count();
         let preflight = deployments
-            .preflight(Some(path), Some("web"), None, &caller)
+            .preflight(Some(path), Some("web"), None, None, &caller)
             .unwrap();
         assert!(!preflight.ready);
         assert_eq!(preflight.blockers.len(), 2);
@@ -7940,7 +8078,7 @@ env_file=".web.env"
             revision = updated.active_revision;
             assert_eq!(
                 deployments
-                    .preflight(Some(path), Some("web"), None, &caller)
+                    .preflight(Some(path), Some("web"), None, None, &caller)
                     .unwrap()
                     .blockers
                     .len(),
@@ -7949,7 +8087,7 @@ env_file=".web.env"
         }
         docker.bridge_unavailable.store(true, Ordering::SeqCst);
         let blocked = deployments
-            .preflight(Some(path), Some("web"), None, &caller)
+            .preflight(Some(path), Some("web"), None, None, &caller)
             .unwrap();
         assert!(!blocked.ready);
         let docker_blocker = blocked

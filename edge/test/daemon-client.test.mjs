@@ -51,6 +51,19 @@ test('daemon client emits and accepts only the strict protocol-v3 envelope', asy
   assert.deepEqual(response.data, { runs: [] });
 });
 
+test('finite test starts are not cut off by the ordinary ten-second read lane', async () => {
+  const response = await fixture((socket, raw) => {
+    const request = JSON.parse(raw.subarray(0, -1));
+    setTimeout(() => socket.end(`${JSON.stringify({
+      protocol: 3,
+      id: request.id,
+      ok: true,
+      data: { run_id: 'tfixture', status: 'running' },
+    })}\n`), 30);
+  }, (client) => client.call('test.start', {}, 'owner@example.test'), { timeoutMs: 5 });
+  assert.equal(response.data.run_id, 'tfixture');
+});
+
 test('daemon client rejects old, mismatched, extra, and unframed responses', async () => {
   for (const response of [
     (id) => `${JSON.stringify({ protocol: 1, id, ok: true, result: {} })}\n`,

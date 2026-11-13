@@ -120,6 +120,7 @@ pub struct App {
     executor: Arc<dyn OperationExecutor>,
     installation_endpoint: Option<std::path::PathBuf>,
     request_slots: Arc<Semaphore>,
+    read_slots: Arc<Semaphore>,
     action_slots: Arc<Semaphore>,
     wait_preparations: Arc<Semaphore>,
     admission_handoffs: Arc<Semaphore>,
@@ -133,6 +134,7 @@ impl App {
             executor: Arc::new(PingExecutor { socket_display }),
             installation_endpoint: None,
             request_slots: Arc::new(Semaphore::new(16)),
+            read_slots: Arc::new(Semaphore::new(16)),
             action_slots: Arc::new(Semaphore::new(4)),
             wait_preparations: Arc::new(Semaphore::new(8)),
             admission_handoffs: Arc::new(Semaphore::new(4)),
@@ -145,6 +147,7 @@ impl App {
             executor,
             installation_endpoint: None,
             request_slots: Arc::new(Semaphore::new(16)),
+            read_slots: Arc::new(Semaphore::new(16)),
             action_slots: Arc::new(Semaphore::new(4)),
             wait_preparations: Arc::new(Semaphore::new(8)),
             admission_handoffs: Arc::new(Semaphore::new(4)),
@@ -238,8 +241,13 @@ impl App {
                 ),
             );
         }
+        let operation = request.operation;
         let slots = if long_running {
             &self.action_slots
+        } else if devcoordinator2_api::operation(&operation)
+            .is_some_and(|definition| definition.policy.read_only())
+        {
+            &self.read_slots
         } else {
             &self.request_slots
         };
@@ -247,7 +255,6 @@ impl App {
             Ok(permit) => permit,
             Err(_) => return ResponseEnvelope::failure(id, overloaded()),
         };
-        let operation = request.operation;
         let params = request.params;
         let executor = Arc::clone(&self.executor);
         response_from_result(

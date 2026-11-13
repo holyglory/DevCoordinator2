@@ -939,6 +939,7 @@ handlers! { self,params,caller,now,actor,administrator,repository,operation;
                     params.path.as_deref(),
                     params.name.as_deref(),
                     params.deployment_id.as_deref(),
+                    params.candidate.as_ref(),
                     caller,
                 )
             };
@@ -1130,6 +1131,7 @@ handlers! { self,params,caller,now,actor,administrator,repository,operation;
                     params.name.as_deref(),
                     params.deployment_id.as_deref(),
                     &params.component,
+                    params.generation,
                     params.tail_lines,
                     caller,
                 )
