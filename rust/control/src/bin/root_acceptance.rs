@@ -6540,30 +6540,96 @@ fn case_event_wait_replays_planning_and_groups_heartbeats(world: &mut World) -> 
         .to_owned();
     world.wait_status(&["passed"], Duration::from_secs(30))?;
     world.wait_units_empty(Duration::from_secs(10))?;
-    let test_events = world.call(
-        "event.wait",
-        json!({
-            "cursor":0,
-            "filters":[{
-                "filter_id":"tests",
-                "categories":["test"],
-                "repository_ids":[repository_id]
-            }]
-        }),
-    )?;
-    let test_events = data(&test_events)?;
+    let event_deadline = Instant::now() + Duration::from_secs(10);
+    let deadline_at = (time::OffsetDateTime::now_utc() + time::Duration::seconds(10))
+        .format(&time::format_description::well_known::Rfc3339)
+        .map_err(|error| format!("cannot format lifecycle event deadline: {error}"))?;
+    let run_id = test_run_id(data(&started)?)?.to_owned();
+    let mut cursor = 0_u64;
+    let mut lifecycle = Vec::new();
+    while lifecycle.len() < 2 {
+        ensure!(
+            Instant::now() < event_deadline,
+            "native test lifecycle events did not arrive before their deadline"
+        );
+        let response = world.call(
+            "event.wait",
+            json!({
+                "cursor":cursor,
+                "limit":1,
+                "filters":[{
+                    "filter_id":"tests",
+                    "categories":["test"],
+                    "kinds":["test.started","test.finished"],
+                    "repository_ids":[repository_id],
+                    "deadline_at":deadline_at
+                }]
+            }),
+        )?;
+        let response = data(&response)?;
+        let events = response["events"]
+            .as_array()
+            .ok_or("event.wait omitted events")?;
+        ensure!(
+            events.len() == 1,
+            "event.wait returned an empty or multi-event lifecycle batch"
+        );
+        let event = &events[0];
+        ensure!(
+            event["filter_ids"] == json!(["tests"]),
+            "test lifecycle event matched an unexpected filter"
+        );
+        let event_cursor = event
+            .pointer("/event/cursor")
+            .and_then(Value::as_u64)
+            .ok_or("test lifecycle event omitted cursor")?;
+        let next_cursor = response["cursor"]
+            .as_u64()
+            .ok_or("event.wait omitted cursor")?;
+        ensure!(
+            next_cursor == event_cursor && next_cursor > cursor,
+            "event.wait cursor did not advance monotonically"
+        );
+        let event_run_id = event
+            .pointer("/event/event/data/run_id")
+            .and_then(Value::as_str)
+            .ok_or("test lifecycle event omitted run_id")?;
+        let event_repository_id = event
+            .pointer("/event/event/data/repository_id")
+            .and_then(Value::as_str)
+            .ok_or("test lifecycle event omitted repository_id")?;
+        ensure!(
+            event_run_id == run_id && event_repository_id == repository_id,
+            "test lifecycle event did not preserve the admitted run identity"
+        );
+        let kind = event
+            .pointer("/event/event/data/kind")
+            .and_then(Value::as_str)
+            .ok_or("test lifecycle event omitted kind")?;
+        match lifecycle.len() {
+            0 => ensure!(
+                kind == "test.started"
+                    && event.pointer("/event/event/data/status") == Some(&json!("running")),
+                "test lifecycle did not begin with a running event"
+            ),
+            1 => ensure!(
+                kind == "test.finished"
+                    && event.pointer("/event/event/data/status") == Some(&json!("passed"))
+                    && event.pointer("/event/event/data/exit_code") == Some(&json!(0)),
+                "test lifecycle did not finish with the admitted run"
+            ),
+            _ => unreachable!(),
+        }
+        ensure!(
+            !event.to_string().contains("caller_uid") && !event.to_string().contains("client"),
+            "test event disclosed caller attribution"
+        );
+        lifecycle.push(kind.to_owned());
+        cursor = next_cursor;
+    }
     ensure!(
-        test_events["events"].as_array().is_some_and(|events| {
-            events.len() == 2
-                && events[0].pointer("/event/event/data/kind") == Some(&json!("test.started"))
-                && events[1].pointer("/event/event/data/kind") == Some(&json!("test.finished"))
-        }),
+        lifecycle == ["test.started", "test.finished"],
         "native test lifecycle events were not delivered in cursor order"
-    );
-    ensure!(
-        !test_events.to_string().contains("caller_uid")
-            && !test_events.to_string().contains("client"),
-        "test event disclosed caller attribution"
     );
     let created = world.call(
         "task.create",
