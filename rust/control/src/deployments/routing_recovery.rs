@@ -75,10 +75,9 @@ pub(crate) fn restore_route(
         work: None,
         identity: None,
     };
-    let mut target =
-        deployments.resolve_target_readonly(None, None, Some(deployment_id), &caller)?;
-    // Recovery is bound to the saved declaration. If the checkout changed,
-    // leave the route for an explicit apply instead of replaying new config.
+    let target = deployments.resolve_recorded_target(deployment_id, &caller)?;
+    // Recovery uses the saved deployment and component fingerprint for the
+    // applied generation, independently of later declaration edits.
     let saved_spec: serde_json::Value = serde_json::from_str(&row.spec_json).map_err(|_| {
         ProtocolError::new(
             ErrorCode::InternalError,
@@ -107,10 +106,6 @@ pub(crate) fn restore_route(
     {
         return Ok(Recovery::NotApplicable);
     }
-    // Restart recovery is bound to the applied generation. The checkout may
-    // have changed since apply; do not reject recovery or prove health against
-    // the newer, unapplied declaration.
-    target.specification = stored_deployment_specification(&row)?;
     let identity = stored.binding_identity.clone().ok_or_else(|| {
         ProtocolError::new(
             ErrorCode::DeploymentActionFailed,

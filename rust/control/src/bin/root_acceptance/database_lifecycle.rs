@@ -1,6 +1,7 @@
 //! Real shared-fixture ownership, retained retry, and crash recovery.
 
 use super::*;
+use devcoordinator2_control::docker::{DockerCli, DockerControl, ExactContainerId};
 
 pub(super) fn shared_ownership_and_recovery(world: &mut World) -> Result<(), String> {
     let (listener, gate) = database_case_gate(world)?;
@@ -237,4 +238,108 @@ pub(super) fn retain_start_response(
     file.write_all(&payload)
         .and_then(|()| file.sync_all())
         .map_err(|error| error.to_string())
+}
+
+pub(super) fn completed_receipt_and_renamed_intent(world: &mut World) -> Result<(), String> {
+    let (listener, gate) = database_case_gate(world)?;
+    let command = command_json(&fixture_command(
+        world,
+        &["hold-socket", gate.to_str().ok_or("invalid gate path")?],
+    ))?;
+    world.write_config(&format!("schema=2\n[test.owned]\ntimeout_seconds=120\n[[test.owned.check]]\nname=\"unit\"\ntier=\"release\"\ncommand={command}\ntimeout_seconds=90\n"))?;
+    world.git(&["add", "."])?;
+    world.git(&["commit", "-qm", "owned receipt recovery fixture"])?;
+    DockerCli::default()
+        .ensure_image("postgres:16-alpine")
+        .map_err(|_| "container fixture image is unavailable")?;
+    let started = world.start_fresh(json!({"path":world.repo,"test":"owned"}), None)?;
+    retain_start_response(world, "start-before-recovery", &started)?;
+    let _socket = await_database_case(&listener)?;
+    let run = test_run_id(&started)?.to_owned();
+    let create = json!({"path":world.repo,"run_id":run,"check":"unit","image":"postgres:16-alpine","command":["true"]});
+    let created = world.call("test.container.create", create.clone())?;
+    let first = data(&created)?["record"]["container_id"]
+        .as_str()
+        .ok_or("created container identity missing")?
+        .to_owned();
+    let reference = json!({"path":world.repo,"run_id":run,"check":"unit","container_id":first});
+    let removed = world.call("test.container.remove", reference.clone())?;
+    let before = data(&removed)?["record"].clone();
+    let mut failures = Vec::new();
+    let refused = world.call("test.container.start", reference.clone())?;
+    if refused["ok"] != false {
+        failures.push("removed container could be started");
+    }
+    let after = world.call("test.container.inspect", reference.clone())?;
+    if data(&after)?["record"] != before {
+        failures.push("refused start rewrote completed cleanup evidence");
+    }
+    data(&world.call("test.container.retry", reference)?)?;
+
+    let created = world.call("test.container.create", create)?;
+    let created = data(&created)?["record"].clone();
+    let id = created["container_id"]
+        .as_str()
+        .ok_or("second container identity missing")?
+        .to_owned();
+    let name = created["name"]
+        .as_str()
+        .ok_or("second container name missing")?
+        .to_owned();
+    world.stop_daemon(true)?;
+    let path = world
+        .repo
+        .join(".devcoordinator/test/containers/pending")
+        .join(&run)
+        .join("container-lifecycle.json");
+    let mut records: Value =
+        serde_json::from_slice(&fs::read(&path).map_err(|_| "pending receipt missing")?)
+            .map_err(|_| "pending receipt invalid")?;
+    let record = records
+        .as_array_mut()
+        .ok_or("pending receipt must be an array")?
+        .iter_mut()
+        .find(|record| record["container_id"] == id)
+        .ok_or("pending exact identity missing")?;
+    record["container_id"] = json!("0".repeat(64));
+    record["cleanup_status"] = json!("cleanup_pending");
+    record["cleanup_attempts"] = json!([]);
+    fs::write(
+        &path,
+        serde_json::to_vec(&records).map_err(|_| "cannot encode pending intent")?,
+    )
+    .map_err(|_| "cannot retain pending intent")?;
+    run_status("docker", &["rename", &id, &format!("{name}-renamed")])?;
+    world.start_daemon(None, None, None)?;
+    world.wait_run_status(&started, &["interrupted"], Duration::from_secs(30))?;
+    let intent =
+        json!({"path":world.repo,"run_id":run,"check":"unit","container_id":"0".repeat(64)});
+    let inspected = world.call("test.container.inspect", intent.clone())?;
+    let exact =
+        ExactContainerId::parse(id.clone()).map_err(|_| "invalid exact fixture identity")?;
+    let alive = DockerCli::default()
+        .container_present(&exact)
+        .map_err(|_| "cannot inspect exact fixture")?;
+    if !alive || data(&inspected)?["record"]["cleanup_status"] == "cleanup_complete" {
+        failures.push("renamed labelled container lost its unresolved ownership intent");
+    }
+    run_status("docker", &["rename", &id, &name])?;
+    let retried = world.call("test.container.retry", intent)?;
+    let absent = !DockerCli::default()
+        .container_present(&exact)
+        .map_err(|_| "cannot verify exact fixture absence")?;
+    if data(&retried)?["record"]["container_id"] != id
+        || data(&retried)?["record"]["cleanup_status"] != "cleanup_complete"
+        || !absent
+    {
+        failures.push("restored pending intent could not finish exact cleanup");
+    }
+    if !absent {
+        remove_fixture_container(&world.unit_prefix, &id)?;
+    }
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(failures.join("; "))
+    }
 }

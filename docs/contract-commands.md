@@ -132,6 +132,14 @@ template can outlive the run that created it, so that run does not owe template
 removal while the pool still owns it. Process death releases the lease and
 startup recovery reconciles its persisted exact identity.
 
+Finalization seals new container creation before taking its cleanup snapshot.
+Already admitted creation remains visible through its persisted intent and
+operation lease; if it is still active, the run retains a pending cleanup
+obligation and cannot pass. Ordinary mid-run cleanup leaves creation open.
+A refused start of a removed container preserves its completed receipt, and
+any unresolved matching-label candidate keeps crash recovery incomplete even
+when its original name is absent.
+
 Ownership survives replacement of `current/` in one per-run record under
 `.devcoordinator/test/containers/pending/<run-id>/`. After every container is
 proven absent and all leases are released, that directory moves atomically to

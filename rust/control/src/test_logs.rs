@@ -725,6 +725,29 @@ mod tests {
                 .archive_container_run(&worktree, run_id, &directory)
                 .unwrap();
         }
+        {
+            let directory = store
+                .open_container_run(
+                    &worktree,
+                    &runs[5].0,
+                    Some((
+                        rustix::process::getuid().as_raw(),
+                        rustix::process::getgid().as_raw(),
+                    )),
+                )
+                .unwrap()
+                .unwrap();
+            store
+                .archive_container_run(&worktree, &runs[5].0, &directory)
+                .unwrap();
+        }
+        assert!(
+            store
+                .open_container_run(&worktree, &runs[5].0, None)
+                .unwrap()
+                .is_none(),
+            "a creation refused after allocation must not leave an empty ownership directory"
+        );
         // An unfinished feedback task protects an old run without loading the
         // historical feedback or delivery catalog into this maintenance page.
         database.transaction(|tx|{

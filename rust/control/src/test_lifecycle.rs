@@ -518,6 +518,10 @@ impl TestLifecycle {
             return Ok(());
         };
         let (uid, gid) = self.inner.store.owner(&current).map_err(state_error)?;
+        self.inner
+            .store
+            .seal_container_creation(worktree, &current, &summary.run_id, uid, gid)
+            .map_err(state_error)?;
         let cleanup_caller = Caller {
             via_edge: false,
             pid: 0,
@@ -2286,6 +2290,17 @@ impl TestLifecycle {
         {
             return;
         }
+        let creation_sealed = self
+            .inner
+            .store
+            .seal_container_creation(
+                &handle.worktree,
+                &handle.current,
+                &handle.run_id,
+                handle.caller_uid,
+                handle.caller_gid,
+            )
+            .is_ok();
         let (report, report_issue) = self.report_snapshot(handle, true);
         let properties = self
             .inner
@@ -2354,7 +2369,9 @@ impl TestLifecycle {
         let container_cleanup_complete = container_cleanup
             .as_ref()
             .is_ok_and(|summary| summary.cleanup_completed && summary.failed_operations == 0);
-        if (!fixtures_cleaned || !container_cleanup_complete) && status == TestStatus::Passed {
+        if (!creation_sealed || !fixtures_cleaned || !container_cleanup_complete)
+            && status == TestStatus::Passed
+        {
             status = TestStatus::Failed;
         }
         self.remove_containers(
@@ -2403,6 +2420,10 @@ impl TestLifecycle {
                 Some(devcoordinator2_api::test_containers::ContainerCleanupStatus::Failed);
             summary.container_lifecycle_ref =
                 Some(crate::test_state::CONTAINER_LIFECYCLE_FILE.into());
+        }
+        if !creation_sealed {
+            summary.container_cleanup_status =
+                Some(devcoordinator2_api::test_containers::ContainerCleanupStatus::Failed);
         }
         let mut retry_evidence_written = true;
         if let Some(report) = report

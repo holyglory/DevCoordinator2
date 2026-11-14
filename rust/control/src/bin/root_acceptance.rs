@@ -7386,6 +7386,10 @@ fn cases() -> Vec<Case> {
             database_lifecycle::shared_ownership_and_recovery,
         ),
         (
+            "container_receipt_monotonicity_and_pending_intent_recovery",
+            database_lifecycle::completed_receipt_and_renamed_intent,
+        ),
+        (
             "failed_component_is_degraded_and_busy_is_immediate",
             case_failed_component_is_degraded_and_busy_is_immediate,
         ),

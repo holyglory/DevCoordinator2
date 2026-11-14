@@ -25,6 +25,7 @@ pub const SUMMARY_FILE: &str = "summary.json";
 pub const ENV_FILE: &str = "env";
 pub const CONTAINERS_FILE: &str = "containers.json";
 pub const CONTAINER_LIFECYCLE_FILE: &str = "container-lifecycle.json";
+const CONTAINER_CREATION_CLOSED_FILE: &str = "container-creation-closed.json";
 const HISTORY_FILE: &str = "history.json";
 const EVIDENCE_FILE: &str = "evidence.json";
 const JSON_LIMIT: u64 = 2 * 1024 * 1024;
@@ -408,6 +409,45 @@ impl TestRunStore {
         Ok(read_json::<Vec<String>>(current, CONTAINERS_FILE)?.unwrap_or_default())
     }
 
+    pub(crate) fn seal_container_creation(
+        &self,
+        worktree: &Path,
+        current: &File,
+        run_id: &str,
+        uid: u32,
+        gid: u32,
+    ) -> Result<(), TestStateError> {
+        validate_run_id(run_id)?;
+        // Serialize with intent publication when ownership already exists;
+        // never allocate ownership metadata just to close an empty run.
+        let _ownership = self.open_container_run(worktree, run_id, None)?;
+        atomic_json(
+            current,
+            CONTAINER_CREATION_CLOSED_FILE,
+            &run_id,
+            0o600,
+            uid,
+            gid,
+        )
+    }
+
+    pub(crate) fn container_creation_open(
+        &self,
+        worktree: &Path,
+        run_id: &str,
+    ) -> Result<bool, TestStateError> {
+        let Some(current) = self.open_current(worktree)? else {
+            return Ok(false);
+        };
+        let Some(summary) = read_json::<TestSummary>(&current, SUMMARY_FILE)? else {
+            return Ok(false);
+        };
+        validate_summary(&summary)?;
+        Ok(summary.run_id == run_id
+            && summary.status == TestStatus::Running
+            && read_json::<String>(&current, CONTAINER_CREATION_CLOSED_FILE)?.is_none())
+    }
+
     /// Retain daemon-owned temporary-container records separately from the
     /// legacy database-fixture ID list.  Keeping a typed record lets cleanup be
     /// retried after a daemon restart without trusting a caller-supplied ID.
@@ -558,12 +598,10 @@ impl TestRunStore {
         directory: &File,
     ) -> Result<(), TestStateError> {
         let records = self.read_container_records(directory)?;
-        if records.is_empty()
-            || records.iter().any(|record| {
-                record.cleanup_status
-                    != devcoordinator2_api::test_containers::ContainerCleanupStatus::Complete
-            })
-        {
+        if records.iter().any(|record| {
+            record.cleanup_status
+                != devcoordinator2_api::test_containers::ContainerCleanupStatus::Complete
+        }) {
             return Ok(());
         }
         let mut leases = Vec::new();
@@ -596,7 +634,8 @@ impl TestRunStore {
                 "container ownership directory changed".into(),
             ));
         }
-        if read_json::<bool>(directory, "retention-expired.json")?.unwrap_or(false)
+        if records.is_empty()
+            || read_json::<bool>(directory, "retention-expired.json")?.unwrap_or(false)
             || open_chain(&test, &["logs", "runs", run_id])?.is_none()
         {
             // Its ordinary run retention already expired while cleanup was

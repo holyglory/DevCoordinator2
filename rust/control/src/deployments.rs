@@ -346,7 +346,16 @@ impl Deployments {
         candidate: Option<&devcoordinator2_api::params::DeploymentCandidateSource>,
         caller: &Caller,
     ) -> Result<devcoordinator2_api::results::DeploymentPreflight, ProtocolError> {
-        let mut target = self.resolve_target_readonly(path, name, deployment_id, caller)?;
+        let mut target = match (candidate, deployment_id) {
+            (Some(_), Some(id)) => self.resolve_recorded_target(id, caller)?,
+            (Some(_), None) => {
+                return Err(ProtocolError::new(
+                    ErrorCode::ParamsInvalid,
+                    "candidate source requires an existing deployment_id",
+                ));
+            }
+            (None, _) => self.resolve_target_readonly(path, name, deployment_id, caller)?,
+        };
         if let Some(candidate) = candidate {
             if caller.identity.is_some() || caller.via_edge {
                 return Err(ProtocolError::new(
@@ -809,7 +818,14 @@ impl Deployments {
                 "candidate source requires an existing deployment_id",
             ));
         }
-        let mut target = self.resolve_target(path, name, deployment_id, caller)?;
+        let mut target = if candidate.is_some() {
+            self.resolve_recorded_target(
+                deployment_id.expect("candidate identity checked"),
+                caller,
+            )?
+        } else {
+            self.resolve_target(path, name, deployment_id, caller)?
+        };
         let mut source_origin = None;
         if let Some(candidate) = candidate {
             if caller.identity.is_some() || caller.via_edge {
@@ -1125,7 +1141,11 @@ impl Deployments {
         deployment_id: Option<&str>,
         caller: &Caller,
     ) -> Result<DeploymentStatus, ProtocolError> {
-        let mut target = self.resolve_target(path, name, deployment_id, caller)?;
+        let mut target = if let Some(id) = deployment_id {
+            self.resolve_recorded_target(id, caller)?
+        } else {
+            self.resolve_target(path, name, None, caller)?
+        };
         let row = target
             .row
             .as_ref()
@@ -1243,12 +1263,16 @@ impl Deployments {
         {
             return self.control_observed(action, deployment_id, component);
         }
-        let mut target = self.resolve_target(path, name, deployment_id, caller)?;
+        let mut target = if let Some(id) = deployment_id {
+            self.resolve_recorded_target(id, caller)?
+        } else {
+            self.resolve_target(path, name, None, caller)?
+        };
         let row = target
             .row
             .clone()
             .ok_or_else(|| not_found(&target.deployment_id))?;
-        if matches!(action, "start" | "restart") {
+        if matches!(action, "start" | "restart") && deployment_id.is_none() {
             // Runtime controls must use the exact specification recorded by
             // the applied generation. The checkout may have changed since
             // that generation was applied; reading it here would silently
@@ -1367,12 +1391,16 @@ impl Deployments {
             }
             return self.observed_logs(deployment_id, component, tail_lines);
         }
-        let target = self.resolve_target(
-            params.path.as_deref(),
-            params.name.as_deref(),
-            params.deployment_id.as_deref(),
-            caller,
-        )?;
+        let target = if let Some(id) = params.deployment_id.as_deref() {
+            self.resolve_recorded_target(id, caller)?
+        } else {
+            self.resolve_target_readonly(
+                params.path.as_deref(),
+                params.name.as_deref(),
+                None,
+                caller,
+            )?
+        };
         let row = target
             .row
             .as_ref()
@@ -1557,7 +1585,11 @@ impl Deployments {
         if let Some(deployment_id) = deployment_id {
             self.reject_observed_configuration(deployment_id)?;
         }
-        let target = self.resolve_target(path, name, deployment_id, caller)?;
+        let target = if let Some(id) = deployment_id {
+            self.resolve_recorded_target(id, caller)?
+        } else {
+            self.resolve_target(path, name, None, caller)?
+        };
         let row = target
             .row
             .clone()
@@ -4680,6 +4712,51 @@ impl Deployments {
         Ok(target)
     }
 
+    /// Runtime controls and retained diagnostics use the applied declaration.
+    /// Current-source parsing belongs to desired-source validation instead.
+    fn resolve_recorded_target(
+        &self,
+        deployment_id: &str,
+        caller: &Caller,
+    ) -> Result<DeploymentTarget, ProtocolError> {
+        let row = self
+            .store
+            .get(deployment_id)?
+            .ok_or_else(|| not_found(deployment_id))?;
+        let worktree = self.worktree_path(&row.worktree_id)?;
+        let specification = stored_deployment_specification(&row)?;
+        Self::target_from_record(row, worktree, specification, caller)
+    }
+
+    fn target_from_record(
+        row: DeploymentRow,
+        worktree: PathBuf,
+        specification: DeploymentSpec,
+        caller: &Caller,
+    ) -> Result<DeploymentTarget, ProtocolError> {
+        let (caller_uid, caller_gid) = if caller.is_console() {
+            (
+                row.created_by_uid,
+                primary_gid(row.created_by_uid).map_err(systemd_error)?,
+            )
+        } else {
+            (caller.uid, caller.gid)
+        };
+        Ok(DeploymentTarget {
+            deployment_id: row.deployment_id.clone(),
+            repository_id: row.repository_id.clone(),
+            worktree_id: row.worktree_id.clone(),
+            source: row.source.clone(),
+            row: Some(row),
+            worktree,
+            specification,
+            caller_uid,
+            caller_gid,
+            client: client_kind_name(caller.client_kind).into(),
+            session: caller.client_session.clone(),
+        })
+    }
+
     fn resolve_target_readonly(
         &self,
         path: Option<&str>,
@@ -4704,27 +4781,7 @@ impl Deployments {
                     "recorded deployment source is no longer declared",
                 ));
             }
-            let (caller_uid, caller_gid) = if caller.is_console() {
-                (
-                    row.created_by_uid,
-                    primary_gid(row.created_by_uid).map_err(systemd_error)?,
-                )
-            } else {
-                (caller.uid, caller.gid)
-            };
-            return Ok(DeploymentTarget {
-                deployment_id: row.deployment_id.clone(),
-                repository_id: row.repository_id.clone(),
-                worktree_id: row.worktree_id.clone(),
-                source: row.source.clone(),
-                row: Some(row),
-                worktree,
-                specification,
-                caller_uid,
-                caller_gid,
-                client: client_kind_name(caller.client_kind).into(),
-                session: caller.client_session.clone(),
-            });
+            return Self::target_from_record(row, worktree, specification, caller);
         }
         if caller.identity.is_some() {
             return Err(ProtocolError::new(
@@ -7174,9 +7231,12 @@ image="cache:1"
         );
         assert!(first_path.is_dir());
 
-        let rolled = deployments
-            .rollback(None, None, Some(&first.deployment_id), &caller)
-            .unwrap();
+        let declaration = worktree.join(".devcoordinator.toml");
+        let original = std::fs::read(&declaration).unwrap();
+        std::fs::write(&declaration, "schema = [\n").unwrap();
+        let rolled = deployments.rollback(None, None, Some(&first.deployment_id), &caller);
+        std::fs::write(&declaration, original).unwrap();
+        let rolled = rolled.expect("recorded rollback must not parse the editable declaration");
         assert_eq!(rolled.rolled_back_from, Some(2));
         assert_eq!(rolled.rolled_back_to, Some(1));
         assert_eq!(rolled.current_generation, Some(3));
@@ -7186,6 +7246,7 @@ image="cache:1"
             "a".repeat(40)
         );
 
+        std::fs::remove_file(&declaration).unwrap();
         deployments
             .remove(None, None, Some(&first.deployment_id), false, &caller)
             .unwrap();
@@ -7886,9 +7947,59 @@ database="app"
         assert_eq!(failure.code, ErrorCode::DeploymentActionFailed);
         assert!(failure.message.contains("PostgreSQL host port"));
 
-        let removed = deployments
-            .remove(None, None, Some(&applied.deployment_id), true, &caller)
-            .unwrap();
+        let declaration = worktree.join(".devcoordinator.toml");
+        let original = std::fs::read(&declaration).unwrap();
+        std::fs::write(&declaration, "schema = [\n").unwrap();
+        let kept = deployments.remove(None, None, Some(&applied.deployment_id), false, &caller);
+        std::fs::write(&declaration, &original).unwrap();
+        let mut failures = Vec::new();
+        match kept {
+            Ok(kept) => {
+                assert!(!kept.data_deleted);
+                assert!(kept.deleted_volumes.is_empty());
+                assert!(secret.exists());
+                assert!(
+                    !docker
+                        .actions
+                        .lock()
+                        .unwrap()
+                        .iter()
+                        .any(|action| action.contains("volume-remove:"))
+                );
+                host_tcp_ready.store(true, Ordering::SeqCst);
+                let reapplied = deployments
+                    .apply(
+                        Some(worktree.to_str().unwrap()),
+                        Some("database"),
+                        None,
+                        &caller,
+                    )
+                    .unwrap();
+                assert_eq!(reapplied.deployment_id, applied.deployment_id);
+            }
+            Err(error) => failures.push(format!(
+                "retaining data with malformed declaration: {}",
+                error.code
+            )),
+        }
+        std::fs::remove_file(&declaration).unwrap();
+        let removed = deployments.remove(None, None, Some(&applied.deployment_id), true, &caller);
+        std::fs::write(&declaration, original).unwrap();
+        let removed = match removed {
+            Ok(removed) => Some(removed),
+            Err(error) => {
+                failures.push(format!(
+                    "deleting data with removed declaration: {}",
+                    error.code
+                ));
+                None
+            }
+        };
+        assert!(
+            failures.is_empty(),
+            "recorded removal depends on editable source: {failures:?}"
+        );
+        let removed = removed.unwrap();
         assert!(removed.data_deleted);
         assert_eq!(removed.deleted_volumes.len(), 1);
         assert!(!secret.exists());
@@ -8020,6 +8131,28 @@ shared_from="{owner_id}/db"
         assert_eq!(consumer.components[0].port, None);
         assert!(!consumer.components[0].owned);
         assert_eq!(consumer.components[0].health, "healthy");
+
+        let declaration = worktree.join(".devcoordinator.toml");
+        let original = std::fs::read(&declaration).unwrap();
+        std::fs::write(&declaration, "schema = [\n").unwrap();
+        let mut failures = Vec::new();
+        for delete_data in [false, true] {
+            let refused = deployments
+                .remove(None, None, Some(&owner_id), delete_data, &caller)
+                .unwrap_err();
+            if refused.code != ErrorCode::DeploymentActionFailed
+                || !refused.message.contains("PostgreSQL owner")
+            {
+                failures.push(format!("delete_data={delete_data}: {}", refused.code));
+            }
+            assert!(deployments.store.get(&owner_id).unwrap().is_some());
+            assert!(deployments.store.get(&consumer_id).unwrap().is_some());
+        }
+        std::fs::write(&declaration, original).unwrap();
+        assert!(
+            failures.is_empty(),
+            "recorded owner protection was unreachable: {failures:?}"
+        );
 
         crate::ports::release(&database, &owner_id, None, Some("db")).unwrap();
         crate::ports::lease_with_availability(

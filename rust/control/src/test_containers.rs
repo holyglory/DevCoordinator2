@@ -265,12 +265,14 @@ impl TestContainerService {
                 let candidates = self.docker.list_ids_by_labels(&record.labels)?;
                 let mut owned = Vec::new();
                 for id in candidates {
-                    if self
-                        .inspect_owned(&id, &record.labels, &record.name)
-                        .is_ok()
-                    {
-                        owned.push(id);
-                    }
+                    self.inspect_owned(&id, &record.labels, &record.name).map_err(|error| {
+                        if error.recovery.as_ref().is_some_and(|recovery| recovery.retryable) {
+                            DockerError::Command("owned creation intent candidate inspection is unavailable".into())
+                        } else {
+                            DockerError::InvalidTarget("owned creation intent candidate failed exact name or ownership inspection".into())
+                        }
+                    })?;
+                    owned.push(id);
                 }
                 if owned.len() > 1 {
                     return Err(DockerError::InvalidTarget(
@@ -485,7 +487,6 @@ impl TestContainerService {
         let (records, index) = self.find_record(&context, &params)?;
         let mut record = records[index].clone();
         self.verify_record(&record, &context)?;
-        let id = exact_id(&record.container_id)?;
         let _lease = self
             .store
             .container_lease(&context.records, &record.owner_token, false)
@@ -497,6 +498,23 @@ impl TestContainerService {
                 )
             })?;
         context.unlock()?;
+        record = self
+            .current_records(&context)?
+            .into_iter()
+            .find(|value| value.owner_token == record.owner_token)
+            .ok_or_else(ownership_error)?;
+        self.verify_record(&record, &context)?;
+        if record.cleanup_status == ContainerCleanupStatus::Complete {
+            return Err(ProtocolError::new(
+                ErrorCode::TestStartFailed,
+                "completed temporary container cannot be started",
+            ));
+        }
+        let id = exact_id(&record.container_id)?;
+        if id.as_str() != params.container_id {
+            return Err(ownership_error());
+        }
+        self.require_creation_open(&context.worktree, &context.run_id)?;
         if let Err(error) = self.inspect_owned(&id, &record.labels, &record.name) {
             record.operation_failed = true;
             record.cleanup_status = ContainerCleanupStatus::Failed;
@@ -842,6 +860,9 @@ impl TestContainerService {
             .map(|current| self.store.owner(current))
             .transpose()
             .map_err(state_error)?;
+        if create {
+            self.require_creation_open(&worktree, run_id)?;
+        }
         let mut records = self
             .store
             .open_container_run(&worktree, run_id, None)
@@ -894,6 +915,9 @@ impl TestContainerService {
                 .retire_legacy_container_receipts(current, &durable, uid, gid)
                 .map_err(state_error)?;
         }
+        if create {
+            self.require_creation_open(&worktree, run_id)?;
+        }
         let status = summary
             .filter(|summary| summary.run_id == run_id)
             .map_or(TestStatus::Interrupted, |summary| summary.status);
@@ -909,6 +933,21 @@ impl TestContainerService {
             run_id: run_id.into(),
             check: check.into(),
         })
+    }
+
+    fn require_creation_open(&self, worktree: &Path, run_id: &str) -> Result<(), ProtocolError> {
+        if self
+            .store
+            .container_creation_open(worktree, run_id)
+            .map_err(state_error)?
+        {
+            Ok(())
+        } else {
+            Err(ProtocolError::new(
+                ErrorCode::TestStartFailed,
+                "governed test no longer accepts container creation or starts",
+            ))
+        }
     }
 
     fn current_records(
@@ -1007,9 +1046,8 @@ impl TestContainerService {
             return Ok(false);
         };
         Ok(self.records(&directory)?.iter().any(|record| {
-            record.labels == actual.labels
-                && record.name == actual.name
-                && (record.container_id == id.as_str() || record.container_id == "0".repeat(64))
+            record.container_id == id.as_str()
+                || (record.container_id == "0".repeat(64) && record.labels == actual.labels)
         }))
     }
 
@@ -1065,7 +1103,7 @@ impl TestContainerService {
             .store
             .read_current_summary(&context.worktree)
             .map_err(state_error)?;
-        if !summary.is_some_and(|summary| summary.run_id == context.run_id)
+        if summary.is_none_or(|summary| summary.run_id != context.run_id)
             || !context.check.starts_with("shared-")
             || records.len() >= RECORD_CAP
         {

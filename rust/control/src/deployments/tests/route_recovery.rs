@@ -48,16 +48,40 @@ fn explicit_linked_candidate_status_tracks_its_origin_by_deployment_id() {
         path: linked.to_string_lossy().into_owned(),
         commit: "b".repeat(40),
     };
-    let applied = fixture
-        .deployments
-        .apply_with_candidate(
-            None,
-            None,
-            Some(&first.deployment_id),
-            Some(&candidate),
-            &fixture.caller,
-        )
-        .unwrap();
+    let declaration = fixture.world.worktree.join(".devcoordinator.toml");
+    let original = std::fs::read(&declaration).unwrap();
+    std::fs::write(&declaration, "schema = [\n").unwrap();
+    let preflight = fixture.deployments.preflight(
+        None,
+        None,
+        Some(&first.deployment_id),
+        Some(&candidate),
+        &fixture.caller,
+    );
+    let applied = fixture.deployments.apply_with_candidate(
+        None,
+        None,
+        Some(&first.deployment_id),
+        Some(&candidate),
+        &fixture.caller,
+    );
+    std::fs::write(&declaration, &original).unwrap();
+    eprintln!(
+        "malformed original declaration: candidate preflight={:?}, apply={:?}",
+        preflight
+            .as_ref()
+            .map(|result| result.ready)
+            .map_err(|error| error.code),
+        applied
+            .as_ref()
+            .map(|result| result.current_generation)
+            .map_err(|error| error.code)
+    );
+    assert!(
+        preflight.as_ref().is_ok_and(|result| result.ready),
+        "clean candidate preflight must read its own declaration"
+    );
+    let applied = applied.expect("clean candidate apply must read its own declaration");
     assert!(applied.readiness.unwrap().ready);
     assert!(
         fixture
@@ -315,6 +339,52 @@ fn explicit_worktree_candidate_keeps_identity_and_tracks_its_origin() {
         "rollback must keep the exact frozen source"
     );
     assert!(fixture.world.worktree.is_dir());
+
+    let declaration = fixture.world.worktree.join(".devcoordinator.toml");
+    let original = std::fs::read(&declaration).unwrap();
+    let mut failures = Vec::new();
+    for (state, bytes) in [("malformed", Some("schema = [\n")), ("removed", None)] {
+        if let Some(bytes) = bytes {
+            std::fs::write(&declaration, bytes).unwrap();
+        } else {
+            std::fs::remove_file(&declaration).unwrap();
+        }
+        for action in ["stop", "start", "restart"] {
+            match fixture.deployments.control(
+                action,
+                None,
+                None,
+                Some(&first.deployment_id),
+                None,
+                &fixture.caller,
+            ) {
+                Ok(status) => {
+                    assert_eq!(status.current_generation, restored.current_generation);
+                    if action != "stop" {
+                        assert_eq!(status.route_port, restored.route_port);
+                    }
+                }
+                Err(error) => {
+                    failures.push(format!("{action} with {state} declaration: {}", error.code))
+                }
+            }
+        }
+        assert_eq!(
+            fixture
+                .deployments
+                .store
+                .generation(&first.deployment_id, 5)
+                .unwrap()
+                .unwrap()
+                .path,
+            frozen
+        );
+        std::fs::write(&declaration, &original).unwrap();
+    }
+    assert!(
+        failures.is_empty(),
+        "saved runtime controls depend on mutable source: {failures:?}"
+    );
 }
 
 #[test]
@@ -379,7 +449,7 @@ fn historical_process_logs_never_substitute_another_generation() {
         .deployments
         .logs(
             DeploymentLogsParams {
-                deployment_id: Some(first.deployment_id),
+                deployment_id: Some(first.deployment_id.clone()),
                 path: None,
                 name: None,
                 component: "api".into(),
@@ -391,6 +461,112 @@ fn historical_process_logs_never_substitute_another_generation() {
         )
         .unwrap_err();
     assert_eq!(invalid.code, ErrorCode::ParamsInvalid);
+
+    // The two address forms share a retained log. Only the log read is being
+    // tested; repository registration must not wait for a domain writer.
+    let held = crate::request_responsiveness_tests::HeldLane::new(
+        fixture.world.database.clone(),
+        crate::database::Lane::Write,
+    );
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let mut observations = Vec::new();
+    std::thread::scope(|scope| {
+        for by_id in [true, false] {
+            let sender = sender.clone();
+            let deployments = fixture.deployments.clone();
+            let caller = fixture.caller.clone();
+            let params = DeploymentLogsParams {
+                deployment_id: by_id.then(|| first.deployment_id.clone()),
+                path: (!by_id).then(|| fixture.world.worktree.to_string_lossy().into_owned()),
+                name: (!by_id).then(|| "web".into()),
+                component: "removed".into(),
+                generation: Some(7),
+                attempt: None,
+                tail_lines: 10,
+            };
+            scope.spawn(move || {
+                let began = Instant::now();
+                let result = deployments.logs(params, &caller);
+                sender.send((by_id, began.elapsed(), result)).unwrap();
+            });
+        }
+        for _ in 0..2 {
+            if let Ok(result) = receiver.recv_timeout(Duration::from_secs(1)) {
+                observations.push(result);
+            }
+        }
+        // Always release the fixture's writers and join accepted reads before
+        // asserting, including the intentionally failing baseline.
+        drop(held);
+    });
+    observations.extend(receiver.try_iter());
+    let mut failures = Vec::new();
+    for (by_id, elapsed, result) in observations {
+        match result {
+            Ok(logs) => {
+                assert_eq!(logs.tail, "removed component startup");
+                if elapsed >= Duration::from_secs(1) {
+                    failures.push(format!(
+                        "by_id={by_id} waited {} ms for a writer",
+                        elapsed.as_millis()
+                    ));
+                }
+            }
+            Err(error) => failures.push(format!("by_id={by_id}: {}", error.code)),
+        }
+    }
+    let declaration = fixture.world.worktree.join(".devcoordinator.toml");
+    let original = std::fs::read(&declaration).unwrap();
+    for (state, bytes) in [("malformed", Some("schema = [\n")), ("removed", None)] {
+        if let Some(bytes) = bytes {
+            std::fs::write(&declaration, bytes).unwrap();
+        } else {
+            std::fs::remove_file(&declaration).unwrap();
+        }
+        match fixture.deployments.logs(
+            DeploymentLogsParams {
+                deployment_id: Some(first.deployment_id.clone()),
+                path: None,
+                name: None,
+                component: "removed".into(),
+                generation: Some(7),
+                attempt: None,
+                tail_lines: 10,
+            },
+            &fixture.caller,
+        ) {
+            Ok(logs) => assert_eq!(logs.tail, "removed component startup"),
+            Err(error) => failures.push(format!(
+                "retained logs with {state} declaration: {}",
+                error.code
+            )),
+        }
+        assert!(
+            fixture
+                .deployments
+                .preflight(
+                    None,
+                    None,
+                    Some(&first.deployment_id),
+                    None,
+                    &fixture.caller
+                )
+                .is_err(),
+            "preflight must still validate desired source"
+        );
+        assert!(
+            fixture
+                .deployments
+                .apply(None, None, Some(&first.deployment_id), &fixture.caller)
+                .is_err(),
+            "apply must still validate desired source"
+        );
+        std::fs::write(&declaration, &original).unwrap();
+    }
+    assert!(
+        failures.is_empty(),
+        "retained log reads depend on writes or mutable source: {failures:?}"
+    );
 }
 
 #[test]
@@ -445,6 +621,7 @@ fn mixed_candidate_rollback_uses_retained_configuration_and_restores_failed_snap
     assert_eq!(restored.previous_generation, before.previous_generation);
     std::fs::remove_dir(&route_path).unwrap();
     std::fs::rename(route_path.with_extension("retained"), &route_path).unwrap();
+    std::fs::write(&config_path, "schema = [\n").unwrap();
     let to_ordinary = fixture
         .deployments
         .rollback(None, None, Some(id), &fixture.caller)
@@ -1007,7 +1184,22 @@ fn reconcile_recovers_missing_saved_process_on_original_route_lease() {
             move |connection| crate::ports::withdraw_conflict(connection, &id, "api")
         })
         .unwrap();
-    fixture.deployments.reconcile_routes().unwrap();
+    let declaration = fixture.world.worktree.join(".devcoordinator.toml");
+    let original = std::fs::read(&declaration).unwrap();
+    std::fs::write(&declaration, "schema = [\n").unwrap();
+    let reconciled = fixture.deployments.reconcile_routes();
+    let restarted = fixture
+        .systemd
+        .states
+        .lock()
+        .unwrap()
+        .get(&unit)
+        .is_some_and(|state| state == "running");
+    std::fs::write(&declaration, original).unwrap();
+    assert!(
+        reconciled.is_ok() && restarted,
+        "route recovery must use the recorded declaration: {reconciled:?}"
+    );
     let recovered = fixture.status(&first.deployment_id);
     assert_eq!(recovered.state, "running");
     assert_eq!(recovered.current_generation, first.current_generation);

@@ -72,6 +72,8 @@ pub(super) fn assert_frozen_worktree_candidate(world: &mut World) -> Result<(), 
     let candidate = world
         .base
         .join("candidate-worktrees/frozen-worktree-candidate");
+    let original_declaration = fs::read_to_string(world.repo.join(".devcoordinator.toml"))
+        .map_err(|error| error.to_string())?;
     world.git(&[
         "worktree",
         "add",
@@ -99,6 +101,18 @@ pub(super) fn assert_frozen_worktree_candidate(world: &mut World) -> Result<(), 
     );
     fs::write(candidate.join("marker.txt"), "unreviewed after apply\n")
         .map_err(|e| e.to_string())?;
+    world.write_config("schema = [unfinished declaration\n")?;
+    let logs = world.call(
+        "deployment.logs",
+        json!({"deployment_id":id,"component":"api","generation":2,"tail_lines":5}),
+    )?;
+    ensure!(
+        data(&logs)?["process_log"]["generation"] == 2,
+        "saved process diagnostics depended on the editable declaration"
+    );
+    for operation in ["deployment.stop", "deployment.start"] {
+        data(&world.call(operation, json!({"deployment_id":id,"component":"api"}))?)?;
+    }
     let restarted = data(&world.call(
         "deployment.restart",
         json!({"deployment_id":id,"component":"api"}),
@@ -132,6 +146,7 @@ pub(super) fn assert_frozen_worktree_candidate(world: &mut World) -> Result<(), 
             _ => Ok(None),
         },
     )?;
+    world.write_config(&original_declaration)?;
     let recovered = data(&world.call("deployment.status", json!({"deployment_id":id}))?)?.clone();
     ensure!(
         recovered["current_generation"] == 2 && recovered["readiness"]["pending_apply"] == true,
@@ -139,11 +154,13 @@ pub(super) fn assert_frozen_worktree_candidate(world: &mut World) -> Result<(), 
     );
     fs::write(candidate.join("marker.txt"), "frozen-v2\n").map_err(|e| e.to_string())?;
     let commit = commit_candidate(world, &candidate, "frozen-v3")?;
-    let third = data(&world.call(
-        "deployment.apply",
-        json!({"deployment_id":id,"candidate":{"path":candidate,"commit":commit}}),
-    )?)?
-    .clone();
+    world.write_config("schema = [unfinished declaration\n")?;
+    let request = json!({"deployment_id":id,"candidate":{"path":candidate,"commit":commit}});
+    ensure!(
+        data(&world.call("deployment.preflight", request.clone())?)?["ready"] == true,
+        "clean candidate preflight depended on the editable declaration"
+    );
+    let third = data(&world.call("deployment.apply", request)?)?.clone();
     ensure!(
         third["current_generation"] == 3 && third["previous_generation"] == 2,
         "worktree candidate did not retain its frozen predecessor"
@@ -189,6 +206,7 @@ pub(super) fn assert_frozen_worktree_candidate(world: &mut World) -> Result<(), 
         "deployment.remove",
         json!({"deployment_id":id,"delete_data":true}),
     )?)?;
+    world.write_config(&original_declaration)?;
     world.forget_volume(&volume);
     ensure!(
         !world.state.join("deployments").join(&id).exists(),
