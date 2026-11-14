@@ -159,7 +159,7 @@ pub(crate) fn add_shared_phases(
         prototype.invalidates.clear();
         prototype.cwd = ".".into();
         prototype.env.clear();
-        prototype.timeout_seconds = Some(120);
+        prototype.timeout_seconds = Some(crate::test_containers::FIXTURE_PHASE_TIMEOUT_SECONDS);
         prototype.completion = CompletionMode::Process;
         prototype.produces.clear();
         prototype.retained_artifacts.clear();

@@ -4,14 +4,17 @@
 //! environment. Managed labels are generated inside this module, container
 //! mutations require a full 64-hex ID, and cleanup is always exact-targeted.
 
+use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::fs::File;
 use std::io::{self, Read, Write};
+use std::marker::PhantomData;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStderr, ChildStdout, Command, ExitStatus, Stdio};
+use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::{Arc, Mutex};
@@ -28,6 +31,40 @@ const MAX_CAPTURE_BYTES: usize = 256 * 1024;
 const MAX_ERROR_BYTES: usize = 4 * 1024;
 const MAX_LOG_BYTES: usize = 64 * 1024;
 const READINESS_POLL: Duration = Duration::from_millis(100);
+
+thread_local! {
+    static CLEANUP_DEADLINE: Cell<Option<Instant>> = const { Cell::new(None) };
+}
+
+/// Opt-in budget for a synchronous owned cleanup. The guard is not Send and
+/// must never escape to another thread or span asynchronous work. Nested
+/// scopes can only shorten the deadline; Drop restores it during unwinding.
+pub(crate) struct DockerDeadlineScope {
+    previous: Option<Instant>,
+    _same_thread: PhantomData<Rc<()>>,
+}
+
+impl DockerDeadlineScope {
+    pub(crate) fn enter(deadline: Instant) -> Self {
+        let previous = CLEANUP_DEADLINE.with(|current| {
+            let previous = current.get();
+            current.set(Some(
+                previous.map_or(deadline, |earlier| earlier.min(deadline)),
+            ));
+            previous
+        });
+        Self {
+            previous,
+            _same_thread: PhantomData,
+        }
+    }
+}
+
+impl Drop for DockerDeadlineScope {
+    fn drop(&mut self) {
+        CLEANUP_DEADLINE.with(|current| current.set(self.previous));
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DockerErrorKind {
@@ -2266,7 +2303,16 @@ pub trait DockerControl: Send + Sync {
 }
 
 impl DockerControl for DockerCli {
-    fn invoke(&self, invocation: DockerInvocation) -> Result<DockerOutput, DockerError> {
+    fn invoke(&self, mut invocation: DockerInvocation) -> Result<DockerOutput, DockerError> {
+        if let Some(deadline) = CLEANUP_DEADLINE.with(Cell::get) {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(DockerError::Timeout {
+                    operation: "owned cleanup budget".into(),
+                });
+            }
+            invocation.timeout = invocation.timeout.min(remaining);
+        }
         execute_process(&self.executable, invocation)
     }
 
@@ -3786,5 +3832,59 @@ mod tests {
             Err(error) => error,
         };
         assert_eq!(error.kind(), DockerErrorKind::TimedOut);
+        let began = Instant::now();
+        {
+            let _cleanup = DockerDeadlineScope::enter(Instant::now() + Duration::from_millis(10));
+            let error = match cli.invoke(
+                DockerInvocation::new(vec!["version".into()], Duration::from_secs(2)).unwrap(),
+            ) {
+                Ok(_) => panic!("cleanup deadline must cap a longer command"),
+                Err(error) => error,
+            };
+            assert_eq!(error.kind(), DockerErrorKind::TimedOut);
+        }
+        assert!(began.elapsed() < Duration::from_millis(500));
+        let marker = temporary.path().join("deadline-marker");
+        std::fs::write(&executable, "#!/bin/sh\nprintf ran > \"$2\"\n").unwrap();
+        let invocation = || {
+            DockerInvocation::new(
+                vec!["version".into(), marker.as_os_str().to_owned()],
+                Duration::from_secs(2),
+            )
+            .unwrap()
+        };
+        {
+            let _outer = DockerDeadlineScope::enter(Instant::now() - Duration::from_millis(1));
+            {
+                let _inner = DockerDeadlineScope::enter(Instant::now() + Duration::from_secs(1));
+                assert!(matches!(
+                    cli.invoke(invocation()),
+                    Err(DockerError::Timeout { .. })
+                ));
+            }
+            assert!(matches!(
+                cli.invoke(invocation()),
+                Err(DockerError::Timeout { .. })
+            ));
+        }
+        assert!(
+            !marker.exists(),
+            "an expired nested scope must not launch a command"
+        );
+        cli.invoke(invocation())
+            .expect("ordinary Docker budgets must be restored");
+        assert_eq!(std::fs::read_to_string(&marker).unwrap(), "ran");
+        std::fs::remove_file(&marker).unwrap();
+        assert!(
+            std::panic::catch_unwind(|| {
+                let _cleanup =
+                    DockerDeadlineScope::enter(Instant::now() - Duration::from_millis(1));
+                std::panic::resume_unwind(Box::new(()));
+            })
+            .is_err()
+        );
+        cli.invoke(invocation())
+            .expect("unwinding must restore the previous deadline");
+        assert_eq!(std::fs::read_to_string(marker).unwrap(), "ran");
     }
 }

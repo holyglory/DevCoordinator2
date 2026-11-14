@@ -413,6 +413,7 @@ struct FixtureSystemd {
     fail_stop: AtomicBool,
     timed_out: AtomicBool,
     report_inactive: AtomicBool,
+    finalization_gate: Mutex<Option<RemovalGate>>,
 }
 
 impl FixtureSystemd {
@@ -429,6 +430,7 @@ impl FixtureSystemd {
             fail_stop: AtomicBool::new(false),
             timed_out: AtomicBool::new(false),
             report_inactive: AtomicBool::new(false),
+            finalization_gate: Mutex::new(None),
         }
     }
 
@@ -614,6 +616,14 @@ impl SystemdControl for FixtureSystemd {
         unit: &str,
         properties: &[&str],
     ) -> Result<Vec<(String, String)>, SystemdError> {
+        if properties == ["Result", "ExecMainStatus"]
+            && let Some(gate) = self.finalization_gate.lock().unwrap().clone()
+        {
+            let mut state = gate.0.lock().unwrap();
+            state.0 = true;
+            gate.1.notify_all();
+            drop(gate.1.wait_while(state, |state| !state.1).unwrap());
+        }
         let state = self.runs.lock().unwrap().get(unit).cloned();
         let (running, exit) = state.as_ref().map_or((false, 0), |state| {
             let state = state.0.lock().unwrap();
@@ -2717,7 +2727,14 @@ database="app_test"
 }
 
 fn shared_postgres_world(docker: Arc<PostgresDocker>) -> LifecycleWorld {
-    let world = LifecycleWorld::with_docker(docker);
+    shared_postgres_world_with_clock(docker, Arc::new(FixtureClock))
+}
+
+fn shared_postgres_world_with_clock(
+    docker: Arc<PostgresDocker>,
+    clock: Arc<dyn Clock>,
+) -> LifecycleWorld {
+    let world = LifecycleWorld::with_docker_clock(docker, clock);
     let path = world.worktree.join(".devcoordinator.toml");
     let mut config = std::fs::read_to_string(&path).unwrap();
     config.push_str(
@@ -2756,12 +2773,16 @@ fn shared_postgres_timeout_after_delete_proves_absence_and_keeps_an_idempotent_r
             .inspection
             .is_some()
     );
+    let protected = world
+        .containers
+        .retry(reference.clone(), &world.caller)
+        .expect_err("a live fixture lease must protect its container");
+    assert!(protected.message.contains("active fixture lease"));
     assert!(
-        world
-            .containers
-            .retry(reference.clone(), &world.caller)
-            .is_err(),
-        "a live fixture lease must protect its container"
+        protected
+            .recovery
+            .is_none_or(|recovery| !recovery.retryable),
+        "active fixture use must not be confused with a concurrent cleanup operation"
     );
     assert_eq!(docker.removed.load(Ordering::SeqCst), 0);
     docker.timeout_after_remove.store(true, Ordering::SeqCst);
@@ -2919,6 +2940,13 @@ fn shared_postgres_inspection_stays_available_while_docker_cleanup_is_stalled() 
         "cleanup did not reach the Docker boundary"
     );
     drop(state);
+    let retry_service = world.containers.clone();
+    let retry_caller = world.caller.clone();
+    let retry_reference = reference.clone();
+    let (retry_sent, retry_received) = std::sync::mpsc::channel();
+    let retrying = std::thread::spawn(move || {
+        let _ = retry_sent.send(retry_service.retry(retry_reference, &retry_caller));
+    });
     let service = world.containers.clone();
     let caller = world.caller.clone();
     let (sent, received) = std::sync::mpsc::channel();
@@ -2926,15 +2954,192 @@ fn shared_postgres_inspection_stays_available_while_docker_cleanup_is_stalled() 
         let _ = sent.send(service.inspect(reference, &caller));
     });
     let result = received.recv_timeout(Duration::from_secs(2));
+    let retry = retry_received.recv_timeout(Duration::from_secs(2));
     // Always release the disposable Docker fixture, including a failed check.
     gate.0.lock().unwrap().1 = true;
     gate.1.notify_all();
     inspection.join().unwrap();
+    retrying.join().unwrap();
     let result = result
         .expect("a stalled Docker removal must not hold the metadata lock")
         .unwrap();
     assert!(result.inspection.is_some());
     world.wait_status(TestStatus::Passed);
+    let error = retry
+        .expect("concurrent cleanup observation must remain bounded")
+        .expect_err("active cleanup must be reported as transient progress");
+    let recovery = error
+        .recovery
+        .expect("cleanup progress needs structured recovery");
+    assert!(
+        recovery.retryable && !recovery.waitable,
+        "an exclusive cleanup operation is not a terminal fixture lease"
+    );
+    assert_eq!(
+        recovery.state.as_deref(),
+        Some("container_operation_in_progress")
+    );
+}
+
+#[test]
+fn shared_postgres_owned_cleanup_observes_complete_without_repeating_an_admitted_operation() {
+    use std::os::unix::fs::OpenOptionsExt;
+    let docker = Arc::new(PostgresDocker::new());
+    let world = shared_postgres_world(docker.clone());
+    let started = world.start();
+    execute_admitted_database_setup(&world.capacity, &started, &world.worktree);
+    let reference = shared_postgres_reference(&world, &docker, &started);
+    let record = world
+        .containers
+        .inspect(reference.clone(), &world.caller)
+        .unwrap()
+        .record;
+    let path = world
+        .worktree
+        .join(".devcoordinator/test/containers/pending")
+        .join(&started.run_id);
+    let operation = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .open(path.join(format!("{}.operation", record.owner_token)))
+        .unwrap();
+    rustix::fs::flock(
+        &operation,
+        rustix::fs::FlockOperation::NonBlockingLockExclusive,
+    )
+    .unwrap();
+    world.systemd.finish(&started.unit);
+    let active_use =
+        std::fs::File::open(path.join(format!("{}.lease", record.owner_token))).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        match rustix::fs::flock(
+            &active_use,
+            rustix::fs::FlockOperation::NonBlockingLockExclusive,
+        ) {
+            Ok(()) => break,
+            Err(rustix::io::Errno::WOULDBLOCK) if Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(1))
+            }
+            value => panic!("owned cleanup did not release active use: {value:?}"),
+        }
+    }
+    // An already-admitted peer owns both leases, performs the real adapter
+    // cleanup, and publishes its receipt before releasing its operation lease.
+    // Keep the operation unsettled long enough for the owned caller to
+    // observe its Busy response before the peer publishes the outcome.
+    std::thread::sleep(Duration::from_millis(500));
+    docker
+        .remove_container_verified_named(
+            &ExactContainerId::parse(reference.container_id.clone()).unwrap(),
+            &record.name,
+            true,
+        )
+        .unwrap();
+    let directory = std::fs::File::open(&path).unwrap();
+    rustix::fs::flock(&directory, rustix::fs::FlockOperation::LockExclusive).unwrap();
+    let mut records = TestRunStore.read_container_records(&directory).unwrap();
+    records[0].cleanup_status =
+        devcoordinator2_api::test_containers::ContainerCleanupStatus::Complete;
+    records[0].cleanup_attempts.push(
+        devcoordinator2_api::test_containers::ContainerCleanupAttempt {
+            attempt: 1,
+            attempted_at: "2026-09-04T00:00:00Z".into(),
+            status: devcoordinator2_api::test_containers::ContainerCleanupStatus::Complete,
+            stderr: None,
+            stderr_bytes: 0,
+            exit_code: None,
+            signal: None,
+            retryable: false,
+        },
+    );
+    TestRunStore
+        .write_container_records(&directory, &records, world.caller.uid, world.caller.gid)
+        .unwrap();
+    rustix::fs::flock(&directory, rustix::fs::FlockOperation::Unlock).unwrap();
+    world.wait_status(TestStatus::Passed);
+    assert_eq!(
+        docker.removed.load(Ordering::SeqCst),
+        1,
+        "coalescing must not issue a second removal"
+    );
+    assert!(!docker.present.load(Ordering::SeqCst));
+    drop(active_use);
+    drop(operation);
+}
+
+fn exercise_owned_cleanup_metadata_contention(after_mutation: bool) {
+    let docker = Arc::new(PostgresDocker::new());
+    let gate = Arc::new((Mutex::new((false, false)), Condvar::new()));
+    let clock = Arc::new(FinalizationClock {
+        armed: AtomicBool::new(false),
+        gate: gate.clone(),
+    });
+    let world = shared_postgres_world_with_clock(docker.clone(), clock.clone());
+    let started = world.start();
+    execute_admitted_database_setup(&world.capacity, &started, &world.worktree);
+    if after_mutation {
+        clock.armed.store(true, Ordering::SeqCst);
+    } else {
+        *world.systemd.finalization_gate.lock().unwrap() = Some(gate.clone());
+    }
+    world.systemd.finish(&started.unit);
+    let state = gate.0.lock().unwrap();
+    let (state, timeout) = gate
+        .1
+        .wait_timeout_while(state, Duration::from_secs(3), |state| !state.0)
+        .unwrap();
+    assert!(
+        !timeout.timed_out(),
+        "owned cleanup did not reach its metadata barrier"
+    );
+    drop(state);
+    assert_eq!(
+        docker.removed.load(Ordering::SeqCst),
+        u64::from(after_mutation)
+    );
+    let directory = std::fs::File::open(
+        world
+            .worktree
+            .join(".devcoordinator/test/containers/pending")
+            .join(&started.run_id),
+    )
+    .unwrap();
+    rustix::fs::flock(
+        &directory,
+        rustix::fs::FlockOperation::NonBlockingLockExclusive,
+    )
+    .unwrap();
+    gate.0.lock().unwrap().1 = true;
+    gate.1.notify_all();
+    // Hold the injected transaction beyond the existing50ms metadata ceiling;
+    // success still requires the real cleanup and persisted absence receipt.
+    std::thread::sleep(Duration::from_millis(500));
+    assert_eq!(
+        docker.removed.load(Ordering::SeqCst),
+        u64::from(after_mutation)
+    );
+    rustix::fs::flock(&directory, rustix::fs::FlockOperation::Unlock).unwrap();
+    world.wait_status(TestStatus::Passed);
+    assert_eq!(
+        docker.removed.load(Ordering::SeqCst),
+        1,
+        "metadata contention must never repeat a settled Docker mutation"
+    );
+    assert!(!docker.present.load(Ordering::SeqCst));
+}
+
+#[test]
+fn shared_postgres_owned_cleanup_waits_for_metadata_before_mutation() {
+    exercise_owned_cleanup_metadata_contention(false);
+}
+
+#[test]
+fn shared_postgres_owned_cleanup_retains_the_observed_result_after_metadata_contention() {
+    exercise_owned_cleanup_metadata_contention(true);
 }
 
 #[test]
@@ -3116,6 +3321,28 @@ fn container_review_completed_receipt_survives_a_refused_start() {
         before.cleanup_status,
         devcoordinator2_api::test_containers::ContainerCleanupStatus::Complete
     );
+    let operation = std::fs::File::open(
+        world
+            .worktree
+            .join(".devcoordinator/test/containers/pending")
+            .join(&started.run_id)
+            .join(format!("{}.operation", before.owner_token)),
+    )
+    .unwrap();
+    rustix::fs::flock(
+        &operation,
+        rustix::fs::FlockOperation::NonBlockingLockExclusive,
+    )
+    .unwrap();
+    assert_eq!(
+        world
+            .containers
+            .retry(reference.clone(), &world.caller)
+            .unwrap()
+            .record,
+        before,
+        "a completed receipt must be reusable without acquiring a redundant operation lease"
+    );
     let refused = world
         .containers
         .start(reference.clone(), &world.caller)
@@ -3125,6 +3352,7 @@ fn container_review_completed_receipt_survives_a_refused_start() {
         .inspect(reference, &world.caller)
         .unwrap()
         .record;
+    drop(operation);
     world.systemd.finish(&started.unit);
     world.wait_status(if after.operation_failed {
         TestStatus::Failed

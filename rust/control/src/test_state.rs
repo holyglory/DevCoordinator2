@@ -128,6 +128,19 @@ struct EvidenceDocument {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct TestRunStore;
 
+pub(crate) struct ContainerMutationLease {
+    // Release exclusive use before the operation lock. A held exclusive-use
+    // lease must never look like a fixture after its operation lock is released.
+    _active_use: File,
+    _operation: File,
+}
+
+pub(crate) enum ContainerLeaseAccess {
+    Ready(ContainerMutationLease),
+    ActiveUse,
+    OperationInProgress,
+}
+
 #[derive(Clone, Copy, Debug, Default)]
 pub struct ActiveTestArchiveBlocker;
 
@@ -606,7 +619,9 @@ impl TestRunStore {
         }
         let mut leases = Vec::new();
         for record in &records {
-            let Some(lease) = self.container_lease(directory, &record.owner_token, false)? else {
+            let ContainerLeaseAccess::Ready(lease) =
+                self.container_mutation_lease(directory, &record.owner_token)?
+            else {
                 return Ok(());
             };
             leases.push(lease);
@@ -691,7 +706,9 @@ impl TestRunStore {
         }
         let mut leases = Vec::new();
         for record in &records {
-            let Some(lease) = self.container_lease(&directory, &record.owner_token, false)? else {
+            let ContainerLeaseAccess::Ready(lease) =
+                self.container_mutation_lease(&directory, &record.owner_token)?
+            else {
                 return Ok(());
             };
             leases.push(lease);
@@ -724,10 +741,10 @@ impl TestRunStore {
             if !matches!(
                 name,
                 "." | ".." | CONTAINER_LIFECYCLE_FILE | "retention-expired.json"
-            ) && !records
-                .iter()
-                .any(|record| name == format!("{}.lease", record.owner_token))
-            {
+            ) && !records.iter().any(|record| {
+                name == format!("{}.lease", record.owner_token)
+                    || name == format!("{}.operation", record.owner_token)
+            }) {
                 return Err(TestStateError::Invalid(
                     "container receipt contains an unowned entry".into(),
                 ));
@@ -780,8 +797,8 @@ impl TestRunStore {
         Ok(())
     }
 
-    /// A live fixture holds a shared lease. Cleanup requires an exclusive
-    /// lease; process death releases it without reconstructing pool memory.
+    /// A live fixture or admitted creation holds a shared use lease. Mutation
+    /// takes the separate operation lease first, then this use lease exclusively.
     pub(crate) fn container_lease(
         &self,
         directory: &File,
@@ -808,6 +825,45 @@ impl TestRunStore {
             Err(rustix::io::Errno::WOULDBLOCK) if !active => Ok(None),
             Err(error) => Err(errno("lock container lease", error)),
         }
+    }
+
+    pub(crate) fn container_operation_lease(
+        &self,
+        directory: &File,
+        token: &str,
+    ) -> Result<Option<File>, TestStateError> {
+        validate_atom(token)?;
+        let file = File::from(
+            unix_fs::openat(
+                directory,
+                format!("{token}.operation"),
+                OFlags::RDWR | OFlags::CREATE | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+                Mode::from_raw_mode(0o600),
+            )
+            .map_err(|error| errno("open container operation lease", error))?,
+        );
+        match unix_fs::flock(&file, FlockOperation::NonBlockingLockExclusive) {
+            Ok(()) => Ok(Some(file)),
+            Err(rustix::io::Errno::WOULDBLOCK) => Ok(None),
+            Err(error) => Err(errno("lock container operation lease", error)),
+        }
+    }
+
+    pub(crate) fn container_mutation_lease(
+        &self,
+        directory: &File,
+        token: &str,
+    ) -> Result<ContainerLeaseAccess, TestStateError> {
+        let Some(operation) = self.container_operation_lease(directory, token)? else {
+            return Ok(ContainerLeaseAccess::OperationInProgress);
+        };
+        let Some(active_use) = self.container_lease(directory, token, false)? else {
+            return Ok(ContainerLeaseAccess::ActiveUse);
+        };
+        Ok(ContainerLeaseAccess::Ready(ContainerMutationLease {
+            _active_use: active_use,
+            _operation: operation,
+        }))
     }
 
     pub fn read_history(&self, worktree: &Path) -> Result<Vec<TestHistoryEntry>, TestStateError> {

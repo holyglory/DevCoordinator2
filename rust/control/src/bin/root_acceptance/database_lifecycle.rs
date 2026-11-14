@@ -130,7 +130,7 @@ timeout_seconds=90
                     && observed["record"]["cleanup_status"] != "cleanup_complete",
                 "reused name falsely completed cleanup"
             );
-            let failed_retry = world.call("test.container.retry", request.clone())?;
+            let failed_retry = retry_when_idle(world, &request)?;
             ensure!(
                 data(&failed_retry)?["record"]["cleanup_status"] != "cleanup_complete",
                 "retry ignored the reused name"
@@ -152,12 +152,12 @@ timeout_seconds=90
                 "normal fixture result changed during cleanup"
             );
         }
-        let retry = world.call("test.container.retry", request.clone())?;
+        let retry = retry_when_idle(world, &request)?;
         ensure!(
             data(&retry)?["record"]["cleanup_status"] == "cleanup_complete",
             "retained fixture cleanup could not be retried"
         );
-        let repeated = world.call("test.container.retry", request.clone())?;
+        let repeated = retry_when_idle(world, &request)?;
         ensure!(
             data(&repeated)?["record"] == data(&retry)?["record"],
             "repeating successful cleanup changed its durable receipt"
@@ -169,6 +169,33 @@ timeout_seconds=90
         drop(socket);
     }
     Ok(())
+}
+
+fn retry_when_idle(world: &World, request: &Value) -> Result<Value, String> {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let reply = world.call("test.container.retry", request.clone())?;
+        let transient_busy = reply["ok"] == false
+            && reply
+                .pointer("/error/recovery/class")
+                .and_then(Value::as_str)
+                == Some("transient")
+            && reply.pointer("/error/recovery/retryable") == Some(&json!(true))
+            && matches!(
+                reply
+                    .pointer("/error/recovery/state")
+                    .and_then(Value::as_str),
+                Some("container_operation_in_progress" | "container_metadata_busy")
+            );
+        if !transient_busy {
+            return Ok(reply);
+        }
+        ensure!(
+            Instant::now() < deadline,
+            "typed container cleanup contention did not settle within 30 seconds"
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
 }
 
 pub(super) fn assert_live_template(world: &World, id: &str) -> Result<Value, String> {

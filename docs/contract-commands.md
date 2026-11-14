@@ -132,9 +132,23 @@ template can outlive the run that created it, so that run does not owe template
 removal while the pool still owns it. Process death releases the lease and
 startup recovery reconciles its persisted exact identity.
 
+Active fixture use and an operation already in progress have separate leases.
+Cleanup or start contention reports typed transient
+`container_operation_in_progress` with `retryable: true`; it does not claim
+that a fixture is still active. Completed receipts are reusable without
+waiting for another mutation lease. Retention preserves ownership while
+either lease is held.
+
+Owned fixture cleanup observes an already-admitted operation within its
+existing phase budget. A short metadata-only conflict can wait before the
+original cleanup starts; after Docker returns, only receipt persistence is
+retried. A settled removal or ownership failure is not retried by this wait.
+The same absolute budget caps owned-cleanup Docker commands, and expiry keeps
+the cleanup obligation pending instead of claiming success.
+
 Finalization seals new container creation before taking its cleanup snapshot.
 Already admitted creation remains visible through its persisted intent and
-operation lease; if it is still active, the run retains a pending cleanup
+active-use lease; if it is still active, the run retains a pending cleanup
 obligation and cannot pass. Ordinary mid-run cleanup leaves creation open.
 A refused start of a removed container preserves its completed receipt, and
 any unresolved matching-label candidate keeps crash recovery incomplete even

@@ -687,6 +687,7 @@ mod tests {
             (2, "cleanup_pending"),
             (3, "cleanup_failed"),
             (4, "cleanup_complete"),
+            (6, "cleanup_complete"),
         ] {
             let run_id = &runs[index].0;
             let directory = store
@@ -717,6 +718,14 @@ mod tests {
                 container_leases.push(
                     store
                         .container_lease(&directory, "fixture-owner", true)
+                        .unwrap()
+                        .unwrap(),
+                );
+            }
+            if index == 6 {
+                container_leases.push(
+                    store
+                        .container_operation_lease(&directory, "fixture-owner")
                         .unwrap()
                         .unwrap(),
                 );
@@ -835,7 +844,7 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
-        for index in [2, 3, 4] {
+        for index in [2, 3, 4, 6] {
             assert!(
                 store
                     .open_container_run(&worktree, &runs[index].0, None)
@@ -846,7 +855,7 @@ mod tests {
         }
         assert_eq!(
             store.container_runs(&worktree).unwrap().len(),
-            3,
+            4,
             "startup enumerates only pending ownership, not completed history"
         );
         {
@@ -878,6 +887,14 @@ mod tests {
         );
         drop(container_leases);
         crate::storage::evidence::record_run_expired(&database, &worktree, &runs[4].0).unwrap();
+        crate::storage::evidence::record_run_expired(&database, &worktree, &runs[6].0).unwrap();
+        assert!(
+            store
+                .open_container_run(&worktree, &runs[6].0, None)
+                .unwrap()
+                .is_none(),
+            "operation-held complete evidence expires only after its operation lease is released"
+        );
         assert!(
             store
                 .open_container_run(&worktree, &runs[4].0, None)

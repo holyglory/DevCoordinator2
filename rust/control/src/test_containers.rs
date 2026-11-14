@@ -9,6 +9,7 @@ use std::collections::BTreeMap;
 use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use crate::database::OptionalExtension;
 use devcoordinator2_api::ErrorCode;
@@ -29,12 +30,13 @@ use crate::docker::{
 };
 use crate::platform::Clock;
 use crate::repository::resolve_worktree;
-use crate::test_state::TestRunStore;
+use crate::test_state::{ContainerLeaseAccess, ContainerMutationLease, TestRunStore};
 
 const TIMESTAMP_FORMAT: &[FormatItem<'static>] =
     format_description!("[year]-[month]-[day]T[hour]:[minute]:[second]Z");
 const RECORD_CAP: usize = 256;
 const MAX_LABEL_BYTES: usize = 256;
+pub(crate) const FIXTURE_PHASE_TIMEOUT_SECONDS: u64 = 120;
 
 #[derive(Clone)]
 pub struct TestContainerService {
@@ -43,6 +45,29 @@ pub struct TestContainerService {
     docker: Arc<dyn DockerControl>,
     clock: Arc<dyn Clock>,
     store: TestRunStore,
+}
+
+enum MutationAccess {
+    Ready(ContainerMutationLease),
+    FixtureActive,
+    InProgress,
+}
+
+enum CleanupOutcome {
+    Settled,
+    FixtureActive,
+    InProgress,
+}
+
+enum CleanupFailure {
+    Docker(DockerError),
+    State(ProtocolError),
+}
+
+impl From<DockerError> for CleanupFailure {
+    fn from(error: DockerError) -> Self {
+        Self::Docker(error)
+    }
 }
 
 /// A fixture's live lease and durable ownership reference. Dropping a handle
@@ -64,14 +89,39 @@ impl OwnedTestContainer {
     pub fn remove(&mut self) -> Result<(), String> {
         self.cleanup_attempted = true;
         self.lease.take();
-        let result = self
-            .service
-            .remove_or_retry(self.reference.clone(), &self.caller, "removed")
-            .map_err(|_| "owned database cleanup could not retain its receipt".to_owned())?;
-        if result.record.cleanup_status == ContainerCleanupStatus::Complete {
-            Ok(())
-        } else {
-            Err("owned database cleanup is incomplete; inspect or retry its retained container record".into())
+        let deadline = fixture_cleanup_deadline();
+        let _docker_deadline = crate::docker::DockerDeadlineScope::enter(deadline);
+        let mut backoff = Duration::from_millis(10);
+        loop {
+            match self.service.remove_with_deadline(
+                self.reference.clone(),
+                &self.caller,
+                "removed",
+                deadline,
+            ) {
+                Ok(result) if result.record.cleanup_status == ContainerCleanupStatus::Complete => {
+                    return Ok(());
+                }
+                Ok(_) => return Err(owned_cleanup_incomplete()),
+                Err(error) if retryable_state(&error, "container_operation_in_progress") => {
+                    return self.service.observe_owned_cleanup(
+                        &self.reference,
+                        &self.caller,
+                        deadline,
+                    );
+                }
+                Err(error) if retryable_state(&error, "container_metadata_busy") => {
+                    if !wait_cleanup_budget(deadline, &mut backoff) {
+                        return Err(owned_cleanup_pending());
+                    }
+                }
+                Err(error) => {
+                    return Err(format!(
+                        "owned database cleanup could not complete: {}",
+                        error.message
+                    ));
+                }
+            }
         }
     }
 }
@@ -242,25 +292,34 @@ impl TestContainerService {
         &self,
         context: &Context,
         record: &mut TestContainerRecord,
-    ) -> Result<bool, ProtocolError> {
+        deadline: Instant,
+    ) -> Result<CleanupOutcome, ProtocolError> {
         context.unlock()?;
         self.verify_record_labels(record)?;
-        let Some(_lease) = self
-            .store
-            .container_lease(&context.records, &record.owner_token, false)
-            .map_err(state_error)?
-        else {
-            return Ok(false);
-        };
-        *record = self
-            .current_records(context)?
-            .into_iter()
-            .find(|value| value.owner_token == record.owner_token)
-            .ok_or_else(ownership_error)?;
+        self.refresh_record(context, record)?;
         if record.cleanup_status == ContainerCleanupStatus::Complete {
-            return Ok(true);
+            return Ok(CleanupOutcome::Settled);
         }
-        let removal = (|| {
+        let _lease = match self.mutation_access(context, record)? {
+            MutationAccess::Ready(lease) => lease,
+            access => {
+                self.refresh_record(context, record)?;
+                return Ok(
+                    if record.cleanup_status == ContainerCleanupStatus::Complete {
+                        CleanupOutcome::Settled
+                    } else if matches!(access, MutationAccess::FixtureActive) {
+                        CleanupOutcome::FixtureActive
+                    } else {
+                        CleanupOutcome::InProgress
+                    },
+                );
+            }
+        };
+        self.refresh_record(context, record)?;
+        if record.cleanup_status == ContainerCleanupStatus::Complete {
+            return Ok(CleanupOutcome::Settled);
+        }
+        let removal: Result<crate::docker::ContainerRemovalReceipt, CleanupFailure> = (|| {
             if record.container_id == "0".repeat(64) {
                 let candidates = self.docker.list_ids_by_labels(&record.labels)?;
                 let mut owned = Vec::new();
@@ -277,14 +336,14 @@ impl TestContainerService {
                 if owned.len() > 1 {
                     return Err(DockerError::InvalidTarget(
                         "fixture intent resolved to multiple exact containers".into(),
-                    ));
+                    )
+                    .into());
                 }
                 if let Some(id) = owned.pop() {
                     record.container_id = id.to_string();
                     // Bind the recovered exact ID before any Docker mutation.
-                    self.save_record(context, record).map_err(|_| {
-                        DockerError::Command("cannot retain recovered fixture identity".into())
-                    })?;
+                    self.save_cleanup_record(context, record, deadline)
+                        .map_err(CleanupFailure::State)?;
                 } else if !self.docker.container_name_present(&record.name)? {
                     return Ok(crate::docker::ContainerRemovalReceipt {
                         command_error: None,
@@ -292,7 +351,8 @@ impl TestContainerService {
                 } else {
                     return Err(DockerError::InvalidTarget(
                         "fixture name has no matching owned identity".into(),
-                    ));
+                    )
+                    .into());
                 }
             }
             let id = exact_id(&record.container_id).map_err(|_| {
@@ -307,8 +367,12 @@ impl TestContainerService {
                 record.solver_exit_code = inspection.exit_code;
                 record.solver_signal = inspection.signal;
             }
+            if Instant::now() >= deadline {
+                return Err(CleanupFailure::State(cleanup_receipt_pending_error(record)));
+            }
             self.docker
                 .remove_container_receipt(&id, &record.name, true)
+                .map_err(CleanupFailure::Docker)
         })();
         let (status, retryable, diagnostics) = match removal {
             Ok(receipt) => (
@@ -318,7 +382,8 @@ impl TestContainerService {
                     .command_error
                     .map(|error| cleanup_details(record, &error)),
             ),
-            Err(error) => {
+            Err(CleanupFailure::State(error)) => return Err(error),
+            Err(CleanupFailure::Docker(error)) => {
                 let retryable = docker_retryable(&error);
                 (
                     if retryable {
@@ -346,8 +411,8 @@ impl TestContainerService {
             signal: diagnostics.as_ref().and_then(|(_, signal, _)| *signal),
             retryable,
         });
-        self.save_record(context, record)?;
-        Ok(true)
+        self.save_cleanup_record(context, record, deadline)?;
+        Ok(CleanupOutcome::Settled)
     }
 
     pub fn create(
@@ -449,7 +514,7 @@ impl TestContainerService {
                 record.operation_failed = true;
                 self.save_record(&context, &record)?;
                 drop(_lease);
-                self.cleanup_record(&context, &mut record)?;
+                self.cleanup_record(&context, &mut record, fixture_cleanup_deadline())?;
                 return Err(docker_error("cannot create governed container", error));
             }
         };
@@ -461,7 +526,7 @@ impl TestContainerService {
                 record.operation_failed = true;
                 self.save_record(&context, &record)?;
                 drop(_lease);
-                self.cleanup_record(&context, &mut record)?;
+                self.cleanup_record(&context, &mut record, fixture_cleanup_deadline())?;
                 return Err(error);
             }
         };
@@ -487,28 +552,30 @@ impl TestContainerService {
         let (records, index) = self.find_record(&context, &params)?;
         let mut record = records[index].clone();
         self.verify_record(&record, &context)?;
-        let _lease = self
-            .store
-            .container_lease(&context.records, &record.owner_token, false)
-            .map_err(state_error)?
-            .ok_or_else(|| {
-                ProtocolError::new(
-                    ErrorCode::TestStartFailed,
-                    "temporary container has an active lifecycle operation",
-                )
-            })?;
         context.unlock()?;
-        record = self
-            .current_records(&context)?
-            .into_iter()
-            .find(|value| value.owner_token == record.owner_token)
-            .ok_or_else(ownership_error)?;
+        self.refresh_record(&context, &mut record)?;
         self.verify_record(&record, &context)?;
         if record.cleanup_status == ContainerCleanupStatus::Complete {
-            return Err(ProtocolError::new(
-                ErrorCode::TestStartFailed,
-                "completed temporary container cannot be started",
-            ));
+            return Err(completed_start_error());
+        }
+        let _lease = match self.mutation_access(&context, &record)? {
+            MutationAccess::Ready(lease) => lease,
+            access => {
+                self.refresh_record(&context, &mut record)?;
+                return Err(
+                    if record.cleanup_status == ContainerCleanupStatus::Complete {
+                        completed_start_error()
+                    } else if matches!(access, MutationAccess::FixtureActive) {
+                        fixture_active_error()
+                    } else {
+                        operation_busy_error(&record)
+                    },
+                );
+            }
+        };
+        self.refresh_record(&context, &mut record)?;
+        if record.cleanup_status == ContainerCleanupStatus::Complete {
+            return Err(completed_start_error());
         }
         let id = exact_id(&record.container_id)?;
         if id.as_str() != params.container_id {
@@ -644,11 +711,13 @@ impl TestContainerService {
             if record.cleanup_status == ContainerCleanupStatus::Complete {
                 continue;
             }
-            if !self.cleanup_record(&context, record)?
-                && record
-                    .labels
-                    .get("devcoordinator2.component")
-                    .is_some_and(|component| component == "database-template")
+            if matches!(
+                self.cleanup_record(&context, record, fixture_cleanup_deadline())?,
+                CleanupOutcome::FixtureActive
+            ) && record
+                .labels
+                .get("devcoordinator2.component")
+                .is_some_and(|component| component == "database-template")
             {
                 leased_templates.push(record.owner_token.clone());
             }
@@ -723,6 +792,16 @@ impl TestContainerService {
         caller: &Caller,
         operation: &str,
     ) -> Result<ContainerOperationResult, ProtocolError> {
+        self.remove_with_deadline(params, caller, operation, fixture_cleanup_deadline())
+    }
+
+    fn remove_with_deadline(
+        &self,
+        params: ContainerReference,
+        caller: &Caller,
+        operation: &str,
+        deadline: Instant,
+    ) -> Result<ContainerOperationResult, ProtocolError> {
         let context = self.resolve_reference(&params, caller)?;
         let (mut records, index) = self.find_record(&context, &params)?;
         let id = exact_id(&params.container_id)?;
@@ -739,14 +818,15 @@ impl TestContainerService {
                 inspection: None,
             });
         }
-        if !self.cleanup_record(&context, &mut records[index])? {
-            return Err(ProtocolError::new(
-                ErrorCode::TestStartFailed,
-                "temporary database container still has an active fixture lease",
-            ));
+        match self.cleanup_record(&context, &mut records[index], deadline)? {
+            CleanupOutcome::FixtureActive => return Err(fixture_active_error()),
+            CleanupOutcome::InProgress => return Err(operation_busy_error(&records[index])),
+            CleanupOutcome::Settled => {}
         }
         let status = records[index].cleanup_status;
-        self.archive_receipt(&context)?;
+        if status == ContainerCleanupStatus::Complete {
+            self.archive_receipt(&context)?;
+        }
         let inspection = if status == ContainerCleanupStatus::Complete {
             None
         } else {
@@ -933,6 +1013,110 @@ impl TestContainerService {
             run_id: run_id.into(),
             check: check.into(),
         })
+    }
+
+    fn refresh_record(
+        &self,
+        context: &Context,
+        record: &mut TestContainerRecord,
+    ) -> Result<(), ProtocolError> {
+        *record = self
+            .current_records(context)?
+            .into_iter()
+            .find(|value| value.owner_token == record.owner_token)
+            .ok_or_else(ownership_error)?;
+        self.verify_record_labels(record)
+    }
+
+    fn mutation_access(
+        &self,
+        context: &Context,
+        record: &TestContainerRecord,
+    ) -> Result<MutationAccess, ProtocolError> {
+        Ok(
+            match self
+                .store
+                .container_mutation_lease(&context.records, &record.owner_token)
+                .map_err(state_error)?
+            {
+                ContainerLeaseAccess::Ready(lease) => MutationAccess::Ready(lease),
+                ContainerLeaseAccess::ActiveUse
+                    if record.labels.contains_key("devcoordinator2.component") =>
+                {
+                    MutationAccess::FixtureActive
+                }
+                ContainerLeaseAccess::ActiveUse | ContainerLeaseAccess::OperationInProgress => {
+                    MutationAccess::InProgress
+                }
+            },
+        )
+    }
+
+    fn observe_owned_cleanup(
+        &self,
+        reference: &ContainerReference,
+        caller: &Caller,
+        deadline: Instant,
+    ) -> Result<(), String> {
+        let mut backoff = Duration::from_millis(10);
+        loop {
+            let observation = (|| -> Result<Option<bool>, ProtocolError> {
+                let context = self.resolve_reference(reference, caller)?;
+                let (records, index) = self.find_record(&context, reference)?;
+                let mut record = records[index].clone();
+                self.verify_record(&record, &context)?;
+                context.unlock()?;
+                if record.cleanup_status == ContainerCleanupStatus::Complete {
+                    return Ok(Some(true));
+                }
+                let Some(_operation) = self
+                    .store
+                    .container_operation_lease(&context.records, &record.owner_token)
+                    .map_err(state_error)?
+                else {
+                    return Ok(None);
+                };
+                self.refresh_record(&context, &mut record)?;
+                Ok(Some(
+                    record.cleanup_status == ContainerCleanupStatus::Complete,
+                ))
+            })();
+            match observation {
+                Ok(Some(true)) => return Ok(()),
+                Ok(Some(false)) => return Err(owned_cleanup_incomplete()),
+                Ok(None) => {}
+                Err(error) if retryable_state(&error, "container_metadata_busy") => {}
+                Err(error) => {
+                    return Err(format!(
+                        "owned database cleanup could not be observed: {}",
+                        error.message
+                    ));
+                }
+            }
+            if !wait_cleanup_budget(deadline, &mut backoff) {
+                return Err(owned_cleanup_pending());
+            }
+        }
+    }
+
+    fn save_cleanup_record(
+        &self,
+        context: &Context,
+        record: &TestContainerRecord,
+        deadline: Instant,
+    ) -> Result<(), ProtocolError> {
+        let mut backoff = Duration::from_millis(10);
+        loop {
+            match self.save_record(context, record) {
+                Ok(()) => return Ok(()),
+                Err(error) if retryable_state(&error, "container_metadata_busy") => {
+                    if !wait_cleanup_budget(deadline, &mut backoff) {
+                        return Err(cleanup_receipt_pending_error(record));
+                    }
+                }
+                Err(error) => return Err(error),
+            }
+        }
     }
 
     fn require_creation_open(&self, worktree: &Path, run_id: &str) -> Result<(), ProtocolError> {
@@ -1557,6 +1741,81 @@ fn ownership_error() -> ProtocolError {
         ErrorCode::PermissionDenied,
         "container is not an owned temporary container for this run and check",
     )
+}
+
+fn fixture_active_error() -> ProtocolError {
+    ProtocolError::new(
+        ErrorCode::TestStartFailed,
+        "temporary container still has an active fixture lease",
+    )
+}
+
+fn fixture_cleanup_deadline() -> Instant {
+    Instant::now() + Duration::from_secs(FIXTURE_PHASE_TIMEOUT_SECONDS)
+}
+
+fn retryable_state(error: &ProtocolError, state: &str) -> bool {
+    error
+        .recovery
+        .as_ref()
+        .is_some_and(|recovery| recovery.retryable && recovery.state.as_deref() == Some(state))
+}
+
+fn wait_cleanup_budget(deadline: Instant, backoff: &mut Duration) -> bool {
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    if remaining.is_zero() {
+        return false;
+    }
+    std::thread::sleep((*backoff).min(remaining));
+    *backoff = backoff.saturating_mul(2).min(Duration::from_millis(100));
+    Instant::now() < deadline
+}
+
+fn owned_cleanup_incomplete() -> String {
+    "owned database cleanup is incomplete; inspect or retry its retained container record".into()
+}
+
+fn owned_cleanup_pending() -> String {
+    "owned database cleanup is still pending within its retained container record".into()
+}
+
+fn cleanup_receipt_pending_error(record: &TestContainerRecord) -> ProtocolError {
+    let mut recovery = devcoordinator2_api::recovery::Guidance::transient(
+        "container cleanup receipt remains pending",
+        "container_cleanup_receipt_pending",
+    );
+    recovery.retryable = false;
+    recovery.waitable = false;
+    recovery.run_id = Some(record.run_id.clone());
+    recovery.repository_id = Some(record.repository_id.clone());
+    ProtocolError::new(
+        ErrorCode::TestStartFailed,
+        "container cleanup receipt remains pending",
+    )
+    .with_recovery(recovery)
+}
+
+fn completed_start_error() -> ProtocolError {
+    ProtocolError::new(
+        ErrorCode::TestStartFailed,
+        "completed temporary container cannot be started",
+    )
+}
+
+fn operation_busy_error(record: &TestContainerRecord) -> ProtocolError {
+    let mut recovery = devcoordinator2_api::recovery::Guidance::transient(
+        "temporary container operation is in progress",
+        "container_operation_in_progress",
+    );
+    recovery.retryable = true;
+    recovery.waitable = false;
+    recovery.run_id = Some(record.run_id.clone());
+    recovery.repository_id = Some(record.repository_id.clone());
+    ProtocolError::new(
+        ErrorCode::TestStartFailed,
+        "temporary container operation is in progress",
+    )
+    .with_recovery(recovery)
 }
 
 fn docker_error(operation: &str, error: DockerError) -> ProtocolError {
