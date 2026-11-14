@@ -205,34 +205,43 @@ entry explicitly binds one non-root Unix UID to that account's private
 }
 ```
 
-The daemon invokes the executable as that UID only to resolve the collector's
-opaque repository key, then opens `usage/usage.sqlite3` read-only. Missing or
-unsupported sources become partial coverage; they never block unrelated
-Coordinator functions and never contribute zeroes. Paths, UIDs, account
-aliases, and per-source values are not returned by the API.
-Missing repository links are resolved only when an operator opens that
-repository. Until then the collection says "Open repository to index usage";
-successful links are persisted, so later collection reads and restarts stay
-fast without launching unused Codex processes.
+The daemon reads the producer's versioned `usage-v2` API. It requires the
+source's `usage-v2/manifest.json`, verifies the socket and peer identity, and
+resolves opaque repository keys through `localUsage/repositoryIdentity`.
+It does not invoke a legacy usage command or open `usage/usage.sqlite3`.
+Missing or unsupported sources become partial coverage; they never block
+unrelated Coordinator functions and never contribute zeroes. Paths, UIDs,
+account aliases, and per-source values are not returned by the API.
 
-A source may optionally set `api_socket` to its existing CodexMulti local
-app-server socket. The Coordinator then prefers the bounded `localUsage/summary`
-API and retains the read-only SQLite fallback. Keep API mode opt-in until that
-source passes the windowed-rollup integration checks described in
-[the usage consumer contract](codex-usage-consumer.md). The default socket is
-`CODEX_HOME/app-server-control/app-server-control.sock`; no new server is started.
+`api_socket` may select an existing CodexMulti app-server socket. When omitted,
+it defaults to `CODEX_HOME/app-server-control/app-server-control.sock`; no new
+server is started. Verify the exact-window integration described in
+[the usage consumer contract](codex-usage-consumer.md) before relying on a
+configured source's measurements.
 
 The installer accepts repeatable `--codex-usage-account UNIX_ACCOUNT` for the
 default `~/.codex` and `~/.local/bin/codex` locations, merges the private policy
 atomically, and preserves previously configured sources.
 
-Keep each policy entry's executable compatible with that environment's current
-usage database. An older executable can reject a database upgraded by the
-running app before repository identity resolution. Verify the replacement's
-identity query as the configured UID, preserve the UID and private home, and
-activate the updated private policy through the reviewed installer. A successful
-`not_found` result means the environment has no history for that repository;
-it is distinct from an unreadable database.
+The executable field remains part of the policy's installation identity; it
+does not enable a SQLite fallback. A successful `not_found` result means the
+producer has no history for that repository, which differs from an unavailable
+source.
+
+Retiring a source removes its exact UID entry from the private policy and
+activates the changed policy through the reviewed installation lifecycle.
+Usage-source changes are restart-required; `config.reload` currently reloads
+only Compose environment-file authorizations. Preserve every other source,
+the policy's root ownership and mode 0600, and the previous configuration for
+recovery. The installer preserves existing entries, so omitting an account from
+`--codex-usage-account` alone does not retire it.
+
+Source retirement and data deletion are separate actions. Delete obsolete
+accounting databases and their sidecars only with explicit disposal authority,
+after checking exact file identities and active writers. Retain compact
+before/after allocation and absence evidence. Preserve current usage-v2 data,
+chat history, credentials and repository identity keys; an unsupported source
+does not make its whole Codex home disposable.
 
 ## Enforcement
 

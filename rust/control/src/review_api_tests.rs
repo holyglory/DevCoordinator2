@@ -766,16 +766,24 @@ fn delayed_collector_finishes_once_after_bounded_cold_review_and_supplies_attrib
     let calls = Arc::new(AtomicUsize::new(0));
     let observed = calls.clone();
     let (entered_source, entered) = std::sync::mpsc::channel();
-    let gate = ResponseGate::default();
-    let response_gate = gate.clone();
+    let gates = (0..5).map(|_| ResponseGate::default()).collect::<Vec<_>>();
+    let response_gates = gates.clone();
     let peer = Peer::start(root, &home, move |params| {
-        observed.fetch_add(1, Ordering::SeqCst);
-        entered_source.send(()).unwrap();
-        response_gate.wait();
-        response(params, START + WEEK, 135)
+        let call = observed.fetch_add(1, Ordering::SeqCst);
+        entered_source.send(call).unwrap();
+        response_gates[call].wait();
+        let mut value = response(params, START + WEEK - 1000, [135, 150, 150, 180, 210][call]);
+        value["generatedAt"] = json!(START + WEEK);
+        if call == 2 {
+            value.as_object_mut().unwrap().remove("contractVersion");
+        }
+        value
     });
     // Release on assertion failure as well, before Peer joins its worker.
-    let release = gate.release_on_drop();
+    let mut releases = gates
+        .iter()
+        .map(|gate| Some(gate.release_on_drop()))
+        .collect::<Vec<_>>();
     let caller = caller();
     crate::usage_context::ingest(
         &fixture.database,
@@ -809,22 +817,120 @@ fn delayed_collector_finishes_once_after_bounded_cold_review_and_supplies_attrib
     assert_eq!(pending.usage.coverage.available_collectors, 0);
     assert!(pending.usage.coverage.snapshot.unwrap().refreshing);
     assert_eq!(calls.load(Ordering::SeqCst), 1);
-    release.release();
+    releases[0].take().unwrap().release();
     assert!(
         fixture
             .service
             .usage
             .wait_for_collector_refresh(Instant::now() + Duration::from_secs(5))
     );
+    // Operators may return after the five-second freshness period, including
+    // before consuming this completed read for the first time.
+    fixture.service.usage.expire_collector_cache();
     let began = Instant::now();
-    let warm = fixture.service.prepare(input(), START + WEEK).unwrap();
-    assert!(began.elapsed() < Duration::from_millis(500));
+    let warm = fixture
+        .service
+        .prepare(input(), START + WEEK + 60_000)
+        .unwrap();
     assert_eq!(warm.usage.coverage.available_collectors, 1);
     assert_eq!(warm.usage.totals.total_tokens, Some(135));
+    assert!(began.elapsed() < Duration::from_millis(500));
     assert_eq!(warm.usage.outcomes.rows.len(), 1);
     assert_eq!(warm.usage.outcomes.rows[0].outcome_id, "spec");
-    assert!(!warm.usage.coverage.snapshot.unwrap().refreshing);
-    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    let snapshot = warm.usage.coverage.snapshot.unwrap();
+    assert!(snapshot.refreshing);
+    assert!(!snapshot.refresh_failed);
+    assert_eq!(snapshot.updated_at_ms, Some(START + WEEK));
+    assert_eq!(warm.generated_at_ms, START + WEEK + 60_000);
+    assert_eq!(
+        warm.usage.coverage.sources[0].updated_at_ms,
+        START + WEEK - 1000
+    );
+    assert_eq!(warm.usage.coverage.sources[0].freshness, "fresh");
+    assert_eq!(warm.usage.coverage.events["api_snapshot_stale"], 1);
+    assert_eq!(entered.recv_timeout(Duration::from_secs(2)).unwrap(), 1);
+    for _ in 0..2 {
+        let refreshing = fixture.service.prepare(input(), START + WEEK).unwrap();
+        assert_eq!(refreshing.usage.totals.total_tokens, Some(135));
+        assert!(refreshing.usage.coverage.snapshot.unwrap().refreshing);
+    }
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+    for other in [
+        Prepare {
+            workstream_id: Some("other".into()),
+            ..input()
+        },
+        Prepare {
+            window_start_ms: START + 1,
+            ..input()
+        },
+    ] {
+        let different = fixture.service.prepare(other, START + WEEK).unwrap();
+        assert_eq!(different.usage.coverage.available_collectors, 0);
+        assert_eq!(different.usage.totals.total_tokens, None);
+        assert_eq!(
+            different.usage.coverage.unavailable_reasons["api_source_busy"],
+            1
+        );
+    }
+    releases[1].take().unwrap().release();
+    assert!(
+        fixture
+            .service
+            .usage
+            .wait_for_collector_refresh(Instant::now() + Duration::from_secs(5))
+    );
+    let refreshed = fixture.service.prepare(input(), START + WEEK).unwrap();
+    assert_eq!(refreshed.usage.totals.total_tokens, Some(150));
+    assert!(!refreshed.usage.coverage.snapshot.unwrap().refreshing);
+    assert!(
+        !refreshed
+            .usage
+            .coverage
+            .events
+            .contains_key("api_snapshot_stale")
+    );
+
+    fixture.service.usage.expire_collector_cache();
+    let refreshing = fixture.service.prepare(input(), START + WEEK).unwrap();
+    assert_eq!(refreshing.usage.totals.total_tokens, Some(150));
+    assert_eq!(entered.recv_timeout(Duration::from_secs(2)).unwrap(), 2);
+    releases[2].take().unwrap().release();
+    assert!(
+        fixture
+            .service
+            .usage
+            .wait_for_collector_refresh(Instant::now() + Duration::from_secs(5))
+    );
+    let failed = fixture.service.prepare(input(), START + WEEK).unwrap();
+    assert_eq!(failed.usage.coverage.available_collectors, 1);
+    assert_eq!(failed.usage.totals.total_tokens, Some(150));
+    let snapshot = failed.usage.coverage.snapshot.unwrap();
+    assert!(!snapshot.refreshing);
+    assert!(snapshot.refresh_failed);
+    assert_eq!(failed.usage.coverage.events["api_contract_unsupported"], 1);
+    let repeated = fixture.service.prepare(input(), START + WEEK).unwrap();
+    assert_eq!(repeated.usage.totals.total_tokens, Some(150));
+    assert!(repeated.usage.coverage.snapshot.unwrap().refresh_failed);
+    assert_eq!(calls.load(Ordering::SeqCst), 3);
+
+    fixture.service.usage.expire_collector_cache();
+    let recovering = fixture.service.prepare(input(), START + WEEK).unwrap();
+    assert_eq!(recovering.usage.totals.total_tokens, Some(150));
+    assert_eq!(entered.recv_timeout(Duration::from_secs(2)).unwrap(), 3);
+    releases[3].take().unwrap().release();
+    assert!(
+        fixture
+            .service
+            .usage
+            .wait_for_collector_refresh(Instant::now() + Duration::from_secs(5))
+    );
+    let recovered = fixture.service.prepare(input(), START + WEEK).unwrap();
+    assert_eq!(recovered.usage.totals.total_tokens, Some(180));
+    let snapshot = recovered.usage.coverage.snapshot.unwrap();
+    assert!(!snapshot.refreshing);
+    assert!(!snapshot.refresh_failed);
+    assert_eq!(calls.load(Ordering::SeqCst), 4);
     let request = super::tests::record(&fixture);
     let saved = fixture
         .service
@@ -832,4 +938,66 @@ fn delayed_collector_finishes_once_after_bounded_cold_review_and_supplies_attrib
         .unwrap();
     assert!(saved.completed);
     assert_eq!(saved.record.experiment.disposition, Disposition::Unchanged);
+
+    let other = Prepare {
+        workstream_id: Some("other".into()),
+        ..input()
+    };
+    let other = fixture.service.prepare(other, START + WEEK).unwrap();
+    assert_eq!(other.usage.totals.total_tokens, None);
+    assert_eq!(entered.recv_timeout(Duration::from_secs(2)).unwrap(), 4);
+    let other_root = fixture._temporary.path().join("other-repository");
+    let other_key = KEY.replace('b', "c");
+    fixture.database.transaction(|tx| {
+        tx.execute("INSERT INTO repositories(repository_id,root_path,display_name,registered_at,registered_by_uid,last_seen_at) VALUES('project-beta',$1,'Project Beta','1970-01-01T00:16:40Z',1,'1970-01-01T00:16:40Z')", [other_root.to_string_lossy().as_ref()])?;
+        tx.execute("INSERT INTO codex_usage_repository_links(source_uid,repository_id,codex_repository_id,source_schema,taxonomy_version,resolved_at) VALUES($1,'project-beta',$2,3,1,'t')", crate::database::params![peer.source.uid,other_key])?;
+        Ok(())
+    }).unwrap();
+    let different = fixture
+        .service
+        .prepare(
+            Prepare {
+                repository_id: "project-beta".into(),
+                ..input()
+            },
+            START + WEEK,
+        )
+        .unwrap();
+    assert_eq!(different.usage.totals.total_tokens, None);
+    assert_eq!(
+        different.usage.coverage.unavailable_reasons["api_source_busy"],
+        1
+    );
+
+    let mut changed = caller.clone();
+    changed
+        .work
+        .as_mut()
+        .unwrap()
+        .context
+        .as_mut()
+        .unwrap()
+        .operation_id = Some("new-operation-binding".into());
+    crate::usage_context::ingest(
+        &fixture.database,
+        changed.uid,
+        "project-alpha",
+        changed.work.as_ref().unwrap(),
+        START + 2,
+    )
+    .unwrap();
+    let different = fixture.service.prepare(input(), START + WEEK).unwrap();
+    assert_eq!(different.usage.totals.total_tokens, None);
+    assert_eq!(
+        different.usage.coverage.unavailable_reasons["api_source_busy"],
+        1
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 5);
+    releases[4].take().unwrap().release();
+    assert!(
+        fixture
+            .service
+            .usage
+            .wait_for_collector_refresh(Instant::now() + Duration::from_secs(5))
+    );
 }

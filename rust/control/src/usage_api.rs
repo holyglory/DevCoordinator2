@@ -76,6 +76,60 @@ struct Entry {
     bytes: usize,
 }
 
+pub(super) struct SummaryRead {
+    summary: Arc<Summary>,
+    refresh_reason: Option<String>,
+}
+
+impl std::ops::Deref for SummaryRead {
+    type Target = Summary;
+
+    fn deref(&self) -> &Self::Target {
+        &self.summary
+    }
+}
+
+impl SummaryRead {
+    fn cached_or_error(report: Option<Arc<Summary>>, reason: &str) -> Result<Self, String> {
+        match report {
+            Some(summary) => Ok(Self {
+                summary,
+                refresh_reason: Some(reason.into()),
+            }),
+            None => Err(reason.into()),
+        }
+    }
+
+    pub(super) fn source_report(
+        &self,
+        repository: Option<&str>,
+        buckets: usize,
+        worktree_keys: Option<&[String]>,
+        include_unassigned: bool,
+    ) -> SourceReport {
+        let mut report =
+            self.summary
+                .source_report(repository, buckets, worktree_keys, include_unassigned);
+        if let Some(snapshot) = &mut report.snapshot {
+            // Display age describes this exact summary, separately from the
+            // producer publication times retained in source_snapshot.
+            snapshot.updated_at_ms = Some(self.summary.generated_at);
+            if let Some(reason) = &self.refresh_reason {
+                snapshot.refreshing |= is_pending(reason);
+                snapshot.refresh_failed |= !is_pending(reason);
+                if is_pending(reason) {
+                    snapshot.progress_stage = Some("source_read".into());
+                }
+            }
+        }
+        if let Some(reason) = &self.refresh_reason {
+            increment(&mut report.coverage_events, "api_snapshot_stale");
+            increment(&mut report.coverage_events, reason);
+        }
+        report
+    }
+}
+
 #[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct Summary {
@@ -299,7 +353,7 @@ impl CollectorApi {
         start: u64,
         end: u64,
         deadline: Instant,
-    ) -> Result<Arc<Summary>, String> {
+    ) -> Result<SummaryRead, String> {
         self.summary_with_workstream(
             source,
             repository,
@@ -328,7 +382,7 @@ impl CollectorApi {
         start: u64,
         end: u64,
         deadline: Instant,
-    ) -> Result<Arc<Summary>, String> {
+    ) -> Result<SummaryRead, String> {
         let path = source.api_socket.as_ref().ok_or("api_not_configured")?;
         let key = format!(
             "{}:{path:?}:{}:{:?}:{include_unassigned}:{start}:{end}",
@@ -360,14 +414,18 @@ impl CollectorApi {
             .get(&key)
             .filter(|entry| entry.loaded.elapsed() < FRESH_FOR)
         {
-            return Ok(entry.report.clone());
+            return Ok(SummaryRead {
+                summary: entry.report.clone(),
+                refresh_reason: None,
+            });
         }
+        let saved = state.entries.get(&key).map(|entry| entry.report.clone());
         if let Some((_, reason)) = state.failed_until.get(&key) {
-            return Err(reason.clone());
+            return SummaryRead::cached_or_error(saved, reason);
         }
         if !state.inflight.contains_key(&key) {
             if state.inflight.values().any(|flight| &flight.source == path) {
-                return Err("api_source_busy".into());
+                return SummaryRead::cached_or_error(saved, "api_source_busy");
             }
             let inflight_bytes = state
                 .inflight
@@ -377,7 +435,7 @@ impl CollectorApi {
             if state.inflight.len() >= MAX_CACHED
                 || request_bytes > MAX_INFLIGHT_BYTES.saturating_sub(inflight_bytes)
             {
-                return Err("api_busy".into());
+                return SummaryRead::cached_or_error(saved, "api_busy");
             }
             state.inflight.insert(
                 key.clone(),
@@ -429,10 +487,18 @@ impl CollectorApi {
                 .get(&key)
                 .filter(|entry| entry.loaded.elapsed() < FRESH_FOR)
             {
-                return Ok(entry.report.clone());
+                return Ok(SummaryRead {
+                    summary: entry.report.clone(),
+                    refresh_reason: None,
+                });
             }
             if let Some((_, reason)) = state.failed_until.get(&key) {
-                return Err(reason.clone());
+                return SummaryRead::cached_or_error(saved, reason);
+            }
+            // Freshness triggers one revalidation; it does not erase a
+            // completed exact-query observation before its caller can read it.
+            if saved.is_some() {
+                return SummaryRead::cached_or_error(saved, "api_refresh_pending");
             }
             let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
                 return Err("api_refresh_pending".into());
@@ -512,6 +578,17 @@ impl CollectorApi {
             }
         }
         changed.notify_all();
+    }
+
+    #[cfg(test)]
+    pub(super) fn expire(&self) {
+        let mut state = self.0.0.lock().unwrap();
+        for entry in state.entries.values_mut() {
+            entry.loaded = Instant::now() - FRESH_FOR;
+        }
+        for (until, _) in state.failed_until.values_mut() {
+            *until = Instant::now();
+        }
     }
 
     #[cfg(test)]

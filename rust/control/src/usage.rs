@@ -253,6 +253,11 @@ impl UsageService {
     }
 
     #[cfg(test)]
+    pub(crate) fn expire_collector_cache(&self) {
+        self.usage.api.expire();
+    }
+
+    #[cfg(test)]
     pub(crate) fn wait_for_collector_refresh(&self, deadline: Instant) -> bool {
         self.usage.api.wait_until_idle(deadline)
     }
