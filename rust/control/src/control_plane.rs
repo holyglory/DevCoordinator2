@@ -214,6 +214,17 @@ impl ControlPlane {
                     .with("message", event.message);
                 let _ = alert_telegram.enqueue_event(&notification);
             }));
+        let deployment_events = events.clone();
+        let deployment_clock = Arc::clone(&clock);
+        deployments.set_event_sink(Arc::new(move |event| {
+            deployment_events
+                .publish(NewEvent {
+                    occurred_at: event_timestamp(deployment_clock.as_ref()),
+                    dedupe_key: None,
+                    event: results::OwnedEvent::Deployment(event),
+                })
+                .map(|_| ())
+        }));
         let test_telegram = telegram.clone();
         let test_sampler = health.sampler().clone();
         let test_events = events.clone();
@@ -2184,14 +2195,24 @@ impl OperationExecutor for ControlPlane {
                 let run_id = request.run_id.clone();
                 let path = request.path.clone();
                 let deadline = request.deadline_at.clone();
+                let deadline_at = parse_deadline(&deadline)?;
                 let status_caller = caller.clone();
                 return Ok(Box::pin(async move {
                     loop {
+                        if tokio::time::Instant::now() >= deadline_at {
+                            return Err(wait_deadline_error(
+                                "test run did not finish before the requested deadline",
+                                Some("running".into()),
+                                Some(run_id.clone()),
+                                None,
+                            ));
+                        }
                         let access_for_wait = access.clone();
                         let caller_for_wait = wait_caller.clone();
                         let subscription_events = events.clone();
                         let subscription_repository = repository.repository_id.clone();
-                        let subscription_deadline = deadline.clone();
+                        let subscription_deadline =
+                            crate::request_deadline::observation_deadline(&deadline)?;
                         let subscription = wait
                             .blocking(move || {
                                 subscription_events.subscribe_with_visibility(
@@ -2228,132 +2249,21 @@ impl OperationExecutor for ControlPlane {
                                 status: latest,
                             });
                         }
-                        let result = subscription.receive().await?;
-                        if !result.heartbeat_due.is_empty() {
-                            let latest =
-                                test_wait_status(&tests, &path, &status_caller, &wait).await?;
-                            if latest.run_id == run_id
-                                && latest.status != results::TestStatus::Running
-                            {
-                                return encode(results::TestWaitResult {
-                                    completed: true,
-                                    timed_out: false,
-                                    status: latest,
-                                });
-                            }
-                            if latest.run_id != run_id {
-                                return Err(test_wait_run_changed(&run_id, &latest));
-                            }
-                            return Err(wait_deadline_error(
-                                "test run did not finish before the requested deadline",
-                                Some(format!("{:?}", latest.status)),
-                                Some(run_id.clone()),
-                                None,
-                            ));
-                        }
-                        let latest = test_wait_status(&tests, &path, &status_caller, &wait).await?;
-                        if latest.run_id != run_id {
-                            return Err(test_wait_run_changed(&run_id, &latest));
-                        }
-                        if latest.status != results::TestStatus::Running {
-                            return encode(results::TestWaitResult {
-                                completed: true,
-                                timed_out: false,
-                                status: latest,
-                            });
-                        }
+                        let _ = subscription.receive().await?;
                     }
                 }) as crate::daemon::DeferredOperation);
             }
             if operation == "deployment.wait" {
                 let request: params::DeploymentWait = decode(authorization.params.clone())?;
-                let current = self.deployments.status(
-                    request.path.as_deref(),
-                    request.name.as_deref(),
-                    request.deployment_id.as_deref(),
-                    caller,
-                )?;
-                if deployment_wait_satisfied(&current, request.state) {
-                    return Ok(Box::pin(async move {
-                        encode(results::DeploymentWaitResult {
-                            completed: true,
-                            timed_out: false,
-                            status: current,
-                        })
-                    }) as crate::daemon::DeferredOperation);
-                }
-                let events = self.events.clone();
                 let access = self.access.clone();
                 let wait_caller = caller.clone();
-                let deployments = self.deployments.clone();
-                let deadline = request.deadline_at.clone();
-                let target_deployment_id = current.deployment_id.clone();
-                let state = request.state;
-                let status_caller = caller.clone();
-                return Ok(Box::pin(async move {
-                    loop {
-                        let access_for_wait = access.clone();
-                        let caller_for_wait = wait_caller.clone();
-                        let subscription_events = events.clone();
-                        let subscription_deployment = target_deployment_id.clone();
-                        let subscription_deadline = deadline.clone();
-                        let subscription = wait
-                            .blocking(move || {
-                                subscription_events.subscribe_with_visibility(
-                                    params::EventWait {
-                                        cursor: None,
-                                        filters: vec![params::EventFilter {
-                                            filter_id: "deployment-wait".into(),
-                                            categories: vec![params::EventCategory::Deployment],
-                                            kinds: vec![
-                                                "deployment.applied".into(),
-                                                "deployment.failed".into(),
-                                                "deployment.start".into(),
-                                                "deployment.restart".into(),
-                                            ],
-                                            repository_ids: vec![],
-                                            deployment_ids: vec![subscription_deployment],
-                                            deadline_at: Some(subscription_deadline),
-                                        }],
-                                        limit: 10,
-                                    },
-                                    Arc::new(move || {
-                                        access_for_wait.event_visibility(&caller_for_wait)
-                                    }),
-                                )
-                            })
-                            .await?;
-                        let result = subscription.receive().await?;
-                        let service = deployments.clone();
-                        let status_request = request.clone();
-                        let caller = status_caller.clone();
-                        let latest = wait
-                            .blocking(move || {
-                                service.status(
-                                    status_request.path.as_deref(),
-                                    status_request.name.as_deref(),
-                                    status_request.deployment_id.as_deref(),
-                                    &caller,
-                                )
-                            })
-                            .await?;
-                        if deployment_wait_satisfied(&latest, state) {
-                            return encode(results::DeploymentWaitResult {
-                                completed: true,
-                                timed_out: false,
-                                status: latest,
-                            });
-                        }
-                        if !result.heartbeat_due.is_empty() {
-                            return Err(wait_deadline_error(
-                                "deployment did not reach the requested state before the deadline",
-                                Some(latest.state.clone()),
-                                None,
-                                Some(latest.deployment_id.clone()),
-                            ));
-                        }
-                    }
-                }) as crate::daemon::DeferredOperation);
+                return self.deployments.prepare_wait(
+                    request,
+                    caller.clone(),
+                    self.events.clone(),
+                    Arc::new(move || access.event_visibility(&wait_caller)),
+                    wait,
+                );
             }
             let request: params::EventWait = decode(authorization.params)?;
             let access = self.access.clone();
@@ -2417,25 +2327,6 @@ fn test_wait_run_changed(requested_run_id: &str, current: &results::TestSummary)
         field_errors: vec![],
         example: None,
     })
-}
-
-fn deployment_wait_satisfied(
-    status: &results::DeploymentStatus,
-    state: params::DeploymentWaitState,
-) -> bool {
-    match state {
-        params::DeploymentWaitState::Applied => {
-            status.current_generation.is_some() && status.state != "applying"
-        }
-        params::DeploymentWaitState::Ready => status.readiness.as_ref().is_some_and(|r| r.ready),
-        params::DeploymentWaitState::SourceCurrent => status
-            .readiness
-            .as_ref()
-            .is_some_and(|r| r.pending_apply == Some(false)),
-        params::DeploymentWaitState::RouteAcknowledged => {
-            status.route_port.is_some() && status.state == "running"
-        }
-    }
 }
 
 struct RepositoryIdentity {

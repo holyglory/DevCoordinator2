@@ -1,6 +1,7 @@
 //! Deployment resolution, truthful status, observed control, and route changes.
 mod recovery;
 mod routing_recovery;
+mod wait;
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::ffi::OsString;
@@ -17,7 +18,7 @@ use devcoordinator2_api::params::{
 };
 use devcoordinator2_api::results::{
     Component, ComponentBinding, ComposeService, DeclaredDeployment, DeploymentList, DeploymentLog,
-    DeploymentSource, DeploymentStatus, DomainChanged,
+    DeploymentOwnedEvent, DeploymentSource, DeploymentStatus, DomainChanged,
 };
 use devcoordinator2_api::{ErrorCode, ProtocolError};
 use time::{format_description::FormatItem, macros::format_description};
@@ -87,7 +88,11 @@ pub struct Deployments {
     busy: Arc<MutationLocks>,
     finite_operations: crate::deployment_cancellation::FiniteOperations,
     routes: RouteFilePublisher,
+    events: Arc<Mutex<Option<DeploymentEventSink>>>,
 }
+
+type DeploymentEventSink =
+    Arc<dyn Fn(DeploymentOwnedEvent) -> Result<(), ProtocolError> + Send + Sync>;
 
 struct ResolvedDeployment {
     row: DeploymentRow,
@@ -290,6 +295,27 @@ impl Deployments {
             busy: Arc::new(MutationLocks::default()),
             finite_operations: crate::deployment_cancellation::FiniteOperations::default(),
             routes,
+            events: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    pub(crate) fn set_event_sink(&self, sink: DeploymentEventSink) {
+        *self
+            .events
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(sink);
+    }
+
+    fn publish_event(&self, event: DeploymentOwnedEvent) {
+        let sink = self
+            .events
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        if let Some(sink) = sink
+            && let Err(error) = sink(event)
+        {
+            tracing::warn!(code=%error.code,"deployment event publication unavailable");
         }
     }
 
@@ -4512,32 +4538,57 @@ impl Deployments {
         } else {
             None
         };
-        let mut changed = false;
-        for id in ids.into_iter().take(1) {
-            let Ok(_busy) = self.acquire_mutation(&id, MutationOwner::Maintenance) else {
-                continue;
-            };
-            match routing_recovery::restore_route(self, &id) {
-                Ok(routing_recovery::Recovery::Restored) => changed = true,
-                Ok(routing_recovery::Recovery::Deferred) => continue,
-                Ok(routing_recovery::Recovery::NotApplicable) => {}
-                Err(error) => {
-                    tracing::warn!(code=%error.code, deployment_id=%id, "route recovery incomplete");
-                    continue;
-                }
+        let Some(id) = ids.into_iter().next() else {
+            return Ok(next);
+        };
+        let Ok(_busy) = self.acquire_mutation(&id, MutationOwner::Maintenance) else {
+            return Ok(next);
+        };
+        let repository_id = self.store.get(&id)?.map(|row| row.repository_id);
+        let was_routed=self.database.read({
+            let id=id.clone();
+            move |connection|connection.query_row("SELECT EXISTS(SELECT 1 FROM domain_routes WHERE deployment_id=$1 AND port IS NOT NULL)",
+                [id],|row|row.get::<_,bool>(0)).map_err(DatabaseError::from)
+        }).map_err(database_error)?;
+        let recovered = match routing_recovery::restore_route(self, &id) {
+            Ok(routing_recovery::Recovery::Restored) => true,
+            Ok(routing_recovery::Recovery::Deferred) => return Ok(next),
+            Ok(routing_recovery::Recovery::NotApplicable) => false,
+            Err(error) => {
+                tracing::warn!(code=%error.code,deployment_id=%id,"route recovery incomplete");
+                return Ok(next);
             }
-            match self.validate_or_withdraw_route(&id) {
-                Ok(true) => {}
-                Ok(false) => changed = true,
-                Err(error) => {
-                    tracing::warn!(code=%error.code, deployment_id=%id, "route reconciliation failed");
-                }
+        };
+        let withdrawn = match self.validate_or_withdraw_route(&id) {
+            Ok(valid) => !valid,
+            Err(error) => {
+                tracing::warn!(code=%error.code,deployment_id=%id,"route reconciliation failed");
+                false
             }
-        }
-        // A deferred deployment keeps its prior route, but it must not hide a
-        // confirmed change for another deployment (or a successful recovery).
-        if changed {
+        };
+        if recovered || withdrawn {
             self.routes.publish_current()?;
+            if recovered || was_routed {
+                let state = match self.store.get(&id) {
+                    Ok(row) => row.map(|row| row.state),
+                    Err(error) => {
+                        tracing::warn!(code=%error.code,"deployment event state unavailable");
+                        None
+                    }
+                };
+                self.publish_event(DeploymentOwnedEvent {
+                    kind: if recovered {
+                        "deployment.recovered"
+                    } else {
+                        "deployment.route_changed"
+                    }
+                    .into(),
+                    repository_id,
+                    deployment_id: id,
+                    component: None,
+                    state,
+                });
+            }
         }
         Ok(next)
     }
@@ -6421,6 +6472,7 @@ mod tests {
         snapshot: Mutex<crate::deployment_git::GitSnapshot>,
         snapshots: Mutex<BTreeMap<PathBuf, crate::deployment_git::GitSnapshot>>,
         actions: Mutex<Vec<String>>,
+        snapshot_hook: Mutex<Option<Box<dyn FnOnce() + Send>>>,
     }
 
     impl CheckoutGit {
@@ -6433,6 +6485,7 @@ mod tests {
                 }),
                 snapshots: Mutex::new(BTreeMap::new()),
                 actions: Mutex::new(Vec::new()),
+                snapshot_hook: Mutex::new(None),
             }
         }
     }
@@ -6445,13 +6498,17 @@ mod tests {
             _caller_gid: u32,
         ) -> Result<crate::deployment_git::GitSnapshot, crate::deployment_git::DeploymentGitError>
         {
-            Ok(self
+            let snapshot = self
                 .snapshots
                 .lock()
                 .unwrap()
                 .get(worktree)
                 .cloned()
-                .unwrap_or_else(|| self.snapshot.lock().unwrap().clone()))
+                .unwrap_or_else(|| self.snapshot.lock().unwrap().clone());
+            if let Some(hook) = self.snapshot_hook.lock().unwrap().take() {
+                hook();
+            }
+            Ok(snapshot)
         }
 
         fn add_detached_worktree(

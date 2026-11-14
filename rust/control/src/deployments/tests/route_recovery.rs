@@ -1,5 +1,8 @@
 use super::*;
 
+#[path = "wait.rs"]
+mod wait;
+
 #[test]
 fn explicit_linked_candidate_status_tracks_its_origin_by_deployment_id() {
     let fixture = RouteWorld::new("checkout");

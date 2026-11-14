@@ -314,6 +314,38 @@ fn test_wait_deadline_includes_slow_status_preparation() {
 }
 
 #[test]
+fn direct_test_wait_keeps_its_deadline_with_scheduler_heartbeats() {
+    use crate::daemon::OperationExecutor;
+    let world = World::new();
+    let caller = crate::access::Caller::from_client(
+        std::process::id(),
+        rustix::process::getuid().as_raw(),
+        rustix::process::getgid().as_raw(),
+        ClientContext::default(),
+        None,
+    )
+    .unwrap();
+    let wait = crate::daemon::WaitContext::new(Arc::new(tokio::sync::Semaphore::new(2)), None);
+    let deferred = world
+        .plane
+        .defer("test.wait", world.query("test.wait"), &caller, wait)
+        .unwrap()
+        .unwrap();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        let error = tokio::time::timeout(RESPONSE_BOUND, deferred)
+            .await
+            .expect("the state observer must retain its own logical deadline")
+            .unwrap_err();
+        assert_eq!(error.code, ErrorCode::WaitDeadlineReached);
+        assert_eq!(error.recovery.unwrap().run_id.as_deref(), Some(RUN));
+    });
+}
+
+#[test]
 fn test_wait_deadline_includes_observation_after_preparation() {
     use crate::access::Caller;
     use crate::daemon::{DeferredOperation, OperationExecutor};

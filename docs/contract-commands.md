@@ -472,9 +472,14 @@ Reference args on every command except `list`: `path` (required) plus
   use explicit status for source freshness. Observed-only
   deployments have no managed-source readiness claim.
 - `deployment.wait` waits for `applied`, `ready`, `source_current`, or
-  `route_acknowledged` until a caller-supplied RFC 3339 deadline. A timeout is
-  returned as `wait_deadline_reached` with the latest status and recovery
-  choices.
+  `route_acknowledged` until a caller-supplied RFC 3339 deadline. It subscribes
+  before rechecking state and wakes on the target deployment's changes,
+  including committed route recovery. The existing event scheduler provides
+  bounded one-second rechecks for external source edits and unavailable
+  notifications. Admission, state checks and idle observation share the original
+  absolute deadline; a heartbeat never extends it. Expiry returns
+  `wait_deadline_reached` with recovery choices, without admitting a late status
+  check.
 - `deployment.start | stop | restart {component?}` → status. Whole
   deployment in declared/reverse order, or one component whose declaration
   permits independent control. A declared independent Compose service is

@@ -119,6 +119,28 @@ pub(crate) fn parse_deadline(value: &str) -> Result<tokio::time::Instant, Protoc
     Ok(tokio::time::Instant::now() + duration.try_into().unwrap_or_default())
 }
 
+/// Recheck externally observable state through the existing event scheduler,
+/// without extending the caller's absolute deadline or creating another timer.
+pub(crate) fn observation_deadline(value: &str) -> Result<String, ProtocolError> {
+    let deadline =
+        time::OffsetDateTime::parse(value, &time::format_description::well_known::Rfc3339)
+            .map_err(|_| {
+                ProtocolError::new(
+                    ErrorCode::ParamsInvalid,
+                    "deadline_at must be an RFC 3339 timestamp",
+                )
+            })?;
+    deadline
+        .min(time::OffsetDateTime::now_utc() + time::Duration::seconds(1))
+        .format(&time::format_description::well_known::Rfc3339)
+        .map_err(|_| {
+            ProtocolError::new(
+                ErrorCode::InternalError,
+                "cannot format observation deadline",
+            )
+        })
+}
+
 pub(crate) fn wait_deadline_error(
     reason: &str,
     state: Option<String>,
