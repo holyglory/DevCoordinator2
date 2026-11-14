@@ -51,6 +51,7 @@ pub(crate) struct DeliveryService {
     artifacts: TestArtifactService,
     base_domain: String,
     native_console: Option<(PathBuf, String)>,
+    deployment_files: crate::deployment_files::DeploymentFiles,
 }
 
 impl DeliveryService {
@@ -58,12 +59,14 @@ impl DeliveryService {
         database: Database,
         artifacts: TestArtifactService,
         base_domain: String,
+        deployment_files: crate::deployment_files::DeploymentFiles,
     ) -> Self {
         Self {
             database,
             artifacts,
             base_domain,
             native_console: None,
+            deployment_files,
         }
     }
 
@@ -353,7 +356,18 @@ impl DeliveryService {
         if let Some(origin) = DeploymentStore::new(self.database.clone())
             .generation_origin(&web.deployment_id, row.2)?
         {
-            if row.11 != "checkout" || row.9 == 0 {
+            let retained = DeploymentStore::new(self.database.clone())
+                .generation(&web.deployment_id, row.2)?;
+            if !matches!(row.11.as_str(), "checkout" | "worktree")
+                || row.9 == 0
+                || !retained.is_some_and(|generation| {
+                    generation.path.is_dir()
+                        && self
+                            .deployment_files
+                            .owned_generation(&web.deployment_id, &generation.path)
+                            .is_some()
+                })
+            {
                 return Err(invalid(
                     "Web deployment candidate source binding is invalid",
                 ));

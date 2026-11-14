@@ -1730,6 +1730,62 @@ pub struct DeploymentLog {
     pub log_path: Option<String>,
     pub container_id: Option<String>,
     pub observed_only: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub process_log: Option<ProcessLogInfo>,
+}
+
+#[derive(Clone, Debug, JsonSchema, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProcessLogState {
+    Available,
+    Empty,
+    Unavailable,
+    Legacy,
+}
+
+#[derive(Clone, Debug, JsonSchema, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProcessLogInfo {
+    pub generation: Option<u32>,
+    pub attempt: Option<u32>,
+    pub state: ProcessLogState,
+    #[schemars(length(max = 8))]
+    pub retained_generations: Vec<u32>,
+    #[schemars(length(max = 8))]
+    pub retained_attempts: Vec<u32>,
+    pub max_generations: u8,
+    pub max_attempts_per_generation: u8,
+}
+
+#[cfg(test)]
+mod process_log_compatibility {
+    use super::*;
+
+    #[test]
+    fn old_log_responses_and_new_identity_metadata_round_trip() {
+        let old = serde_json::json!({"deployment_id":"d1","component":"api","tail":"output",
+            "truncated_before_tail":false,"log_path":null,"container_id":null,"observed_only":false});
+        let mut log: DeploymentLog = serde_json::from_value(old.clone()).unwrap();
+        assert_eq!(serde_json::to_value(&log).unwrap(), old);
+        log.process_log = Some(ProcessLogInfo {
+            generation: Some(7),
+            attempt: Some(19),
+            state: ProcessLogState::Available,
+            retained_generations: vec![7],
+            retained_attempts: vec![19],
+            max_generations: 8,
+            max_attempts_per_generation: 8,
+        });
+        let encoded = serde_json::to_value(&log).unwrap();
+        assert_eq!(encoded["tail"], old["tail"]);
+        assert_eq!(
+            serde_json::from_value::<DeploymentLog>(encoded.clone()).unwrap(),
+            log
+        );
+        let mut invalid = encoded;
+        invalid["process_log"]["state"] = serde_json::json!("unknown");
+        assert!(serde_json::from_value::<DeploymentLog>(invalid).is_err());
+    }
 }
 
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]

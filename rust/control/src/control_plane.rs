@@ -32,6 +32,7 @@ use crate::plan::{PlanService, PostgresDeploymentEvidence};
 use crate::platform::{Clock, HostClock};
 use crate::progress::ProgressService;
 use crate::repository::Registry;
+use crate::request_deadline::{WaitContext, parse_deadline, wait_deadline_error};
 use crate::routes::RouteFilePublisher;
 use crate::server::ServerService;
 use crate::sketches::SketchService;
@@ -166,6 +167,10 @@ impl ControlPlane {
             database.clone(),
             artifacts.clone(),
             config.base_domain.clone(),
+            crate::deployment_files::DeploymentFiles::new(
+                config.deployments_dir(),
+                config.secrets_dir(),
+            ),
         )
         .with_native_console(
             std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."),
@@ -370,12 +375,31 @@ impl ControlPlane {
     fn capture_usage_context(&self, params: &Value, caller: &Caller) {
         if !caller.via_edge
             && let Some(work) = &caller.work
-            && let Ok(repository) = self.resolve_repository(
-                params.get("path").and_then(Value::as_str),
-                params.get("repository_id").and_then(Value::as_str),
-                caller,
-                false,
-            )
+            && work.diagnostic.is_none()
+            && work
+                .context
+                .as_ref()
+                .is_some_and(|context| context.operation_id.is_some() && context.validate().is_ok())
+            && let Ok(repository) = self
+                .resolve_registered_repository(
+                    params.get("path").and_then(Value::as_str),
+                    params.get("repository_id").and_then(Value::as_str),
+                    caller,
+                )
+                .or_else(|error| {
+                    // Preserve declaration capture for a first registration. An
+                    // existing worktree's optional accounting never updates it.
+                    if error.code == ErrorCode::RepositoryNotFound {
+                        self.resolve_repository(
+                            params.get("path").and_then(Value::as_str),
+                            params.get("repository_id").and_then(Value::as_str),
+                            caller,
+                            false,
+                        )
+                    } else {
+                        Err(error)
+                    }
+                })
         {
             let now = (self.clock.now_utc().unix_timestamp_nanos() / 1_000_000) as u64;
             if crate::usage_context::ingest(
@@ -480,6 +504,51 @@ impl ControlPlane {
             }
         }
         let registered = self.registry.register(&path, caller.uid, caller.gid)?;
+        Ok(RepositoryIdentity {
+            repository_id: registered.repository_id,
+            display_name: registered.display_name,
+        })
+    }
+
+    fn resolve_registered_repository(
+        &self,
+        path: Option<&str>,
+        repository_id: Option<&str>,
+        caller: &Caller,
+    ) -> Result<RepositoryIdentity, ProtocolError> {
+        if let Some(repository_id) = repository_id {
+            return self.repository_by_id(repository_id, false);
+        }
+        let path = path
+            .filter(|path| Path::new(path).is_absolute())
+            .ok_or_else(|| {
+                ProtocolError::new(
+                    ErrorCode::ParamsInvalid,
+                    "an absolute project path or identity is required",
+                )
+            })?;
+        let path = std::fs::canonicalize(path).map_err(|_| {
+            ProtocolError::new(
+                ErrorCode::RepositoryNotFound,
+                "no registered worktree matches this request",
+            )
+        })?;
+        let registered = if let Some(registered) = self.registry.registered_worktree(&path)? {
+            registered
+        } else {
+            // Subdirectories and file paths retain Git's canonical repository
+            // semantics; the normal exact-root read requires no subprocess.
+            let source =
+                crate::repository::resolve_worktree(&path, Some((caller.uid, caller.gid)))?;
+            self.registry
+                .registered_worktree(&source.worktree_root)?
+                .ok_or_else(|| {
+                    ProtocolError::new(
+                        ErrorCode::RepositoryNotFound,
+                        "no registered worktree matches this request",
+                    )
+                })?
+        };
         Ok(RepositoryIdentity {
             repository_id: registered.repository_id,
             display_name: registered.display_name,
@@ -1976,14 +2045,13 @@ impl OperationExecutor for ControlPlane {
                 .exists()
             && let Some(work) = caller.work.as_ref().and_then(|work| work.context.as_ref())
             && let Some(capability) = &work.alarm
-            && let Ok(repository) = self.resolve_repository(
+            && let Ok(repository) = self.resolve_registered_repository(
                 authorization.params.get("path").and_then(Value::as_str),
                 authorization
                     .params
                     .get("repository_id")
                     .and_then(Value::as_str),
                 caller,
-                false,
             )
         {
             let now = (self.clock.now_utc().unix_timestamp_nanos() / 1_000_000) as u64;
@@ -2026,11 +2094,10 @@ impl OperationExecutor for ControlPlane {
         if !caller.via_edge
             && !operation.starts_with("event.")
             && !operation.starts_with("agent.message.")
-            && let Ok(repository) = self.resolve_repository(
+            && let Ok(repository) = self.resolve_registered_repository(
                 params.get("path").and_then(Value::as_str),
                 params.get("repository_id").and_then(Value::as_str),
                 caller,
-                false,
             )
             && let Ok(messages) = self.sketches.message_poll_kind(
                 params::AgentMessagePoll {
@@ -2053,6 +2120,7 @@ impl OperationExecutor for ControlPlane {
         operation: &str,
         params: Value,
         caller: &Caller,
+        wait: WaitContext,
     ) -> Option<Result<crate::daemon::DeferredOperation, ProtocolError>> {
         if !matches!(
             operation,
@@ -2069,16 +2137,14 @@ impl OperationExecutor for ControlPlane {
                 let runtime = self.tests.admission_runtime_dir();
                 let tests = self.tests.clone();
                 return Ok(Box::pin(async move {
-                    let wait = tokio::time::timeout_at(
+                    let admission_wait = tokio::time::timeout_at(
                         deadline,
                         crate::test_admission::wait_for_admission_open(runtime),
                     );
-                    match wait.await {
+                    match admission_wait.await {
                         Ok(Ok(())) => {
-                            crate::daemon::blocking_operation(move || {
-                                encode(tests.admission_status()?)
-                            })
-                            .await
+                            wait.blocking(move || encode(tests.admission_status()?))
+                                .await
                         }
                         Ok(Err(error)) => Err(ProtocolError::new(
                             ErrorCode::InternalError,
@@ -2110,7 +2176,7 @@ impl OperationExecutor for ControlPlane {
                     }) as crate::daemon::DeferredOperation);
                 }
                 let repository =
-                    self.resolve_repository(Some(&request.path), None, caller, false)?;
+                    self.resolve_registered_repository(Some(&request.path), None, caller)?;
                 let events = self.events.clone();
                 let access = self.access.clone();
                 let wait_caller = caller.clone();
@@ -2126,31 +2192,32 @@ impl OperationExecutor for ControlPlane {
                         let subscription_events = events.clone();
                         let subscription_repository = repository.repository_id.clone();
                         let subscription_deadline = deadline.clone();
-                        let subscription = crate::daemon::blocking_operation(move || {
-                            subscription_events.subscribe_with_visibility(
-                                params::EventWait {
-                                    cursor: None,
-                                    filters: vec![params::EventFilter {
-                                        filter_id: "test-wait".into(),
-                                        categories: vec![params::EventCategory::Test],
-                                        kinds: vec!["test.finished".into()],
-                                        repository_ids: vec![subscription_repository],
-                                        deployment_ids: vec![],
-                                        deadline_at: Some(subscription_deadline),
-                                    }],
-                                    limit: 10,
-                                },
-                                Arc::new(move || {
-                                    access_for_wait.event_visibility(&caller_for_wait)
-                                }),
-                            )
-                        })
-                        .await?;
+                        let subscription = wait
+                            .blocking(move || {
+                                subscription_events.subscribe_with_visibility(
+                                    params::EventWait {
+                                        cursor: None,
+                                        filters: vec![params::EventFilter {
+                                            filter_id: "test-wait".into(),
+                                            categories: vec![params::EventCategory::Test],
+                                            kinds: vec!["test.finished".into()],
+                                            repository_ids: vec![subscription_repository],
+                                            deployment_ids: vec![],
+                                            deadline_at: Some(subscription_deadline),
+                                        }],
+                                        limit: 10,
+                                    },
+                                    Arc::new(move || {
+                                        access_for_wait.event_visibility(&caller_for_wait)
+                                    }),
+                                )
+                            })
+                            .await?;
                         // The run may finish between the initial status read and
                         // subscription creation. Re-check immediately after the
                         // subscription is installed so the completion event is
                         // not required to be observed by this connection.
-                        let latest = test_wait_status(&tests, &path, &status_caller).await?;
+                        let latest = test_wait_status(&tests, &path, &status_caller, &wait).await?;
                         if latest.run_id != run_id {
                             return Err(test_wait_run_changed(&run_id, &latest));
                         }
@@ -2163,7 +2230,8 @@ impl OperationExecutor for ControlPlane {
                         }
                         let result = subscription.receive().await?;
                         if !result.heartbeat_due.is_empty() {
-                            let latest = test_wait_status(&tests, &path, &status_caller).await?;
+                            let latest =
+                                test_wait_status(&tests, &path, &status_caller, &wait).await?;
                             if latest.run_id == run_id
                                 && latest.status != results::TestStatus::Running
                             {
@@ -2183,7 +2251,7 @@ impl OperationExecutor for ControlPlane {
                                 None,
                             ));
                         }
-                        let latest = test_wait_status(&tests, &path, &status_caller).await?;
+                        let latest = test_wait_status(&tests, &path, &status_caller, &wait).await?;
                         if latest.run_id != run_id {
                             return Err(test_wait_run_changed(&run_id, &latest));
                         }
@@ -2229,44 +2297,46 @@ impl OperationExecutor for ControlPlane {
                         let subscription_events = events.clone();
                         let subscription_deployment = target_deployment_id.clone();
                         let subscription_deadline = deadline.clone();
-                        let subscription = crate::daemon::blocking_operation(move || {
-                            subscription_events.subscribe_with_visibility(
-                                params::EventWait {
-                                    cursor: None,
-                                    filters: vec![params::EventFilter {
-                                        filter_id: "deployment-wait".into(),
-                                        categories: vec![params::EventCategory::Deployment],
-                                        kinds: vec![
-                                            "deployment.applied".into(),
-                                            "deployment.failed".into(),
-                                            "deployment.start".into(),
-                                            "deployment.restart".into(),
-                                        ],
-                                        repository_ids: vec![],
-                                        deployment_ids: vec![subscription_deployment],
-                                        deadline_at: Some(subscription_deadline),
-                                    }],
-                                    limit: 10,
-                                },
-                                Arc::new(move || {
-                                    access_for_wait.event_visibility(&caller_for_wait)
-                                }),
-                            )
-                        })
-                        .await?;
+                        let subscription = wait
+                            .blocking(move || {
+                                subscription_events.subscribe_with_visibility(
+                                    params::EventWait {
+                                        cursor: None,
+                                        filters: vec![params::EventFilter {
+                                            filter_id: "deployment-wait".into(),
+                                            categories: vec![params::EventCategory::Deployment],
+                                            kinds: vec![
+                                                "deployment.applied".into(),
+                                                "deployment.failed".into(),
+                                                "deployment.start".into(),
+                                                "deployment.restart".into(),
+                                            ],
+                                            repository_ids: vec![],
+                                            deployment_ids: vec![subscription_deployment],
+                                            deadline_at: Some(subscription_deadline),
+                                        }],
+                                        limit: 10,
+                                    },
+                                    Arc::new(move || {
+                                        access_for_wait.event_visibility(&caller_for_wait)
+                                    }),
+                                )
+                            })
+                            .await?;
                         let result = subscription.receive().await?;
                         let service = deployments.clone();
                         let status_request = request.clone();
                         let caller = status_caller.clone();
-                        let latest = crate::daemon::blocking_operation(move || {
-                            service.status(
-                                status_request.path.as_deref(),
-                                status_request.name.as_deref(),
-                                status_request.deployment_id.as_deref(),
-                                &caller,
-                            )
-                        })
-                        .await?;
+                        let latest = wait
+                            .blocking(move || {
+                                service.status(
+                                    status_request.path.as_deref(),
+                                    status_request.name.as_deref(),
+                                    status_request.deployment_id.as_deref(),
+                                    &caller,
+                                )
+                            })
+                            .await?;
                         if deployment_wait_satisfied(&latest, state) {
                             return encode(results::DeploymentWaitResult {
                                 completed: true,
@@ -2304,64 +2374,12 @@ async fn test_wait_status(
     tests: &TestLifecycle,
     path: &str,
     caller: &Caller,
+    wait: &WaitContext,
 ) -> Result<results::TestSummary, ProtocolError> {
     let tests = tests.clone();
     let path = path.to_owned();
     let caller = caller.clone();
-    crate::daemon::blocking_operation(move || tests.status(&path, &caller)).await
-}
-
-fn parse_deadline(value: &str) -> Result<tokio::time::Instant, ProtocolError> {
-    let parsed = time::OffsetDateTime::parse(value, &time::format_description::well_known::Rfc3339)
-        .map_err(|_| {
-            ProtocolError::new(
-                ErrorCode::ParamsInvalid,
-                "deadline_at must be an RFC 3339 timestamp",
-            )
-        })?;
-    let now = time::OffsetDateTime::now_utc();
-    let duration = parsed - now;
-    Ok(tokio::time::Instant::now() + duration.try_into().unwrap_or_default())
-}
-
-fn wait_deadline_error(
-    reason: &str,
-    state: Option<String>,
-    run_id: Option<String>,
-    deployment_id: Option<String>,
-) -> ProtocolError {
-    ProtocolError::new(
-        ErrorCode::WaitDeadlineReached,
-        "the requested wait deadline was reached",
-    )
-    .with_recovery(devcoordinator2_api::recovery::Guidance {
-        class: devcoordinator2_api::recovery::Class::Transient,
-        retryable: false,
-        waitable: true,
-        safe_to_continue: true,
-        state,
-        reason: reason.into(),
-        run_id,
-        deployment_id,
-        generation: None,
-        repository_id: None,
-        options: vec![devcoordinator2_api::recovery::RecoveryOption {
-            id: "inspect".into(),
-            action: devcoordinator2_api::recovery::Action::Inspect,
-            operation: None,
-            effect:
-                "Read the latest status and choose whether to wait again or continue elsewhere."
-                    .into(),
-            target: None,
-            cost: Some("immediate".into()),
-            risk: Some("none".into()),
-            prerequisites: vec![],
-            independent_work_safe: true,
-            user_action_required: false,
-        }],
-        field_errors: vec![],
-        example: None,
-    })
+    wait.blocking(move || tests.status(&path, &caller)).await
 }
 
 fn test_wait_run_changed(requested_run_id: &str, current: &results::TestSummary) -> ProtocolError {

@@ -31,29 +31,19 @@ pub(crate) struct SharedFixtures {
 }
 
 struct SharedDatabase {
-    docker: Arc<dyn DockerControl>,
-    container: Option<ExactContainerId>,
-    name: String,
+    container: Option<crate::test_containers::OwnedTestContainer>,
     environment: BTreeMap<String, String>,
 }
 
 impl SharedDatabase {
     fn remove(&mut self) -> Result<(), String> {
-        if let Some(container) = &self.container {
-            self.docker
-                .remove_container_verified_named(container, &self.name, true)
-                .map_err(|error| format!("shared database cleanup failed: {error}"))?;
+        if let Some(container) = &mut self.container {
+            container.remove()?;
             self.container = None;
         }
         Ok(())
     }
 }
-impl Drop for SharedDatabase {
-    fn drop(&mut self) {
-        let _ = self.remove();
-    }
-}
-
 fn shared_declarations(
     spec: &crate::repository_config::TestSpec,
     checks: &[devcoordinator2_executor_protocol::CheckPlan],
@@ -303,6 +293,8 @@ impl FixtureRun {
                 *instance = Some(self.pool.create_shared(
                     spec,
                     &self.context,
+                    &self.root,
+                    self.gid,
                     &shared.scope,
                     cancelled.clone(),
                     Some(log.clone()),
@@ -393,9 +385,12 @@ impl FixtureRun {
                 .values()
                 .filter_map(|slot| {
                     slot.try_lock().ok().and_then(|value| {
-                        value
-                            .as_ref()
-                            .and_then(|database| database.container.clone())
+                        value.as_ref().and_then(|database| {
+                            database
+                                .container
+                                .as_ref()
+                                .map(|container| container.id().clone())
+                        })
                     })
                 }),
         );
@@ -511,6 +506,8 @@ impl FixtureHandler for FixtureRun {
                     specification,
                     &inputs,
                     &self.context,
+                    &self.root,
+                    self.gid,
                     &identity,
                     cancelled.clone(),
                     Some(log.clone()),
@@ -553,31 +550,21 @@ impl FixtureHandler for FixtureRun {
 
 pub(crate) struct DatabasePool {
     docker: Arc<dyn DockerControl>,
+    containers: crate::test_containers::TestContainerService,
     random: Arc<dyn RandomSource>,
     templates: Mutex<BTreeMap<String, Slot>>,
     owned: Mutex<Vec<Weak<Template>>>,
 }
 
 struct Template {
-    docker: Arc<dyn DockerControl>,
+    _ownership: crate::test_containers::OwnedTestContainer,
     container: ExactContainerId,
-    container_name: String,
     manager: String,
     name: String,
     user: String,
     password: String,
     port: u16,
     last_used: Mutex<Instant>,
-}
-
-impl Drop for Template {
-    fn drop(&mut self) {
-        let _ = self.docker.remove_container_verified_named(
-            &self.container,
-            &self.container_name,
-            true,
-        );
-    }
 }
 
 pub(crate) struct DatabaseLease {
@@ -701,10 +688,13 @@ pub(crate) fn read_sql_inputs(
 }
 
 impl DatabasePool {
+    #[allow(clippy::too_many_arguments)]
     fn create_shared(
         &self,
         spec: &PostgresSpec,
         context: &ManagedLabelContext,
+        root: &Path,
+        gid: u32,
         scope: &str,
         cancelled: Arc<AtomicBool>,
         log: Log,
@@ -732,9 +722,10 @@ impl DatabasePool {
             "devcoordinator2-test-{}-postgres-{scope}",
             run_id.trim_start_matches('t')
         );
-        let container = self
-            .docker
-            .run_detached(&RunDetachedRequest {
+        let ownership = self.containers.create_fixture(
+            root,
+            gid,
+            RunDetachedRequest {
                 name: name.clone(),
                 image: spec.image.clone(),
                 label_context: labels,
@@ -754,12 +745,12 @@ impl DatabasePool {
                 publish: vec!["127.0.0.1::5432".into()],
                 tmpfs: vec!["/var/lib/postgresql/data:rw,size=1g,mode=0700".into()],
                 command: Vec::new(),
-            })
-            .map_err(shared_start_failure)?;
+                retain_on_failure: true,
+            },
+        )?;
+        let container = ownership.id().clone();
         let mut database = SharedDatabase {
-            docker: self.docker.clone(),
-            container: Some(container.clone()),
-            name,
+            container: Some(ownership),
             environment: BTreeMap::new(),
         };
         let port = self
@@ -804,9 +795,14 @@ impl DatabasePool {
         ]);
         Ok(database)
     }
-    pub fn new(docker: Arc<dyn DockerControl>, random: Arc<dyn RandomSource>) -> Self {
+    pub fn new(
+        docker: Arc<dyn DockerControl>,
+        random: Arc<dyn RandomSource>,
+        containers: crate::test_containers::TestContainerService,
+    ) -> Self {
         Self {
             docker,
+            containers,
             random,
             templates: Mutex::new(BTreeMap::new()),
             owned: Mutex::new(Vec::new()),
@@ -827,6 +823,8 @@ impl DatabasePool {
         specification: &PostgresSpec,
         inputs: &[(String, Vec<u8>)],
         context: &ManagedLabelContext,
+        root: &Path,
+        gid: u32,
         identity: &str,
         cancelled: Arc<AtomicBool>,
         log: Log,
@@ -865,6 +863,8 @@ impl DatabasePool {
                 specification,
                 inputs,
                 context,
+                root,
+                gid,
                 &fingerprint,
                 cancelled.clone(),
                 log.clone(),
@@ -1022,11 +1022,14 @@ impl DatabasePool {
             .is_ok_and(|output| output.stdout.trim() == "t")
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn create(
         &self,
         specification: &PostgresSpec,
         inputs: &[(String, Vec<u8>)],
         context: &ManagedLabelContext,
+        root: &Path,
+        gid: u32,
         fingerprint: &str,
         cancelled: Arc<AtomicBool>,
         log: Log,
@@ -1038,7 +1041,6 @@ impl DatabasePool {
         // Template containers are daemon-owned disposable resources too. Use
         // a stable template identity so the Docker boundary can enforce the
         // same run/check/owner label contract as per-run fixtures.
-        labels.run_id = Some(format!("template-{}", &fingerprint[..16]));
         labels.check = Some("database-template".into());
         labels.component = Some("database-template".into());
         let nonce = self.secret()?;
@@ -1047,9 +1049,10 @@ impl DatabasePool {
             &fingerprint[..16],
             &nonce[..8]
         );
-        let container = self
-            .docker
-            .run_detached(&RunDetachedRequest {
+        let ownership = self.containers.create_fixture(
+            root,
+            gid,
+            RunDetachedRequest {
                 name: container_name.clone(),
                 image: specification.image.clone(),
                 label_context: labels,
@@ -1069,12 +1072,13 @@ impl DatabasePool {
                 publish: vec!["127.0.0.1::5432".into()],
                 tmpfs: vec!["/var/lib/postgresql/data:rw,size=1g,mode=0700".into()],
                 command: Vec::new(),
-            })
-            .map_err(|_| "cannot start owned database template")?;
+                retain_on_failure: true,
+            },
+        )?;
+        let container = ownership.id().clone();
         let mut template = Template {
-            docker: self.docker.clone(),
+            _ownership: ownership,
             container,
-            container_name,
             manager,
             name: format!("dc2_template_{}", &fingerprint[..24]),
             user: specification.user.clone(),
@@ -1202,27 +1206,9 @@ impl DatabasePool {
     }
 }
 
-fn shared_start_failure(error: crate::docker::DockerError) -> String {
-    // run_detached already withholds stderr/environment values and exposes
-    // only the safe failure kind, exit status and exact-target cleanup result.
-    // Keep those facts at the original shared-fixture boundary instead of
-    // replacing them with an untraceable generic setup failure.
-    format!("cannot start owned shared database: {error}")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn shared_start_preserves_safe_docker_failure_and_cleanup_facts() {
-        let failure = shared_start_failure(crate::docker::DockerError::Command(
-            "docker run failed (exit_code=125; cleanup=removed:1)".into(),
-        ));
-        assert_eq!(
-            failure,
-            "cannot start owned shared database: docker run failed (exit_code=125; cleanup=removed:1)"
-        );
-    }
     #[test]
     fn shared_phase_names_and_limits_are_checked_before_replacing_a_run() {
         let root = tempfile::tempdir().unwrap();

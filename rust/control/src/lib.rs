@@ -47,6 +47,7 @@ pub mod progress;
 pub mod rate_card;
 pub mod repository;
 pub mod repository_config;
+mod request_deadline;
 mod review;
 mod review_validation;
 pub mod routes;
@@ -76,6 +77,9 @@ mod usage_context;
 
 #[cfg(test)]
 mod automation_test_support;
+
+#[cfg(test)]
+mod request_responsiveness_tests;
 
 pub use devcoordinator2_api::DATABASE_SCHEMA_VERSION;
 pub const SOURCE_COMMIT: &str = match option_env!("DEVCOORDINATOR2_SOURCE_COMMIT") {

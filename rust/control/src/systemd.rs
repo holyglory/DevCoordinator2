@@ -218,7 +218,18 @@ impl SystemdControl for SystemdCli {
             self.stop_unit(&specification.unit)?;
             self.reset_failed(&specification.unit)?;
         }
-        rotate_log(&specification.log_path)?;
+        // The deployment domain reserves an immutable attempt log. The
+        // launcher only appends; rotating here would discard that identity.
+        match std::fs::symlink_metadata(&specification.log_path) {
+            Ok(metadata) if !metadata.is_file() || metadata.file_type().is_symlink() => {
+                return Err(SystemdError::Invalid(
+                    "deployment log must be a regular non-symlink file".into(),
+                ));
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(invocation_error(&specification.log_path, error)),
+        }
         let output = run_bounded(&self.systemd_run, &argv[1..], STOP_TIMEOUT)?;
         if output.status.success() {
             Ok(())
@@ -468,40 +479,6 @@ pub fn build_persistent_systemd_run_argv(
     argv.push(OsString::from("--"));
     argv.extend(specification.command.iter().cloned());
     Ok(argv)
-}
-
-fn rotate_log(path: &Path) -> Result<(), SystemdError> {
-    match std::fs::symlink_metadata(path) {
-        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => {
-            return Err(SystemdError::Invalid(
-                "deployment log path must be a regular non-symlink file".into(),
-            ));
-        }
-        Ok(_) => {
-            // Keep a bounded attempt history. A single backup is insufficient:
-            // repeated recovery can otherwise overwrite the failed candidate's
-            // only startup evidence before it is inspected.
-            for index in (1..=8).rev() {
-                let mut source = path.as_os_str().to_owned();
-                source.push(format!(".{index}"));
-                let source = PathBuf::from(source);
-                if index == 8 {
-                    let _ = std::fs::remove_file(&source);
-                } else {
-                    let mut target = path.as_os_str().to_owned();
-                    target.push(format!(".{}", index + 1));
-                    let _ = std::fs::rename(&source, PathBuf::from(target));
-                }
-            }
-            let mut previous = path.as_os_str().to_owned();
-            previous.push(".1");
-            std::fs::rename(path, PathBuf::from(previous))
-                .map_err(|error| invocation_error(path, error))?;
-        }
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-        Err(error) => return Err(invocation_error(path, error)),
-    }
-    Ok(())
 }
 
 #[derive(Clone, Debug)]
@@ -992,7 +969,7 @@ mod tests {
     }
 
     #[test]
-    fn persistent_unit_uses_exact_properties_and_rotates_one_bounded_log() {
+    fn persistent_unit_uses_exact_properties_without_renaming_reserved_evidence() {
         let temporary = tempdir().expect("tempdir");
         let recorder = temporary.path().join("arguments");
         let launcher = temporary.path().join("systemd-run");
@@ -1025,39 +1002,13 @@ mod tests {
             allow_new_privileges: false,
         })
         .expect("persistent start");
-        assert_eq!(
-            std::fs::read_to_string(log.with_extension("log.1")).unwrap(),
-            "prior"
-        );
+        assert_eq!(std::fs::read_to_string(&log).unwrap(), "prior");
+        assert!(!log.with_extension("log.1").exists());
         let arguments = std::fs::read_to_string(recorder).unwrap();
         assert!(arguments.contains("--property=Restart=on-failure"));
         assert!(arguments.contains("--property=NoNewPrivileges=yes"));
         assert!(arguments.contains("--property=StandardOutput=append:"));
         assert!(arguments.contains("/usr/bin/true"));
-    }
-
-    #[test]
-    fn log_rotation_preserves_a_bounded_attempt_history() {
-        let temporary = tempdir().unwrap();
-        let log = temporary.path().join("component.log");
-        std::fs::write(&log, "current").unwrap();
-        for index in 1..=8 {
-            std::fs::write(
-                log.with_extension(format!("log.{index}")),
-                format!("old-{index}"),
-            )
-            .unwrap();
-        }
-        rotate_log(&log).unwrap();
-        assert_eq!(
-            std::fs::read_to_string(log.with_extension("log.1")).unwrap(),
-            "current"
-        );
-        assert_eq!(
-            std::fs::read_to_string(log.with_extension("log.8")).unwrap(),
-            "old-7"
-        );
-        assert!(!log.with_extension("log.9").exists());
     }
 
     #[test]
@@ -1156,9 +1107,10 @@ mod tests {
                     assert!(calls.ends_with("stop\nreset-failed\nlaunch\n"));
                 }
                 assert_eq!(
-                    std::fs::read_to_string(log.with_extension("log.1")).unwrap(),
+                    std::fs::read_to_string(&log).unwrap(),
                     "original failure evidence"
                 );
+                assert!(!log.with_extension("log.1").exists());
             } else {
                 assert_eq!(calls.contains("stop\n"), stop_exit != 0);
                 assert!(!calls.contains("reset-failed\n"));

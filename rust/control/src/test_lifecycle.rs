@@ -282,7 +282,11 @@ impl TestLifecycle {
         );
         let lifecycle = Self {
             inner: Arc::new(Inner {
-                databases: Arc::new(DatabasePool::new(docker.clone(), random.clone())),
+                databases: Arc::new(DatabasePool::new(
+                    docker.clone(),
+                    random.clone(),
+                    container_service.clone(),
+                )),
                 config,
                 database,
                 registry,
@@ -455,6 +459,13 @@ impl TestLifecycle {
             return Ok(());
         };
         if summary.status != TestStatus::Running {
+            if !self
+                .inner
+                .container_service
+                .has_pending_run(worktree, &summary.run_id)
+            {
+                return Ok(());
+            }
             if let Ok(Some(current)) = self.inner.store.open_current(worktree)
                 && let Ok((uid, gid)) = self.inner.store.owner(&current)
             {
@@ -1841,6 +1852,7 @@ impl TestLifecycle {
         {
             let _ = self.stop_unit(&unit);
         }
+        let recorded = self.inner.container_service.recover_registered()?;
         let labels = BTreeMap::from([
             (
                 "devcoordinator2.instance".into(),
@@ -1848,7 +1860,8 @@ impl TestLifecycle {
             ),
             ("devcoordinator2.purpose".into(), "test".into()),
         ]);
-        if let Ok(containers) = self.inner.docker.list_ids_by_labels(&labels) {
+        if let Ok(mut containers) = self.inner.docker.list_ids_by_labels(&labels) {
+            containers.retain(|container| !recorded.contains(container));
             self.remove_containers(&containers);
         }
         self.reconcile_orphans()?;
@@ -2525,7 +2538,9 @@ impl TestLifecycle {
                 (Some(report), issue)
             }
             Ok(None) => (None, terminal.then_some(TestReportIssue::Missing)),
-            Err(TestStateError::Filesystem(_)) => (None, Some(TestReportIssue::Unreadable)),
+            Err(TestStateError::Filesystem(_) | TestStateError::Busy) => {
+                (None, Some(TestReportIssue::Unreadable))
+            }
             Err(TestStateError::Json(_) | TestStateError::Invalid(_)) => {
                 (None, Some(TestReportIssue::Invalid))
             }
@@ -2617,6 +2632,16 @@ impl TestLifecycle {
 
     fn remove_containers(&self, containers: &[ExactContainerId]) {
         for container in containers {
+            // Typed ownership has its own durable cleanup receipt and lease.
+            // Keep this fallback only for containers from the legacy path.
+            if !matches!(
+                self.inner
+                    .container_service
+                    .is_recorded_container(container),
+                Ok(false)
+            ) {
+                continue;
+            }
             let _ = self.inner.docker.remove_container(container, true);
         }
     }

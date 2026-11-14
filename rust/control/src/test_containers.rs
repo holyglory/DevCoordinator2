@@ -6,6 +6,7 @@
 //! managed labels before every mutation.
 
 use std::collections::BTreeMap;
+use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -24,6 +25,7 @@ use crate::config::Config;
 use crate::database::{Database, DatabaseError};
 use crate::docker::{
     CreateContainerRequest, DockerControl, DockerError, ExactContainerId, ManagedLabelContext,
+    RunDetachedRequest,
 };
 use crate::platform::Clock;
 use crate::repository::resolve_worktree;
@@ -43,6 +45,45 @@ pub struct TestContainerService {
     store: TestRunStore,
 }
 
+/// A fixture's live lease and durable ownership reference. Dropping a handle
+/// attempts cleanup; only a persisted absence receipt completes ownership.
+pub(crate) struct OwnedTestContainer {
+    service: TestContainerService,
+    reference: ContainerReference,
+    caller: Caller,
+    lease: Option<File>,
+    id: ExactContainerId,
+    cleanup_attempted: bool,
+}
+
+impl OwnedTestContainer {
+    pub fn id(&self) -> &ExactContainerId {
+        &self.id
+    }
+
+    pub fn remove(&mut self) -> Result<(), String> {
+        self.cleanup_attempted = true;
+        self.lease.take();
+        let result = self
+            .service
+            .remove_or_retry(self.reference.clone(), &self.caller, "removed")
+            .map_err(|_| "owned database cleanup could not retain its receipt".to_owned())?;
+        if result.record.cleanup_status == ContainerCleanupStatus::Complete {
+            Ok(())
+        } else {
+            Err("owned database cleanup is incomplete; inspect or retry its retained container record".into())
+        }
+    }
+}
+
+impl Drop for OwnedTestContainer {
+    fn drop(&mut self) {
+        if !self.cleanup_attempted {
+            let _ = self.remove();
+        }
+    }
+}
+
 impl TestContainerService {
     pub fn new(
         config: &Config,
@@ -59,6 +100,254 @@ impl TestContainerService {
         }
     }
 
+    pub(crate) fn create_fixture(
+        &self,
+        path: &Path,
+        gid: u32,
+        mut request: RunDetachedRequest,
+    ) -> Result<OwnedTestContainer, String> {
+        let run_id = request
+            .label_context
+            .run_id
+            .clone()
+            .ok_or("fixture run identity missing")?;
+        let check = request
+            .label_context
+            .check
+            .clone()
+            .or_else(|| request.label_context.component.clone())
+            .ok_or("fixture check identity missing")?;
+        request.label_context.check = Some(check.clone());
+        let caller = Caller {
+            via_edge: false,
+            pid: 0,
+            uid: request.label_context.caller_uid,
+            gid,
+            client_kind: devcoordinator2_api::ClientKind::Other,
+            model: None,
+            effort: None,
+            client_session: None,
+            work: None,
+            identity: None,
+        };
+        let context = self
+            .resolve_owned(
+                &path.to_string_lossy(),
+                &run_id,
+                &check,
+                &caller,
+                true,
+                None,
+            )
+            .map_err(|_| "cannot retain fixture ownership")?;
+        if context.status != TestStatus::Running
+            || context.repository_id != request.label_context.repository_id
+            || context.worktree_id != request.label_context.worktree_id
+            || self.instance != request.label_context.instance
+        {
+            return Err("fixture ownership does not match its active run".into());
+        }
+        let owner = crate::ids::bug_id().map_err(|_| "cannot allocate fixture owner")?;
+        request.label_context.owner = Some(owner.clone());
+        request.retain_on_failure = true;
+        let labels = crate::docker::managed_labels(&request.label_context, &BTreeMap::new())
+            .map_err(|_| "cannot bind fixture ownership labels")?;
+        let mut records = self
+            .records(&context.records)
+            .map_err(|_| "cannot read fixture ownership")?;
+        if records.len() >= RECORD_CAP {
+            return Err("temporary-container ownership record limit reached".into());
+        }
+        let mut record = pending_record(
+            &context,
+            request.name.clone(),
+            request.image.clone(),
+            request.command.clone(),
+            owner.clone(),
+            labels,
+            self.timestamp()
+                .map_err(|_| "cannot timestamp fixture ownership")?,
+        );
+        let lease = self
+            .store
+            .container_lease(&context.records, &owner, true)
+            .map_err(|_| "cannot retain fixture lease")?;
+        records.push(record.clone());
+        self.write_records(&context.records, &records, context.uid, context.gid)
+            .map_err(|_| "cannot retain fixture creation intent")?;
+        context
+            .unlock()
+            .map_err(|_| "cannot release fixture receipt transaction")?;
+        let result = self.docker.run_detached(&request);
+        match &result {
+            Ok(id) => {
+                record.container_id = id.to_string();
+                record.native_execution_began = true;
+            }
+            Err(error) => {
+                record.operation_failed = true;
+                let (exit_code, signal, _) = error_details(error);
+                let detail = format!(
+                    "Docker fixture creation {:?}; private command output withheld",
+                    error.kind()
+                );
+                record.cleanup_attempts.push(ContainerCleanupAttempt {
+                    attempt: 0,
+                    attempted_at: record.created_at.clone(),
+                    status: ContainerCleanupStatus::Failed,
+                    stderr_bytes: detail.len() as u64,
+                    stderr: Some(detail),
+                    exit_code,
+                    signal,
+                    retryable: docker_retryable(error),
+                });
+            }
+        }
+        let retained = self.save_record(&context, &record);
+        drop(context);
+        match (result, retained) {
+            (Ok(id), Ok(())) => Ok(OwnedTestContainer {
+                service: self.clone(),
+                reference: ContainerReference {
+                    path: path.to_string_lossy().into_owned(),
+                    run_id,
+                    check,
+                    container_id: id.to_string(),
+                },
+                caller,
+                lease,
+                id,
+                cleanup_attempted: false,
+            }),
+            (result, _) => {
+                drop(lease);
+                let _ = self.cleanup_run(&path.to_string_lossy(), &run_id, &caller);
+                match result {
+                    Err(error) => Err(format!(
+                        "cannot start owned database fixture (kind={:?}); inspect retained container ownership",
+                        error.kind()
+                    )),
+                    Ok(_) => Err(
+                        "cannot retain fixture identity; inspect retained container ownership"
+                            .into(),
+                    ),
+                }
+            }
+        }
+    }
+
+    /// Reconcile a single owned record. An active lease prevents retries from
+    /// deleting a shared template; crashes release that lease automatically.
+    fn cleanup_record(
+        &self,
+        context: &Context,
+        record: &mut TestContainerRecord,
+    ) -> Result<bool, ProtocolError> {
+        context.unlock()?;
+        self.verify_record_labels(record)?;
+        let Some(_lease) = self
+            .store
+            .container_lease(&context.records, &record.owner_token, false)
+            .map_err(state_error)?
+        else {
+            return Ok(false);
+        };
+        *record = self
+            .current_records(context)?
+            .into_iter()
+            .find(|value| value.owner_token == record.owner_token)
+            .ok_or_else(ownership_error)?;
+        if record.cleanup_status == ContainerCleanupStatus::Complete {
+            return Ok(true);
+        }
+        let removal = (|| {
+            if record.container_id == "0".repeat(64) {
+                let candidates = self.docker.list_ids_by_labels(&record.labels)?;
+                let mut owned = Vec::new();
+                for id in candidates {
+                    if self
+                        .inspect_owned(&id, &record.labels, &record.name)
+                        .is_ok()
+                    {
+                        owned.push(id);
+                    }
+                }
+                if owned.len() > 1 {
+                    return Err(DockerError::InvalidTarget(
+                        "fixture intent resolved to multiple exact containers".into(),
+                    ));
+                }
+                if let Some(id) = owned.pop() {
+                    record.container_id = id.to_string();
+                    // Bind the recovered exact ID before any Docker mutation.
+                    self.save_record(context, record).map_err(|_| {
+                        DockerError::Command("cannot retain recovered fixture identity".into())
+                    })?;
+                } else if !self.docker.container_name_present(&record.name)? {
+                    return Ok(crate::docker::ContainerRemovalReceipt {
+                        command_error: None,
+                    });
+                } else {
+                    return Err(DockerError::InvalidTarget(
+                        "fixture name has no matching owned identity".into(),
+                    ));
+                }
+            }
+            let id = exact_id(&record.container_id).map_err(|_| {
+                DockerError::InvalidTarget("invalid persisted container identity".into())
+            })?;
+            if self.docker.container_present(&id)? {
+                let inspection = self
+                    .inspect_owned(&id, &record.labels, &record.name)
+                    .map_err(|_| {
+                        DockerError::InvalidTarget("container ownership inspection failed".into())
+                    })?;
+                record.solver_exit_code = inspection.exit_code;
+                record.solver_signal = inspection.signal;
+            }
+            self.docker
+                .remove_container_receipt(&id, &record.name, true)
+        })();
+        let (status, retryable, diagnostics) = match removal {
+            Ok(receipt) => (
+                ContainerCleanupStatus::Complete,
+                false,
+                receipt
+                    .command_error
+                    .map(|error| cleanup_details(record, &error)),
+            ),
+            Err(error) => {
+                let retryable = docker_retryable(&error);
+                (
+                    if retryable {
+                        ContainerCleanupStatus::Pending
+                    } else {
+                        ContainerCleanupStatus::Failed
+                    },
+                    retryable,
+                    Some(cleanup_details(record, &error)),
+                )
+            }
+        };
+        record.cleanup_status = status;
+        record.cleanup_attempts.push(ContainerCleanupAttempt {
+            attempt: u32::try_from(record.cleanup_attempts.len())
+                .unwrap_or(u32::MAX)
+                .saturating_add(1),
+            attempted_at: self.timestamp()?,
+            status,
+            stderr: diagnostics.as_ref().map(|(_, _, text)| text.clone()),
+            stderr_bytes: diagnostics
+                .as_ref()
+                .map_or(0, |(_, _, text)| text.len() as u64),
+            exit_code: diagnostics.as_ref().and_then(|(code, _, _)| *code),
+            signal: diagnostics.as_ref().and_then(|(_, signal, _)| *signal),
+            retryable,
+        });
+        self.save_record(context, record)?;
+        Ok(true)
+    }
+
     pub fn create(
         &self,
         params: ContainerCreate,
@@ -68,17 +357,23 @@ impl TestContainerService {
         validate_identity(&params.check, "check", 96)?;
         validate_image(&params.image)?;
         validate_command(&params.command)?;
-        let context = self.resolve(&params.path, &params.run_id, &params.check, caller)?;
-        if context.summary.status != TestStatus::Running {
+        let context = self.resolve_owned(
+            &params.path,
+            &params.run_id,
+            &params.check,
+            caller,
+            true,
+            None,
+        )?;
+        if context.status != TestStatus::Running {
             return Err(ProtocolError::new(
                 ErrorCode::TestStartFailed,
                 "temporary containers can only be created for a running governed test",
             ));
         }
-        let mut records = self.records(&context.current)?;
+        let mut records = self.records(&context.records)?;
         if records.iter().any(|record| {
-            record.run_id == params.run_id
-                && record.check == params.check
+            record.check == params.check
                 && record.cleanup_status != ContainerCleanupStatus::Complete
         }) {
             return Err(ProtocolError::new(
@@ -92,12 +387,11 @@ impl TestContainerService {
                 "temporary-container ownership record limit reached",
             ));
         }
-        let owner_token = crate::ids::bug_id().map_err(|error| {
+        let owner_token = crate::ids::bug_id().map_err(|_| {
             ProtocolError::new(
                 ErrorCode::InternalError,
                 "cannot allocate container owner token",
             )
-            .with_detail(error.to_string())
         })?;
         let name = generated_name(&params.run_id, &params.check, &owner_token)?;
         let created_at = self.timestamp()?;
@@ -121,106 +415,54 @@ impl TestContainerService {
         };
         let labels = crate::docker::managed_labels(&label_context, &BTreeMap::new())
             .map_err(|error| docker_error("cannot create governed container labels", error))?;
+        let mut record = pending_record(
+            &context,
+            name.clone(),
+            params.image.clone(),
+            params.command.clone(),
+            owner_token,
+            labels,
+            created_at,
+        );
+        records.push(record.clone());
+        self.write_records(&context.records, &records, context.uid, context.gid)?;
+        let _lease = self
+            .store
+            .container_lease(&context.records, &record.owner_token, true)
+            .map_err(state_error)?;
+        context.unlock()?;
         let id = match self.docker.create_container(&CreateContainerRequest {
             name: name.clone(),
-            image: params.image.clone(),
+            image: params.image,
             label_context,
             labels: BTreeMap::new(),
             env_file: None,
             publish: Vec::new(),
             volumes: Vec::new(),
-            command: params.command.clone(),
+            command: params.command,
             restart: "no".into(),
         }) {
             Ok(id) => id,
             Err(error) => {
-                let (exit_code, signal, stderr) = error_details(&error);
-                let stderr_bytes = stderr.len() as u64;
-                let failure = TestContainerRecord {
-                    container_id: "0".repeat(64),
-                    name: name.clone(),
-                    run_id: params.run_id.clone(),
-                    check: params.check.clone(),
-                    repository_id: context.repository_id.clone(),
-                    worktree_id: context.worktree_id.clone(),
-                    owner_token: owner_token.clone(),
-                    labels: labels.clone(),
-                    image: params.image.clone(),
-                    command: params.command.clone(),
-                    operation_failed: true,
-                    created_at: created_at.clone(),
-                    native_execution_began: false,
-                    solver_exit_code: None,
-                    solver_signal: None,
-                    stdout_ref: None,
-                    stderr_ref: None,
-                    stdout_bytes: 0,
-                    stderr_bytes,
-                    cleanup_status: ContainerCleanupStatus::Failed,
-                    cleanup_attempts: vec![ContainerCleanupAttempt {
-                        attempt: 0,
-                        attempted_at: created_at.clone(),
-                        status: ContainerCleanupStatus::Failed,
-                        stderr: Some(stderr),
-                        stderr_bytes,
-                        exit_code,
-                        signal,
-                        retryable: false,
-                    }],
-                };
-                records.push(failure);
-                let _ = self.write_records(&context.current, &records, context.uid, context.gid);
+                record.operation_failed = true;
+                self.save_record(&context, &record)?;
+                drop(_lease);
+                self.cleanup_record(&context, &mut record)?;
                 return Err(docker_error("cannot create governed container", error));
             }
         };
-        let inspection = match self.inspect_owned(&id, &labels, &name) {
+        record.container_id = id.to_string();
+        self.save_record(&context, &record)?;
+        let inspection = match self.inspect_owned(&id, &record.labels, &name) {
             Ok(value) => value,
             Err(error) => {
-                let cleanup = self
-                    .docker
-                    .remove_container_verified_named(&id, &name, true);
-                let detail = match cleanup {
-                    Ok(()) => {
-                        "created container failed ownership inspection and was removed".into()
-                    }
-                    Err(cleanup_error) => format!(
-                        "created container failed ownership inspection; cleanup failed: {cleanup_error}"
-                    ),
-                };
-                return Err(error.with_detail(detail));
+                record.operation_failed = true;
+                self.save_record(&context, &record)?;
+                drop(_lease);
+                self.cleanup_record(&context, &mut record)?;
+                return Err(error);
             }
         };
-        let record = TestContainerRecord {
-            container_id: id.to_string(),
-            name,
-            run_id: params.run_id,
-            check: params.check,
-            repository_id: context.repository_id,
-            worktree_id: context.worktree_id,
-            owner_token,
-            labels,
-            image: params.image,
-            command: params.command,
-            operation_failed: false,
-            created_at,
-            native_execution_began: false,
-            solver_exit_code: None,
-            solver_signal: None,
-            stdout_ref: None,
-            stderr_ref: None,
-            stdout_bytes: 0,
-            stderr_bytes: 0,
-            cleanup_status: ContainerCleanupStatus::Pending,
-            cleanup_attempts: Vec::new(),
-        };
-        records.push(record.clone());
-        if let Err(error) = self.write_records(&context.current, &records, context.uid, context.gid)
-        {
-            let _ = self
-                .docker
-                .remove_container_verified_named(&id, &record.name, true);
-            return Err(error);
-        }
         Ok(ContainerOperationResult {
             operation: "created".into(),
             record,
@@ -233,60 +475,59 @@ impl TestContainerService {
         params: ContainerReference,
         caller: &Caller,
     ) -> Result<ContainerOperationResult, ProtocolError> {
-        let context = self.resolve(&params.path, &params.run_id, &params.check, caller)?;
-        let (mut records, index) = self.find_record(&context, &params)?;
-        let id = exact_id(&params.container_id)?;
-        if records[index].container_id != id.as_str() {
-            return Err(ownership_error());
+        let context = self.resolve_reference(&params, caller)?;
+        if context.status != TestStatus::Running {
+            return Err(ProtocolError::new(
+                ErrorCode::TestStartFailed,
+                "temporary containers can only start for the current running test",
+            ));
         }
-        self.verify_record(&records[index], &context)?;
-        if let Err(error) = self.inspect_owned(&id, &records[index].labels, &records[index].name) {
-            records[index].operation_failed = true;
-            records[index].cleanup_status = ContainerCleanupStatus::Failed;
-            records[index]
-                .cleanup_attempts
-                .push(ContainerCleanupAttempt {
-                    attempt: 0,
-                    attempted_at: self.timestamp()?,
-                    status: ContainerCleanupStatus::Failed,
-                    stderr: Some("container ownership inspection failed".into()),
-                    stderr_bytes: "container ownership inspection failed".len() as u64,
-                    exit_code: None,
-                    signal: None,
-                    retryable: false,
-                });
-            let _ = self.write_records(&context.current, &records, context.uid, context.gid);
+        let (records, index) = self.find_record(&context, &params)?;
+        let mut record = records[index].clone();
+        self.verify_record(&record, &context)?;
+        let id = exact_id(&record.container_id)?;
+        let _lease = self
+            .store
+            .container_lease(&context.records, &record.owner_token, false)
+            .map_err(state_error)?
+            .ok_or_else(|| {
+                ProtocolError::new(
+                    ErrorCode::TestStartFailed,
+                    "temporary container has an active lifecycle operation",
+                )
+            })?;
+        context.unlock()?;
+        if let Err(error) = self.inspect_owned(&id, &record.labels, &record.name) {
+            record.operation_failed = true;
+            record.cleanup_status = ContainerCleanupStatus::Failed;
+            self.save_record(&context, &record)?;
             return Err(error);
         }
         if let Err(error) = self.docker.start_container(&id) {
             let (exit_code, signal, stderr) = error_details(&error);
-            let stderr_bytes = stderr.len() as u64;
-            records[index].operation_failed = true;
-            records[index].cleanup_status = ContainerCleanupStatus::Pending;
-            records[index]
-                .cleanup_attempts
-                .push(ContainerCleanupAttempt {
-                    attempt: 0,
-                    attempted_at: self.timestamp()?,
-                    status: ContainerCleanupStatus::Failed,
-                    stderr: Some(stderr),
-                    stderr_bytes,
-                    exit_code,
-                    signal,
-                    retryable: false,
-                });
-            self.write_records(&context.current, &records, context.uid, context.gid)?;
+            record.operation_failed = true;
+            record.cleanup_attempts.push(ContainerCleanupAttempt {
+                attempt: 0,
+                attempted_at: self.timestamp()?,
+                status: ContainerCleanupStatus::Failed,
+                stderr_bytes: stderr.len() as u64,
+                stderr: Some(stderr),
+                exit_code,
+                signal,
+                retryable: false,
+            });
+            self.save_record(&context, &record)?;
             return Err(docker_error("cannot start governed container", error));
         }
-        records[index].native_execution_began = true;
-        self.write_records(&context.current, &records, context.uid, context.gid)?;
-        let inspection = self.inspect_owned(&id, &records[index].labels, &records[index].name)?;
-        records[index].solver_exit_code = inspection.exit_code;
-        records[index].solver_signal = inspection.signal;
-        self.write_records(&context.current, &records, context.uid, context.gid)?;
+        record.native_execution_began = true;
+        self.save_record(&context, &record)?;
+        let inspection = self.inspect_owned(&id, &record.labels, &record.name)?;
+        record.solver_exit_code = inspection.exit_code;
+        record.solver_signal = inspection.signal;
+        self.save_record(&context, &record)?;
         Ok(ContainerOperationResult {
             operation: "started".into(),
-            record: records[index].clone(),
+            record,
             inspection: Some(inspection),
         })
     }
@@ -296,21 +537,38 @@ impl TestContainerService {
         params: ContainerReference,
         caller: &Caller,
     ) -> Result<ContainerOperationResult, ProtocolError> {
-        let context = self.resolve(&params.path, &params.run_id, &params.check, caller)?;
+        let context = self.resolve_reference(&params, caller)?;
         let (mut records, index) = self.find_record(&context, &params)?;
         let id = exact_id(&params.container_id)?;
         if records[index].container_id != id.as_str() {
             return Err(ownership_error());
         }
         self.verify_record(&records[index], &context)?;
-        let inspection = self.inspect_owned(&id, &records[index].labels, &records[index].name)?;
-        records[index].solver_exit_code = inspection.exit_code;
-        records[index].solver_signal = inspection.signal;
-        self.write_records(&context.current, &records, context.uid, context.gid)?;
+        context.unlock()?;
+        let inspection = if records[index].cleanup_status == ContainerCleanupStatus::Complete {
+            None
+        } else {
+            match self.inspect_owned(&id, &records[index].labels, &records[index].name) {
+                Ok(inspection) => {
+                    records[index].solver_exit_code = inspection.exit_code;
+                    records[index].solver_signal = inspection.signal;
+                    Some(inspection)
+                }
+                Err(error) => {
+                    if self.docker.container_present(&id).map_err(|failure| {
+                        docker_error("cannot observe governed container", failure)
+                    })? {
+                        return Err(error);
+                    }
+                    None
+                }
+            }
+        };
+        self.archive_receipt(&context)?;
         Ok(ContainerOperationResult {
             operation: "inspected".into(),
             record: records[index].clone(),
-            inspection: Some(inspection),
+            inspection,
         })
     }
 
@@ -357,56 +615,37 @@ impl TestContainerService {
             }
             Err(error) => return Err(error),
         };
-        let mut records = self.records(&context.current)?;
-        let mut native_execution_started = false;
+        let mut records = self.records(&context.records)?;
+        context.unlock()?;
+        let mut leased_templates = Vec::new();
         for record in records.iter_mut().filter(|record| {
             record.run_id == run_id
                 && record.repository_id == context.repository_id
                 && record.worktree_id == context.worktree_id
         }) {
-            native_execution_started |= record.native_execution_began;
             if record.cleanup_status == ContainerCleanupStatus::Complete {
                 continue;
             }
-            self.verify_record_labels(record)?;
-            let id = exact_id(&record.container_id)?;
-            let attempt = u32::try_from(record.cleanup_attempts.len())
-                .unwrap_or(u32::MAX)
-                .saturating_add(1);
-            let attempted_at = self.timestamp()?;
-            let removal = self
-                .docker
-                .remove_container_verified_named(&id, &record.name, true);
-            let (status, retryable, diagnostics) = match removal {
-                Ok(()) => (ContainerCleanupStatus::Complete, false, None),
-                Err(error) => {
-                    let retryable = docker_retryable(&error);
-                    (
-                        if retryable {
-                            ContainerCleanupStatus::Pending
-                        } else {
-                            ContainerCleanupStatus::Failed
-                        },
-                        retryable,
-                        Some(error_details(&error)),
-                    )
-                }
-            };
-            record.cleanup_status = status;
-            record.cleanup_attempts.push(ContainerCleanupAttempt {
-                attempt,
-                attempted_at,
-                status,
-                stderr: diagnostics.as_ref().map(|(_, _, value)| value.clone()),
-                stderr_bytes: diagnostics
-                    .as_ref()
-                    .map_or(0, |(_, _, value)| value.len() as u64),
-                exit_code: diagnostics.as_ref().and_then(|(code, _, _)| *code),
-                signal: diagnostics.as_ref().and_then(|(_, signal, _)| *signal),
-                retryable,
-            });
+            if !self.cleanup_record(&context, record)?
+                && record
+                    .labels
+                    .get("devcoordinator2.component")
+                    .is_some_and(|component| component == "database-template")
+            {
+                leased_templates.push(record.owner_token.clone());
+            }
         }
-        self.write_records(&context.current, &records, context.uid, context.gid)?;
+        records = self.current_records(&context)?;
+        self.archive_receipt(&context)?;
+        // Warm templates retain their own live lease beyond the creating run.
+        // They are not that run's cleanup obligation until the pool retires them.
+        records.retain(|record| !leased_templates.contains(&record.owner_token));
+        let native_execution_started = records.iter().any(|record| {
+            record.run_id == run_id
+                && record.repository_id == context.repository_id
+                && record.worktree_id == context.worktree_id
+                && record.native_execution_began
+        });
         let pending_count = records
             .iter()
             .filter(|record| {
@@ -466,57 +705,30 @@ impl TestContainerService {
         caller: &Caller,
         operation: &str,
     ) -> Result<ContainerOperationResult, ProtocolError> {
-        let context = self.resolve(&params.path, &params.run_id, &params.check, caller)?;
+        let context = self.resolve_reference(&params, caller)?;
         let (mut records, index) = self.find_record(&context, &params)?;
         let id = exact_id(&params.container_id)?;
         if records[index].container_id != id.as_str() {
             return Err(ownership_error());
         }
         self.verify_record(&records[index], &context)?;
-        if let Ok(inspection) =
-            self.inspect_owned(&id, &records[index].labels, &records[index].name)
-        {
-            records[index].solver_exit_code = inspection.exit_code;
-            records[index].solver_signal = inspection.signal;
-        }
-        let attempt = u32::try_from(records[index].cleanup_attempts.len())
-            .unwrap_or(u32::MAX)
-            .saturating_add(1);
-        let attempted_at = self.timestamp()?;
-        let removal = self
-            .docker
-            .remove_container_verified_named(&id, &records[index].name, true);
-        let (status, retryable, diagnostics) = match removal {
-            Ok(()) => (ContainerCleanupStatus::Complete, false, None),
-            Err(error) => {
-                let retryable = docker_retryable(&error);
-                (
-                    if retryable {
-                        ContainerCleanupStatus::Pending
-                    } else {
-                        ContainerCleanupStatus::Failed
-                    },
-                    retryable,
-                    Some(error_details(&error)),
-                )
-            }
-        };
-        records[index].cleanup_status = status;
-        records[index]
-            .cleanup_attempts
-            .push(ContainerCleanupAttempt {
-                attempt,
-                attempted_at,
-                status,
-                stderr: diagnostics.as_ref().map(|(_, _, value)| value.clone()),
-                stderr_bytes: diagnostics
-                    .as_ref()
-                    .map_or(0, |(_, _, value)| value.len() as u64),
-                exit_code: diagnostics.as_ref().and_then(|(code, _, _)| *code),
-                signal: diagnostics.as_ref().and_then(|(_, signal, _)| *signal),
-                retryable,
+        context.unlock()?;
+        if records[index].cleanup_status == ContainerCleanupStatus::Complete {
+            self.archive_receipt(&context)?;
+            return Ok(ContainerOperationResult {
+                operation: operation.into(),
+                record: records[index].clone(),
+                inspection: None,
             });
-        self.write_records(&context.current, &records, context.uid, context.gid)?;
+        }
+        if !self.cleanup_record(&context, &mut records[index])? {
+            return Err(ProtocolError::new(
+                ErrorCode::TestStartFailed,
+                "temporary database container still has an active fixture lease",
+            ));
+        }
+        let status = records[index].cleanup_status;
+        self.archive_receipt(&context)?;
         let inspection = if status == ContainerCleanupStatus::Complete {
             None
         } else {
@@ -538,6 +750,33 @@ impl TestContainerService {
         run_id: &str,
         check: &str,
         caller: &Caller,
+    ) -> Result<Context, ProtocolError> {
+        self.resolve_owned(path, run_id, check, caller, false, None)
+    }
+
+    fn resolve_reference(
+        &self,
+        params: &ContainerReference,
+        caller: &Caller,
+    ) -> Result<Context, ProtocolError> {
+        self.resolve_owned(
+            &params.path,
+            &params.run_id,
+            &params.check,
+            caller,
+            false,
+            Some(&params.container_id),
+        )
+    }
+
+    fn resolve_owned(
+        &self,
+        path: &str,
+        run_id: &str,
+        check: &str,
+        caller: &Caller,
+        create: bool,
+        candidate: Option<&str>,
     ) -> Result<Context, ProtocolError> {
         if path.is_empty() || !Path::new(path).is_absolute() {
             return Err(ProtocolError::new(
@@ -585,42 +824,193 @@ impl TestContainerService {
                 crate::ids::repository_id(&info.repository_root).map_err(id_error)?;
             (info.worktree_root.to_path_buf(), worktree_id, repository_id)
         };
-        let current = self
-            .store
-            .open_current(&worktree)
-            .map_err(state_error)?
-            .ok_or_else(|| {
-                ProtocolError::new(
-                    ErrorCode::TestNotFound,
-                    "governed test state is unavailable",
-                )
-            })?;
+        validate_identity(run_id, "run_id", 96)?;
         let summary = self
             .store
             .read_current_summary(&worktree)
-            .map_err(state_error)?
-            .ok_or_else(|| {
-                ProtocolError::new(ErrorCode::TestNotFound, "governed test run not found")
-            })?;
-        if summary.run_id != run_id {
-            return Err(ProtocolError::new(
-                ErrorCode::TestNotFound,
-                "run_id does not match the current governed test",
-            ));
+            .map_err(state_error)?;
+        let current = if summary
+            .as_ref()
+            .is_some_and(|summary| summary.run_id == run_id)
+        {
+            self.store.open_current(&worktree).map_err(state_error)?
+        } else {
+            None
+        };
+        let owner = current
+            .as_ref()
+            .map(|current| self.store.owner(current))
+            .transpose()
+            .map_err(state_error)?;
+        let mut records = self
+            .store
+            .open_container_run(&worktree, run_id, None)
+            .map_err(state_error)?;
+        if records.is_none()
+            && let Some(current) = current.as_ref()
+        {
+            let legacy_ids = self
+                .store
+                .read_legacy_containers(current)
+                .map_err(state_error)?;
+            let legacy = !self.records(current)?.is_empty()
+                || candidate.is_some_and(|id| legacy_ids.iter().any(|value| value == id));
+            if create || legacy {
+                records = self
+                    .store
+                    .open_container_run(&worktree, run_id, owner)
+                    .map_err(state_error)?;
+            }
         }
-        let (uid, gid) = self.store.owner(&current).map_err(state_error)?;
+        let records = records.ok_or_else(|| {
+            ProtocolError::new(
+                ErrorCode::TestNotFound,
+                "retained container ownership is unavailable for this run",
+            )
+        })?;
+        let (uid, gid) = self.store.owner(&records).map_err(state_error)?;
+        // Migrate existing typed receipts once. Legacy untyped Docker labels
+        // alone never grant ownership of an arbitrary container.
+        if let Some(current) = current.as_ref() {
+            let legacy = self.records(current)?;
+            let mut durable = self.records(&records)?;
+            let previous_count = durable.len();
+            for record in legacy.into_iter().filter(|record| {
+                record.run_id == run_id
+                    && record.repository_id == repository_id
+                    && record.worktree_id == worktree_id
+            }) {
+                if !durable
+                    .iter()
+                    .any(|value| value.owner_token == record.owner_token)
+                {
+                    durable.push(record);
+                }
+            }
+            if durable.len() != previous_count {
+                self.write_records(&records, &durable, uid, gid)?;
+            }
+            self.store
+                .retire_legacy_container_receipts(current, &durable, uid, gid)
+                .map_err(state_error)?;
+        }
+        let status = summary
+            .filter(|summary| summary.run_id == run_id)
+            .map_or(TestStatus::Interrupted, |summary| summary.status);
         Ok(Context {
             worktree,
             worktree_id,
             repository_id,
-            current,
-            summary,
+            records,
+            status,
             execution_uid: uid,
             uid,
             gid,
             run_id: run_id.into(),
             check: check.into(),
         })
+    }
+
+    fn current_records(
+        &self,
+        context: &Context,
+    ) -> Result<Vec<TestContainerRecord>, ProtocolError> {
+        let directory = self
+            .store
+            .open_container_run(&context.worktree, &context.run_id, None)
+            .map_err(state_error)?
+            .ok_or_else(ownership_error)?;
+        self.records(&directory)
+    }
+
+    fn save_record(
+        &self,
+        context: &Context,
+        record: &TestContainerRecord,
+    ) -> Result<(), ProtocolError> {
+        let directory = self
+            .store
+            .open_container_run(&context.worktree, &context.run_id, None)
+            .map_err(state_error)?
+            .ok_or_else(ownership_error)?;
+        let mut records = self.records(&directory)?;
+        let stored = records
+            .iter_mut()
+            .find(|value| value.owner_token == record.owner_token)
+            .ok_or_else(ownership_error)?;
+        if stored.labels != record.labels || stored.name != record.name {
+            return Err(ownership_error());
+        }
+        *stored = record.clone();
+        self.write_records(&directory, &records, context.uid, context.gid)
+    }
+
+    fn archive_receipt(&self, context: &Context) -> Result<(), ProtocolError> {
+        if context.status != TestStatus::Running
+            && let Some(directory) = self
+                .store
+                .open_container_run(&context.worktree, &context.run_id, None)
+                .map_err(state_error)?
+        {
+            self.store
+                .archive_container_run(&context.worktree, &context.run_id, &directory)
+                .map_err(state_error)?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn has_pending_run(&self, worktree: &Path, run_id: &str) -> bool {
+        self.store
+            .container_run_pending(worktree, run_id)
+            .unwrap_or(true)
+    }
+
+    /// Legacy cleanup must not bypass a typed record's lease or retained
+    /// failure. Resolve only this observed exact container's owning run.
+    pub(crate) fn is_recorded_container(
+        &self,
+        id: &ExactContainerId,
+    ) -> Result<bool, ProtocolError> {
+        let value = self
+            .docker
+            .inspect(id)
+            .map_err(|error| docker_error("cannot classify exact cleanup ownership", error))?;
+        let actual = self
+            .to_inspection_value(&value, id)
+            .map_err(|_| ownership_error())?;
+        let Some(run_id) = actual.labels.get("devcoordinator2.run") else {
+            return Ok(false);
+        };
+        let Some(worktree_id) = actual.labels.get("devcoordinator2.worktree") else {
+            return Ok(false);
+        };
+        let requested = worktree_id.clone();
+        let path = self
+            .database
+            .read(move |connection| {
+                connection
+                    .query_row(
+                        "SELECT worktree_path FROM worktrees WHERE worktree_id=$1",
+                        [requested],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .optional()
+                    .map_err(DatabaseError::from)
+            })
+            .map_err(database_error)?;
+        let Some(path) = path else { return Ok(false) };
+        let Some(directory) = self
+            .store
+            .open_container_run(Path::new(&path), run_id, None)
+            .map_err(state_error)?
+        else {
+            return Ok(false);
+        };
+        Ok(self.records(&directory)?.iter().any(|record| {
+            record.labels == actual.labels
+                && record.name == actual.name
+                && (record.container_id == id.as_str() || record.container_id == "0".repeat(64))
+        }))
     }
 
     fn records(&self, current: &std::fs::File) -> Result<Vec<TestContainerRecord>, ProtocolError> {
@@ -646,18 +1036,172 @@ impl TestContainerService {
         context: &Context,
         params: &ContainerReference,
     ) -> Result<(Vec<TestContainerRecord>, usize), ProtocolError> {
-        let records = self.records(&context.current)?;
-        let index = records
-            .iter()
-            .position(|record| {
-                record.container_id == params.container_id
-                    && record.run_id == context.run_id
-                    && record.check == context.check
-                    && record.repository_id == context.repository_id
-                    && record.worktree_id == context.worktree_id
-            })
-            .ok_or_else(ownership_error)?;
+        let mut records = self.records(&context.records)?;
+        let index = records.iter().position(|record| {
+            record.container_id == params.container_id
+                && record.run_id == context.run_id
+                && record.check == context.check
+                && record.repository_id == context.repository_id
+                && record.worktree_id == context.worktree_id
+        });
+        let index = if let Some(index) = index {
+            index
+        } else {
+            self.adopt_legacy_fixture(context, params, &mut records)?
+        };
         Ok((records, index))
+    }
+
+    /// Older shared fixtures have an exact ID receipt but no typed lifecycle
+    /// record. Recover only that retained ID, its deterministic fixture name,
+    /// and the complete run/repository/worktree/owner label binding.
+    fn adopt_legacy_fixture(
+        &self,
+        context: &Context,
+        params: &ContainerReference,
+        records: &mut Vec<TestContainerRecord>,
+    ) -> Result<usize, ProtocolError> {
+        let summary = self
+            .store
+            .read_current_summary(&context.worktree)
+            .map_err(state_error)?;
+        if !summary.is_some_and(|summary| summary.run_id == context.run_id)
+            || !context.check.starts_with("shared-")
+            || records.len() >= RECORD_CAP
+        {
+            return Err(ownership_error());
+        }
+        let current = self
+            .store
+            .open_current(&context.worktree)
+            .map_err(state_error)?
+            .ok_or_else(ownership_error)?;
+        if !self
+            .store
+            .read_legacy_containers(&current)
+            .map_err(state_error)?
+            .contains(&params.container_id)
+        {
+            return Err(ownership_error());
+        }
+        context.unlock()?;
+        let id = exact_id(&params.container_id)?;
+        let value = self
+            .docker
+            .inspect(&id)
+            .map_err(|error| docker_error("cannot inspect retained fixture", error))?;
+        let actual = self
+            .to_inspection_value(&value, &id)
+            .map_err(|_| ownership_error())?;
+        let expected_name = format!(
+            "devcoordinator2-test-{}-postgres-{}",
+            context.run_id.trim_start_matches('t'),
+            context.check
+        );
+        if actual.name != expected_name
+            || actual.labels.get("devcoordinator2.component") != Some(&context.check)
+        {
+            return Err(ownership_error());
+        }
+        let owner = actual
+            .labels
+            .get("devcoordinator2.owner")
+            .cloned()
+            .ok_or_else(ownership_error)?;
+        validate_identity(&owner, "owner", MAX_LABEL_BYTES)?;
+        let mut record = pending_record(
+            context,
+            expected_name,
+            actual.image,
+            Vec::new(),
+            owner,
+            actual.labels,
+            self.timestamp()?,
+        );
+        record.container_id = id.to_string();
+        record.native_execution_began = matches!(
+            actual.state.as_str(),
+            "running" | "exited" | "restarting" | "paused" | "dead"
+        );
+        self.verify_record(&record, context)?;
+        let directory = self
+            .store
+            .open_container_run(&context.worktree, &context.run_id, None)
+            .map_err(state_error)?
+            .ok_or_else(ownership_error)?;
+        *records = self.records(&directory)?;
+        if let Some(index) = records.iter().position(|value| {
+            value.container_id == record.container_id && value.check == record.check
+        }) {
+            return Ok(index);
+        }
+        if records.len() >= RECORD_CAP {
+            return Err(ownership_error());
+        }
+        records.push(record);
+        self.write_records(&directory, records, context.uid, context.gid)?;
+        Ok(records.len() - 1)
+    }
+
+    pub(crate) fn recover_registered(&self) -> Result<Vec<ExactContainerId>, ProtocolError> {
+        let worktrees = self
+            .database
+            .read(|connection| {
+                let mut statement = connection
+                    .prepare("SELECT worktree_path FROM worktrees ORDER BY worktree_id")?;
+                statement
+                    .query_map([], |row| row.get::<_, String>(0))?
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(DatabaseError::from)
+            })
+            .map_err(database_error)?;
+        let mut recorded = Vec::new();
+        for path in worktrees {
+            let worktree = Path::new(&path);
+            let runs = match self.store.container_runs(worktree) {
+                Ok(runs) => runs,
+                Err(_) => continue,
+            };
+            for run_id in runs {
+                let Some(directory) = self
+                    .store
+                    .open_container_run(worktree, &run_id, None)
+                    .map_err(state_error)?
+                else {
+                    continue;
+                };
+                let (uid, gid) = self.store.owner(&directory).map_err(state_error)?;
+                let records = self.records(&directory)?;
+                recorded.extend(records.iter().filter_map(|record| {
+                    ExactContainerId::parse(record.container_id.clone()).ok()
+                }));
+                drop(directory);
+                for record in records
+                    .iter()
+                    .filter(|record| record.container_id == "0".repeat(64))
+                {
+                    if let Ok(candidates) = self.docker.list_ids_by_labels(&record.labels) {
+                        recorded.extend(candidates);
+                    }
+                }
+                let caller = Caller {
+                    via_edge: false,
+                    pid: 0,
+                    uid,
+                    gid,
+                    client_kind: devcoordinator2_api::ClientKind::Other,
+                    model: None,
+                    effort: None,
+                    client_session: None,
+                    work: None,
+                    identity: None,
+                };
+                // Failed cleanup remains a durable inspect/retry obligation.
+                // It must not prevent unrelated repositories from recovering.
+                let _ = self.cleanup_run(&path, &run_id, &caller);
+            }
+        }
+        Ok(recorded)
     }
 
     fn verify_record(
@@ -821,18 +1365,80 @@ impl TestContainerService {
     }
 }
 
+fn pending_record(
+    context: &Context,
+    name: String,
+    image: String,
+    command: Vec<String>,
+    owner_token: String,
+    labels: BTreeMap<String, String>,
+    created_at: String,
+) -> TestContainerRecord {
+    TestContainerRecord {
+        container_id: "0".repeat(64),
+        name,
+        image,
+        command,
+        owner_token,
+        labels,
+        created_at,
+        run_id: context.run_id.clone(),
+        check: context.check.clone(),
+        repository_id: context.repository_id.clone(),
+        worktree_id: context.worktree_id.clone(),
+        operation_failed: false,
+        native_execution_began: false,
+        solver_exit_code: None,
+        solver_signal: None,
+        stdout_ref: None,
+        stderr_ref: None,
+        stdout_bytes: 0,
+        stderr_bytes: 0,
+        cleanup_status: ContainerCleanupStatus::Pending,
+        cleanup_attempts: Vec::new(),
+    }
+}
+
+fn cleanup_details(
+    record: &TestContainerRecord,
+    error: &DockerError,
+) -> (Option<i32>, Option<i32>, String) {
+    let (exit, signal, text) = error_details(error);
+    if record.labels.contains_key("devcoordinator2.component") {
+        // Fixtures run with private database credentials. Keep only bounded
+        // typed command facts in ordinary receipts, never subprocess text.
+        (
+            exit,
+            signal,
+            format!(
+                "Docker cleanup command {:?}; inspect exact absence status",
+                error.kind()
+            ),
+        )
+    } else {
+        (exit, signal, text)
+    }
+}
+
 struct Context {
     #[allow(dead_code)]
     worktree: PathBuf,
     worktree_id: String,
     repository_id: String,
-    current: std::fs::File,
-    summary: devcoordinator2_api::results::TestSummary,
+    records: std::fs::File,
+    status: TestStatus,
     execution_uid: u32,
     uid: u32,
     gid: u32,
     run_id: String,
     check: String,
+}
+
+impl Context {
+    fn unlock(&self) -> Result<(), ProtocolError> {
+        rustix::fs::flock(&self.records, rustix::fs::FlockOperation::Unlock)
+            .map_err(|_| state_error(crate::test_state::TestStateError::Busy))
+    }
 }
 
 fn generated_name(run_id: &str, check: &str, owner: &str) -> Result<String, ProtocolError> {
@@ -997,6 +1603,19 @@ fn next_action(status: ContainerCleanupStatus) -> &'static str {
 }
 
 fn state_error(error: crate::test_state::TestStateError) -> ProtocolError {
+    if matches!(error, crate::test_state::TestStateError::Busy) {
+        let mut guidance = devcoordinator2_api::recovery::Guidance::transient(
+            "container ownership metadata is busy",
+            "container_metadata_busy",
+        );
+        guidance.retryable = true;
+        guidance.waitable = false;
+        return ProtocolError::new(
+            ErrorCode::TestStartFailed,
+            "container ownership metadata is busy; retry this exact operation",
+        )
+        .with_recovery(guidance);
+    }
     ProtocolError::new(
         ErrorCode::InternalError,
         "governed container state is unavailable",

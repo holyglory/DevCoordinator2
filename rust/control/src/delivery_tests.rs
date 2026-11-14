@@ -137,6 +137,10 @@ impl World {
                 Registry::new(fixture.database.clone()),
             ),
             fixture.config.base_domain.clone(),
+            crate::deployment_files::DeploymentFiles::new(
+                fixture.config.deployments_dir(),
+                fixture.config.secrets_dir(),
+            ),
         );
         if native {
             service = service.with_native_console(fixture.repository.clone(), "c".repeat(40));

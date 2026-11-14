@@ -701,6 +701,14 @@ pub struct RunDetachedRequest {
     pub publish: Vec<String>,
     pub tmpfs: Vec<String>,
     pub command: Vec<String>,
+    /// A persisted owner reconciles failures instead of deleting by name.
+    pub retain_on_failure: bool,
+}
+
+pub struct ContainerRemovalReceipt {
+    /// Removal may fail after Docker deleted the container. A successful
+    /// receipt independently proves exact ID and owned-name absence.
+    pub command_error: Option<DockerError>,
 }
 
 pub struct CreateContainerRequest {
@@ -1148,7 +1156,11 @@ pub trait DockerControl: Send + Sync {
         ) {
             Ok(output) => output,
             Err(error) => {
-                let cleanup = self.cleanup_failed_run_container(&request.name);
+                let cleanup = if request.retain_on_failure {
+                    "owned-reconciliation-pending".into()
+                } else {
+                    self.cleanup_failed_run_container(&request.name)
+                };
                 return Err(DockerError::Command(format!(
                     "docker run invocation failed (kind={:?}; cleanup={cleanup})",
                     error.kind()
@@ -1163,20 +1175,33 @@ pub trait DockerControl: Send + Sync {
             // name and expose the safe exit/cleanup facts. Known bridge
             // failures are reduced to a fixed, secret-free recovery reason.
             let network_reason = classify_network_failure(&output.stderr);
-            let cleanup = self.cleanup_failed_run_container(&request.name);
+            let cleanup = if request.retain_on_failure {
+                "owned-reconciliation-pending".into()
+            } else {
+                self.cleanup_failed_run_container(&request.name)
+            };
             if let Some(reason) = network_reason {
                 return Err(DockerError::NetworkUnavailable(format!(
                     "{reason} (exit_code={}; cleanup={cleanup})",
                     output.exit_code
                 )));
             }
-            return Err(DockerError::Command(format!(
-                "docker run failed (exit_code={}; cleanup={cleanup})",
-                output.exit_code
-            )));
+            return Err(DockerError::CommandFailure {
+                message: format!(
+                    "docker run failed (exit_code={}; cleanup={cleanup})",
+                    output.exit_code
+                ),
+                exit_code: Some(output.exit_code),
+                signal: None,
+                stderr: String::new(),
+            });
         }
         if ensure_exact_output(&output, "run").is_err() {
-            let cleanup = self.cleanup_failed_run_container(&request.name);
+            let cleanup = if request.retain_on_failure {
+                "owned-reconciliation-pending".into()
+            } else {
+                self.cleanup_failed_run_container(&request.name)
+            };
             return Err(DockerError::Command(format!(
                 "docker run output exceeded the bounded capture (cleanup={cleanup})"
             )));
@@ -1184,7 +1209,11 @@ pub trait DockerControl: Send + Sync {
         match ExactContainerId::parse(output.stdout.trim().to_owned()) {
             Ok(container) => Ok(container),
             Err(_) => {
-                let cleanup = self.cleanup_failed_run_container(&request.name);
+                let cleanup = if request.retain_on_failure {
+                    "owned-reconciliation-pending".into()
+                } else {
+                    self.cleanup_failed_run_container(&request.name)
+                };
                 Err(DockerError::Command(format!(
                     "docker run returned an invalid container id (cleanup={cleanup})"
                 )))
@@ -1613,11 +1642,13 @@ pub trait DockerControl: Send + Sync {
         container_id: &ExactContainerId,
         delete_volumes: bool,
     ) -> Result<(), DockerError> {
-        self.remove_container(container_id, delete_volumes)?;
+        let removal = self.remove_container(container_id, delete_volumes);
         if self.container_present(container_id)? {
-            return Err(DockerError::Command(
-                "docker rm completed but the exact container is still present".into(),
-            ));
+            return Err(removal.err().unwrap_or_else(|| {
+                DockerError::Command(
+                    "docker rm completed but the exact container is still present".into(),
+                )
+            }));
         }
         Ok(())
     }
@@ -1631,13 +1662,32 @@ pub trait DockerControl: Send + Sync {
         name: &str,
         delete_volumes: bool,
     ) -> Result<(), DockerError> {
-        self.remove_container_verified(container_id, delete_volumes)?;
+        self.remove_container_receipt(container_id, name, delete_volumes)
+            .map(|_| ())
+    }
+
+    fn remove_container_receipt(
+        &self,
+        container_id: &ExactContainerId,
+        name: &str,
+        delete_volumes: bool,
+    ) -> Result<ContainerRemovalReceipt, DockerError> {
+        let removal = self.remove_container(container_id, delete_volumes);
+        if self.container_present(container_id)? {
+            return Err(removal.err().unwrap_or_else(|| {
+                DockerError::Command(
+                    "docker rm completed but the exact container is still present".into(),
+                )
+            }));
+        }
         if self.container_name_present(name)? {
             return Err(DockerError::Command(
                 "docker rm completed but the exact container name is still present".into(),
             ));
         }
-        Ok(())
+        Ok(ContainerRemovalReceipt {
+            command_error: removal.err(),
+        })
     }
 
     fn container_name_present(&self, name: &str) -> Result<bool, DockerError> {
@@ -3016,6 +3066,7 @@ mod tests {
                 publish: vec!["127.0.0.1::5432".into()],
                 tmpfs: vec!["/tmp:rw,noexec".into()],
                 command: vec!["postgres".into()],
+                retain_on_failure: false,
             })
             .expect("container");
         assert_eq!(container, id('a'));
@@ -3064,6 +3115,7 @@ mod tests {
                 publish: vec!["127.0.0.1::5432".into()],
                 tmpfs: vec!["/tmp:rw,noexec".into()],
                 command: vec!["postgres".into()],
+                retain_on_failure: false,
             })
             .expect_err("Docker run failure should be reported");
         let message = error.to_string();
@@ -3080,6 +3132,29 @@ mod tests {
         );
         assert_eq!(&calls[2].args[..2], ["rm", "--force"]);
         assert_eq!(calls.len(), 3, "the sibling name must not be removed");
+        let owned = FakeDocker::new(vec![output(125, "", "POSTGRES_PASSWORD=fixture-value")]);
+        let failure = owned
+            .run_detached(&RunDetachedRequest {
+                name: "fixture".into(),
+                image: "postgres:16-alpine".into(),
+                label_context: labels(),
+                labels: BTreeMap::new(),
+                env_names: vec!["POSTGRES_PASSWORD".into()],
+                env_values: BTreeMap::from([("POSTGRES_PASSWORD".into(), "fixture-value".into())]),
+                publish: Vec::new(),
+                tmpfs: Vec::new(),
+                command: vec!["postgres".into()],
+                retain_on_failure: true,
+            })
+            .expect_err("owned failure needs durable reconciliation");
+        assert_eq!(failure.command_details().0, Some(125));
+        assert!(failure.to_string().contains("owned-reconciliation-pending"));
+        assert!(!failure.to_string().contains("fixture-value"));
+        assert_eq!(
+            owned.calls().len(),
+            1,
+            "a persisted owner must reconcile exact IDs instead of deleting by name"
+        );
     }
 
     #[test]
@@ -3105,6 +3180,7 @@ mod tests {
                 publish: vec!["127.0.0.1::5432".into()],
                 tmpfs: vec!["/tmp:rw,noexec".into()],
                 command: vec!["postgres".into()],
+                retain_on_failure: false,
             })
             .expect_err("bridge failure should be classified");
         assert_eq!(error.kind(), DockerErrorKind::NetworkUnavailable);

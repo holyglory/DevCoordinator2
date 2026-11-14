@@ -8,6 +8,7 @@ use std::mem::ManuallyDrop;
 use std::path::{Path, PathBuf};
 #[cfg(any(test, feature = "test-fixtures"))]
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use devcoordinator2_persistence::Persistence;
 #[cfg(any(test, feature = "test-fixtures"))]
@@ -20,6 +21,46 @@ pub use devcoordinator2_persistence::{
 use thiserror::Error;
 
 thread_local! { static MAINTENANCE_CONTEXT:Cell<bool>=const {Cell::new(false)}; }
+
+const OPTIONAL_TRANSACTION_BUDGET: Duration = Duration::from_millis(100);
+const OPTIONAL_LOCK_BUDGET: Duration = Duration::from_millis(25);
+
+/// Optional metadata shares one absolute transaction budget. Each statement
+/// receives only the time remaining; domain mutation timeouts stay unchanged.
+pub(crate) struct OptionalTransaction<'a, 'connection> {
+    transaction: &'a Transaction<'connection>,
+    deadline: Instant,
+}
+
+impl OptionalTransaction<'_, '_> {
+    fn remaining(&self) -> std::result::Result<Duration, DatabaseError> {
+        self.deadline
+            .checked_duration_since(Instant::now())
+            .filter(|left| !left.is_zero())
+            .ok_or_else(|| {
+                DatabaseError::Domain(devcoordinator2_api::ProtocolError::new(
+                    devcoordinator2_api::ErrorCode::Busy,
+                    "optional metadata transaction reached its deadline",
+                ))
+            })
+    }
+
+    /// Run one statement within the remaining metadata budget.
+    pub(crate) fn run<T>(
+        &self,
+        work: impl FnOnce(&Connection) -> std::result::Result<T, DatabaseError>,
+    ) -> std::result::Result<T, DatabaseError> {
+        let remaining = self.remaining()?;
+        self.transaction.execute_batch(&format!(
+            "SET LOCAL statement_timeout={}; SET LOCAL lock_timeout={}",
+            remaining.as_millis().clamp(1, i32::MAX as u128),
+            remaining.min(OPTIONAL_LOCK_BUDGET).as_millis().max(1),
+        ))?;
+        let result = work(self.transaction)?;
+        self.remaining()?;
+        Ok(result)
+    }
+}
 /// Route nested domain operations to maintenance capacity on this thread.
 /// The guard restores the prior scope on success, failure and unwinding.
 pub fn maintenance_context<T>(work: impl FnOnce() -> T) -> T {
@@ -176,6 +217,28 @@ impl Database {
         F: FnOnce(&Transaction<'_>) -> std::result::Result<T, DatabaseError> + Send,
     {
         blocking(|| self.inner.transaction_on(request_lane(), work))
+    }
+    /// Optional metadata must never queue behind active domain mutations.
+    pub(crate) fn try_transaction<T, F>(
+        &self,
+        work: F,
+    ) -> std::result::Result<Option<T>, DatabaseError>
+    where
+        T: Send,
+        F: FnOnce(&OptionalTransaction<'_, '_>) -> std::result::Result<T, DatabaseError> + Send,
+    {
+        blocking(|| {
+            self.inner
+                .try_transaction_on(request_lane(), |transaction| {
+                    let bounded = OptionalTransaction {
+                        transaction,
+                        deadline: Instant::now() + OPTIONAL_TRANSACTION_BUDGET,
+                    };
+                    let result = work(&bounded)?;
+                    bounded.remaining()?;
+                    Ok(result)
+                })
+        })
     }
     pub fn read_transaction<T, F>(&self, work: F) -> std::result::Result<T, DatabaseError>
     where

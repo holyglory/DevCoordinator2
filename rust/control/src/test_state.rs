@@ -15,7 +15,7 @@ use devcoordinator2_executor_protocol::{
     ArtifactReceipt, CheckReport, DiagnosticExit, ExecutionPlan, ExecutionReport, LogStreamSummary,
     ProofKind, RunStatus, Schema2, ValidationTier,
 };
-use rustix::fs::{self as unix_fs, AtFlags, Dir, Mode, OFlags};
+use rustix::fs::{self as unix_fs, AtFlags, Dir, FlockOperation, Mode, OFlags};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use thiserror::Error;
 
@@ -33,6 +33,8 @@ const EVIDENCE_CAP: usize = 50;
 
 #[derive(Debug, Error)]
 pub enum TestStateError {
+    #[error("container ownership metadata is busy")]
+    Busy,
     #[error("invalid governed-test state: {0}")]
     Invalid(String),
     #[error("governed-test filesystem operation failed: {0}")]
@@ -399,6 +401,13 @@ impl TestRunStore {
         atomic_json(current, CONTAINERS_FILE, containers, 0o600, uid, gid)
     }
 
+    pub(crate) fn read_legacy_containers(
+        &self,
+        current: &File,
+    ) -> Result<Vec<String>, TestStateError> {
+        Ok(read_json::<Vec<String>>(current, CONTAINERS_FILE)?.unwrap_or_default())
+    }
+
     /// Retain daemon-owned temporary-container records separately from the
     /// legacy database-fixture ID list.  Keeping a typed record lets cleanup be
     /// retried after a daemon restart without trusting a caller-supplied ID.
@@ -458,6 +467,308 @@ impl TestRunStore {
             ));
         }
         Ok(records)
+    }
+
+    /// Ownership outlives `current` replacement and log retention. The same
+    /// typed receipt is stored once, in its run's private lifecycle directory.
+    /// Lock the directory across each read/modify/atomic-write transaction.
+    pub(crate) fn open_container_run(
+        &self,
+        worktree: &Path,
+        run_id: &str,
+        owner: Option<(u32, u32)>,
+    ) -> Result<Option<File>, TestStateError> {
+        validate_run_id(run_id)?;
+        let Some(test) = self.open_test(worktree)? else {
+            return Ok(None);
+        };
+        let mut directory = None;
+        if let Some(containers) = open_child(&test, "containers")? {
+            for state in ["pending", "receipts"] {
+                if let Some(parent) = open_child(&containers, state)?
+                    && let Some(found) = open_child(&parent, run_id)?
+                {
+                    directory = Some(found);
+                    break;
+                }
+            }
+        }
+        if directory.is_none()
+            && let Some(owner) = owner
+        {
+            let containers = ensure_directory(&test, "containers", 0o711, None)?;
+            let pending = ensure_directory(&containers, "pending", 0o711, None)?;
+            directory = Some(ensure_directory(&pending, run_id, 0o700, Some(owner))?);
+        }
+        if let Some(directory) = &directory {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_millis(50);
+            loop {
+                match unix_fs::flock(directory, FlockOperation::NonBlockingLockExclusive) {
+                    Ok(()) => break,
+                    Err(rustix::io::Errno::WOULDBLOCK) if std::time::Instant::now() < deadline => {
+                        std::thread::sleep(std::time::Duration::from_millis(1));
+                    }
+                    Err(rustix::io::Errno::WOULDBLOCK) => return Err(TestStateError::Busy),
+                    Err(error) => return Err(errno("lock container ownership", error)),
+                }
+            }
+        }
+        Ok(directory)
+    }
+
+    pub(crate) fn container_runs(&self, worktree: &Path) -> Result<Vec<String>, TestStateError> {
+        let Some(test) = self.open_test(worktree)? else {
+            return Ok(Vec::new());
+        };
+        let Some(containers) = open_chain(&test, &["containers", "pending"])? else {
+            return Ok(Vec::new());
+        };
+        let mut result = Vec::new();
+        for entry in
+            Dir::read_from(&containers).map_err(|error| errno("list container ownership", error))?
+        {
+            let entry = entry.map_err(|error| errno("read container ownership", error))?;
+            let Some(name) = entry.file_name().to_str().ok() else {
+                continue;
+            };
+            if validate_run_id(name).is_ok() {
+                result.push(name.to_owned());
+            }
+        }
+        result.sort();
+        Ok(result)
+    }
+
+    pub(crate) fn container_run_pending(
+        &self,
+        worktree: &Path,
+        run_id: &str,
+    ) -> Result<bool, TestStateError> {
+        validate_run_id(run_id)?;
+        let Some(test) = self.open_test(worktree)? else {
+            return Ok(false);
+        };
+        Ok(open_chain(&test, &["containers", "pending", run_id])?.is_some())
+    }
+
+    pub(crate) fn archive_container_run(
+        &self,
+        worktree: &Path,
+        run_id: &str,
+        directory: &File,
+    ) -> Result<(), TestStateError> {
+        let records = self.read_container_records(directory)?;
+        if records.is_empty()
+            || records.iter().any(|record| {
+                record.cleanup_status
+                    != devcoordinator2_api::test_containers::ContainerCleanupStatus::Complete
+            })
+        {
+            return Ok(());
+        }
+        let mut leases = Vec::new();
+        for record in &records {
+            let Some(lease) = self.container_lease(directory, &record.owner_token, false)? else {
+                return Ok(());
+            };
+            leases.push(lease);
+        }
+        let Some(test) = self.open_test(worktree)? else {
+            return Ok(());
+        };
+        let Some(pending) = open_chain(&test, &["containers", "pending"])? else {
+            return Ok(());
+        };
+        let Some(source) = open_child(&pending, run_id)? else {
+            return Ok(());
+        };
+        use std::os::unix::fs::MetadataExt;
+        if source
+            .metadata()
+            .map_err(|error| filesystem("inspect pending ownership", error))?
+            .ino()
+            != directory
+                .metadata()
+                .map_err(|error| filesystem("inspect owned receipt", error))?
+                .ino()
+        {
+            return Err(TestStateError::Invalid(
+                "container ownership directory changed".into(),
+            ));
+        }
+        if read_json::<bool>(directory, "retention-expired.json")?.unwrap_or(false)
+            || open_chain(&test, &["logs", "runs", run_id])?.is_none()
+        {
+            // Its ordinary run retention already expired while cleanup was
+            // pending. The completed receipt now expires with that same run.
+            self.validate_container_receipt_entries(directory, &records)?;
+            return remove_child_if_present(&pending, run_id);
+        }
+        let containers = open_child(&test, "containers")?.ok_or_else(|| {
+            TestStateError::Invalid("container ownership root disappeared".into())
+        })?;
+        let receipts = ensure_directory(&containers, "receipts", 0o711, None)?;
+        if open_child(&receipts, run_id)?.is_some() {
+            return Err(TestStateError::Invalid(
+                "completed container receipt already exists".into(),
+            ));
+        }
+        unix_fs::renameat(&pending, run_id, &receipts, run_id)
+            .map_err(|error| errno("archive completed container receipt", error))?;
+        pending
+            .sync_all()
+            .map_err(|error| filesystem("sync pending ownership", error))?;
+        receipts
+            .sync_all()
+            .map_err(|error| filesystem("sync completed ownership", error))?;
+        Ok(())
+    }
+
+    /// The existing run-retention receipt calls this exact-run cleanup. Live
+    /// leases and any pending/failed record keep their ownership indefinitely.
+    pub(crate) fn retire_container_run(
+        &self,
+        worktree: &Path,
+        run_id: &str,
+    ) -> Result<(), TestStateError> {
+        let Some(directory) = self.open_container_run(worktree, run_id, None)? else {
+            return Ok(());
+        };
+        let records = self.read_container_records(&directory)?;
+        let (uid, gid) = self.owner(&directory)?;
+        atomic_json(&directory, "retention-expired.json", &true, 0o600, uid, gid)?;
+        if self
+            .read_current_summary(worktree)?
+            .is_some_and(|summary| summary.run_id == run_id)
+            && let Some(current) = self.open_current(worktree)?
+        {
+            self.retire_legacy_container_receipts(&current, &records, uid, gid)?;
+        }
+        if records.iter().any(|record| {
+            record.cleanup_status
+                != devcoordinator2_api::test_containers::ContainerCleanupStatus::Complete
+        }) {
+            return Ok(());
+        }
+        let mut leases = Vec::new();
+        for record in &records {
+            let Some(lease) = self.container_lease(&directory, &record.owner_token, false)? else {
+                return Ok(());
+            };
+            leases.push(lease);
+        }
+        self.validate_container_receipt_entries(&directory, &records)?;
+        let Some(test) = self.open_test(worktree)? else {
+            return Ok(());
+        };
+        for state in ["pending", "receipts"] {
+            if let Some(parent) = open_chain(&test, &["containers", state])? {
+                remove_child_if_present(&parent, run_id)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_container_receipt_entries(
+        &self,
+        directory: &File,
+        records: &[TestContainerRecord],
+    ) -> Result<(), TestStateError> {
+        for entry in
+            Dir::read_from(directory).map_err(|error| errno("inspect container receipt", error))?
+        {
+            let entry = entry.map_err(|error| errno("read container receipt", error))?;
+            let name = entry
+                .file_name()
+                .to_str()
+                .map_err(|_| TestStateError::Invalid("container receipt name is invalid".into()))?;
+            if !matches!(
+                name,
+                "." | ".." | CONTAINER_LIFECYCLE_FILE | "retention-expired.json"
+            ) && !records
+                .iter()
+                .any(|record| name == format!("{}.lease", record.owner_token))
+            {
+                return Err(TestStateError::Invalid(
+                    "container receipt contains an unowned entry".into(),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn retire_legacy_container_receipts(
+        &self,
+        current: &File,
+        durable: &[TestContainerRecord],
+        uid: u32,
+        gid: u32,
+    ) -> Result<(), TestStateError> {
+        let legacy = self.read_container_records(current)?;
+        let retained = legacy
+            .iter()
+            .filter(|old| {
+                !durable.iter().any(|record| {
+                    record.owner_token == old.owner_token
+                        && (record.container_id == old.container_id
+                            || old.container_id == "0".repeat(64))
+                        && record.run_id == old.run_id
+                        && record.check == old.check
+                        && record.repository_id == old.repository_id
+                        && record.worktree_id == old.worktree_id
+                        && record.name == old.name
+                        && record.labels == old.labels
+                })
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        if retained.len() != legacy.len() {
+            self.write_container_records(current, &retained, uid, gid)?;
+        }
+        let legacy_ids = self.read_legacy_containers(current)?;
+        let retained_ids = legacy_ids
+            .iter()
+            .filter(|id| {
+                !durable.iter().any(|record| {
+                    record.container_id == **id && record.container_id != "0".repeat(64)
+                })
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        if retained_ids.len() != legacy_ids.len() {
+            self.write_containers(current, &retained_ids, uid, gid)?;
+        }
+        Ok(())
+    }
+
+    /// A live fixture holds a shared lease. Cleanup requires an exclusive
+    /// lease; process death releases it without reconstructing pool memory.
+    pub(crate) fn container_lease(
+        &self,
+        directory: &File,
+        token: &str,
+        active: bool,
+    ) -> Result<Option<File>, TestStateError> {
+        validate_atom(token)?;
+        let file = File::from(
+            unix_fs::openat(
+                directory,
+                format!("{token}.lease"),
+                OFlags::RDWR | OFlags::CREATE | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+                Mode::from_raw_mode(0o600),
+            )
+            .map_err(|error| errno("open container lease", error))?,
+        );
+        let operation = if active {
+            FlockOperation::NonBlockingLockShared
+        } else {
+            FlockOperation::NonBlockingLockExclusive
+        };
+        match unix_fs::flock(&file, operation) {
+            Ok(()) => Ok(Some(file)),
+            Err(rustix::io::Errno::WOULDBLOCK) if !active => Ok(None),
+            Err(error) => Err(errno("lock container lease", error)),
+        }
     }
 
     pub fn read_history(&self, worktree: &Path) -> Result<Vec<TestHistoryEntry>, TestStateError> {

@@ -1,5 +1,5 @@
 //! Explicit content-free operation declarations from authorized local calls.
-use crate::database::{Database, DatabaseError, params};
+use crate::database::{Database, DatabaseError, OptionalExtension, params};
 use devcoordinator2_api::work_context::WorkAttribution;
 use serde::{Deserialize, Serialize};
 
@@ -93,17 +93,54 @@ pub(crate) fn ingest(
         experiment_ref: work.experiment_ref.clone(),
     };
     let encoded = serde_json::to_string(&context).expect("context metadata serialization");
-    database.transaction(|tx| {
-        let context_seq: i64 = tx.query_row(
-            "INSERT INTO codex_usage_contexts(context_json) VALUES($1) ON CONFLICT(context_json) DO UPDATE SET context_json=EXCLUDED.context_json RETURNING context_seq",
-            params![encoded], |row| row.get(0),
-        )?;
-        tx.execute(
+    // Identical declarations already have durable evidence. Reading that
+    // evidence preserves the first capture time and avoids an incidental
+    // write for every observation of the same operation.
+    let recorded = database.read(|connection| {
+        Ok(connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM codex_usage_operation_contexts b JOIN codex_usage_contexts c ON c.context_seq=b.context_seq WHERE b.source_uid=$1 AND b.operation_id=$2 AND b.repository_id=$3 AND c.context_json=$4)",
+            params![uid, operation, repository, encoded],
+            |row| row.get::<_, bool>(0),
+        )?)
+    })?;
+    if recorded {
+        return Ok(());
+    }
+    database.try_transaction(|tx| {
+        let mut context_seq = tx.run(|connection| {
+            connection.query_row(
+                "SELECT context_seq FROM codex_usage_contexts WHERE context_json=$1",
+                [&encoded], |row| row.get::<_, i64>(0),
+            ).optional().map_err(DatabaseError::from)
+        })?;
+        if context_seq.is_none() {
+            context_seq = tx.run(|connection| {
+                connection.query_row(
+                    "INSERT INTO codex_usage_contexts(context_json) VALUES($1) ON CONFLICT(context_json) DO NOTHING RETURNING context_seq",
+                    [&encoded], |row| row.get::<_, i64>(0),
+                ).optional().map_err(DatabaseError::from)
+            })?;
+        }
+        let context_seq = match context_seq {
+            Some(sequence) => sequence,
+            // Another writer may have inserted the dictionary row between
+            // the read and INSERT. Read its committed identity without UPDATE.
+            None => tx.run(|connection| {
+                Ok(connection.query_row(
+                    "SELECT context_seq FROM codex_usage_contexts WHERE context_json=$1",
+                    [&encoded], |row| row.get::<_, i64>(0),
+                )?)
+            })?,
+        };
+        tx.run(|connection| Ok(connection.execute(
             "INSERT INTO codex_usage_operation_contexts(source_uid,operation_id,repository_id,captured_at_ms,context_seq) VALUES($1,$2,$3,$4,$5) ON CONFLICT(source_uid,operation_id) DO UPDATE SET rejected=codex_usage_operation_contexts.rejected OR codex_usage_operation_contexts.repository_id<>EXCLUDED.repository_id OR codex_usage_operation_contexts.context_seq<>EXCLUDED.context_seq",
             params![uid,operation,repository,at,context_seq],
-        )?;
+        )?))?;
         Ok(())
-    })
+    })?.ok_or_else(|| DatabaseError::Domain(devcoordinator2_api::ProtocolError::new(
+        devcoordinator2_api::ErrorCode::Busy,
+        "work context capture is unavailable while authority writers are busy",
+    )))
 }
 
 pub(crate) fn read(

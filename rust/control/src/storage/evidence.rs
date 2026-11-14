@@ -381,7 +381,10 @@ pub(crate) fn record_run_expired(
         c.execute("INSERT INTO storage_jobs VALUES($1,'retention','completed',$1,$2,'retention',0,$3,'{}',$4)",crate::database::params![job_id,super::hash(job_id.as_bytes()),super::json(&job).map_err(DatabaseError::Domain)?,now])?;
         for (step,receipt) in job.receipts.iter().enumerate(){c.execute("INSERT INTO storage_item_receipts VALUES($1,$2,$3,$4)",crate::database::params![job_id,receipt.artifact_id,step,super::json(receipt).map_err(DatabaseError::Domain)?])?;}
         Ok(())
-    }).map_err(db_error)
+    }).map_err(db_error)?;
+    crate::test_state::TestRunStore
+        .retire_container_run(worktree, run_id)
+        .map_err(|_| unavailable("container_ownership_retention_failed"))
 }
 
 #[cfg(test)]

@@ -361,6 +361,26 @@ fn review_context_window_is_indexed_bounded_uid_scoped_and_conflicts_stay_unattr
         START + 3,
     )
     .unwrap();
+    // The read-only identical-declaration fast path must never clear a
+    // previously recorded conflict or replace its original declaration.
+    crate::usage_context::ingest(
+        &fixture.database,
+        call.uid,
+        "project-alpha",
+        &work,
+        START + 4,
+    )
+    .unwrap();
+    let rejected = crate::usage_context::read(
+        &fixture.database,
+        call.uid,
+        "project-alpha",
+        START,
+        START + WEEK,
+    )
+    .unwrap();
+    assert!(rejected.bindings.is_empty());
+    assert_eq!(rejected.rejected, 1);
     let prepared = service(&fixture, peer.source.clone())
         .prepare(input(), START + WEEK)
         .unwrap();

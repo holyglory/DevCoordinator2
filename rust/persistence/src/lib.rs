@@ -357,6 +357,18 @@ impl Persistence {
         client.batch_execute(&session_settings(&self.pools.config, lane))?;
         Ok(Connection::new(client))
     }
+    /// Admit optional work only when this lane already has a connection.
+    /// Saturation does not queue a request or borrow another lane's capacity.
+    pub fn try_acquire(&self, lane: Lane) -> Result<Option<Connection>> {
+        if self.pools.closed.load(Ordering::Acquire) {
+            return Err(Error::Closed);
+        }
+        let Some(mut client) = self.pool(lane).try_get() else {
+            return Ok(None);
+        };
+        client.batch_execute(&session_settings(&self.pools.config, lane))?;
+        Ok(Some(Connection::new(client)))
+    }
     pub fn read<T, E, F>(&self, work: F) -> std::result::Result<T, E>
     where
         E: From<Error>,
@@ -410,6 +422,23 @@ impl Persistence {
         let value = work(&tx)?;
         tx.commit().map_err(E::from)?;
         Ok(value)
+    }
+    pub fn try_transaction_on<T, E, F>(
+        &self,
+        lane: Lane,
+        work: F,
+    ) -> std::result::Result<Option<T>, E>
+    where
+        E: From<Error>,
+        F: FnOnce(&Transaction<'_>) -> std::result::Result<T, E>,
+    {
+        let Some(connection) = self.try_acquire(lane).map_err(E::from)? else {
+            return Ok(None);
+        };
+        let tx = connection.unchecked_transaction().map_err(E::from)?;
+        let value = work(&tx)?;
+        tx.commit().map_err(E::from)?;
+        Ok(Some(value))
     }
     pub fn close(&self) {
         self.pools.closed.store(true, Ordering::Release);

@@ -108,8 +108,9 @@ not finish in time.
 
 ## test.container.create | start | inspect | remove | retry
 
-These operations are the only supported Docker boundary for temporary solver
-containers. Requests carry the registered worktree `path`, accepted `run_id`,
+These operations are the supported Docker boundary for temporary test
+containers, including solver containers and Coordinator-owned PostgreSQL
+fixtures. Requests carry the registered worktree `path`, accepted `run_id`,
 `check`, and (for create) an image plus argv; they do not accept a Docker
 socket, host path, privilege flag, or raw Docker option. The daemon adds exact
 run, check, repository, worktree, purpose, and opaque owner labels, persists
@@ -118,10 +119,31 @@ after forced removal. `inspect` returns the bounded state, exit code/signal,
 labels, native-start flag, cleanup attempts, retryability, and next action.
 
 Cleanup results use `cleanup_pending`, `cleanup_complete`, or
-`cleanup_failed`. Pending cleanup is retried by the Coordinator reconciliation
-worker and by `retry`; failed or pending cleanup keeps the governed run from
-being reported as passed. Unrelated containers are never selected by name or
-prefix alone.
+`cleanup_failed`. Current-run reconciliation, startup recovery, and `retry`
+reconcile retained ownership; failed or pending run cleanup prevents a passed
+result. A removal timeout still produces `cleanup_complete` when independent
+checks prove both exact ID and name absent, with the command failure retained
+in the attempt. Repeating completed cleanup returns its existing receipt.
+Unrelated containers are never selected by name or prefix alone.
+
+Fixture handles hold active leases. Removal and retry refuse an active
+fixture or cached template; retiring the handle releases its lease. A cached
+template can outlive the run that created it, so that run does not owe template
+removal while the pool still owns it. Process death releases the lease and
+startup recovery reconciles its persisted exact identity.
+
+Ownership survives replacement of `current/` in one per-run record under
+`.devcoordinator/test/containers/pending/<run-id>/`. After every container is
+proven absent and all leases are released, that directory moves atomically to
+`containers/receipts/<run-id>/`. Requests resolve the exact run; startup scans
+pending ownership. Completed receipts expire through the existing run-log
+retention path. Pending or failed ownership survives expired logs.
+
+Older shared fixtures can acquire a typed receipt only when the current run's
+retained `containers.json` contains that exact ID and Docker inspection proves
+the expected fixture name and all ownership labels. Labels alone, an unrelated
+name, or a missing historical receipt cannot authorize adoption. Inspection
+and retry refuse those cases instead of reconstructing ownership from guesses.
 
 Additive `targets: ["api","ui"]` selects multiple declarations for one invocation,
 instead of `test`. `checks` accepts qualified `target/check` names, and
@@ -439,12 +461,16 @@ Reference args on every command except `list`: `path` (required) plus
   setup are not started, and unrelated services/routes remain. Stop withdraws
   the route for a whole routed component, never for an unrelated Compose
   worker, and never deletes data.
-- `deployment.logs {component, generation?, tail_lines<=5000}` → `{component,
-  tail, log_path | container_id}`. Process logs are generation-bound; omit
+- `deployment.logs {component, generation?, attempt?, tail_lines<=5000}` → `{component,
+  tail, log_path | container_id, process_log?}`. Process logs expose retained
+  generation and stable startup-attempt identities; omit
   `generation` for the selected current component or provide a retained
-  generation when inspecting a failed candidate.
+  generation when inspecting a failed candidate. `attempt` requires a
+  generation. Metadata reports exact identities, availability and retention;
+  selectors never fall back to an unrelated legacy log.
 - `deployment.rollback` → status with `rolled_back_from`/`rolled_back_to`;
-  checkout source only (`rollback_unavailable` otherwise).
+  an owned retained previous source is required (`rollback_unavailable`
+  otherwise), including an explicit frozen worktree candidate.
 - `deployment.apply` accepts an optional `candidate: {path, commit}` with an
   existing `deployment_id`. Trusted local callers can promote a clean linked
   worktree at the full expected commit into the same deployment.

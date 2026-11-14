@@ -199,8 +199,24 @@ impl ReviewService {
         self.repository(&p.repository_id)?;
         let repo = p.repository_id.clone();
         let scope = scope_key(&p.workstream_id);
-        let changed=self.database.call(move|c| Ok(c.execute("UPDATE review_policies SET owner_thread_id=$1,alarm_namespace=$2,lease_expires_at=$3 WHERE repository_id=$4 AND workstream_key=$5 AND ($6<>0 OR owner_thread_id IS NULL OR owner_thread_id=$1 OR lease_expires_at IS NULL OR lease_expires_at<=$7)",crate::database::params![p.owner_thread_id,p.alarm_namespace,p.lease_expires_at as i64,repo,scope,matches!(mode,RegistrationMode::Replace),now as i64])?)).map_err(database_error)?;
-        let _ = changed;
+        let update = |c: &crate::database::Connection| {
+            Ok(c.execute("UPDATE review_policies SET owner_thread_id=$1,alarm_namespace=$2,lease_expires_at=$3 WHERE repository_id=$4 AND workstream_key=$5 AND ($6<>0 OR owner_thread_id IS NULL OR owner_thread_id=$1 OR lease_expires_at IS NULL OR lease_expires_at<=$7)",crate::database::params![p.owner_thread_id,p.alarm_namespace,p.lease_expires_at as i64,repo,scope,matches!(mode,RegistrationMode::Replace),now as i64])?)
+        };
+        match mode {
+            RegistrationMode::Replace => {
+                self.database
+                    .call(|connection| update(connection))
+                    .map_err(database_error)?;
+            }
+            RegistrationMode::Refresh => {
+                self.database.try_transaction(|transaction| transaction.run(update))
+                    .map_err(database_error)?
+                    .ok_or_else(|| ProtocolError::new(
+                        devcoordinator2_api::ErrorCode::Busy,
+                        "native review delivery refresh is unavailable while authority writers are busy",
+                    ))?;
+            }
+        }
         self.policy_status(
             api::Scope {
                 repository_id: p.repository_id,

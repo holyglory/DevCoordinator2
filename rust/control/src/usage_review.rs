@@ -138,9 +138,7 @@ impl CodexUsage {
                 .as_ref()
                 .map(|review| super::review_aggregate::from_api(&review.outcomes))
                 .ok_or("api_contract_unsupported")?;
-            if self.binding_failures.lock().map_or(true, |failures| {
-                failures.contains(&(source.uid, repository.repository_id.clone()))
-            }) {
+            if self.binding_capture_failed(source.uid, &repository.repository_id) {
                 groups.gap("work_context_capture_failed", 1);
                 increment(&mut report.coverage_events, "partial");
             }

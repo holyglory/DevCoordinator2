@@ -18,6 +18,8 @@ use tracing::{error, info};
 
 use crate::access::Caller;
 use crate::agent_request_log::RequestObservation;
+pub use crate::request_deadline::WaitContext;
+use crate::request_deadline::{WaitDeadline, blocking_operation};
 use crate::{DATABASE_SCHEMA_VERSION, SOURCE_COMMIT};
 
 const READ_DEADLINE: Duration = Duration::from_secs(5);
@@ -46,11 +48,14 @@ pub trait OperationExecutor: Send + Sync + 'static {
         None
     }
 
+    /// Prepare a passive observer. Every later synchronous subscription or
+    /// status step must use the supplied context's blocking admission.
     fn defer(
         &self,
         _operation: &str,
         _params: Value,
         _caller: &Caller,
+        _wait: WaitContext,
     ) -> Option<Result<DeferredOperation, ProtocolError>> {
         None
     }
@@ -332,23 +337,29 @@ impl App {
         let executor = Arc::clone(&self.executor);
         let operation = request.operation.clone();
         let params = request.params.clone();
-        blocking_operation(move || {
+        let deadline = WaitDeadline::for_operation(&operation, &params)?;
+        let context = WaitContext::new(self.wait_preparations.clone(), deadline.clone());
+        let preparation = blocking_operation(move || {
+            // The worker owns this permit through real completion. Dropping
+            // a timed-out observer cannot admit more blocked preparations.
             let _permit = permit;
-            executor.defer(&operation, params, &caller).transpose()
-        })
-        .await
+            executor
+                .defer(&operation, params, &caller, context)
+                .transpose()
+        });
+        let prepared = if let Some(deadline) = &deadline {
+            deadline.run(preparation).await?
+        } else {
+            preparation.await?
+        };
+        Ok(prepared.map(|operation| {
+            if let Some(deadline) = deadline {
+                Box::pin(async move { deadline.run(operation).await }) as DeferredOperation
+            } else {
+                operation
+            }
+        }))
     }
-}
-
-/// Wait preparation and status rechecks can read authority state or storage.
-/// Keep those synchronous steps away from the socket and bridge reactors too.
-pub(crate) async fn blocking_operation<T: Send + 'static>(
-    work: impl FnOnce() -> Result<T, ProtocolError> + Send + 'static,
-) -> Result<T, ProtocolError> {
-    tokio::task::spawn_blocking(work).await.map_err(|error| {
-        ProtocolError::new(ErrorCode::InternalError, "operation task failed")
-            .with_detail(error.to_string())
-    })?
 }
 
 fn overloaded() -> ProtocolError {
@@ -677,6 +688,7 @@ mod tests {
             operation: &str,
             params: Value,
             _caller: &Caller,
+            _wait: WaitContext,
         ) -> Option<Result<DeferredOperation, ProtocolError>> {
             if operation != "event.wait" {
                 return None;
@@ -724,6 +736,7 @@ mod tests {
             operation: &str,
             _params: Value,
             _caller: &Caller,
+            _wait: WaitContext,
         ) -> Option<Result<DeferredOperation, ProtocolError>> {
             if !crate::client::is_passive_wait_operation(operation) {
                 return None;
@@ -756,6 +769,7 @@ mod tests {
             operation: &str,
             _params: Value,
             _caller: &Caller,
+            _wait: WaitContext,
         ) -> Option<Result<DeferredOperation, ProtocolError>> {
             if !crate::client::is_passive_wait_operation(operation) {
                 return None;
@@ -1256,6 +1270,7 @@ mod tests {
                 operation: &str,
                 _: Value,
                 _: &Caller,
+                _: WaitContext,
             ) -> Option<Result<DeferredOperation, ProtocolError>> {
                 if operation != "test.wait" {
                     return None;
@@ -1524,6 +1539,335 @@ mod tests {
                 .all(|(_, _, _, responsive, ping, waited)| *responsive && *ping && *waited),
             "slow preparation blocked unrelated requests: {outcomes:?}"
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn deadlines_and_disconnects_keep_blocked_preparation_capacity_owned() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::{Condvar, Mutex};
+
+        struct BlockedPreparation {
+            active: Arc<AtomicUsize>,
+            started: Arc<tokio::sync::Notify>,
+            release: Arc<(Mutex<bool>, Condvar)>,
+        }
+        impl OperationExecutor for BlockedPreparation {
+            fn execute(&self, _: &str, _: Value, _: &Caller) -> Result<Value, ProtocolError> {
+                Ok(serde_json::json!({"responsive":true}))
+            }
+
+            fn defer(
+                &self,
+                operation: &str,
+                _: Value,
+                _: &Caller,
+                _: WaitContext,
+            ) -> Option<Result<DeferredOperation, ProtocolError>> {
+                if operation != "test.wait" {
+                    return None;
+                }
+                self.active.fetch_add(1, Ordering::SeqCst);
+                self.started.notify_one();
+                let (released, changed) = &*self.release;
+                let _guard = changed
+                    .wait_while(released.lock().unwrap(), |released| !*released)
+                    .unwrap();
+                self.active.fetch_sub(1, Ordering::SeqCst);
+                Some(Ok(Box::pin(async {
+                    Ok(serde_json::json!({"complete":true}))
+                })))
+            }
+        }
+        struct Release(Arc<(Mutex<bool>, Condvar)>);
+        impl Drop for Release {
+            fn drop(&mut self) {
+                let (released, changed) = &*self.0;
+                *released.lock().unwrap() = true;
+                changed.notify_all();
+            }
+        }
+
+        let temporary = tempdir().unwrap();
+        let socket = temporary.path().join("daemon.sock");
+        let active = Arc::new(AtomicUsize::new(0));
+        let started = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new((Mutex::new(false), Condvar::new()));
+        let release_on_exit = Release(release.clone());
+        let app = Arc::new(App::with_executor(
+            None,
+            Arc::new(BlockedPreparation {
+                active: active.clone(),
+                started: started.clone(),
+                release,
+            }),
+        ));
+        let endpoint = DaemonEndpoint::bind(&socket).await.unwrap();
+        let (shutdown, mut shutdown_rx) = watch::channel(false);
+        let socket_app = app.clone();
+        let server =
+            tokio::spawn(async move { endpoint.serve(&mut shutdown_rx, socket_app).await });
+        let mut waiting = Vec::new();
+        for _ in 0..8 {
+            let socket = socket.clone();
+            waiting.push(tokio::spawn(async move {
+                let deadline = (time::OffsetDateTime::now_utc()
+                    + time::Duration::milliseconds(300))
+                .format(&time::format_description::well_known::Rfc3339)
+                .unwrap();
+                timeout(
+                    Duration::from_secs(1),
+                    crate::client::call(
+                        &socket,
+                        "test.wait",
+                        serde_json::json!({
+                            "path":"/fixture", "run_id":"held-run", "deadline_at":deadline
+                        }),
+                        ClientContext::default(),
+                    ),
+                )
+                .await
+            }));
+        }
+        timeout(Duration::from_secs(2), async {
+            while active.load(Ordering::SeqCst) != 8 {
+                started.notified().await;
+            }
+        })
+        .await
+        .unwrap();
+        let disconnected = waiting.pop().unwrap();
+        disconnected.abort();
+        assert!(disconnected.await.unwrap_err().is_cancelled());
+        let mut bounded = true;
+        for wait in waiting {
+            bounded &= matches!(wait.await.unwrap(), Ok(Ok(ResponseEnvelope::Failure { error, .. }))
+                if error.code == ErrorCode::WaitDeadlineReached);
+        }
+        let retained =
+            app.wait_preparations.available_permits() == 0 && active.load(Ordering::SeqCst) == 8;
+        let mut refused = true;
+        for _ in 0..16 {
+            refused &= matches!(crate::client::call(
+                &socket, "test.wait", serde_json::json!({
+                    "path":"/fixture", "run_id":"held-run", "deadline_at":"2099-01-01T00:00:00Z"
+                }), ClientContext::default(),
+            ).await.unwrap(), ResponseEnvelope::Failure { error, .. } if error.code == ErrorCode::Busy);
+        }
+        let ping = timeout(
+            Duration::from_secs(1),
+            crate::client::call(
+                &socket,
+                "ping",
+                serde_json::json!({}),
+                ClientContext::default(),
+            ),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let still_bounded = active.load(Ordering::SeqCst) == 8;
+        drop(release_on_exit);
+        let restored = timeout(
+            Duration::from_secs(2),
+            app.wait_preparations.clone().acquire_many_owned(8),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        drop(restored);
+        shutdown.send(true).unwrap();
+        timeout(Duration::from_secs(2), server)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert!(bounded && retained && refused && still_bounded);
+        assert_eq!(active.load(Ordering::SeqCst), 0);
+        assert!(matches!(ping, ResponseEnvelope::Success { .. }));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn awakened_observers_keep_worker_capacity_after_deadlines_and_disconnects() {
+        use crate::database::{Database, Lane};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        struct Counts {
+            prepared: AtomicUsize,
+            active: AtomicUsize,
+            peak: AtomicUsize,
+            started: AtomicUsize,
+            changed: tokio::sync::Notify,
+        }
+        struct Active(Arc<Counts>);
+        impl Drop for Active {
+            fn drop(&mut self) {
+                self.0.active.fetch_sub(1, Ordering::SeqCst);
+            }
+        }
+        struct Observer {
+            database: Database,
+            counts: Arc<Counts>,
+            wake: watch::Receiver<bool>,
+        }
+        impl OperationExecutor for Observer {
+            fn execute(&self, _: &str, _: Value, _: &Caller) -> Result<Value, ProtocolError> {
+                Ok(serde_json::json!({"responsive":true}))
+            }
+            fn defer(
+                &self,
+                operation: &str,
+                _: Value,
+                _: &Caller,
+                wait: WaitContext,
+            ) -> Option<Result<DeferredOperation, ProtocolError>> {
+                if operation != "test.wait" {
+                    return None;
+                }
+                self.counts.prepared.fetch_add(1, Ordering::SeqCst);
+                self.counts.changed.notify_one();
+                let mut wake = self.wake.clone();
+                let counts = self.counts.clone();
+                let database = self.database.clone();
+                Some(Ok(Box::pin(async move {
+                    wake.wait_for(|wake| *wake).await.map_err(|_| {
+                        ProtocolError::new(ErrorCode::InternalError, "fixture wake closed")
+                    })?;
+                    wait.blocking(move || {
+                        let active = counts.active.fetch_add(1, Ordering::SeqCst) + 1;
+                        counts.peak.fetch_max(active, Ordering::SeqCst);
+                        counts.started.fetch_add(1, Ordering::SeqCst);
+                        counts.changed.notify_one();
+                        let _active = Active(counts);
+                        database
+                            .read(|connection| {
+                                let value = connection
+                                    .query_row("SELECT 1", [], |row| row.get::<_, i32>(0))?;
+                                Ok(serde_json::json!({"value":value}))
+                            })
+                            .map_err(|_| {
+                                ProtocolError::new(ErrorCode::InternalError, "fixture read failed")
+                            })
+                    })
+                    .await
+                })))
+            }
+        }
+
+        let temporary = tempdir().unwrap();
+        let socket = temporary.path().join("daemon.sock");
+        let database = Database::open(temporary.path().join("authority")).unwrap();
+        let held = crate::request_responsiveness_tests::HeldLane::new(database.clone(), Lane::Read);
+        let counts = Arc::new(Counts {
+            prepared: AtomicUsize::new(0),
+            active: AtomicUsize::new(0),
+            peak: AtomicUsize::new(0),
+            started: AtomicUsize::new(0),
+            changed: tokio::sync::Notify::new(),
+        });
+        let (wake, receive) = watch::channel(false);
+        let app = Arc::new(App::with_executor(
+            None,
+            Arc::new(Observer {
+                database,
+                counts: counts.clone(),
+                wake: receive,
+            }),
+        ));
+        let endpoint = DaemonEndpoint::bind(&socket).await.unwrap();
+        let (shutdown, mut shutdown_rx) = watch::channel(false);
+        let socket_app = app.clone();
+        let server =
+            tokio::spawn(async move { endpoint.serve(&mut shutdown_rx, socket_app).await });
+        let deadline = (time::OffsetDateTime::now_utc() + time::Duration::seconds(2))
+            .format(&time::format_description::well_known::Rfc3339)
+            .unwrap();
+        let mut observers = Vec::new();
+        for index in 0..32 {
+            let socket = socket.clone();
+            let deadline = deadline.clone();
+            observers.push(tokio::spawn(async move {
+                timeout(Duration::from_secs(3), crate::client::call(
+                    &socket,"test.wait",serde_json::json!({"path":"/fixture","run_id":"accepted-run","deadline_at":deadline}),ClientContext::default(),
+                )).await
+            }));
+            timeout(Duration::from_secs(1), async {
+                while counts.prepared.load(Ordering::SeqCst) <= index {
+                    counts.changed.notified().await;
+                }
+            })
+            .await
+            .unwrap();
+        }
+        // All thirty-two waits are idle and admitted, while no synchronous
+        // step owns capacity until the event actually wakes them.
+        let idle = timeout(
+            Duration::from_secs(1),
+            app.wait_preparations.clone().acquire_many_owned(8),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(counts.started.load(Ordering::SeqCst), 0);
+        drop(idle);
+        wake.send_replace(true);
+        timeout(Duration::from_secs(1), async {
+            while counts.active.load(Ordering::SeqCst) != 8 {
+                counts.changed.notified().await;
+            }
+        })
+        .await
+        .unwrap();
+        for observer in observers.drain(..16) {
+            observer.abort();
+            assert!(observer.await.unwrap_err().is_cancelled());
+        }
+        let mut bounded = true;
+        for observer in observers {
+            bounded &= matches!(observer.await.unwrap(),Ok(Ok(ResponseEnvelope::Failure {error,..})) if error.code==ErrorCode::WaitDeadlineReached);
+        }
+        let retained = app.wait_preparations.available_permits() == 0
+            && counts.active.load(Ordering::SeqCst) == 8;
+        let refused = matches!(crate::client::call(
+            &socket,"test.wait",serde_json::json!({"path":"/fixture","run_id":"accepted-run","deadline_at":"2099-01-01T00:00:00Z"}),ClientContext::default(),
+        ).await.unwrap(),ResponseEnvelope::Failure {error,..} if error.code==ErrorCode::Busy);
+        let ping = timeout(
+            Duration::from_secs(1),
+            crate::client::call(
+                &socket,
+                "ping",
+                serde_json::json!({}),
+                ClientContext::default(),
+            ),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        tokio::task::spawn_blocking(move || drop(held))
+            .await
+            .unwrap();
+        let restored = timeout(
+            Duration::from_secs(2),
+            app.wait_preparations.clone().acquire_many_owned(8),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        drop(restored);
+        shutdown.send(true).unwrap();
+        timeout(Duration::from_secs(2), server)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert!(bounded && retained && refused);
+        assert_eq!(counts.active.load(Ordering::SeqCst), 0);
+        assert_eq!(counts.peak.load(Ordering::SeqCst), 8);
+        assert_eq!(
+            counts.started.load(Ordering::SeqCst),
+            8,
+            "cancelled queued observers must not leave worker backlog"
+        );
+        assert!(matches!(ping, ResponseEnvelope::Success { .. }));
     }
 
     #[tokio::test]

@@ -24109,8 +24109,8 @@
           "limit": {
             "default": null,
             "format": "uint16",
-            "maximum": 65535,
-            "minimum": 0,
+            "maximum": 50,
+            "minimum": 1,
             "type": [
               "integer",
               "null"
@@ -24145,8 +24145,8 @@
               "limit": {
                 "default": null,
                 "format": "uint16",
-                "maximum": 65535,
-                "minimum": 0,
+                "maximum": 50,
+                "minimum": 1,
                 "type": [
                   "integer",
                   "null"
@@ -28613,6 +28613,16 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "additionalProperties": false,
         "properties": {
+          "attempt": {
+            "default": null,
+            "description": "Stable component-wide process startup attempt; requires generation.",
+            "format": "uint32",
+            "minimum": 1,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
           "component": {
             "type": "string"
           },
@@ -28667,6 +28677,16 @@
             "$schema": "https://json-schema.org/draft/2020-12/schema",
             "additionalProperties": false,
             "properties": {
+              "attempt": {
+                "default": null,
+                "description": "Stable component-wide process startup attempt; requires generation.",
+                "format": "uint32",
+                "minimum": 1,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
               "component": {
                 "type": "string"
               },
@@ -28720,6 +28740,79 @@
       ],
       "name": "deployment.logs",
       "outputSchema": {
+        "$defs": {
+          "ProcessLogInfo": {
+            "additionalProperties": false,
+            "properties": {
+              "attempt": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "generation": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "max_attempts_per_generation": {
+                "format": "uint8",
+                "maximum": 255,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "max_generations": {
+                "format": "uint8",
+                "maximum": 255,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "retained_attempts": {
+                "items": {
+                  "format": "uint32",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "maxItems": 8,
+                "type": "array"
+              },
+              "retained_generations": {
+                "items": {
+                  "format": "uint32",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "maxItems": 8,
+                "type": "array"
+              },
+              "state": {
+                "$ref": "#/$defs/ProcessLogState"
+              }
+            },
+            "required": [
+              "state",
+              "retained_generations",
+              "retained_attempts",
+              "max_generations",
+              "max_attempts_per_generation"
+            ],
+            "type": "object"
+          },
+          "ProcessLogState": {
+            "enum": [
+              "available",
+              "empty",
+              "unavailable",
+              "legacy"
+            ],
+            "type": "string"
+          }
+        },
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "additionalProperties": false,
         "properties": {
@@ -28748,6 +28841,16 @@
             "type": [
               "boolean",
               "null"
+            ]
+          },
+          "process_log": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ProcessLogInfo"
+              },
+              {
+                "type": "null"
+              }
             ]
           },
           "tail": {

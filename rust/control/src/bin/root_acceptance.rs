@@ -130,6 +130,12 @@ macro_rules! ensure {
     };
 }
 
+#[path = "root_acceptance/database_lifecycle.rs"]
+mod database_lifecycle;
+#[path = "root_acceptance/deployment_diagnostics.rs"]
+mod deployment_diagnostics;
+#[path = "root_acceptance/request_responsiveness.rs"]
+mod request_responsiveness;
 #[path = "root_acceptance/storage.rs"]
 mod storage_cases;
 #[path = "root_acceptance/storage_upstream.rs"]
@@ -2458,6 +2464,13 @@ fn case_database_template_failure_cancellation_and_restart(
             json!({"path":world.repo,"test":"database"}),
             previous_run_id.as_deref(),
         )?;
+        let stage = match fault {
+            "cleanup" => "start-before-cleanup",
+            "cancel" => "start-after-cleanup-failure",
+            "restart" => "start-after-cancellation",
+            _ => unreachable!(),
+        };
+        database_lifecycle::retain_start_response(world, stage, &started)?;
         let run = test_run_id(&started)?.to_owned();
         let mut socket = await_database_case(&listener)?;
         let containers = template_containers(world)?;
@@ -2465,6 +2478,7 @@ fn case_database_template_failure_cancellation_and_restart(
             containers.len() == 1,
             "unexpected number of template instances"
         );
+        let template = database_lifecycle::assert_live_template(world, &containers[0])?;
         if fault == "cancel" {
             ensure!(
                 prior.as_ref() != containers.first(),
@@ -2524,6 +2538,11 @@ fn case_database_template_failure_cancellation_and_restart(
                     template_containers(world)?.is_empty(),
                     "restart left an unowned template or writable case"
                 );
+                let inspected = world.call("test.container.inspect", template.clone())?;
+                ensure!(
+                    data(&inspected)?["record"]["cleanup_status"] == "cleanup_complete",
+                    "restart lost the template cleanup receipt"
+                );
                 ensure!(
                     world.units()?.is_empty(),
                     "interrupted database unit survived restart"
@@ -2538,6 +2557,7 @@ fn case_database_template_failure_cancellation_and_restart(
         json!({"path":world.repo,"test":"database"}),
         previous_run_id.as_deref(),
     )?;
+    database_lifecycle::retain_start_response(world, "start-after-restart", &started)?;
     await_database_case(&listener)?
         .write_all(b"1")
         .map_err(|e| e.to_string())?;
@@ -4949,6 +4969,7 @@ fn case_exact_candidate_keeps_data_route_and_rollback(world: &mut World) -> Resu
         "remove",
         candidate.to_str().ok_or("invalid candidate path")?,
     ])?;
+    deployment_diagnostics::assert_frozen_worktree_candidate(world)?;
     Ok(())
 }
 
@@ -7351,6 +7372,18 @@ fn cases() -> Vec<Case> {
         (
             "exact_candidate_keeps_data_route_and_rollback",
             case_exact_candidate_keeps_data_route_and_rollback,
+        ),
+        (
+            "process_startup_attempts_remain_attributable_and_bounded",
+            deployment_diagnostics::case_process_startup_attempts_remain_attributable_and_bounded,
+        ),
+        (
+            "reads_survive_busy_writers_and_run_transitions",
+            request_responsiveness::reads_survive_busy_writers_and_run_transitions,
+        ),
+        (
+            "shared_database_ownership_and_recovery",
+            database_lifecycle::shared_ownership_and_recovery,
         ),
         (
             "failed_component_is_degraded_and_busy_is_immediate",

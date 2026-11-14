@@ -971,6 +971,17 @@ impl Deployments {
                 .transpose()?
                 .flatten()
                 == source_origin
+            && (candidate.is_none()
+                || row
+                    .current_generation
+                    .map(|number| self.store.generation(&target.deployment_id, number))
+                    .transpose()?
+                    .flatten()
+                    .is_some_and(|generation| {
+                        self.files
+                            .owned_generation(&target.deployment_id, &generation.path)
+                            .is_some()
+                    }))
         {
             let resolved = ResolvedDeployment {
                 row: row.clone(),
@@ -1039,14 +1050,44 @@ impl Deployments {
             .iter()
             .all(ComponentSpec::is_finite_workload)
             .then(|| self.finite_operations.begin(&target.deployment_id));
-        let generation_path =
-            match self.prepare_generation(&target, generation, snapshot.commit.as_deref()) {
-                Ok(path) => path,
+        let generation_path = match self.prepare_generation(
+            &target,
+            generation,
+            snapshot.commit.as_deref(),
+            candidate.is_some(),
+        ) {
+            Ok(path) => path,
+            Err(error) => {
+                self.restore_after_preparation_failure(&target, &old_components, &desired)?;
+                return Err(error);
+            }
+        };
+        if candidate.is_some() {
+            // Runtime configuration must come from the same committed tree as
+            // the commands and files. Reject a source edit racing preparation.
+            let retained_spec = load_deployment_spec(&generation_path, &target.specification.name)
+                .map_err(config_error)
+                .and_then(|specification| {
+                    if specification.canonical(&target.source)
+                        != target.specification.canonical(&target.source)
+                    {
+                        Err(ProtocolError::new(
+                            ErrorCode::DeploymentApplyFailed,
+                            "candidate specification changed while freezing its generation",
+                        ))
+                    } else {
+                        Ok(specification)
+                    }
+                });
+            match retained_spec {
+                Ok(specification) => target.specification = specification,
                 Err(error) => {
+                    self.remove_generation_path(&target, generation, &generation_path);
                     self.restore_after_preparation_failure(&target, &old_components, &desired)?;
                     return Err(error);
                 }
-            };
+            }
+        }
         self.store.add_generation_with_origin(
             &target.deployment_id,
             generation,
@@ -1090,12 +1131,6 @@ impl Deployments {
             .as_ref()
             .ok_or_else(|| not_found(&target.deployment_id))?;
         let _busy = self.acquire_busy(&target.deployment_id)?;
-        if target.source != "checkout" {
-            return Err(ProtocolError::new(
-                ErrorCode::RollbackUnavailable,
-                "worktree deployments keep no previous generation",
-            ));
-        }
         let previous = row.previous_generation.ok_or_else(|| {
             ProtocolError::new(
                 ErrorCode::RollbackUnavailable,
@@ -1105,7 +1140,13 @@ impl Deployments {
         let retained = self
             .store
             .generation(&target.deployment_id, previous)?
-            .filter(|generation| generation.path.is_dir())
+            .filter(|generation| {
+                generation.path.is_dir()
+                    && self
+                        .files
+                        .owned_generation(&target.deployment_id, &generation.path)
+                        .is_some()
+            })
             .ok_or_else(|| {
                 ProtocolError::new(
                     ErrorCode::RollbackUnavailable,
@@ -1305,10 +1346,25 @@ impl Deployments {
     ) -> Result<DeploymentLog, ProtocolError> {
         let component = params.component.as_str();
         let generation = params.generation;
+        let attempt = params.attempt;
+        let selected = generation.is_some() || attempt.is_some();
+        if attempt.is_some() && generation.is_none() || generation == Some(0) || attempt == Some(0)
+        {
+            return Err(ProtocolError::new(
+                ErrorCode::ParamsInvalid,
+                "a positive process attempt requires a positive generation",
+            ));
+        }
         let tail_lines = params.tail_lines;
         if let Some(deployment_id) = params.deployment_id.as_deref()
             && self.store.observed_exists(deployment_id)?
         {
+            if selected {
+                return Err(ProtocolError::new(
+                    ErrorCode::ParamsInvalid,
+                    "observed container logs have no process generation or attempt selector",
+                ));
+            }
             return self.observed_logs(deployment_id, component, tail_lines);
         }
         let target = self.resolve_target(
@@ -1322,11 +1378,18 @@ impl Deployments {
             .as_ref()
             .ok_or_else(|| not_found(&target.deployment_id))?;
         if component == "build" {
+            if selected {
+                return Err(ProtocolError::new(
+                    ErrorCode::ParamsInvalid,
+                    "build logs have no process generation or attempt selector",
+                ));
+            }
             let (tail, truncated) = self
                 .files
                 .read_log_tail(&target.deployment_id, component, tail_lines)
                 .map_err(file_action_error)?;
             return Ok(DeploymentLog {
+                process_log: None,
                 deployment_id: Some(target.deployment_id),
                 component: component.into(),
                 tail,
@@ -1336,23 +1399,39 @@ impl Deployments {
                 observed_only: Some(false),
             });
         }
-        let specification = target.specification.component(component).ok_or_else(|| {
-            ProtocolError::new(
-                ErrorCode::ParamsInvalid,
-                format!("no component {component:?}"),
-            )
-        })?;
+        let specification = target.specification.component(component);
         let stored = self
             .store
             .components(&target.deployment_id)?
             .into_iter()
-            .find(|stored| stored.name == component)
-            .ok_or_else(|| {
-                ProtocolError::new(
-                    ErrorCode::ParamsInvalid,
-                    format!("no component {component:?}"),
-                )
-            })?;
+            .find(|stored| stored.name == component);
+        let (Some(specification), Some(stored)) = (specification, stored) else {
+            if let Some(generation) = generation {
+                return self
+                    .process_log(&target, component, generation, attempt, tail_lines, false);
+            }
+            return Err(ProtocolError::new(
+                ErrorCode::ParamsInvalid,
+                format!("no component {component:?}"),
+            ));
+        };
+        if selected && specification.kind != ComponentKind::Process {
+            if let Some(generation) = generation {
+                let archived =
+                    self.process_log(&target, component, generation, attempt, tail_lines, false)?;
+                if archived
+                    .process_log
+                    .as_ref()
+                    .is_some_and(|info| info.retained_generations.contains(&generation))
+                {
+                    return Ok(archived);
+                }
+            }
+            return Err(ProtocolError::new(
+                ErrorCode::ParamsInvalid,
+                "generation and attempt selectors apply only to process logs",
+            ));
+        }
         match (
             specification.kind,
             stored.binding_kind.as_deref(),
@@ -1368,33 +1447,14 @@ impl Deployments {
                             "process component has no generation-bound log",
                         )
                     })?;
-                let (mut tail, mut truncated) = self
-                    .files
-                    .read_generation_log_tail(
-                        &target.deployment_id,
-                        component,
-                        selected_generation,
-                        tail_lines,
-                    )
-                    .map_err(file_action_error)?;
-                // Deployments created before generation-bound process logs may
-                // still have the legacy component log. Keep reads compatible
-                // while every new attempt is isolated by generation.
-                if tail.is_empty() && !truncated {
-                    (tail, truncated) = self
-                        .files
-                        .read_log_tail(&target.deployment_id, component, tail_lines)
-                        .map_err(file_action_error)?;
-                }
-                Ok(DeploymentLog {
-                    deployment_id: Some(target.deployment_id),
-                    component: component.into(),
-                    tail,
-                    truncated_before_tail: Some(truncated),
-                    log_path: None,
-                    container_id: None,
-                    observed_only: Some(false),
-                })
+                self.process_log(
+                    &target,
+                    component,
+                    selected_generation,
+                    attempt,
+                    tail_lines,
+                    !selected,
+                )
             }
             (_, Some("container"), Some(identity)) => {
                 let identity = ExactContainerId::parse(identity.to_owned()).map_err(|_| {
@@ -1404,6 +1464,7 @@ impl Deployments {
                     )
                 })?;
                 Ok(DeploymentLog {
+                    process_log: None,
                     deployment_id: Some(target.deployment_id),
                     component: component.into(),
                     tail: self
@@ -1426,6 +1487,7 @@ impl Deployments {
                     self.compose_context(&target, specification, &path, generation)?;
                 context.project = project.to_owned();
                 Ok(DeploymentLog {
+                    process_log: None,
                     deployment_id: Some(target.deployment_id),
                     component: component.into(),
                     tail: self
@@ -1439,6 +1501,7 @@ impl Deployments {
                 })
             }
             _ => Ok(DeploymentLog {
+                process_log: None,
                 deployment_id: Some(target.deployment_id),
                 component: component.into(),
                 tail: String::new(),
@@ -1448,6 +1511,39 @@ impl Deployments {
                 observed_only: Some(false),
             }),
         }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn process_log(
+        &self,
+        target: &DeploymentTarget,
+        component: &str,
+        generation: u32,
+        attempt: Option<u32>,
+        tail_lines: u16,
+        allow_legacy: bool,
+    ) -> Result<DeploymentLog, ProtocolError> {
+        let (tail, truncated, info) = self
+            .files
+            .read_process_log(
+                &target.deployment_id,
+                component,
+                generation,
+                attempt,
+                tail_lines,
+                allow_legacy,
+            )
+            .map_err(file_action_error)?;
+        Ok(DeploymentLog {
+            deployment_id: Some(target.deployment_id.clone()),
+            component: component.into(),
+            tail,
+            truncated_before_tail: Some(truncated),
+            log_path: None,
+            container_id: None,
+            observed_only: Some(false),
+            process_log: Some(info),
+        })
     }
 
     pub fn remove(
@@ -1697,6 +1793,7 @@ impl Deployments {
             );
         }
         Ok(DeploymentLog {
+            process_log: None,
             deployment_id: Some(deployment_id.into()),
             component: component.into(),
             tail: truncate_tail(&tails.join("\n"), 65_536),
@@ -2355,9 +2452,6 @@ impl Deployments {
                     "deployment generation counter is exhausted",
                 )
             })?;
-            if target.source != "checkout" {
-                return Ok(last);
-            }
             let path = self
                 .files
                 .generation_path(&target.deployment_id, last)
@@ -2380,11 +2474,12 @@ impl Deployments {
         target: &DeploymentTarget,
         generation: u32,
         commit: Option<&str>,
+        freeze_source: bool,
     ) -> Result<PathBuf, ProtocolError> {
         self.files
             .ensure_layout(&target.deployment_id, target.caller_uid, target.caller_gid)
             .map_err(file_apply_error)?;
-        if target.source == "worktree" {
+        if target.source == "worktree" && !freeze_source {
             return Ok(target.worktree.clone());
         }
         let commit = commit.ok_or_else(|| {
@@ -2417,9 +2512,6 @@ impl Deployments {
     }
 
     fn remove_generation_path(&self, target: &DeploymentTarget, generation: u32, path: &Path) {
-        if target.source != "checkout" {
-            return;
-        }
         let Ok(expected) = self
             .files
             .generation_path(&target.deployment_id, generation)
@@ -2441,22 +2533,7 @@ impl Deployments {
     }
 
     fn remove_recorded_generation_path(&self, target: &DeploymentTarget, path: &Path) {
-        if target.source != "checkout" {
-            return;
-        }
-        let Ok(directory) = self.files.deployment_dir(&target.deployment_id) else {
-            return;
-        };
-        if path.parent() != Some(directory.as_path()) {
-            return;
-        }
-        let Some(generation) = path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .and_then(|name| name.strip_prefix("gen-"))
-            .and_then(|number| number.parse::<u32>().ok())
-            .filter(|number| *number > 0)
-        else {
+        let Some(generation) = self.files.owned_generation(&target.deployment_id, path) else {
             return;
         };
         let _ =
@@ -2987,6 +3064,16 @@ impl Deployments {
         }
 
         let previous = target.row.as_ref().and_then(|row| row.current_generation);
+        let retained_previous = previous
+            .map(|number| self.store.generation(&target.deployment_id, number))
+            .transpose()?
+            .flatten()
+            .filter(|row| {
+                self.files
+                    .owned_generation(&target.deployment_id, &row.path)
+                    .is_some()
+            })
+            .map(|row| row.number);
         self.retire_previous(
             target,
             old_components,
@@ -2995,9 +3082,7 @@ impl Deployments {
             generation_path,
         );
         let mut keep = BTreeSet::from([generation]);
-        if target.source == "checkout"
-            && let Some(previous) = previous
-        {
+        if let Some(previous) = retained_previous {
             keep.insert(previous);
         }
         let protected_paths = self
@@ -3012,17 +3097,9 @@ impl Deployments {
                 self.remove_recorded_generation_path(target, &stale.path);
             }
         }
-        if target.source != "checkout"
-            && let Some(previous) = previous
-        {
-            crate::ports::release(&self.database, &target.deployment_id, Some(previous), None)
-                .map_err(runtime_error)?;
-        }
         self.store
             .set_generation_state(&target.deployment_id, generation, "current")?;
-        if target.source == "checkout"
-            && let Some(previous) = previous
-        {
+        if let Some(previous) = retained_previous {
             self.store
                 .set_generation_state(&target.deployment_id, previous, "previous")?;
         }
@@ -3044,11 +3121,7 @@ impl Deployments {
                     .into(),
                 ),
                 current_generation: Some(Some(generation)),
-                previous_generation: Some(if target.source == "checkout" {
-                    previous
-                } else {
-                    None
-                }),
+                previous_generation: Some(retained_previous),
                 ..Default::default()
             },
         )?;
@@ -3317,9 +3390,7 @@ impl Deployments {
                 let _ = self.docker.remove_container(&identity, false);
             }
         }
-        if target.source == "checkout"
-            && let Some(previous) = previous
-        {
+        if let Some(previous) = previous {
             let _ =
                 crate::ports::release(&self.database, &target.deployment_id, Some(previous), None);
         }
@@ -3480,7 +3551,13 @@ impl Deployments {
                 }
                 let log_path = self
                     .files
-                    .generation_log_path(&target.deployment_id, &component.name, generation)
+                    .reserve_process_log(
+                        &target.deployment_id,
+                        &component.name,
+                        generation,
+                        target.caller_uid,
+                        target.caller_gid,
+                    )
                     .map_err(file_apply_error)?;
                 self.systemd
                     .start_persistent(&PersistentUnitSpec {
@@ -6959,6 +7036,7 @@ image="cache:2"
         let logs = deployments
             .logs(
                 DeploymentLogsParams {
+                    attempt: None,
                     path: None,
                     name: None,
                     deployment_id: Some(deployment_id.clone()),
@@ -7213,6 +7291,7 @@ command=["serve"]
         let build_log = deployments
             .logs(
                 DeploymentLogsParams {
+                    attempt: None,
                     path: None,
                     name: None,
                     deployment_id: Some(first.deployment_id.clone()),
@@ -7228,6 +7307,7 @@ command=["serve"]
         let process_log = deployments
             .logs(
                 DeploymentLogsParams {
+                    attempt: None,
                     path: None,
                     name: None,
                     deployment_id: Some(first.deployment_id.clone()),
@@ -7597,6 +7677,7 @@ route=true
         let logs = deployments
             .logs(
                 DeploymentLogsParams {
+                    attempt: None,
                     path: None,
                     name: None,
                     deployment_id: Some(applied.deployment_id.clone()),
@@ -7637,6 +7718,7 @@ route=true
         let logs = deployments
             .logs(
                 DeploymentLogsParams {
+                    attempt: None,
                     path: None,
                     name: None,
                     deployment_id: Some(applied.deployment_id.clone()),

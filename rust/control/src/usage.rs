@@ -227,6 +227,11 @@ impl UsageService {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn binding_capture_failed(&self, uid: u32, repository: &str) -> bool {
+        self.usage.binding_capture_failed(uid, repository)
+    }
+
     pub fn new(config: Config, database: Database, registry: Registry) -> Self {
         Self::with_clock(config, database, registry, Arc::new(HostClock))
     }
@@ -538,6 +543,12 @@ impl UsageService {
 }
 
 impl CodexUsage {
+    pub(crate) fn binding_capture_failed(&self, uid: u32, repository: &str) -> bool {
+        self.binding_failures.lock().map_or(true, |failures| {
+            failures.contains(&(uid, repository.to_owned()))
+        })
+    }
+
     pub fn new(config: Config, authority: Database) -> Self {
         Self::with_clock(config, authority, Arc::new(HostClock))
     }

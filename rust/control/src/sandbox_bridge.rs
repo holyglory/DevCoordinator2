@@ -425,6 +425,7 @@ mod tests {
             operation: &str,
             _: Value,
             _: &crate::access::Caller,
+            _: crate::daemon::WaitContext,
         ) -> Option<Result<crate::daemon::DeferredOperation, ProtocolError>> {
             assert_eq!(operation, "event.wait");
             self.0.notify_one();

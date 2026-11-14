@@ -678,6 +678,53 @@ mod tests {
             }
             runs.push((run_id, run_dir));
         }
+        // Ownership follows the same run retention only after exact cleanup
+        // is complete. Failed/pending work and a live lease survive its logs.
+        let store = crate::test_state::TestRunStore;
+        let mut container_leases = Vec::new();
+        for (index, status) in [
+            (1, "cleanup_complete"),
+            (2, "cleanup_pending"),
+            (3, "cleanup_failed"),
+            (4, "cleanup_complete"),
+        ] {
+            let run_id = &runs[index].0;
+            let directory = store
+                .open_container_run(
+                    &worktree,
+                    run_id,
+                    Some((
+                        rustix::process::getuid().as_raw(),
+                        rustix::process::getgid().as_raw(),
+                    )),
+                )
+                .unwrap()
+                .unwrap();
+            let record = serde_json::from_value(serde_json::json!({
+                "container_id":"d".repeat(64),"name":"owned-fixture","run_id":run_id,"check":"postgres",
+                "repository_id":"r1111111111111111","worktree_id":"w1111111111111111","owner_token":"fixture-owner",
+                "labels":{},"image":"postgres:16-alpine","command":[],"created_at":"2026-09-03T12:00:00Z","cleanup_status":status
+            })).unwrap();
+            store
+                .write_container_records(
+                    &directory,
+                    &[record],
+                    rustix::process::getuid().as_raw(),
+                    rustix::process::getgid().as_raw(),
+                )
+                .unwrap();
+            if index == 4 {
+                container_leases.push(
+                    store
+                        .container_lease(&directory, "fixture-owner", true)
+                        .unwrap()
+                        .unwrap(),
+                );
+            }
+            store
+                .archive_container_run(&worktree, run_id, &directory)
+                .unwrap();
+        }
         // An unfinished feedback task protects an old run without loading the
         // historical feedback or delivery catalog into this maintenance page.
         database.transaction(|tx|{
@@ -759,6 +806,61 @@ mod tests {
             })
             .unwrap();
         assert_eq!((projection, jobs, receipts), (5, 17, 17));
+        assert!(
+            store
+                .open_container_run(&worktree, &runs[1].0, None)
+                .unwrap()
+                .is_none()
+        );
+        for index in [2, 3, 4] {
+            assert!(
+                store
+                    .open_container_run(&worktree, &runs[index].0, None)
+                    .unwrap()
+                    .is_some(),
+                "unfinished ownership for run {index} must survive expired log payloads"
+            );
+        }
+        assert_eq!(
+            store.container_runs(&worktree).unwrap().len(),
+            3,
+            "startup enumerates only pending ownership, not completed history"
+        );
+        {
+            let directory = store
+                .open_container_run(&worktree, &runs[2].0, None)
+                .unwrap()
+                .unwrap();
+            let mut records = store.read_container_records(&directory).unwrap();
+            records[0].cleanup_status =
+                devcoordinator2_api::test_containers::ContainerCleanupStatus::Complete;
+            store
+                .write_container_records(
+                    &directory,
+                    &records,
+                    rustix::process::getuid().as_raw(),
+                    rustix::process::getgid().as_raw(),
+                )
+                .unwrap();
+            store
+                .archive_container_run(&worktree, &runs[2].0, &directory)
+                .unwrap();
+        }
+        assert!(
+            store
+                .open_container_run(&worktree, &runs[2].0, None)
+                .unwrap()
+                .is_none(),
+            "late cleanup must expire even when the old run's metadata directory still exists"
+        );
+        drop(container_leases);
+        crate::storage::evidence::record_run_expired(&database, &worktree, &runs[4].0).unwrap();
+        assert!(
+            store
+                .open_container_run(&worktree, &runs[4].0, None)
+                .unwrap()
+                .is_none()
+        );
         let protected = crate::storage::evidence::published_run(&database, &worktree, &runs[0].0)
             .unwrap()
             .unwrap();

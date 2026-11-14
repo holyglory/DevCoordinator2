@@ -887,6 +887,10 @@ deployment_params!(DeploymentLogs {
     #[serde(default)]
     #[schemars(range(min = 1))]
     pub generation: Option<u32>,
+    /// Stable component-wide process startup attempt; requires generation.
+    #[serde(default)]
+    #[schemars(range(min = 1))]
+    pub attempt: Option<u32>,
     #[serde(default = "default_deployment_tail")]
     #[schemars(range(min = 1, max = 5000))]
     pub tail_lines: u16,
@@ -1703,6 +1707,10 @@ mod tests {
         let catalog: LogCatalog = serde_json::from_value(serde_json::json!({"path": "/x"}))
             .expect("catalog may enumerate without phase or stream");
         assert!(catalog.phase.is_none() && catalog.stream.is_none());
+        let listing = crate::operation_schema("test.list").unwrap();
+        let limit = &listing["inputSchema"]["properties"]["limit"];
+        assert_eq!(limit["minimum"], 1);
+        assert_eq!(limit["maximum"], 50);
     }
 
     #[test]
@@ -1735,6 +1743,7 @@ pub struct TestList {
     #[serde(default)]
     pub after_worktree_id: Option<String>,
     #[serde(default)]
+    #[schemars(range(min = 1, max = 50))]
     pub limit: Option<u16>,
 }
 

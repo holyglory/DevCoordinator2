@@ -254,6 +254,46 @@ impl Registry {
         }
     }
 
+    /// Read one already registered worktree without invoking Git or updating
+    /// last-seen timestamps. This lookup does not authorize code execution.
+    pub(crate) fn registered_worktree(
+        &self,
+        path: &Path,
+    ) -> Result<Option<RegisteredRepository>, ProtocolError> {
+        validate_absolute_path(path)?;
+        let path = path_text(path)?;
+        let found = self.database.read(move |connection| {
+            connection.query_row(
+                "SELECT r.repository_id,r.root_path,r.display_name,w.worktree_id,w.worktree_path,r.archived_at,r.merged_into_repository_id FROM worktrees w JOIN repositories r USING(repository_id) WHERE w.worktree_path=$1",
+                [path],
+                |row| Ok((RegisteredRepository {
+                    repository_id: row.get(0)?,
+                    root_path: row.get(1)?,
+                    display_name: row.get(2)?,
+                    worktree_id: row.get(3)?,
+                    worktree_path: row.get(4)?,
+                    registered: false,
+                }, row.get::<_, Option<String>>(5)?, row.get::<_, Option<String>>(6)?)),
+            ).optional().map_err(DatabaseError::from)
+        }).map_err(database_error)?;
+        let Some((registered, archived, replacement)) = found else {
+            return Ok(None);
+        };
+        if archived.is_some() {
+            let suffix = replacement
+                .map(|id| format!("; use {id}"))
+                .unwrap_or_default();
+            return Err(ProtocolError::new(
+                ErrorCode::RepositoryArchived,
+                format!(
+                    "repository {} is archived{suffix}",
+                    registered.repository_id
+                ),
+            ));
+        }
+        Ok(Some(registered))
+    }
+
     pub fn list_repositories(
         &self,
         include_archived: bool,

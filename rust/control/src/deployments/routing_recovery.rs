@@ -201,10 +201,6 @@ pub(crate) fn restore_route(
         .files
         .environment_path(deployment_id, &component_name, generation)
         .map_err(file_apply_error)?;
-    let log_path = deployments
-        .files
-        .generation_log_path(deployment_id, &component_name, generation)
-        .map_err(file_apply_error)?;
     let working_directory = generation_path
         .join(&saved.cwd)
         .canonicalize()
@@ -219,6 +215,16 @@ pub(crate) fn restore_route(
         return Ok(Recovery::NotApplicable);
     }
     if state.active_state != "active" {
+        let log_path = deployments
+            .files
+            .reserve_process_log(
+                deployment_id,
+                &component_name,
+                generation,
+                row.created_by_uid,
+                primary_gid(row.created_by_uid).map_err(systemd_error)?,
+            )
+            .map_err(file_apply_error)?;
         deployments
             .systemd
             .start_persistent(&PersistentUnitSpec {

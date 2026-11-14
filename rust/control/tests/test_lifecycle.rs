@@ -129,10 +129,18 @@ impl DockerControl for FixtureDocker {
     }
 }
 
+type RemovalGate = Arc<(Mutex<(bool, bool)>, Condvar)>;
+
 struct PostgresDocker {
     removed: AtomicU64,
     provisioned: AtomicU64,
     present: AtomicBool,
+    labels: Mutex<BTreeMap<String, String>>,
+    name: Mutex<String>,
+    fail_remove: AtomicBool,
+    timeout_after_remove: AtomicBool,
+    reused_name: AtomicBool,
+    removal_gate: Mutex<Option<RemovalGate>>,
 }
 
 impl PostgresDocker {
@@ -141,6 +149,12 @@ impl PostgresDocker {
             removed: AtomicU64::new(0),
             provisioned: AtomicU64::new(0),
             present: AtomicBool::new(false),
+            labels: Mutex::new(BTreeMap::new()),
+            name: Mutex::new(String::new()),
+            fail_remove: AtomicBool::new(false),
+            timeout_after_remove: AtomicBool::new(false),
+            reused_name: AtomicBool::new(false),
+            removal_gate: Mutex::new(None),
         }
     }
 }
@@ -190,6 +204,12 @@ impl DockerControl for PostgresDocker {
         );
         assert_eq!(request.label_context.purpose, "test");
         assert_eq!(request.label_context.data_class, "disposable");
+        *self.labels.lock().unwrap() = devcoordinator2_control::docker::managed_labels(
+            &request.label_context,
+            &BTreeMap::new(),
+        )
+        .unwrap();
+        *self.name.lock().unwrap() = request.name.clone();
         self.provisioned.fetch_add(1, Ordering::SeqCst);
         self.present.store(true, Ordering::SeqCst);
         ExactContainerId::parse("d".repeat(64))
@@ -242,7 +262,18 @@ impl DockerControl for PostgresDocker {
     }
 
     fn container_name_present(&self, _name: &str) -> Result<bool, DockerError> {
-        Ok(self.present.load(Ordering::SeqCst))
+        Ok(self.present.load(Ordering::SeqCst) || self.reused_name.load(Ordering::SeqCst))
+    }
+
+    fn inspect(&self, container_id: &ExactContainerId) -> Result<serde_json::Value, DockerError> {
+        if !self.present.load(Ordering::SeqCst) {
+            return Err(DockerError::Command("No such container".into()));
+        }
+        Ok(serde_json::json!({
+            "Id": container_id.as_str(), "Name": format!("/{}", self.name.lock().unwrap()),
+            "Config": {"Image":"postgres:18", "Labels": *self.labels.lock().unwrap()},
+            "State": {"Status":"running", "ExitCode":0}
+        }))
     }
 
     fn remove_container(
@@ -252,7 +283,23 @@ impl DockerControl for PostgresDocker {
     ) -> Result<(), DockerError> {
         assert!(delete_volumes);
         self.removed.fetch_add(1, Ordering::SeqCst);
+        if let Some(gate) = self.removal_gate.lock().unwrap().clone() {
+            let mut state = gate.0.lock().unwrap();
+            state.0 = true;
+            gate.1.notify_all();
+            drop(gate.1.wait_while(state, |state| !state.1).unwrap());
+        }
+        if self.fail_remove.load(Ordering::SeqCst) {
+            return Err(DockerError::Command(
+                "permission denied during fixture removal".into(),
+            ));
+        }
         self.present.store(false, Ordering::SeqCst);
+        if self.timeout_after_remove.swap(false, Ordering::SeqCst) {
+            return Err(DockerError::Timeout {
+                operation: "rm".into(),
+            });
+        }
         Ok(())
     }
 }
@@ -619,6 +666,8 @@ impl SystemdControl for FixtureSystemd {
 
 struct LifecycleWorld {
     capacity: CapacityBroker,
+    database: Database,
+    containers: devcoordinator2_control::test_containers::TestContainerService,
     _temporary: tempfile::TempDir,
     worktree: PathBuf,
     lifecycle: TestLifecycle,
@@ -731,9 +780,15 @@ command=["true"]
         let logs = TestLogService::new(database.clone(), registry.clone());
         let systemd = Arc::new(FixtureSystemd::new());
         let monotonic = Arc::new(FixtureMonotonic::new());
+        let containers = devcoordinator2_control::test_containers::TestContainerService::new(
+            &config,
+            database.clone(),
+            docker.clone(),
+            Arc::new(FixtureClock),
+        );
         let lifecycle = TestLifecycle::with_adapters(
             config,
-            database,
+            database.clone(),
             registry,
             capacity.clone(),
             logs,
@@ -770,6 +825,8 @@ command=["true"]
         assert_ne!(caller.uid, 0, "lifecycle fixture requires non-root caller");
         Self {
             capacity,
+            database,
+            containers,
             _temporary: temporary,
             worktree,
             lifecycle,
@@ -1080,6 +1137,32 @@ fn public_run_history_uses_exact_registration_without_edge_git_access() {
 #[test]
 fn current_run_pages_bound_large_reports_and_keep_every_worktree_discoverable() {
     let world = LifecycleWorld::new();
+    let schema = devcoordinator2_api::operation_schema("test.list").unwrap();
+    let bounds = &schema["inputSchema"]["properties"]["limit"];
+    for limit in [1, 50] {
+        world
+            .lifecycle
+            .list_current_page(devcoordinator2_api::params::TestList {
+                limit: Some(limit),
+                ..Default::default()
+            })
+            .expect("published page boundary is accepted by the handler");
+    }
+    for limit in [0, 51, u16::MAX] {
+        assert_eq!(
+            world
+                .lifecycle
+                .list_current_page(devcoordinator2_api::params::TestList {
+                    limit: Some(limit),
+                    ..Default::default()
+                })
+                .unwrap_err()
+                .code,
+            ErrorCode::ParamsInvalid
+        );
+    }
+    assert_eq!(bounds["minimum"], 1, "schema must match the handler");
+    assert_eq!(bounds["maximum"], 50, "schema must match the handler");
     let first = world.start();
     world.systemd.finish(&first.unit);
     let mut summary = world.wait_status(TestStatus::Passed);
@@ -2455,6 +2538,12 @@ database="app_test"
     let logs = TestLogService::new(database.clone(), registry.clone());
     let systemd = Arc::new(FixtureSystemd::new());
     let docker = Arc::new(PostgresDocker::new());
+    let containers = devcoordinator2_control::test_containers::TestContainerService::new(
+        &config,
+        database.clone(),
+        docker.clone(),
+        Arc::new(FixtureClock),
+    );
     let lifecycle = TestLifecycle::with_adapters(
         config,
         database,
@@ -2554,6 +2643,386 @@ database="app_test"
         TestStatus::Passed
     );
     assert_eq!(docker.removed.load(Ordering::SeqCst), 1);
+    let result = containers
+        .inspect(
+            devcoordinator2_api::test_containers::ContainerReference {
+                path: worktree.to_string_lossy().into_owned(),
+                run_id: started.run_id.clone(),
+                check: docker.labels.lock().unwrap()["devcoordinator2.check"].clone(),
+                container_id: "d".repeat(64),
+            },
+            &caller,
+        )
+        .expect(
+            "shared fixture ownership must remain inspectable through the supported container API",
+        );
+    assert_eq!(
+        result.record.cleanup_status,
+        devcoordinator2_api::test_containers::ContainerCleanupStatus::Complete,
+    );
+}
+
+fn shared_postgres_world(docker: Arc<PostgresDocker>) -> LifecycleWorld {
+    let world = LifecycleWorld::with_docker(docker);
+    let path = world.worktree.join(".devcoordinator.toml");
+    let mut config = std::fs::read_to_string(&path).unwrap();
+    config.push_str(
+        "\n[test.all.postgres]\nimage=\"postgres:18\"\nuser=\"app\"\ndatabase=\"app_test\"\n",
+    );
+    std::fs::write(path, config).unwrap();
+    world
+}
+
+fn shared_postgres_reference(
+    world: &LifecycleWorld,
+    docker: &PostgresDocker,
+    run: &TestStarted,
+) -> devcoordinator2_api::test_containers::ContainerReference {
+    devcoordinator2_api::test_containers::ContainerReference {
+        path: world.worktree.to_string_lossy().into_owned(),
+        run_id: run.run_id.clone(),
+        check: docker.labels.lock().unwrap()["devcoordinator2.check"].clone(),
+        container_id: "d".repeat(64),
+    }
+}
+
+#[test]
+fn shared_postgres_timeout_after_delete_proves_absence_and_keeps_an_idempotent_receipt() {
+    use devcoordinator2_api::test_containers::ContainerCleanupStatus;
+    let docker = Arc::new(PostgresDocker::new());
+    let world = shared_postgres_world(docker.clone());
+    let started = world.start();
+    execute_admitted_database_setup(&world.capacity, &started, &world.worktree);
+    let reference = shared_postgres_reference(&world, &docker, &started);
+    assert!(
+        world
+            .containers
+            .inspect(reference.clone(), &world.caller)
+            .unwrap()
+            .inspection
+            .is_some()
+    );
+    assert!(
+        world
+            .containers
+            .retry(reference.clone(), &world.caller)
+            .is_err(),
+        "a live fixture lease must protect its container"
+    );
+    assert_eq!(docker.removed.load(Ordering::SeqCst), 0);
+    docker.timeout_after_remove.store(true, Ordering::SeqCst);
+    world.systemd.finish(&started.unit);
+    let summary = world.wait_status(TestStatus::Passed);
+    assert_eq!(
+        summary.container_cleanup_status,
+        Some(ContainerCleanupStatus::Complete)
+    );
+    let receipt = world
+        .containers
+        .inspect(reference.clone(), &world.caller)
+        .unwrap()
+        .record;
+    assert_eq!(receipt.cleanup_status, ContainerCleanupStatus::Complete);
+    assert_eq!(receipt.cleanup_attempts.len(), 1);
+    assert!(
+        receipt.cleanup_attempts[0]
+            .stderr
+            .as_ref()
+            .unwrap()
+            .contains("TimedOut")
+    );
+    assert!(
+        !serde_json::to_string(&receipt)
+            .unwrap()
+            .contains("POSTGRES_PASSWORD")
+    );
+    let repeated = world
+        .containers
+        .retry(reference, &world.caller)
+        .unwrap()
+        .record;
+    assert_eq!(repeated, receipt);
+    assert_eq!(docker.removed.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn shared_postgres_failed_cleanup_survives_replacement_and_refuses_a_reused_name() {
+    use devcoordinator2_api::test_containers::ContainerCleanupStatus;
+    let docker = Arc::new(PostgresDocker::new());
+    let world = shared_postgres_world(docker.clone());
+    let started = world.start();
+    execute_admitted_database_setup(&world.capacity, &started, &world.worktree);
+    let reference = shared_postgres_reference(&world, &docker, &started);
+    docker.fail_remove.store(true, Ordering::SeqCst);
+    world.systemd.finish(&started.unit);
+    let summary = world.wait_status(TestStatus::Failed);
+    assert_eq!(
+        summary.container_cleanup_status,
+        Some(ContainerCleanupStatus::Failed)
+    );
+    let failed = world
+        .containers
+        .inspect(reference.clone(), &world.caller)
+        .unwrap();
+    assert!(failed.inspection.is_some());
+    assert_eq!(failed.record.cleanup_status, ContainerCleanupStatus::Failed);
+
+    let replacement = world.start();
+    assert_ne!(replacement.run_id, started.run_id);
+    assert_eq!(
+        world
+            .containers
+            .inspect(reference.clone(), &world.caller)
+            .unwrap()
+            .record,
+        failed.record,
+        "replacing current must not erase ownership or its failed receipt"
+    );
+    docker.fail_remove.store(false, Ordering::SeqCst);
+    docker.reused_name.store(true, Ordering::SeqCst);
+    let reused = world
+        .containers
+        .retry(reference.clone(), &world.caller)
+        .unwrap();
+    assert_ne!(
+        reused.record.cleanup_status,
+        ContainerCleanupStatus::Complete
+    );
+    assert!(
+        reused.inspection.is_none(),
+        "the exact ID is absent even though its old name was reused"
+    );
+    docker.reused_name.store(false, Ordering::SeqCst);
+    let cleaned = world
+        .containers
+        .retry(reference.clone(), &world.caller)
+        .unwrap()
+        .record;
+    assert_eq!(cleaned.cleanup_status, ContainerCleanupStatus::Complete);
+    assert!(cleaned.cleanup_attempts.len() > failed.record.cleanup_attempts.len());
+    let attempts = docker.removed.load(Ordering::SeqCst);
+    assert_eq!(
+        world
+            .containers
+            .retry(reference, &world.caller)
+            .unwrap()
+            .record,
+        cleaned
+    );
+    assert_eq!(docker.removed.load(Ordering::SeqCst), attempts);
+    world.systemd.finish(&replacement.unit);
+    world.wait_status(TestStatus::Passed);
+}
+
+#[test]
+fn shared_postgres_restart_recovers_failed_cleanup_without_pool_memory() {
+    use devcoordinator2_api::test_containers::ContainerCleanupStatus;
+    let docker = Arc::new(PostgresDocker::new());
+    let world = shared_postgres_world(docker.clone());
+    let started = world.start();
+    execute_admitted_database_setup(&world.capacity, &started, &world.worktree);
+    let reference = shared_postgres_reference(&world, &docker, &started);
+    docker.fail_remove.store(true, Ordering::SeqCst);
+    world.systemd.finish(&started.unit);
+    world.wait_status(TestStatus::Failed);
+    docker.fail_remove.store(false, Ordering::SeqCst);
+    world.lifecycle.recover().unwrap();
+    let record = world
+        .containers
+        .inspect(reference, &world.caller)
+        .unwrap()
+        .record;
+    assert_eq!(record.cleanup_status, ContainerCleanupStatus::Complete);
+    assert!(!docker.present.load(Ordering::SeqCst));
+    assert_eq!(
+        world
+            .lifecycle
+            .status(world.worktree.to_str().unwrap(), &world.caller)
+            .unwrap()
+            .status,
+        TestStatus::Failed,
+        "cleanup recovery must preserve the original failed run result"
+    );
+}
+
+#[test]
+fn shared_postgres_inspection_stays_available_while_docker_cleanup_is_stalled() {
+    let docker = Arc::new(PostgresDocker::new());
+    let world = shared_postgres_world(docker.clone());
+    let started = world.start();
+    execute_admitted_database_setup(&world.capacity, &started, &world.worktree);
+    let reference = shared_postgres_reference(&world, &docker, &started);
+    let gate = Arc::new((Mutex::new((false, false)), Condvar::new()));
+    *docker.removal_gate.lock().unwrap() = Some(gate.clone());
+    world.systemd.finish(&started.unit);
+    let state = gate.0.lock().unwrap();
+    let (state, timeout) = gate
+        .1
+        .wait_timeout_while(state, Duration::from_secs(3), |state| !state.0)
+        .unwrap();
+    assert!(
+        !timeout.timed_out(),
+        "cleanup did not reach the Docker boundary"
+    );
+    drop(state);
+    let service = world.containers.clone();
+    let caller = world.caller.clone();
+    let (sent, received) = std::sync::mpsc::channel();
+    let inspection = std::thread::spawn(move || {
+        let _ = sent.send(service.inspect(reference, &caller));
+    });
+    let result = received.recv_timeout(Duration::from_secs(2));
+    // Always release the disposable Docker fixture, including a failed check.
+    gate.0.lock().unwrap().1 = true;
+    gate.1.notify_all();
+    inspection.join().unwrap();
+    let result = result
+        .expect("a stalled Docker removal must not hold the metadata lock")
+        .unwrap();
+    assert!(result.inspection.is_some());
+    world.wait_status(TestStatus::Passed);
+}
+
+#[test]
+fn shared_postgres_legacy_recovery_requires_the_retained_id_and_exact_fixture_binding() {
+    let docker = Arc::new(PostgresDocker::new());
+    let world = shared_postgres_world(docker.clone());
+    let started = world.start();
+    execute_admitted_database_setup(&world.capacity, &started, &world.worktree);
+    let reference = shared_postgres_reference(&world, &docker, &started);
+    let path = world
+        .worktree
+        .join(".devcoordinator/test/containers/pending")
+        .join(&started.run_id)
+        .join("container-lifecycle.json");
+    std::fs::remove_file(path).unwrap();
+    let mut foreign = reference.clone();
+    foreign.check = "shared-foreign".into();
+    assert!(world.containers.inspect(foreign, &world.caller).is_err());
+    let recovered = world
+        .containers
+        .inspect(reference.clone(), &world.caller)
+        .unwrap();
+    assert_eq!(recovered.record.container_id, reference.container_id);
+    assert!(recovered.inspection.is_some());
+    assert_eq!(docker.removed.load(Ordering::SeqCst), 0);
+    assert!(
+        world
+            .containers
+            .retry(reference.clone(), &world.caller)
+            .is_err()
+    );
+    world.systemd.finish(&started.unit);
+    world.wait_status(TestStatus::Passed);
+    let complete = world.containers.inspect(reference, &world.caller).unwrap();
+    assert_eq!(
+        complete.record.cleanup_status,
+        devcoordinator2_api::test_containers::ContainerCleanupStatus::Complete
+    );
+}
+
+#[test]
+fn shared_postgres_typed_migration_and_expiry_never_restore_legacy_copies() {
+    struct RetentionClock;
+    impl Clock for RetentionClock {
+        fn now_utc(&self) -> OffsetDateTime {
+            datetime!(2026-11-14 00:00 UTC)
+        }
+    }
+    let docker = Arc::new(PostgresDocker::new());
+    let world = shared_postgres_world(docker.clone());
+    let started = world.start();
+    execute_admitted_database_setup(&world.capacity, &started, &world.worktree);
+    let reference = shared_postgres_reference(&world, &docker, &started);
+    let root = world.worktree.join(".devcoordinator/test/containers");
+    let receipt = root
+        .join("pending")
+        .join(&started.run_id)
+        .join("container-lifecycle.json");
+    let legacy = serde_json::from_slice::<
+        Vec<devcoordinator2_api::test_containers::TestContainerRecord>,
+    >(&std::fs::read(&receipt).unwrap())
+    .unwrap();
+    let current = TestRunStore.open_current(&world.worktree).unwrap().unwrap();
+    let retained_ids = vec![reference.container_id.clone(), "e".repeat(64)];
+    TestRunStore
+        .write_container_records(&current, &legacy, world.caller.uid, world.caller.gid)
+        .unwrap();
+    TestRunStore
+        .write_containers(&current, &retained_ids, world.caller.uid, world.caller.gid)
+        .unwrap();
+    std::fs::remove_file(&receipt).unwrap();
+    world
+        .containers
+        .inspect(reference.clone(), &world.caller)
+        .unwrap();
+    assert!(
+        TestRunStore
+            .read_container_records(&current)
+            .unwrap()
+            .is_empty()
+    );
+    // A crash after durable copy and before retiring the old copy is safe to
+    // resume even though the new canonical receipt already exists.
+    TestRunStore
+        .write_container_records(&current, &legacy, world.caller.uid, world.caller.gid)
+        .unwrap();
+    world
+        .containers
+        .inspect(reference.clone(), &world.caller)
+        .unwrap();
+    assert!(
+        TestRunStore
+            .read_container_records(&current)
+            .unwrap()
+            .is_empty()
+    );
+    let legacy_ids: Vec<String> = serde_json::from_slice(
+        &std::fs::read(
+            world
+                .worktree
+                .join(".devcoordinator/test/current/containers.json"),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        legacy_ids,
+        vec!["e".repeat(64)],
+        "only IDs with durable typed ownership may be retired"
+    );
+    world.systemd.finish(&started.unit);
+    world.wait_status(TestStatus::Passed);
+    let logs = TestLogService::with_clock(
+        world.database.clone(),
+        Registry::new(world.database.clone()),
+        Arc::new(RetentionClock),
+    );
+    let mut cursor = None;
+    for page in 0..200 {
+        let step = logs
+            .run_maintenance_step(cursor, 1, Duration::from_millis(100))
+            .unwrap();
+        assert!(step.report.errors.is_empty(), "{:?}", step.report.errors);
+        if step.complete {
+            break;
+        }
+        assert!(page < 199, "run retention did not finish");
+        cursor = step.next_worktree_id;
+    }
+    assert!(
+        world
+            .containers
+            .inspect(reference.clone(), &world.caller)
+            .is_err(),
+        "expired typed ownership must not be restored from current"
+    );
+    assert!(world.containers.retry(reference, &world.caller).is_err());
+    assert!(
+        !root.join("pending").join(&started.run_id).exists(),
+        "an expired unrelated-ID request must not create empty ownership state"
+    );
+    assert!(!root.join("receipts").join(&started.run_id).exists());
 }
 
 #[test]

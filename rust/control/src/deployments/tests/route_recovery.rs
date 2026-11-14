@@ -216,6 +216,21 @@ fn explicit_worktree_candidate_keeps_identity_and_tracks_its_origin() {
     assert_eq!(applied.deployment_id, first.deployment_id);
     assert_eq!(applied.current_generation, Some(2));
     assert!(applied.readiness.unwrap().ready);
+    let retained = fixture
+        .deployments
+        .store
+        .generation(&first.deployment_id, 2)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        retained.path,
+        fixture
+            .deployments
+            .files
+            .generation_path(&first.deployment_id, 2)
+            .unwrap(),
+        "explicit worktree candidate must run from its retained generation"
+    );
     let origin = fixture
         .deployments
         .store
@@ -230,6 +245,152 @@ fn explicit_worktree_candidate_keeps_identity_and_tracks_its_origin() {
             .unwrap()
             .ready
     );
+    assert_eq!(
+        applied.previous_generation, None,
+        "mutable original source is not a frozen rollback target"
+    );
+    let id = first.deployment_id.clone();
+    let legacy_path = fixture.world.worktree.to_string_lossy().into_owned();
+    fixture
+        .world
+        .database
+        .transaction(move |db| {
+            db.execute(
+                "UPDATE generations SET path=$1 WHERE deployment_id=$2 AND number=2",
+                crate::database::params![legacy_path, id],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    let upgraded = fixture
+        .deployments
+        .apply_with_candidate(
+            None,
+            None,
+            Some(&first.deployment_id),
+            Some(&candidate),
+            &fixture.caller,
+        )
+        .unwrap();
+    assert_eq!(
+        upgraded.current_generation,
+        Some(3),
+        "legacy mutable candidate must be frozen even when its source is unchanged"
+    );
+    assert_ne!(upgraded.unchanged, Some(true));
+    let frozen = fixture
+        .deployments
+        .store
+        .generation(&first.deployment_id, 3)
+        .unwrap()
+        .unwrap()
+        .path;
+    let mutable = fixture.apply().unwrap();
+    assert_eq!(mutable.previous_generation, Some(3));
+    assert_eq!(
+        fixture
+            .deployments
+            .store
+            .generation(&first.deployment_id, 4)
+            .unwrap()
+            .unwrap()
+            .path,
+        fixture.world.worktree,
+        "ordinary worktree apply must keep developer editing semantics"
+    );
+    let restored = fixture
+        .deployments
+        .rollback(None, None, Some(&first.deployment_id), &fixture.caller)
+        .unwrap();
+    assert_eq!(restored.rolled_back_to, Some(3));
+    assert_eq!(
+        fixture
+            .deployments
+            .store
+            .generation(&first.deployment_id, 5)
+            .unwrap()
+            .unwrap()
+            .path,
+        frozen,
+        "rollback must keep the exact frozen source"
+    );
+    assert!(fixture.world.worktree.is_dir());
+}
+
+#[test]
+fn historical_process_logs_never_substitute_another_generation() {
+    let fixture = RouteWorld::new("worktree");
+    let first = fixture.apply().unwrap();
+    let legacy = fixture
+        .deployments
+        .files
+        .log_path(&first.deployment_id, "api")
+        .unwrap();
+    std::fs::write(legacy, "unrelated legacy startup\n").unwrap();
+    let logs = fixture
+        .deployments
+        .logs(
+            DeploymentLogsParams {
+                attempt: None,
+                deployment_id: Some(first.deployment_id.clone()),
+                path: None,
+                name: None,
+                component: "api".into(),
+                generation: Some(99),
+                tail_lines: 10,
+            },
+            &fixture.caller,
+        )
+        .unwrap();
+    assert!(
+        logs.tail.is_empty(),
+        "historical log substituted legacy output"
+    );
+    let path = fixture
+        .deployments
+        .files
+        .reserve_process_log(
+            &first.deployment_id,
+            "removed",
+            7,
+            fixture.caller.uid,
+            fixture.caller.gid,
+        )
+        .unwrap();
+    std::fs::write(path, "removed component startup\n").unwrap();
+    let retained = fixture
+        .deployments
+        .logs(
+            DeploymentLogsParams {
+                deployment_id: Some(first.deployment_id.clone()),
+                path: None,
+                name: None,
+                component: "removed".into(),
+                generation: Some(7),
+                attempt: None,
+                tail_lines: 10,
+            },
+            &fixture.caller,
+        )
+        .unwrap();
+    assert_eq!(retained.tail, "removed component startup");
+    assert_eq!(retained.process_log.unwrap().generation, Some(7));
+    let invalid = fixture
+        .deployments
+        .logs(
+            DeploymentLogsParams {
+                deployment_id: Some(first.deployment_id),
+                path: None,
+                name: None,
+                component: "api".into(),
+                generation: None,
+                attempt: Some(1),
+                tail_lines: 10,
+            },
+            &fixture.caller,
+        )
+        .unwrap_err();
+    assert_eq!(invalid.code, ErrorCode::ParamsInvalid);
 }
 
 #[test]
@@ -997,6 +1158,53 @@ fn reconcile_recovers_missing_saved_process_on_original_route_lease() {
         drop(maintenance);
         assert!(fixture.deployments.busy.entries.lock().unwrap().is_empty());
     });
+}
+
+#[test]
+fn restoring_only_a_route_keeps_the_original_process_log_identity() {
+    let fixture = RouteWorld::new("checkout");
+    let first = fixture.apply().unwrap();
+    let read = || {
+        fixture
+            .deployments
+            .logs(
+                DeploymentLogsParams {
+                    deployment_id: Some(first.deployment_id.clone()),
+                    path: None,
+                    name: None,
+                    component: "api".into(),
+                    generation: Some(1),
+                    attempt: None,
+                    tail_lines: 10,
+                },
+                &fixture.caller,
+            )
+            .unwrap()
+    };
+    let before = read();
+    fixture
+        .world
+        .database
+        .transaction({
+            let id = first.deployment_id.clone();
+            move |connection| crate::ports::withdraw_conflict(connection, &id, "api")
+        })
+        .unwrap();
+    fixture.deployments.reconcile_routes().unwrap();
+    let after = read();
+    assert_eq!(after.tail, before.tail);
+    assert_eq!(
+        after.process_log.unwrap().attempt,
+        before.process_log.unwrap().attempt,
+        "restoring a route without starting the active unit created a fictional startup attempt"
+    );
+    assert!(
+        fixture
+            .status(&first.deployment_id)
+            .readiness
+            .unwrap()
+            .ready
+    );
 }
 
 #[test]
