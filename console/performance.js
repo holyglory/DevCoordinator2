@@ -42,6 +42,17 @@ window.DevCoordinatorPerformance = (() => {
     }
     const costAmount = cost => usd(cost?.estimated_usd_micros);
     const totalSource = usage => usage?.totals || usage?.outcomes?.totals?.cost || null;
+    const coverageStatusText = coverage => {
+      const snapshot = coverage?.snapshot;
+      const unavailableReasons = Object.keys(coverage?.unavailable_reasons || {});
+      // A refresh can remain marked as active after the coordinator has
+      // established that no source can answer this request. Keep that state
+      // truthful instead of leaving the page saying "Loading usage…" forever.
+      if (coverage?.state === 'unavailable' && !snapshot?.updated_at_ms && unavailableReasons.length) {
+        return coverageText({ ...coverage, snapshot: snapshot ? { ...snapshot, refreshing: false } : snapshot });
+      }
+      return coverageText(coverage);
+    };
     const badge = disposition => `<span class="performance-status ${esc(disposition)}">${window.DevCoordinatorI18n.computedMarkup(() => statuses[disposition] ? window.DevCoordinatorI18n.t("performance.status_" + disposition) : disposition)}</span>`;
     const color = key => ({coding:'var(--chart-blue)',integration_testing:'var(--chart-violet)',unknown:'var(--muted)',unattributed:'var(--muted)'})[key] || `var(--chart-${['blue', 'violet', 'amber', 'teal', 'green'][Array.from(key).reduce((n, c) => n + c.charCodeAt(0), 0) % 5]})`;
     const entries = values => Object.entries(values || {}).sort((a, b) => b[1].measured - a[1].measured || a[0].localeCompare(b[0]));
@@ -134,7 +145,7 @@ window.DevCoordinatorPerformance = (() => {
         popover.hidden = open;
         button.setAttribute('aria-expanded', String(!open));
       }, { signal });
-      const showCoverage = usage => { window.DevCoordinatorI18n.bind(find('coverage'), () => `${coverageText(usage.coverage)}${usage.outcomes.unattributed.operations ? ' · ' + window.DevCoordinatorI18n.t("performance.unattributedWork") : ''}`); };
+      const showCoverage = usage => { window.DevCoordinatorI18n.bind(find('coverage'), () => `${coverageStatusText(usage.coverage)}${usage.outcomes.unattributed.operations ? ' · ' + window.DevCoordinatorI18n.t("performance.unattributedWork") : ''}`); };
       function showUsage(usage, append = false) {
         const previousUsage = currentUsage; currentUsage = usage;
         if (!reference) { session.periodUsage = { start, end, usage: append && previousUsage ? { ...usage, outcomes: { ...usage.outcomes, rows: [...previousUsage.outcomes.rows, ...usage.outcomes.rows] } } : usage }; currentUsage = session.periodUsage.usage; }
@@ -207,7 +218,7 @@ window.DevCoordinatorPerformance = (() => {
         catch (error) { if (active()) { window.DevCoordinatorI18n.text(find('period-total'), "performance.unavailable_ca1844"); if (!reference) { window.DevCoordinatorI18n.text(find('coverage'), "performance.measurements_could_not_be_loaded_77193b"); window.DevCoordinatorI18n.text(find('outcomes'), "performance.measurements_could_not_be_loaded_77193b"); errorPanel(find('charts'), error.message, loadPeriod); } } }
       }
       async function loadLifetime() {
-        try { const data = await read('performance.overview', { repository_id: repositoryId, window_start_ms: 0, window_end_ms: session.lifetimeEnd, totals_only: true }); if (!active()) return; find('lifetime').innerHTML = tokenDetail('All recorded total', data.total_tokens, data.totals); find('lifetime').title = coverageText(data.coverage); }
+        try { const data = await read('performance.overview', { repository_id: repositoryId, window_start_ms: 0, window_end_ms: session.lifetimeEnd, totals_only: true }); if (!active()) return; find('lifetime').innerHTML = tokenDetail('All recorded total', data.total_tokens, data.totals); find('lifetime').title = coverageStatusText(data.coverage); }
         catch (error) { if (active()) { window.DevCoordinatorI18n.text(find('lifetime'), "performance.unavailable_ca1844"); find('lifetime').title = error.message; } }
       }
       async function loadReview() {
