@@ -92,6 +92,20 @@ result for the next identical request. A foreground timeout is not a thirty-seco
 source failure. Changing the window or work bindings selects a different cache
 entry; a warm result is never borrowed from another scope.
 
+The five-second freshness period starts revalidation; it does not make completed
+measurements unavailable. A later request returns the last valid exact-query
+snapshot while one bounded source refresh runs, including when the caller has
+not yet consumed that completed snapshot. Coverage events identify
+`api_snapshot_stale` and the pending or failed refresh reason. The display
+snapshot's `updated_at_ms` is the producer's summary-generation time, so a new
+request cannot make old measurements appear newly observed. The separate source
+snapshot retains the producer's original publication times and frontiers.
+
+A failed refresh preserves these measurements with
+`refresh_failed: true` and the precise bounded reason until a successful refresh
+replaces them. Cold failures still have no measurements. Existing memory, byte,
+admission, retry and eviction bounds apply; no usage copy is stored durably.
+
 ## Verification and activation
 
 Acceptance exercises authorized context ingestion and `review.prepare` through
