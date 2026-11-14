@@ -5,7 +5,7 @@
 //! authenticated worktree, the persisted run/check record, and the exact
 //! managed labels before every mutation.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -45,6 +45,41 @@ pub struct TestContainerService {
     docker: Arc<dyn DockerControl>,
     clock: Arc<dyn Clock>,
     store: TestRunStore,
+}
+
+/// Ephemeral protection derived from canonical receipts. It never grants
+/// mutation authority or creates another ownership registry.
+#[derive(Default)]
+pub(crate) struct ContainerProtection {
+    ids: BTreeSet<String>,
+    intents: Vec<UnboundContainer>,
+    scoped: bool,
+}
+
+struct UnboundContainer {
+    name: String,
+    owner: String,
+    run: String,
+    worktree: String,
+}
+
+impl ContainerProtection {
+    fn retain(&mut self, records: &[TestContainerRecord]) {
+        for record in records {
+            if record.container_id == "0".repeat(64) {
+                if record.cleanup_status != ContainerCleanupStatus::Complete {
+                    self.intents.push(UnboundContainer {
+                        name: record.name.clone(),
+                        owner: record.owner_token.clone(),
+                        run: record.run_id.clone(),
+                        worktree: record.worktree_id.clone(),
+                    });
+                }
+            } else {
+                self.ids.insert(record.container_id.clone());
+            }
+        }
+    }
 }
 
 enum MutationAccess {
@@ -1188,12 +1223,50 @@ impl TestContainerService {
             .unwrap_or(true)
     }
 
-    /// Legacy cleanup must not bypass a typed record's lease or retained
-    /// failure. Resolve only this observed exact container's owning run.
+    pub(crate) fn protection_for_scope(
+        &self,
+        worktree: &Path,
+        run: Option<&str>,
+    ) -> Result<ContainerProtection, ProtocolError> {
+        let runs = match run {
+            Some(run) => vec![run.to_owned()],
+            None => self.store.container_runs(worktree).map_err(state_error)?,
+        };
+        let mut protection = ContainerProtection {
+            scoped: true,
+            ..ContainerProtection::default()
+        };
+        for run in runs {
+            if let Some(directory) = self
+                .store
+                .open_container_run(worktree, &run, None)
+                .map_err(state_error)?
+            {
+                let records = self.records(&directory)?;
+                if records.iter().any(|record| record.run_id != run) {
+                    return Err(ownership_error());
+                }
+                protection.retain(&records);
+            }
+        }
+        Ok(protection)
+    }
+
+    /// Legacy cleanup consults canonical scope authority, never a lookup
+    /// selected by possibly damaged observed run/worktree labels.
     pub(crate) fn is_recorded_container(
         &self,
         id: &ExactContainerId,
+        protection: &ContainerProtection,
     ) -> Result<bool, ProtocolError> {
+        if protection.ids.contains(id.as_str())
+            || (protection.scoped && !protection.intents.is_empty())
+        {
+            return Ok(true);
+        }
+        if protection.intents.is_empty() {
+            return Ok(false);
+        }
         let value = self
             .docker
             .inspect(id)
@@ -1201,37 +1274,11 @@ impl TestContainerService {
         let actual = self
             .to_inspection_value(&value, id)
             .map_err(|_| ownership_error())?;
-        let Some(run_id) = actual.labels.get("devcoordinator2.run") else {
-            return Ok(false);
-        };
-        let Some(worktree_id) = actual.labels.get("devcoordinator2.worktree") else {
-            return Ok(false);
-        };
-        let requested = worktree_id.clone();
-        let path = self
-            .database
-            .read(move |connection| {
-                connection
-                    .query_row(
-                        "SELECT worktree_path FROM worktrees WHERE worktree_id=$1",
-                        [requested],
-                        |row| row.get::<_, String>(0),
-                    )
-                    .optional()
-                    .map_err(DatabaseError::from)
-            })
-            .map_err(database_error)?;
-        let Some(path) = path else { return Ok(false) };
-        let Some(directory) = self
-            .store
-            .open_container_run(Path::new(&path), run_id, None)
-            .map_err(state_error)?
-        else {
-            return Ok(false);
-        };
-        Ok(self.records(&directory)?.iter().any(|record| {
-            record.container_id == id.as_str()
-                || (record.container_id == "0".repeat(64) && record.labels == actual.labels)
+        Ok(protection.intents.iter().any(|intent| {
+            actual.name == intent.name
+                || actual.labels.get("devcoordinator2.owner") == Some(&intent.owner)
+                || actual.labels.get("devcoordinator2.run") == Some(&intent.run)
+                || actual.labels.get("devcoordinator2.worktree") == Some(&intent.worktree)
         }))
     }
 
@@ -1286,11 +1333,10 @@ impl TestContainerService {
         let summary = self
             .store
             .read_current_summary(&context.worktree)
-            .map_err(state_error)?;
-        if summary.is_none_or(|summary| summary.run_id != context.run_id)
-            || !context.check.starts_with("shared-")
-            || records.len() >= RECORD_CAP
-        {
+            .map_err(state_error)?
+            .filter(|summary| summary.run_id == context.run_id)
+            .ok_or_else(ownership_error)?;
+        if !context.check.starts_with("shared-") || records.len() >= RECORD_CAP {
             return Err(ownership_error());
         }
         let current = self
@@ -1331,13 +1377,38 @@ impl TestContainerService {
             .cloned()
             .ok_or_else(ownership_error)?;
         validate_identity(&owner, "owner", MAX_LABEL_BYTES)?;
+        let labels = crate::docker::managed_labels(
+            &ManagedLabelContext {
+                instance: self.instance.clone(),
+                repository_id: context.repository_id.clone(),
+                worktree_id: context.worktree_id.clone(),
+                run_id: Some(context.run_id.clone()),
+                check: Some(context.check.clone()),
+                owner: Some(owner.clone()),
+                deployment_id: None,
+                component: Some(context.check.clone()),
+                generation: None,
+                ttl_seconds: None,
+                purpose: "test".into(),
+                caller_uid: context.execution_uid,
+                client: summary.client,
+                session: actual.labels.get("devcoordinator2.session").cloned(),
+                created_at: summary.started_at,
+                data_class: "disposable".into(),
+            },
+            &BTreeMap::new(),
+        )
+        .map_err(|_| ownership_error())?;
+        if !ownership_labels_match(&actual.labels, &labels) {
+            return Err(ownership_error());
+        }
         let mut record = pending_record(
             context,
             expected_name,
             actual.image,
             Vec::new(),
             owner,
-            actual.labels,
+            labels,
             self.timestamp()?,
         );
         record.container_id = id.to_string();
@@ -1365,7 +1436,7 @@ impl TestContainerService {
         Ok(records.len() - 1)
     }
 
-    pub(crate) fn recover_registered(&self) -> Result<Vec<ExactContainerId>, ProtocolError> {
+    pub(crate) fn recover_registered(&self) -> Result<ContainerProtection, ProtocolError> {
         let worktrees = self
             .database
             .read(|connection| {
@@ -1377,7 +1448,7 @@ impl TestContainerService {
                     .map_err(DatabaseError::from)
             })
             .map_err(database_error)?;
-        let mut recorded = Vec::new();
+        let mut recorded = ContainerProtection::default();
         for path in worktrees {
             let worktree = Path::new(&path);
             let runs = match self.store.container_runs(worktree) {
@@ -1394,16 +1465,16 @@ impl TestContainerService {
                 };
                 let (uid, gid) = self.store.owner(&directory).map_err(state_error)?;
                 let records = self.records(&directory)?;
-                recorded.extend(records.iter().filter_map(|record| {
-                    ExactContainerId::parse(record.container_id.clone()).ok()
-                }));
+                recorded.retain(&records);
                 drop(directory);
                 for record in records
                     .iter()
                     .filter(|record| record.container_id == "0".repeat(64))
                 {
                     if let Ok(candidates) = self.docker.list_ids_by_labels(&record.labels) {
-                        recorded.extend(candidates);
+                        recorded
+                            .ids
+                            .extend(candidates.into_iter().map(|id| id.to_string()));
                     }
                 }
                 let caller = Caller {
@@ -1466,12 +1537,13 @@ impl TestContainerService {
             .docker
             .inspect(id)
             .map_err(|error| docker_error("cannot inspect governed container", error))?;
-        let actual = self
+        let mut actual = self
             .to_inspection_value(&value, id)
             .map_err(|message| ProtocolError::new(ErrorCode::TestStartFailed, message))?;
-        if actual.name != expected_name || actual.labels != *labels {
+        if actual.name != expected_name || !ownership_labels_match(&actual.labels, labels) {
             return Err(ownership_error());
         }
+        actual.labels = labels.clone();
         Ok(actual)
     }
 
@@ -1483,7 +1555,12 @@ impl TestContainerService {
         let id = ExactContainerId::parse(record.container_id.clone()).ok()?;
         self.to_inspection_value(value, &id)
             .ok()
+            .filter(|inspection| {
+                inspection.name == record.name
+                    && ownership_labels_match(&inspection.labels, &record.labels)
+            })
             .map(|mut inspection| {
+                inspection.labels = record.labels.clone();
                 inspection.native_execution_began = record.native_execution_began;
                 inspection.cleanup_status = record.cleanup_status;
                 inspection.cleanup_attempts = record.cleanup_attempts.clone();
@@ -1743,6 +1820,29 @@ fn ownership_error() -> ProtocolError {
     )
 }
 
+fn persisted_labels_match(
+    actual: &BTreeMap<String, String>,
+    expected: &BTreeMap<String, String>,
+) -> bool {
+    expected
+        .iter()
+        .all(|(key, value)| actual.get(key) == Some(value))
+}
+
+fn ownership_labels_match(
+    actual: &BTreeMap<String, String>,
+    expected: &BTreeMap<String, String>,
+) -> bool {
+    persisted_labels_match(actual, expected)
+        && actual
+            .iter()
+            .filter(|(key, _)| {
+                key.strip_prefix(crate::docker::LABEL_PREFIX)
+                    .is_some_and(|suffix| suffix.is_empty() || suffix.starts_with('.'))
+            })
+            .all(|(key, value)| expected.get(key) == Some(value))
+}
+
 fn fixture_active_error() -> ProtocolError {
     ProtocolError::new(
         ErrorCode::TestStartFailed,
@@ -1766,7 +1866,10 @@ fn wait_cleanup_budget(deadline: Instant, backoff: &mut Duration) -> bool {
     if remaining.is_zero() {
         return false;
     }
-    std::thread::sleep((*backoff).min(remaining));
+    // Pace only the next authoritative receipt/lease observation. The
+    // explicit ceiling is the existing bounded-observation contract.
+    let pause = (*backoff).min(remaining);
+    std::thread::sleep(pause.min(Duration::from_millis(100)));
     *backoff = backoff.saturating_mul(2).min(Duration::from_millis(100));
     Instant::now() < deadline
 }

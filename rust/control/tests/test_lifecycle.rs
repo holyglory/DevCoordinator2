@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::ffi::CString;
 use std::io::{self, Cursor, Read};
 use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
@@ -30,6 +31,8 @@ use devcoordinator2_executor_protocol::{
     ArtifactReceipt, CapacityReport, CheckReport, DiagnosticExit, ExecutionPlan, ExecutionReport,
     LeafStatus, ProofKind, RunStatus, Schema2, ValidationTier,
 };
+use std::os::fd::{AsRawFd, FromRawFd};
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::process::ExitStatusExt;
 use tempfile::tempdir;
 use time::{OffsetDateTime, macros::datetime};
@@ -131,6 +134,110 @@ impl DockerControl for FixtureDocker {
 
 type RemovalGate = Arc<(Mutex<(bool, bool)>, Condvar)>;
 
+struct FixtureFileEvents {
+    file: std::fs::File,
+    close_mask: u32,
+    directory: bool,
+}
+
+impl FixtureFileEvents {
+    fn watch_closes(path: &Path, directory: bool) -> Self {
+        // SAFETY: the returned descriptor is checked and transferred exactly
+        // once into File; the CString remains live throughout add_watch.
+        let descriptor = unsafe { libc::inotify_init1(libc::IN_CLOEXEC | libc::IN_NONBLOCK) };
+        assert!(
+            descriptor >= 0,
+            "cannot create fixture event watch: {}",
+            io::Error::last_os_error()
+        );
+        let file = unsafe { std::fs::File::from_raw_fd(descriptor) };
+        let name = CString::new(path.as_os_str().as_bytes()).unwrap();
+        let close_mask = if directory {
+            libc::IN_CLOSE_NOWRITE
+        } else {
+            libc::IN_CLOSE_WRITE
+        };
+        let watch = unsafe { libc::inotify_add_watch(file.as_raw_fd(), name.as_ptr(), close_mask) };
+        assert!(
+            watch >= 0,
+            "cannot watch fixture progress: {}",
+            io::Error::last_os_error()
+        );
+        Self {
+            file,
+            close_mask,
+            directory,
+        }
+    }
+
+    fn wait_for_closes(&mut self, expected: usize) {
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let mut observed = 0;
+        let mut buffer = [0_u8; 4096];
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            assert!(
+                !remaining.is_zero(),
+                "fixture did not observe {expected} descriptor closes"
+            );
+            let mut descriptor = libc::pollfd {
+                fd: self.file.as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            // SAFETY: poll receives one valid descriptor and a bounded timeout.
+            let ready = unsafe {
+                libc::poll(
+                    &mut descriptor,
+                    1,
+                    remaining.as_millis().clamp(1, i32::MAX as u128) as i32,
+                )
+            };
+            if ready < 0 && io::Error::last_os_error().kind() == io::ErrorKind::Interrupted {
+                continue;
+            }
+            assert!(ready > 0, "fixture progress event deadline elapsed");
+            let size = match self.file.read(&mut buffer) {
+                Ok(size) => size,
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
+                    ) =>
+                {
+                    continue;
+                }
+                Err(error) => panic!("cannot read fixture progress event: {error}"),
+            };
+            let mut offset = 0;
+            while offset + std::mem::size_of::<libc::inotify_event>() <= size {
+                // SAFETY: a complete POD event header is present; the byte
+                // buffer need not have the native struct's alignment.
+                let event = unsafe {
+                    std::ptr::read_unaligned(
+                        buffer.as_ptr().add(offset).cast::<libc::inotify_event>(),
+                    )
+                };
+                let next = offset + std::mem::size_of::<libc::inotify_event>() + event.len as usize;
+                assert!(
+                    next <= size && event.mask & libc::IN_Q_OVERFLOW == 0,
+                    "fixture progress events were lost"
+                );
+                if event.len == 0
+                    && event.mask & self.close_mask != 0
+                    && (event.mask & libc::IN_ISDIR != 0) == self.directory
+                {
+                    observed += 1;
+                }
+                offset = next;
+            }
+            if observed >= expected {
+                return;
+            }
+        }
+    }
+}
+
 struct FinalizationClock {
     armed: AtomicBool,
     gate: RemovalGate,
@@ -153,6 +260,7 @@ struct PostgresDocker {
     provisioned: AtomicU64,
     present: AtomicBool,
     labels: Mutex<BTreeMap<String, String>>,
+    image_labels: Mutex<BTreeMap<String, String>>,
     name: Mutex<String>,
     fail_remove: AtomicBool,
     timeout_after_remove: AtomicBool,
@@ -168,6 +276,7 @@ impl PostgresDocker {
             provisioned: AtomicU64::new(0),
             present: AtomicBool::new(false),
             labels: Mutex::new(BTreeMap::new()),
+            image_labels: Mutex::new(BTreeMap::new()),
             name: Mutex::new(String::new()),
             fail_remove: AtomicBool::new(false),
             timeout_after_remove: AtomicBool::new(false),
@@ -175,6 +284,12 @@ impl PostgresDocker {
             removal_gate: Mutex::new(None),
             creation_gate: Mutex::new(None),
         }
+    }
+
+    fn observed_labels(&self) -> BTreeMap<String, String> {
+        let mut labels = self.image_labels.lock().unwrap().clone();
+        labels.extend(self.labels.lock().unwrap().clone());
+        labels
     }
 }
 
@@ -293,7 +408,7 @@ impl DockerControl for PostgresDocker {
         &self,
         labels: &BTreeMap<String, String>,
     ) -> Result<Vec<ExactContainerId>, DockerError> {
-        let actual = self.labels.lock().unwrap();
+        let actual = self.observed_labels();
         if self.present.load(Ordering::SeqCst)
             && labels
                 .iter()
@@ -321,7 +436,7 @@ impl DockerControl for PostgresDocker {
         }
         Ok(serde_json::json!({
             "Id": container_id.as_str(), "Name": format!("/{}", self.name.lock().unwrap()),
-            "Config": {"Image":"postgres:18", "Labels": *self.labels.lock().unwrap()},
+            "Config": {"Image":"postgres:18", "Labels": self.observed_labels()},
             "State": {"Status":"running", "ExitCode":0}
         }))
     }
@@ -2758,6 +2873,184 @@ fn shared_postgres_reference(
 }
 
 #[test]
+fn shared_postgres_image_metadata_does_not_change_ownership_or_escape_inspection() {
+    let docker = Arc::new(PostgresDocker::new());
+    *docker.image_labels.lock().unwrap() = BTreeMap::from([
+        ("maintainer".into(), "unpublished-image-metadata".into()),
+        (
+            "org.opencontainers.image.description".into(),
+            "fixture image description".into(),
+        ),
+    ]);
+    let world = shared_postgres_world(docker.clone());
+    let started = world.start();
+    execute_admitted_database_setup(&world.capacity, &started, &world.worktree);
+    let reference = shared_postgres_reference(&world, &docker, &started);
+    let inspected = world.containers.inspect(reference.clone(), &world.caller);
+    if inspected.is_err() {
+        docker.image_labels.lock().unwrap().clear();
+    }
+    world.systemd.finish(&started.unit);
+    world.wait_status(TestStatus::Passed);
+    let inspected =
+        inspected.expect("unmanaged image metadata must not invalidate daemon ownership");
+    assert_eq!(
+        inspected.inspection.as_ref().unwrap().labels,
+        inspected.record.labels
+    );
+    assert!(
+        !serde_json::to_string(&inspected)
+            .unwrap()
+            .contains("unpublished-image-metadata")
+    );
+    assert!(!docker.present.load(Ordering::SeqCst));
+    assert_eq!(
+        world
+            .containers
+            .inspect(reference, &world.caller)
+            .unwrap()
+            .record
+            .cleanup_status,
+        devcoordinator2_api::test_containers::ContainerCleanupStatus::Complete
+    );
+}
+
+#[test]
+fn native_container_image_metadata_keeps_create_inspect_and_cleanup_owned() {
+    let docker = Arc::new(PostgresDocker::new());
+    docker
+        .image_labels
+        .lock()
+        .unwrap()
+        .insert("maintainer".into(), "unpublished-image-metadata".into());
+    let world = LifecycleWorld::with_docker(docker.clone());
+    let started = world.start();
+    let created = world.containers.create(
+        devcoordinator2_api::test_containers::ContainerCreate {
+            path: world.worktree.to_string_lossy().into_owned(),
+            run_id: started.run_id.clone(),
+            check: "unit".into(),
+            image: "postgres:18".into(),
+            command: vec!["true".into()],
+        },
+        &world.caller,
+    );
+    let reference = devcoordinator2_api::test_containers::ContainerReference {
+        path: world.worktree.to_string_lossy().into_owned(),
+        run_id: started.run_id.clone(),
+        check: "unit".into(),
+        container_id: "d".repeat(64),
+    };
+    if created.is_err() {
+        docker.image_labels.lock().unwrap().clear();
+    }
+    let cleaned = world.containers.retry(reference, &world.caller).unwrap();
+    world.systemd.finish(&started.unit);
+    world.wait_status(if created.is_ok() {
+        TestStatus::Passed
+    } else {
+        TestStatus::Failed
+    });
+    let created = created.expect("native container creation must accept unrelated image metadata");
+    assert_eq!(
+        created.inspection.as_ref().unwrap().labels,
+        created.record.labels
+    );
+    assert!(
+        !serde_json::to_string(&created)
+            .unwrap()
+            .contains("unpublished-image-metadata")
+    );
+    assert_eq!(
+        cleaned.record.cleanup_status,
+        devcoordinator2_api::test_containers::ContainerCleanupStatus::Complete
+    );
+    assert_eq!(docker.removed.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn container_image_metadata_never_relaxes_authority_labels_or_diagnostic_projection() {
+    for drift in ["extra", "changed", "missing"] {
+        let docker = Arc::new(PostgresDocker::new());
+        let world = LifecycleWorld::with_docker(docker.clone());
+        let started = world.start();
+        let created = world
+            .containers
+            .create(
+                devcoordinator2_api::test_containers::ContainerCreate {
+                    path: world.worktree.to_string_lossy().into_owned(),
+                    run_id: started.run_id.clone(),
+                    check: "unit".into(),
+                    image: "postgres:18".into(),
+                    command: vec!["true".into()],
+                },
+                &world.caller,
+            )
+            .unwrap();
+        let reference = devcoordinator2_api::test_containers::ContainerReference {
+            path: world.worktree.to_string_lossy().into_owned(),
+            run_id: started.run_id.clone(),
+            check: "unit".into(),
+            container_id: created.record.container_id,
+        };
+        match drift {
+            "extra" => {
+                docker.image_labels.lock().unwrap().insert(
+                    "devcoordinator2.unexpected".into(),
+                    "unpublished-authority-metadata".into(),
+                );
+            }
+            "changed" => {
+                docker.labels.lock().unwrap().insert(
+                    "devcoordinator2.owner".into(),
+                    "unpublished-authority-metadata".into(),
+                );
+            }
+            "missing" => {
+                docker
+                    .labels
+                    .lock()
+                    .unwrap()
+                    .remove("devcoordinator2.owner");
+            }
+            _ => unreachable!(),
+        }
+        let inspected = world.containers.inspect(reference.clone(), &world.caller);
+        let rejected = world
+            .containers
+            .remove(reference.clone(), &world.caller)
+            .unwrap();
+        let untouched = docker.present.load(Ordering::SeqCst);
+        *docker.labels.lock().unwrap() = created.record.labels;
+        docker.image_labels.lock().unwrap().clear();
+        world.containers.retry(reference, &world.caller).unwrap();
+        world.systemd.finish(&started.unit);
+        world.wait_status(TestStatus::Passed);
+        assert!(
+            inspected.is_err(),
+            "authority drift {drift} must refuse owned inspection"
+        );
+        assert_eq!(
+            rejected.record.cleanup_status,
+            devcoordinator2_api::test_containers::ContainerCleanupStatus::Failed
+        );
+        assert!(
+            untouched,
+            "authority drift {drift} must not authorize removal"
+        );
+        assert!(
+            rejected.inspection.is_none(),
+            "unverified authority must not appear as an owned diagnostic inspection"
+        );
+        assert!(
+            !serde_json::to_string(&rejected)
+                .unwrap()
+                .contains("unpublished-authority-metadata")
+        );
+    }
+}
+
+#[test]
 fn shared_postgres_timeout_after_delete_proves_absence_and_keeps_an_idempotent_receipt() {
     use devcoordinator2_api::test_containers::ContainerCleanupStatus;
     let docker = Arc::new(PostgresDocker::new());
@@ -3011,6 +3304,10 @@ fn shared_postgres_owned_cleanup_observes_complete_without_repeating_an_admitted
         rustix::fs::FlockOperation::NonBlockingLockExclusive,
     )
     .unwrap();
+    let mut activity = FixtureFileEvents::watch_closes(
+        &path.join(format!("{}.operation", record.owner_token)),
+        false,
+    );
     world.systemd.finish(&started.unit);
     let active_use =
         std::fs::File::open(path.join(format!("{}.lease", record.owner_token))).unwrap();
@@ -3029,9 +3326,9 @@ fn shared_postgres_owned_cleanup_observes_complete_without_repeating_an_admitted
     }
     // An already-admitted peer owns both leases, performs the real adapter
     // cleanup, and publishes its receipt before releasing its operation lease.
-    // Keep the operation unsettled long enough for the owned caller to
-    // observe its Busy response before the peer publishes the outcome.
-    std::thread::sleep(Duration::from_millis(500));
+    // Observe the rejected mutation attempt and then the owned caller's
+    // coalescing probe before publishing the peer's settled outcome.
+    activity.wait_for_closes(2);
     docker
         .remove_container_verified_named(
             &ExactContainerId::parse(reference.container_id.clone()).unwrap(),
@@ -3101,23 +3398,22 @@ fn exercise_owned_cleanup_metadata_contention(after_mutation: bool) {
         docker.removed.load(Ordering::SeqCst),
         u64::from(after_mutation)
     );
-    let directory = std::fs::File::open(
-        world
-            .worktree
-            .join(".devcoordinator/test/containers/pending")
-            .join(&started.run_id),
-    )
-    .unwrap();
+    let directory_path = world
+        .worktree
+        .join(".devcoordinator/test/containers/pending")
+        .join(&started.run_id);
+    let directory = std::fs::File::open(&directory_path).unwrap();
     rustix::fs::flock(
         &directory,
         rustix::fs::FlockOperation::NonBlockingLockExclusive,
     )
     .unwrap();
+    let mut activity = FixtureFileEvents::watch_closes(&directory_path, true);
     gate.0.lock().unwrap().1 = true;
     gate.1.notify_all();
-    // Hold the injected transaction beyond the existing50ms metadata ceiling;
-    // success still requires the real cleanup and persisted absence receipt.
-    std::thread::sleep(Duration::from_millis(500));
+    // A closed directory descriptor proves the contending metadata attempt
+    // returned before the injected transaction is made available.
+    activity.wait_for_closes(1);
     assert_eq!(
         docker.removed.load(Ordering::SeqCst),
         u64::from(after_mutation)
@@ -3145,6 +3441,11 @@ fn shared_postgres_owned_cleanup_retains_the_observed_result_after_metadata_cont
 #[test]
 fn shared_postgres_legacy_recovery_requires_the_retained_id_and_exact_fixture_binding() {
     let docker = Arc::new(PostgresDocker::new());
+    docker
+        .image_labels
+        .lock()
+        .unwrap()
+        .insert("maintainer".into(), "unpublished-image-metadata".into());
     let world = shared_postgres_world(docker.clone());
     let started = world.start();
     execute_admitted_database_setup(&world.capacity, &started, &world.worktree);
@@ -3162,6 +3463,15 @@ fn shared_postgres_legacy_recovery_requires_the_retained_id_and_exact_fixture_bi
         .containers
         .inspect(reference.clone(), &world.caller)
         .unwrap();
+    assert_eq!(
+        recovered.inspection.as_ref().unwrap().labels,
+        recovered.record.labels
+    );
+    assert!(
+        !serde_json::to_string(&recovered)
+            .unwrap()
+            .contains("unpublished-image-metadata")
+    );
     assert_eq!(recovered.record.container_id, reference.container_id);
     assert!(recovered.inspection.is_some());
     assert_eq!(docker.removed.load(Ordering::SeqCst), 0);
@@ -3410,6 +3720,11 @@ fn container_review_renamed_pending_intent_cannot_complete_while_its_container_e
         .write_container_records(&directory, &records, world.caller.uid, world.caller.gid)
         .unwrap();
     docker.name.lock().unwrap().push_str("-renamed");
+    docker
+        .image_labels
+        .lock()
+        .unwrap()
+        .insert("maintainer".into(), "unpublished-image-metadata".into());
     docker.present.store(true, Ordering::SeqCst);
     reference.container_id = "0".repeat(64);
     let attempted = world
@@ -3431,6 +3746,133 @@ fn container_review_renamed_pending_intent_cannot_complete_while_its_container_e
         devcoordinator2_api::test_containers::ContainerCleanupStatus::Complete,
         "a matching-label candidate with a changed name is an unresolved obligation"
     );
+}
+
+#[test]
+fn container_zero_intent_authority_drift_cannot_fall_through_legacy_cleanup() {
+    let mut failures = Vec::new();
+    for field in ["owner", "run", "worktree"] {
+        for missing in [false, true] {
+            let docker = Arc::new(PostgresDocker::new());
+            let world = LifecycleWorld::with_docker(docker.clone());
+            let started = world.start();
+            let created = world
+                .containers
+                .create(
+                    devcoordinator2_api::test_containers::ContainerCreate {
+                        path: world.worktree.to_string_lossy().into_owned(),
+                        run_id: started.run_id.clone(),
+                        check: "unit".into(),
+                        image: "postgres:18".into(),
+                        command: vec!["true".into()],
+                    },
+                    &world.caller,
+                )
+                .unwrap();
+            let reference = devcoordinator2_api::test_containers::ContainerReference {
+                path: world.worktree.to_string_lossy().into_owned(),
+                run_id: started.run_id.clone(),
+                check: "unit".into(),
+                container_id: created.record.container_id,
+            };
+            world.containers.remove(reference, &world.caller).unwrap();
+            let directory = std::fs::File::open(
+                world
+                    .worktree
+                    .join(".devcoordinator/test/containers/pending")
+                    .join(&started.run_id),
+            )
+            .unwrap();
+            let mut records = TestRunStore.read_container_records(&directory).unwrap();
+            records[0].container_id = "0".repeat(64);
+            records[0].cleanup_status =
+                devcoordinator2_api::test_containers::ContainerCleanupStatus::Pending;
+            records[0].cleanup_attempts.clear();
+            TestRunStore
+                .write_container_records(&directory, &records, world.caller.uid, world.caller.gid)
+                .unwrap();
+            let key = format!("devcoordinator2.{field}");
+            if missing {
+                docker.labels.lock().unwrap().remove(&key);
+            } else {
+                docker
+                    .labels
+                    .lock()
+                    .unwrap()
+                    .insert(key, "unrecognized-ownership-value".into());
+            }
+            docker.present.store(true, Ordering::SeqCst);
+            if field == "worktree" {
+                world.lifecycle.recover().unwrap();
+            } else {
+                world.start();
+            }
+            let protected = docker.present.load(Ordering::SeqCst);
+            // Contain only this disposable simulated container, then stop the
+            // fixture's current run before reporting every safe matrix result.
+            docker.present.store(false, Ordering::SeqCst);
+            world
+                .lifecycle
+                .stop(world.worktree.to_str().unwrap(), None, &world.caller)
+                .unwrap();
+            if !protected {
+                failures.push(format!(
+                    "{field}:{}",
+                    if missing { "missing" } else { "changed" }
+                ));
+            }
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "typed creation intents entered raw legacy removal: {failures:?}"
+    );
+}
+
+#[test]
+fn valid_unrecorded_legacy_containers_still_cleanup_in_their_canonical_scope() {
+    for startup in [false, true] {
+        let docker = Arc::new(PostgresDocker::new());
+        let world = LifecycleWorld::with_docker(docker.clone());
+        let started = world.start();
+        world
+            .containers
+            .create(
+                devcoordinator2_api::test_containers::ContainerCreate {
+                    path: world.worktree.to_string_lossy().into_owned(),
+                    run_id: started.run_id.clone(),
+                    check: "unit".into(),
+                    image: "postgres:18".into(),
+                    command: vec!["true".into()],
+                },
+                &world.caller,
+            )
+            .unwrap();
+        // Recreate the retained pre-typed contract only inside this isolated
+        // fixture. No unresolved canonical ownership remains for its scope.
+        std::fs::remove_dir_all(
+            world
+                .worktree
+                .join(".devcoordinator/test/containers/pending")
+                .join(&started.run_id),
+        )
+        .unwrap();
+        if startup {
+            world.lifecycle.recover().unwrap();
+        } else {
+            world.start();
+        }
+        let removed = !docker.present.load(Ordering::SeqCst);
+        world
+            .lifecycle
+            .stop(world.worktree.to_str().unwrap(), None, &world.caller)
+            .unwrap();
+        assert!(
+            removed,
+            "valid unrecorded legacy cleanup was suppressed (startup={startup})"
+        );
+        assert_eq!(docker.removed.load(Ordering::SeqCst), 1);
+    }
 }
 
 #[test]

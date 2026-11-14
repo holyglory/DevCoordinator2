@@ -42,7 +42,7 @@ use crate::repository_config::{TestSpec, load_composed_test_spec, load_test_spec
 use crate::systemd::{SystemdCli, SystemdControl, TransientUnitSpec, UnitProcess};
 use crate::test_admission::{AdmissionError, TestAdmission};
 use crate::test_command::{HostTestCommand, TestCommand};
-use crate::test_containers::TestContainerService;
+use crate::test_containers::{ContainerProtection, TestContainerService};
 use crate::test_databases::{DatabasePool, FixtureRun, add_shared_phases};
 use crate::test_logs::TestLogService;
 use crate::test_state::{
@@ -571,7 +571,7 @@ impl TestLifecycle {
             ("devcoordinator2.run".into(), summary.run_id.clone()),
         ]);
         if let Ok(containers) = self.inner.docker.list_ids_by_labels(&labels) {
-            self.remove_containers(&containers);
+            self.remove_containers_scoped(&containers, worktree, Some(&summary.run_id));
         }
         let now = self.timestamp()?;
         let elapsed = time::PrimitiveDateTime::parse(&summary.started_at, TIMESTAMP_FORMAT)
@@ -922,7 +922,7 @@ impl TestLifecycle {
             .admission
             .start_guard_for(&registered.worktree_id)
             .map_err(admission_error)?;
-        let superseded_run_id = self.supersede_prior(&registered.worktree_id)?;
+        let superseded_run_id = self.supersede_prior(&worktree, &registered.worktree_id)?;
         let run_id = self.run_id()?;
         let prepared = self
             .inner
@@ -1864,9 +1864,8 @@ impl TestLifecycle {
             ),
             ("devcoordinator2.purpose".into(), "test".into()),
         ]);
-        if let Ok(mut containers) = self.inner.docker.list_ids_by_labels(&labels) {
-            containers.retain(|container| !recorded.contains(container));
-            self.remove_containers(&containers);
+        if let Ok(containers) = self.inner.docker.list_ids_by_labels(&labels) {
+            self.remove_containers(&containers, &recorded);
         }
         self.reconcile_orphans()?;
         self.inner.admission.reset().map_err(admission_error)
@@ -2374,11 +2373,13 @@ impl TestLifecycle {
         {
             status = TestStatus::Failed;
         }
-        self.remove_containers(
+        self.remove_containers_scoped(
             &handle
                 .containers
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner),
+            &handle.worktree,
+            Some(&handle.run_id),
         );
         let mut summary = initial_summary(
             &handle.run_id,
@@ -2568,7 +2569,11 @@ impl TestLifecycle {
         }
     }
 
-    fn supersede_prior(&self, worktree_id: &str) -> Result<Option<String>, ProtocolError> {
+    fn supersede_prior(
+        &self,
+        worktree: &Path,
+        worktree_id: &str,
+    ) -> Result<Option<String>, ProtocolError> {
         let mut superseded_run_id = None;
         let previous = self
             .inner
@@ -2626,7 +2631,7 @@ impl TestLifecycle {
         ]);
         if let Ok(mut containers) = self.inner.docker.list_ids_by_labels(&labels) {
             containers.retain(|container| !self.inner.databases.owns(container));
-            self.remove_containers(&containers);
+            self.remove_containers_scoped(&containers, worktree, None);
         }
         Ok(superseded_run_id)
     }
@@ -2651,14 +2656,32 @@ impl TestLifecycle {
         self.inner.systemd.reset_failed(unit).map_err(systemd_error)
     }
 
-    fn remove_containers(&self, containers: &[ExactContainerId]) {
+    fn remove_containers_scoped(
+        &self,
+        containers: &[ExactContainerId],
+        worktree: &Path,
+        run_id: Option<&str>,
+    ) {
+        if containers.is_empty() {
+            return;
+        }
+        if let Ok(protection) = self
+            .inner
+            .container_service
+            .protection_for_scope(worktree, run_id)
+        {
+            self.remove_containers(containers, &protection);
+        }
+    }
+
+    fn remove_containers(&self, containers: &[ExactContainerId], protection: &ContainerProtection) {
         for container in containers {
             // Typed ownership has its own durable cleanup receipt and lease.
             // Keep this fallback only for containers from the legacy path.
             if !matches!(
                 self.inner
                     .container_service
-                    .is_recorded_container(container),
+                    .is_recorded_container(container, protection),
                 Ok(false)
             ) {
                 continue;
@@ -2673,7 +2696,7 @@ impl TestLifecycle {
         run_id: &str,
         containers: &[ExactContainerId],
     ) {
-        self.remove_containers(containers);
+        self.remove_containers_scoped(containers, worktree, Some(run_id));
         let _ = self.inner.capacity.unregister_run(run_id);
         let _ = self.inner.admission.finished(run_id);
         self.cleanup_unstarted(worktree, run_id);
