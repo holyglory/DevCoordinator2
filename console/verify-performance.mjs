@@ -148,7 +148,12 @@ export async function verifyPerformance({ page, daemon, check, scenario, baseUrl
   verify('both grouping charts and outcome composition are visible', await page.locator('.performance-distribution').count() === 2 && await page.locator('.performance-outcome-table .performance-stack').count() === 3);
   for (const chart of await page.locator('.performance-distribution').all()) {
     const group = chart.locator('.performance-legend .performance-token-detail').first();
-    verify('group details do not expose unavailable component popovers', await group.count() === 0);
+    if (await group.count()) {
+      await group.locator('button').click();
+      const details = await group.locator('.performance-token-popover').innerText();
+      verify('group details show same-scope provider components when supplied', details.includes('Cached input') && !/Cached input\s+—/.test(details));
+      await group.locator('button').click();
+    } else verify('group details omit unavailable component popovers', true);
   }
   verify('cost matrix shows API-equivalent estimates', await page.locator('.performance-cost-matrix').count() === 1 && (await page.locator('.performance-cost-matrix').innerText()).includes('API-equivalent USD'));
   await page.locator('.performance-exact summary').first().click();
