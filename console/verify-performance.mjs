@@ -90,7 +90,7 @@ export async function verifyPerformance({ page, daemon, check, scenario, baseUrl
   const delayedTokenRequest = page.waitForRequest(request => request.url().endsWith('/performance.overview'));
   await page.goto(`${baseUrl}#/performance/${REPO}`);
   await delayedTokenRequest;
-  await page.waitForTimeout(1100);
+  await page.locator('[data-usage-loading]').waitFor({ state: 'visible', timeout: 5000 });
   verify('slow token reads show inline progress after one second', await page.locator('[data-usage-loading]').isVisible() && (await page.locator('[data-usage-loading]').innerText()).includes('Loading token usage'));
   daemon.releaseDelayed();
   await page.waitForFunction(() => document.querySelector('[data-performance-period-total]')?.textContent.includes('6.4'), null, { timeout: 15000 });
@@ -99,7 +99,7 @@ export async function verifyPerformance({ page, daemon, check, scenario, baseUrl
   await page.goto('about:blank');
   await page.goto(`${baseUrl}#/performance/${REPO}`);
   await page.waitForFunction(() => document.querySelector('[data-performance-coverage]')?.textContent.includes('Loading usage'));
-  await page.waitForTimeout(1100);
+  await page.locator('[data-usage-loading]').waitFor({ state: 'visible', timeout: 5000 });
   verify('pending measurements show an evidence-based remaining-time estimate', await page.locator('[data-usage-loading]').isVisible() && (await page.locator('[data-usage-loading]').innerText()).includes('Estimated remaining: about 2 min'));
   verify('pending measurements do not claim unavailable or empty data', (await page.locator('[data-performance-charts]').innerText()).includes('Loading token breakdowns') && (await page.locator('[data-performance-outcomes]').innerText()).includes('Loading outcomes') && (await page.locator('[data-performance-period-total]').innerText()).includes('Loading') && (await page.locator('[data-performance-lifetime]').innerText()).includes('Loading'));
   const initialQueries = daemon.calls.filter(call => call.operation === 'performance.overview').map(call => call.params);

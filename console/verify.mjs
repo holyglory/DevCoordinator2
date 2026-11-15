@@ -1128,7 +1128,7 @@ async function main() {
       const delayedUsageRequest = page.waitForRequest(request => request.url().endsWith('/usage.repository'));
       await page.goto(`http://${HOST}:${port}/#/usage/${REPO}`);
       await delayedUsageRequest;
-      await page.waitForTimeout(1100);
+      await page.locator('[data-usage-loading]').waitFor({ state: 'visible', timeout: 5000 });
       check('usage-only: slow repository reads show progress after one second', await page.locator('[data-usage-loading]').isVisible() && (await page.locator('[data-usage-loading]').innerText()).includes('Loading token usage'));
       daemon.releaseDelayed();
       await page.waitForSelector('.usage-phase-chart');
