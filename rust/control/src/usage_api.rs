@@ -134,15 +134,15 @@ impl State {
                 .retain(|(at, _)| now.duration_since(*at) < PROFILE_RETENTION);
             !history.samples.is_empty()
         });
-        if !self.profiles.contains_key(&profile) && self.profiles.len() >= MAX_PROFILES {
-            if let Some(oldest) = self
+        if !self.profiles.contains_key(&profile)
+            && self.profiles.len() >= MAX_PROFILES
+            && let Some(oldest) = self
                 .profiles
                 .iter()
                 .min_by_key(|(_, history)| history.samples.front().map(|(at, _)| *at))
                 .map(|(key, _)| key.clone())
-            {
-                self.profiles.remove(&oldest);
-            }
+        {
+            self.profiles.remove(&oldest);
         }
         let history = self.profiles.entry(profile).or_default();
         history.samples.push_back((now, duration_ms));
@@ -295,6 +295,10 @@ fn query_key(
     )
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "The timing profile must match the complete source query scope"
+)]
 fn profile_key(
     source: &CodexUsageSource,
     repository: Option<&str>,
@@ -336,6 +340,10 @@ fn profile_key(
         .collect())
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "The cache key must retain the complete source query scope"
+)]
 fn full_query_key(
     source: &CodexUsageSource,
     repository: Option<&str>,
@@ -762,9 +770,9 @@ impl CollectorApi {
             }
             // Freshness triggers one revalidation; it does not erase a
             // completed exact-query observation before its caller can read it.
-            if saved.is_some() {
+            if let Some(saved) = saved {
                 return SummaryRead::cached_with_loading(
-                    saved.expect("saved summary checked above"),
+                    saved,
                     "api_refresh_pending",
                     loading_from_state(&state, &key, &profile, Instant::now()),
                 );

@@ -70,28 +70,28 @@ impl CodexUsage {
                     reports.push((uid, report));
                 }
                 Ok((_, Err(reason))) | Err(reason) => {
-                    if loading.is_none() && super::collector_api::is_pending(&reason) {
-                        if let Some(source) = self.config.codex_usage_sources.get(index)
-                            && let Ok(key) = self.repository_key(source, repository, now_ms, false)
-                            && let Ok(contexts) = crate::usage_context::read(
-                                &self.authority,
-                                source.uid,
-                                &repository.repository_id,
-                                start_ms,
-                                end_ms,
-                            )
-                        {
-                            loading = self.api.loading_for(
-                                source,
-                                Some(&key),
-                                None,
-                                true,
-                                workstream,
-                                &contexts.bindings,
-                                start_ms,
-                                end_ms,
-                            );
-                        }
+                    if loading.is_none()
+                        && super::collector_api::is_pending(&reason)
+                        && let Some(source) = self.config.codex_usage_sources.get(index)
+                        && let Ok(key) = self.repository_key(source, repository, now_ms, false)
+                        && let Ok(contexts) = crate::usage_context::read(
+                            &self.authority,
+                            source.uid,
+                            &repository.repository_id,
+                            start_ms,
+                            end_ms,
+                        )
+                    {
+                        loading = self.api.loading_for(
+                            source,
+                            Some(&key),
+                            None,
+                            true,
+                            workstream,
+                            &contexts.bindings,
+                            start_ms,
+                            end_ms,
+                        );
                     }
                     increment(&mut failures, &reason)
                 }
