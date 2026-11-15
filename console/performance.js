@@ -42,13 +42,18 @@ window.DevCoordinatorPerformance = (() => {
     }
     const costAmount = cost => usd(cost?.estimated_usd_micros);
     const totalSource = usage => usage?.totals || usage?.outcomes?.totals?.cost || null;
+    const pendingUsageReasons = new Set(['api_refresh_pending', 'api_source_busy', 'api_busy']);
+    const usageRefreshPending = coverage => {
+      const reasons = Object.keys(coverage?.unavailable_reasons || {});
+      return reasons.some(reason => pendingUsageReasons.has(reason)) || (!reasons.length && !!coverage?.snapshot?.refreshing);
+    };
     const coverageStatusText = coverage => {
       const snapshot = coverage?.snapshot;
       const unavailableReasons = Object.keys(coverage?.unavailable_reasons || {});
       // A refresh can remain marked as active after the coordinator has
       // established that no source can answer this request. Keep that state
       // truthful instead of leaving the page saying "Loading usage…" forever.
-      if (coverage?.state === 'unavailable' && !snapshot?.updated_at_ms && unavailableReasons.length) {
+      if (coverage?.state === 'unavailable' && !snapshot?.updated_at_ms && unavailableReasons.length && !usageRefreshPending(coverage)) {
         return coverageText({ ...coverage, snapshot: snapshot ? { ...snapshot, refreshing: false } : snapshot });
       }
       return coverageText(coverage);
@@ -86,7 +91,7 @@ window.DevCoordinatorPerformance = (() => {
       const find = name => root.querySelector(`[data-performance-${name}]`);
       const requests = { repository_id: repositoryId, window_start_ms: start, window_end_ms: end, outcome_limit: 5 };
       let currentUsage = null; let reviewData = null; let historyBefore = session.history?.next_before ?? null; let revisionBefore = null;
-      let periodRefreshTimer = null;
+      const refreshTimers = new Map();
       function route(review, overrides = {}) {
         const p = new URLSearchParams({ range, from: String(start), to: String(end), ...overrides });
         if (review) p.set('review', review);
@@ -100,21 +105,20 @@ window.DevCoordinatorPerformance = (() => {
         target.innerHTML = `<p role="alert">${esc(message)}</p><button type="button" class="btn btn-small"><span data-i18n="performance.retry_942087">Retry</span></button>`;
         target.querySelector('button').addEventListener('click', retry);
       }
-      function clearPeriodRefresh() {
-        if (periodRefreshTimer) window.clearTimeout(periodRefreshTimer);
-        periodRefreshTimer = null;
+      function clearRefresh(name) {
+        window.clearTimeout(refreshTimers.get(name));
+        refreshTimers.delete(name);
       }
-      function periodNeedsRefresh(data) {
+      function needsRefresh(data) {
         const coverage = data?.usage?.coverage || data?.coverage;
-        if (coverage?.snapshot?.refreshing) return true;
-        return Object.keys(coverage?.unavailable_reasons || {}).some(reason => ['api_refresh_pending', 'api_source_busy', 'api_busy', 'query_budget_exhausted'].includes(reason));
+        return usageRefreshPending(coverage);
       }
-      function schedulePeriodRefresh() {
-        if (periodRefreshTimer || signal.aborted) return;
-        periodRefreshTimer = window.setTimeout(() => {
-          periodRefreshTimer = null;
-          if (active()) loadPeriod(true);
-        }, 5000);
+      function scheduleRefresh(name, readAgain) {
+        if (refreshTimers.has(name) || signal.aborted) return;
+        refreshTimers.set(name, window.setTimeout(() => {
+          refreshTimers.delete(name);
+          if (active()) readAgain(true);
+        }, 5000));
       }
       async function read(operation, params, useCache = true) {
         const key = `${operation}:${JSON.stringify(params)}`; const saved = cache.get(key);
@@ -238,16 +242,23 @@ window.DevCoordinatorPerformance = (() => {
           find('period-cost').innerHTML = esc(costAmount(data.cost));
           find('cost-status').textContent = `${costState(data.cost)} · Standard API basis`;
           if (!reference) {
-            if (data.usage) showUsage(session.periodUsage?.start === start && session.periodUsage?.end === end ? session.periodUsage.usage : data.usage);
+            if (data.usage) showUsage(!waitForRefresh && session.periodUsage?.start === start && session.periodUsage?.end === end ? session.periodUsage.usage : data.usage);
             if (session.scroll) window.scrollTo({ top: session.scroll });
           }
-          if (periodNeedsRefresh(data)) schedulePeriodRefresh();
-          else clearPeriodRefresh();
+          if (needsRefresh(data)) scheduleRefresh('period', loadPeriod);
+          else clearRefresh('period');
         }
         catch (error) { if (active()) { window.DevCoordinatorI18n.text(find('period-total'), "performance.unavailable_ca1844"); if (!reference) { window.DevCoordinatorI18n.text(find('coverage'), "performance.measurements_could_not_be_loaded_77193b"); window.DevCoordinatorI18n.text(find('outcomes'), "performance.measurements_could_not_be_loaded_77193b"); errorPanel(find('charts'), error.message, loadPeriod); } } }
       }
-      async function loadLifetime() {
-        try { const data = await read('performance.overview', { repository_id: repositoryId, window_start_ms: 0, window_end_ms: session.lifetimeEnd, totals_only: true }); if (!active()) return; find('lifetime').innerHTML = tokenDetail('All recorded total', data.total_tokens, data.totals); find('lifetime').title = coverageStatusText(data.coverage); }
+      async function loadLifetime(waitForRefresh = false) {
+        try {
+          const data = await read('performance.overview', { repository_id: repositoryId, window_start_ms: 0, window_end_ms: session.lifetimeEnd, totals_only: true }, !waitForRefresh);
+          if (!active()) return;
+          find('lifetime').innerHTML = tokenDetail('All recorded total', data.total_tokens, data.totals);
+          find('lifetime').title = coverageStatusText(data.coverage);
+          if (needsRefresh(data)) scheduleRefresh('lifetime', loadLifetime);
+          else clearRefresh('lifetime');
+        }
         catch (error) { if (active()) { window.DevCoordinatorI18n.text(find('lifetime'), "performance.unavailable_ca1844"); find('lifetime').title = error.message; } }
       }
       async function loadReview() {
@@ -256,7 +267,7 @@ window.DevCoordinatorPerformance = (() => {
       }
       await Promise.allSettled([loadHistory(), loadPeriod(), loadLifetime(), ...(reference ? [loadReview()] : [])]);
       if (active()) root.style.minHeight = '';
-      signal.addEventListener('abort', () => { clearPeriodRefresh(); root.style.minHeight = ''; }, { once: true });
+      signal.addEventListener('abort', () => { for (const name of refreshTimers.keys()) clearRefresh(name); root.style.minHeight = ''; }, { once: true });
     }
     return { render };
   }
