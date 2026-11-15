@@ -52,6 +52,16 @@ export async function verifyPerformance({ page, daemon, check, scenario, baseUrl
     return { grid: topStyle.display === 'grid', headingTop: heading.getBoundingClientRect().top, totalsTop: totals.getBoundingClientRect().top };
   });
   verify('wide header and totals share the same top edge', !topGeometry?.grid || Math.abs(topGeometry.headingTop - topGeometry.totalsTop) <= 1);
+  daemon.setScenario({ ...scenario, performancePendingOnce: true });
+  await page.reload();
+  await page.locator('[data-performance-history] tbody tr').first().waitFor();
+  await page.waitForFunction(() => document.querySelector('[data-performance-coverage]')?.textContent.includes('Usage data unavailable'));
+  await page.waitForFunction(() => document.querySelector('[data-performance-period-total]')?.textContent.includes('6.4'), { timeout: 15000 });
+  verify('pending overview refresh eventually paints measured tokens', (await page.locator('[data-performance-period-total]').innerText()).includes('6.4') && daemon.calls.filter(call => call.operation === 'performance.overview' && !call.params.totals_only).length >= 2);
+  daemon.setScenario(scenario);
+  await page.reload();
+  await page.locator('[data-performance-history] tbody tr').first().waitFor();
+  await page.waitForFunction(() => document.querySelector('[data-performance-lifetime]')?.textContent.includes('32'));
   verify('performance is a repository work view', await page.locator('#workspace-work-views a[aria-current]').innerText() === 'Performance');
   verify('overall and period totals are distinct', (await page.locator('[data-performance-lifetime]').innerText()).includes('32') && (await page.locator('[data-performance-period-total]').innerText()).includes('6.4'));
   await page.locator('[data-performance-period-total] .performance-token-detail-button').click();

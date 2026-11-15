@@ -460,7 +460,7 @@ async function startFakeDaemon(dir) {
   const connections = new Set(), idleWaiters = new Set();
   let pendingHandlers = 0, draining = false;
   const notifyIdle = () => { if (!connections.size && !pendingHandlers) for (const resolve of [...idleWaiters]) resolve(); };
-  const mutable = { stopped: false, serviceStopped: false, taskUpdates: new Map(), createdTasks: [], previewRequested: false, failNextTaskUpdate: false, failNextLogCatalog: false, failNextLogRead: false, failNextLogPage: false, usageCollectionReads: 0, capacityCap: 80, logAge: 86400, logDepth: 3, evidenceImage: ONE_PIXEL_PNG, evidenceWidth: 1, evidenceHeight: 1, evidenceFeedback: [], feedbackSequence: 0 };
+  const mutable = { stopped: false, serviceStopped: false, taskUpdates: new Map(), createdTasks: [], previewRequested: false, failNextTaskUpdate: false, failNextLogCatalog: false, failNextLogRead: false, failNextLogPage: false, usageCollectionReads: 0, performancePendingServed: false, capacityCap: 80, logAge: 86400, logDepth: 3, evidenceImage: ONE_PIXEL_PNG, evidenceWidth: 1, evidenceHeight: 1, evidenceFeedback: [], feedbackSequence: 0 };
   const evidenceImage = (imageId, kind = 'viewport') => ({
     status: 'available', image_id: imageId, kind, mime: 'image/png',
     size: mutable.evidenceImage.length,
@@ -606,7 +606,11 @@ async function startFakeDaemon(dir) {
       }
       if (scenario.denied && ADMIN_ONLY.includes(cmd)) return reply({ ok: false, error: { code: 'permission_denied', message: `${cmd} requires administrator`, detail: '' } });
       if (cmd.startsWith('performance.') && !scenario.admin) return reply({ ok:false, error:{code:'permission_denied',message:'Administrator access required',detail:''} });
-      if (cmd.startsWith('performance.')) return reply({ok:true,data:performanceFixture(cmd,req.params,scenario)});
+      if (cmd.startsWith('performance.')) {
+        const pending = cmd === 'performance.overview' && !req.params.totals_only && scenario.performancePendingOnce && !mutable.performancePendingServed;
+        if (pending) mutable.performancePendingServed = true;
+        return reply({ok:true,data:performanceFixture(cmd,req.params,pending ? {...scenario, usageUnavailable:true, performanceRefreshPending:true} : scenario)});
+      }
       if (scenario.denied && OPERATOR_ONLY.includes(cmd)) return reply({ ok: false, error: { code: 'permission_denied', message: `${cmd} requires operator`, detail: '' } });
       const artifacts = artifactResponse(cmd, req.params, scenario);
       if (artifacts) return reply(artifacts);
@@ -894,7 +898,7 @@ async function startFakeDaemon(dir) {
   return {
     socketPath,
     calls,
-    setScenario: (s) => { draining = false; for (const release of headerReplies) release(); headerReplies.clear(); mutable.headersReleased = false; for (const release of delayedReplies) release(); delayedReplies.clear(); scenario = s; mutable.cacheReleased = false; mutable.testSweepMutated = false; mutable.stopped = false; mutable.serviceStopped = false; mutable.taskUpdates.clear(); mutable.createdTasks.length = 0; mutable.previewRequested = false; mutable.failNextTaskUpdate = false; mutable.failNextLogCatalog = !!s.logCatalogError; mutable.failNextLogRead = !!s.logReadError; mutable.failNextLogPage = !!s.logPageError; mutable.usageCollectionReads = 0; mutable.capacityCap = 80; mutable.logAge = 86400; mutable.logDepth = 3; mutable.evidenceFeedback.length = 0; mutable.feedbackSequence = 0; calls.length = 0; },
+    setScenario: (s) => { draining = false; for (const release of headerReplies) release(); headerReplies.clear(); mutable.headersReleased = false; for (const release of delayedReplies) release(); delayedReplies.clear(); scenario = s; mutable.cacheReleased = false; mutable.testSweepMutated = false; mutable.stopped = false; mutable.serviceStopped = false; mutable.taskUpdates.clear(); mutable.createdTasks.length = 0; mutable.previewRequested = false; mutable.failNextTaskUpdate = false; mutable.failNextLogCatalog = !!s.logCatalogError; mutable.failNextLogRead = !!s.logReadError; mutable.failNextLogPage = !!s.logPageError; mutable.usageCollectionReads = 0; mutable.performancePendingServed = false; mutable.capacityCap = 80; mutable.logAge = 86400; mutable.logDepth = 3; mutable.evidenceFeedback.length = 0; mutable.feedbackSequence = 0; calls.length = 0; },
     setEvidenceImage: (bytes, width, height) => { mutable.evidenceImage = Buffer.from(bytes); mutable.evidenceWidth = width; mutable.evidenceHeight = height; },
     failNextTaskUpdate: () => { mutable.failNextTaskUpdate = true; },
     mutateTestSweep: () => { mutable.testSweepMutated = true; },
