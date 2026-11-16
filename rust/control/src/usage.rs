@@ -464,7 +464,7 @@ impl UsageService {
             end - start,
             1,
             true,
-            Some(Instant::now() + QUERY_TIMEOUT),
+            Some(Instant::now() + collector_api::API_BUDGET),
             Projection::Tokens,
             rate_cards,
             None,
@@ -812,7 +812,8 @@ impl CodexUsage {
         let mut failures = BTreeMap::new();
         let mut loading = None;
         let mut progress = Vec::new();
-        let deadline = Some(deadline.unwrap_or_else(|| Instant::now() + QUERY_TIMEOUT));
+        let source_deadline = deadline.unwrap_or_else(|| Instant::now() + QUERY_TIMEOUT);
+        let deadline = Some(source_deadline);
         for source in &self.config.codex_usage_sources {
             let source_snapshot = source_progress(source);
             let source_indexing = source_snapshot
@@ -840,7 +841,13 @@ impl CodexUsage {
                 increment(&mut failures, "worktree_mapping_unavailable");
                 continue;
             }
-            match self.repository_key(source, repository, now_ms, resolve_missing) {
+            match self.repository_key_until(
+                source,
+                repository,
+                now_ms,
+                resolve_missing,
+                source_deadline,
+            ) {
                 Ok(key) => {
                     match self.read_source(
                         source,
@@ -863,7 +870,13 @@ impl CodexUsage {
                         Err(reason) if reason == "mapping_unavailable" && resolve_missing => {
                             self.delete_link(source.uid, &repository.repository_id)?;
                             match self
-                                .repository_key(source, repository, now_ms, true)
+                                .repository_key_until(
+                                    source,
+                                    repository,
+                                    now_ms,
+                                    true,
+                                    source_deadline,
+                                )
                                 .and_then(|key| {
                                     self.read_source(
                                         source,

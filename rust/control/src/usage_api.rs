@@ -638,6 +638,7 @@ impl CollectorApi {
         end: u64,
         deadline: Instant,
     ) -> Result<SummaryRead, String> {
+        let deadline = deadline.min(Instant::now() + API_BUDGET);
         let path = source.api_socket.as_ref().ok_or("api_not_configured")?;
         let key = full_query_key(
             source,
@@ -669,102 +670,123 @@ impl CollectorApi {
             .saturating_add(source.codex_home.as_os_str().len());
         let (guard, changed) = &*self.0;
         let mut state = guard.lock().map_err(|_| "api_busy")?;
-        state
-            .failed_until
-            .retain(|_, (until, _)| *until > Instant::now());
-        state
-            .cold_waiters
-            .retain(|_, waiter| waiter.touched.elapsed() < COLD_WAITER_FOR);
-        if let Some(entry) = state
-            .entries
-            .get(&key)
-            .filter(|entry| entry.loaded.elapsed() < FRESH_FOR)
-        {
-            return Ok(SummaryRead {
-                summary: entry.report.clone(),
-                refresh_reason: None,
-                loading: None,
-            });
-        }
-        let saved = state.entries.get(&key).map(|entry| entry.report.clone());
-        if let Some((_, reason)) = state.failed_until.get(&key) {
-            return SummaryRead::cached_or_error(saved, reason);
-        }
-        if !state.inflight.contains_key(&key) {
-            if state.inflight.values().any(|flight| &flight.source == path) {
-                if saved.is_none() {
-                    // Remember only bounded admission metadata, not another
-                    // worker or query payload. Its next foreground retry
-                    // claims the existing slot after this read completes.
-                    state.remember_cold_waiter(&key, path);
-                }
-                return SummaryRead::cached_or_error(saved, "api_source_busy");
-            }
-            if saved.is_some()
-                && state
-                    .cold_waiters
-                    .iter()
-                    .any(|(waiting_key, waiter)| waiting_key != &key && &waiter.source == path)
-            {
-                // A repeated stale read already has useful measurements.
-                // Give a still-polling cold query a turn before revalidating
-                // those measurements again, without borrowing its scope.
-                return SummaryRead::cached_or_error(saved, "api_source_busy");
-            }
-            state.cold_waiters.remove(&key);
-            let inflight_bytes = state.pending_bytes();
-            if state.inflight.len() >= MAX_CACHED
-                || request_bytes > MAX_INFLIGHT_BYTES.saturating_sub(inflight_bytes)
-            {
-                return SummaryRead::cached_or_error(saved, "api_busy");
-            }
-            state.inflight.insert(
-                key.clone(),
-                Flight {
-                    source: path.clone(),
-                    bytes: request_bytes,
-                    started: Instant::now(),
-                    profile: profile.clone(),
-                },
-            );
-            let cache = self.clone();
-            let request_key = key.clone();
-            let source = source.clone();
-            let repository = repository.map(str::to_owned);
-            let worktree_keys = worktree_keys.map(<[String]>::to_vec);
-            let workstream = workstream.map(str::to_owned);
-            let bindings = bindings.to_vec();
-            drop(state);
-            // A bounded source read may outlive this foreground request. It
-            // remains owned by this exact-query cache until completion; another
-            // request for the same source cannot launch a competing cold read.
-            let spawned = std::thread::Builder::new()
-                .name("usage-api-refresh".into())
-                .spawn(move || {
-                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        fetch(
-                            &source,
-                            SummaryQuery {
-                                repository: repository.as_deref(),
-                                worktree_keys: worktree_keys.as_deref(),
-                                include_unassigned,
-                                workstream: workstream.as_deref(),
-                                bindings: &bindings,
-                                start,
-                                end,
-                            },
-                            Instant::now() + SOURCE_READ_BUDGET,
-                        )
-                    }))
-                    .unwrap_or_else(|_| Err("api_refresh_failed".into()));
-                    cache.finish(request_key, result);
-                });
-            if spawned.is_err() {
-                self.finish(key.clone(), Err("api_refresh_failed".into()));
-            }
-            state = guard.lock().map_err(|_| "api_busy")?;
-        }
+        let mut waited_for_source = false;
         loop {
+            state
+                .failed_until
+                .retain(|_, (until, _)| *until > Instant::now());
+            state
+                .cold_waiters
+                .retain(|_, waiter| waiter.touched.elapsed() < COLD_WAITER_FOR);
+            if let Some(entry) = state
+                .entries
+                .get(&key)
+                .filter(|entry| entry.loaded.elapsed() < FRESH_FOR)
+            {
+                return Ok(SummaryRead {
+                    summary: entry.report.clone(),
+                    refresh_reason: None,
+                    loading: None,
+                });
+            }
+            let saved = state.entries.get(&key).map(|entry| entry.report.clone());
+            if let Some((_, reason)) = state.failed_until.get(&key) {
+                return SummaryRead::cached_or_error(saved, reason);
+            }
+            if !state.inflight.contains_key(&key) {
+                if state.inflight.values().any(|flight| &flight.source == path) {
+                    if let Some(saved) = saved {
+                        return SummaryRead::cached_or_error(Some(saved), "api_source_busy");
+                    }
+                    // Remember only bounded admission metadata, not another
+                    // worker or query payload. A cold foreground continuation
+                    // may claim the existing slot after this read completes.
+                    #[cfg(test)]
+                    let observer_notification = !state.cold_waiters.contains_key(&key);
+                    state.remember_cold_waiter(&key, path);
+                    #[cfg(test)]
+                    if observer_notification {
+                        changed.notify_all();
+                    }
+                    let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+                        return Err("api_source_busy".into());
+                    };
+                    waited_for_source = true;
+                    let (updated, _) = changed
+                        .wait_timeout(state, remaining)
+                        .map_err(|_| "api_busy")?;
+                    state = updated;
+                    // Completion or another waiter may have changed this exact
+                    // key. Recheck cache, failures and ownership under the lock.
+                    continue;
+                }
+                if waited_for_source && Instant::now() >= deadline {
+                    return SummaryRead::cached_or_error(saved, "api_source_busy");
+                }
+                if saved.is_some()
+                    && state
+                        .cold_waiters
+                        .iter()
+                        .any(|(waiting_key, waiter)| waiting_key != &key && &waiter.source == path)
+                {
+                    // A repeated stale read already has useful measurements.
+                    // Give a still-polling cold query a turn before revalidating
+                    // those measurements again, without borrowing its scope.
+                    return SummaryRead::cached_or_error(saved, "api_source_busy");
+                }
+                state.cold_waiters.remove(&key);
+                let inflight_bytes = state.pending_bytes();
+                if state.inflight.len() >= MAX_CACHED
+                    || request_bytes > MAX_INFLIGHT_BYTES.saturating_sub(inflight_bytes)
+                {
+                    return SummaryRead::cached_or_error(saved, "api_busy");
+                }
+                state.inflight.insert(
+                    key.clone(),
+                    Flight {
+                        source: path.clone(),
+                        bytes: request_bytes,
+                        started: Instant::now(),
+                        profile: profile.clone(),
+                    },
+                );
+                let cache = self.clone();
+                let request_key = key.clone();
+                let source = source.clone();
+                let repository = repository.map(str::to_owned);
+                let worktree_keys = worktree_keys.map(<[String]>::to_vec);
+                let workstream = workstream.map(str::to_owned);
+                let bindings = bindings.to_vec();
+                drop(state);
+                // A bounded source read may outlive this foreground request. It
+                // remains owned by this exact-query cache until completion; another
+                // request for the same source cannot launch a competing cold read.
+                let spawned = std::thread::Builder::new()
+                    .name("usage-api-refresh".into())
+                    .spawn(move || {
+                        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            fetch(
+                                &source,
+                                SummaryQuery {
+                                    repository: repository.as_deref(),
+                                    worktree_keys: worktree_keys.as_deref(),
+                                    include_unassigned,
+                                    workstream: workstream.as_deref(),
+                                    bindings: &bindings,
+                                    start,
+                                    end,
+                                },
+                                Instant::now() + SOURCE_READ_BUDGET,
+                            )
+                        }))
+                        .unwrap_or_else(|_| Err("api_refresh_failed".into()));
+                        cache.finish(request_key, result);
+                    });
+                if spawned.is_err() {
+                    self.finish(key.clone(), Err("api_refresh_failed".into()));
+                }
+                state = guard.lock().map_err(|_| "api_busy")?;
+            }
             if let Some(entry) = state
                 .entries
                 .get(&key)
@@ -794,13 +816,10 @@ impl CollectorApi {
             if remaining.is_zero() {
                 return Err("api_refresh_pending".into());
             }
-            let (updated, waited) = changed
+            let (updated, _) = changed
                 .wait_timeout(state, remaining)
                 .map_err(|_| "api_busy")?;
             state = updated;
-            if waited.timed_out() && state.inflight.contains_key(&key) {
-                return Err("api_refresh_pending".into());
-            }
         }
     }
 

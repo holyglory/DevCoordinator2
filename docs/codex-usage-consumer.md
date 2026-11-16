@@ -150,6 +150,15 @@ query payloads or additional workers. Hints expire after fifteen seconds
 without a retry and share the existing admission-memory budget. Other sources
 remain independent.
 
+A cold foreground request may wait on the existing source-completion condition
+for an occupied source within its supplied budget, capped at 650 milliseconds.
+After a wake it rechecks the exact cache key, failures, and source ownership
+before admitting or joining a read. Waiting for a free slot does not reset the
+deadline or create a second producer job. Saved measurements return immediately.
+Ending a foreground wait leaves an already-owned background read intact. The
+repository Usage continuation uses the same condition through its retained
+source cutoff; it does not require another polling worker or public API field.
+
 A failed refresh preserves these measurements with
 `refresh_failed: true` and the precise bounded reason until a successful refresh
 replaces them. Cold failures still have no measurements. Existing memory, byte,
