@@ -14,7 +14,8 @@ use super::{
 use crate::{
     config::Config,
     docker::{DockerCli, DockerControl},
-    metrics_source::run_bounded,
+    metrics_source::{run_bounded, run_bounded_with_limit},
+    repository::WORKTREE_LIST_OUTPUT_LIMIT,
 };
 use devcoordinator2_api::{ProtocolError, storage as api};
 pub use discovery::{DiscoveryBudget, DiscoveryCursor};
@@ -634,6 +635,25 @@ pub(super) fn git_bytes_with_stderr(
     args: &[&str],
     context: &Context,
 ) -> Result<(Vec<u8>, Vec<u8>), ProtocolError> {
+    git_bytes_with_stderr_limit(root, args, context, None)
+}
+
+pub(super) fn git_worktree_bytes(root: &Path, context: &Context) -> Result<Vec<u8>, ProtocolError> {
+    git_bytes_with_stderr_limit(
+        root,
+        &["worktree", "list", "--porcelain", "-z"],
+        context,
+        Some(WORKTREE_LIST_OUTPUT_LIMIT),
+    )
+    .map(|(stdout, _)| stdout)
+}
+
+fn git_bytes_with_stderr_limit(
+    root: &Path,
+    args: &[&str],
+    context: &Context,
+    output_limit: Option<usize>,
+) -> Result<(Vec<u8>, Vec<u8>), ProtocolError> {
     let uid = context
         .repositories
         .iter()
@@ -677,8 +697,16 @@ pub(super) fn git_bytes_with_stderr(
         }
         "/usr/bin/git"
     };
-    let output = run_bounded(Path::new(program), &arguments, Duration::from_secs(30))
-        .ok_or_else(|| unavailable("git_observation_unavailable"))?;
+    let output = match output_limit {
+        Some(limit) => run_bounded_with_limit(
+            Path::new(program),
+            &arguments,
+            Duration::from_secs(30),
+            limit,
+        ),
+        None => run_bounded(Path::new(program), &arguments, Duration::from_secs(30)),
+    }
+    .ok_or_else(|| unavailable("git_observation_unavailable"))?;
     if !output.status.success() || output.truncated {
         return Err(blocked("git_baseline_unverified"));
     }
