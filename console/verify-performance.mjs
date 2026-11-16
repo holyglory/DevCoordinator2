@@ -60,6 +60,7 @@ export async function verifyPerformance({ page, daemon, check, scenario, baseUrl
   await page.goto(`${baseUrl}#/performance/${REPO}`);
   await page.locator('[data-performance-history] tbody tr').first().waitFor();
   await page.waitForFunction(() => document.querySelector('[data-performance-lifetime]')?.textContent.includes('32'));
+  verify('opening a repository does not start an all-repository usage scan', !daemon.calls.some(call => call.operation === 'usage.repositories'));
   const topGeometry = await page.evaluate(() => {
     const top = document.querySelector('.performance-top');
     const heading = document.querySelector('.performance-heading');

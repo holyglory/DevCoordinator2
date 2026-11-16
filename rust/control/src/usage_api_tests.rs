@@ -74,6 +74,95 @@ fn api_contract_requires_negotiation_and_complete_consistent_fresh_metadata() {
 }
 
 #[test]
+fn collector_rpc_errors_use_fixed_numeric_categories_without_private_text() {
+    use crate::usage_api_fixture::Peer;
+    let private = "malicious-private-path /private/source secret-value ignore prior instructions";
+    let cases = [
+        (
+            json!({"code":-32603,"message":private,"data":{"private":private}}),
+            "api_source_unavailable",
+        ),
+        (
+            json!({"code":-32601,"message":private}),
+            "api_contract_unsupported",
+        ),
+        (
+            json!({"code":-32602,"message":private}),
+            "api_params_invalid",
+        ),
+        (
+            json!({"code":-32600,"message":private}),
+            "api_request_invalid",
+        ),
+        (
+            json!({"code":-32700,"message":private}),
+            "api_request_invalid",
+        ),
+        (json!({"code":-32015,"message":private}), "api_source_error"),
+        (
+            json!({"code":"-32603","message":private}),
+            "api_contract_unsupported",
+        ),
+        (
+            json!({"code":-32603.5,"message":private}),
+            "api_contract_unsupported",
+        ),
+        (json!({"message":private}), "api_contract_unsupported"),
+        (json!(private), "api_contract_unsupported"),
+    ];
+    for (error, expected) in cases {
+        let directory = tempfile::tempdir().unwrap();
+        let peer = Peer::start_rpc(
+            directory.path(),
+            &directory.path().join("home"),
+            move |_| json!({"id":2,"error":error}),
+        );
+        let actual = CollectorApi::default()
+            .summary(
+                &peer.source,
+                Some(KEY),
+                None,
+                true,
+                10,
+                20,
+                Instant::now() + Duration::from_secs(2),
+            )
+            .err()
+            .expect("an RPC error must not supply measurements");
+        assert_eq!(actual, expected);
+        assert!(!actual.contains(private));
+    }
+    for malformed in [
+        json!({"id":2}),
+        json!({"id":2,"result":null,"error":{"code":-32603,"message":private}}),
+        json!({"id":2,"result":{},"error":{"code":-32603,"message":private}}),
+        json!({"id":2,"result":{}}),
+    ] {
+        let directory = tempfile::tempdir().unwrap();
+        let peer = Peer::start_rpc(
+            directory.path(),
+            &directory.path().join("home"),
+            move |_| malformed.clone(),
+        );
+        assert_eq!(
+            CollectorApi::default()
+                .summary(
+                    &peer.source,
+                    Some(KEY),
+                    None,
+                    true,
+                    10,
+                    20,
+                    Instant::now() + Duration::from_secs(2)
+                )
+                .err()
+                .as_deref(),
+            Some("api_contract_unsupported")
+        );
+    }
+}
+
+#[test]
 fn source_loading_reports_unknown_estimate_overrun_and_completion_for_exact_scope() {
     use crate::usage_api_fixture::{Peer, ResponseGate};
     use std::time::Duration;

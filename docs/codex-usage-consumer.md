@@ -155,6 +155,16 @@ A failed refresh preserves these measurements with
 replaces them. Cold failures still have no measurements. Existing memory, byte,
 admission, retry and eviction bounds apply; no usage copy is stored durably.
 
+Matching JSON-RPC error replies use fixed categories derived only from their
+integer code: internal error (`-32603`) is `api_source_unavailable`, missing
+method (`-32601`) is `api_contract_unsupported`, invalid parameters (`-32602`)
+is `api_params_invalid`, and invalid request or parse errors (`-32600` or
+`-32700`) are `api_request_invalid`. Other integer error codes are
+`api_source_error`. Missing or malformed codes and ambiguous result/error
+replies remain contract failures. Upstream messages and error data are never
+copied into reports. A source error clears query loading, preserves existing
+measurements with failed-refresh coverage, and can recover on a later read.
+
 Stale source publication remains a coverage gap. Pending journal entries may
 keep its snapshot refreshing, but a successful stale read is not a failed
 refresh. Only a failed source state or an actual refresh error marks failure.
