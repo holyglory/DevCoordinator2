@@ -367,17 +367,28 @@ pub(super) fn cost_from_buckets(buckets: &CostBuckets) -> UsageCost {
         cached_input_usd_micros: known[1].then(|| micros(amounts[1])).flatten(),
         cache_write_usd_micros: known[2].then(|| micros(amounts[2])).flatten(),
         output_usd_micros: known[3].then(|| micros(amounts[3])).flatten(),
-        input_tokens: known_token_components[0].then_some(token_components[0]),
-        cached_input_tokens: known_token_components[1].then_some(token_components[1]),
+        input_tokens: known_token_components[0]
+            .then(|| i64::try_from(token_components[0]).ok())
+            .flatten(),
+        cached_input_tokens: known_token_components[1]
+            .then(|| i64::try_from(token_components[1]).ok())
+            .flatten(),
         cache_write_tokens: known_token_components[2].then_some(token_components[2]),
-        uncached_input_tokens: known_token_components[3].then_some(token_components[3]),
-        output_tokens: known_token_components[4].then_some(token_components[4]),
-        reasoning_tokens: known_token_components[5].then_some(token_components[5]),
-        model_requests: buckets.operations,
-        priced_requests: buckets.operations.saturating_sub(unknown_requests),
-        unknown_requests,
+        uncached_input_tokens: known_token_components[3]
+            .then(|| i64::try_from(token_components[3]).ok())
+            .flatten(),
+        output_tokens: known_token_components[4]
+            .then(|| i64::try_from(token_components[4]).ok())
+            .flatten(),
+        reasoning_tokens: known_token_components[5]
+            .then(|| i64::try_from(token_components[5]).ok())
+            .flatten(),
+        model_requests: Some(buckets.operations),
+        priced_requests: Some(buckets.operations.saturating_sub(unknown_requests)),
+        unknown_requests: Some(unknown_requests),
+        priced_observations: None,
         unknown_tokens,
-        unknown_observations: unknown_requests + buckets.source_gaps,
+        unknown_observations: None,
         rate_card_ref: refs.first().cloned(),
         rate_card_refs: refs,
         matched_rate_cards: cards.into_values().collect(),

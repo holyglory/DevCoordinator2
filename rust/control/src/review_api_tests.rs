@@ -268,6 +268,523 @@ fn mixed_headline_and_rich_sources_keep_deferred_counts_unknown() {
     }
 }
 
+#[test]
+fn signed_components_survive_headline_and_rich_transport_without_changing_totals_or_prices() {
+    for totals_only in [true, false] {
+        for (source_count, output) in [(1, -3), (2, -3), (2, i64::MAX)] {
+            let mut fixture = Fixture::new();
+            let root = fixture._temporary.path();
+            let mut peers = Vec::new();
+            for index in 0..source_count {
+                let path = root.join(format!("signed-{index}"));
+                std::fs::create_dir(&path).unwrap();
+                let mut cap = capability();
+                cap["supportsTokenHeadlines"] = json!(true);
+                peers.push(Peer::with_capability(
+                    &path,
+                    &path.join("home"),
+                    Some(cap),
+                    move |params| {
+                        let mut value = if params["includeReview"] == false {
+                            crate::usage_api_fixture::headline_response(params, START + WEEK)
+                        } else {
+                            priced_response(params)
+                        };
+                        value["report"]["providerTokens"] = json!([
+                        ("total_tokens",135), ("input_tokens",-4),
+                        ("input_tokens_details.cached_tokens",-2),
+                            ("output_tokens",output), ("output_tokens_details.reasoning_tokens",-1),
+                        ("cache_write_input_tokens",7),
+                    ].map(|(category, quantity)| json!({
+                        "category":category,"repositoryBucket":params["repositoryKey"],
+                        "measurementProvenance":"provider_reported","measuredTokens":quantity,
+                        "exactTokens":quantity,"unknownObservations":0,"observationCount":1,
+                    })));
+                        if params["includeReview"] != false {
+                            for (field, quantity) in [
+                                ("inputTokens", -4),
+                                ("cachedInputTokens", -2),
+                                ("uncachedInputTokens", -2),
+                                ("outputTokens", output),
+                                ("reasoningTokens", -1),
+                                ("cacheWriteTokens", 7),
+                            ] {
+                                value["report"]["cost"][field] = json!(quantity);
+                            }
+                        }
+                        value
+                    },
+                ));
+            }
+            fixture.config.codex_usage_sources =
+                peers.iter().map(|peer| peer.source.clone()).collect();
+            let plane = ControlPlane::with_adapters(
+                fixture.config.clone(),
+                fixture.database.clone(),
+                Arc::new(|_: &RouteAccessSection| Ok(())),
+                Arc::new(FixtureClock),
+            )
+            .unwrap();
+            let result = plane
+                .execute(
+                    "performance.overview",
+                    json!({
+                        "repository_id":"project-alpha","window_start_ms":START,
+                        "window_end_ms":START+WEEK,"totals_only":totals_only,
+                    }),
+                    &Caller {
+                        work: None,
+                        ..caller()
+                    },
+                )
+                .unwrap();
+            assert_eq!(result["total_tokens"]["measured"], source_count * 135);
+            for (field, quantity) in [
+                ("input_tokens", -4),
+                ("cached_input_tokens", -2),
+                ("output_tokens", output),
+                ("reasoning_tokens", -1),
+            ] {
+                let expected = quantity
+                    .checked_mul(source_count)
+                    .map_or(Value::Null, |v| json!(v));
+                assert_eq!(result["totals"][field], expected);
+                assert_eq!(result["cost"][field], expected);
+            }
+            assert_eq!(result["cost"]["uncached_input_tokens"], -2 * source_count);
+            assert_eq!(result["cost"]["cache_write_tokens"], 7 * source_count);
+            assert_eq!(
+                result["cost"]["estimated_usd_micros"],
+                if totals_only {
+                    Value::Null
+                } else {
+                    json!(135 * source_count)
+                }
+            );
+            assert_eq!(
+                result["coverage"]["sources"][0]["updated_at_ms"],
+                START + WEEK
+            );
+            if output == i64::MAX {
+                assert_eq!(result["coverage"]["events"]["token_quantity_overflow"], 1);
+                if !totals_only {
+                    assert_eq!(
+                        result["cost"]["unavailable_reasons"]["quantity_overflow"],
+                        1
+                    );
+                }
+            }
+            for peer in &peers {
+                let requests = peer.requests.lock().unwrap();
+                let request = requests
+                    .iter()
+                    .find(|request| request["method"] == "localUsage/summary")
+                    .unwrap();
+                assert_eq!(request["params"]["fromAt"], START);
+                assert_eq!(request["params"]["toAt"], START + WEEK);
+                assert_eq!(request["params"]["repositoryKey"], KEY);
+                assert_eq!(request["params"]["includeReview"], !totals_only);
+            }
+        }
+    }
+    let schema = (devcoordinator2_api::operation("performance.overview")
+        .unwrap()
+        .output_schema)();
+    for (definition, fields) in [
+        (
+            "UsageTotals",
+            &[
+                "input_tokens",
+                "cached_input_tokens",
+                "output_tokens",
+                "reasoning_tokens",
+            ][..],
+        ),
+        (
+            "UsageCost",
+            &[
+                "input_tokens",
+                "cached_input_tokens",
+                "uncached_input_tokens",
+                "output_tokens",
+                "reasoning_tokens",
+            ][..],
+        ),
+    ] {
+        for field in fields {
+            let property = &schema["$defs"][definition]["properties"][*field];
+            assert_eq!(property["format"], "int64");
+            assert!(
+                property.get("minimum").is_none(),
+                "{definition}.{field} accepts signed corrections"
+            );
+            assert!(
+                property["type"]
+                    .as_array()
+                    .unwrap()
+                    .contains(&json!("null"))
+            );
+        }
+    }
+    assert_eq!(
+        schema["$defs"]["UsageTotals"]["properties"]["total_tokens"]["minimum"],
+        0
+    );
+    assert_eq!(
+        schema["$defs"]["UsageCost"]["properties"]["cache_write_tokens"]["minimum"],
+        0
+    );
+}
+
+#[test]
+fn rich_execution_unions_preserve_source_measurements_without_summing_sources() {
+    // The source supplies scalar unions, not interval positions. A second
+    // positive union can overlap the first; a known empty union adds nothing.
+    for (sources, expected_wall, expected_elapsed, expected_exact, expected_unknown) in [
+        (vec![(1000, 0, 800, Some(800), 0)], 1000, 800, Some(800), 0),
+        (vec![(0, 0, 0, Some(0), 0)], 0, 0, Some(0), 0),
+        (vec![(0, 3, 0, None, 3)], 0, 0, None, 3),
+        (vec![(1000, 2, 800, None, 2)], 1000, 800, None, 2),
+        (
+            vec![(1000, 0, 800, Some(800), 0), (1500, 0, 1200, Some(1200), 0)],
+            1500,
+            1200,
+            None,
+            1,
+        ),
+        (
+            vec![(1000, 0, 800, Some(800), 0), (0, 0, 0, Some(0), 0)],
+            1000,
+            800,
+            Some(800),
+            0,
+        ),
+        (
+            vec![(0, 0, 0, Some(0), 0), (1000, 0, 800, Some(800), 0)],
+            1000,
+            800,
+            Some(800),
+            0,
+        ),
+        (
+            vec![(0, 0, 0, Some(0), 0), (0, 0, 0, Some(0), 0)],
+            0,
+            0,
+            Some(0),
+            0,
+        ),
+        (
+            vec![(1000, 0, 800, Some(800), 0), (0, 2, 0, None, 2)],
+            1000,
+            800,
+            None,
+            2,
+        ),
+    ] {
+        let mut fixture = Fixture::new();
+        let root = fixture._temporary.path();
+        let mut peers = Vec::new();
+        for (index, (wall, unknown_wall, elapsed, exact, unknown_elapsed)) in
+            sources.iter().copied().enumerate()
+        {
+            let path = root.join(format!("union-{index}"));
+            std::fs::create_dir(&path).unwrap();
+            peers.push(Peer::start(&path, &path.join("home"), move |params| {
+                let mut value = response(params, START + WEEK, 135);
+                value["review"]["time"]["execution_wall"] =
+                    json!({"measured_ms":wall,"unknown_intervals":unknown_wall});
+                value["review"]["time"]["summed_agent_active"] =
+                    json!({"measured_ms":wall * 2,"unknown_intervals":unknown_wall});
+                value["review"]["outcomes"]["totals"]["elapsedExecutionMs"] =
+                    json!({"measured":elapsed,"exact":exact,"unknown":unknown_elapsed});
+                value["review"]["outcomes"]["unattributed"]["elapsedExecutionMs"] =
+                    json!({"measured":elapsed,"exact":exact,"unknown":unknown_elapsed});
+                value["report"]["measuredExecutionIntervalSumMs"] = json!(9_000);
+                value
+            }));
+        }
+        fixture.config.codex_usage_sources = peers.iter().map(|peer| peer.source.clone()).collect();
+        let plane = ControlPlane::with_adapters(
+            fixture.config.clone(),
+            fixture.database.clone(),
+            Arc::new(|_: &RouteAccessSection| Ok(())),
+            Arc::new(FixtureClock),
+        )
+        .unwrap();
+        let prepared: Prepared = serde_json::from_value(
+            plane
+                .execute(
+                    "review.prepare",
+                    serde_json::to_value(input()).unwrap(),
+                    &Caller {
+                        work: None,
+                        ..caller()
+                    },
+                )
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            prepared.usage.time.execution_wall.measured_ms,
+            expected_wall
+        );
+        assert_eq!(
+            prepared.usage.time.execution_wall.unknown_intervals,
+            expected_unknown
+        );
+        assert_eq!(
+            prepared.usage.time.summed_agent_active.measured_ms,
+            sources.iter().map(|source| source.0 * 2).sum::<u64>()
+        );
+        assert_eq!(
+            prepared.usage.time.summed_agent_active.unknown_intervals,
+            sources.iter().map(|source| source.1).sum::<u64>()
+        );
+        assert_eq!(
+            prepared.usage.outcomes.totals.active_agent_ms.measured, 0,
+            "repository active time is not allocated into an outcome/workstream aggregate"
+        );
+        let measured = &prepared.usage.outcomes.totals.elapsed_execution_ms;
+        assert_eq!(measured.measured, expected_elapsed);
+        assert_eq!(measured.exact, expected_exact);
+        assert_eq!(measured.unknown, expected_unknown);
+        assert!(
+            prepared
+                .usage
+                .coverage
+                .sources
+                .iter()
+                .all(|source| source.measured_execution_interval_sum_ms == Some(9_000)),
+            "diagnostic operation sums remain separate from wall unions"
+        );
+        let performance = plane.execute("performance.overview", json!({
+            "repository_id":"project-alpha","window_start_ms":START,"window_end_ms":START + WEEK
+        }), &Caller { work: None, ..caller() }).unwrap();
+        assert_eq!(
+            performance["usage"]["time"]["execution_wall"]["measured_ms"],
+            expected_wall
+        );
+        assert_eq!(
+            performance["usage"]["outcomes"]["totals"]["elapsedExecutionMs"]["measured"],
+            expected_elapsed
+        );
+        assert_eq!(
+            performance["usage"]["outcomes"]["totals"]["elapsedExecutionMs"]["exact"],
+            json!(expected_exact)
+        );
+        assert_eq!(
+            performance["usage"]["outcomes"]["totals"]["elapsedExecutionMs"]["unknown"],
+            expected_unknown
+        );
+    }
+}
+
+#[test]
+fn rich_cost_reasons_and_observation_units_survive_real_transport() {
+    for source_count in [1, 2] {
+        let mut fixture = Fixture::new();
+        let root = fixture._temporary.path();
+        let mut peers = Vec::new();
+        for index in 0..source_count {
+            let path = root.join(format!("cost-{index}"));
+            std::fs::create_dir(&path).unwrap();
+            peers.push(Peer::start(&path, &path.join("home"), |params| {
+                let mut value = response(params, START + WEEK, 135);
+                value["report"]["cost"] = json!({
+                    "basis":"api_equivalent","currency":"USD","status":"unavailable","processingTier":"standard",
+                    "estimatedUsdMicros":null,"inputUsdMicros":null,"cachedInputUsdMicros":null,"cacheWriteUsdMicros":null,"outputUsdMicros":null,
+                    "inputTokens":135,"uncachedInputTokens":135,"cachedInputTokens":0,"cacheWriteTokens":0,"outputTokens":0,"reasoningTokens":0,"providerTotalTokens":135,
+                    "pricedObservations":0,"unknownObservations":3,"unknownRequests":3,
+                    "rateCardRefs":[],"unavailableReasons":{"rate_card_missing":3}
+                }); value
+            }));
+        }
+        fixture.config.codex_usage_sources = peers.iter().map(|peer| peer.source.clone()).collect();
+        let plane = ControlPlane::with_adapters(
+            fixture.config.clone(),
+            fixture.database.clone(),
+            Arc::new(|_: &RouteAccessSection| Ok(())),
+            Arc::new(FixtureClock),
+        )
+        .unwrap();
+        let prepared = plane
+            .execute(
+                "review.prepare",
+                serde_json::to_value(input()).unwrap(),
+                &Caller {
+                    work: None,
+                    ..caller()
+                },
+            )
+            .unwrap();
+        let cost = &prepared["usage"]["totals"]["cost"];
+        assert_eq!(cost["status"], "unavailable");
+        assert_eq!(cost["estimated_usd_micros"], Value::Null);
+        assert_eq!(
+            cost["unavailable_reasons"]["rate_card_missing"],
+            source_count * 3
+        );
+        assert_eq!(
+            cost["model_requests"],
+            source_count * 2,
+            "only the exact repository report count establishes unique model requests"
+        );
+        assert_eq!(cost["priced_requests"], Value::Null);
+        assert_eq!(
+            cost["unknown_requests"],
+            Value::Null,
+            "pricing observations are not unique requests"
+        );
+        assert_eq!(cost["priced_observations"], 0);
+        assert_eq!(cost["unknown_observations"], source_count * 3);
+        let schema = (devcoordinator2_api::operation("review.prepare")
+            .unwrap()
+            .output_schema)();
+        for counter in [
+            "model_requests",
+            "priced_requests",
+            "unknown_requests",
+            "priced_observations",
+            "unknown_observations",
+        ] {
+            assert!(
+                schema["$defs"]["UsageCost"]["properties"][counter]["type"]
+                    .as_array()
+                    .is_some_and(|types| types.contains(&json!("null"))),
+                "{counter} must represent unavailable counts in the public schema"
+            );
+        }
+        assert_eq!(
+            prepared["usage"]["outcomes"]["totals"]["cost"]["model_requests"],
+            Value::Null,
+            "repository request counts cannot allocate an outcome/workstream cost denominator"
+        );
+    }
+}
+
+#[test]
+fn rich_scoped_cost_preserves_measured_request_counts_and_known_zero_estimate() {
+    use devcoordinator2_api::results::UsageCost;
+    let mut fixture = Fixture::new();
+    let authorized = caller();
+    crate::usage_context::ingest(
+        &fixture.database,
+        authorized.uid,
+        "project-alpha",
+        authorized.work.as_ref().unwrap(),
+        START + 1,
+    )
+    .unwrap();
+    let root = fixture._temporary.path();
+    let peer = Peer::start(root, &root.join("known-cost"), |params| {
+        let mut value = response(params, START + WEEK, 135);
+        assert_eq!(
+            value["review"]["outcomes"]["rows"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        value["review"]["outcomes"]["rows"][0]["effort"]["cost"] =
+            serde_json::to_value(UsageCost {
+                status: "complete".into(),
+                basis: "api_equivalent".into(),
+                currency: "USD".into(),
+                processing_tier: "standard".into(),
+                estimated_usd_micros: Some(0),
+                input_usd_micros: Some(0),
+                cached_input_usd_micros: Some(0),
+                cache_write_usd_micros: Some(0),
+                output_usd_micros: Some(0),
+                input_tokens: Some(120),
+                uncached_input_tokens: Some(120),
+                cached_input_tokens: Some(0),
+                cache_write_tokens: Some(0),
+                output_tokens: Some(0),
+                model_requests: Some(1),
+                priced_requests: Some(1),
+                unknown_requests: Some(0),
+                priced_observations: Some(3),
+                unknown_observations: Some(0),
+                rate_card_ref: Some("fixture-free-rate".into()),
+                rate_card_refs: vec!["fixture-free-rate".into()],
+                ..Default::default()
+            })
+            .unwrap();
+        value
+    });
+    fixture.config.codex_usage_sources = vec![peer.source.clone()];
+    let plane = ControlPlane::with_adapters(
+        fixture.config.clone(),
+        fixture.database.clone(),
+        Arc::new(|_: &RouteAccessSection| Ok(())),
+        Arc::new(FixtureClock),
+    )
+    .unwrap();
+    let result = plane
+        .execute(
+            "review.prepare",
+            serde_json::to_value(input()).unwrap(),
+            &Caller {
+                work: None,
+                ..authorized
+            },
+        )
+        .unwrap();
+    let cost = &result["usage"]["outcomes"]["rows"][0]["effort"]["cost"];
+    assert_eq!(cost["model_requests"], 1);
+    assert_eq!(cost["priced_requests"], 1);
+    assert_eq!(cost["unknown_requests"], 0);
+    assert_eq!(
+        cost["priced_observations"], 3,
+        "unique requests and pricing observations retain their separate units"
+    );
+    assert_eq!(cost["unknown_observations"], 0);
+    assert_eq!(
+        cost["estimated_usd_micros"], 0,
+        "a measured zero estimate must not become unavailable"
+    );
+    assert_eq!(
+        result["usage"]["totals"]["cost"]["estimated_usd_micros"],
+        Value::Null
+    );
+}
+
+#[test]
+fn rich_cost_reason_labels_and_count_map_remain_bounded_and_private() {
+    for reasons in [
+        json!({"/private/source/secret":1}),
+        json!({"private\nsource":1}),
+        Value::Object(
+            (0..65)
+                .map(|index| (format!("reason_{index}"), json!(1)))
+                .collect(),
+        ),
+    ] {
+        let directory = tempfile::tempdir().unwrap();
+        let peer = Peer::start(
+            directory.path(),
+            &directory.path().join("home"),
+            move |params| {
+                let mut value = priced_response(params);
+                value["report"]["cost"]["unavailableReasons"] = reasons.clone();
+                value
+            },
+        );
+        let fixture = Fixture::new();
+        let prepared = service(&fixture, peer.source.clone())
+            .prepare(input(), START + WEEK)
+            .unwrap();
+        assert_eq!(prepared.usage.totals.total_tokens, None);
+        assert_eq!(
+            prepared.usage.coverage.unavailable_reasons["api_contract_unsupported"],
+            1
+        );
+        let wire = serde_json::to_string(&prepared).unwrap();
+        assert!(!wire.contains("/private/source/secret"));
+    }
+}
+
 fn activity_response(params: &Value, count: usize) -> Value {
     use devcoordinator2_api::outcomes::OutcomeMeasurement;
     use devcoordinator2_api::results::{UsageActivity, UsageCost};

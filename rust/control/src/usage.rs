@@ -161,11 +161,16 @@ struct SourceReport {
     source_snapshot: Option<devcoordinator2_api::results::UsageSourceSnapshot>,
     supplied_cost: Option<UsageCost>,
     snapshot: Option<devcoordinator2_api::results::UsageSnapshot>,
+    supplied_execution_wall: Option<MeasuredTime>,
+    supplied_agent_active: Option<MeasuredTime>,
     database_schema: u32,
     taxonomy_version: u32,
     evidence: bool,
     freshest_at_ms: Option<u64>,
-    tokens: BTreeMap<String, u64>,
+    // Wide accumulation retains signed net components and the full u64
+    // provider total without narrowing either measurement prematurely.
+    tokens: BTreeMap<String, i128>,
+    unavailable_tokens: BTreeSet<String>,
     token_observations: BTreeMap<String, u64>,
     phase_series: Vec<BTreeMap<String, u64>>,
     token_buckets_observed: Vec<bool>,
@@ -1492,7 +1497,7 @@ fn add_cached_dimension_costs(
                 .get(category)
                 .copied()
                 .unwrap_or(0)
-                .saturating_add(*value);
+                .saturating_add(i128::from(*value));
         }
         let bucket = aggregate_cost(
             &provider,
@@ -1586,6 +1591,7 @@ fn combine(
     configured: usize,
 ) -> UsageRepository {
     let mut tokens = BTreeMap::new();
+    let mut unavailable_tokens = BTreeSet::new();
     let mut token_coverage = BTreeMap::new();
     let mut coverage_events = BTreeMap::new();
     let mut series = vec![BTreeMap::new(); bucket_count];
@@ -1605,6 +1611,8 @@ fn combine(
     let mut outcome_costs = BTreeMap::<String, CostBuckets>::new();
     let mut request_unknown = 0_u64;
     let mut execution_unknown = 0_u64;
+    let mut supplied_execution_wall: Option<MeasuredTime> = None;
+    let mut supplied_agent_ms = 0_u64;
     let mut agent_unknown = 0_u64;
     let mut operation_count = 0_u64;
     let mut model_requests = 0_u64;
@@ -1617,7 +1625,13 @@ fn combine(
     for (uid, report) in reports {
         schemas.insert(report.database_schema);
         taxonomies.insert(report.taxonomy_version);
-        merge_counts(&mut tokens, &report.tokens);
+        for category in &report.unavailable_tokens {
+            unavailable_tokens.insert(category.clone());
+            tokens.remove(category);
+        }
+        for (category, value) in &report.tokens {
+            add_token_quantity(&mut tokens, &mut unavailable_tokens, category, *value);
+        }
         merge_counts(&mut token_coverage, &report.token_observations);
         merge_counts(&mut coverage_events, &report.coverage_events);
         for (index, values) in report.phase_series.iter().enumerate() {
@@ -1666,6 +1680,22 @@ fn combine(
         request_unknown = request_unknown.saturating_add(report.request_unknown);
         execution_unknown = execution_unknown.saturating_add(report.execution_unknown);
         agent_unknown = agent_unknown.saturating_add(report.agent_unknown);
+        if let Some(wall) = &report.supplied_execution_wall {
+            execution_unknown = execution_unknown.saturating_add(wall.unknown_intervals);
+            if let Some(previous) = &mut supplied_execution_wall {
+                if previous.measured_ms > 0 && wall.measured_ms > 0 {
+                    execution_unknown = execution_unknown.max(1);
+                    increment(&mut coverage_events, "execution_wall_overlap_unknown");
+                }
+                previous.measured_ms = previous.measured_ms.max(wall.measured_ms);
+            } else {
+                supplied_execution_wall = Some(wall.clone());
+            }
+        }
+        if let Some(active) = &report.supplied_agent_active {
+            supplied_agent_ms = supplied_agent_ms.saturating_add(active.measured_ms);
+            agent_unknown = agent_unknown.saturating_add(active.unknown_intervals);
+        }
         merge_counts(&mut phase_unknown, &report.phase_unknown);
         operation_count = operation_count.saturating_add(report.operation_count);
         model_requests = model_requests.saturating_add(report.model_request_count);
@@ -1682,6 +1712,32 @@ fn combine(
                     && (report.execution_unknown > 0
                         || report.request_unknown > 0
                         || report.agent_unknown > 0)));
+    }
+    let invalid_categories = tokens
+        .iter()
+        .filter(|(category, value)| {
+            if collector_api::signed_component(category) {
+                i64::try_from(**value).is_err()
+            } else {
+                u64::try_from(**value).is_err()
+            }
+        })
+        .map(|(category, _)| category.clone())
+        .collect::<Vec<_>>();
+    for category in invalid_categories {
+        tokens.remove(&category);
+        unavailable_tokens.insert(category);
+    }
+    if !unavailable_tokens.is_empty() {
+        increment(&mut coverage_events, "token_quantity_overflow");
+    }
+    let interval_execution_ms = union_ms(&execution_intervals);
+    let supplied_execution_ms = supplied_execution_wall
+        .as_ref()
+        .map_or(0, |wall| wall.measured_ms);
+    if interval_execution_ms > 0 && supplied_execution_ms > 0 {
+        execution_unknown = execution_unknown.max(1);
+        increment(&mut coverage_events, "execution_wall_overlap_unknown");
     }
     let has_gaps = !failures.is_empty()
         || token_coverage.keys().any(|state| state != "complete")
@@ -1704,13 +1760,22 @@ fn combine(
         }
     }
     let total_tokens = (!token_coverage.is_empty())
-        .then(|| tokens.get("total_tokens").copied())
+        .then(|| {
+            tokens
+                .get("total_tokens")
+                .and_then(|v| u64::try_from(*v).ok())
+        })
         .flatten();
     let mut total_cost_buckets = CostBuckets::default();
     for bucket in activity_costs.values() {
         merge_cost_bucket(&mut total_cost_buckets, bucket);
     }
     total_cost_buckets.source_gaps += failures.values().sum::<u64>();
+    let counts_known =
+        !reports.is_empty() && reports.iter().all(|(_, report)| !report.counts_deferred);
+    let source_cost_supplied = reports
+        .iter()
+        .any(|(_, report)| report.supplied_cost.is_some());
     let mut total_cost = if reports
         .iter()
         .any(|(_, report)| report.supplied_cost.is_some())
@@ -1731,19 +1796,43 @@ fn combine(
     } else {
         cost_from_buckets(&total_cost_buckets)
     };
+    if counts_known
+        && reports
+            .iter()
+            .all(|(_, report)| report.source_snapshot.is_some())
+    {
+        total_cost.model_requests = Some(model_requests);
+    } else if reports.is_empty() {
+        total_cost.model_requests = None;
+    }
+    if !source_cost_supplied && total_cost_buckets.models.is_empty() {
+        total_cost.priced_requests = None;
+        total_cost.unknown_requests = None;
+        total_cost.priced_observations = None;
+        total_cost.unknown_observations = None;
+    }
     if reports.iter().any(|(_, report)| report.counts_deferred) {
+        total_cost.model_requests = None;
+        total_cost.priced_requests = None;
+        total_cost.unknown_requests = None;
         // Pricing is deferred, but these are canonical provider component
         // measurements. Retain them for the headline's existing breakdown
         // without valuing them or inventing request/operation counts.
-        total_cost.input_tokens = tokens.get("input_tokens").copied();
-        total_cost.cached_input_tokens = tokens.get("input_tokens_details.cached_tokens").copied();
+        total_cost.input_tokens = tokens
+            .get("input_tokens")
+            .and_then(|v| i64::try_from(*v).ok());
+        total_cost.cached_input_tokens = tokens
+            .get("input_tokens_details.cached_tokens")
+            .and_then(|v| i64::try_from(*v).ok());
         total_cost.cache_write_tokens = tokens
             .get("input_tokens_details.cache_write_tokens")
-            .copied();
-        total_cost.output_tokens = tokens.get("output_tokens").copied();
+            .and_then(|v| u64::try_from(*v).ok());
+        total_cost.output_tokens = tokens
+            .get("output_tokens")
+            .and_then(|v| i64::try_from(*v).ok());
         total_cost.reasoning_tokens = tokens
             .get("output_tokens_details.reasoning_tokens")
-            .copied();
+            .and_then(|v| i64::try_from(*v).ok());
         total_cost.uncached_input_tokens = total_cost
             .input_tokens
             .zip(total_cost.cached_input_tokens)
@@ -1857,11 +1946,11 @@ fn combine(
     if contributed > 0 && request_intervals.is_empty() && request_unknown == 0 {
         request_unknown = 1;
     }
-    let execution_ms = union_ms(&execution_intervals);
+    let execution_ms = interval_execution_ms.max(supplied_execution_ms);
     let agent_ms = agent_intervals
         .values()
         .map(|intervals| union_ms(intervals))
-        .fold(0_u64, u64::saturating_add);
+        .fold(supplied_agent_ms, u64::saturating_add);
     let phases = phase_intervals
         .keys()
         .chain(phase_unknown.keys())
@@ -1891,7 +1980,10 @@ fn combine(
                 bucket_start_ms: start_ms.saturating_add(bucket_ms.saturating_mul(index as u64)),
                 bucket_end_ms: start_ms.saturating_add(bucket_ms.saturating_mul(index as u64 + 1)),
                 coverage: bucket_coverage[index].clone(),
-                total_tokens: token_buckets_observed[index].then(|| phases.values().copied().sum()),
+                total_tokens: (token_buckets_observed[index]
+                    && !unavailable_tokens.contains("total_tokens"))
+                .then(|| phases.values().copied().try_fold(0u64, u64::checked_add))
+                .flatten(),
                 phases,
             }
         })
@@ -1927,8 +2019,6 @@ fn combine(
                 snapshots.iter().find_map(|s| s.progress_stage.clone())
             },
         });
-    let counts_known =
-        !reports.is_empty() && reports.iter().all(|(_, report)| !report.counts_deferred);
     UsageRepository {
         repository_id: repository.repository_id.clone(),
         display_name: repository.display_name.clone(),
@@ -1959,12 +2049,18 @@ fn combine(
         },
         totals: UsageTotals {
             total_tokens,
-            input_tokens: tokens.get("input_tokens").copied(),
-            cached_input_tokens: tokens.get("input_tokens_details.cached_tokens").copied(),
-            output_tokens: tokens.get("output_tokens").copied(),
+            input_tokens: tokens
+                .get("input_tokens")
+                .and_then(|v| i64::try_from(*v).ok()),
+            cached_input_tokens: tokens
+                .get("input_tokens_details.cached_tokens")
+                .and_then(|v| i64::try_from(*v).ok()),
+            output_tokens: tokens
+                .get("output_tokens")
+                .and_then(|v| i64::try_from(*v).ok()),
             reasoning_tokens: tokens
                 .get("output_tokens_details.reasoning_tokens")
-                .copied(),
+                .and_then(|v| i64::try_from(*v).ok()),
             model_requests: counts_known.then_some(model_requests),
             tool_calls: counts_known.then_some(tool_calls),
             operations: counts_known.then_some(operation_count),
@@ -2332,6 +2428,28 @@ fn increment_triple(
     *value = value.saturating_add(amount);
 }
 
+fn add_token_quantity(
+    target: &mut BTreeMap<String, i128>,
+    unavailable: &mut BTreeSet<String>,
+    category: &str,
+    amount: i128,
+) {
+    if unavailable.contains(category) {
+        return;
+    }
+    if let Some(value) = target
+        .get(category)
+        .copied()
+        .unwrap_or_default()
+        .checked_add(amount)
+    {
+        target.insert(category.to_owned(), value);
+    } else {
+        target.remove(category);
+        unavailable.insert(category.to_owned());
+    }
+}
+
 fn merge_counts(target: &mut BTreeMap<String, u64>, source: &BTreeMap<String, u64>) {
     for (key, amount) in source {
         let value = target.entry(key.clone()).or_default();
@@ -2452,7 +2570,7 @@ pub(crate) mod tests {
         );
         assert_eq!(cost.status, "complete");
         assert_eq!(cost.estimated_usd_micros, Some(1_100));
-        assert_eq!(cost.model_requests, 1);
+        assert_eq!(cost.model_requests, Some(1));
     }
 
     #[test]
@@ -2517,7 +2635,11 @@ pub(crate) mod tests {
         let cost = cost_from_buckets(&buckets);
         assert_eq!(cost.status, "unavailable");
         assert_eq!(cost.estimated_usd_micros, None);
-        assert!(cost.unknown_observations > 0);
+        assert!(cost.unknown_requests.is_some_and(|unknown| unknown > 0));
+        assert_eq!(
+            cost.unknown_observations, None,
+            "the local estimator records request gaps, not source observation counts"
+        );
     }
 
     #[test]
@@ -2577,7 +2699,7 @@ pub(crate) mod tests {
             database_schema: 4,
             taxonomy_version: 1,
             evidence: true,
-            tokens: BTreeMap::from([("total_tokens".into(), tokens)]),
+            tokens: BTreeMap::from([("total_tokens".into(), i128::from(tokens))]),
             token_observations: BTreeMap::from([("complete".into(), 1)]),
             coverage_events: BTreeMap::from([("complete".into(), 1)]),
             phase_series: vec![BTreeMap::from([(phase.into(), tokens)])],
@@ -2610,5 +2732,69 @@ pub(crate) mod tests {
         assert_eq!(report.series[0].phases["implementation"], 100);
         assert_eq!(report.series[0].phases["testing"], 50);
         assert_eq!(report.time.execution_wall.measured_ms, 15);
+
+        // Component adjustments use their signed range; provider totals and
+        // cache writes keep the full unsigned range. Overflow is unavailable,
+        // while an observed net zero remains a measurement.
+        for (left, right, expected) in [
+            (i128::from(i64::MAX), 1, None),
+            (i128::from(i64::MIN), -1, None),
+            (-4, 4, Some(0)),
+        ] {
+            let mut first = source("implementation", 100, (0, 10));
+            first.tokens.insert("input_tokens".into(), left);
+            let mut second = source("testing", 50, (5, 15));
+            second.tokens.insert("input_tokens".into(), right);
+            let report = combine(
+                &RepositoryRecord {
+                    repository_id: "r1".into(),
+                    display_name: "Example".into(),
+                    root_path: "/repo".into(),
+                },
+                UsageRange::Hours24,
+                15,
+                0,
+                100,
+                1,
+                &[(1, first), (2, second)],
+                BTreeMap::new(),
+                None,
+                2,
+            );
+            assert_eq!(report.totals.input_tokens, expected);
+            assert_eq!(report.totals.total_tokens, Some(150));
+            assert_eq!(
+                report.coverage.events.get("token_quantity_overflow"),
+                expected.is_none().then_some(&1)
+            );
+        }
+        let mut first = source("implementation", u64::MAX, (0, 10));
+        first.tokens.insert(
+            "input_tokens_details.cache_write_tokens".into(),
+            i128::from(u64::MAX),
+        );
+        let mut second = source("testing", 1, (5, 15));
+        second
+            .tokens
+            .insert("input_tokens_details.cache_write_tokens".into(), 1);
+        let report = combine(
+            &RepositoryRecord {
+                repository_id: "r1".into(),
+                display_name: "Example".into(),
+                root_path: "/repo".into(),
+            },
+            UsageRange::Hours24,
+            15,
+            0,
+            100,
+            1,
+            &[(1, first), (2, second)],
+            BTreeMap::new(),
+            None,
+            2,
+        );
+        assert_eq!(report.totals.total_tokens, None);
+        assert_eq!(report.series[0].total_tokens, None);
+        assert_eq!(report.coverage.events["token_quantity_overflow"], 1);
     }
 }

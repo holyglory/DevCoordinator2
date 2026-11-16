@@ -727,6 +727,96 @@ fn headline_parser_rejects_rich_deferred_and_wrong_scope_or_provenance_confusion
 }
 
 #[test]
+fn provider_token_quantity_ranges_are_category_aware_in_both_projections() {
+    use crate::usage_api_fixture::{Peer, headline_response};
+    for headline in [false, true] {
+        for (category, quantity, valid) in [
+            ("input_tokens", json!(i64::MIN), true),
+            ("input_tokens", json!(0), true),
+            ("input_tokens_details.cached_tokens", json!(-2), true),
+            ("output_tokens", json!(i64::MAX), true),
+            ("output_tokens_details.reasoning_tokens", json!(-1), true),
+            ("input_tokens", json!(i64::MAX as u64 + 1), false),
+            ("total_tokens", json!(u64::MAX), true),
+            ("total_tokens", json!(-1), false),
+            ("cache_write_input_tokens", json!(u64::MAX), true),
+            ("cache_write_input_tokens", json!(-1), false),
+            ("cached_input_tokens", json!(-1), false),
+            ("reasoning_output_tokens", json!(-1), false),
+        ] {
+            let expected = quantity
+                .as_i64()
+                .map(i128::from)
+                .or_else(|| quantity.as_u64().map(i128::from))
+                .unwrap();
+            let directory = tempfile::tempdir().unwrap();
+            let mut cap = capability();
+            cap["supportsTokenHeadlines"] = json!(true);
+            let peer = Peer::with_capability(
+                directory.path(),
+                &directory.path().join("home"),
+                Some(cap),
+                move |params| {
+                    let mut value = if headline {
+                        headline_response(params, 20)
+                    } else {
+                        response(params, 20, 135)
+                    };
+                    value["report"]["providerTokens"] = json!([{
+                        "category":category,"repositoryBucket":KEY,"measurementProvenance":"provider_reported",
+                        "measuredTokens":quantity,"exactTokens":quantity,"unknownObservations":0,"observationCount":1,
+                    }]);
+                    value
+                },
+            );
+            let api = CollectorApi::default();
+            let result = if headline {
+                api.summary_headline(
+                    &peer.source,
+                    Some(KEY),
+                    None,
+                    true,
+                    10,
+                    20,
+                    Instant::now() + API_BUDGET,
+                )
+            } else {
+                api.summary(
+                    &peer.source,
+                    Some(KEY),
+                    None,
+                    true,
+                    10,
+                    20,
+                    Instant::now() + API_BUDGET,
+                )
+            };
+            if valid {
+                let read = result
+                    .unwrap_or_else(|reason| panic!("{category} / headline={headline}: {reason}"));
+                let report = read.source_report(Some(KEY), 1, None, true);
+                let normalized = if category == "cache_write_input_tokens" {
+                    "input_tokens_details.cache_write_tokens"
+                } else {
+                    category
+                };
+                assert_eq!(
+                    report.tokens.get(normalized),
+                    Some(&expected),
+                    "{category} / headline={headline}"
+                );
+            } else {
+                assert_eq!(
+                    result.err().as_deref(),
+                    Some("api_contract_unsupported"),
+                    "{category} / headline={headline}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn headline_provider_unknown_total_is_not_reconstructed_from_components() {
     use crate::usage_api_fixture::{Peer, headline_response};
     let directory = tempfile::tempdir().unwrap();
@@ -741,6 +831,13 @@ fn headline_provider_unknown_total_is_not_reconstructed_from_components() {
             value["report"]["providerTokens"][0]["measuredTokens"] = json!(0);
             value["report"]["providerTokens"][0]["exactTokens"] = Value::Null;
             value["report"]["providerTokens"][0]["unknownObservations"] = json!(1);
+            for token in value["report"]["providerTokens"].as_array_mut().unwrap() {
+                if token["category"] == "output_tokens_details.reasoning_tokens" {
+                    token["measuredTokens"] = json!(-1);
+                    token["exactTokens"] = Value::Null;
+                    token["unknownObservations"] = json!(1);
+                }
+            }
             value["report"]["coverage"]["state"] = json!("partial");
             value["report"]["coverage"]["hasGaps"] = json!(true);
             value
@@ -761,6 +858,7 @@ fn headline_provider_unknown_total_is_not_reconstructed_from_components() {
     assert_eq!(report.tokens.get("total_tokens"), None);
     assert_eq!(report.tokens["input_tokens"], 100);
     assert_eq!(report.tokens["output_tokens"], 20);
+    assert_eq!(report.tokens["output_tokens_details.reasoning_tokens"], -1);
     assert!(report.counts_deferred);
 }
 
@@ -1255,11 +1353,8 @@ fn explicit_review_rows_keep_unknown_precision_costs_and_truthful_time_basis() {
     assert_eq!(report.totals.provider_total_tokens.exact, None);
     assert_eq!(report.totals.cost.estimated_usd_micros, Some(14));
     assert_eq!(report.totals.elapsed_execution_ms.exact, None);
-    assert!(
-        report
-            .basis
-            .contains("aggregate intervals cannot be unioned")
-    );
+    assert!(report.basis.contains("may overlap"));
+    assert_eq!(report.totals.elapsed_execution_ms.measured, 1000);
     assert_eq!(report.rows.len(), 1);
 }
 

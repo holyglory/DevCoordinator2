@@ -100,6 +100,34 @@ and reasoning output are subsets. Unknown measurements retain null exact values.
 Summed concurrent operation durations are not elapsed wall time or active-agent
 time; dimensions lacking the necessary intervals stay unknown.
 
+Rich source-provided wall and elapsed-execution unions retain their measured
+value and exact/unknown state. A known empty union remains exact zero; an
+unavailable zero remains unknown. Positive unions from different sources may
+overlap: their maximum is retained as a measured lower bound with explicit
+overlap uncertainty, rather than summing them. Known empty unions add nothing.
+Source active-agent time is the sum of per-agent/thread unions and remains
+separate from wall time. Repository active measurements are not allocated into
+phases or outcomes. Diagnostic operation-interval sums remain separate snapshot
+metadata and are never substituted for any union.
+
+Cost availability reasons retain their bounded content-free labels and counts.
+Pricing observations and unique model requests remain distinct units: the
+repository request total comes from its matching rich report, while unknown
+priced/unpriced request counts are null when only observation counts exist.
+Priced and unknown observation counters are nullable when their matching scope
+has no observed count. Genuine measured request counters retain numeric JSON,
+including zero; a measured zero estimate also remains available. No repository
+request denominator or cost is borrowed for an outcome or workstream subset.
+
+Accepted retained adjustments can make input, cached-input, output, and
+reasoning components negative. Only those four canonical provider categories
+accept signed 64-bit net measurements; total tokens, cache-write tokens, and
+observation counters remain unsigned. The matching component fields in totals
+and cost details, including uncached input, preserve signs. Aggregation uses
+checked arithmetic and leaves an out-of-range result unavailable with a fixed
+coverage reason. Components never reconstruct the provider total or imply a
+refund or a new price; source-declared price amounts remain authoritative.
+
 Ordinary reports omit credentials, raw arguments, prompts, response bodies,
 private paths and contributing account identities. Source references used by
 the collector remain internal; human-facing source labels do not expose UIDs or

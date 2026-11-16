@@ -39,8 +39,9 @@ impl Effort {
     pub(super) fn merge(&mut self, other: Self, source: usize) -> Result<(), String> {
         self.inexact_tokens |= other.inexact_tokens;
         self.inexact_active |= other.inexact_active;
-        self.inexact_elapsed |=
-            other.inexact_elapsed || (self.aggregate_sources > 0 && other.aggregate_sources > 0);
+        let overlapping_elapsed_unions =
+            self.aggregate_elapsed_ms > 0 && other.aggregate_elapsed_ms > 0;
+        self.inexact_elapsed |= other.inexact_elapsed || overlapping_elapsed_unions;
         self.inexact_waits |=
             other.inexact_waits || (self.aggregate_sources > 0 && other.aggregate_sources > 0);
         self.inexact_activities.extend(other.inexact_activities);
@@ -67,14 +68,14 @@ impl Effort {
         self.unknown_tokens += other.unknown_tokens;
         self.unknown_active += other.unknown_active;
         self.unknown_elapsed += other.unknown_elapsed;
+        if overlapping_elapsed_unions {
+            self.unknown_elapsed = self.unknown_elapsed.max(1);
+        }
         self.unknown_waits += other.unknown_waits;
         self.aggregate_active_ms = self
             .aggregate_active_ms
             .saturating_add(other.aggregate_active_ms);
-        self.aggregate_elapsed_ms = self
-            .aggregate_elapsed_ms
-            .checked_add(other.aggregate_elapsed_ms)
-            .ok_or("usage_overflow")?;
+        self.aggregate_elapsed_ms = self.aggregate_elapsed_ms.max(other.aggregate_elapsed_ms);
         self.aggregate_wait_ms = self
             .aggregate_wait_ms
             .checked_add(other.aggregate_wait_ms)
@@ -137,6 +138,8 @@ impl Effort {
     }
 
     pub(super) fn finish(self) -> Result<OutcomeEffort, String> {
+        let elapsed_intervals = union_ms(&self.elapsed);
+        let mixed_elapsed_union = elapsed_intervals > 0 && self.aggregate_elapsed_ms > 0;
         let active = self.active.values().try_fold(0_u64, |sum, intervals| {
             sum.checked_add(union_ms(intervals))
                 .ok_or("usage_overflow".to_string())
@@ -164,11 +167,9 @@ impl Effort {
                 !self.inexact_active,
             ),
             elapsed_execution_ms: measurement(
-                union_ms(&self.elapsed)
-                    .checked_add(self.aggregate_elapsed_ms)
-                    .ok_or("usage_overflow")?,
-                self.unknown_elapsed,
-                !self.inexact_elapsed,
+                elapsed_intervals.max(self.aggregate_elapsed_ms),
+                self.unknown_elapsed.max(u64::from(mixed_elapsed_union)),
+                !self.inexact_elapsed && !mixed_elapsed_union,
             ),
             recorded_wait_ms: measurement(
                 union_ms(&self.waits)

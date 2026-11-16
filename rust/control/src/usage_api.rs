@@ -519,12 +519,7 @@ impl HeadlineSummary {
         {
             return Err("api_contract_unsupported".into());
         }
-        let mut tokens = r.provider_tokens;
-        for token in &mut tokens {
-            if token.category == "cache_write_input_tokens" {
-                token.category = "input_tokens_details.cache_write_tokens".into();
-            }
-        }
+        let tokens = r.provider_tokens;
         Ok(Summary {
             contract_version: self.contract_version,
             source: self.source,
@@ -650,16 +645,18 @@ pub(super) struct SourceCost {
     pub cached_input_usd_micros: Option<u64>,
     pub cache_write_usd_micros: Option<u64>,
     pub output_usd_micros: Option<u64>,
-    pub input_tokens: u64,
-    pub uncached_input_tokens: u64,
-    pub cached_input_tokens: u64,
+    pub input_tokens: i64,
+    pub uncached_input_tokens: i64,
+    pub cached_input_tokens: i64,
     pub cache_write_tokens: u64,
-    pub output_tokens: u64,
-    pub reasoning_tokens: u64,
+    pub output_tokens: i64,
+    pub reasoning_tokens: i64,
     pub provider_total_tokens: u64,
     pub priced_observations: u64,
     pub unknown_observations: u64,
     pub rate_card_refs: Vec<String>,
+    #[serde(default)]
+    pub unavailable_reasons: BTreeMap<String, u64>,
 }
 
 impl SourceCost {
@@ -683,14 +680,15 @@ impl SourceCost {
             uncached_input_tokens: Some(self.uncached_input_tokens),
             output_tokens: Some(self.output_tokens),
             reasoning_tokens: Some(self.reasoning_tokens),
-            unknown_requests: 0,
+            unknown_requests: None,
             unknown_tokens: 0,
-            unknown_observations: self.unknown_observations,
+            unknown_observations: Some(self.unknown_observations),
             rate_card_ref: self.rate_card_refs.first().cloned(),
             rate_card_refs: self.rate_card_refs.clone(),
-            model_requests: self.priced_observations,
-            priced_requests: self.priced_observations,
-            unavailable_reasons: BTreeMap::new(),
+            model_requests: None,
+            priced_requests: None,
+            priced_observations: Some(self.priced_observations),
+            unavailable_reasons: self.unavailable_reasons.clone(),
             matched_rate_cards: Vec::new(),
         }
     }
@@ -733,15 +731,71 @@ pub(super) struct MeasuredCounts {
     pub tools: u64,
 }
 #[derive(Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(try_from = "WireToken")]
 pub(super) struct Token {
     pub category: String,
     pub repository_bucket: String,
     pub measurement_provenance: String,
-    pub measured_tokens: u64,
-    pub exact_tokens: Option<u64>,
+    pub measured_tokens: i128,
+    pub exact_tokens: Option<i128>,
     pub unknown_observations: u64,
     pub observation_count: u64,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WireToken {
+    category: String,
+    repository_bucket: String,
+    measurement_provenance: String,
+    measured_tokens: i128,
+    exact_tokens: Option<i128>,
+    unknown_observations: u64,
+    observation_count: u64,
+}
+
+pub(super) fn signed_component(category: &str) -> bool {
+    matches!(
+        category,
+        "input_tokens"
+            | "input_tokens_details.cached_tokens"
+            | "output_tokens"
+            | "output_tokens_details.reasoning_tokens"
+    )
+}
+
+impl TryFrom<WireToken> for Token {
+    type Error = &'static str;
+    fn try_from(value: WireToken) -> Result<Self, Self::Error> {
+        let permitted = |quantity| {
+            if signed_component(&value.category) {
+                i64::try_from(quantity).is_ok()
+            } else {
+                u64::try_from(quantity).is_ok()
+            }
+        };
+        if !permitted(value.measured_tokens)
+            || value
+                .exact_tokens
+                .is_some_and(|quantity| !permitted(quantity))
+        {
+            return Err("token_quantity_invalid");
+        }
+        let category = if value.category == "cache_write_input_tokens" {
+            "input_tokens_details.cache_write_tokens".into()
+        } else {
+            value.category
+        };
+        Ok(Self {
+            category,
+            repository_bucket: value.repository_bucket,
+            measurement_provenance: value.measurement_provenance,
+            measured_tokens: value.measured_tokens,
+            exact_tokens: value.exact_tokens,
+            unknown_observations: value.unknown_observations,
+            observation_count: value.observation_count,
+        })
+    }
 }
 #[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1670,8 +1724,9 @@ fn validate_projection(
             .provider_tokens
             .iter()
             .filter(|token| token.category == "total_tokens")
-            .map(|token| token.measured_tokens)
-            .sum::<u64>();
+            .try_fold(0u64, |total, token| {
+                total.checked_add(u64::try_from(token.measured_tokens).ok()?)
+            });
         let components = [
             cost.input_usd_micros,
             cost.cached_input_usd_micros,
@@ -1691,12 +1746,20 @@ fn validate_projection(
                     || total
                         .zip(cost.estimated_usd_micros)
                         .is_none_or(|(parts, total)| total < parts || total - parts > 3)
-                    || cost.provider_total_tokens != provider_total
+                    || Some(cost.provider_total_tokens) != provider_total
                     || cost.rate_card_refs.is_empty()))
             || cost
                 .rate_card_refs
                 .iter()
                 .any(|r| r.len() > 128 || r.chars().any(char::is_control))
+            || cost.unavailable_reasons.len() > 64
+            || cost.unavailable_reasons.keys().any(|reason| {
+                reason.is_empty()
+                    || reason.len() > 64
+                    || !reason
+                        .bytes()
+                        .all(|byte| byte.is_ascii_alphanumeric() || b"._-".contains(&byte))
+            })
         {
             return Err("api_contract_unsupported".into());
         }
@@ -1722,6 +1785,14 @@ impl Summary {
         let partial =
             r.coverage.has_gaps || r.coverage.state != "complete" || (!headline && source_partial);
         let mut result = SourceReport {
+            supplied_execution_wall: self
+                .review
+                .as_ref()
+                .map(|review| review.time.execution_wall.clone()),
+            supplied_agent_active: self
+                .review
+                .as_ref()
+                .map(|review| review.time.summed_agent_active.clone()),
             source_snapshot: self.snapshot.as_ref().map(|s| {
                 devcoordinator2_api::results::UsageSourceSnapshot {
                     source: "usage-v2".into(),
@@ -1787,8 +1858,8 @@ impl Summary {
             bucket_coverage: vec![CoverageState::Unobserved; buckets],
             // Aggregated durations cannot be unioned across collectors. Do not invent intervals.
             request_unknown: 1,
-            execution_unknown: 1,
-            agent_unknown: 1,
+            execution_unknown: u64::from(self.review.is_none()),
+            agent_unknown: u64::from(self.review.is_none()),
             ..Default::default()
         };
         if source_partial && !headline {
@@ -1807,8 +1878,13 @@ impl Summary {
                 continue;
             }
             result.evidence |= t.observation_count > 0;
-            if t.observation_count > 0 && (t.exact_tokens.is_some() || t.measured_tokens > 0) {
-                *result.tokens.entry(t.category.clone()).or_default() += t.measured_tokens;
+            if t.observation_count > 0 && (t.exact_tokens.is_some() || t.measured_tokens != 0) {
+                add_token_quantity(
+                    &mut result.tokens,
+                    &mut result.unavailable_tokens,
+                    &t.category,
+                    t.measured_tokens,
+                );
             }
             let state = if partial || t.unknown_observations > 0 || t.exact_tokens.is_none() {
                 "partial"
@@ -1848,7 +1924,11 @@ impl Summary {
             for ((phase, _), value) in &result.activities {
                 *result.phase_series[0].entry(phase.clone()).or_default() += value;
             }
-            if let Some(total) = result.tokens.get("total_tokens").copied() {
+            if let Some(total) = result
+                .tokens
+                .get("total_tokens")
+                .and_then(|v| u64::try_from(*v).ok())
+            {
                 let classified = result.phase_series[0]
                     .values()
                     .copied()
@@ -1966,18 +2046,38 @@ pub(super) fn merge_costs(costs: &[UsageCost], source_gaps: bool) -> UsageCost {
     };
     let mut partial = source_gaps;
     let mut refs = BTreeSet::new();
+    let counter = |select: fn(&UsageCost) -> Option<u64>| {
+        if costs.is_empty() {
+            return None;
+        }
+        costs
+            .iter()
+            .try_fold(0_u64, |total, cost| total.checked_add(select(cost)?))
+    };
+    result.model_requests = counter(|cost| cost.model_requests);
+    result.priced_requests = counter(|cost| cost.priced_requests);
+    result.unknown_requests = counter(|cost| cost.unknown_requests);
+    result.priced_observations = counter(|cost| cost.priced_observations);
+    result.unknown_observations = counter(|cost| cost.unknown_observations);
+    let mut quantity_overflow = false;
     macro_rules! sum {
         ($field:ident) => {{
-            let mut amount = None;
+            let mut amount: Option<i128> = None;
+            let mut overflow = false;
             for cost in costs {
                 match cost.$field {
                     Some(v) => {
-                        amount = Some(amount.unwrap_or(0u64).saturating_add(v));
+                        if !overflow {
+                            amount = amount.unwrap_or_default().checked_add(i128::from(v));
+                            overflow = amount.is_none();
+                            partial |= overflow;
+                        }
                     }
                     None => partial = true,
                 }
             }
-            result.$field = amount;
+            result.$field = amount.and_then(|value| value.try_into().ok());
+            quantity_overflow |= overflow || (amount.is_some() && result.$field.is_none());
         }};
     }
     sum!(estimated_usd_micros);
@@ -1991,21 +2091,22 @@ pub(super) fn merge_costs(costs: &[UsageCost], source_gaps: bool) -> UsageCost {
     sum!(uncached_input_tokens);
     sum!(output_tokens);
     // Reasoning is an optional output subset, not a separate billed component.
-    result.reasoning_tokens = costs
+    let reasoning = costs
         .iter()
         .filter_map(|c| c.reasoning_tokens)
-        .reduce(u64::saturating_add);
+        .collect::<Vec<_>>();
+    result.reasoning_tokens = (!reasoning.is_empty())
+        .then(|| {
+            reasoning
+                .iter()
+                .try_fold(0i128, |total, value| total.checked_add(i128::from(*value)))
+                .and_then(|value| i64::try_from(value).ok())
+        })
+        .flatten();
+    quantity_overflow |= !reasoning.is_empty() && result.reasoning_tokens.is_none();
     for cost in costs {
         partial |= cost.status != "complete";
-        result.model_requests = result.model_requests.saturating_add(cost.model_requests);
-        result.priced_requests = result.priced_requests.saturating_add(cost.priced_requests);
-        result.unknown_requests = result
-            .unknown_requests
-            .saturating_add(cost.unknown_requests);
         result.unknown_tokens = result.unknown_tokens.saturating_add(cost.unknown_tokens);
-        result.unknown_observations = result
-            .unknown_observations
-            .saturating_add(cost.unknown_observations);
         refs.extend(cost.rate_card_refs.clone());
         for card in &cost.matched_rate_cards {
             if !result.matched_rate_cards.contains(card) {
@@ -2016,6 +2117,10 @@ pub(super) fn merge_costs(costs: &[UsageCost], source_gaps: bool) -> UsageCost {
     }
     if source_gaps {
         increment(&mut result.unavailable_reasons, "unavailable_collectors");
+    }
+    if quantity_overflow {
+        partial = true;
+        increment(&mut result.unavailable_reasons, "quantity_overflow");
     }
     result.rate_card_refs = refs.into_iter().collect();
     result.rate_card_ref = result.rate_card_refs.first().cloned();
