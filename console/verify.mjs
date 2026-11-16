@@ -552,6 +552,17 @@ async function startFakeDaemon(dir) {
         }
       };
       const reply = (payload) => {
+        if (scenario.usageUnknownMeasurements && payload.ok && req.operation === 'usage.repository') {
+          payload = structuredClone(payload);
+          for (const row of payload.data.models.slice(0, 2)) row.cost.unknown_observations = null;
+          payload.data.totals.cached_input_tokens = null;
+        }
+        if (scenario.usageSignedComponents && payload.ok && req.operation === 'usage.repository') {
+          payload = structuredClone(payload);
+          Object.assign(payload.data.totals, { input_tokens: -4, cached_input_tokens: -2, output_tokens: payload.data.totals.total_tokens + 4, reasoning_tokens: -1 });
+          const row = payload.data.models[0];
+          Object.assign(row.cost, { input_tokens: -4, cached_input_tokens: -2, output_tokens: row.total_tokens + 4, reasoning_tokens: -1 });
+        }
         if (scenario.cacheState && payload.ok && ['usage.repository', 'usage.repositories', 'progress.repository'].includes(req.operation)) {
           payload = structuredClone(payload);
           const ready = !!req.params.wait_for_refresh;
@@ -1146,6 +1157,23 @@ async function main() {
       check('usage-only: completeness explanation is a real focused contextual overlay', await explanation.getAttribute('role') === 'dialog' && !!await explanation.getAttribute('data-ui-contextual-overlay') && await explanation.evaluate((element) => document.activeElement === element && getComputedStyle(element).position === 'absolute'));
       await page.keyboard.press('Escape');
       check('usage-only: phase chart fits without horizontal scrolling', await page.locator('.usage-chart-scroll').evaluate((element) => element.scrollWidth <= element.clientWidth + 1));
+      const unknownObservations = page.locator('[data-usage-model-detail] dl div').filter({ has: page.locator('dt', { hasText: 'Unknown observations' }) }).locator('dd');
+      check('usage-only: measured zero observations remains zero', await unknownObservations.innerText() === '0');
+      daemon.setScenario({ ...SCENARIOS.populated, workspaceLongList: true, usageSignedComponents: true });
+      await page.reload();
+      await page.locator('[data-usage-model-detail] dl').waitFor();
+      check('usage-only: signed net components retain their actual values', await page.locator('[data-usage-model-detail] dl div').filter({ has: page.locator('dt', { hasText: /^Input$/ }) }).locator('dd').innerText() === '-4' && await page.locator('[data-usage-model-detail] dl div').filter({ has: page.locator('dt', { hasText: /^Cached input$/ }) }).locator('dd').innerText() === '-2');
+      check('usage-only: signed corrections do not invent cache efficiency', (await page.locator('.usage-metrics').innerText()).includes('Cache efficiency\n—'));
+      daemon.setScenario({ ...SCENARIOS.populated, workspaceLongList: true, usageUnknownMeasurements: true });
+      await page.reload();
+      await page.locator('[data-usage-model-detail] dl').waitFor();
+      check('usage-only: initially unmeasured observation counts remain unavailable', await unknownObservations.innerText() === '—');
+      check('usage-only: unknown cached input does not become zero efficiency', (await page.locator('.usage-metrics').innerText()).includes('Cache efficiency\n—'));
+      await page.locator('[data-usage-model-index="1"]').click();
+      check('usage-only: selected unmeasured observation counts remain unavailable', await unknownObservations.innerText() === '—');
+      await page.locator('[data-usage-model-index="2"]').click();
+      check('usage-only: measured unknown observations retain their real count', await unknownObservations.innerText() === '8');
+      daemon.setScenario({ ...SCENARIOS.populated, workspaceLongList: true });
       await page.setViewportSize({ width: 810, height: 867 });
       await page.reload();
       await page.waitForSelector('[data-usage-worktree-scope-toggle]');
