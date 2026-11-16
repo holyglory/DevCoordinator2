@@ -1479,3 +1479,125 @@ fn delayed_collector_finishes_once_after_bounded_cold_review_and_supplies_attrib
             .wait_for_collector_refresh(Instant::now() + Duration::from_secs(5))
     );
 }
+
+#[test]
+fn source_rpc_failure_retains_measured_review_clears_loading_and_recovers() {
+    use crate::usage_api_fixture::ResponseGate;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
+
+    let mut fixture = Fixture::new();
+    let root = fixture._temporary.path();
+    let private = "never-return-private /private/accounting secret-token hostile instructions";
+    let gates = [ResponseGate::default(), ResponseGate::default()];
+    let response_gates = gates.clone();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let observed = calls.clone();
+    let peer = Peer::start_rpc(root, &root.join("source"), move |params| {
+        match observed.fetch_add(1, Ordering::SeqCst) {
+            0 => json!({"id":2,"result":response(params, START + WEEK, 135)}),
+            1 => {
+                response_gates[0].wait();
+                json!({"id":2,"error":{"code":-32603,"message":private,"data":{"raw":private}}})
+            }
+            2 => {
+                response_gates[1].wait();
+                json!({"id":2,"result":response(params, START + WEEK, 180)})
+            }
+            _ => panic!("an exact cached read must not start a duplicate source request"),
+        }
+    });
+    let releases = gates
+        .iter()
+        .map(ResponseGate::release_on_drop)
+        .collect::<Vec<_>>();
+    fixture.service = service(&fixture, peer.source.clone());
+    fixture.service.prepare(input(), START + WEEK).unwrap();
+    assert!(
+        fixture
+            .service
+            .usage
+            .wait_for_collector_refresh(Instant::now() + Duration::from_secs(2))
+    );
+    let initial = fixture.service.prepare(input(), START + WEEK).unwrap();
+    assert_eq!(initial.usage.totals.total_tokens, Some(135));
+
+    fixture.service.usage.expire_collector_cache();
+    let refreshing = fixture.service.prepare(input(), START + WEEK).unwrap();
+    assert_eq!(refreshing.usage.totals.total_tokens, Some(135));
+    assert!(refreshing.usage.coverage.loading.is_some());
+    let mut releases = releases.into_iter();
+    releases.next().unwrap().release();
+    assert!(
+        fixture
+            .service
+            .usage
+            .wait_for_collector_refresh(Instant::now() + Duration::from_secs(2))
+    );
+    let failed = fixture.service.prepare(input(), START + WEEK).unwrap();
+    assert_eq!(failed.usage.totals.total_tokens, Some(135));
+    assert_eq!(failed.usage.coverage.events["api_source_unavailable"], 1);
+    assert!(
+        !failed
+            .usage
+            .coverage
+            .events
+            .contains_key("api_contract_unsupported")
+    );
+    assert_eq!(failed.usage.coverage.loading, None);
+    let snapshot = failed.usage.coverage.snapshot.as_ref().unwrap();
+    assert!(snapshot.refresh_failed);
+    assert!(!snapshot.refreshing);
+    assert_eq!(snapshot.updated_at_ms, Some(START + WEEK));
+    let repeated = fixture.service.prepare(input(), START + WEEK).unwrap();
+    assert_eq!(repeated.usage.totals.total_tokens, Some(135));
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+    for packet in [&failed, &repeated] {
+        let wire = serde_json::to_string(packet).unwrap();
+        for forbidden in [
+            private,
+            "/private/accounting",
+            "secret-token",
+            "hostile instructions",
+        ] {
+            assert!(!wire.contains(forbidden));
+        }
+    }
+
+    fixture.service.usage.expire_collector_cache();
+    let recovering = fixture.service.prepare(input(), START + WEEK).unwrap();
+    assert_eq!(recovering.usage.totals.total_tokens, Some(135));
+    assert!(recovering.usage.coverage.loading.is_some());
+    releases.next().unwrap().release();
+    assert!(
+        fixture
+            .service
+            .usage
+            .wait_for_collector_refresh(Instant::now() + Duration::from_secs(2))
+    );
+    let recovered = fixture.service.prepare(input(), START + WEEK).unwrap();
+    assert_eq!(recovered.usage.totals.total_tokens, Some(180));
+    assert_eq!(recovered.usage.coverage.loading, None);
+    assert!(
+        !recovered
+            .usage
+            .coverage
+            .snapshot
+            .as_ref()
+            .unwrap()
+            .refresh_failed
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 3);
+    for request in peer
+        .requests
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|request| request["method"] == "localUsage/summary")
+    {
+        assert_eq!(request["params"]["repositoryKey"], KEY);
+        assert_eq!(request["params"]["fromAt"], START);
+        assert_eq!(request["params"]["toAt"], START + WEEK);
+        assert_eq!(request["params"]["includeReview"], true);
+    }
+}

@@ -159,10 +159,26 @@ impl Peer {
     ) -> Self {
         Self::with_capability(root, home, Some(capability()), respond)
     }
+    pub(crate) fn start_rpc(
+        root: &Path,
+        home: &Path,
+        respond: impl Fn(&Value) -> Value + Send + 'static,
+    ) -> Self {
+        Self::with_reply_mode(root, home, Some(capability()), true, respond)
+    }
     pub(crate) fn with_capability(
         root: &Path,
         home: &Path,
         cap: Option<Value>,
+        respond: impl Fn(&Value) -> Value + Send + 'static,
+    ) -> Self {
+        Self::with_reply_mode(root, home, cap, false, respond)
+    }
+    fn with_reply_mode(
+        root: &Path,
+        home: &Path,
+        cap: Option<Value>,
+        raw_reply: bool,
         respond: impl Fn(&Value) -> Value + Send + 'static,
     ) -> Self {
         std::fs::create_dir_all(home.join("usage-v2")).unwrap();
@@ -207,7 +223,8 @@ impl Peer {
                 let Ok(request) = ws.read() else { continue };
                 let request: Value = serde_json::from_str(request.to_text().unwrap()).unwrap();
                 observed.lock().unwrap().push(request.clone());
-                let response = if request["method"] == "localUsage/repositoryIdentity" {
+                let identity = request["method"] == "localUsage/repositoryIdentity";
+                let response = if identity {
                     assert_eq!(request["params"]["contractVersion"], 1);
                     assert!(
                         PathBuf::from(request["params"]["path"].as_str().unwrap()).is_absolute()
@@ -220,11 +237,12 @@ impl Peer {
                     assert_eq!(request["params"]["includeReview"], true);
                     respond(&request["params"])
                 };
-                let _ = ws.send(Message::Text(
+                let reply = if raw_reply && !identity {
+                    response
+                } else {
                     json!({"id":request["id"],"result":response})
-                        .to_string()
-                        .into(),
-                ));
+                };
+                let _ = ws.send(Message::Text(reply.to_string().into()));
             }
         });
         Self {

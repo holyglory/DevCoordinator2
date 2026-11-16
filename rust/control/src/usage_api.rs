@@ -1201,10 +1201,24 @@ fn exchange(
                 let response: Value =
                     serde_json::from_str(&text).map_err(|_| "api_contract_unsupported")?;
                 if response.get("id").and_then(Value::as_u64) == Some(id) {
-                    return response
-                        .get("result")
-                        .cloned()
-                        .ok_or_else(|| "api_contract_unsupported".into());
+                    return match (response.get("result"), response.get("error")) {
+                        (Some(result), None) => Ok(result.clone()),
+                        (None, Some(error)) => {
+                            // Only fixed numeric categories cross this boundary.
+                            // Upstream message/data may contain private source
+                            // details and must never enter reports or logs.
+                            let reason = match error.get("code").and_then(Value::as_i64) {
+                                Some(-32603) => "api_source_unavailable",
+                                Some(-32601) => "api_contract_unsupported",
+                                Some(-32602) => "api_params_invalid",
+                                Some(-32600 | -32700) => "api_request_invalid",
+                                Some(_) => "api_source_error",
+                                None => "api_contract_unsupported",
+                            };
+                            Err(reason.into())
+                        }
+                        _ => Err("api_contract_unsupported".into()),
+                    };
                 }
                 // Ignore unrelated notifications; never copy raw content or errors into results.
             }
