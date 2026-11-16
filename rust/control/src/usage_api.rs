@@ -1014,11 +1014,13 @@ impl CollectorApi {
                     .values()
                     .filter(|flight| &flight.source == path)
                     .collect::<Vec<_>>();
-                let can_share_rich = projection == QueryProjection::Headline
-                    && known_headlines == Some(true)
+                let can_share_compact = known_headlines == Some(true)
                     && same_source.len() == 1
-                    && same_source[0].projection == QueryProjection::Rich;
-                if !same_source.is_empty() && !can_share_rich {
+                    && ((projection == QueryProjection::Headline
+                        && same_source[0].projection == QueryProjection::Rich)
+                        || (projection == QueryProjection::Rich
+                            && same_source[0].projection == QueryProjection::Headline));
+                if !same_source.is_empty() && !can_share_compact {
                     if let Some(saved) = saved {
                         return SummaryRead::cached_or_error(Some(saved), "api_source_busy");
                     }

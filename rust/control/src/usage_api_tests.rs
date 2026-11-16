@@ -192,6 +192,80 @@ fn negotiated_headline_can_cross_repository_while_rich_read_is_occupied() {
 }
 
 #[test]
+fn negotiated_rich_read_can_follow_an_occupied_headline_lane() {
+    use crate::usage_api_fixture::{Peer, ResponseGate, headline_response};
+    let directory = tempfile::tempdir().unwrap();
+    let gate = ResponseGate::default();
+    let response_gate = gate.clone();
+    let mut cap = capability();
+    cap["supportsTokenHeadlines"] = json!(true);
+    let peer = Peer::with_capability_concurrent(
+        directory.path(),
+        &directory.path().join("home"),
+        Some(cap),
+        move |params| {
+            if params["repositoryKey"] == KEY && params["includeReview"] == false {
+                response_gate.wait();
+                headline_response(params, 20)
+            } else {
+                response(params, 20, 135)
+            }
+        },
+    );
+    let release = gate.release_on_drop();
+    let api = CollectorApi::default();
+    assert_eq!(
+        api.summary_headline(
+            &peer.source,
+            Some(KEY),
+            None,
+            true,
+            10,
+            20,
+            Instant::now() + Duration::from_millis(50),
+        )
+        .err()
+        .as_deref(),
+        Some("api_refresh_pending")
+    );
+    let started = Instant::now();
+    while started.elapsed() < Duration::from_secs(1)
+        && !peer.requests.lock().unwrap().iter().any(|request| {
+            request["method"] == "localUsage/summary" && request["params"]["includeReview"] == false
+        })
+    {
+        std::thread::yield_now();
+    }
+    let rich = api.summary(
+        &peer.source,
+        Some("repo_eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"),
+        None,
+        true,
+        10,
+        20,
+        Instant::now() + API_BUDGET,
+    );
+    assert!(started.elapsed() < Duration::from_secs(1));
+    assert!(
+        rich.is_ok(),
+        "a negotiated rich read can use the second bounded lane"
+    );
+    release.release();
+    assert!(api.wait_until_idle(Instant::now() + Duration::from_secs(2)));
+    let summaries = peer
+        .requests
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|request| request["method"] == "localUsage/summary")
+        .cloned()
+        .collect::<Vec<_>>();
+    assert_eq!(summaries.len(), 2);
+    assert_eq!(summaries[0]["params"]["includeReview"], false);
+    assert_eq!(summaries[1]["params"]["includeReview"], true);
+}
+
+#[test]
 fn unnegotiated_headline_stays_on_the_single_heavy_lane() {
     use crate::usage_api_fixture::{Peer, ResponseGate};
     let directory = tempfile::tempdir().unwrap();
