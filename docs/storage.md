@@ -97,7 +97,10 @@ caches, and fourteen for other unused disposable resources. Use `storage.policy.
 first verified observation. Current use and leases extend the inactivity
 baseline. Hourly discovery and relevant lifecycle events refresh the inventory;
 eligibility deadlines trigger another observation before automatic deletion.
-Inventory keeps the actual observation timestamp and expires after two missed
+Inventory keeps each candidate's earliest actual observation timestamp, including
+cached dependencies and measurements continued across batches. Later fresh
+observations do not inherit the scan's start time, and finishing an older
+observation never refreshes it. Inventory expires after two missed
 hourly discovery intervals. This accommodates long host scans without extending
 the five-minute lifetime of a prepared cleanup plan. Failed provider observations
 immediately block affected records. Removal still verifies current dependencies,
@@ -125,6 +128,8 @@ check examines names rather than secret contents; public examples such as
 `.env.example` remain eligible. Verified backup copies retain their own
 recovery-generation policy.
 
+Git worktree enumeration retains at most one MiB per output stream, independently
+of the metrics helper's 64 KiB default. Truncated inventories remain unavailable.
 Worktrees need an explicit disposal declaration, no current owner/runtime use,
 a clean Git state, no unique commits and a verified remote baseline. Backup
 cleanup preserves at least two verified generations per recovery lineage plus

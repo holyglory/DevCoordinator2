@@ -120,6 +120,8 @@ pub struct Context {
     /// Valid only within one discovery pass; removal always remeasures.
     pub discovery_measurements: BTreeMap<PathBuf, super::fs::Measurement>,
     pub docker_snapshot: Option<std::sync::Arc<Vec<serde_json::Value>>>,
+    /// Earliest observation used by records that depend on the cached snapshot.
+    pub docker_snapshot_at_ms: Option<u64>,
     pub docker_unavailable: bool,
     pub scan_repository_id: Option<String>,
     pub active_worktrees: Vec<PathBuf>,

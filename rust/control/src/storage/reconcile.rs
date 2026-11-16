@@ -122,11 +122,39 @@ impl ReconcileCursor {
                                 if self.discovery.tracked_source_directories.contains(path)
                         )
                         && !old.artifact.protected
-                        && !self.context.protected_resources.contains(&old.resource_key)
-                        && !self.context.protected_ancestors.contains(&old.resource_key)
+                        && !super::resource_is_covered(
+                            &old.resource_key,
+                            &old.ancestor_keys,
+                            |key| {
+                                self.context
+                                    .protected_resources
+                                    .iter()
+                                    .any(|resource| resource == key)
+                            },
+                            |key| {
+                                self.context
+                                    .protected_ancestors
+                                    .iter()
+                                    .any(|resource| resource == key)
+                            },
+                        )
                         && !self.context.leased_artifacts.contains(&id)
-                        && !self.context.leased_resources.contains(&old.resource_key)
-                        && !self.context.leased_ancestors.contains(&old.resource_key);
+                        && !super::resource_is_covered(
+                            &old.resource_key,
+                            &old.ancestor_keys,
+                            |key| {
+                                self.context
+                                    .leased_resources
+                                    .iter()
+                                    .any(|resource| resource == key)
+                            },
+                            |key| {
+                                self.context
+                                    .leased_ancestors
+                                    .iter()
+                                    .any(|resource| resource == key)
+                            },
+                        );
                     if tracked_source_directory {
                         // This row was emitted by a prior scan before the
                         // source-folder classifier consulted Git. The path is

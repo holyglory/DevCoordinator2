@@ -23,6 +23,7 @@ pub(super) struct EvidenceCursor {
 struct WorktreeEvidence {
     repository: String,
     worktree: PathBuf,
+    observed_at_ms: u64,
     request: LogPruneRequest,
     filesystem_cursor: Option<String>,
     filesystem_complete: bool,
@@ -103,6 +104,7 @@ impl WorktreeEvidence {
             },
             context,
         )?;
+        record.artifact.verified_at_ms = Some(self.observed_at_ms);
         record.artifact.repository_id = Some(self.repository.clone());
         record.artifact.repository_name = context
             .repositories
@@ -235,6 +237,7 @@ impl HostBackend {
                     cursor.current = Some(WorktreeEvidence {
                         repository: repository.clone(),
                         worktree: worktree.clone(),
+                        observed_at_ms: context.now_ms,
                         request: query,
                         filesystem_cursor: None,
                         filesystem_complete: false,
@@ -480,8 +483,23 @@ mod tests {
     impl crate::docker::DockerControl for NoHostDocker {
         fn invoke(
             &self,
-            _: crate::docker::DockerInvocation,
+            input: crate::docker::DockerInvocation,
         ) -> Result<crate::docker::DockerOutput, crate::docker::DockerError> {
+            // This isolated Git/filesystem fixture has a complete empty
+            // container inventory; no call reaches the host Docker engine.
+            if input
+                .args()
+                .first()
+                .is_some_and(|argument| argument == "ps")
+            {
+                return Ok(crate::docker::DockerOutput {
+                    exit_code: 0,
+                    stdout: String::new(),
+                    stderr: String::new(),
+                    stdout_truncated: false,
+                    stderr_truncated: false,
+                });
+            }
             Err(crate::docker::DockerError::CliUnavailable)
         }
         fn spawn_follow_logs(
@@ -625,6 +643,68 @@ mod tests {
         let second = temporary.path().join("repo-two");
         std::fs::create_dir_all(&first).unwrap();
         std::fs::create_dir_all(&second).unwrap();
+        let execution_uid = rustix::process::getuid().as_raw();
+        let git = |root: &Path, arguments: &[&str]| {
+            let output = std::process::Command::new("/usr/bin/git")
+                .arg("--no-optional-locks")
+                .arg("-C")
+                .arg(root)
+                .args([
+                    "-c",
+                    "core.fsmonitor=false",
+                    "-c",
+                    "core.hooksPath=/dev/null",
+                ])
+                .args(arguments)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            output.stdout
+        };
+        git(&first, &["init", "--quiet", "--initial-branch=main"]);
+        std::fs::create_dir(first.join("build")).unwrap();
+        std::fs::write(first.join("build/source.txt"), "tracked source\n").unwrap();
+        git(&first, &["add", "build/source.txt"]);
+        git(
+            &first,
+            &[
+                "-c",
+                "user.name=Fixture",
+                "-c",
+                "user.email=fixture@example.invalid",
+                "commit",
+                "--quiet",
+                "-m",
+                "source baseline",
+            ],
+        );
+        let origin = temporary.path().join("origin.git");
+        git(
+            &first,
+            &[
+                "init",
+                "--bare",
+                "--quiet",
+                "--initial-branch=main",
+                origin.to_str().unwrap(),
+            ],
+        );
+        git(
+            &first,
+            &["remote", "add", "origin", origin.to_str().unwrap()],
+        );
+        git(
+            &first,
+            &["push", "--quiet", "origin", "HEAD:refs/heads/main"],
+        );
+        let worktree_paths =
+            crate::automation_test_support::add_large_worktree_inventory(&first, temporary.path());
+        let trailing = worktree_paths.last().unwrap();
+        let worktrees = trailing.parent().unwrap();
         publish_run(&first, "run-one");
         publish_run(&second, "run-two");
         let sparse_evidence =
@@ -649,8 +729,8 @@ mod tests {
         database
             .transaction(move |c| {
                 c.execute(
-                    "INSERT INTO repositories(repository_id,root_path,display_name,registered_at,registered_by_uid,last_seen_at) VALUES('r1111111111111111',$1,'one','t',1,'t'),('r2222222222222222',$2,'two','t',1,'t')",
-                    crate::database::params![first_text, second_text],
+                    "INSERT INTO repositories(repository_id,root_path,display_name,registered_at,registered_by_uid,last_seen_at) VALUES('r1111111111111111',$1,'one','t',$3,'t'),('r2222222222222222',$2,'two','t',$3,'t')",
+                    crate::database::params![first_text, second_text, execution_uid],
                 )?;
                 c.execute(
                     "INSERT INTO worktrees(worktree_id,repository_id,worktree_path,registered_at,last_seen_at) VALUES('w1','r1111111111111111',$1,'t','t'),('w2','r2222222222222222',$2,'t','t')",
@@ -682,19 +762,37 @@ mod tests {
                     id: "r1111111111111111".into(),
                     name: "one".into(),
                     root: first.clone(),
-                    execution_uid: 1000,
+                    execution_uid,
                 },
                 Repository {
                     id: "r2222222222222222".into(),
                     name: "two".into(),
                     root: second.clone(),
-                    execution_uid: 1000,
+                    execution_uid,
                 },
             ],
             retention_age_seconds: 86_400,
             retention_depth: 3,
             ..Context::default()
         };
+        let refused =
+            super::super::git_bytes(&first, &["worktree", "list", "--porcelain", "-z"], &context)
+                .unwrap_err();
+        assert_eq!(refused.message, "git_baseline_unverified");
+        assert!(
+            super::super::git_worktree_bytes(&first, &context)
+                .unwrap()
+                .len()
+                > 64 * 1024
+        );
+        let mut no_owner = context.clone();
+        no_owner.repositories[0].execution_uid = 0;
+        assert_eq!(
+            super::super::git_worktree_bytes(&first, &no_owner)
+                .unwrap_err()
+                .message,
+            "git_execution_owner_unverified"
+        );
         // A fresh filesystem observation cannot claim complete policy
         // eligibility before retention has published a complete generation.
         let mut preliminary = Discovery::default();
@@ -703,10 +801,24 @@ mod tests {
             .unwrap();
         assert_eq!(preliminary.records.len(), 2);
         assert!(!preliminary.complete_kinds.contains(&api::Kind::Evidence));
+        struct ObservationClock(std::sync::atomic::AtomicU64);
+        impl crate::platform::Clock for ObservationClock {
+            fn now_utc(&self) -> time::OffsetDateTime {
+                time::OffsetDateTime::from_unix_timestamp_nanos(
+                    i128::from(self.0.load(std::sync::atomic::Ordering::SeqCst)) * 1_000_000,
+                )
+                .unwrap()
+            }
+        }
+        let scan_started_at = 1_800_000_000_000;
+        let late_observed_at = scan_started_at + crate::storage::OBSERVATION_FRESH_MS + 1;
+        let clock = std::sync::Arc::new(ObservationClock(std::sync::atomic::AtomicU64::new(
+            scan_started_at,
+        )));
         let service = crate::storage::StorageService::with_backend(
             config(temporary.path()),
             database.clone(),
-            std::sync::Arc::new(crate::platform::HostClock),
+            clock.clone(),
             crate::capacity::CapacityBroker::new(
                 database.clone(),
                 temporary.path().join("daemon.sock"),
@@ -727,6 +839,94 @@ mod tests {
             work: None,
             identity: None,
         };
+        let ancestor_keys = |path: &Path| {
+            path.ancestors()
+                .skip(1)
+                .map(|parent| {
+                    let (device, inode) = crate::storage::fs::identity(parent).unwrap();
+                    format!("fs:{device}:{inode}")
+                })
+                .collect::<Vec<_>>()
+        };
+        let mut legacy_context = context.clone();
+        legacy_context
+            .worktrees
+            .push(("r1111111111111111".into(), trailing.clone()));
+        legacy_context.discovering = true;
+        legacy_context.docker_snapshot = Some(std::sync::Arc::new(Vec::new()));
+        let mut legacy_source = backend
+            .directory_candidate(
+                &trailing.join("build"),
+                trailing,
+                Some(&first),
+                api::Kind::BuildOutput,
+                false,
+                &legacy_context,
+            )
+            .unwrap();
+        legacy_source.artifact.repository_id = Some("r1111111111111111".into());
+        legacy_source.ancestor_keys = ancestor_keys(&trailing.join("build"));
+        let legacy_source_id = legacy_source.artifact.artifact_id.clone();
+        crate::storage::read_tests::save(&service, &legacy_source);
+        let mut guarded_sources = Vec::new();
+        for (index, protected) in [(18, true), (19, false)] {
+            let worktree = worktrees.join(format!("worktree-{index:02}"));
+            legacy_context
+                .worktrees
+                .push(("r1111111111111111".into(), worktree.clone()));
+            let mut parent = backend
+                .directory_candidate(
+                    &worktree,
+                    &worktree,
+                    Some(&first),
+                    api::Kind::Worktree,
+                    true,
+                    &legacy_context,
+                )
+                .unwrap();
+            parent.artifact.repository_id = Some("r1111111111111111".into());
+            parent.ancestor_keys = ancestor_keys(&worktree);
+            crate::storage::read_tests::save(&service, &parent);
+            let mut child = backend
+                .directory_candidate(
+                    &worktree.join("build"),
+                    &worktree,
+                    Some(&first),
+                    api::Kind::BuildOutput,
+                    false,
+                    &legacy_context,
+                )
+                .unwrap();
+            child.artifact.repository_id = Some("r1111111111111111".into());
+            child.ancestor_keys = ancestor_keys(&worktree.join("build"));
+            crate::storage::read_tests::save(&service, &child);
+            let reason = if protected {
+                service
+                    .protect(
+                        api::Protection {
+                            artifact_id: parent.artifact.artifact_id,
+                            expected_revision: parent.artifact.revision,
+                            protected: true,
+                        },
+                        &caller,
+                    )
+                    .unwrap();
+                "protected_shared_data"
+            } else {
+                service
+                    .lease(
+                        api::LeaseSet {
+                            lease_id: None,
+                            artifact_ids: vec![parent.artifact.artifact_id],
+                            duration_seconds: 86_400,
+                        },
+                        &caller,
+                    )
+                    .unwrap();
+                "active_lease"
+            };
+            guarded_sources.push((child.artifact.artifact_id, reason));
+        }
         let protection = || api::Protection {
             artifact_id: "sa-run-one".into(),
             expected_revision: 1,
@@ -884,7 +1084,7 @@ mod tests {
         let mut steps = 0;
         loop {
             steps += 1;
-            assert!(steps < 200);
+            assert!(steps < 600);
             match service.execute_scan_step(&scan.job_id, &mut scan_cursor, budget) {
                 Err(error) => {
                     assert_eq!(error.code, devcoordinator2_api::ErrorCode::Busy);
@@ -895,6 +1095,11 @@ mod tests {
             }
         }
         assert!(scan_cursor.is_some());
+        // The first worktree's active-run state was read before contention;
+        // the second worktree is first observed only after this delay.
+        clock
+            .0
+            .store(late_observed_at, std::sync::atomic::Ordering::SeqCst);
         let job = crate::storage::worker::scan_job_for_test(
             service.clone(),
             scan.job_id.clone(),
@@ -931,7 +1136,7 @@ mod tests {
         let runtime = tokio::runtime::Runtime::new().unwrap();
         let mut events = scheduler.retry_events();
         let (_stop, mut shutdown) = tokio::sync::watch::channel(false);
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
         loop {
             assert!(std::time::Instant::now() < deadline);
             events.borrow_and_update();
@@ -957,6 +1162,53 @@ mod tests {
             service.job(&scan.job_id).unwrap().state,
             api::JobState::Completed
         ));
+        let trailing_worktree = service
+            .inventory(api::List {
+                kind: Some(api::Kind::Worktree),
+                query: Some("zz-trailing".into()),
+                limit: Some(10),
+                ..Default::default()
+            })
+            .unwrap();
+        let retired_source = service.artifact(&legacy_source_id).unwrap();
+        let observed = trailing_worktree.artifacts.iter().any(|artifact| {
+            artifact.name == "zz-trailing"
+                && artifact.repository_id.as_deref() == Some("r1111111111111111")
+        });
+        assert!(
+            observed && retired_source.removed_at_ms.is_some(),
+            "large Git inventory lost trailing worktree/source retirement: observed={observed}, retired={}",
+            retired_source.removed_at_ms.is_some()
+        );
+        assert!(trailing.join("build/source.txt").is_file());
+        let guarded = guarded_sources
+            .iter()
+            .map(|(id, reason)| {
+                let artifact = service.artifact(id).unwrap();
+                (
+                    artifact.name,
+                    artifact.removed_at_ms,
+                    artifact.reasons.iter().any(|current| current == reason),
+                )
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            guarded
+                .iter()
+                .all(|(_, removed, guarded)| removed.is_none() && *guarded),
+            "inherited source guard lost during retirement: {guarded:?}"
+        );
+        let target = trailing_worktree.artifacts.first().unwrap();
+        // Exercise the target refresh's actual Git/common-directory check.
+        // Full process visibility belongs to the root-owned acceptance journey.
+        backend
+            .revalidation_membership(
+                &service.record(&target.artifact_id).unwrap(),
+                trailing,
+                &first,
+                &service.context().unwrap(),
+            )
+            .unwrap();
         let page = service
             .inventory(api::List {
                 kind: Some(api::Kind::Evidence),
@@ -978,6 +1230,28 @@ mod tests {
             .filter(|artifact| expected_ids.contains(artifact.artifact_id.as_str()))
             .collect::<Vec<_>>();
         assert_eq!(observed.len(), 2);
+        let first_observed = observed
+            .iter()
+            .find(|artifact| artifact.repository_id.as_deref() == Some("r1111111111111111"))
+            .unwrap();
+        let second_observed = observed
+            .iter()
+            .find(|artifact| artifact.repository_id.as_deref() == Some("r2222222222222222"))
+            .unwrap();
+        assert_eq!(first_observed.verified_at_ms, Some(scan_started_at));
+        assert!(
+            first_observed
+                .reasons
+                .iter()
+                .any(|reason| reason == "checks_expired")
+        );
+        assert_eq!(second_observed.verified_at_ms, Some(late_observed_at));
+        assert!(
+            !second_observed
+                .reasons
+                .iter()
+                .any(|reason| reason == "checks_expired")
+        );
         let repositories = observed
             .iter()
             .filter_map(|artifact| artifact.repository_id.as_deref())

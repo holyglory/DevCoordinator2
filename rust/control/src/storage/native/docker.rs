@@ -276,6 +276,14 @@ impl HostBackend {
         context: &Context,
         out: &mut Discovery,
     ) -> Result<(), ProtocolError> {
+        // Containers and their consumers share the earlier snapshot. Builder
+        // cache inventory is acquired separately during this current turn.
+        let build_cache_context = context;
+        let mut observation_context = context.clone();
+        if let Some(at) = context.docker_snapshot_at_ms {
+            observation_context.now_ms = context.now_ms.min(at);
+        }
+        let context = &observation_context;
         let containers = self.containers_for(context)?;
         let mut volume_owners: BTreeMap<String, BTreeSet<(String, String)>> = BTreeMap::new();
         for c in containers.iter() {
@@ -574,7 +582,7 @@ impl HostBackend {
         }
         self.discover_images_networks(context, out, &containers, &container_records, &prior)?;
         if context.scan_repository_id.is_none() {
-            self.discover_build_cache(context, out);
+            self.discover_build_cache(build_cache_context, out);
         }
         if let Some(repo) = &context.scan_repository_id {
             let mut keep = out

@@ -79,3 +79,66 @@ impl Fixture {
         }
     }
 }
+
+/// A real complete Git inventory whose trailing worktree lies beyond 64 KiB.
+pub(super) fn add_large_worktree_inventory(
+    repository: &std::path::Path,
+    staging: &std::path::Path,
+) -> Vec<std::path::PathBuf> {
+    let directory = (0..19).fold(staging.join("worktrees"), |path, index| {
+        path.join(format!("{index:02}-{}", "w".repeat(180)))
+    });
+    std::fs::create_dir_all(&directory).unwrap();
+    let mut paths = Vec::new();
+    for index in 0..21 {
+        let name = if index == 20 {
+            "zz-trailing".into()
+        } else {
+            format!("worktree-{index:02}")
+        };
+        let path = directory.join(name);
+        let output = std::process::Command::new("/usr/bin/git")
+            .arg("--no-optional-locks")
+            .arg("-C")
+            .arg(repository)
+            .args([
+                "-c",
+                "core.fsmonitor=false",
+                "-c",
+                "core.hooksPath=/dev/null",
+                "worktree",
+                "add",
+                "--quiet",
+                "--detach",
+            ])
+            .arg(&path)
+            .arg("HEAD")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        paths.push(path);
+    }
+    let output = std::process::Command::new("/usr/bin/git")
+        .arg("--no-optional-locks")
+        .arg("-C")
+        .arg(repository)
+        .args(["worktree", "list", "--porcelain", "-z"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let trailing = paths.last().unwrap().as_os_str().as_encoded_bytes();
+    assert!(output.stdout.len() > 64 * 1024);
+    assert!(
+        output
+            .stdout
+            .windows(trailing.len())
+            .position(|part| part == trailing)
+            .unwrap()
+            > 64 * 1024
+    );
+    paths
+}
