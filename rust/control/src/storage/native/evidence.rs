@@ -23,6 +23,7 @@ pub(super) struct EvidenceCursor {
 struct WorktreeEvidence {
     repository: String,
     worktree: PathBuf,
+    observed_at_ms: u64,
     request: LogPruneRequest,
     filesystem_cursor: Option<String>,
     filesystem_complete: bool,
@@ -103,6 +104,7 @@ impl WorktreeEvidence {
             },
             context,
         )?;
+        record.artifact.verified_at_ms = Some(self.observed_at_ms);
         record.artifact.repository_id = Some(self.repository.clone());
         record.artifact.repository_name = context
             .repositories
@@ -235,6 +237,7 @@ impl HostBackend {
                     cursor.current = Some(WorktreeEvidence {
                         repository: repository.clone(),
                         worktree: worktree.clone(),
+                        observed_at_ms: context.now_ms,
                         request: query,
                         filesystem_cursor: None,
                         filesystem_complete: false,
@@ -703,10 +706,24 @@ mod tests {
             .unwrap();
         assert_eq!(preliminary.records.len(), 2);
         assert!(!preliminary.complete_kinds.contains(&api::Kind::Evidence));
+        struct ObservationClock(std::sync::atomic::AtomicU64);
+        impl crate::platform::Clock for ObservationClock {
+            fn now_utc(&self) -> time::OffsetDateTime {
+                time::OffsetDateTime::from_unix_timestamp_nanos(
+                    i128::from(self.0.load(std::sync::atomic::Ordering::SeqCst)) * 1_000_000,
+                )
+                .unwrap()
+            }
+        }
+        let scan_started_at = 1_800_000_000_000;
+        let late_observed_at = scan_started_at + crate::storage::OBSERVATION_FRESH_MS + 1;
+        let clock = std::sync::Arc::new(ObservationClock(std::sync::atomic::AtomicU64::new(
+            scan_started_at,
+        )));
         let service = crate::storage::StorageService::with_backend(
             config(temporary.path()),
             database.clone(),
-            std::sync::Arc::new(crate::platform::HostClock),
+            clock.clone(),
             crate::capacity::CapacityBroker::new(
                 database.clone(),
                 temporary.path().join("daemon.sock"),
@@ -895,6 +912,11 @@ mod tests {
             }
         }
         assert!(scan_cursor.is_some());
+        // The first worktree's active-run state was read before contention;
+        // the second worktree is first observed only after this delay.
+        clock
+            .0
+            .store(late_observed_at, std::sync::atomic::Ordering::SeqCst);
         let job = crate::storage::worker::scan_job_for_test(
             service.clone(),
             scan.job_id.clone(),
@@ -978,6 +1000,28 @@ mod tests {
             .filter(|artifact| expected_ids.contains(artifact.artifact_id.as_str()))
             .collect::<Vec<_>>();
         assert_eq!(observed.len(), 2);
+        let first_observed = observed
+            .iter()
+            .find(|artifact| artifact.repository_id.as_deref() == Some("r1111111111111111"))
+            .unwrap();
+        let second_observed = observed
+            .iter()
+            .find(|artifact| artifact.repository_id.as_deref() == Some("r2222222222222222"))
+            .unwrap();
+        assert_eq!(first_observed.verified_at_ms, Some(scan_started_at));
+        assert!(
+            first_observed
+                .reasons
+                .iter()
+                .any(|reason| reason == "checks_expired")
+        );
+        assert_eq!(second_observed.verified_at_ms, Some(late_observed_at));
+        assert!(
+            !second_observed
+                .reasons
+                .iter()
+                .any(|reason| reason == "checks_expired")
+        );
         let repositories = observed
             .iter()
             .filter_map(|artifact| artifact.repository_id.as_deref())

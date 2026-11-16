@@ -606,6 +606,9 @@ impl HostBackend {
             },
             context,
         )?;
+        if let Some(at) = context.docker_snapshot_at_ms {
+            r.artifact.verified_at_ms = r.artifact.verified_at_ms.map(|verified| verified.min(at));
+        }
         r.resource_key = format!("fs:{device}:{inode}");
         r.artifact.filesystem_id = Some(format!("fs-{device}"));
         match &measured {

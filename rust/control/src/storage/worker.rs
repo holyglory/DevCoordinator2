@@ -225,6 +225,9 @@ impl StorageService {
             *cursor = None;
             return Ok(true);
         }
+        // Native continuations retain the start of older observations; newly
+        // acquired evidence uses this batch's actual clock instead of scan start.
+        state.context.now_ms = self.now_ms();
         let result = self
             .backend
             .discover_step(&state.context, &mut state.discovery, budget);

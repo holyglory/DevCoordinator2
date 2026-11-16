@@ -77,7 +77,10 @@ caches, and fourteen for other unused disposable resources. Use `storage.policy.
 first verified observation. Current use and leases extend the inactivity
 baseline. Hourly discovery and relevant lifecycle events refresh the inventory;
 eligibility deadlines trigger another observation before automatic deletion.
-Inventory keeps the actual observation timestamp and expires after two missed
+Inventory keeps each candidate's earliest actual observation timestamp, including
+cached dependencies and measurements continued across batches. Later fresh
+observations do not inherit the scan's start time, and finishing an older
+observation never refreshes it. Inventory expires after two missed
 hourly discovery intervals. This accommodates long host scans without extending
 the five-minute lifetime of a prepared cleanup plan. Failed provider observations
 immediately block affected records. Removal still verifies current dependencies,

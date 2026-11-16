@@ -60,7 +60,7 @@ type SourceTraversal = (SourceRoot, Vec<(PathBuf, std::fs::ReadDir, usize)>);
 struct SourceCursor {
     roots: VecDeque<SourceRoot>,
     current: Option<SourceTraversal>,
-    pending: Option<(Candidate, fs::MeasurementCursor)>,
+    pending: Option<(Candidate, fs::MeasurementCursor, u64)>,
     candidates: usize,
     had_gap: bool,
 }
@@ -161,10 +161,10 @@ impl SourceCursor {
         out.coverage_gaps.push(message.into());
     }
 
-    fn prepare(&mut self, candidate: Candidate, out: &mut Discovery) {
+    fn prepare(&mut self, candidate: Candidate, out: &mut Discovery, observed_at_ms: u64) {
         self.candidates += 1;
         match fs::MeasurementCursor::new(&candidate.path) {
-            Ok(measurement) => self.pending = Some((candidate, measurement)),
+            Ok(measurement) => self.pending = Some((candidate, measurement, observed_at_ms)),
             Err(_) => self.gap(out, "source_discovery_incomplete"),
         }
     }
@@ -184,7 +184,7 @@ impl SourceCursor {
             {
                 return Ok(false);
             }
-            if let Some((candidate, measurement)) = self.pending.as_mut() {
+            if let Some((candidate, measurement, observed_at_ms)) = self.pending.as_mut() {
                 let measured = measurement.step(
                     budget.entries.saturating_sub(entries).max(1),
                     budget.elapsed.saturating_sub(started.elapsed()),
@@ -206,6 +206,10 @@ impl SourceCursor {
                         context.discovery_measurements.remove(&candidate.path);
                         match result {
                             Ok(mut record) => {
+                                record.artifact.verified_at_ms = record
+                                    .artifact
+                                    .verified_at_ms
+                                    .map(|at| at.min(*observed_at_ms));
                                 record.artifact.repository_id =
                                     candidate.root.repository_id.clone();
                                 record.artifact.repository_name =
@@ -286,6 +290,7 @@ impl SourceCursor {
                             recognized: true,
                         },
                         out,
+                        context.now_ms,
                     );
                 }
                 continue;
@@ -394,6 +399,7 @@ impl SourceCursor {
                         recognized,
                     },
                     out,
+                    context.now_ms,
                 );
                 continue;
             }
@@ -440,10 +446,14 @@ impl HostBackend {
                 finalize_index: 0,
             }
         });
+        state.context.now_ms = context.now_ms;
         match state.phase {
             0 => {
                 match self.container_rows() {
-                    Ok(rows) => state.context.docker_snapshot = Some(std::sync::Arc::new(rows)),
+                    Ok(rows) => {
+                        state.context.docker_snapshot = Some(std::sync::Arc::new(rows));
+                        state.context.docker_snapshot_at_ms = Some(context.now_ms);
+                    }
                     Err(error) => {
                         state.context.docker_unavailable = true;
                         let category = match error.message.as_str() {
@@ -673,5 +683,57 @@ mod tests {
                     if path == &repository.join("build")
             )
         }));
+
+        let generated = repository.join("dist");
+        std::fs::create_dir(&generated).unwrap();
+        std::fs::write(generated.join("output.bin"), "generated output").unwrap();
+        for cached_at in [1_000, 900] {
+            scan_context.now_ms = 1_000;
+            scan_context.docker_snapshot = Some(std::sync::Arc::new(Vec::new()));
+            scan_context.docker_snapshot_at_ms = Some(cached_at);
+            let mut cursor = SourceCursor::new(&scan_context);
+            let mut discovery = Discovery::default();
+            let budget = DiscoveryBudget {
+                entries: 1,
+                elapsed: Duration::from_millis(100),
+            };
+            for _ in 0..64 {
+                assert!(
+                    !cursor
+                        .step(&backend, &mut scan_context, &mut discovery, budget)
+                        .unwrap()
+                );
+                if cursor.pending.is_some() {
+                    break;
+                }
+            }
+            assert!(cursor.pending.is_some());
+            scan_context.now_ms += crate::storage::OBSERVATION_FRESH_MS + 1;
+            if cached_at == 1_000 {
+                // A later dependency observation cannot refresh measurement
+                // metadata already acquired before this long continuation.
+                scan_context.docker_snapshot_at_ms = Some(scan_context.now_ms);
+            }
+            for _ in 0..64 {
+                if cursor
+                    .step(&backend, &mut scan_context, &mut discovery, budget)
+                    .unwrap()
+                {
+                    break;
+                }
+            }
+            let record = discovery
+                .records
+                .iter()
+                .find(|record| {
+                    matches!(
+                        &record.locator,
+                        crate::storage::model::Locator::Directory { path, .. } if path == &generated
+                    )
+                })
+                .unwrap();
+            assert_eq!(record.artifact.verified_at_ms, Some(cached_at));
+            assert!(generated.is_dir());
+        }
     }
 }
