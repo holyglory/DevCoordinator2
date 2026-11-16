@@ -1,5 +1,5 @@
 //! A target-only observation, never a partial whole-inventory discovery.
-use super::{Backend, DiscoveryBudget, HostBackend, git_bytes};
+use super::{Backend, DiscoveryBudget, HostBackend, git_bytes, git_worktree_bytes};
 use crate::storage::{
     blocked, fs, hash, json,
     model::{Context, Locator, Record},
@@ -100,7 +100,7 @@ fn ancestors(record: &Record) -> Result<Vec<String>, ProtocolError> {
 }
 
 impl HostBackend {
-    fn revalidation_membership(
+    pub(super) fn revalidation_membership(
         &self,
         record: &Record,
         path: &Path,
@@ -121,7 +121,7 @@ impl HostBackend {
         }
         // A database row or stale Git worktree entry alone cannot prove that
         // this directory still belongs to the registered source repository.
-        let membership = git_bytes(main, &["worktree", "list", "--porcelain", "-z"], context)?;
+        let membership = git_worktree_bytes(main, context)?;
         use std::os::unix::ffi::OsStrExt;
         if !membership
             .split(|b| *b == 0)

@@ -379,6 +379,15 @@ pub(crate) fn run_bounded(
     arguments: &[OsString],
     timeout: Duration,
 ) -> Option<ProcessOutput> {
+    run_bounded_with_limit(program, arguments, timeout, OUTPUT_LIMIT)
+}
+
+pub(crate) fn run_bounded_with_limit(
+    program: &Path,
+    arguments: &[OsString],
+    timeout: Duration,
+    output_limit: usize,
+) -> Option<ProcessOutput> {
     let mut child = Command::new(program)
         .args(arguments)
         .env_clear()
@@ -390,8 +399,8 @@ pub(crate) fn run_bounded(
         .ok()?;
     let stdout = child.stdout.take()?;
     let stderr = child.stderr.take()?;
-    let stdout_reader = thread::spawn(move || read_output(stdout));
-    let stderr_reader = thread::spawn(move || read_output(stderr));
+    let stdout_reader = thread::spawn(move || read_output(stdout, output_limit));
+    let stderr_reader = thread::spawn(move || read_output(stderr, output_limit));
     let deadline = Instant::now() + timeout;
     let status = loop {
         if let Some(status) = child.try_wait().ok()? {
@@ -424,7 +433,10 @@ pub(crate) fn run_bounded(
     })
 }
 
-fn read_output(mut source: impl Read) -> io::Result<(Vec<u8>, bool)> {
+pub(crate) fn read_output(
+    mut source: impl Read,
+    output_limit: usize,
+) -> io::Result<(Vec<u8>, bool)> {
     let mut output = Vec::new();
     let mut buffer = [0_u8; 8 * 1024];
     let mut truncated = false;
@@ -433,7 +445,7 @@ fn read_output(mut source: impl Read) -> io::Result<(Vec<u8>, bool)> {
         if read == 0 {
             return Ok((output, truncated));
         }
-        let remaining = OUTPUT_LIMIT.saturating_sub(output.len());
+        let remaining = output_limit.saturating_sub(output.len());
         output.extend_from_slice(&buffer[..read.min(remaining)]);
         truncated |= read > remaining;
     }
@@ -541,5 +553,32 @@ mod tests {
         assert_eq!(storage.images, 1_573_364);
         assert_eq!(storage.build_cache, 2_000_000_000);
         assert_eq!(storage.volumes["managed-data"], 47_740_000);
+        let arguments = ["-c", "70000", "/dev/zero"].map(OsString::from);
+        let default = run_bounded(
+            Path::new("/usr/bin/head"),
+            &arguments,
+            Duration::from_secs(2),
+        )
+        .unwrap();
+        assert_eq!(default.stdout.len(), 64 * 1024);
+        assert!(default.truncated);
+        let expanded = run_bounded_with_limit(
+            Path::new("/usr/bin/head"),
+            &arguments,
+            Duration::from_secs(2),
+            128 * 1024,
+        )
+        .unwrap();
+        assert_eq!(expanded.stdout.len(), 70000);
+        assert!(!expanded.truncated);
+        let oversized = run_bounded_with_limit(
+            Path::new("/usr/bin/head"),
+            &arguments,
+            Duration::from_secs(2),
+            70000 - 1,
+        )
+        .unwrap();
+        assert_eq!(oversized.stdout.len(), 70000 - 1);
+        assert!(oversized.truncated);
     }
 }

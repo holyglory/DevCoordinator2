@@ -191,6 +191,17 @@ fn storage_inventory_sql() -> String {
     )
 }
 
+fn resource_is_covered(
+    resource: &str,
+    ancestors: &[String],
+    contains_resource: impl Fn(&str) -> bool,
+    contains_ancestor: impl Fn(&str) -> bool,
+) -> bool {
+    contains_resource(resource)
+        || contains_ancestor(resource)
+        || ancestors.iter().any(|ancestor| contains_resource(ancestor))
+}
+
 fn storage_eligibility_projection() -> String {
     format!(
         "{}, eligibility AS NOT MATERIALIZED (SELECT b.artifact_id,b.kind,b.removed_at_ms,b.base_safety,COALESCE((policy.value->>'automatic')::boolean,true) automatic,CASE WHEN b.kind='evidence' THEN NULL ELSE LEAST(18446744073709551615::numeric,GREATEST(COALESCE((b.record_json#>>'{{artifact,last_used_at_ms}}')::numeric,0),COALESCE(b.lease_used::numeric,0),(b.record_json#>>'{{artifact,observed_since_ms}}')::numeric)+LEAST(18446744073709551615::numeric,CASE WHEN b.kind IN ('build_output','dependency_cache','build_cache') THEN COALESCE((policy.value->>'cache_idle_seconds')::numeric,{cache}) ELSE COALESCE((policy.value->>'data_idle_seconds')::numeric,{data}) END*1000)) END eligible_at_ms FROM base b LEFT JOIN storage_policies local ON local.scope=b.projection_repository_id LEFT JOIN storage_policies global ON global.scope='' CROSS JOIN LATERAL(SELECT COALESCE(local.policy_json,global.policy_json) value) policy)",
@@ -1445,16 +1456,18 @@ impl StorageService {
     ) -> Result<api::Artifact, ProtocolError> {
         let policy = projection.policy(r.artifact.repository_id.as_deref());
         let now = projection.now;
-        let shared_protection = projection.protected_resources.contains(&r.resource_key)
-            || projection.protected_ancestors.contains(&r.resource_key)
-            || r.ancestor_keys
-                .iter()
-                .any(|key| projection.protected_resources.contains(key));
-        let shared_lease = projection.leased_resources.contains(&r.resource_key)
-            || projection.leased_ancestors.contains(&r.resource_key)
-            || r.ancestor_keys
-                .iter()
-                .any(|key| projection.leased_resources.contains(key));
+        let shared_protection = resource_is_covered(
+            &r.resource_key,
+            &r.ancestor_keys,
+            |key| projection.protected_resources.contains(key),
+            |key| projection.protected_ancestors.contains(key),
+        );
+        let shared_lease = resource_is_covered(
+            &r.resource_key,
+            &r.ancestor_keys,
+            |key| projection.leased_resources.contains(key),
+            |key| projection.leased_ancestors.contains(key),
+        );
         let shared_use = std::iter::once(&r.resource_key)
             .chain(&r.ancestor_keys)
             .filter_map(|key| projection.lease_resource_use.get(key))

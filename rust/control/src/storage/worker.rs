@@ -452,11 +452,7 @@ impl StorageService {
         // Git also knows linked worktrees that have never run a Coordinator
         // command. Inspect it under the registered repository owner's identity.
         for repository in context.repositories.clone() {
-            if let Ok(bytes) = super::native::git_bytes(
-                &repository.root,
-                &["worktree", "list", "--porcelain", "-z"],
-                &context,
-            ) {
+            if let Ok(bytes) = super::native::git_worktree_bytes(&repository.root, &context) {
                 use std::os::unix::ffi::OsStringExt;
                 for field in bytes.split(|b| *b == 0) {
                     if let Some(path) = field.strip_prefix(b"worktree ") {

@@ -24,6 +24,7 @@ use crate::ids;
 const GIT_TIMEOUT: Duration = Duration::from_secs(10);
 const PROCESS_POLL: Duration = Duration::from_millis(10);
 const PROCESS_OUTPUT_CAP: usize = 64 * 1024;
+pub(crate) const WORKTREE_LIST_OUTPUT_LIMIT: usize = 1024 * 1024;
 const GIT_ERROR_CAP: usize = 512;
 const EXEC_PATH: &str = "/usr/bin:/bin";
 
@@ -1426,7 +1427,11 @@ fn run_git_arguments(
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    run_command_with_timeout(command, timeout)
+    if arguments.starts_with(&["worktree", "list"]) {
+        run_command_with_limit(command, timeout, Some(WORKTREE_LIST_OUTPUT_LIMIT))
+    } else {
+        run_command_with_timeout(command, timeout)
+    }
 }
 
 struct GitOutput {
@@ -1435,7 +1440,15 @@ struct GitOutput {
     stderr: Vec<u8>,
 }
 
-fn run_command_with_timeout(mut command: Command, timeout: Duration) -> io::Result<GitOutput> {
+fn run_command_with_timeout(command: Command, timeout: Duration) -> io::Result<GitOutput> {
+    run_command_with_limit(command, timeout, None)
+}
+
+fn run_command_with_limit(
+    mut command: Command,
+    timeout: Duration,
+    complete_output_limit: Option<usize>,
+) -> io::Result<GitOutput> {
     let mut child = command.spawn()?;
     // Wake when Git exits instead of imposing a polling interval on every
     // repository in the Console navigation catalogue.
@@ -1453,10 +1466,16 @@ fn run_command_with_timeout(mut command: Command, timeout: Duration) -> io::Resu
         .ok_or_else(|| io::Error::other("git stderr was not captured"))?;
     let stdout_reader = thread::Builder::new()
         .name("devcoordinator2-git-stdout".to_owned())
-        .spawn(move || read_bounded(stdout, PROCESS_OUTPUT_CAP))?;
+        .spawn(move || match complete_output_limit {
+            Some(limit) => read_complete_output(stdout, limit),
+            None => read_bounded(stdout, PROCESS_OUTPUT_CAP),
+        })?;
     let stderr_reader = thread::Builder::new()
         .name("devcoordinator2-git-stderr".to_owned())
-        .spawn(move || read_bounded(stderr, PROCESS_OUTPUT_CAP))?;
+        .spawn(move || match complete_output_limit {
+            Some(limit) => read_complete_output(stderr, limit),
+            None => read_bounded(stderr, PROCESS_OUTPUT_CAP),
+        })?;
     let deadline = Instant::now() + timeout;
     let status = loop {
         if let Some(status) = child.try_wait()? {
@@ -1507,6 +1526,17 @@ fn run_command_with_timeout(mut command: Command, timeout: Duration) -> io::Resu
         stdout,
         stderr,
     })
+}
+
+fn read_complete_output(input: impl Read, cap: usize) -> io::Result<Vec<u8>> {
+    let (output, truncated) = crate::metrics_source::read_output(input, cap)?;
+    if truncated {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Git worktree inventory exceeded its output limit",
+        ));
+    }
+    Ok(output)
 }
 
 fn read_bounded(mut input: impl Read, cap: usize) -> io::Result<Vec<u8>> {
@@ -1982,6 +2012,16 @@ mod tests {
             .unwrap();
         assert_eq!(error.kind(), io::ErrorKind::TimedOut);
         assert!(began.elapsed() < Duration::from_secs(2));
+        let mut command = Command::new("/usr/bin/head");
+        command
+            .args(["-c", "70000", "/dev/zero"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let error = run_command_with_limit(command, Duration::from_secs(2), Some(64 * 1024))
+            .err()
+            .unwrap();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
     }
 
     #[test]
@@ -2508,6 +2548,15 @@ mod tests {
         let log = linked_root.join(".devcoordinator/test/logs/runs/run-1/stdout.log");
         std::fs::create_dir_all(log.parent().unwrap()).expect("test log directory");
         std::fs::write(&log, b"owned test output").expect("test log");
+        let large_worktrees = crate::automation_test_support::add_large_worktree_inventory(
+            &fixture.root,
+            fixture._temporary.path(),
+        );
+        let mut expected = large_worktrees
+            .iter()
+            .map(|path| ids::worktree_id(path).unwrap())
+            .collect::<std::collections::BTreeSet<_>>();
+        expected.insert(linked.worktree_id);
 
         let retired = fixture
             .registry
@@ -2520,10 +2569,18 @@ mod tests {
             )
             .expect("retire repository");
         assert!(retired.removed);
-        assert_eq!(retired.removed_worktree_ids, vec![linked.worktree_id]);
+        assert_eq!(
+            retired
+                .removed_worktree_ids
+                .iter()
+                .cloned()
+                .collect::<std::collections::BTreeSet<_>>(),
+            expected
+        );
         assert!(retired.logs_removed);
         assert!(!fixture.root.exists());
         assert!(!linked_root.exists());
+        assert!(large_worktrees.iter().all(|path| !path.exists()));
         assert!(!log.exists());
         let repeated = fixture
             .registry
