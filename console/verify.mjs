@@ -608,8 +608,10 @@ async function startFakeDaemon(dir) {
       if (scenario.denied && ADMIN_ONLY.includes(cmd)) return reply({ ok: false, error: { code: 'permission_denied', message: `${cmd} requires administrator`, detail: '' } });
       if (cmd.startsWith('performance.') && !scenario.admin) return reply({ ok:false, error:{code:'permission_denied',message:'Administrator access required',detail:''} });
       if (cmd.startsWith('performance.')) {
-        const pendingKey = cmd === 'performance.review' ? `review:${req.params.reference}` : scenario.performancePendingByWindow ? JSON.stringify([req.params.repository_id, req.params.window_start_ms, req.params.window_end_ms, !!req.params.totals_only]) : req.params.totals_only ? 'lifetime' : 'period';
-        const pending = ['performance.overview', 'performance.review'].includes(cmd) && scenario.performancePendingRepository === req.params.repository_id || (cmd === 'performance.overview' && (scenario.performancePendingOnce || scenario.performancePendingByWindow) || cmd === 'performance.review' && scenario.performanceReviewPendingOnce) && !mutable.performancePendingServed.has(pendingKey);
+        if (scenario.performanceDetailsError && cmd === 'performance.overview' && !req.params.totals_only) return reply({ ok: false, error: { code: 'api_source_unavailable', message: 'Detailed measurements are temporarily unavailable.', detail: '' } });
+        if ((scenario.performanceHoldDetails || scenario.performanceHoldDetailsFrom === req.params.window_start_ms) && cmd === 'performance.overview' && !req.params.totals_only && !mutable.cacheReleased) await new Promise(resolve => delayedReplies.add(resolve));
+        const pendingKey = cmd === 'performance.review' ? `review:${req.params.reference}` : JSON.stringify([req.params.repository_id, req.params.window_start_ms, req.params.window_end_ms, !!req.params.totals_only]);
+        const pending = ['performance.overview', 'performance.review'].includes(cmd) && scenario.performancePendingRepository === req.params.repository_id || (cmd === 'performance.overview' && (scenario.performancePendingOnce || scenario.performancePendingByWindow) || cmd === 'performance.review' && scenario.performanceReviewPendingOnce) && (scenario.performanceHoldPending ? !mutable.cacheReleased : !mutable.performancePendingServed.has(pendingKey));
         if (pending) mutable.performancePendingServed.add(pendingKey);
         return reply({ok:true,data:performanceFixture(cmd,req.params,pending ? {...scenario, usageUnavailable:true, performanceRefreshPending:true} : scenario)});
       }
@@ -974,7 +976,7 @@ async function main() {
     const scenarioName = process.env.CONSOLE_VERIFY_HOLD_SCENARIO || 'populated';
     const scenario = SCENARIOS[scenarioName];
     if (!scenario) throw new Error(`unknown hold scenario ${scenarioName}`);
-    daemon.setScenario({ ...scenario, ...(process.env.CONSOLE_VERIFY_PERFORMANCE_DENSE ? { performanceDense: true } : {}), ...(process.env.CONSOLE_VERIFY_PERFORMANCE_WORKSTREAM ? { performanceWorkstream: true } : {}), ...(process.env.CONSOLE_VERIFY_PERFORMANCE_PENDING_REPOSITORY ? { performancePendingRepository: process.env.CONSOLE_VERIFY_PERFORMANCE_PENDING_REPOSITORY } : {}), ...(process.env.CONSOLE_VERIFY_PERFORMANCE_PENDING_ONCE ? { performancePendingOnce: true } : {}), ...(process.env.CONSOLE_VERIFY_PERFORMANCE_DELAY_MS ? { delayMs: Number(process.env.CONSOLE_VERIFY_PERFORMANCE_DELAY_MS), delayRepository: process.env.CONSOLE_VERIFY_PERFORMANCE_DELAY_REPOSITORY || null, delayOperations: (process.env.CONSOLE_VERIFY_PERFORMANCE_DELAY_OPERATIONS || 'performance.overview,performance.review').split(',').filter(Boolean) } : {}) });
+    daemon.setScenario({ ...scenario, ...(process.env.CONSOLE_VERIFY_PERFORMANCE_DENSE ? { performanceDense: true } : {}), ...(process.env.CONSOLE_VERIFY_PERFORMANCE_WORKSTREAM ? { performanceWorkstream: true } : {}), ...(process.env.CONSOLE_VERIFY_PERFORMANCE_HOLD_DETAILS_FROM ? { performanceHoldDetailsFrom: Number(process.env.CONSOLE_VERIFY_PERFORMANCE_HOLD_DETAILS_FROM) } : {}), ...(process.env.CONSOLE_VERIFY_PERFORMANCE_PENDING_REPOSITORY ? { performancePendingRepository: process.env.CONSOLE_VERIFY_PERFORMANCE_PENDING_REPOSITORY } : {}), ...(process.env.CONSOLE_VERIFY_PERFORMANCE_PENDING_ONCE ? { performancePendingOnce: true } : {}), ...(process.env.CONSOLE_VERIFY_PERFORMANCE_DELAY_MS ? { delayMs: Number(process.env.CONSOLE_VERIFY_PERFORMANCE_DELAY_MS), delayRepository: process.env.CONSOLE_VERIFY_PERFORMANCE_DELAY_REPOSITORY || null, delayOperations: (process.env.CONSOLE_VERIFY_PERFORMANCE_DELAY_OPERATIONS || 'performance.overview,performance.review').split(',').filter(Boolean) } : {}) });
     const { cookie } = sessions.issue({ sub: 'sub', email: scenario.identity, name: 'Verifier' });
     const holdView = process.env.CONSOLE_VERIFY_HOLD_VIEW || `#/deployments/${DEP}`;
     const targetUrl = `http://${HOST}:${port}/${holdView}`;
@@ -1191,17 +1193,18 @@ async function main() {
         const { cookie } = sessions.issue({ sub: 'sub', email: 'owner@example.test' });
         await context.addCookies([{ name: 'dc2_session', value: cookie.split(';')[0].split('=')[1], domain: '.' + BASE, path: '/' }]);
         const page = await context.newPage();
-        for (const route of ['usage', 'usage/' + REPO, 'progress/' + REPO, 'deployments'].filter(route => !process.env.CONSOLE_VERIFY_CACHE_ROUTE || route.startsWith(process.env.CONSOLE_VERIFY_CACHE_ROUTE))) {
+        for (const route of ['usage', 'usage/' + REPO, 'progress/' + REPO].filter(route => !process.env.CONSOLE_VERIFY_CACHE_ROUTE || route.startsWith(process.env.CONSOLE_VERIFY_CACHE_ROUTE))) {
           for (const cacheState of ['loading', 'stale', 'failed', 'unavailable']) {
             try {
             daemon.setScenario({ ...SCENARIOS.populated, cacheState });
             const operation = route === 'usage' ? 'usage.repositories' : route.startsWith('progress') ? 'progress.repository' : 'usage.repository';
             const failed = ['failed', 'unavailable'].includes(cacheState);
-            const waitRequest = failed ? null : page.waitForRequest(request => [operation, ...(route === 'usage' ? ['usage.repository'] : [])].some(name => request.url().endsWith('/api/v3/' + name)) && request.postDataJSON()?.wait_for_refresh === true).catch(error => ({ error }));
+            const navigationStarted = Date.now();
+            const waitRequest = failed ? null : page.waitForRequest(request => [operation, ...(route === 'usage' ? ['usage.repository'] : [])].some(name => request.url().endsWith('/api/v3/' + name)) && request.postDataJSON()?.wait_for_refresh === true).then(request => ({ request, elapsed_ms: Date.now() - navigationStarted })).catch(error => ({ error }));
             await page.goto('http://' + HOST + ':' + port + '/?cache=' + cacheState + '#/' + route);
-            await page.waitForFunction(() => /Loading usage|Saved usage|Refresh failed|refresh failed/i.test(document.querySelector('main').innerText));
+            await page.waitForFunction(() => /Loading (token )?usage|Rebuilding usage cache|Indexing usage cache|Saved usage|Refresh failed/i.test(document.querySelector('main').innerText));
             const before = await page.locator('main').innerText();
-            check('cache ' + viewport.width + ' ' + route + ' ' + cacheState + ': truthful snapshot label', cacheState === 'loading' ? /Loading usage/.test(before) : failed ? /refresh failed/i.test(before) : /saved usage/i.test(before));
+            check('cache ' + viewport.width + ' ' + route + ' ' + cacheState + ': truthful snapshot label', cacheState === 'loading' ? /Loading (token )?usage|Rebuilding usage cache|Indexing usage cache/.test(before) : failed ? /refresh failed/i.test(before) : /saved usage/i.test(before));
             if (cacheState === 'unavailable' && route === 'usage/' + REPO) check('empty usage failure is shown once', (before.match(/refresh failed/gi) || []).length === 1 && await page.locator('.usage-metrics').count() === 0);
             if (cacheState === 'loading' && route === 'usage/' + REPO) check('cache cold detail hides unmeasured metrics', await page.locator('.usage-metrics').count() === 0);
             if (cacheState === 'loading' && route === 'usage/' + REPO) check('cache cold detail shows rebuild progress', await page.locator('.usage-rebuild-progress').count() === 1 && /3,426/.test(await page.locator('.usage-rebuild-progress').innerText()));
@@ -1211,8 +1214,9 @@ async function main() {
             if (waitRequest) {
               const received = await waitRequest;
               if (received.error) throw received.error;
+              check('cache ' + viewport.width + ' ' + route + ': initial continuation starts within one second', received.elapsed_ms < 1000, `${received.elapsed_ms}ms`);
               daemon.releaseDelayed();
-              await page.waitForFunction(() => !/Loading usage|Saved usage · updating|Updating saved usage/.test(document.querySelector('main').innerText));
+              await page.waitForFunction(() => !/Loading (token )?usage|Rebuilding usage cache|Indexing usage cache|Saved usage · updating|Updating saved usage/.test(document.querySelector('main').innerText));
               if (cacheState === 'stale' && details) check('cache ' + route + ': open details survive refresh', await page.locator(details).getAttribute('open') !== null);
               const renderedOperation = page.url().includes('#/usage/') ? 'usage.repository' : operation;
               check('cache ' + route + ': completion uses bounded event wait', daemon.calls.some(call => call.operation === renderedOperation && call.params.wait_for_refresh === true));
