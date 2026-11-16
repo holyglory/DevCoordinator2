@@ -69,6 +69,7 @@ enum Projection {
     Full,
     Tokens,
     PerformanceFast,
+    Headline,
 }
 pub(crate) const QUERY_TIMEOUT: Duration = Duration::from_secs(30);
 const PROCESS_POLL: Duration = Duration::from_millis(10);
@@ -155,6 +156,7 @@ enum TokenField {
 
 #[derive(Default)]
 struct SourceReport {
+    counts_deferred: bool,
     loading: Option<UsageLoading>,
     source_snapshot: Option<devcoordinator2_api::results::UsageSourceSnapshot>,
     supplied_cost: Option<UsageCost>,
@@ -465,7 +467,7 @@ impl UsageService {
             1,
             true,
             Some(Instant::now() + collector_api::API_BUDGET),
-            Projection::Tokens,
+            Projection::Headline,
             rate_cards,
             None,
         )
@@ -524,8 +526,8 @@ impl CodexUsage {
                 range: report.range,
                 coverage: report.coverage,
                 total_tokens: report.totals.total_tokens,
-                model_requests: Some(report.totals.model_requests),
-                tool_calls: Some(report.totals.tool_calls),
+                model_requests: report.totals.model_requests,
+                tool_calls: report.totals.tool_calls,
                 execution_wall_ms: Some(report.time.execution_wall.measured_ms),
                 cost: report.totals.cost.clone(),
             });
@@ -555,8 +557,8 @@ impl CodexUsage {
                 range: report.range,
                 coverage: report.coverage,
                 total_tokens: report.totals.total_tokens,
-                model_requests: Some(report.totals.model_requests),
-                tool_calls: Some(report.totals.tool_calls),
+                model_requests: report.totals.model_requests,
+                tool_calls: report.totals.tool_calls,
                 execution_wall_ms: Some(report.time.execution_wall.measured_ms),
                 cost: report.totals.cost.clone(),
             });
@@ -903,22 +905,33 @@ impl CodexUsage {
                         }
                         Err(reason) => {
                             if collector_api::is_pending(&reason) {
-                                let candidate = self.api.loading_for(
-                                    source,
-                                    Some(&key),
-                                    selection
-                                        .as_ref()
-                                        .and_then(|s| s.source_keys.get(&source.uid))
-                                        .and_then(|v| v.as_deref()),
-                                    selection
-                                        .as_ref()
-                                        .map(|s| s.include_unassigned)
-                                        .unwrap_or(true),
-                                    None,
-                                    &[],
-                                    start_ms,
-                                    end_ms,
-                                );
+                                let candidate = if matches!(projection, Projection::Headline) {
+                                    self.api.headline_loading_for(
+                                        source,
+                                        Some(&key),
+                                        None,
+                                        true,
+                                        start_ms,
+                                        end_ms,
+                                    )
+                                } else {
+                                    self.api.loading_for(
+                                        source,
+                                        Some(&key),
+                                        selection
+                                            .as_ref()
+                                            .and_then(|s| s.source_keys.get(&source.uid))
+                                            .and_then(|v| v.as_deref()),
+                                        selection
+                                            .as_ref()
+                                            .map(|s| s.include_unassigned)
+                                            .unwrap_or(true),
+                                        None,
+                                        &[],
+                                        start_ms,
+                                        end_ms,
+                                    )
+                                };
                                 loading = match (loading.take(), candidate) {
                                     (None, candidate) => candidate,
                                     (Some(existing), Some(candidate)) => Some(UsageLoading {
@@ -1252,9 +1265,18 @@ impl CodexUsage {
             return Err("query_budget_exhausted".into());
         }
         if has_usage_v2_manifest(source) {
-            let summary = self
-                .api
-                .summary(
+            let summary = if matches!(projection, Projection::Headline) {
+                self.api.summary_headline(
+                    source,
+                    Some(repository_key),
+                    selected_keys,
+                    include_unassigned,
+                    start_ms,
+                    end_ms,
+                    deadline.min(Instant::now() + collector_api::API_BUDGET),
+                )
+            } else {
+                self.api.summary(
                     source,
                     Some(repository_key),
                     worktree_keys.and_then(Option::as_deref),
@@ -1263,15 +1285,16 @@ impl CodexUsage {
                     end_ms,
                     deadline.min(Instant::now() + collector_api::API_BUDGET),
                 )
-                .map_err(|reason| {
-                    // A fresh store is available only through a successful,
-                    // versioned handshake. Never fall back to legacy SQLite.
-                    if filtered && reason == "api_contract_unsupported" {
-                        "worktree_attribution_unavailable".to_owned()
-                    } else {
-                        reason
-                    }
-                })?;
+            }
+            .map_err(|reason| {
+                // A fresh store is available only through a successful,
+                // versioned handshake. Never fall back to legacy SQLite.
+                if filtered && reason == "api_contract_unsupported" {
+                    "worktree_attribution_unavailable".to_owned()
+                } else {
+                    reason
+                }
+            })?;
             if filtered
                 && (summary.report.worktree_coverage.is_none()
                     || summary.source.as_ref().is_some_and(|source| {
@@ -1655,9 +1678,10 @@ fn combine(
         contributed += usize::from(report.evidence);
         report_has_gaps |= report.evidence
             && (report.token_observations.is_empty()
-                || report.execution_unknown > 0
-                || report.request_unknown > 0
-                || report.agent_unknown > 0);
+                || (!report.counts_deferred
+                    && (report.execution_unknown > 0
+                        || report.request_unknown > 0
+                        || report.agent_unknown > 0)));
     }
     let has_gaps = !failures.is_empty()
         || token_coverage.keys().any(|state| state != "complete")
@@ -1687,7 +1711,7 @@ fn combine(
         merge_cost_bucket(&mut total_cost_buckets, bucket);
     }
     total_cost_buckets.source_gaps += failures.values().sum::<u64>();
-    let total_cost = if reports
+    let mut total_cost = if reports
         .iter()
         .any(|(_, report)| report.supplied_cost.is_some())
     {
@@ -1707,6 +1731,24 @@ fn combine(
     } else {
         cost_from_buckets(&total_cost_buckets)
     };
+    if reports.iter().any(|(_, report)| report.counts_deferred) {
+        // Pricing is deferred, but these are canonical provider component
+        // measurements. Retain them for the headline's existing breakdown
+        // without valuing them or inventing request/operation counts.
+        total_cost.input_tokens = tokens.get("input_tokens").copied();
+        total_cost.cached_input_tokens = tokens.get("input_tokens_details.cached_tokens").copied();
+        total_cost.cache_write_tokens = tokens
+            .get("input_tokens_details.cache_write_tokens")
+            .copied();
+        total_cost.output_tokens = tokens.get("output_tokens").copied();
+        total_cost.reasoning_tokens = tokens
+            .get("output_tokens_details.reasoning_tokens")
+            .copied();
+        total_cost.uncached_input_tokens = total_cost
+            .input_tokens
+            .zip(total_cost.cached_input_tokens)
+            .and_then(|(input, cached)| input.checked_sub(cached));
+    }
     let mut model_rows = total_cost_buckets
         .models
         .iter()
@@ -1885,6 +1927,8 @@ fn combine(
                 snapshots.iter().find_map(|s| s.progress_stage.clone())
             },
         });
+    let counts_known =
+        !reports.is_empty() && reports.iter().all(|(_, report)| !report.counts_deferred);
     UsageRepository {
         repository_id: repository.repository_id.clone(),
         display_name: repository.display_name.clone(),
@@ -1921,9 +1965,9 @@ fn combine(
             reasoning_tokens: tokens
                 .get("output_tokens_details.reasoning_tokens")
                 .copied(),
-            model_requests,
-            tool_calls,
-            operations: operation_count,
+            model_requests: counts_known.then_some(model_requests),
+            tool_calls: counts_known.then_some(tool_calls),
+            operations: counts_known.then_some(operation_count),
             cost: total_cost,
         },
         series: points,

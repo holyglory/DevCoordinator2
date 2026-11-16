@@ -65,6 +65,33 @@ scope. Unknown-context work remains visible. `review.prepare` preserves its
 existing JSON fields, and review acceptance still requires interpreted evidence.
 The integration does not change verdict rules to manufacture a completed review.
 
+Performance `totals_only` requests negotiate the additive
+`supportsTokenHeadlines` capability. When true they send `includeReview:false`
+and require the separate `token_headline` projection: canonical provider token
+rows, exact requested repository/window, and the original versioned snapshot
+frontiers remain mandatory. Counts, activity, timing, lifecycle, context, work
+bindings, and pricing are explicitly deferred rather than fabricated as zero.
+The public totals' request/tool/operation counts are null for that projection;
+ordinary measured rich results retain numeric counts. Known token components
+remain available even when pricing is unavailable. An optional unknown cache
+write component does not erase an exact provider total at the published prefix.
+
+Headline and rich requests have distinct cache/loading keys. A producer without
+the capability (or with it false) retains the existing strict rich request;
+that compatibility fallback never trains the headline latency estimate. Rich
+review and Usage queries do not accept headline nulls or incomplete review
+payloads. Header projection does not manufacture Usage graphs, outcome
+attribution, or timing. Headline coverage describes token measurements at the
+canonical published prefix; source backlog and freshness remain separately
+visible in the unchanged snapshot metadata.
+
+Console requests the finite period and lifetime headlines before admitting the
+rich overview. It retains those measured summaries and their component details
+while rich detail is pending or fails, and shows deferred counts and pricing as
+unavailable rather than zero. A selected stored review remains readable even
+when headline attempts are still pending. The first pending continuation is
+immediate; the inline progress indicator is independently delayed one second.
+
 ## Coverage, timing and privacy
 
 Unavailable collectors are excluded, never counted as synthetic zeroes.

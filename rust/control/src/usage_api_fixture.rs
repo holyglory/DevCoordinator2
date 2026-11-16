@@ -144,6 +144,24 @@ pub(crate) fn response(params: &Value, generated: u64, tokens: u64) -> Value {
     value
 }
 
+pub(crate) fn headline_response(params: &Value, generated: u64) -> Value {
+    let mut value: Value = serde_json::from_str(include_str!(
+        "../../../test-fixtures/usage-v2-token-headline-response.json"
+    ))
+    .unwrap();
+    let key = params["repositoryKey"].as_str().unwrap_or(KEY);
+    value["generatedAt"] = json!(generated);
+    value["snapshot"]["generatedAt"] = json!(generated);
+    value["snapshot"]["updatedAtMs"] = json!(generated);
+    value["snapshot"]["watermarkAtMs"] = json!(generated - 1);
+    value["report"]["scope"] = json!({"type":"repository","id":key});
+    value["report"]["timeRange"] = json!({"startMs":params["fromAt"],"endMs":params["toAt"]});
+    for token in value["report"]["providerTokens"].as_array_mut().unwrap() {
+        token["repositoryBucket"] = json!(key);
+    }
+    value
+}
+
 pub(crate) struct Peer {
     stop: Arc<AtomicBool>,
     worker: Option<std::thread::JoinHandle<()>>,
@@ -234,7 +252,14 @@ impl Peer {
                     assert_eq!(request["method"], "localUsage/summary");
                     assert_eq!(request["params"]["contractVersion"], 1);
                     // A missing includeReview used to make every real review unattributed.
-                    assert_eq!(request["params"]["includeReview"], true);
+                    if request["params"]["includeReview"] != true {
+                        assert_eq!(request["params"]["includeReview"], false);
+                        assert_eq!(
+                            cap.as_ref()
+                                .and_then(|cap| cap.get("supportsTokenHeadlines")),
+                            Some(&json!(true))
+                        );
+                    }
                     respond(&request["params"])
                 };
                 let reply = if raw_reply && !identity {

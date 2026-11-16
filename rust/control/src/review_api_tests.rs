@@ -76,6 +76,198 @@ fn priced_response(params: &Value) -> Value {
     value
 }
 
+#[test]
+fn performance_headlines_preserve_exact_components_and_nullable_deferred_counts() {
+    let mut fixture = Fixture::new();
+    let root = fixture._temporary.path();
+    let mut cap = capability();
+    cap["supportsTokenHeadlines"] = json!(true);
+    let peer = Peer::with_capability(root, &root.join("headlines"), Some(cap), |params| {
+        if params["includeReview"] == false {
+            let mut value = crate::usage_api_fixture::headline_response(params, START + WEEK);
+            value["snapshot"]["freshness"] = json!("stale");
+            value["snapshot"]["pendingEntries"] = json!(97);
+            value
+        } else {
+            let mut value = response(params, START + WEEK, 135);
+            value["snapshot"]["journalWatermark"] = json!(11);
+            value
+        }
+    });
+    fixture.config.codex_usage_sources = vec![peer.source.clone()];
+    let plane = ControlPlane::with_adapters(
+        fixture.config.clone(),
+        fixture.database.clone(),
+        Arc::new(|_: &RouteAccessSection| Ok(())),
+        Arc::new(FixtureClock),
+    )
+    .unwrap();
+    let authorized = Caller {
+        work: None,
+        ..caller()
+    };
+    let mut period = Value::Null;
+    for start in [START, 0] {
+        let result = plane
+            .execute(
+                "performance.overview",
+                json!({
+                    "repository_id":"project-alpha","window_start_ms":start,
+                    "window_end_ms":START + WEEK,"totals_only":true,
+                }),
+                &authorized,
+            )
+            .unwrap();
+        assert_eq!(result["total_tokens"]["measured"], 120);
+        assert_eq!(result["total_tokens"]["exact"], 120);
+        assert_eq!(result["totals"]["input_tokens"], 100);
+        assert_eq!(result["totals"]["cached_input_tokens"], 80);
+        assert_eq!(result["totals"]["output_tokens"], 20);
+        assert_eq!(result["totals"]["reasoning_tokens"], 5);
+        for count in ["model_requests", "tool_calls", "operations"] {
+            assert!(result["totals"].get(count).is_some_and(Value::is_null));
+        }
+        assert_eq!(result["cost"]["status"], "unavailable");
+        for amount in [
+            "estimated_usd_micros",
+            "input_usd_micros",
+            "cached_input_usd_micros",
+            "cache_write_usd_micros",
+            "output_usd_micros",
+        ] {
+            assert!(result["cost"][amount].is_null());
+        }
+        assert_eq!(result["cost"]["input_tokens"], 100);
+        assert_eq!(result["cost"]["uncached_input_tokens"], 20);
+        assert_eq!(result["cost"]["cache_write_tokens"], Value::Null);
+        assert_eq!(
+            result["coverage"]["state"], "complete",
+            "deferred counts/cost and an optional unknown cache-write component must not erase a known provider total"
+        );
+        assert_eq!(result["coverage"]["sources"][0]["format_version"], 3);
+        assert_eq!(result["coverage"]["sources"][0]["generation"], 7);
+        assert_eq!(result["coverage"]["sources"][0]["watermark"], 42);
+        assert_eq!(result["coverage"]["sources"][0]["journal_watermark"], 42);
+        assert_eq!(result["coverage"]["sources"][0]["pending_entries"], 97);
+        assert!(
+            result["coverage"]["sources"][0]["source_watermark"]
+                .as_str()
+                .unwrap()
+                .starts_with("usage-v2:headline:")
+        );
+        assert_eq!(
+            result["coverage"]["snapshot"]["updated_at_ms"],
+            START + WEEK
+        );
+        assert_eq!(result["coverage"]["loading"], Value::Null);
+        assert_eq!(
+            result["usage"],
+            Value::Null,
+            "no empty rich graphs are manufactured from a headline"
+        );
+        if start == START {
+            period = result;
+        }
+    }
+    let params = json!({"repository_id":"project-alpha","window_start_ms":START,"window_end_ms":START + WEEK});
+    let rich = plane
+        .execute("performance.overview", params, &authorized)
+        .unwrap();
+    assert_eq!(rich["total_tokens"]["measured"], 135);
+    assert_eq!(rich["totals"]["model_requests"], 2);
+    assert_eq!(rich["totals"]["tool_calls"], 0);
+    assert_eq!(rich["totals"]["operations"], 2);
+    assert!(rich["usage"].is_object());
+    let again = plane.execute("performance.overview", json!({"repository_id":"project-alpha","window_start_ms":START,"window_end_ms":START + WEEK,"totals_only":true}), &authorized).unwrap();
+    assert_eq!(
+        again, period,
+        "rich and headline cache entries never replace each other"
+    );
+    let summaries = peer
+        .requests
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|request| request["method"] == "localUsage/summary")
+        .cloned()
+        .collect::<Vec<_>>();
+    assert_eq!(summaries.len(), 3);
+    assert_eq!(summaries[0]["params"]["includeReview"], false);
+    assert_eq!(summaries[1]["params"]["includeReview"], false);
+    assert_eq!(summaries[2]["params"]["includeReview"], true);
+    for (request, start) in summaries.iter().zip([START, 0, START]) {
+        assert_eq!(request["params"]["repositoryKey"], KEY);
+        assert_eq!(request["params"]["fromAt"], start);
+        assert_eq!(request["params"]["toAt"], START + WEEK);
+    }
+    let schema = (devcoordinator2_api::operation("performance.overview")
+        .unwrap()
+        .output_schema)();
+    for count in ["model_requests", "tool_calls", "operations"] {
+        assert!(
+            schema["$defs"]["UsageTotals"]["properties"][count]["type"]
+                .as_array()
+                .is_some_and(|types| types.contains(&json!("null")))
+        );
+    }
+}
+
+#[test]
+fn mixed_headline_and_rich_sources_keep_deferred_counts_unknown() {
+    for headlined in [false, true] {
+        let mut fixture = Fixture::new();
+        let root = fixture._temporary.path();
+        let modern = root.join("modern");
+        let compatible = root.join("compatible");
+        std::fs::create_dir(&modern).unwrap();
+        std::fs::create_dir(&compatible).unwrap();
+        let mut cap = capability();
+        cap["supportsTokenHeadlines"] = json!(headlined);
+        let modern = Peer::with_capability(&modern, &modern.join("home"), Some(cap), |params| {
+            if params["includeReview"] == false {
+                crate::usage_api_fixture::headline_response(params, START + WEEK)
+            } else {
+                response(params, START + WEEK, 135)
+            }
+        });
+        let compatible = Peer::start(&compatible, &compatible.join("home"), |params| {
+            assert_eq!(params["includeReview"], true);
+            response(params, START + WEEK, 135)
+        });
+        fixture.config.codex_usage_sources = vec![modern.source.clone(), compatible.source.clone()];
+        let plane = ControlPlane::with_adapters(
+            fixture.config.clone(),
+            fixture.database.clone(),
+            Arc::new(|_: &RouteAccessSection| Ok(())),
+            Arc::new(FixtureClock),
+        )
+        .unwrap();
+        let result = plane.execute("performance.overview", json!({"repository_id":"project-alpha", "window_start_ms":START,"window_end_ms":START + WEEK,"totals_only":true}), &Caller { work: None, ..caller() }).unwrap();
+        assert_eq!(result["coverage"]["available_collectors"], 2);
+        assert_eq!(
+            result["total_tokens"]["measured"],
+            if headlined { 255 } else { 270 }
+        );
+        assert_eq!(
+            result["coverage"]["state"], "partial",
+            "the rich source's existing partial token coverage is preserved independently of deferred counts"
+        );
+        if headlined {
+            for count in ["operations", "model_requests", "tool_calls"] {
+                assert!(
+                    result["totals"][count].is_null(),
+                    "{count} cannot present a measured subset as the full aggregate"
+                );
+            }
+        } else {
+            assert_eq!(result["totals"]["operations"], 4);
+            assert_eq!(result["totals"]["model_requests"], 4);
+            assert_eq!(result["totals"]["tool_calls"], 0);
+        }
+        assert_eq!(result["cost"]["estimated_usd_micros"], Value::Null);
+    }
+}
+
 fn activity_response(params: &Value, count: usize) -> Value {
     use devcoordinator2_api::outcomes::OutcomeMeasurement;
     use devcoordinator2_api::results::{UsageActivity, UsageCost};

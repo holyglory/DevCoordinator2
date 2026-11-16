@@ -577,6 +577,194 @@ fn collector_rpc_errors_use_fixed_numeric_categories_without_private_text() {
 }
 
 #[test]
+fn headline_negotiation_falls_back_to_strict_rich_for_older_producers() {
+    use crate::usage_api_fixture::{Peer, headline_response};
+    for flag in [None, Some(json!(false)), Some(json!("true"))] {
+        let directory = tempfile::tempdir().unwrap();
+        let mut cap = capability();
+        if let Some(flag) = flag {
+            cap["supportsTokenHeadlines"] = flag;
+        }
+        let peer = Peer::with_capability(
+            directory.path(),
+            &directory.path().join("home"),
+            Some(cap),
+            |params| {
+                assert_eq!(params["includeReview"], true);
+                response(params, 20, 135)
+            },
+        );
+        let read = CollectorApi::default()
+            .summary_headline(
+                &peer.source,
+                Some(KEY),
+                None,
+                true,
+                10,
+                20,
+                Instant::now() + API_BUDGET,
+            )
+            .unwrap();
+        assert_eq!(
+            read.source_report(Some(KEY), 1, None, true).tokens["total_tokens"],
+            135
+        );
+        assert!(read.review.is_some());
+        assert!(matches!(read.report.counts, Counts::Measured(_)));
+    }
+    let directory = tempfile::tempdir().unwrap();
+    let peer = Peer::start(directory.path(), &directory.path().join("home"), |params| {
+        headline_response(params, 20)
+    });
+    assert_eq!(
+        CollectorApi::default()
+            .summary_headline(
+                &peer.source,
+                Some(KEY),
+                None,
+                true,
+                10,
+                20,
+                Instant::now() + API_BUDGET
+            )
+            .err()
+            .as_deref(),
+        Some("api_contract_unsupported"),
+        "an unnegotiated nullable payload is not an older rich response"
+    );
+}
+
+#[test]
+fn headline_parser_rejects_rich_deferred_and_wrong_scope_or_provenance_confusion() {
+    use crate::usage_api_fixture::{Peer, headline_response};
+    let mut cap = capability();
+    cap["supportsTokenHeadlines"] = json!(true);
+    for field in [
+        "counts",
+        "review",
+        "activity",
+        "scope",
+        "window",
+        "version",
+        "frontier",
+        "deferred",
+        "bucket",
+        "exact",
+        "projection_version",
+    ] {
+        let directory = tempfile::tempdir().unwrap();
+        let peer = Peer::with_capability(
+            directory.path(),
+            &directory.path().join("home"),
+            Some(cap.clone()),
+            move |params| {
+                let mut value = headline_response(params, 20);
+                match field {
+                    "counts" => {
+                        value["report"]["counts"] =
+                            json!({"operations":0,"modelRequests":0,"tools":0})
+                    }
+                    "review" => value["review"] = json!({}),
+                    "activity" => value["report"]["providerTokensByActivity"] = json!([]),
+                    "scope" => value["report"]["scope"]["id"] = json!("other-repository"),
+                    "window" => value["report"]["timeRange"]["startMs"] = json!(11),
+                    "version" => value["report"]["databaseSchemaVersion"] = json!(1),
+                    "frontier" => {
+                        value["snapshot"]["sourceWatermark"] = json!("headline:unverified")
+                    }
+                    "deferred" => value["report"]["coverage"]["counts"] = json!("complete"),
+                    "bucket" => {
+                        value["report"]["providerTokens"][0]["repositoryBucket"] =
+                            json!("other-repository")
+                    }
+                    "exact" => value["report"]["providerTokens"][0]["exactTokens"] = json!(121),
+                    "projection_version" => value["report"]["projectionSchemaVersion"] = json!(2),
+                    _ => unreachable!(),
+                }
+                value
+            },
+        );
+        assert_eq!(
+            CollectorApi::default()
+                .summary_headline(
+                    &peer.source,
+                    Some(KEY),
+                    None,
+                    true,
+                    10,
+                    20,
+                    Instant::now() + API_BUDGET
+                )
+                .err()
+                .as_deref(),
+            Some("api_contract_unsupported"),
+            "{field}"
+        );
+    }
+    let directory = tempfile::tempdir().unwrap();
+    let peer = Peer::with_capability(
+        directory.path(),
+        &directory.path().join("home"),
+        Some(cap),
+        |params| headline_response(params, 20),
+    );
+    assert_eq!(
+        CollectorApi::default()
+            .summary(
+                &peer.source,
+                Some(KEY),
+                None,
+                true,
+                10,
+                20,
+                Instant::now() + API_BUDGET
+            )
+            .err()
+            .as_deref(),
+        Some("api_contract_unsupported"),
+        "rich validation never accepts headline nulls"
+    );
+}
+
+#[test]
+fn headline_provider_unknown_total_is_not_reconstructed_from_components() {
+    use crate::usage_api_fixture::{Peer, headline_response};
+    let directory = tempfile::tempdir().unwrap();
+    let mut cap = capability();
+    cap["supportsTokenHeadlines"] = json!(true);
+    let peer = Peer::with_capability(
+        directory.path(),
+        &directory.path().join("home"),
+        Some(cap),
+        |params| {
+            let mut value = headline_response(params, 20);
+            value["report"]["providerTokens"][0]["measuredTokens"] = json!(0);
+            value["report"]["providerTokens"][0]["exactTokens"] = Value::Null;
+            value["report"]["providerTokens"][0]["unknownObservations"] = json!(1);
+            value["report"]["coverage"]["state"] = json!("partial");
+            value["report"]["coverage"]["hasGaps"] = json!(true);
+            value
+        },
+    );
+    let read = CollectorApi::default()
+        .summary_headline(
+            &peer.source,
+            Some(KEY),
+            None,
+            true,
+            10,
+            20,
+            Instant::now() + API_BUDGET,
+        )
+        .unwrap();
+    let report = read.source_report(Some(KEY), 1, None, true);
+    assert_eq!(report.tokens.get("total_tokens"), None);
+    assert_eq!(report.tokens["input_tokens"], 100);
+    assert_eq!(report.tokens["output_tokens"], 20);
+    assert!(report.counts_deferred);
+}
+
+#[test]
 fn source_loading_reports_unknown_estimate_overrun_and_completion_for_exact_scope() {
     use crate::usage_api_fixture::{Peer, ResponseGate};
     use std::time::Duration;

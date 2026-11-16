@@ -30,6 +30,19 @@ const MAX_PROFILES: usize = 96;
 const PROFILE_RETENTION: Duration = Duration::from_secs(24 * 60 * 60);
 pub(super) const API_BUDGET: Duration = Duration::from_millis(650);
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum QueryProjection {
+    Rich,
+    Headline,
+}
+
+fn projection_key(key: String, projection: QueryProjection) -> String {
+    match projection {
+        QueryProjection::Rich => key,
+        QueryProjection::Headline => format!("{key}:token_headline"),
+    }
+}
+
 pub(super) fn is_pending(reason: &str) -> bool {
     matches!(
         reason,
@@ -82,6 +95,7 @@ struct Flight {
     bytes: usize,
     started: Instant,
     profile: String,
+    projection: QueryProjection,
 }
 
 struct ColdWaiter {
@@ -406,6 +420,138 @@ pub(super) struct Summary {
     pub review: Option<ReviewUsage>,
 }
 
+// A headline has a separate wire parser: rich summaries must continue to
+// reject nullable counts and activity vectors rather than accepting them as
+// an incomplete review. Only a negotiated headline can create Counts::Deferred.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct HeadlineSummary {
+    contract_version: Option<u32>,
+    source: Option<Value>,
+    generated_at: u64,
+    snapshot: Option<Snapshot>,
+    report: HeadlineReport,
+    summary: HeadlineNativeSummary,
+    review: Value,
+    work_contexts: Vec<Value>,
+    operation_bindings: Vec<Value>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct HeadlineNativeSummary {
+    projection: String,
+    counts: Value,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct HeadlineReport {
+    schema_version: u32,
+    kind: String,
+    projection: String,
+    #[serde(default)]
+    projection_schema_version: Option<u32>,
+    database_schema_version: u64,
+    taxonomy_version: i64,
+    scope: Scope,
+    time_range: Option<TimeRange>,
+    coverage: HeadlineCoverage,
+    counts: Value,
+    provider_tokens: Vec<Token>,
+    provider_tokens_by_activity: Value,
+    measured_execution_interval_sum_ms: Value,
+    cost: Value,
+    timing: Value,
+    lifecycle: Value,
+    context_size: Value,
+    work_bindings: Value,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct HeadlineCoverage {
+    #[serde(flatten)]
+    tokens: Coverage,
+    counts: String,
+    cost: String,
+    timing: String,
+    lifecycle: String,
+    context_size: String,
+    work_bindings: String,
+    activity: String,
+}
+
+impl HeadlineSummary {
+    fn into_summary(self) -> Result<Summary, String> {
+        let r = self.report;
+        if r.projection != "token_headline"
+            || r.projection_schema_version
+                .is_some_and(|version| version != 1)
+            || self.summary.projection != "token_headline"
+            || !self.summary.counts.is_null()
+            || !self.review.is_null()
+            || !self.work_contexts.is_empty()
+            || !self.operation_bindings.is_empty()
+            || [
+                r.counts,
+                r.provider_tokens_by_activity,
+                r.measured_execution_interval_sum_ms,
+                r.cost,
+                r.timing,
+                r.lifecycle,
+                r.context_size,
+                r.work_bindings,
+            ]
+            .iter()
+            .any(|value| !value.is_null())
+            || [
+                &r.coverage.counts,
+                &r.coverage.cost,
+                &r.coverage.timing,
+                &r.coverage.lifecycle,
+                &r.coverage.context_size,
+                &r.coverage.work_bindings,
+                &r.coverage.activity,
+            ]
+            .iter()
+            .any(|value| value.as_str() != "deferred")
+        {
+            return Err("api_contract_unsupported".into());
+        }
+        let mut tokens = r.provider_tokens;
+        for token in &mut tokens {
+            if token.category == "cache_write_input_tokens" {
+                token.category = "input_tokens_details.cache_write_tokens".into();
+            }
+        }
+        Ok(Summary {
+            contract_version: self.contract_version,
+            source: self.source,
+            generated_at: self.generated_at,
+            snapshot: self.snapshot,
+            report: Report {
+                projection: Some(r.projection),
+                schema_version: r.schema_version,
+                kind: r.kind,
+                database_schema_version: r.database_schema_version,
+                taxonomy_version: r.taxonomy_version,
+                scope: r.scope,
+                time_range: r.time_range,
+                coverage: r.coverage.tokens,
+                counts: Counts::Deferred,
+                provider_tokens: tokens,
+                provider_tokens_by_activity: Vec::new(),
+                measured_execution_interval_sum_ms: None,
+                cost: None,
+                worktrees: Vec::new(),
+                worktree_coverage: None,
+            },
+            review: None,
+        })
+    }
+}
+
 #[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct Snapshot {
@@ -434,6 +580,8 @@ pub(super) struct Snapshot {
 #[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct Report {
+    #[serde(default)]
+    pub projection: Option<String>,
     pub schema_version: u32,
     pub kind: String,
     pub database_schema_version: u64,
@@ -565,9 +713,21 @@ pub(super) struct Coverage {
     pub state: String,
     pub has_gaps: bool,
 }
+#[derive(Clone)]
+pub(super) enum Counts {
+    Measured(MeasuredCounts),
+    Deferred,
+}
+
+impl<'de> Deserialize<'de> for Counts {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        MeasuredCounts::deserialize(deserializer).map(Self::Measured)
+    }
+}
+
 #[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub(super) struct Counts {
+pub(super) struct MeasuredCounts {
     pub operations: u64,
     pub model_requests: u64,
     pub tools: u64,
@@ -595,6 +755,33 @@ pub(super) struct Activity {
 }
 
 impl CollectorApi {
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Headline requests retain explicit exact repository scope"
+    )]
+    pub(super) fn summary_headline(
+        &self,
+        source: &CodexUsageSource,
+        repository: Option<&str>,
+        worktree_keys: Option<&[String]>,
+        include_unassigned: bool,
+        start: u64,
+        end: u64,
+        deadline: Instant,
+    ) -> Result<SummaryRead, String> {
+        self.summary_with_projection(
+            source,
+            repository,
+            worktree_keys,
+            include_unassigned,
+            None,
+            &[],
+            start,
+            end,
+            deadline,
+            QueryProjection::Headline,
+        )
+    }
     #[expect(
         clippy::too_many_arguments,
         reason = "Compatibility wrapper preserves the existing collector call shape"
@@ -638,28 +825,65 @@ impl CollectorApi {
         end: u64,
         deadline: Instant,
     ) -> Result<SummaryRead, String> {
+        self.summary_with_projection(
+            source,
+            repository,
+            worktree_keys,
+            include_unassigned,
+            workstream,
+            bindings,
+            start,
+            end,
+            deadline,
+            QueryProjection::Rich,
+        )
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Projection selection adds no ambiguity to exact source scope"
+    )]
+    fn summary_with_projection(
+        &self,
+        source: &CodexUsageSource,
+        repository: Option<&str>,
+        worktree_keys: Option<&[String]>,
+        include_unassigned: bool,
+        workstream: Option<&str>,
+        bindings: &[crate::usage_context::Binding],
+        start: u64,
+        end: u64,
+        deadline: Instant,
+        projection: QueryProjection,
+    ) -> Result<SummaryRead, String> {
         let deadline = deadline.min(Instant::now() + API_BUDGET);
         let path = source.api_socket.as_ref().ok_or("api_not_configured")?;
-        let key = full_query_key(
-            source,
-            repository,
-            worktree_keys,
-            include_unassigned,
-            workstream,
-            bindings,
-            start,
-            end,
-        )?;
-        let profile = profile_key(
-            source,
-            repository,
-            worktree_keys,
-            include_unassigned,
-            workstream,
-            bindings,
-            start,
-            end,
-        )?;
+        let key = projection_key(
+            full_query_key(
+                source,
+                repository,
+                worktree_keys,
+                include_unassigned,
+                workstream,
+                bindings,
+                start,
+                end,
+            )?,
+            projection,
+        );
+        let profile = projection_key(
+            profile_key(
+                source,
+                repository,
+                worktree_keys,
+                include_unassigned,
+                workstream,
+                bindings,
+                start,
+                end,
+            )?,
+            projection,
+        );
         if bindings.len() > crate::usage_context::MAX_BINDINGS {
             return Err("api_contract_unsupported".into());
         }
@@ -748,6 +972,7 @@ impl CollectorApi {
                         bytes: request_bytes,
                         started: Instant::now(),
                         profile: profile.clone(),
+                        projection,
                     },
                 );
                 let cache = self.clone();
@@ -775,6 +1000,7 @@ impl CollectorApi {
                                     bindings: &bindings,
                                     start,
                                     end,
+                                    projection,
                                 },
                                 Instant::now() + SOURCE_READ_BUDGET,
                             )
@@ -838,7 +1064,7 @@ impl CollectorApi {
         start: u64,
         end: u64,
     ) -> Option<UsageLoading> {
-        let key = full_query_key(
+        self.loading_for_projection(
             source,
             repository,
             worktree_keys,
@@ -847,19 +1073,76 @@ impl CollectorApi {
             bindings,
             start,
             end,
+            QueryProjection::Rich,
         )
-        .ok()?;
-        let profile = profile_key(
+    }
+
+    pub(super) fn headline_loading_for(
+        &self,
+        source: &CodexUsageSource,
+        repository: Option<&str>,
+        worktree_keys: Option<&[String]>,
+        include_unassigned: bool,
+        start: u64,
+        end: u64,
+    ) -> Option<UsageLoading> {
+        self.loading_for_projection(
             source,
             repository,
             worktree_keys,
             include_unassigned,
-            workstream,
-            bindings,
+            None,
+            &[],
             start,
             end,
+            QueryProjection::Headline,
         )
-        .ok()?;
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Loading scope mirrors the selected cached projection"
+    )]
+    fn loading_for_projection(
+        &self,
+        source: &CodexUsageSource,
+        repository: Option<&str>,
+        worktree_keys: Option<&[String]>,
+        include_unassigned: bool,
+        workstream: Option<&str>,
+        bindings: &[crate::usage_context::Binding],
+        start: u64,
+        end: u64,
+        projection: QueryProjection,
+    ) -> Option<UsageLoading> {
+        let key = projection_key(
+            full_query_key(
+                source,
+                repository,
+                worktree_keys,
+                include_unassigned,
+                workstream,
+                bindings,
+                start,
+                end,
+            )
+            .ok()?,
+            projection,
+        );
+        let profile = projection_key(
+            profile_key(
+                source,
+                repository,
+                worktree_keys,
+                include_unassigned,
+                workstream,
+                bindings,
+                start,
+                end,
+            )
+            .ok()?,
+            projection,
+        );
         let (state, _) = &*self.0;
         let state = state.lock().ok()?;
         loading_from_state(&state, &key, &profile, Instant::now())
@@ -871,7 +1154,10 @@ impl CollectorApi {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let flight = state.inflight.remove(&key);
-        if let (Some(flight), Ok(_)) = (&flight, &result) {
+        if let (Some(flight), Ok((summary, _))) = (&flight, &result)
+            && (flight.projection == QueryProjection::Rich
+                || summary.report.projection.as_deref() == Some("token_headline"))
+        {
             let duration_ms =
                 u64::try_from(flight.started.elapsed().as_millis()).unwrap_or(u64::MAX);
             state.record_duration(flight.profile.clone(), duration_ms);
@@ -974,6 +1260,7 @@ struct SummaryQuery<'a> {
     bindings: &'a [crate::usage_context::Binding],
     start: u64,
     end: u64,
+    projection: QueryProjection,
 }
 
 fn fetch(
@@ -989,20 +1276,38 @@ fn fetch(
         bindings,
         start,
         end,
+        projection,
     } = query;
-    let mut socket = connect(source, deadline)?;
+    let (mut socket, supports_headlines) = connect(source, deadline)?;
+    let actual_projection = if projection == QueryProjection::Headline && supports_headlines {
+        QueryProjection::Headline
+    } else {
+        QueryProjection::Rich
+    };
     let value = exchange(
         &mut socket,
         2,
         "localUsage/summary",
-        json!({"contractVersion":1,"repositoryKey":repository,"worktreeKeys":worktree_keys,"includeUnassigned":include_unassigned,"workstreamId":workstream,"fromAt":start,"toAt":end,"includeReview":true,"workContextBindings":bindings}),
+        json!({"contractVersion":1,"repositoryKey":repository,"worktreeKeys":worktree_keys,"includeUnassigned":include_unassigned,"workstreamId":workstream,"fromAt":start,"toAt":end,"includeReview":actual_projection == QueryProjection::Rich,"workContextBindings":bindings}),
         deadline,
     )?;
     let bytes = serde_json::to_vec(&value)
         .map_err(|_| "api_contract_unsupported")?
         .len();
-    let summary: Summary = serde_json::from_value(value).map_err(|_| "api_contract_unsupported")?;
-    validate(&summary, repository, start, end)?;
+    let summary: Summary = match actual_projection {
+        QueryProjection::Rich => {
+            serde_json::from_value(value).map_err(|_| "api_contract_unsupported")?
+        }
+        QueryProjection::Headline => serde_json::from_value::<HeadlineSummary>(value)
+            .map_err(|_| "api_contract_unsupported")?
+            .into_summary()?,
+    };
+    match actual_projection {
+        QueryProjection::Rich => validate(&summary, repository, start, end)?,
+        QueryProjection::Headline => {
+            validate_projection(&summary, repository, start, end, actual_projection)?
+        }
+    }
     // Dropping the connection stops response delivery. The producer keeps its
     // bounded read isolated in its local worker; this consumer does not claim
     // that transport closure cancels that worker synchronously.
@@ -1012,7 +1317,7 @@ fn fetch(
 fn connect(
     source: &CodexUsageSource,
     deadline: Instant,
-) -> Result<WebSocket<DeadlineStream>, String> {
+) -> Result<(WebSocket<DeadlineStream>, bool), String> {
     let path = source.api_socket.as_ref().ok_or("api_not_configured")?;
     let metadata = path.metadata().map_err(|_| "api_socket_unavailable")?;
     if !metadata.file_type().is_socket() || metadata.uid() != source.uid {
@@ -1070,12 +1375,17 @@ fn connect(
         return Err("api_source_identity_mismatch".into());
     }
     validate_capability(&initialize)?;
+    let supports_headlines = initialize
+        .get("localUsageAccounting")
+        .and_then(|capability| capability.get("supportsTokenHeadlines"))
+        .and_then(Value::as_bool)
+        == Some(true);
     socket
         .send(Message::Text(
             json!({"method":"initialized"}).to_string().into(),
         ))
         .map_err(|_| "api_unavailable")?;
-    Ok(socket)
+    Ok((socket, supports_headlines))
 }
 
 fn validate_capability(initialize: &Value) -> Result<(), String> {
@@ -1114,7 +1424,7 @@ pub(super) fn repository_identity(
     path: &Path,
     deadline: Instant,
 ) -> Result<String, String> {
-    let mut socket = connect(source, deadline)?;
+    let (mut socket, _) = connect(source, deadline)?;
     let value = exchange(
         &mut socket,
         2,
@@ -1253,15 +1563,48 @@ fn validate(
     start: u64,
     end: u64,
 ) -> Result<(), String> {
+    validate_projection(summary, repository, start, end, QueryProjection::Rich)
+}
+
+fn validate_projection(
+    summary: &Summary,
+    repository: Option<&str>,
+    start: u64,
+    end: u64,
+    projection: QueryProjection,
+) -> Result<(), String> {
     if summary.contract_version != Some(1)
         || summary.source.as_ref().and_then(Value::as_str) != Some("usage-v2")
         || summary.snapshot.is_none()
-        || summary.review.is_none()
+        || match projection {
+            QueryProjection::Rich => {
+                summary.review.is_none()
+                    || summary.report.projection.is_some()
+                    || matches!(summary.report.counts, Counts::Deferred)
+            }
+            QueryProjection::Headline => {
+                summary.review.is_some()
+                    || summary.report.projection.as_deref() != Some("token_headline")
+                    || !matches!(summary.report.counts, Counts::Deferred)
+            }
+        }
     {
         return Err("api_contract_unsupported".into());
     }
     let r = &summary.report;
     if summary.source.is_some() && r.database_schema_version != 3 {
+        return Err("api_contract_unsupported".into());
+    }
+    if projection == QueryProjection::Headline
+        && r.provider_tokens.iter().any(|token| {
+            token.repository_bucket != repository.unwrap_or("all")
+                || token.measurement_provenance != "provider_reported"
+                || token.exact_tokens.is_some_and(|value| {
+                    value != token.measured_tokens || token.unknown_observations != 0
+                })
+                || token.unknown_observations > token.observation_count
+        })
+    {
         return Err("api_contract_unsupported".into());
     }
     if r.schema_version != 1
@@ -1370,12 +1713,14 @@ impl Summary {
         include_unassigned: bool,
     ) -> SourceReport {
         let r = &self.report;
+        let headline = matches!(r.counts, Counts::Deferred);
         let source_partial = self.snapshot.as_ref().is_some_and(|snapshot| {
             snapshot.freshness != "fresh"
                 || snapshot.pending_entries.unwrap_or_default() != 0
                 || snapshot.pending_corrections.unwrap_or_default() != 0
         });
-        let partial = r.coverage.has_gaps || r.coverage.state != "complete" || source_partial;
+        let partial =
+            r.coverage.has_gaps || r.coverage.state != "complete" || (!headline && source_partial);
         let mut result = SourceReport {
             source_snapshot: self.snapshot.as_ref().map(|s| {
                 devcoordinator2_api::results::UsageSourceSnapshot {
@@ -1446,7 +1791,7 @@ impl Summary {
             agent_unknown: 1,
             ..Default::default()
         };
-        if source_partial {
+        if source_partial && !headline {
             increment(&mut result.coverage_events, "partial");
         }
         for t in &r.provider_tokens {
@@ -1470,12 +1815,19 @@ impl Summary {
             } else {
                 "complete"
             };
-            *result.token_observations.entry(state.into()).or_default() += t.observation_count;
+            if !headline || t.category == "total_tokens" {
+                *result.token_observations.entry(state.into()).or_default() += t.observation_count;
+            }
         }
         {
-            result.operation_count = r.counts.operations;
-            result.model_request_count = r.counts.model_requests;
-            result.tool_count = r.counts.tools;
+            match &r.counts {
+                Counts::Measured(counts) => {
+                    result.operation_count = counts.operations;
+                    result.model_request_count = counts.model_requests;
+                    result.tool_count = counts.tools;
+                }
+                Counts::Deferred => result.counts_deferred = true,
+            }
             for a in &r.provider_tokens_by_activity {
                 let key = (safe_phase(&a.phase), safe_label(&a.activity));
                 *result.activities.entry(key.clone()).or_default() += a.measured_tokens;
@@ -1589,8 +1941,8 @@ impl CodexUsage {
                 range: report.range,
                 coverage: report.coverage,
                 total_tokens: report.totals.total_tokens,
-                model_requests: Some(report.totals.model_requests),
-                tool_calls: Some(report.totals.tool_calls),
+                model_requests: report.totals.model_requests,
+                tool_calls: report.totals.tool_calls,
                 execution_wall_ms: Some(report.time.execution_wall.measured_ms),
                 cost: report.totals.cost,
             });

@@ -2422,9 +2422,9 @@ pub struct UsageTotals {
     pub cached_input_tokens: Option<u64>,
     pub output_tokens: Option<u64>,
     pub reasoning_tokens: Option<u64>,
-    pub model_requests: u64,
-    pub tool_calls: u64,
-    pub operations: u64,
+    pub model_requests: Option<u64>,
+    pub tool_calls: Option<u64>,
+    pub operations: Option<u64>,
     #[serde(default, skip_serializing_if = "UsageCost::is_empty")]
     pub cost: UsageCost,
 }
