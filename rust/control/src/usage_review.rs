@@ -153,6 +153,9 @@ impl CodexUsage {
         projection: Projection,
         rates: &[devcoordinator2_api::rate_card::RateCard],
     ) -> Result<(SourceReport, Groups), String> {
+        // Identity resolution and queued/owned source waits share one
+        // foreground budget; waiting for a free slot never starts a new one.
+        let deadline = deadline.min(Instant::now() + super::collector_api::API_BUDGET);
         if super::has_usage_v2_manifest(source) {
             let key = self
                 .repository_key_until(source, repository, now_ms, true, deadline)

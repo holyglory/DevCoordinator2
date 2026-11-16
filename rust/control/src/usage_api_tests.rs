@@ -10,6 +10,677 @@ fn expire_completed_summaries(api: &CollectorApi) {
     }
 }
 
+fn observe_cold_waiter(api: &CollectorApi, deadline: Instant) -> bool {
+    let (state, changed) = &*api.0;
+    let state = state.lock().unwrap();
+    let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+        return false;
+    };
+    let (state, _) = changed
+        .wait_timeout_while(state, remaining, |state| state.cold_waiters.is_empty())
+        .unwrap();
+    !state.cold_waiters.is_empty()
+}
+
+#[test]
+fn cold_occupied_source_wakes_and_consumes_requested_exact_query() {
+    use crate::usage_api_fixture::{Peer, ResponseGate};
+    let directory = tempfile::tempdir().unwrap();
+    let gate = ResponseGate::default();
+    let response_gate = gate.clone();
+    let peer = Peer::start(
+        directory.path(),
+        &directory.path().join("home"),
+        move |params| {
+            if params["fromAt"] == 0 {
+                response_gate.wait();
+            }
+            response(params, 20, if params["fromAt"] == 0 { 270 } else { 135 })
+        },
+    );
+    let release = gate.release_on_drop();
+    let api = CollectorApi::default();
+    assert_eq!(
+        api.summary(
+            &peer.source,
+            Some(KEY),
+            None,
+            true,
+            0,
+            20,
+            Instant::now() + Duration::from_millis(30)
+        )
+        .err()
+        .as_deref(),
+        Some("api_refresh_pending")
+    );
+    let started = Instant::now();
+    let requested = std::thread::scope(|scope| {
+        let pending = scope.spawn(|| {
+            api.summary(
+                &peer.source,
+                Some(KEY),
+                None,
+                true,
+                10,
+                20,
+                started + API_BUDGET,
+            )
+        });
+        assert!(observe_cold_waiter(
+            &api,
+            Instant::now() + Duration::from_secs(1)
+        ));
+        release.release();
+        pending.join().unwrap()
+    });
+    assert!(started.elapsed() < Duration::from_millis(800));
+    let requested =
+        requested.expect("a queued fast read must be consumed in the same bounded continuation");
+    assert_eq!(requested.report.provider_tokens[0].measured_tokens, 135);
+    assert_eq!(requested.report.time_range.as_ref().unwrap().start_ms, 10);
+    let summaries = peer
+        .requests
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|request| request["method"] == "localUsage/summary")
+        .cloned()
+        .collect::<Vec<_>>();
+    assert_eq!(summaries.len(), 2, "one owned source read per exact query");
+    assert_eq!(summaries[0]["params"]["fromAt"], 0);
+    assert_eq!(summaries[1]["params"]["fromAt"], 10);
+    assert_eq!(summaries[1]["params"]["toAt"], 20);
+}
+
+#[test]
+fn negotiated_headline_can_cross_repository_while_rich_read_is_occupied() {
+    use crate::usage_api_fixture::{Peer, ResponseGate, headline_response};
+    let directory = tempfile::tempdir().unwrap();
+    let gate = ResponseGate::default();
+    let response_gate = gate.clone();
+    let rich_key = KEY.to_owned();
+    let response_key = rich_key.clone();
+    let headline_key = "repo_cccccccccccccccccccccccccccccccccccccccc".to_owned();
+    let mut cap = capability();
+    cap["supportsTokenHeadlines"] = json!(true);
+    let peer = Peer::with_capability_concurrent(
+        directory.path(),
+        &directory.path().join("home"),
+        Some(cap),
+        move |params| {
+            if params["repositoryKey"].as_str() == Some(response_key.as_str())
+                && params["includeReview"] == true
+            {
+                response_gate.wait();
+                response(params, 20, 135)
+            } else {
+                headline_response(params, 20)
+            }
+        },
+    );
+    let release = gate.release_on_drop();
+    let api = CollectorApi::default();
+    assert_eq!(
+        api.summary(
+            &peer.source,
+            Some(KEY),
+            None,
+            true,
+            10,
+            20,
+            Instant::now() + Duration::from_millis(50),
+        )
+        .err()
+        .as_deref(),
+        Some("api_refresh_pending")
+    );
+    let started = Instant::now();
+    while started.elapsed() < Duration::from_secs(1)
+        && !peer.requests.lock().unwrap().iter().any(|request| {
+            request["method"] == "localUsage/summary"
+                && request["params"]["includeReview"] == true
+                && request["params"]["repositoryKey"] == rich_key
+        })
+    {
+        std::thread::yield_now();
+    }
+    assert!(
+        peer.requests.lock().unwrap().iter().any(|request| {
+            request["method"] == "localUsage/summary" && request["params"]["includeReview"] == true
+        }),
+        "the rich source read must be occupying the source before the switch"
+    );
+    let began = Instant::now();
+    let headline = api.summary_headline(
+        &peer.source,
+        Some(&headline_key),
+        None,
+        true,
+        10,
+        20,
+        Instant::now() + API_BUDGET,
+    );
+    assert!(
+        began.elapsed() < Duration::from_secs(1),
+        "a compact repository switch must not inherit the rich read latency"
+    );
+    let headline = headline.expect("negotiated compact reads have an independent bounded lane");
+    assert_eq!(
+        headline
+            .report
+            .provider_tokens
+            .iter()
+            .find(|token| token.category == "total_tokens")
+            .map(|token| token.measured_tokens),
+        Some(120)
+    );
+    release.release();
+    assert!(api.wait_until_idle(Instant::now() + Duration::from_secs(2)));
+    let summaries = peer
+        .requests
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|request| request["method"] == "localUsage/summary")
+        .cloned()
+        .collect::<Vec<_>>();
+    assert_eq!(summaries.len(), 2, "one rich and one compact read only");
+    assert_eq!(summaries[0]["params"]["includeReview"], true);
+    assert_eq!(summaries[1]["params"]["includeReview"], false);
+    assert_eq!(summaries[1]["params"]["repositoryKey"], headline_key);
+}
+
+#[test]
+fn negotiated_rich_read_can_follow_an_occupied_headline_lane() {
+    use crate::usage_api_fixture::{Peer, ResponseGate, headline_response};
+    let directory = tempfile::tempdir().unwrap();
+    let gate = ResponseGate::default();
+    let response_gate = gate.clone();
+    let mut cap = capability();
+    cap["supportsTokenHeadlines"] = json!(true);
+    let peer = Peer::with_capability_concurrent(
+        directory.path(),
+        &directory.path().join("home"),
+        Some(cap),
+        move |params| {
+            if params["repositoryKey"] == KEY && params["includeReview"] == false {
+                response_gate.wait();
+                headline_response(params, 20)
+            } else {
+                response(params, 20, 135)
+            }
+        },
+    );
+    let release = gate.release_on_drop();
+    let api = CollectorApi::default();
+    assert_eq!(
+        api.summary_headline(
+            &peer.source,
+            Some(KEY),
+            None,
+            true,
+            10,
+            20,
+            Instant::now() + Duration::from_millis(50),
+        )
+        .err()
+        .as_deref(),
+        Some("api_refresh_pending")
+    );
+    let started = Instant::now();
+    while started.elapsed() < Duration::from_secs(1)
+        && !peer.requests.lock().unwrap().iter().any(|request| {
+            request["method"] == "localUsage/summary" && request["params"]["includeReview"] == false
+        })
+    {
+        std::thread::yield_now();
+    }
+    let rich = api.summary(
+        &peer.source,
+        Some("repo_eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"),
+        None,
+        true,
+        10,
+        20,
+        Instant::now() + API_BUDGET,
+    );
+    assert!(started.elapsed() < Duration::from_secs(1));
+    assert!(
+        rich.is_ok(),
+        "a negotiated rich read can use the second bounded lane"
+    );
+    release.release();
+    assert!(api.wait_until_idle(Instant::now() + Duration::from_secs(2)));
+    let summaries = peer
+        .requests
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|request| request["method"] == "localUsage/summary")
+        .cloned()
+        .collect::<Vec<_>>();
+    assert_eq!(summaries.len(), 2);
+    assert_eq!(summaries[0]["params"]["includeReview"], false);
+    assert_eq!(summaries[1]["params"]["includeReview"], true);
+}
+
+#[test]
+fn unnegotiated_headline_stays_on_the_single_heavy_lane() {
+    use crate::usage_api_fixture::{Peer, ResponseGate};
+    let directory = tempfile::tempdir().unwrap();
+    let gate = ResponseGate::default();
+    let response_gate = gate.clone();
+    let mut cap = capability();
+    cap["supportsTokenHeadlines"] = json!(false);
+    let peer = Peer::with_capability_concurrent(
+        directory.path(),
+        &directory.path().join("home"),
+        Some(cap),
+        move |params| {
+            if params["includeReview"] == true && params["repositoryKey"] == KEY {
+                response_gate.wait();
+            }
+            response(params, 20, 135)
+        },
+    );
+    let release = gate.release_on_drop();
+    let api = CollectorApi::default();
+    assert_eq!(
+        api.summary(
+            &peer.source,
+            Some(KEY),
+            None,
+            true,
+            10,
+            20,
+            Instant::now() + Duration::from_millis(50),
+        )
+        .err()
+        .as_deref(),
+        Some("api_refresh_pending")
+    );
+    let began = Instant::now();
+    let pending = api.summary_headline(
+        &peer.source,
+        Some("repo_dddddddddddddddddddddddddddddddddddddddd"),
+        None,
+        true,
+        10,
+        20,
+        Instant::now() + API_BUDGET,
+    );
+    assert!(began.elapsed() < Duration::from_secs(1));
+    assert_eq!(pending.err().as_deref(), Some("api_source_busy"));
+    assert_eq!(
+        peer.requests
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|request| request["method"] == "localUsage/summary")
+            .count(),
+        1,
+        "an unnegotiated headline cannot launch a second rich read"
+    );
+    release.release();
+    assert!(api.wait_until_idle(Instant::now() + Duration::from_secs(2)));
+    let fallback = api
+        .summary_headline(
+            &peer.source,
+            Some("repo_dddddddddddddddddddddddddddddddddddddddd"),
+            None,
+            true,
+            10,
+            20,
+            Instant::now() + API_BUDGET,
+        )
+        .unwrap();
+    assert!(
+        fallback.review.is_some(),
+        "old producers use rich fallback after the lane clears"
+    );
+    assert_eq!(
+        peer.requests
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|request| request["method"] == "localUsage/summary")
+            .count(),
+        2
+    );
+}
+
+#[test]
+fn cold_wait_budget_does_not_delay_cached_data_or_cancel_owned_source() {
+    use crate::usage_api_fixture::{Peer, ResponseGate};
+    let directory = tempfile::tempdir().unwrap();
+    let gate = ResponseGate::default();
+    let response_gate = gate.clone();
+    let peer = Peer::start(
+        directory.path(),
+        &directory.path().join("home"),
+        move |params| {
+            if params["fromAt"] == 0 {
+                response_gate.wait();
+            }
+            response(params, 20, 135)
+        },
+    );
+    let release = gate.release_on_drop();
+    let api = CollectorApi::default();
+    api.summary(
+        &peer.source,
+        Some(KEY),
+        None,
+        true,
+        10,
+        20,
+        Instant::now() + API_BUDGET,
+    )
+    .unwrap();
+    expire_completed_summaries(&api);
+    assert_eq!(
+        api.summary(
+            &peer.source,
+            Some(KEY),
+            None,
+            true,
+            0,
+            20,
+            Instant::now() + Duration::from_millis(30)
+        )
+        .err()
+        .as_deref(),
+        Some("api_refresh_pending")
+    );
+    let began = Instant::now();
+    let saved = api
+        .summary(
+            &peer.source,
+            Some(KEY),
+            None,
+            true,
+            10,
+            20,
+            began + API_BUDGET,
+        )
+        .unwrap();
+    assert_eq!(saved.report.provider_tokens[0].measured_tokens, 135);
+    assert!(
+        began.elapsed() < Duration::from_millis(100),
+        "saved measurements must return without joining an occupied source"
+    );
+    let began = Instant::now();
+    let pending = api.summary(
+        &peer.source,
+        Some(KEY),
+        None,
+        true,
+        11,
+        20,
+        began + Duration::from_millis(80),
+    );
+    assert!(
+        began.elapsed() < Duration::from_millis(250),
+        "waiting for admission must not reset the supplied foreground budget"
+    );
+    assert_eq!(pending.err().as_deref(), Some("api_source_busy"));
+    assert!(
+        !api.wait_until_idle(Instant::now() + Duration::from_millis(1)),
+        "ending one foreground wait must not cancel an owned producer read"
+    );
+    assert!(
+        !peer
+            .requests
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|request| request["params"]["fromAt"] == 11)
+    );
+    release.release();
+    assert!(api.wait_until_idle(Instant::now() + Duration::from_secs(2)));
+    let ready = api
+        .summary(
+            &peer.source,
+            Some(KEY),
+            None,
+            true,
+            11,
+            20,
+            Instant::now() + API_BUDGET,
+        )
+        .unwrap();
+    assert_eq!(ready.report.provider_tokens[0].measured_tokens, 135);
+    let ready_again = api
+        .summary(
+            &peer.source,
+            Some(KEY),
+            None,
+            true,
+            11,
+            20,
+            Instant::now() + API_BUDGET,
+        )
+        .unwrap();
+    assert_eq!(ready_again.report.provider_tokens[0].measured_tokens, 135);
+    assert_eq!(
+        peer.requests
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|request| request["params"]["fromAt"] == 11)
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn queued_same_query_waiters_share_success_and_fixed_source_errors() {
+    use crate::usage_api_fixture::{Peer, ResponseGate};
+    for source_error in [false, true] {
+        let directory = tempfile::tempdir().unwrap();
+        let gate = ResponseGate::default();
+        let response_gate = gate.clone();
+        let peer = Peer::start_rpc(
+            directory.path(),
+            &directory.path().join("home"),
+            move |params| {
+                if params["fromAt"] == 0 {
+                    response_gate.wait();
+                }
+                if params["fromAt"] == 10 && source_error {
+                    json!({"id":2,"error":{"code":-32603,"message":"private fixture detail"}})
+                } else {
+                    json!({"id":2,"result":response(params, 20, 135)})
+                }
+            },
+        );
+        let release = gate.release_on_drop();
+        let api = CollectorApi::default();
+        let _ = api.summary(
+            &peer.source,
+            Some(KEY),
+            None,
+            true,
+            0,
+            20,
+            Instant::now() + Duration::from_millis(30),
+        );
+        let barrier = std::sync::Barrier::new(3);
+        let results = std::thread::scope(|scope| {
+            let read = || {
+                barrier.wait();
+                api.summary(
+                    &peer.source,
+                    Some(KEY),
+                    None,
+                    true,
+                    10,
+                    20,
+                    Instant::now() + API_BUDGET,
+                )
+            };
+            let first = scope.spawn(read);
+            let second = scope.spawn(read);
+            barrier.wait();
+            assert!(observe_cold_waiter(
+                &api,
+                Instant::now() + Duration::from_secs(1)
+            ));
+            release.release();
+            [first.join().unwrap(), second.join().unwrap()]
+        });
+        for result in results {
+            if source_error {
+                assert_eq!(result.err().as_deref(), Some("api_source_unavailable"));
+            } else {
+                assert_eq!(
+                    result.unwrap().report.provider_tokens[0].measured_tokens,
+                    135
+                );
+            }
+        }
+        assert!(api.wait_until_idle(Instant::now() + Duration::from_secs(2)));
+        assert!(
+            api.loading_for(&peer.source, Some(KEY), None, true, None, &[], 10, 20)
+                .is_none()
+        );
+        assert_eq!(
+            peer.requests
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|request| request["params"]["fromAt"] == 10)
+                .count(),
+            1,
+            "waking concurrent foreground requests cannot duplicate a producer job"
+        );
+    }
+}
+
+#[test]
+fn repository_continuations_wake_after_short_occupied_source() {
+    use crate::automation_test_support::{Fixture, FixtureClock, START, WEEK};
+    use crate::usage_api_fixture::{Peer, ResponseGate};
+    for surface in ["performance", "usage"] {
+        let mut fixture = Fixture::new();
+        let root = fixture._temporary.path();
+        let gate = ResponseGate::default();
+        let response_gate = gate.clone();
+        let peer = Peer::start(root, &root.join("source"), move |params| {
+            if params["fromAt"] == 0 {
+                response_gate.wait();
+            }
+            response(params, START + WEEK, 135)
+        });
+        let release = gate.release_on_drop();
+        fixture.config.codex_usage_sources = vec![peer.source.clone()];
+        let usage = UsageService::with_clock(
+            fixture.config.clone(),
+            fixture.database.clone(),
+            Registry::new(fixture.database.clone()),
+            Arc::new(FixtureClock),
+        );
+        let repository = RepositoryRecord {
+            repository_id: "project-alpha".into(),
+            display_name: "Project Alpha".into(),
+            root_path: fixture.repository.clone(),
+        };
+        usage
+            .usage
+            .repository_key(&peer.source, &repository, START + WEEK, true)
+            .unwrap();
+        let api = usage.usage.api.clone();
+        assert_eq!(
+            api.summary(
+                &peer.source,
+                Some(KEY),
+                None,
+                true,
+                0,
+                START + WEEK,
+                Instant::now() + Duration::from_millis(30)
+            )
+            .err()
+            .as_deref(),
+            Some("api_refresh_pending")
+        );
+        let reviews = crate::review::ReviewService::new(fixture.database.clone(), usage.clone());
+        let started = Instant::now();
+        let measured = std::thread::scope(|scope| {
+            let request = scope.spawn(|| {
+                if surface == "performance" {
+                    reviews
+                        .performance_overview(
+                            devcoordinator2_api::performance::Overview {
+                                repository_id: repository.repository_id.clone(),
+                                window_start_ms: START,
+                                window_end_ms: START + WEEK,
+                                outcome_cursor: None,
+                                outcome_limit: Some(5),
+                                totals_only: false,
+                                wait_for_refresh: true,
+                            },
+                            START + WEEK,
+                        )
+                        .unwrap()
+                        .total_tokens
+                        .measured
+                } else {
+                    usage
+                        .repository(devcoordinator2_api::params::UsageRepository {
+                            repository_id: repository.repository_id.clone(),
+                            range: UsageRange::Hours24,
+                            worktree_ids: None,
+                            include_unassigned: true,
+                            wait_for_refresh: true,
+                        })
+                        .unwrap()
+                        .totals
+                        .total_tokens
+                        .unwrap_or(0)
+                }
+            });
+            assert!(observe_cold_waiter(
+                &api,
+                Instant::now() + Duration::from_secs(1)
+            ));
+            release.release();
+            request.join().unwrap()
+        });
+        assert_eq!(
+            measured, 135,
+            "{surface} must consume its queued source completion before returning pending"
+        );
+        assert!(
+            started.elapsed() < Duration::from_millis(900),
+            "{surface} exceeded the bounded foreground continuation"
+        );
+        assert!(usage.wait_for_collector_refresh(Instant::now() + Duration::from_secs(2)));
+        assert!(
+            usage
+                .usage
+                .cache
+                .wait_until_idle(Instant::now() + Duration::from_secs(2))
+        );
+        let summaries = peer
+            .requests
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|request| request["method"] == "localUsage/summary")
+            .cloned()
+            .collect::<Vec<_>>();
+        assert_eq!(
+            summaries.len(),
+            2,
+            "{surface} must not duplicate the producer read"
+        );
+        assert_eq!(summaries[1]["params"]["toAt"], START + WEEK);
+        assert_eq!(summaries[1]["params"]["repositoryKey"], KEY);
+    }
+}
+
 #[test]
 fn api_contract_requires_negotiation_and_complete_consistent_fresh_metadata() {
     validate_capability(&json!({"localUsageAccounting":capability()})).unwrap();
@@ -160,6 +831,292 @@ fn collector_rpc_errors_use_fixed_numeric_categories_without_private_text() {
             Some("api_contract_unsupported")
         );
     }
+}
+
+#[test]
+fn headline_negotiation_falls_back_to_strict_rich_for_older_producers() {
+    use crate::usage_api_fixture::{Peer, headline_response};
+    for flag in [None, Some(json!(false)), Some(json!("true"))] {
+        let directory = tempfile::tempdir().unwrap();
+        let mut cap = capability();
+        if let Some(flag) = flag {
+            cap["supportsTokenHeadlines"] = flag;
+        }
+        let peer = Peer::with_capability(
+            directory.path(),
+            &directory.path().join("home"),
+            Some(cap),
+            |params| {
+                assert_eq!(params["includeReview"], true);
+                response(params, 20, 135)
+            },
+        );
+        let read = CollectorApi::default()
+            .summary_headline(
+                &peer.source,
+                Some(KEY),
+                None,
+                true,
+                10,
+                20,
+                Instant::now() + API_BUDGET,
+            )
+            .unwrap();
+        assert_eq!(
+            read.source_report(Some(KEY), 1, None, true).tokens["total_tokens"],
+            135
+        );
+        assert!(read.review.is_some());
+        assert!(matches!(read.report.counts, Counts::Measured(_)));
+    }
+    let directory = tempfile::tempdir().unwrap();
+    let peer = Peer::start(directory.path(), &directory.path().join("home"), |params| {
+        headline_response(params, 20)
+    });
+    assert_eq!(
+        CollectorApi::default()
+            .summary_headline(
+                &peer.source,
+                Some(KEY),
+                None,
+                true,
+                10,
+                20,
+                Instant::now() + API_BUDGET
+            )
+            .err()
+            .as_deref(),
+        Some("api_contract_unsupported"),
+        "an unnegotiated nullable payload is not an older rich response"
+    );
+}
+
+#[test]
+fn headline_parser_rejects_rich_deferred_and_wrong_scope_or_provenance_confusion() {
+    use crate::usage_api_fixture::{Peer, headline_response};
+    let mut cap = capability();
+    cap["supportsTokenHeadlines"] = json!(true);
+    for field in [
+        "counts",
+        "review",
+        "activity",
+        "scope",
+        "window",
+        "version",
+        "frontier",
+        "deferred",
+        "bucket",
+        "exact",
+        "projection_version",
+    ] {
+        let directory = tempfile::tempdir().unwrap();
+        let peer = Peer::with_capability(
+            directory.path(),
+            &directory.path().join("home"),
+            Some(cap.clone()),
+            move |params| {
+                let mut value = headline_response(params, 20);
+                match field {
+                    "counts" => {
+                        value["report"]["counts"] =
+                            json!({"operations":0,"modelRequests":0,"tools":0})
+                    }
+                    "review" => value["review"] = json!({}),
+                    "activity" => value["report"]["providerTokensByActivity"] = json!([]),
+                    "scope" => value["report"]["scope"]["id"] = json!("other-repository"),
+                    "window" => value["report"]["timeRange"]["startMs"] = json!(11),
+                    "version" => value["report"]["databaseSchemaVersion"] = json!(1),
+                    "frontier" => {
+                        value["snapshot"]["sourceWatermark"] = json!("headline:unverified")
+                    }
+                    "deferred" => value["report"]["coverage"]["counts"] = json!("complete"),
+                    "bucket" => {
+                        value["report"]["providerTokens"][0]["repositoryBucket"] =
+                            json!("other-repository")
+                    }
+                    "exact" => value["report"]["providerTokens"][0]["exactTokens"] = json!(121),
+                    "projection_version" => value["report"]["projectionSchemaVersion"] = json!(2),
+                    _ => unreachable!(),
+                }
+                value
+            },
+        );
+        assert_eq!(
+            CollectorApi::default()
+                .summary_headline(
+                    &peer.source,
+                    Some(KEY),
+                    None,
+                    true,
+                    10,
+                    20,
+                    Instant::now() + API_BUDGET
+                )
+                .err()
+                .as_deref(),
+            Some("api_contract_unsupported"),
+            "{field}"
+        );
+    }
+    let directory = tempfile::tempdir().unwrap();
+    let peer = Peer::with_capability(
+        directory.path(),
+        &directory.path().join("home"),
+        Some(cap),
+        |params| headline_response(params, 20),
+    );
+    assert_eq!(
+        CollectorApi::default()
+            .summary(
+                &peer.source,
+                Some(KEY),
+                None,
+                true,
+                10,
+                20,
+                Instant::now() + API_BUDGET
+            )
+            .err()
+            .as_deref(),
+        Some("api_contract_unsupported"),
+        "rich validation never accepts headline nulls"
+    );
+}
+
+#[test]
+fn provider_token_quantity_ranges_are_category_aware_in_both_projections() {
+    use crate::usage_api_fixture::{Peer, headline_response};
+    for headline in [false, true] {
+        for (category, quantity, valid) in [
+            ("input_tokens", json!(i64::MIN), true),
+            ("input_tokens", json!(0), true),
+            ("input_tokens_details.cached_tokens", json!(-2), true),
+            ("output_tokens", json!(i64::MAX), true),
+            ("output_tokens_details.reasoning_tokens", json!(-1), true),
+            ("input_tokens", json!(i64::MAX as u64 + 1), false),
+            ("total_tokens", json!(u64::MAX), true),
+            ("total_tokens", json!(-1), false),
+            ("cache_write_input_tokens", json!(u64::MAX), true),
+            ("cache_write_input_tokens", json!(-1), false),
+            ("cached_input_tokens", json!(-1), false),
+            ("reasoning_output_tokens", json!(-1), false),
+        ] {
+            let expected = quantity
+                .as_i64()
+                .map(i128::from)
+                .or_else(|| quantity.as_u64().map(i128::from))
+                .unwrap();
+            let directory = tempfile::tempdir().unwrap();
+            let mut cap = capability();
+            cap["supportsTokenHeadlines"] = json!(true);
+            let peer = Peer::with_capability(
+                directory.path(),
+                &directory.path().join("home"),
+                Some(cap),
+                move |params| {
+                    let mut value = if headline {
+                        headline_response(params, 20)
+                    } else {
+                        response(params, 20, 135)
+                    };
+                    value["report"]["providerTokens"] = json!([{
+                        "category":category,"repositoryBucket":KEY,"measurementProvenance":"provider_reported",
+                        "measuredTokens":quantity,"exactTokens":quantity,"unknownObservations":0,"observationCount":1,
+                    }]);
+                    value
+                },
+            );
+            let api = CollectorApi::default();
+            let result = if headline {
+                api.summary_headline(
+                    &peer.source,
+                    Some(KEY),
+                    None,
+                    true,
+                    10,
+                    20,
+                    Instant::now() + API_BUDGET,
+                )
+            } else {
+                api.summary(
+                    &peer.source,
+                    Some(KEY),
+                    None,
+                    true,
+                    10,
+                    20,
+                    Instant::now() + API_BUDGET,
+                )
+            };
+            if valid {
+                let read = result
+                    .unwrap_or_else(|reason| panic!("{category} / headline={headline}: {reason}"));
+                let report = read.source_report(Some(KEY), 1, None, true);
+                let normalized = if category == "cache_write_input_tokens" {
+                    "input_tokens_details.cache_write_tokens"
+                } else {
+                    category
+                };
+                assert_eq!(
+                    report.tokens.get(normalized),
+                    Some(&expected),
+                    "{category} / headline={headline}"
+                );
+            } else {
+                assert_eq!(
+                    result.err().as_deref(),
+                    Some("api_contract_unsupported"),
+                    "{category} / headline={headline}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn headline_provider_unknown_total_is_not_reconstructed_from_components() {
+    use crate::usage_api_fixture::{Peer, headline_response};
+    let directory = tempfile::tempdir().unwrap();
+    let mut cap = capability();
+    cap["supportsTokenHeadlines"] = json!(true);
+    let peer = Peer::with_capability(
+        directory.path(),
+        &directory.path().join("home"),
+        Some(cap),
+        |params| {
+            let mut value = headline_response(params, 20);
+            value["report"]["providerTokens"][0]["measuredTokens"] = json!(0);
+            value["report"]["providerTokens"][0]["exactTokens"] = Value::Null;
+            value["report"]["providerTokens"][0]["unknownObservations"] = json!(1);
+            for token in value["report"]["providerTokens"].as_array_mut().unwrap() {
+                if token["category"] == "output_tokens_details.reasoning_tokens" {
+                    token["measuredTokens"] = json!(-1);
+                    token["exactTokens"] = Value::Null;
+                    token["unknownObservations"] = json!(1);
+                }
+            }
+            value["report"]["coverage"]["state"] = json!("partial");
+            value["report"]["coverage"]["hasGaps"] = json!(true);
+            value
+        },
+    );
+    let read = CollectorApi::default()
+        .summary_headline(
+            &peer.source,
+            Some(KEY),
+            None,
+            true,
+            10,
+            20,
+            Instant::now() + API_BUDGET,
+        )
+        .unwrap();
+    let report = read.source_report(Some(KEY), 1, None, true);
+    assert_eq!(report.tokens.get("total_tokens"), None);
+    assert_eq!(report.tokens["input_tokens"], 100);
+    assert_eq!(report.tokens["output_tokens"], 20);
+    assert_eq!(report.tokens["output_tokens_details.reasoning_tokens"], -1);
+    assert!(report.counts_deferred);
 }
 
 #[test]
@@ -653,11 +1610,8 @@ fn explicit_review_rows_keep_unknown_precision_costs_and_truthful_time_basis() {
     assert_eq!(report.totals.provider_total_tokens.exact, None);
     assert_eq!(report.totals.cost.estimated_usd_micros, Some(14));
     assert_eq!(report.totals.elapsed_execution_ms.exact, None);
-    assert!(
-        report
-            .basis
-            .contains("aggregate intervals cannot be unioned")
-    );
+    assert!(report.basis.contains("may overlap"));
+    assert_eq!(report.totals.elapsed_execution_ms.measured, 1000);
     assert_eq!(report.rows.len(), 1);
 }
 
@@ -827,9 +1781,7 @@ fn cold_waiter_hints_are_bounded_expire_and_preserve_source_isolation() {
     );
     for end in 21..21 + MAX_CACHED as u64 + 1 {
         assert_eq!(
-            read(&a.source, end, Duration::from_millis(100))
-                .err()
-                .as_deref(),
+            read(&a.source, end, Duration::ZERO).err().as_deref(),
             Some("api_source_busy")
         );
     }

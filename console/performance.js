@@ -43,15 +43,11 @@ window.DevCoordinatorPerformance = (() => {
       const componentMarkup = hasComponents
         ? `<dl>${rows.map(([name, value]) => `<div><dt>${esc(name)}</dt><dd>${value == null ? 'Unavailable' : integer(value)}</dd></div>`).join('')}</dl><dl class="performance-cost-detail">${costs.map(([name, value]) => `<div><dt>${esc(name)}</dt><dd>${value == null ? 'Unavailable' : usd(value)}</dd></div>`).join('')}</dl>`
         : '<p class="performance-token-popover-empty">Component details unavailable for this breakdown.</p>';
-      return `<span class="performance-token-detail"><button type="button" class="performance-token-detail-button" data-performance-token-detail="${id}" aria-expanded="false" aria-controls="${id}" aria-label="Show token breakdown for ${esc(label)}">${amount(measurement)}</button><span class="performance-token-popover" id="${id}" role="dialog" aria-label="Token breakdown" hidden><strong>${esc(label)}</strong>${componentMarkup}<small>${esc(costState(cost))} · API-equivalent Standard basis</small></span></span>`;
+      return `<span class="performance-token-detail"><button type="button" class="performance-token-detail-button" data-performance-token-detail="${id}" aria-expanded="false" aria-controls="${id}" aria-label="Show token breakdown for ${esc(label)}">${amount(measurement)}</button><span class="performance-token-popover" id="${id}" role="dialog" aria-label="Token breakdown" data-ui-contextual-overlay="Token breakdown temporarily overlays surrounding measurements" hidden><strong data-ui-continuation-anchor>${esc(label)}</strong>${componentMarkup}<small>${esc(costState(cost))} · API-equivalent Standard basis</small></span></span>`;
     }
     const costAmount = cost => usd(cost?.estimated_usd_micros);
     const totalSource = usage => usage?.totals || usage?.outcomes?.totals?.cost || null;
-    const pendingUsageReasons = new Set(['api_refresh_pending', 'api_source_busy', 'api_busy']);
-    const usageRefreshPending = coverage => {
-      const reasons = Object.keys(coverage?.unavailable_reasons || {});
-      return reasons.some(reason => pendingUsageReasons.has(reason)) || (!reasons.length && !!coverage?.snapshot?.refreshing);
-    };
+    const usageRefreshPending = coverage => window.DevCoordinatorUsageLoading.pending(coverage);
     const coverageStatusText = coverage => {
       const snapshot = coverage?.snapshot;
       const unavailableReasons = Object.keys(coverage?.unavailable_reasons || {});
@@ -127,6 +123,11 @@ window.DevCoordinatorPerformance = (() => {
       let currentUsage = null; let reviewData = null; let historyBefore = session.history?.next_before ?? null; let revisionBefore = null;
       const refreshTimers = new Map();
       let loadingProgress;
+      const headlinesReady = { period: false, lifetime: false };
+      let detailsStarted = false;
+      let reviewStarted = false;
+      let periodMeasurement = null;
+      let periodDetailsReady = false;
       function route(review, overrides = {}) {
         const p = new URLSearchParams({ range, from: String(start), to: String(end), recordedTo: String(session.lifetimeEnd), ...overrides });
         if (review) p.set('review', review);
@@ -151,12 +152,12 @@ window.DevCoordinatorPerformance = (() => {
         return usageRefreshPending(coverage);
       }
       const pendingMeasurements = coverage => coverage?.state === 'unavailable' && usageRefreshPending(coverage);
-      function scheduleRefresh(name, readAgain) {
+      function scheduleRefresh(name, readAgain, waiting) {
         if (refreshTimers.has(name) || signal.aborted) return;
         refreshTimers.set(name, window.setTimeout(() => {
           refreshTimers.delete(name);
           if (active()) readAgain(true);
-        }, 5000));
+        }, waiting ? 5000 : 0));
       }
       async function read(operation, params, useCache = true) {
         // A refresh updates the same period instead of caching a second version.
@@ -234,7 +235,8 @@ window.DevCoordinatorPerformance = (() => {
         const source = workstream ? outcomes.totals.cost : usage.totals;
         if (!append && pendingMeasurements(usage.coverage) && !total.measured) {
           showCoverage(usage);
-          window.DevCoordinatorI18n.text(find('scope-total'), 'performance.loading_measurements_baea02');
+          if (!reference && periodMeasurement) find('scope-total').innerHTML = tokenDetail('Period total', periodMeasurement.total_tokens, periodMeasurement.totals);
+          else window.DevCoordinatorI18n.text(find('scope-total'), 'performance.loading_measurements_baea02');
           find('charts').innerHTML = `<p>${window.DevCoordinatorI18n.markup('performance.loading_token_breakdowns_b62cda')}</p>`;
           window.DevCoordinatorI18n.text(find('outcomes'), 'performance.loading_outcomes_a12af3');
           window.DevCoordinatorI18n.text(find('outcome-count'), 'performance.loading_ba3bbb');
@@ -305,40 +307,89 @@ window.DevCoordinatorPerformance = (() => {
         } catch (error) { if (active()) { if (!more) window.DevCoordinatorI18n.text(find('count'), "performance.unavailable_ca1844"); errorPanel(more ? find('history-more') : find('history'), error.message, () => loadHistory(more)); } }
       }
       root.addEventListener('click', event => { if (event.target.closest('[data-performance-select]')) { session.focusReview = true; session.activationScroll = window.scrollY; if (!reference) session.scroll = window.scrollY; } }, { signal });
+      function startDetails() {
+        if (!active() || detailsStarted || !headlinesReady.period || !headlinesReady.lifetime) return;
+        detailsStarted = true;
+        void loadPeriod();
+        startReview();
+      }
+      function startReview() {
+        if (!active() || !reference || reviewStarted) return;
+        reviewStarted = true;
+        void loadReview();
+      }
+      function showPeriodTotal(data, headline = false) {
+        const pending = pendingMeasurements(data.usage?.coverage || data.coverage) && !data.total_tokens.measured;
+        if (data.total_tokens.exact != null || data.total_tokens.measured) periodMeasurement = data;
+        // A rich read may still be queued after the exact headline has arrived.
+        if (pending && periodMeasurement) return;
+        const measured = periodMeasurement || data;
+        const target = find('period-total');
+        const open = target.querySelector('.performance-token-popover:not([hidden])');
+        const focused = target.contains(document.activeElement);
+        target.innerHTML = pending ? window.DevCoordinatorI18n.markup('performance.loading_ba3bbb') : tokenDetail('Overview period total', measured.total_tokens, measured.totals);
+        if (open) {
+          const popover = target.querySelector('.performance-token-popover');
+          if (popover) { popover.hidden = false; target.querySelector('button').setAttribute('aria-expanded', 'true'); }
+          if (focused) target.querySelector('button')?.focus({ preventScroll: true });
+        }
+        const costPending = pending || headline && data.cost?.estimated_usd_micros == null;
+        find('period-cost').innerHTML = costPending ? window.DevCoordinatorI18n.markup('performance.loading_ba3bbb') : esc(costAmount(data.cost));
+        find('cost-status').textContent = costPending ? 'Standard API basis' : `${costState(data.cost)} · Standard API basis`;
+      }
+      async function loadPeriodHeadline(waitForRefresh = false) {
+        try {
+          const data = await read('performance.overview', { ...requests, totals_only: true, ...(waitForRefresh ? { wait_for_refresh: true } : {}) }, !waitForRefresh);
+          if (!active() || periodDetailsReady) return;
+          showPeriodTotal(data, true);
+          if (!reference) {
+            find('scope-total').innerHTML = pendingMeasurements(data.coverage) && !data.total_tokens.measured ? window.DevCoordinatorI18n.markup('performance.loading_measurements_baea02') : tokenDetail('Overview period total', data.total_tokens, data.totals);
+            window.DevCoordinatorI18n.bind(find('coverage'), () => coverageStatusText(data.coverage));
+          }
+          if (needsRefresh(data)) scheduleRefresh('period-headline', loadPeriodHeadline, waitForRefresh);
+          else clearRefresh('period-headline');
+          if (!pendingMeasurements(data.coverage)) { headlinesReady.period = true; startDetails(); }
+        } catch (error) {
+          if (active()) { window.DevCoordinatorI18n.text(find('period-total'), 'performance.unavailable_ca1844'); headlinesReady.period = true; startDetails(); }
+        }
+      }
       async function loadPeriod(waitForRefresh = false) {
         try {
           const data = await read('performance.overview', waitForRefresh ? { ...requests, wait_for_refresh: true } : requests, !waitForRefresh);
           if (!active()) return;
-          const pending = pendingMeasurements(data.usage?.coverage || data.coverage) && !data.total_tokens.measured;
-          find('period-total').innerHTML = pending ? window.DevCoordinatorI18n.markup('performance.loading_ba3bbb') : tokenDetail('Overview period total', data.total_tokens, data.totals);
-          find('period-cost').innerHTML = pending ? window.DevCoordinatorI18n.markup('performance.loading_ba3bbb') : esc(costAmount(data.cost));
-          find('cost-status').textContent = pending ? 'Standard API basis' : `${costState(data.cost)} · Standard API basis`;
+          showPeriodTotal(data);
           if (!reference) {
             if (data.usage) showUsage(!waitForRefresh && session.periodUsage?.start === start && session.periodUsage?.end === end ? session.periodUsage.usage : data.usage);
             if (session.scroll) window.scrollTo({ top: session.scroll });
           }
-          if (needsRefresh(data)) scheduleRefresh('period', loadPeriod);
-          else { clearRefresh('period'); }
+          if (needsRefresh(data)) scheduleRefresh('period', loadPeriod, waitForRefresh);
+          else { clearRefresh('period'); clearRefresh('period-headline'); periodDetailsReady = true; }
         }
-        catch (error) { if (active()) { window.DevCoordinatorI18n.text(find('period-total'), "performance.unavailable_ca1844"); if (!reference) { window.DevCoordinatorI18n.text(find('coverage'), "performance.measurements_could_not_be_loaded_77193b"); window.DevCoordinatorI18n.text(find('outcomes'), "performance.measurements_could_not_be_loaded_77193b"); errorPanel(find('charts'), error.message, loadPeriod); } } }
+        catch (error) { if (active()) { if (!periodMeasurement) window.DevCoordinatorI18n.text(find('period-total'), "performance.unavailable_ca1844"); window.DevCoordinatorI18n.text(find('period-cost'), "performance.unavailable_ca1844"); if (!reference) { window.DevCoordinatorI18n.text(find('coverage'), "performance.measurements_could_not_be_loaded_77193b"); window.DevCoordinatorI18n.text(find('outcomes'), "performance.measurements_could_not_be_loaded_77193b"); errorPanel(find('charts'), error.message, loadPeriod); } } }
       }
       async function loadLifetime(waitForRefresh = false) {
         try {
-          const data = await read('performance.overview', { repository_id: repositoryId, window_start_ms: 0, window_end_ms: session.lifetimeEnd, totals_only: true }, !waitForRefresh);
+          const data = await read('performance.overview', { repository_id: repositoryId, window_start_ms: 0, window_end_ms: session.lifetimeEnd, totals_only: true, ...(waitForRefresh ? { wait_for_refresh: true } : {}) }, !waitForRefresh);
           if (!active()) return;
           find('lifetime').innerHTML = pendingMeasurements(data.coverage) && !data.total_tokens.measured ? window.DevCoordinatorI18n.markup('performance.loading_ba3bbb') : tokenDetail('All recorded total', data.total_tokens, data.totals);
           find('lifetime').title = coverageStatusText(data.coverage);
-          if (needsRefresh(data)) scheduleRefresh('lifetime', loadLifetime);
+          if (needsRefresh(data)) scheduleRefresh('lifetime', loadLifetime, waitForRefresh);
           else { clearRefresh('lifetime'); }
+          if (!pendingMeasurements(data.coverage)) { headlinesReady.lifetime = true; startDetails(); }
         }
-        catch (error) { if (active()) { window.DevCoordinatorI18n.text(find('lifetime'), "performance.unavailable_ca1844"); find('lifetime').title = error.message; } }
+        catch (error) { if (active()) { window.DevCoordinatorI18n.text(find('lifetime'), "performance.unavailable_ca1844"); find('lifetime').title = error.message; headlinesReady.lifetime = true; startDetails(); } }
       }
       async function loadReview(waitForRefresh = false) {
-        try { const data = await read('performance.review', { repository_id: repositoryId, reference, outcome_limit: 5 }, !waitForRefresh); if (!active()) return; showReview(data); if (needsRefresh(data)) scheduleRefresh('review', loadReview); else { clearRefresh('review'); } }
+        try { const data = await read('performance.review', { repository_id: repositoryId, reference, outcome_limit: 5 }, !waitForRefresh); if (!active()) return; showReview(data); if (needsRefresh(data)) scheduleRefresh('review', loadReview, waitForRefresh); else { clearRefresh('review'); } }
         catch (error) { if (active()) { errorPanel(find('reader'), error.message, loadReview); window.DevCoordinatorI18n.text(find('coverage'), "performance.review_measurements_are_unavailable_497d4e"); find('charts').innerHTML = ''; window.DevCoordinatorI18n.text(find('outcomes'), "performance.review_measurements_are_unavailable_497d4e"); } }
       }
-      await Promise.allSettled([loadHistory(), loadPeriod(), loadLifetime(), ...(reference ? [loadReview()] : [])]);
-      if (active()) root.style.minHeight = '';
+      await Promise.allSettled([loadHistory(), loadPeriodHeadline(), loadLifetime()]);
+      if (active()) {
+        // The stored decision stays readable even when a source cannot yet
+        // finish the two initial headline attempts.
+        startReview();
+        root.style.minHeight = '';
+      }
     }
     return { render };
   }

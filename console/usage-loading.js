@@ -23,9 +23,10 @@ window.DevCoordinatorUsageLoading = (() => {
           const title = entries.every(row => row.history) ? 'usageLoadingReviews' : 'usageLoadingTokens';
           const remaining = entries.map(row => {
             const value = row.loading?.estimated_remaining_ms;
+            // Source elapsed time is already deducted; only age the received estimate.
             return row.loading?.state === 'reading' && row.loading.estimate_samples >= 3
               && row.loading.estimate_basis === 'recent_comparable_source_reads'
-              && Number.isFinite(value) && value > 0 ? value - Number(row.loading.elapsed_ms || 0) : null;
+              && Number.isFinite(value) && value > 0 ? value - (now - row.observed) : null;
           });
           const overrun = entries.some(row => row.loading?.state === 'estimate_exceeded') || remaining.some(value => value != null && value <= 0);
           let estimate = text(overrun ? 'usageEstimateExceeded' : 'usageEstimateUnknown');

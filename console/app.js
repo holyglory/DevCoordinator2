@@ -3123,7 +3123,7 @@ function utcBucket(ms, includeDate = false) {
 function usageSnapshotText(coverage) {
   const snapshot = coverage?.snapshot;
   if (!snapshot) return '';
-  if (snapshot.refreshing && snapshot.progress_total > 0) {
+  if (snapshot.refreshing && snapshot.progress_total > 0 && Number(snapshot.progress_completed || 0) < Number(snapshot.progress_total)) {
     const percent = Math.min(100, Math.round((Number(snapshot.progress_completed || 0) / Number(snapshot.progress_total)) * 100));
     return `Indexing usage cache · ${percent}%`;
   }
@@ -3250,23 +3250,24 @@ function currentUsageLoadingController() {
   }
   return usageLoadingController;
 }
-function continueUsageRefresh(coverages, refresh) {
+function continueUsageRefresh(coverages, refresh, waiting) {
   const identity = usageViewIdentity();
   const scheduled = usageRefreshTimers.get(identity);
-  const pending = coverages.some((coverage) => coverage?.snapshot?.refreshing || window.DevCoordinatorUsageLoading.pending(coverage));
-  if (!pending) {
-    if (scheduled) window.clearTimeout(scheduled);
-    usageRefreshTimers.delete(identity);
-    return;
-  }
-  if (scheduled) return;
   const controller = viewAbort;
+  const pending = coverages.some((coverage) => coverage?.snapshot?.refreshing || window.DevCoordinatorUsageLoading.pending(coverage));
+  if (!pending || scheduled?.controller !== controller) {
+    if (scheduled) window.clearTimeout(scheduled.timer);
+    usageRefreshTimers.delete(identity);
+    if (!pending) return;
+  }
+  if (usageRefreshTimers.has(identity)) return;
   const timer = window.setTimeout(() => {
+    if (usageRefreshTimers.get(identity)?.timer !== timer) return;
     usageRefreshTimers.delete(identity);
     if (controller !== viewAbort || controller?.signal.aborted || identity !== usageViewIdentity()) return;
     refresh();
-  }, 5000);
-  usageRefreshTimers.set(identity, timer);
+  }, waiting ? 5000 : 0);
+  usageRefreshTimers.set(identity, { timer, controller });
 }
 
 function coverageKind(value) {
@@ -3543,7 +3544,7 @@ function modelCostPulse(data) {
   const palette = ['var(--chart-blue)', 'var(--chart-teal)', 'var(--chart-violet)', 'var(--line-strong)'];
   const total = costValue(data.totals?.cost);
   const first = rows[0];
-  const detail = (row) => `<div class="usage-model-detail-body"><div class="usage-model-detail-head"><strong data-ui-continuation-anchor>${esc(row.model)}</strong><span>${row.cost?.status === 'complete' ? 'Complete estimate' : row.cost?.status === 'partial' ? 'Partial estimate' : 'No rate coverage'}</span></div><div class="usage-model-detail-total"><strong>${esc(costAmount(row.cost))}</strong><small>API-equivalent USD</small></div><dl><div><dt>Total tokens</dt><dd>${window.DevCoordinatorI18n.formatted('number', row.total_tokens)}</dd></div><div><dt>Requests</dt><dd>${window.DevCoordinatorI18n.formatted('number', row.model_requests)}</dd></div><div><dt>Input</dt><dd>${window.DevCoordinatorI18n.formatted('number', row.cost?.input_tokens)}</dd></div><div><dt>Cached input</dt><dd>${window.DevCoordinatorI18n.formatted('number', row.cost?.cached_input_tokens)}</dd></div><div><dt>Output</dt><dd>${window.DevCoordinatorI18n.formatted('number', row.cost?.output_tokens)}</dd></div><div><dt>Unknown observations</dt><dd>${window.DevCoordinatorI18n.formatted('number', row.cost?.unknown_observations || 0)}</dd></div></dl><p class="muted">${esc(costBasis(row.cost))}${row.cost?.rate_card_refs?.length ? ` · ${esc(row.cost.rate_card_refs.join(', '))}` : ''}</p></div>`;
+  const detail = (row) => `<div class="usage-model-detail-body"><div class="usage-model-detail-head"><strong data-ui-continuation-anchor>${esc(row.model)}</strong><span>${row.cost?.status === 'complete' ? 'Complete estimate' : row.cost?.status === 'partial' ? 'Partial estimate' : 'No rate coverage'}</span></div><div class="usage-model-detail-total"><strong>${esc(costAmount(row.cost))}</strong><small>API-equivalent USD</small></div><dl><div><dt>Total tokens</dt><dd>${window.DevCoordinatorI18n.formatted('number', row.total_tokens)}</dd></div><div><dt>Requests</dt><dd>${window.DevCoordinatorI18n.formatted('number', row.model_requests)}</dd></div><div><dt>Input</dt><dd>${window.DevCoordinatorI18n.formatted('number', row.cost?.input_tokens)}</dd></div><div><dt>Cached input</dt><dd>${window.DevCoordinatorI18n.formatted('number', row.cost?.cached_input_tokens)}</dd></div><div><dt>Output</dt><dd>${window.DevCoordinatorI18n.formatted('number', row.cost?.output_tokens)}</dd></div><div><dt>Unknown observations</dt><dd>${window.DevCoordinatorI18n.formatted('number', row.cost?.unknown_observations)}</dd></div></dl><p class="muted">${esc(costBasis(row.cost))}${row.cost?.rate_card_refs?.length ? ` · ${esc(row.cost.rate_card_refs.join(', '))}` : ''}</p></div>`;
   const rowsMarkup = rows.map((row, index) => {
     const knownCost = row.cost?.estimated_usd_micros != null;
     const share = total != null && knownCost ? (Number(row.cost.estimated_usd_micros) / (total * 1000000) * 100) : null;
@@ -3572,7 +3573,7 @@ function bindUsageModelLedger(root, data) {
     const model = models[index];
     if (!model || !detail) return;
     const cost = model.cost || {};
-    detail.innerHTML = `<div class="usage-model-detail-body"><div class="usage-model-detail-head"><strong data-ui-continuation-anchor>${esc(model.model)}</strong><span>${cost.status === 'complete' ? 'Complete estimate' : cost.status === 'partial' ? 'Partial estimate' : 'No rate coverage'}</span></div><div class="usage-model-detail-total"><strong>${esc(costAmount(cost))}</strong><small>API-equivalent USD</small></div><dl><div><dt>Total tokens</dt><dd>${window.DevCoordinatorI18n.formatted('number', model.total_tokens)}</dd></div><div><dt>Requests</dt><dd>${window.DevCoordinatorI18n.formatted('number', model.model_requests)}</dd></div><div><dt>Input</dt><dd>${window.DevCoordinatorI18n.formatted('number', cost.input_tokens)}</dd></div><div><dt>Cached input</dt><dd>${window.DevCoordinatorI18n.formatted('number', cost.cached_input_tokens)}</dd></div><div><dt>Output</dt><dd>${window.DevCoordinatorI18n.formatted('number', cost.output_tokens)}</dd></div><div><dt>Unknown observations</dt><dd>${window.DevCoordinatorI18n.formatted('number', cost.unknown_observations || 0)}</dd></div></dl><p class="muted">${esc(costBasis(cost))}${cost.rate_card_refs?.length ? ` · ${esc(cost.rate_card_refs.join(', '))}` : ''}</p></div>`;
+    detail.innerHTML = `<div class="usage-model-detail-body"><div class="usage-model-detail-head"><strong data-ui-continuation-anchor>${esc(model.model)}</strong><span>${cost.status === 'complete' ? 'Complete estimate' : cost.status === 'partial' ? 'Partial estimate' : 'No rate coverage'}</span></div><div class="usage-model-detail-total"><strong>${esc(costAmount(cost))}</strong><small>API-equivalent USD</small></div><dl><div><dt>Total tokens</dt><dd>${window.DevCoordinatorI18n.formatted('number', model.total_tokens)}</dd></div><div><dt>Requests</dt><dd>${window.DevCoordinatorI18n.formatted('number', model.model_requests)}</dd></div><div><dt>Input</dt><dd>${window.DevCoordinatorI18n.formatted('number', cost.input_tokens)}</dd></div><div><dt>Cached input</dt><dd>${window.DevCoordinatorI18n.formatted('number', cost.cached_input_tokens)}</dd></div><div><dt>Output</dt><dd>${window.DevCoordinatorI18n.formatted('number', cost.output_tokens)}</dd></div><div><dt>Unknown observations</dt><dd>${window.DevCoordinatorI18n.formatted('number', cost.unknown_observations)}</dd></div></dl><p class="muted">${esc(costBasis(cost))}${cost.rate_card_refs?.length ? ` · ${esc(cost.rate_card_refs.join(', '))}` : ''}</p></div>`;
     detail.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: 'auto' });
   };
   rows.forEach((row, index) => row.addEventListener('click', () => render(index)));
@@ -3623,7 +3624,7 @@ const viewCodexUsageRepositories = guard(async (waitForRefresh = false) => {
     render().then(() => $(`[data-codex-range="${range}"]`, main)?.focus());
   });
   restore();
-  continueUsageRefresh(rows.map((row) => row.coverage), () => viewCodexUsageRepositories(true));
+  continueUsageRefresh(rows.map((row) => row.coverage), () => viewCodexUsageRepositories(true), waitForRefresh);
 });
 
 const viewCodexUsage = guard(async (repositoryId, waitForRefresh = false) => {
@@ -3652,9 +3653,9 @@ const viewCodexUsage = guard(async (repositoryId, waitForRefresh = false) => {
   if (identity !== usageViewIdentity()) return;
   const restore = usageRefreshContext(waitForRefresh);
   main.innerHTML = `<section class="usage-dashboard" data-ui-region="codex-usage-dashboard">
-    <div class="usage-context"><div class="usage-title"><span class="usage-repo-mark" aria-hidden="true">${planIcon('focus-centered')}</span><h1>${destinationLink('Codex Usage', '#/usage')}</h1><span class="usage-slash" aria-hidden="true">/</span>${projectPicker(projects, repositoryId, (id) => `#/usage/${id}`, 'usage')}</div><div class="usage-range"><div class="usage-range-tools">${usageWorktreeScopeMarkup(scope)}${seg(['24h', '7d', '30d'], state.codexUsageRange, 'codex-range')}</div></div><div class="usage-coverage">${coverageHint(data.coverage)}${window.DevCoordinatorUsageLoading.markup()}<span class="muted">${data.coverage.snapshot ? esc(usageSnapshotText(data)) : `Data current ${data.coverage.freshest_at_ms ? ago(new Date(data.coverage.freshest_at_ms).toISOString()) : '—'}`}</span>${usageRebuildProgress(data.coverage)}</div></div>
+    <div class="usage-context"><div class="usage-title"><span class="usage-repo-mark" aria-hidden="true">${planIcon('focus-centered')}</span><h1>${destinationLink('Codex Usage', '#/usage')}</h1><span class="usage-slash" aria-hidden="true">/</span>${projectPicker(projects, repositoryId, (id) => `#/usage/${id}`, 'usage')}</div><div class="usage-range"><div class="usage-range-tools">${usageWorktreeScopeMarkup(scope)}${seg(['24h', '7d', '30d'], state.codexUsageRange, 'codex-range')}</div></div><div class="usage-coverage">${coverageHint(data.coverage)}${window.DevCoordinatorUsageLoading.markup()}<span class="muted">${data.coverage.snapshot ? esc(usageSnapshotText(data.coverage)) : `Data current ${data.coverage.freshest_at_ms ? ago(new Date(data.coverage.freshest_at_ms).toISOString()) : '—'}`}</span>${usageRebuildProgress(data.coverage)}</div></div>
     ${usageWorktreeUnavailable(scope)}
-    ${scope?.unavailable ? '' : `<div class="usage-metrics" data-ui-verify-min-content-inset="12">${usageMetric('Total tokens', compactNumber(data.totals.total_tokens), 'Provider-reported')}${usageMetric('API-equivalent estimate', costAmount(data.totals.cost), costBasis(data.totals.cost))}${usageMetric('Model requests', compactNumber(data.totals.model_requests))}${usageMetric('Cache efficiency', data.totals.input_tokens ? `${((Number(data.totals.cached_input_tokens || 0) / Number(data.totals.input_tokens)) * 100).toFixed(1)}%` : '—', 'Cached input / input tokens')}</div>`}
+    ${scope?.unavailable ? '' : `<div class="usage-metrics" data-ui-verify-min-content-inset="12">${usageMetric('Total tokens', compactNumber(data.totals.total_tokens), 'Provider-reported')}${usageMetric('API-equivalent estimate', costAmount(data.totals.cost), costBasis(data.totals.cost))}${usageMetric('Model requests', compactNumber(data.totals.model_requests))}${usageMetric('Cache efficiency', data.totals.input_tokens > 0 && data.totals.cached_input_tokens != null && data.totals.cached_input_tokens >= 0 && data.totals.cached_input_tokens <= data.totals.input_tokens ? `${((data.totals.cached_input_tokens / data.totals.input_tokens) * 100).toFixed(1)}%` : '—', 'Cached input / input tokens')}</div>`}
     ${scope?.unavailable ? '' : `<div class="usage-trend-row"><section class="usage-primary" data-ui-region="usage-primary-trend"><div class="usage-section-title"><h2><span data-i18n="usage.provider_reported_total_tokens_by_work_phase_d1895d">Provider-reported total tokens by work phase</span></h2></div>${phaseLegend()}${usagePhaseChart(data.series, data.totals.cost)}</section>${modelCostPulse(data)}</div>
     ${outcomeCostPulse(data)}
     <div class="usage-lower"><section><h2><span data-i18n="usage.activity_breakdown_7ebc89">Activity breakdown</span></h2>${activityRows(data)}</section><section><h2><span data-i18n="usage.time_breakdown_ca0aca">Time breakdown</span> <span class="muted"><span data-i18n="usage.separate_not_added_together_6dbbe5">(separate, not added together)</span></span></h2>${timeRails(data)}</section><section><h2><span data-i18n="usage.tool_outcomes_3a7a68">Tool outcomes</span></h2>${toolOutcomeRows(data)}</section></div>`}
@@ -3666,10 +3667,10 @@ const viewCodexUsage = guard(async (repositoryId, waitForRefresh = false) => {
   bindUsageChartTooltip(main);
   if (data.coverage.snapshot && (!data.coverage.snapshot.updated_at_ms || !data.coverage.available_collectors)) {
     main.querySelectorAll('.usage-metrics, .usage-primary, .usage-lower').forEach((element) => element.remove());
-    main.querySelector('.usage-coverage > .muted')?.remove();
+    if (!data.coverage.snapshot.refresh_failed) main.querySelector('.usage-coverage > .muted')?.remove();
   }
   restore();
-  continueUsageRefresh([data.coverage], () => viewCodexUsage(repositoryId, true));
+  continueUsageRefresh([data.coverage], () => viewCodexUsage(repositoryId, true), waitForRefresh);
   bindSeg(main, 'codex-range', (range) => {
     state.codexUsageRange = range;
     render().then(() => $(`[data-codex-range="${range}"]`, main)?.focus());
@@ -4017,7 +4018,7 @@ const viewProgress = guard(async (repositoryId, waitForRefresh = false) => {
   const restore = usageRefreshContext(waitForRefresh);
   renderProgressDashboard(data, projects, repositoryId);
   restore();
-  continueUsageRefresh([data.coverage.tokens], () => viewProgress(repositoryId, true));
+  continueUsageRefresh([data.coverage.tokens], () => viewProgress(repositoryId, true), waitForRefresh);
 });
 
 // --- Bugs ----------------------------------------------------------------

@@ -239,7 +239,7 @@ fn worktree_selection_keeps_owner_deduplication_and_component_totals() {
         let (report, _) = review_aggregate::display(&connection, facts, None, 1000, 2000).unwrap();
         assert_eq!(
             report.tokens.get("total_tokens").copied().unwrap_or(0),
-            expected
+            i128::from(expected)
         );
         assert_eq!(report.activities.values().sum::<u64>(), expected);
     }
