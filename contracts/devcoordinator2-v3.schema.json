@@ -43883,12 +43883,18 @@
               "model_requests": {
                 "format": "uint64",
                 "minimum": 0,
-                "type": "integer"
+                "type": [
+                  "integer",
+                  "null"
+                ]
               },
               "operations": {
                 "format": "uint64",
                 "minimum": 0,
-                "type": "integer"
+                "type": [
+                  "integer",
+                  "null"
+                ]
               },
               "output_tokens": {
                 "format": "uint64",
@@ -43909,7 +43915,10 @@
               "tool_calls": {
                 "format": "uint64",
                 "minimum": 0,
-                "type": "integer"
+                "type": [
+                  "integer",
+                  "null"
+                ]
               },
               "total_tokens": {
                 "format": "uint64",
@@ -43920,11 +43929,6 @@
                 ]
               }
             },
-            "required": [
-              "model_requests",
-              "tool_calls",
-              "operations"
-            ],
             "type": "object"
           }
         },
@@ -45907,12 +45911,18 @@
               "model_requests": {
                 "format": "uint64",
                 "minimum": 0,
-                "type": "integer"
+                "type": [
+                  "integer",
+                  "null"
+                ]
               },
               "operations": {
                 "format": "uint64",
                 "minimum": 0,
-                "type": "integer"
+                "type": [
+                  "integer",
+                  "null"
+                ]
               },
               "output_tokens": {
                 "format": "uint64",
@@ -45933,7 +45943,10 @@
               "tool_calls": {
                 "format": "uint64",
                 "minimum": 0,
-                "type": "integer"
+                "type": [
+                  "integer",
+                  "null"
+                ]
               },
               "total_tokens": {
                 "format": "uint64",
@@ -45944,11 +45957,6 @@
                 ]
               }
             },
-            "required": [
-              "model_requests",
-              "tool_calls",
-              "operations"
-            ],
             "type": "object"
           }
         },
@@ -48182,12 +48190,18 @@
               "model_requests": {
                 "format": "uint64",
                 "minimum": 0,
-                "type": "integer"
+                "type": [
+                  "integer",
+                  "null"
+                ]
               },
               "operations": {
                 "format": "uint64",
                 "minimum": 0,
-                "type": "integer"
+                "type": [
+                  "integer",
+                  "null"
+                ]
               },
               "output_tokens": {
                 "format": "uint64",
@@ -48208,7 +48222,10 @@
               "tool_calls": {
                 "format": "uint64",
                 "minimum": 0,
-                "type": "integer"
+                "type": [
+                  "integer",
+                  "null"
+                ]
               },
               "total_tokens": {
                 "format": "uint64",
@@ -48219,11 +48236,6 @@
                 ]
               }
             },
-            "required": [
-              "model_requests",
-              "tool_calls",
-              "operations"
-            ],
             "type": "object"
           },
           "WorkAttribution": {
@@ -53426,12 +53438,18 @@
               "model_requests": {
                 "format": "uint64",
                 "minimum": 0,
-                "type": "integer"
+                "type": [
+                  "integer",
+                  "null"
+                ]
               },
               "operations": {
                 "format": "uint64",
                 "minimum": 0,
-                "type": "integer"
+                "type": [
+                  "integer",
+                  "null"
+                ]
               },
               "output_tokens": {
                 "format": "uint64",
@@ -53452,7 +53470,10 @@
               "tool_calls": {
                 "format": "uint64",
                 "minimum": 0,
-                "type": "integer"
+                "type": [
+                  "integer",
+                  "null"
+                ]
               },
               "total_tokens": {
                 "format": "uint64",
@@ -53463,11 +53484,6 @@
                 ]
               }
             },
-            "required": [
-              "model_requests",
-              "tool_calls",
-              "operations"
-            ],
             "type": "object"
           },
           "UsageWorktree": {

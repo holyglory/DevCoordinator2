@@ -47,11 +47,7 @@ window.DevCoordinatorPerformance = (() => {
     }
     const costAmount = cost => usd(cost?.estimated_usd_micros);
     const totalSource = usage => usage?.totals || usage?.outcomes?.totals?.cost || null;
-    const pendingUsageReasons = new Set(['api_refresh_pending', 'api_source_busy', 'api_busy']);
-    const usageRefreshPending = coverage => {
-      const reasons = Object.keys(coverage?.unavailable_reasons || {});
-      return reasons.some(reason => pendingUsageReasons.has(reason)) || (!reasons.length && !!coverage?.snapshot?.refreshing);
-    };
+    const usageRefreshPending = coverage => window.DevCoordinatorUsageLoading.pending(coverage);
     const coverageStatusText = coverage => {
       const snapshot = coverage?.snapshot;
       const unavailableReasons = Object.keys(coverage?.unavailable_reasons || {});
