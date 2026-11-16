@@ -806,6 +806,7 @@ operation_catalog! {
     AgentInstructionCurrent, "agent.instruction.current", "Return concise current ownership and spawn guidance for this harness.", READ_SERVER_ADMIN, Protocol, ["agent_instruction_current"], params::AgentInstructionCurrent, results::AgentInstruction;
     StorageArtifactGet, "storage.artifact.get", "Inspect one tracked artifact and its protection reasons.", READ_SERVER_ADMIN, Protocol, ["storage_artifact_get"], storage::Reference, storage::Artifact;
     StorageScan, "storage.scan", "Queue storage discovery and return a durable job.", IDEMPOTENT_APPEND_SERVER_ADMIN, Protocol, ["storage_scan"], storage::Scan, storage::Job;
+    StorageRevalidate, "storage.revalidate", "Refresh one existing source worktree without granting ownership or deleting data.", IDEMPOTENT_APPEND_SERVER_ADMIN, Protocol, ["storage_revalidate"], storage::Revalidate, storage::Job;
     StorageRegister, "storage.register", "Record a disposal decision for an exact discovered artifact.", REVERSIBLE_SERVER_ADMIN, Protocol, ["storage_register"], storage::Register, storage::Artifact;
     StorageLegacyRegister, "storage.legacy.register", "Queue cleanup-only ownership verification of a legacy group.", REVERSIBLE_SERVER_ADMIN, Protocol, ["storage_legacy_register"], storage::LegacyRegister, storage::Job;
     StorageProtectionSet, "storage.protection.set", "Protect an artifact or remove its explicit protection.", REVERSIBLE_SERVER_ADMIN, Protocol, ["storage_protection_set"], storage::Protection, storage::Artifact;
@@ -815,7 +816,7 @@ operation_catalog! {
     StorageRootsSet, "storage.roots.set", "Configure an exact shared discovery root.", REVERSIBLE_SERVER_ADMIN, Protocol, ["storage_roots_set"], storage::RootSet, storage::Root;
     StorageCleanupPlan, "storage.cleanup.plan", "Resolve removal dependencies and blockers without deleting data.", APPEND_SERVER_ADMIN, Protocol, ["storage_cleanup_plan"], storage::PlanRequest, storage::CleanupPlan;
     StorageCleanupStart, "storage.cleanup.start", "Start an identity-bound cleanup plan.", DESTRUCTIVE_SERVER_ADMIN, Protocol, ["storage_cleanup_start"], storage::Start, storage::Job;
-    StorageJobStatus, "storage.job.status", "Read cleanup progress and exact artifact receipts.", READ_SERVER_ADMIN, Protocol, ["storage_job_status"], storage::JobReference, storage::Job;
+    StorageJobStatus, "storage.job.status", "Read storage progress and exact artifact receipts.", READ_SERVER_ADMIN, Protocol, ["storage_job_status"], storage::JobReference, storage::Job;
     StorageJobCancel, "storage.job.cancel", "Cancel pending steps without undoing completed deletions.", REVERSIBLE_SERVER_ADMIN, Protocol, ["storage_job_cancel"], storage::JobReference, storage::Job;
     StorageHistory, "storage.history", "Read bounded permanent cleanup history.", READ_SERVER_ADMIN, Protocol, ["storage_history"], storage::HistoryRequest, storage::History;
     StorageLeaseSet, "storage.lease.set", "Register or renew an active-use lease.", REVERSIBLE_SERVER_ADMIN, Protocol, ["storage_lease_set"], storage::LeaseSet, storage::Lease;
@@ -1252,6 +1253,11 @@ mod tests {
             parse_request(evidence).unwrap_err().code,
             ErrorCode::ParamsInvalid
         );
+        let refresh = br#"{"protocol":3,"id":"abc","operation":"storage.revalidate","params":{"artifact_id":"target","expected_revision":1,"idempotency_key":"refresh","delete":true},"client":{}}"#;
+        assert_eq!(
+            parse_request(refresh).unwrap_err().code,
+            ErrorCode::ParamsInvalid
+        );
         let mark = br##"{"protocol":3,"id":"abc","operation":"test.evidence.feedback.create","params":{"path":"/repo","run_id":"run","image_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","body":"change this","marks":[{"type":"pin","id":"mark-1","color":"#ef4444","x":0.5,"y":0.5,"extra":true}]},"client":{}}"##;
         assert_eq!(
             parse_request(mark).unwrap_err().code,
@@ -1325,9 +1331,29 @@ mod tests {
         for tool in mcp_tools() {
             assert!(tools.insert(tool.name), "duplicate MCP tool");
         }
-        assert_eq!(OPERATIONS.len(), 195);
-        assert_eq!(tools.len(), 165);
+        assert_eq!(OPERATIONS.len(), 196);
+        assert_eq!(tools.len(), 166);
         assert_eq!(cli_routes.len(), OPERATIONS.len());
+        let discovered = catalog_summary("storage.");
+        assert!(
+            discovered["operations"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|op| op["name"] == "storage.revalidate")
+        );
+        let refresh = operation_schema("storage.revalidate").unwrap();
+        assert_eq!(refresh["policy"]["role"], "administrator");
+        assert_eq!(refresh["policy"]["idempotent"], true);
+        assert_eq!(refresh["inputSchema"]["additionalProperties"], false);
+        assert_eq!(
+            refresh["inputSchema"]["required"],
+            serde_json::json!(["artifact_id", "expected_revision", "idempotency_key"])
+        );
+        assert_eq!(
+            mcp_tool("storage_revalidate").unwrap().operation.name,
+            "storage.revalidate"
+        );
     }
 
     #[test]

@@ -34,6 +34,26 @@ completed removals. Running discovery checks cancellation before each batch and
 releases its execution slot between batches so queued cleanup can advance during
 a long scan.
 
+When only one source worktree needs fresh checks, an administrator can call
+`storage.revalidate` with `artifact_id`, `expected_revision`, and
+`idempotency_key`. It returns a durable `revalidate` job observed through the
+same job status, events, cancellation and history operations. The daemon reads
+fresh ownership and live-use context after capacity admission, takes new Docker
+mount observations, measures the target without following links, and repeats
+its source, activity and safety checks before saving only that target.
+Successful receipts have status `revalidated`; unsafe or incomplete probes have
+status `blocked` and leave the bound target unverified. A newer observation or
+mutation prevents an older refresh from changing that target, even when its
+public revision did not change. Restarted jobs repeat their probes.
+
+Revalidation initially supports existing directory-backed source worktrees.
+It preserves disposal authorization only for the same native identity, grants
+no ownership, deletes nothing and queues no cleanup. Prepare and start an
+ordinary cleanup plan separately after checking the refreshed artifact. Neither
+observation lifetimes nor cleanup-plan expiry are extended. Repeating a request
+with the same key recovers its original job even after that job changed the
+artifact revision; reusing the key for different input is rejected.
+
 Selecting a directory also lists known nested directories affected by that
 removal. Their protection and ownership checks still apply. Aliases and nested
 data contribute to the planned space only once; each tracked identity retains

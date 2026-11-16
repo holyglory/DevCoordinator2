@@ -799,6 +799,7 @@ handlers! { self,params,caller,now,actor,administrator,repository,operation;
                 self.storage.artifact(&p.artifact_id)
             };
     StorageScan => self.storage.scan(params, caller);
+    StorageRevalidate => self.storage.revalidate(params, caller);
     StorageRegister => self.storage.register(params, caller);
     StorageLegacyRegister => {
                 self.storage.register_legacy(params, caller)

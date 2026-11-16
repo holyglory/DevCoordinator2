@@ -1931,6 +1931,10 @@ mod tests {
             ),
             ("config.get", serde_json::json!({})),
             (
+                "storage.revalidate",
+                serde_json::json!({"artifact_id":"target","expected_revision":1,"idempotency_key":"refresh"}),
+            ),
+            (
                 "config.env.set",
                 serde_json::json!({"deployment_id":"d1","file":".env","authorized":true,"expected_revision":"revision"}),
             ),

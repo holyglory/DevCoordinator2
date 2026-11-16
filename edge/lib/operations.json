@@ -1370,6 +1370,16 @@
       },
       "responseTimeoutSeconds": 10
     },
+    "storage.revalidate": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "append",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "server"
+      },
+      "responseTimeoutSeconds": 10
+    },
     "storage.roots.list": {
       "passiveWait": false,
       "policy": {

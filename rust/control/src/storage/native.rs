@@ -4,6 +4,7 @@ mod docker;
 mod docker_engine;
 mod evidence;
 mod mounts;
+mod revalidate;
 mod sources;
 use super::{
     blocked, fs, hash, json,
@@ -18,6 +19,7 @@ use crate::{
 use devcoordinator2_api::{ProtocolError, storage as api};
 pub use discovery::{DiscoveryBudget, DiscoveryCursor};
 pub(crate) use mounts::execute as run_mount_helper;
+pub use revalidate::ReobserveCursor;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -25,6 +27,17 @@ use std::time::Duration;
 
 pub trait Backend: Send + Sync {
     fn discover(&self, context: &Context) -> Result<Discovery, ProtocolError>;
+    /// Refresh a single bound source worktree. Providers must implement actual
+    /// observation; validation alone cannot renew an inventory observation.
+    fn reobserve_step(
+        &self,
+        _record: &Record,
+        _context: &Context,
+        _cursor: &mut ReobserveCursor,
+        _budget: DiscoveryBudget,
+    ) -> Result<Option<Record>, ProtocolError> {
+        Err(blocked("revalidation_provider_unsupported"))
+    }
     fn discover_step(
         &self,
         context: &Context,
@@ -115,6 +128,15 @@ impl HostBackend {
 }
 
 impl Backend for HostBackend {
+    fn reobserve_step(
+        &self,
+        record: &Record,
+        context: &Context,
+        cursor: &mut ReobserveCursor,
+        budget: DiscoveryBudget,
+    ) -> Result<Option<Record>, ProtocolError> {
+        self.reobserve_worktree_step(record, context, cursor, budget)
+    }
     fn resume(
         &self,
         r: &Record,
