@@ -9,7 +9,7 @@ use devcoordinator2_control::deployment_state::{
 // scan fail before the fresh observation completes.
 const ORDERING_SCAN_BUDGET: Duration = Duration::from_secs(300);
 
-fn start_fixture_engine(world: &mut World) -> Result<String, String> {
+pub(super) fn start_fixture_engine(world: &mut World) -> Result<String, String> {
     let runtime = tempfile::Builder::new()
         .prefix("dc2-builder-")
         .tempdir_in("/tmp")
@@ -1900,11 +1900,499 @@ fn observation_age_and_plan_expiry(world: &World, row: &Value, now: u64) -> Resu
     Ok(())
 }
 
+pub(super) fn refreshed_target(
+    world: &World,
+    target: &Value,
+    key: &str,
+) -> Result<(Value, Value), String> {
+    let current = mcp(
+        world,
+        "storage_artifact_get",
+        json!({"artifact_id":target["artifact_id"]}),
+    )?;
+    let input = json!({"artifact_id":current["artifact_id"],"expected_revision":current["revision"],"idempotency_key":key});
+    let job = mcp(world, "storage_revalidate", input)?;
+    let result = wait_job(
+        world,
+        job["job_id"].as_str().ok_or("revalidation job missing")?,
+    )?;
+    let after = mcp(
+        world,
+        "storage_artifact_get",
+        json!({"artifact_id":target["artifact_id"]}),
+    )?;
+    Ok((result, after))
+}
+
+fn targeted_worktree_revalidation(
+    world: &mut World,
+    target: &Value,
+    path: &Path,
+    sibling: &Value,
+    child: &Value,
+) -> Result<Value, String> {
+    let raw = |id: &Value| -> Result<String, String> {
+        world
+            .authority()?
+            .read(|db| {
+                Ok(db.query_row(
+                    "SELECT record_json FROM storage_artifacts WHERE artifact_id=$1",
+                    [id.as_str().ok_or_else(|| {
+                        devcoordinator2_control::database::DatabaseError::Domain(
+                            devcoordinator2_api::ProtocolError::new(
+                                devcoordinator2_api::ErrorCode::InternalError,
+                                "fixture_id_missing",
+                            ),
+                        )
+                    })?],
+                    |row| row.get::<_, String>(0),
+                )?)
+            })
+            .map_err(|e| e.to_string())
+    };
+    let sibling_before = raw(&sibling["artifact_id"])?;
+    let now = (time::OffsetDateTime::now_utc().unix_timestamp_nanos() / 1_000_000) as u64;
+    world.authority()?.transaction(|db| {
+        db.execute("UPDATE storage_scan_state SET revision=revision+1 WHERE singleton=1",[])?;
+        let sequence:i64=db.query_row("SELECT revision FROM storage_scan_state WHERE singleton=1",[],|row|row.get(0))?;
+        db.execute("UPDATE storage_artifacts SET record_json=jsonb_set(jsonb_set(record_json,'{artifact,verified_at_ms}',to_jsonb($1::bigint)),'{update_sequence}',to_jsonb($2::bigint)) WHERE artifact_id=$3",devcoordinator2_control::database::params![now.saturating_sub(3*3_600_000),sequence,target["artifact_id"].as_str().unwrap()])?;
+        Ok(())
+    }).map_err(|e|e.to_string())?;
+    let expired = mcp(
+        world,
+        "storage_artifact_get",
+        json!({"artifact_id":target["artifact_id"]}),
+    )?;
+    ensure!(
+        expired["deletable"] == false
+            && expired["reasons"]
+                .as_array()
+                .is_some_and(|r| r.contains(&json!("checks_expired"))),
+        "expired worktree did not reproduce stale safety observations"
+    );
+    let before_probe = (time::OffsetDateTime::now_utc().unix_timestamp_nanos() / 1_000_000) as u64;
+    let (job, refreshed) = refreshed_target(world, &expired, "target-refresh-expired")?;
+    ensure!(
+        job["state"] == "completed"
+            && job["receipts"][0]["status"] == "revalidated"
+            && refreshed["deletable"] == true
+            && path.is_dir(),
+        "target refresh did not preserve and revalidate archived source: {}",
+        bounded_json(&job)
+    );
+    ensure!(
+        refreshed["verified_at_ms"]
+            .as_u64()
+            .is_some_and(|at| at >= before_probe
+                && at
+                    <= (time::OffsetDateTime::now_utc().unix_timestamp_nanos() / 1_000_000) as u64),
+        "target observation time did not bind actual probes"
+    );
+    ensure!(
+        raw(&sibling["artifact_id"])? == sibling_before,
+        "target-only revalidation changed a sibling record"
+    );
+    let original_input = json!({"artifact_id":expired["artifact_id"],"expected_revision":expired["revision"],"idempotency_key":"target-refresh-expired"});
+    let retried = mcp(world, "storage_revalidate", original_input.clone())?;
+    ensure!(
+        retried["job_id"] == job["job_id"] && retried["state"] == "completed",
+        "lost successful revalidation reply was not recovered before revision validation"
+    );
+    let mut stale = original_input.clone();
+    stale["idempotency_key"] = json!("target-refresh-stale");
+    ensure!(
+        error_code(&world.call("storage.revalidate", stale)?) == Some("storage_conflict"),
+        "stale target revision was accepted"
+    );
+    let mut reused = original_input;
+    reused["expected_revision"] = refreshed["revision"].clone();
+    ensure!(
+        error_code(&world.call("storage.revalidate", reused)?) == Some("storage_conflict"),
+        "revalidation request key accepted different input"
+    );
+
+    let child_now = mcp(
+        world,
+        "storage_artifact_get",
+        json!({"artifact_id":child["artifact_id"]}),
+    )?;
+    let pinned = mcp(
+        world,
+        "storage_protection_set",
+        json!({"artifact_id":child_now["artifact_id"],"expected_revision":child_now["revision"],"protected":true}),
+    )?;
+    let (blocked, after) = refreshed_target(world, target, "target-refresh-protected-descendant")?;
+    ensure!(
+        blocked["state"] == "failed"
+            && blocked["error_code"] == "protected_shared_data"
+            && after["verified_at_ms"].is_null(),
+        "protected descendant failed to invalidate target refresh: {}",
+        bounded_json(&blocked)
+    );
+    mcp(
+        world,
+        "storage_protection_set",
+        json!({"artifact_id":pinned["artifact_id"],"expected_revision":pinned["revision"],"protected":false}),
+    )?;
+    let lease = mcp(
+        world,
+        "storage_lease_set",
+        json!({"artifact_ids":[child["artifact_id"]],"duration_seconds":3600}),
+    )?;
+    let (blocked, _) = refreshed_target(world, target, "target-refresh-leased-descendant")?;
+    ensure!(
+        blocked["state"] == "failed" && blocked["error_code"] == "active_lease",
+        "leased descendant passed target refresh: {}",
+        bounded_json(&blocked)
+    );
+    mcp(
+        world,
+        "storage_lease_release",
+        json!({"lease_id":lease["lease_id"]}),
+    )?;
+
+    let mut process = Command::new("/usr/bin/setpriv")
+        .args([
+            format!("--reuid={}", world.harness.caller_uid),
+            format!("--regid={}", world.harness.caller_gid),
+            "--init-groups".into(),
+            "--".into(),
+            "/bin/sleep".into(),
+            "60".into(),
+        ])
+        .current_dir(path)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    let process_result = refreshed_target(world, target, "target-refresh-active-process");
+    let _ = process.kill();
+    let _ = process.wait();
+    let (blocked, _) = process_result?;
+    ensure!(
+        blocked["state"] == "failed"
+            && matches!(
+                blocked["error_code"].as_str(),
+                Some("active_process" | "active_worktree")
+            ),
+        "active process passed target refresh: {}",
+        bounded_json(&blocked)
+    );
+
+    let active_root = path.join(".devcoordinator/test/current");
+    fs::create_dir_all(&active_root).map_err(|e| e.to_string())?;
+    fs::write(
+        active_root.join("summary.json"),
+        r#"{"status":"running","run_id":"fixture-active-run"}"#,
+    )
+    .map_err(|e| e.to_string())?;
+    let active_result = refreshed_target(world, target, "target-refresh-active-test");
+    fs::remove_dir_all(path.join(".devcoordinator")).map_err(|e| e.to_string())?;
+    let (blocked, _) = active_result?;
+    ensure!(
+        blocked["state"] == "failed" && blocked["error_code"] == "active_worktree",
+        "active test passed target refresh: {}",
+        bounded_json(&blocked)
+    );
+
+    fs::write(
+        path.join("source.txt"),
+        "dirty during target revalidation\n",
+    )
+    .map_err(|e| e.to_string())?;
+    let (blocked, _) = refreshed_target(world, target, "target-refresh-dirty")?;
+    ensure!(
+        blocked["state"] == "failed" && blocked["error_code"] == "dirty_worktree",
+        "dirty source passed target refresh: {}",
+        bounded_json(&blocked)
+    );
+    fs::write(path.join("source.txt"), "authoritative fixture source\n")
+        .map_err(|e| e.to_string())?;
+
+    let saved = path.with_extension("revalidation-saved");
+    for (key, symlink) in [
+        ("target-refresh-replacement", false),
+        ("target-refresh-symlink", true),
+    ] {
+        fs::rename(path, &saved).map_err(|e| e.to_string())?;
+        if symlink {
+            std::os::unix::fs::symlink(&saved, path).map_err(|e| e.to_string())?;
+        } else {
+            fs::create_dir(path).map_err(|e| e.to_string())?;
+        }
+        let attempt = refreshed_target(world, target, key);
+        if symlink {
+            fs::remove_file(path).map_err(|e| e.to_string())?;
+        } else {
+            let metadata = fs::symlink_metadata(path).map_err(|e| e.to_string())?;
+            let replacement_key = format!("fs:{}:{}", metadata.dev(), metadata.ino());
+            let owners:i64=world.authority()?.read(|db|Ok(db.query_row("SELECT COUNT(*) FROM storage_artifacts WHERE projection_resource_key=$1 AND (record_json->>'disposal_approved')::boolean",[replacement_key],|row|row.get(0))?)).map_err(|e|e.to_string())?;
+            ensure!(owners == 0, "replacement inherited disposal ownership");
+            fs::remove_dir(path).map_err(|e| e.to_string())?;
+        }
+        fs::rename(&saved, path).map_err(|e| e.to_string())?;
+        let (blocked, after) = attempt?;
+        ensure!(
+            blocked["state"] == "failed" && after["verified_at_ms"].is_null(),
+            "replacement identity or symlink passed target refresh: {}",
+            bounded_json(&blocked)
+        );
+    }
+    let fifo = path.join("incomplete-probe-fifo");
+    let fifo_c =
+        std::ffi::CString::new(fifo.as_os_str().as_encoded_bytes()).map_err(|e| e.to_string())?;
+    ensure!(
+        unsafe { libc::mkfifo(fifo_c.as_ptr(), 0o600) } == 0,
+        "cannot create isolated incomplete-measurement fixture"
+    );
+    let incomplete = refreshed_target(world, target, "target-refresh-incomplete-measurement");
+    fs::remove_file(&fifo).map_err(|e| e.to_string())?;
+    let (blocked, after) = incomplete?;
+    ensure!(
+        blocked["state"] == "failed"
+            && blocked["error_code"] == "special_file"
+            && after["verified_at_ms"].is_null(),
+        "incomplete measurement renewed safety evidence: {}",
+        bounded_json(&blocked)
+    );
+    let engine_config = world.state.join("storage-fixture-engine.json");
+    let engine_before = fs::read(&engine_config).map_err(|e| e.to_string())?;
+    write_private_json(
+        &engine_config,
+        &json!(world.base.join("missing-revalidation-engine.sock")),
+    )?;
+    let incomplete = refreshed_target(world, target, "target-refresh-incomplete-docker");
+    fs::write(&engine_config, engine_before).map_err(|e| e.to_string())?;
+    let (blocked, after) = incomplete?;
+    ensure!(
+        blocked["state"] == "failed" && after["verified_at_ms"].is_null(),
+        "incomplete Docker probe renewed safety evidence: {}",
+        bounded_json(&blocked)
+    );
+
+    let mount_source = world.base.join("revalidation-mount-source");
+    fs::create_dir(&mount_source).map_err(|e| e.to_string())?;
+    let mount_target = path.join("protected-child");
+    run_status(
+        "/usr/bin/mount",
+        &[
+            "--bind",
+            mount_source.to_str().unwrap(),
+            mount_target.to_str().unwrap(),
+        ],
+    )?;
+    let mounted = refreshed_target(world, target, "target-refresh-mounted-descendant");
+    run_status("/usr/bin/umount", &[mount_target.to_str().unwrap()])?;
+    let (blocked, after) = mounted?;
+    ensure!(
+        blocked["state"] == "failed" && after["verified_at_ms"].is_null(),
+        "mounted descendant passed target refresh: {}",
+        bounded_json(&blocked)
+    );
+
+    let docker_context = world.base.join("revalidation-container-context");
+    fs::create_dir(&docker_context).map_err(|e| e.to_string())?;
+    fs::write(
+        docker_context.join("Dockerfile"),
+        "FROM scratch\nCOPY payload /payload\n",
+    )
+    .map_err(|e| e.to_string())?;
+    fs::write(docker_context.join("payload"), "fixture\n").map_err(|e| e.to_string())?;
+    let docker_host = format!("unix://{}", world.base.join("builder.sock").display());
+    let tag = format!("{}-target-revalidation:fixture", world.unit_prefix);
+    let container = format!("{}-target-revalidation", world.unit_prefix);
+    run_status(
+        "docker",
+        &[
+            "--host",
+            &docker_host,
+            "build",
+            "--quiet",
+            "--tag",
+            &tag,
+            docker_context.to_str().unwrap(),
+        ],
+    )?;
+    run_status(
+        "docker",
+        &[
+            "--host",
+            &docker_host,
+            "create",
+            "--name",
+            &container,
+            "--label",
+            &format!("devcoordinator2.instance={}", world.unit_prefix),
+            "--mount",
+            &format!("type=bind,source={},target=/fixture", path.display()),
+            &tag,
+            "/payload",
+        ],
+    )?;
+    let consumer = refreshed_target(world, target, "target-refresh-docker-mount-consumer");
+    run_status("docker", &["--host", &docker_host, "rm", &container])?;
+    run_status("docker", &["--host", &docker_host, "image", "rm", &tag])?;
+    let (blocked, after) = consumer?;
+    ensure!(
+        blocked["state"] == "failed"
+            && blocked["error_code"] == "consumer_not_in_cleanup"
+            && after["verified_at_ms"].is_null(),
+        "Docker mount consumer passed target refresh: {}",
+        bounded_json(&blocked)
+    );
+
+    // Pause before the final live-use probes. Cancellation and restart use the
+    // real durable worker, rather than a fixture-only completion shortcut.
+    let barrier = world.state.join("storage-pause-revalidation");
+    for (key, restart) in [
+        ("target-refresh-cancel", false),
+        ("target-refresh-restart", true),
+    ] {
+        fs::write(&barrier, key).map_err(|e| e.to_string())?;
+        let _ = fs::remove_file(barrier.with_extension("ready"));
+        let current = mcp(
+            world,
+            "storage_artifact_get",
+            json!({"artifact_id":target["artifact_id"]}),
+        )?;
+        let request = json!({"artifact_id":current["artifact_id"],"expected_revision":current["revision"],"idempotency_key":key});
+        let started = mcp(world, "storage_revalidate", request)?;
+        let id = started["job_id"]
+            .as_str()
+            .ok_or("paused target job missing")?;
+        let deadline = Instant::now() + Duration::from_secs(60);
+        while !barrier.with_extension("ready").exists() {
+            ensure!(
+                Instant::now() < deadline,
+                "target revalidation never reached its final-probe barrier"
+            );
+            thread::sleep(Duration::from_millis(25));
+        }
+        if restart {
+            world.stop_daemon(true)?;
+            fs::write(path.join("source.txt"), "dirty after worker restart\n")
+                .map_err(|e| e.to_string())?;
+            fs::remove_file(&barrier).map_err(|e| e.to_string())?;
+            world.start_daemon(None, None, None)?;
+            let result = wait_job(world, id)?;
+            ensure!(
+                result["state"] == "failed"
+                    && result["error_code"] == "dirty_worktree"
+                    && path.exists(),
+                "restarted target refresh reused earlier probes: {}",
+                bounded_json(&result)
+            );
+            fs::write(path.join("source.txt"), "authoritative fixture source\n")
+                .map_err(|e| e.to_string())?;
+        } else {
+            mcp(world, "storage_job_cancel", json!({"job_id":id}))?;
+            fs::remove_file(&barrier).map_err(|e| e.to_string())?;
+            let result = wait_job(world, id)?;
+            ensure!(
+                result["state"] == "cancelled" && result["receipts"][0]["status"] == "cancelled",
+                "cancelled target refresh lacked its durable receipt: {}",
+                bounded_json(&result)
+            );
+            let after = mcp(
+                world,
+                "storage_artifact_get",
+                json!({"artifact_id":target["artifact_id"]}),
+            )?;
+            ensure!(
+                after["revision"] == current["revision"],
+                "cancelled refresh changed the target"
+            );
+        }
+    }
+    fs::write(&barrier, "target-refresh-unrelated-use").map_err(|e| e.to_string())?;
+    let _ = fs::remove_file(barrier.with_extension("ready"));
+    let current = mcp(
+        world,
+        "storage_artifact_get",
+        json!({"artifact_id":target["artifact_id"]}),
+    )?;
+    let started = mcp(
+        world,
+        "storage_revalidate",
+        json!({"artifact_id":current["artifact_id"],"expected_revision":current["revision"],"idempotency_key":"target-refresh-unrelated-use"}),
+    )?;
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while !barrier.with_extension("ready").exists() {
+        ensure!(
+            Instant::now() < deadline,
+            "unrelated-use revalidation never reached final-probe barrier"
+        );
+        thread::sleep(Duration::from_millis(25));
+    }
+    let unrelated_test = world.repo.join(".devcoordinator/test/current");
+    fs::create_dir_all(&unrelated_test).map_err(|e| e.to_string())?;
+    fs::write(
+        unrelated_test.join("summary.json"),
+        r#"{"status":"running","run_id":"fixture-unrelated-active"}"#,
+    )
+    .map_err(|e| e.to_string())?;
+    world.write_config("schema=2\n[deployment.unrelated]\nsource=\"worktree\"\ncomponents=[\"fixture\"]\n[deployment.unrelated.component.fixture]\ntype=\"process\"\ncommand=[\"/usr/bin/true\"]\n")?;
+    world.authority()?.transaction(|db| {
+        db.execute("INSERT INTO deployments(deployment_id,repository_id,worktree_id,name,source,spec_fingerprint,spec_json,state,current_generation,created_at,created_by_uid,client,updated_at) SELECT 'd1111111111111111',repository_id,worktree_id,'unrelated','worktree','fixture','{}','stopped',1,'t',$1,'fixture','t' FROM worktrees WHERE worktree_path=$2",devcoordinator2_control::database::params![world.harness.caller_uid,world.repo.to_string_lossy().to_string()])?;
+        Ok(())
+    }).map_err(|e|e.to_string())?;
+    fs::remove_file(&barrier).map_err(|e| e.to_string())?;
+    let independent = wait_job(
+        world,
+        started["job_id"]
+            .as_str()
+            .ok_or("independent target job missing")?,
+    );
+    fs::remove_file(unrelated_test.join("summary.json")).map_err(|e| e.to_string())?;
+    let independent = independent?;
+    ensure!(
+        independent["state"] == "completed",
+        "unrelated active test/deployment invalidated target refresh: {}",
+        bounded_json(&independent)
+    );
+    world.authority()?.transaction(|db| {
+        db.execute("INSERT INTO generations(deployment_id,number,commit_hash,dirty,path,fingerprint,created_at,state) VALUES('d1111111111111111',1,'fixture',0,$1,'fixture','t','current')",[world.base.join("unrelated-generation").to_string_lossy().to_string()])?;
+        db.execute("INSERT INTO generation_source_origins(deployment_id,number,worktree_id,path) VALUES('d1111111111111111',1,$1,$2)",devcoordinator2_control::database::params![devcoordinator2_control::ids::worktree_id(path).unwrap(),path.to_string_lossy().to_string()])?;
+        Ok(())
+    }).map_err(|e|e.to_string())?;
+    let (selected, after) =
+        refreshed_target(world, target, "target-refresh-selected-deployment-origin")?;
+    ensure!(
+        selected["state"] == "failed"
+            && selected["error_code"] == "current_deployment"
+            && after["verified_at_ms"].is_null()
+            && path.exists(),
+        "selected deployment source origin passed target refresh: {}",
+        bounded_json(&selected)
+    );
+    world
+        .authority()?
+        .transaction(|db| {
+            db.execute(
+                "DELETE FROM generations WHERE deployment_id='d1111111111111111'",
+                [],
+            )?;
+            db.execute(
+                "DELETE FROM deployments WHERE deployment_id='d1111111111111111'",
+                [],
+            )?;
+            Ok(())
+        })
+        .map_err(|e| e.to_string())?;
+    world.write_config("schema=2\n")?;
+
+    let (job, after) = refreshed_target(world, target, "target-refresh-after-restart")?;
+    ensure!(
+        job["state"] == "completed" && after["deletable"] == true && path.exists(),
+        "target did not recover for separate normal cleanup: {}",
+        bounded_json(&job)
+    );
+    Ok(after)
+}
+
 pub(super) fn worktrees_and_backup_floor(world: &mut World) -> Result<(), String> {
-    // This scenario owns filesystem fixtures and creates no Docker consumers.
-    // Observe a real private engine so unrelated host-container churn cannot
-    // invalidate its cleanup prerequisites. Mount-consumer and engine-outage
-    // coverage remain separate acceptance scenarios with their own fixtures.
+    // Own every filesystem and container fixture in a real private engine so
+    // unrelated host-container churn cannot invalidate cleanup prerequisites.
     start_fixture_engine(world)?;
     world.write_config("schema = 2\n")?;
     world.write_owned("source.txt", "authoritative fixture source\n")?;
@@ -2170,10 +2658,31 @@ pub(super) fn worktrees_and_backup_floor(world: &mut World) -> Result<(), String
         .ok_or("changed metadata worktree missing")?;
     ensure!(
         reason_codes(&changed_worktree).contains(&json!("ignored_review_file_changed"))
-            || reason_codes(&changed_worktree).contains(&json!("unreviewed_ignored_files")),
+            || reason_codes(&changed_worktree).contains(&json!("unreviewed_ignored_files"))
+            || reason_codes(&changed_worktree).contains(&json!("ignored_files_unverified")),
         "changed reviewed metadata was accepted: {}",
         bounded_json(&changed_worktree)
     );
+    let (refresh, after) = refreshed_target(
+        world,
+        &changed_worktree,
+        "revalidate-changed-ignored-review",
+    )?;
+    ensure!(
+        refresh["state"] == "failed"
+            && matches!(
+                refresh["error_code"].as_str(),
+                Some(
+                    "ignored_review_file_changed"
+                        | "unreviewed_ignored_files"
+                        | "ignored_files_unverified"
+                )
+            )
+            && after["verified_at_ms"].is_null(),
+        "changed ignored evidence passed revalidation: {}",
+        bounded_json(&refresh)
+    );
+    let changed_worktree = after;
     fs::write(&history_path, "[]\n").map_err(|e| e.to_string())?;
     let refreshed = mcp(
         world,
@@ -2396,6 +2905,29 @@ pub(super) fn worktrees_and_backup_floor(world: &mut World) -> Result<(), String
         .find(|row| row["name"] == "clean-worktree")
         .cloned()
         .ok_or("restored clean worktree missing")?;
+    // The earlier partial cleanup may already have removed its nested items
+    // before the dirty parent was rejected. Recreate a live descendant for the
+    // refresh journey; protecting a removed tombstone must not protect new data.
+    let refresh_child_path = trees[0].join("protected-child");
+    if !refresh_child_path.exists() {
+        fs::create_dir(&refresh_child_path).map_err(|e| e.to_string())?;
+        chown_path(
+            &refresh_child_path,
+            world.harness.caller_uid,
+            world.harness.caller_gid,
+        )?;
+    }
+    let refresh_inventory = scanned(world, &repo, "revalidation-live-descendant-fixture")?;
+    let refresh_child = refresh_inventory["artifacts"]
+        .as_array()
+        .and_then(|rows| rows.iter().find(|row| row["name"] == "protected-child"))
+        .ok_or("live refresh descendant missing")?;
+    let refresh_child = mcp(
+        world,
+        "storage_register",
+        json!({"artifact_id":refresh_child["artifact_id"],"expected_revision":refresh_child["revision"],"repository_id":repo,"effect":"rebuildable","reason":"Dedicated live disposable descendant for target revalidation guards"}),
+    )?;
+    let clean = targeted_worktree_revalidation(world, &clean, &trees[0], &dirty, &refresh_child)?;
     let old = row("old")?;
     let recent = row("recent")?;
     let latest = row("latest")?;

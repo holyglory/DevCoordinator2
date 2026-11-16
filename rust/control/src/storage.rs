@@ -7,6 +7,7 @@ pub mod native;
 #[cfg(test)]
 mod read_tests;
 mod reconcile;
+mod revalidate;
 mod worker;
 pub use worker::ScanCursor;
 

@@ -69,6 +69,7 @@ fn reasons(row: &Value) -> Vec<Value> {
 }
 
 pub(super) fn upstream_worktree_baselines(world: &mut World) -> Result<(), String> {
+    super::storage_cases::start_fixture_engine(world)?;
     world.write_config("schema = 2\n")?;
     world.write_owned("source.txt", "upstream baseline\n")?;
     world.git(&["add", "."])?;
@@ -158,6 +159,15 @@ pub(super) fn upstream_worktree_baselines(world: &mut World) -> Result<(), Strin
 
     let inventory = scanned(world, &repository, "upstream-published")?;
     let published = row(&inventory, "published-upstream")?;
+    let (refreshed, owned) =
+        super::storage_cases::refreshed_target(world, published, "revalidate-published-upstream")?;
+    ensure!(
+        refreshed["state"] == "completed"
+            && owned["deletable"] == false
+            && owned["ownership"] != "cleanup_owned",
+        "target refresh granted disposal ownership or rejected a published upstream: {}",
+        bounded_json(&refreshed)
+    );
     let published_reasons = reasons(published);
     ensure!(
         !published_reasons.contains(&json!("git_baseline_unverified"))
@@ -180,6 +190,15 @@ pub(super) fn upstream_worktree_baselines(world: &mut World) -> Result<(), Strin
         "dirty upstream worktree was not blocked: {}",
         bounded_json(dirty)
     );
+    let (refresh, after) =
+        super::storage_cases::refreshed_target(world, dirty, "revalidate-upstream-dirty")?;
+    ensure!(
+        refresh["state"] == "failed"
+            && refresh["error_code"] == "dirty_worktree"
+            && after["verified_at_ms"].is_null(),
+        "unsafe upstream was revalidated: {}",
+        bounded_json(&refresh)
+    );
     git_in(world, &candidate, &["add", "dirty.txt"])?;
     git_in(
         world,
@@ -201,6 +220,15 @@ pub(super) fn upstream_worktree_baselines(world: &mut World) -> Result<(), Strin
         "unpublished upstream commit was labelled safe: {}",
         bounded_json(unique)
     );
+    let (refresh, after) =
+        super::storage_cases::refreshed_target(world, unique, "revalidate-upstream-unique")?;
+    ensure!(
+        refresh["state"] == "failed"
+            && refresh["error_code"] == "unique_worktree_commits"
+            && after["verified_at_ms"].is_null(),
+        "unsafe upstream was revalidated: {}",
+        bounded_json(&refresh)
+    );
 
     git_in(
         world,
@@ -218,6 +246,15 @@ pub(super) fn upstream_worktree_baselines(world: &mut World) -> Result<(), Strin
         reasons(deleted).contains(&json!("git_baseline_unverified")),
         "deleted upstream ref was labelled safe: {}",
         bounded_json(deleted)
+    );
+    let (refresh, after) =
+        super::storage_cases::refreshed_target(world, deleted, "revalidate-upstream-deleted")?;
+    ensure!(
+        refresh["state"] == "failed"
+            && refresh["error_code"] == "git_baseline_unverified"
+            && after["verified_at_ms"].is_null(),
+        "unsafe upstream was revalidated: {}",
+        bounded_json(&refresh)
     );
 
     git_in(
@@ -241,6 +278,18 @@ pub(super) fn upstream_worktree_baselines(world: &mut World) -> Result<(), Strin
         "unavailable upstream ref was labelled safe: {}",
         bounded_json(unavailable)
     );
+    let (refresh, after) = super::storage_cases::refreshed_target(
+        world,
+        unavailable,
+        "revalidate-upstream-unavailable",
+    )?;
+    ensure!(
+        refresh["state"] == "failed"
+            && refresh["error_code"] == "git_baseline_unverified"
+            && after["verified_at_ms"].is_null(),
+        "unsafe upstream was revalidated: {}",
+        bounded_json(&refresh)
+    );
 
     git_in(
         world,
@@ -253,6 +302,18 @@ pub(super) fn upstream_worktree_baselines(world: &mut World) -> Result<(), Strin
         reasons(local_only).contains(&json!("git_baseline_unverified")),
         "local-only upstream was treated as a remote baseline: {}",
         bounded_json(local_only)
+    );
+    let (refresh, after) = super::storage_cases::refreshed_target(
+        world,
+        local_only,
+        "revalidate-upstream-local_only",
+    )?;
+    ensure!(
+        refresh["state"] == "failed"
+            && refresh["error_code"] == "git_baseline_unverified"
+            && after["verified_at_ms"].is_null(),
+        "unsafe upstream was revalidated: {}",
+        bounded_json(&refresh)
     );
 
     git_in(
@@ -270,6 +331,15 @@ pub(super) fn upstream_worktree_baselines(world: &mut World) -> Result<(), Strin
         reasons(malformed).contains(&json!("git_baseline_unverified")),
         "unconfigured upstream remote was treated as a published baseline: {}",
         bounded_json(malformed)
+    );
+    let (refresh, after) =
+        super::storage_cases::refreshed_target(world, malformed, "revalidate-upstream-malformed")?;
+    ensure!(
+        refresh["state"] == "failed"
+            && refresh["error_code"] == "git_baseline_unverified"
+            && after["verified_at_ms"].is_null(),
+        "unsafe upstream was revalidated: {}",
+        bounded_json(&refresh)
     );
     Ok(())
 }

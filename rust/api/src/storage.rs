@@ -220,6 +220,14 @@ pub struct Scan {
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+pub struct Revalidate {
+    pub artifact_id: String,
+    pub expected_revision: u64,
+    pub idempotency_key: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct PlanRequest {
     pub artifact_ids: Vec<String>,
     #[serde(default)]
