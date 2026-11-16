@@ -2510,6 +2510,258 @@
         "routes": [
           {
             "dispatch": "protocol",
+            "route": "call storage.revalidate"
+          }
+        ]
+      },
+      "description": "Refresh one existing source worktree without granting ownership or deleting data.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "artifact_id": {
+            "type": "string"
+          },
+          "expected_revision": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "idempotency_key": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "artifact_id",
+          "expected_revision",
+          "idempotency_key"
+        ],
+        "title": "Revalidate",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "artifact_id": {
+                "type": "string"
+              },
+              "expected_revision": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "idempotency_key": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "artifact_id",
+              "expected_revision",
+              "idempotency_key"
+            ],
+            "title": "Revalidate",
+            "type": "object"
+          },
+          "name": "storage_revalidate",
+          "transform": "identity"
+        }
+      ],
+      "name": "storage.revalidate",
+      "outputSchema": {
+        "$defs": {
+          "ItemReceipt": {
+            "additionalProperties": false,
+            "properties": {
+              "artifact_id": {
+                "type": "string"
+              },
+              "code": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "measured_bytes_before": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "removed_at_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "space_change": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/SpaceChange"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "status": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "artifact_id",
+              "status"
+            ],
+            "type": "object"
+          },
+          "JobState": {
+            "enum": [
+              "queued",
+              "running",
+              "cancelling",
+              "cancelled",
+              "completed",
+              "partial",
+              "failed"
+            ],
+            "type": "string"
+          },
+          "SpaceChange": {
+            "additionalProperties": false,
+            "properties": {
+              "available_after": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "available_before": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "filesystem_id": {
+                "type": "string"
+              },
+              "measured_at_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "filesystem_id",
+              "available_before",
+              "available_after",
+              "measured_at_ms"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "actor": {
+            "type": "string"
+          },
+          "completed_at_ms": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "created_at_ms": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "error_code": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "job_id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "plan_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "receipts": {
+            "items": {
+              "$ref": "#/$defs/ItemReceipt"
+            },
+            "type": "array"
+          },
+          "reclaimed_bytes": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "started_at_ms": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "state": {
+            "$ref": "#/$defs/JobState"
+          },
+          "unmeasured_items": {
+            "default": 0,
+            "description": "Items whose removal was verified but whose space change was unavailable.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "job_id",
+          "kind",
+          "state",
+          "created_at_ms",
+          "actor",
+          "receipts",
+          "reclaimed_bytes"
+        ],
+        "title": "Job",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "append",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "server"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
             "route": "call storage.register"
           }
         ]
@@ -4456,7 +4708,7 @@
           }
         ]
       },
-      "description": "Read cleanup progress and exact artifact receipts.",
+      "description": "Read storage progress and exact artifact receipts.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "additionalProperties": false,
@@ -43285,6 +43537,16 @@
               "has_gaps": {
                 "type": "boolean"
               },
+              "loading": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/UsageLoading"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
               "snapshot": {
                 "anyOf": [
                   {
@@ -43340,6 +43602,46 @@
               "unavailable_reasons",
               "database_schemas",
               "taxonomy_versions"
+            ],
+            "type": "object"
+          },
+          "UsageLoading": {
+            "additionalProperties": false,
+            "description": "Bounded progress metadata for an owned usage-source read. An estimate is\nabsent until comparable completed reads exist; it is never inferred from\nthe source deadline or publication backlog.",
+            "properties": {
+              "elapsed_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "estimate_basis": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "estimate_samples": {
+                "default": 0,
+                "format": "uint8",
+                "maximum": 255,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "estimated_remaining_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "state": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "state",
+              "elapsed_ms"
             ],
             "type": "object"
           },
@@ -45259,6 +45561,16 @@
               "has_gaps": {
                 "type": "boolean"
               },
+              "loading": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/UsageLoading"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
               "snapshot": {
                 "anyOf": [
                   {
@@ -45314,6 +45626,46 @@
               "unavailable_reasons",
               "database_schemas",
               "taxonomy_versions"
+            ],
+            "type": "object"
+          },
+          "UsageLoading": {
+            "additionalProperties": false,
+            "description": "Bounded progress metadata for an owned usage-source read. An estimate is\nabsent until comparable completed reads exist; it is never inferred from\nthe source deadline or publication backlog.",
+            "properties": {
+              "elapsed_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "estimate_basis": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "estimate_samples": {
+                "default": 0,
+                "format": "uint8",
+                "maximum": 255,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "estimated_remaining_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "state": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "state",
+              "elapsed_ms"
             ],
             "type": "object"
           },
@@ -47484,6 +47836,16 @@
               "has_gaps": {
                 "type": "boolean"
               },
+              "loading": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/UsageLoading"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
               "snapshot": {
                 "anyOf": [
                   {
@@ -47539,6 +47901,46 @@
               "unavailable_reasons",
               "database_schemas",
               "taxonomy_versions"
+            ],
+            "type": "object"
+          },
+          "UsageLoading": {
+            "additionalProperties": false,
+            "description": "Bounded progress metadata for an owned usage-source read. An estimate is\nabsent until comparable completed reads exist; it is never inferred from\nthe source deadline or publication backlog.",
+            "properties": {
+              "elapsed_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "estimate_basis": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "estimate_samples": {
+                "default": 0,
+                "format": "uint8",
+                "maximum": 255,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "estimated_remaining_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "state": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "state",
+              "elapsed_ms"
             ],
             "type": "object"
           },
@@ -51674,6 +52076,16 @@
               "has_gaps": {
                 "type": "boolean"
               },
+              "loading": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/UsageLoading"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
               "snapshot": {
                 "anyOf": [
                   {
@@ -51729,6 +52141,46 @@
               "unavailable_reasons",
               "database_schemas",
               "taxonomy_versions"
+            ],
+            "type": "object"
+          },
+          "UsageLoading": {
+            "additionalProperties": false,
+            "description": "Bounded progress metadata for an owned usage-source read. An estimate is\nabsent until comparable completed reads exist; it is never inferred from\nthe source deadline or publication backlog.",
+            "properties": {
+              "elapsed_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "estimate_basis": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "estimate_samples": {
+                "default": 0,
+                "format": "uint8",
+                "maximum": 255,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "estimated_remaining_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "state": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "state",
+              "elapsed_ms"
             ],
             "type": "object"
           },
@@ -52485,6 +52937,16 @@
               "has_gaps": {
                 "type": "boolean"
               },
+              "loading": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/UsageLoading"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
               "snapshot": {
                 "anyOf": [
                   {
@@ -52540,6 +53002,46 @@
               "unavailable_reasons",
               "database_schemas",
               "taxonomy_versions"
+            ],
+            "type": "object"
+          },
+          "UsageLoading": {
+            "additionalProperties": false,
+            "description": "Bounded progress metadata for an owned usage-source read. An estimate is\nabsent until comparable completed reads exist; it is never inferred from\nthe source deadline or publication backlog.",
+            "properties": {
+              "elapsed_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "estimate_basis": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "estimate_samples": {
+                "default": 0,
+                "format": "uint8",
+                "maximum": 255,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "estimated_remaining_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "state": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "state",
+              "elapsed_ms"
             ],
             "type": "object"
           },

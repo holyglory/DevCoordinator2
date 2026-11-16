@@ -33,6 +33,8 @@ struct ScanJob {
     service: StorageService,
     id: String,
     cursor: std::sync::Mutex<Option<ScanCursor>>,
+    revalidation: bool,
+    target_cursor: std::sync::Mutex<Option<super::revalidate::RevalidationCursor>>,
     terminal_error: std::sync::Mutex<Option<ProtocolError>>,
 }
 
@@ -47,13 +49,19 @@ pub(super) fn scan_job_for_test(
         service,
         id,
         cursor: std::sync::Mutex::new(cursor),
+        revalidation: false,
+        target_cursor: std::sync::Mutex::new(None),
         terminal_error: std::sync::Mutex::new(None),
     })
 }
 
 impl crate::maintenance::Job for ScanJob {
     fn name(&self) -> &'static str {
-        "storage_discovery"
+        if self.revalidation {
+            "storage_revalidation"
+        } else {
+            "storage_discovery"
+        }
     }
     fn key(&self) -> String {
         format!("storage:{}", self.id)
@@ -77,14 +85,21 @@ impl crate::maintenance::Job for ScanJob {
             .cursor
             .lock()
             .unwrap_or_else(|poison| poison.into_inner());
-        let result = self.service.execute_scan_step(
-            &self.id,
-            &mut cursor,
-            super::native::DiscoveryBudget {
-                entries: 256,
-                elapsed: budget.remaining().min(Duration::from_millis(25)),
-            },
-        );
+        let native_budget = super::native::DiscoveryBudget {
+            entries: 256,
+            elapsed: budget.remaining().min(Duration::from_millis(25)),
+        };
+        let result = if self.revalidation {
+            let mut target = self
+                .target_cursor
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner());
+            self.service
+                .execute_revalidate_step(&self.id, &mut target, native_budget)
+        } else {
+            self.service
+                .execute_scan_step(&self.id, &mut cursor, native_budget)
+        };
         if let Some(state) = cursor.as_ref() {
             budget.consume(state.last_rows, state.last_bytes);
         }
@@ -731,7 +746,7 @@ impl StorageService {
                 job = current;
                 let service = self.clone();
                 let id = job.job_id.clone();
-                let result = if job.kind == "scan" {
+                let result = if job.kind == "scan" || job.kind == "revalidate" {
                     let scheduler = self
                         .maintenance_scheduler
                         .lock()
@@ -744,6 +759,8 @@ impl StorageService {
                                 service,
                                 id,
                                 cursor: std::sync::Mutex::new(None),
+                                revalidation: job.kind == "revalidate",
+                                target_cursor: std::sync::Mutex::new(None),
                                 terminal_error: std::sync::Mutex::new(None),
                             });
                             let mut continuation = None;
@@ -832,7 +849,9 @@ impl StorageService {
                         .with_detail(error.to_string())
                     })
                 };
-                if !(matches!(result, Ok(Ok(()))) || job.kind == "scan" && *shutdown.borrow()) {
+                if !(matches!(result, Ok(Ok(())))
+                    || matches!(job.kind.as_str(), "scan" | "revalidate") && *shutdown.borrow())
+                {
                     let failed_job = job.clone();
                     let _ = self
                         .blocking(move |service| {
@@ -847,7 +866,32 @@ impl StorageService {
                                 Ok(Err(e)) => e.message,
                                 _ => "storage_worker_interrupted".into(),
                             });
-                            service.finish(&latest.job_id, latest.state, latest.error_code)
+                            if latest.kind == "revalidate" {
+                                let value = service
+                                    .database
+                                    .read(|connection| {
+                                        Ok(connection.query_row(
+                                            "SELECT request_json FROM storage_jobs WHERE job_id=$1",
+                                            [&latest.job_id],
+                                            |row| row.get::<_, String>(0),
+                                        )?)
+                                    })
+                                    .map_err(db_error)?;
+                                let request: super::revalidate::Request = parse(&value)?;
+                                service.commit_revalidation(
+                                    &latest.job_id,
+                                    &request.bound,
+                                    Err(ProtocolError::new(
+                                        devcoordinator2_api::ErrorCode::StorageUnavailable,
+                                        latest
+                                            .error_code
+                                            .as_deref()
+                                            .unwrap_or("storage_worker_interrupted"),
+                                    )),
+                                )
+                            } else {
+                                service.finish(&latest.job_id, latest.state, latest.error_code)
+                            }
                         })
                         .await;
                 }
@@ -877,6 +921,14 @@ impl StorageService {
             })
             .map_err(db_error)?;
         match job.kind.as_str() {
+            "revalidate" => {
+                let mut cursor = None;
+                while !self.execute_revalidate_step(
+                    id,
+                    &mut cursor,
+                    super::native::DiscoveryBudget::default(),
+                )? {}
+            }
             "scan" => {
                 let mut cursor = None;
                 while !self.execute_scan_step(
@@ -1357,6 +1409,32 @@ impl StorageService {
                         job.receipts.push(receipt);
                     }
                 }
+                if cancelled && job.kind == "revalidate" && job.receipts.is_empty() {
+                    let value = c.query_row(
+                        "SELECT request_json FROM storage_jobs WHERE job_id=$1",
+                        [&id],
+                        |row| row.get::<_, String>(0),
+                    )?;
+                    let request: super::revalidate::Request =
+                        parse(&value).map_err(DatabaseError::Domain)?;
+                    let receipt = api::ItemReceipt {
+                        artifact_id: request.input.artifact_id,
+                        status: "cancelled".into(),
+                        code: Some("revalidation_cancelled".into()),
+                        measured_bytes_before: None,
+                        removed_at_ms: None,
+                        space_change: None,
+                    };
+                    c.execute(
+                        "INSERT INTO storage_item_receipts VALUES($1,$2,0,$3)",
+                        crate::database::params![
+                            id,
+                            receipt.artifact_id,
+                            json(&receipt).map_err(DatabaseError::Domain)?
+                        ],
+                    )?;
+                    job.receipts.push(receipt);
+                }
                 c.execute(
                     "UPDATE storage_jobs SET state=$1,job_json=$2 WHERE job_id=$3",
                     crate::database::params![
@@ -1388,7 +1466,7 @@ impl StorageService {
         Ok(())
     }
 
-    fn publish(&self, job: &api::Job, event: &str) {
+    pub(super) fn publish(&self, job: &api::Job, event: &str) {
         let now = self
             .clock
             .now_utc()

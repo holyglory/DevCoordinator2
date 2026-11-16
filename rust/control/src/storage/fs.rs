@@ -1,5 +1,5 @@
 //! Filesystem cleanup is Linux-native; other clients keep the typed interface.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Measurement {
     pub device: u64,
     pub inode: u64,

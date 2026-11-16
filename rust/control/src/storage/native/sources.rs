@@ -4,7 +4,7 @@ use super::{
 };
 use crate::database::OptionalExtension;
 use crate::storage::{
-    blocked, db_error, fs, hash, invalid,
+    blocked, db_error, fs, hash, invalid, json,
     model::{Context, Discovery, IgnoredReview, IgnoredReviewFile, Locator, Record},
     unavailable,
 };
@@ -691,6 +691,21 @@ impl HostBackend {
         if !ignored.is_empty() && record.ignored_review.is_none() {
             return Err(blocked("unreviewed_ignored_files"));
         }
+        self.worktree_baseline(path, main, context)?;
+        if processes_reference(&[path.into()])? {
+            return Err(blocked("active_worktree"));
+        }
+        Ok(())
+    }
+
+    /// Exact remote proof plus the local source/configuration that selected it.
+    /// Revalidation compares this before and after its bounded filesystem walk.
+    pub(super) fn worktree_baseline(
+        &self,
+        path: &Path,
+        main: &Path,
+        context: &Context,
+    ) -> Result<String, ProtocolError> {
         let head = String::from_utf8(git_bytes(path, &["rev-parse", "HEAD"], context)?)
             .map_err(|_| blocked("git_baseline_unverified"))?;
         let branch = String::from_utf8(git_bytes(
@@ -732,6 +747,11 @@ impl HostBackend {
                 Some((remote.to_owned(), merge.to_owned()))
             }
         };
+        let remote_name = upstream
+            .as_ref()
+            .map(|(name, _)| name.as_str())
+            .unwrap_or("origin");
+        let remote_url = git_bytes(path, &["remote", "get-url", "--", remote_name], context)?;
         let remote = if let Some((remote_name, remote_ref)) = upstream.as_ref() {
             git_bytes(
                 path,
@@ -754,6 +774,9 @@ impl HostBackend {
         {
             return Err(blocked("git_baseline_unverified"));
         }
+        if upstream.is_none() && (fields.next() != Some("HEAD") || fields.next().is_some()) {
+            return Err(blocked("git_baseline_unverified"));
+        }
         git_bytes(main, &["cat-file", "-e", remote_head], context)?;
         git_bytes(
             main,
@@ -761,10 +784,9 @@ impl HostBackend {
             context,
         )
         .map_err(|_| blocked("unique_worktree_commits"))?;
-        if processes_reference(&[path.into()])? {
-            return Err(blocked("active_worktree"));
-        }
-        Ok(())
+        Ok(hash(
+            json(&(head, branch, upstream, remote_url, remote))?.as_bytes(),
+        ))
     }
 
     pub(super) fn observe_backup(
