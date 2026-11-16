@@ -43339,8 +43339,7 @@
                 ]
               },
               "cached_input_tokens": {
-                "format": "uint64",
-                "minimum": 0,
+                "format": "int64",
                 "type": [
                   "integer",
                   "null"
@@ -43374,8 +43373,7 @@
               },
               "input_tokens": {
                 "description": "Provider-reported token components used by the cost/detail popover.\nUnavailable components remain null; they are never inferred as zero.",
-                "format": "uint64",
-                "minimum": 0,
+                "format": "int64",
                 "type": [
                   "integer",
                   "null"
@@ -43396,14 +43394,16 @@
                 "type": "array"
               },
               "model_requests": {
-                "default": 0,
+                "default": null,
                 "format": "uint64",
                 "minimum": 0,
-                "type": "integer"
+                "type": [
+                  "integer",
+                  "null"
+                ]
               },
               "output_tokens": {
-                "format": "uint64",
-                "minimum": 0,
+                "format": "int64",
                 "type": [
                   "integer",
                   "null"
@@ -43417,11 +43417,23 @@
                   "null"
                 ]
               },
-              "priced_requests": {
-                "default": 0,
+              "priced_observations": {
+                "default": null,
                 "format": "uint64",
                 "minimum": 0,
-                "type": "integer"
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "priced_requests": {
+                "default": null,
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
               },
               "processing_tier": {
                 "default": "",
@@ -43440,8 +43452,7 @@
                 "type": "array"
               },
               "reasoning_tokens": {
-                "format": "uint64",
-                "minimum": 0,
+                "format": "int64",
                 "type": [
                   "integer",
                   "null"
@@ -43459,6 +43470,14 @@
                 "type": "object"
               },
               "uncached_input_tokens": {
+                "format": "int64",
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "unknown_observations": {
+                "default": null,
                 "format": "uint64",
                 "minimum": 0,
                 "type": [
@@ -43466,17 +43485,14 @@
                   "null"
                 ]
               },
-              "unknown_observations": {
-                "default": 0,
-                "format": "uint64",
-                "minimum": 0,
-                "type": "integer"
-              },
               "unknown_requests": {
-                "default": 0,
+                "default": null,
                 "format": "uint64",
                 "minimum": 0,
-                "type": "integer"
+                "type": [
+                  "integer",
+                  "null"
+                ]
               },
               "unknown_tokens": {
                 "default": 0,
@@ -43862,8 +43878,7 @@
             "additionalProperties": false,
             "properties": {
               "cached_input_tokens": {
-                "format": "uint64",
-                "minimum": 0,
+                "format": "int64",
                 "type": [
                   "integer",
                   "null"
@@ -43873,8 +43888,7 @@
                 "$ref": "#/$defs/UsageCost"
               },
               "input_tokens": {
-                "format": "uint64",
-                "minimum": 0,
+                "format": "int64",
                 "type": [
                   "integer",
                   "null"
@@ -43897,16 +43911,14 @@
                 ]
               },
               "output_tokens": {
-                "format": "uint64",
-                "minimum": 0,
+                "format": "int64",
                 "type": [
                   "integer",
                   "null"
                 ]
               },
               "reasoning_tokens": {
-                "format": "uint64",
-                "minimum": 0,
+                "format": "int64",
                 "type": [
                   "integer",
                   "null"
@@ -45367,8 +45379,7 @@
                 ]
               },
               "cached_input_tokens": {
-                "format": "uint64",
-                "minimum": 0,
+                "format": "int64",
                 "type": [
                   "integer",
                   "null"
@@ -45402,8 +45413,7 @@
               },
               "input_tokens": {
                 "description": "Provider-reported token components used by the cost/detail popover.\nUnavailable components remain null; they are never inferred as zero.",
-                "format": "uint64",
-                "minimum": 0,
+                "format": "int64",
                 "type": [
                   "integer",
                   "null"
@@ -45424,14 +45434,16 @@
                 "type": "array"
               },
               "model_requests": {
-                "default": 0,
+                "default": null,
                 "format": "uint64",
                 "minimum": 0,
-                "type": "integer"
+                "type": [
+                  "integer",
+                  "null"
+                ]
               },
               "output_tokens": {
-                "format": "uint64",
-                "minimum": 0,
+                "format": "int64",
                 "type": [
                   "integer",
                   "null"
@@ -45445,11 +45457,23 @@
                   "null"
                 ]
               },
-              "priced_requests": {
-                "default": 0,
+              "priced_observations": {
+                "default": null,
                 "format": "uint64",
                 "minimum": 0,
-                "type": "integer"
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "priced_requests": {
+                "default": null,
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
               },
               "processing_tier": {
                 "default": "",
@@ -45468,8 +45492,7 @@
                 "type": "array"
               },
               "reasoning_tokens": {
-                "format": "uint64",
-                "minimum": 0,
+                "format": "int64",
                 "type": [
                   "integer",
                   "null"
@@ -45487,6 +45510,14 @@
                 "type": "object"
               },
               "uncached_input_tokens": {
+                "format": "int64",
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "unknown_observations": {
+                "default": null,
                 "format": "uint64",
                 "minimum": 0,
                 "type": [
@@ -45494,17 +45525,14 @@
                   "null"
                 ]
               },
-              "unknown_observations": {
-                "default": 0,
-                "format": "uint64",
-                "minimum": 0,
-                "type": "integer"
-              },
               "unknown_requests": {
-                "default": 0,
+                "default": null,
                 "format": "uint64",
                 "minimum": 0,
-                "type": "integer"
+                "type": [
+                  "integer",
+                  "null"
+                ]
               },
               "unknown_tokens": {
                 "default": 0,
@@ -45890,8 +45918,7 @@
             "additionalProperties": false,
             "properties": {
               "cached_input_tokens": {
-                "format": "uint64",
-                "minimum": 0,
+                "format": "int64",
                 "type": [
                   "integer",
                   "null"
@@ -45901,8 +45928,7 @@
                 "$ref": "#/$defs/UsageCost"
               },
               "input_tokens": {
-                "format": "uint64",
-                "minimum": 0,
+                "format": "int64",
                 "type": [
                   "integer",
                   "null"
@@ -45925,16 +45951,14 @@
                 ]
               },
               "output_tokens": {
-                "format": "uint64",
-                "minimum": 0,
+                "format": "int64",
                 "type": [
                   "integer",
                   "null"
                 ]
               },
               "reasoning_tokens": {
-                "format": "uint64",
-                "minimum": 0,
+                "format": "int64",
                 "type": [
                   "integer",
                   "null"
@@ -47646,8 +47670,7 @@
                 ]
               },
               "cached_input_tokens": {
-                "format": "uint64",
-                "minimum": 0,
+                "format": "int64",
                 "type": [
                   "integer",
                   "null"
@@ -47681,8 +47704,7 @@
               },
               "input_tokens": {
                 "description": "Provider-reported token components used by the cost/detail popover.\nUnavailable components remain null; they are never inferred as zero.",
-                "format": "uint64",
-                "minimum": 0,
+                "format": "int64",
                 "type": [
                   "integer",
                   "null"
@@ -47703,14 +47725,16 @@
                 "type": "array"
               },
               "model_requests": {
-                "default": 0,
+                "default": null,
                 "format": "uint64",
                 "minimum": 0,
-                "type": "integer"
+                "type": [
+                  "integer",
+                  "null"
+                ]
               },
               "output_tokens": {
-                "format": "uint64",
-                "minimum": 0,
+                "format": "int64",
                 "type": [
                   "integer",
                   "null"
@@ -47724,11 +47748,23 @@
                   "null"
                 ]
               },
-              "priced_requests": {
-                "default": 0,
+              "priced_observations": {
+                "default": null,
                 "format": "uint64",
                 "minimum": 0,
-                "type": "integer"
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "priced_requests": {
+                "default": null,
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
               },
               "processing_tier": {
                 "default": "",
@@ -47747,8 +47783,7 @@
                 "type": "array"
               },
               "reasoning_tokens": {
-                "format": "uint64",
-                "minimum": 0,
+                "format": "int64",
                 "type": [
                   "integer",
                   "null"
@@ -47766,6 +47801,14 @@
                 "type": "object"
               },
               "uncached_input_tokens": {
+                "format": "int64",
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "unknown_observations": {
+                "default": null,
                 "format": "uint64",
                 "minimum": 0,
                 "type": [
@@ -47773,17 +47816,14 @@
                   "null"
                 ]
               },
-              "unknown_observations": {
-                "default": 0,
-                "format": "uint64",
-                "minimum": 0,
-                "type": "integer"
-              },
               "unknown_requests": {
-                "default": 0,
+                "default": null,
                 "format": "uint64",
                 "minimum": 0,
-                "type": "integer"
+                "type": [
+                  "integer",
+                  "null"
+                ]
               },
               "unknown_tokens": {
                 "default": 0,
@@ -48169,8 +48209,7 @@
             "additionalProperties": false,
             "properties": {
               "cached_input_tokens": {
-                "format": "uint64",
-                "minimum": 0,
+                "format": "int64",
                 "type": [
                   "integer",
                   "null"
@@ -48180,8 +48219,7 @@
                 "$ref": "#/$defs/UsageCost"
               },
               "input_tokens": {
-                "format": "uint64",
-                "minimum": 0,
+                "format": "int64",
                 "type": [
                   "integer",
                   "null"
@@ -48204,16 +48242,14 @@
                 ]
               },
               "output_tokens": {
-                "format": "uint64",
-                "minimum": 0,
+                "format": "int64",
                 "type": [
                   "integer",
                   "null"
                 ]
               },
               "reasoning_tokens": {
-                "format": "uint64",
-                "minimum": 0,
+                "format": "int64",
                 "type": [
                   "integer",
                   "null"
@@ -51890,8 +51926,7 @@
                 ]
               },
               "cached_input_tokens": {
-                "format": "uint64",
-                "minimum": 0,
+                "format": "int64",
                 "type": [
                   "integer",
                   "null"
@@ -51925,8 +51960,7 @@
               },
               "input_tokens": {
                 "description": "Provider-reported token components used by the cost/detail popover.\nUnavailable components remain null; they are never inferred as zero.",
-                "format": "uint64",
-                "minimum": 0,
+                "format": "int64",
                 "type": [
                   "integer",
                   "null"
@@ -51947,14 +51981,16 @@
                 "type": "array"
               },
               "model_requests": {
-                "default": 0,
+                "default": null,
                 "format": "uint64",
                 "minimum": 0,
-                "type": "integer"
+                "type": [
+                  "integer",
+                  "null"
+                ]
               },
               "output_tokens": {
-                "format": "uint64",
-                "minimum": 0,
+                "format": "int64",
                 "type": [
                   "integer",
                   "null"
@@ -51968,11 +52004,23 @@
                   "null"
                 ]
               },
-              "priced_requests": {
-                "default": 0,
+              "priced_observations": {
+                "default": null,
                 "format": "uint64",
                 "minimum": 0,
-                "type": "integer"
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "priced_requests": {
+                "default": null,
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
               },
               "processing_tier": {
                 "default": "",
@@ -51991,8 +52039,7 @@
                 "type": "array"
               },
               "reasoning_tokens": {
-                "format": "uint64",
-                "minimum": 0,
+                "format": "int64",
                 "type": [
                   "integer",
                   "null"
@@ -52010,6 +52057,14 @@
                 "type": "object"
               },
               "uncached_input_tokens": {
+                "format": "int64",
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "unknown_observations": {
+                "default": null,
                 "format": "uint64",
                 "minimum": 0,
                 "type": [
@@ -52017,17 +52072,14 @@
                   "null"
                 ]
               },
-              "unknown_observations": {
-                "default": 0,
-                "format": "uint64",
-                "minimum": 0,
-                "type": "integer"
-              },
               "unknown_requests": {
-                "default": 0,
+                "default": null,
                 "format": "uint64",
                 "minimum": 0,
-                "type": "integer"
+                "type": [
+                  "integer",
+                  "null"
+                ]
               },
               "unknown_tokens": {
                 "default": 0,
@@ -52751,8 +52803,7 @@
                 ]
               },
               "cached_input_tokens": {
-                "format": "uint64",
-                "minimum": 0,
+                "format": "int64",
                 "type": [
                   "integer",
                   "null"
@@ -52786,8 +52837,7 @@
               },
               "input_tokens": {
                 "description": "Provider-reported token components used by the cost/detail popover.\nUnavailable components remain null; they are never inferred as zero.",
-                "format": "uint64",
-                "minimum": 0,
+                "format": "int64",
                 "type": [
                   "integer",
                   "null"
@@ -52808,14 +52858,16 @@
                 "type": "array"
               },
               "model_requests": {
-                "default": 0,
+                "default": null,
                 "format": "uint64",
                 "minimum": 0,
-                "type": "integer"
+                "type": [
+                  "integer",
+                  "null"
+                ]
               },
               "output_tokens": {
-                "format": "uint64",
-                "minimum": 0,
+                "format": "int64",
                 "type": [
                   "integer",
                   "null"
@@ -52829,11 +52881,23 @@
                   "null"
                 ]
               },
-              "priced_requests": {
-                "default": 0,
+              "priced_observations": {
+                "default": null,
                 "format": "uint64",
                 "minimum": 0,
-                "type": "integer"
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "priced_requests": {
+                "default": null,
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
               },
               "processing_tier": {
                 "default": "",
@@ -52852,8 +52916,7 @@
                 "type": "array"
               },
               "reasoning_tokens": {
-                "format": "uint64",
-                "minimum": 0,
+                "format": "int64",
                 "type": [
                   "integer",
                   "null"
@@ -52871,6 +52934,14 @@
                 "type": "object"
               },
               "uncached_input_tokens": {
+                "format": "int64",
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "unknown_observations": {
+                "default": null,
                 "format": "uint64",
                 "minimum": 0,
                 "type": [
@@ -52878,17 +52949,14 @@
                   "null"
                 ]
               },
-              "unknown_observations": {
-                "default": 0,
-                "format": "uint64",
-                "minimum": 0,
-                "type": "integer"
-              },
               "unknown_requests": {
-                "default": 0,
+                "default": null,
                 "format": "uint64",
                 "minimum": 0,
-                "type": "integer"
+                "type": [
+                  "integer",
+                  "null"
+                ]
               },
               "unknown_tokens": {
                 "default": 0,
@@ -53417,8 +53485,7 @@
             "additionalProperties": false,
             "properties": {
               "cached_input_tokens": {
-                "format": "uint64",
-                "minimum": 0,
+                "format": "int64",
                 "type": [
                   "integer",
                   "null"
@@ -53428,8 +53495,7 @@
                 "$ref": "#/$defs/UsageCost"
               },
               "input_tokens": {
-                "format": "uint64",
-                "minimum": 0,
+                "format": "int64",
                 "type": [
                   "integer",
                   "null"
@@ -53452,16 +53518,14 @@
                 ]
               },
               "output_tokens": {
-                "format": "uint64",
-                "minimum": 0,
+                "format": "int64",
                 "type": [
                   "integer",
                   "null"
                 ]
               },
               "reasoning_tokens": {
-                "format": "uint64",
-                "minimum": 0,
+                "format": "int64",
                 "type": [
                   "integer",
                   "null"
