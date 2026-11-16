@@ -86,9 +86,9 @@ export async function verifyWorkspace({ page, daemon, check, scenario, baseUrl, 
   const initialHeading = await page.locator('#workspace-heading > span').elementHandle();
   const initialAspect = await page.locator('#workspace-aspects a[aria-current]').elementHandle();
   daemon.releaseDelayed();
-  await daemon.waitForCall('usage.repositories');
   await daemon.waitForCall('progress.repositories');
   await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  verify('repository navigation does not start unrelated token scans', !daemon.calls.some(call => call.operation === 'usage.repositories'));
   verify('unchanged optional totals retain navigation content and current aspect nodes', await initialHeading.evaluate(node => node.isConnected) && await initialAspect.evaluate(node => node.isConnected));
   const planReads = daemon.calls.filter(call => call.operation === 'plan.overview' && call.params.repository_id === repositoryId && !call.params.limit).length;
   const previousPlan = await page.locator('.plan-context').elementHandle();

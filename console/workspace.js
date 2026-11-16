@@ -379,7 +379,7 @@ window.DevCoordinatorWorkspace = (() => {
       if (data) return;
       if (loading?.signal === signal) return loading.promise;
       const read = async (operation, params) => {
-        try { return { value: await (['plan.overview', 'repository.list', 'test.list'].includes(operation) ? apiPage(operation, params || { limit: operation === 'test.list' ? 20 : 200 }) : api(operation, operation === 'usage.repositories' ? { range: '24h' } : {})) }; }
+        try { return { value: await (['plan.overview', 'repository.list', 'test.list'].includes(operation) ? apiPage(operation, params || { limit: operation === 'test.list' ? 20 : 200 }) : api(operation, {})) }; }
         catch (error) { if (signal.aborted || error.code === 'stale' || error.code === 'unauthenticated') throw error; return { error }; }
       };
       const updateStatus = (results) => {
@@ -401,11 +401,14 @@ window.DevCoordinatorWorkspace = (() => {
         rebuildCatalogue();
         updateStatus([['Plan', plans], ['Tests', tests], ['Deployments', deploymentList], ['Repositories', repositoryList]]);
         if (!canOperate()) return;
-        void Promise.all([read('usage.repositories'), read('progress.repositories')]).then(([usage, progress]) => {
+        // Navigation already has registered repository identities. Asking for
+        // every repository's token totals here would claim the usage source
+        // before the selected page can read its own measurements.
+        void read('progress.repositories').then((progress) => {
           if (signal.aborted) return;
-          data.optional = [...(usage.value?.repositories || []), ...(progress.value?.repositories || [])];
+          data.optional = progress.value?.repositories || [];
           const navigationChanged = rebuildCatalogue();
-          updateStatus([['Plan', plans], ['Tests', tests], ['Deployments', deploymentList], ['Repositories', repositoryList], ['Usage', usage], ['Progress', progress]]);
+          updateStatus([['Plan', plans], ['Tests', tests], ['Deployments', deploymentList], ['Repositories', repositoryList], ['Progress', progress]]);
           if (active && navigationChanged) paint();
         }).catch(() => {});
       });
