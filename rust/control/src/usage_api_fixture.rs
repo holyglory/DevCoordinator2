@@ -165,6 +165,7 @@ pub(crate) fn headline_response(params: &Value, generated: u64) -> Value {
 pub(crate) struct Peer {
     stop: Arc<AtomicBool>,
     worker: Option<std::thread::JoinHandle<()>>,
+    children: Option<Arc<Mutex<Vec<std::thread::JoinHandle<()>>>>>,
     pub requests: Arc<Mutex<Vec<Value>>>,
     pub source: CodexUsageSource,
 }
@@ -191,6 +192,96 @@ impl Peer {
         respond: impl Fn(&Value) -> Value + Send + 'static,
     ) -> Self {
         Self::with_reply_mode(root, home, cap, false, respond)
+    }
+    pub(crate) fn with_capability_concurrent(
+        root: &Path,
+        home: &Path,
+        cap: Option<Value>,
+        respond: impl Fn(&Value) -> Value + Send + Sync + 'static,
+    ) -> Self {
+        std::fs::create_dir_all(home.join("usage-v2")).unwrap();
+        std::fs::write(home.join("usage-v2/manifest.json"), "fixture-v3").unwrap();
+        let socket = root.join("usage-api.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let stop = Arc::new(AtomicBool::new(false));
+        let ending = stop.clone();
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let children = Arc::new(Mutex::new(Vec::new()));
+        let child_handles = children.clone();
+        let observed = requests.clone();
+        let peer_home = home.to_path_buf();
+        let responder: Arc<dyn Fn(&Value) -> Value + Send + Sync> = Arc::new(respond);
+        let worker = std::thread::spawn(move || {
+            while !ending.load(Ordering::SeqCst) {
+                let stream = match listener.accept() {
+                    Ok((stream, _)) => stream,
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(Duration::from_millis(2));
+                        continue;
+                    }
+                    Err(e) => panic!("fixture accept: {e}"),
+                };
+                let cap = cap.clone();
+                let peer_home = peer_home.clone();
+                let observed = observed.clone();
+                let responder = responder.clone();
+                child_handles.lock().unwrap().push(std::thread::spawn(move || {
+                    stream
+                        .set_read_timeout(Some(Duration::from_secs(2)))
+                        .unwrap();
+                    let mut ws = tungstenite::accept(stream).unwrap();
+                    let init: Value =
+                        serde_json::from_str(ws.read().unwrap().to_text().unwrap()).unwrap();
+                    assert_eq!(init["method"], "initialize");
+                    let mut result = json!({"codexHome":peer_home});
+                    if let Some(cap) = &cap {
+                        result["localUsageAccounting"] = cap.clone();
+                    }
+                    ws.send(Message::Text(
+                        json!({"id":init["id"],"result":result}).to_string().into(),
+                    ))
+                    .unwrap();
+                    if ws.read().is_err() {
+                        return;
+                    }
+                    let Ok(request) = ws.read() else { return };
+                    let request: Value = serde_json::from_str(request.to_text().unwrap()).unwrap();
+                    observed.lock().unwrap().push(request.clone());
+                    let identity = request["method"] == "localUsage/repositoryIdentity";
+                    let response = if identity {
+                        assert_eq!(request["params"]["contractVersion"], 1);
+                        assert!(PathBuf::from(request["params"]["path"].as_str().unwrap()).is_absolute());
+                        json!({"contractVersion":1,"source":"usage-v2","repositoryId":KEY,"formatVersion":3})
+                    } else {
+                        assert_eq!(request["method"], "localUsage/summary");
+                        assert_eq!(request["params"]["contractVersion"], 1);
+                        if request["params"]["includeReview"] != true {
+                            assert_eq!(request["params"]["includeReview"], false);
+                            assert_eq!(
+                                cap.as_ref().and_then(|cap| cap.get("supportsTokenHeadlines")),
+                                Some(&json!(true))
+                            );
+                        }
+                        responder(&request["params"])
+                    };
+                    let reply = json!({"id":request["id"],"result":response});
+                    let _ = ws.send(Message::Text(reply.to_string().into()));
+                }));
+            }
+        });
+        Self {
+            stop,
+            worker: Some(worker),
+            children: Some(children),
+            requests,
+            source: CodexUsageSource {
+                uid: rustix::process::getuid().as_raw(),
+                codex_home: home.to_path_buf(),
+                api_socket: Some(socket),
+                executable: "/must-not-execute-retired-cli".into(),
+            },
+        }
     }
     fn with_reply_mode(
         root: &Path,
@@ -273,6 +364,7 @@ impl Peer {
         Self {
             stop,
             worker: Some(worker),
+            children: None,
             requests,
             source: CodexUsageSource {
                 uid: rustix::process::getuid().as_raw(),
@@ -288,6 +380,11 @@ impl Drop for Peer {
         self.stop.store(true, Ordering::SeqCst);
         if let Some(worker) = self.worker.take() {
             worker.join().unwrap();
+        }
+        if let Some(children) = self.children.take() {
+            for child in children.lock().unwrap().drain(..) {
+                child.join().unwrap();
+            }
         }
     }
 }

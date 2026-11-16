@@ -89,6 +89,18 @@ struct State {
     inflight: HashMap<String, Flight>,
     cold_waiters: HashMap<String, ColdWaiter>,
     profiles: HashMap<String, ProfileHistory>,
+    headline_capabilities: HashMap<PathBuf, HeadlineCapability>,
+}
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct SocketIdentity {
+    device: u64,
+    inode: u64,
+    uid: u32,
+}
+#[derive(Clone, Copy)]
+struct HeadlineCapability {
+    identity: SocketIdentity,
+    supports: bool,
 }
 struct Flight {
     source: PathBuf,
@@ -180,6 +192,29 @@ impl State {
         let samples = u8::try_from(values.len()).unwrap_or(u8::MAX);
         (values.get(values.len() / 2).copied().unwrap_or(0), samples)
     }
+
+    fn supports_headlines(
+        &mut self,
+        path: &Path,
+        identity: Option<SocketIdentity>,
+    ) -> Option<bool> {
+        let capability = self.headline_capabilities.get(path).copied()?;
+        if identity == Some(capability.identity) {
+            Some(capability.supports)
+        } else {
+            self.headline_capabilities.remove(path);
+            None
+        }
+    }
+}
+
+fn socket_identity(path: &Path) -> Option<SocketIdentity> {
+    let metadata = path.metadata().ok()?;
+    Some(SocketIdentity {
+        device: metadata.dev(),
+        inode: metadata.ino(),
+        uid: metadata.uid(),
+    })
 }
 
 struct Entry {
@@ -946,6 +981,7 @@ impl CollectorApi {
             .len()
             .saturating_add(key.len())
             .saturating_add(source.codex_home.as_os_str().len());
+        let source_identity = socket_identity(path);
         let (guard, changed) = &*self.0;
         let mut state = guard.lock().map_err(|_| "api_busy")?;
         let mut waited_for_source = false;
@@ -972,7 +1008,17 @@ impl CollectorApi {
                 return SummaryRead::cached_or_error(saved, reason);
             }
             if !state.inflight.contains_key(&key) {
-                if state.inflight.values().any(|flight| &flight.source == path) {
+                let known_headlines = state.supports_headlines(path, source_identity);
+                let same_source = state
+                    .inflight
+                    .values()
+                    .filter(|flight| &flight.source == path)
+                    .collect::<Vec<_>>();
+                let can_share_rich = projection == QueryProjection::Headline
+                    && known_headlines == Some(true)
+                    && same_source.len() == 1
+                    && same_source[0].projection == QueryProjection::Rich;
+                if !same_source.is_empty() && !can_share_rich {
                     if let Some(saved) = saved {
                         return SummaryRead::cached_or_error(Some(saved), "api_source_busy");
                     }
@@ -1032,10 +1078,13 @@ impl CollectorApi {
                 let cache = self.clone();
                 let request_key = key.clone();
                 let source = source.clone();
+                let capability_source = source.api_socket.clone();
                 let repository = repository.map(str::to_owned);
                 let worktree_keys = worktree_keys.map(<[String]>::to_vec);
                 let workstream = workstream.map(str::to_owned);
                 let bindings = bindings.to_vec();
+                let capability_cache = cache.clone();
+                let capability_key = request_key.clone();
                 drop(state);
                 // A bounded source read may outlive this foreground request. It
                 // remains owned by this exact-query cache until completion; another
@@ -1055,6 +1104,13 @@ impl CollectorApi {
                                     start,
                                     end,
                                     projection,
+                                },
+                                move |supports| {
+                                    capability_cache.note_headline_capability(
+                                        &capability_key,
+                                        capability_source.as_deref(),
+                                        supports,
+                                    )
                                 },
                                 Instant::now() + SOURCE_READ_BUDGET,
                             )
@@ -1202,6 +1258,38 @@ impl CollectorApi {
         loading_from_state(&state, &key, &profile, Instant::now())
     }
 
+    /// Publish the negotiated capability as soon as the handshake completes.
+    /// This lets one compact read share the source with one already-running
+    /// rich read; a false or changed capability stays on the ordinary lane.
+    fn note_headline_capability(&self, key: &str, path: Option<&Path>, supports: bool) -> bool {
+        let (guard, changed) = &*self.0;
+        let mut state = guard
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let shared_rich = path.is_some_and(|path| {
+            state.inflight.iter().any(|(other_key, flight)| {
+                other_key != key
+                    && flight.source == path
+                    && flight.projection == QueryProjection::Rich
+            })
+        });
+        if let Some(path) = path
+            && let Some(identity) = socket_identity(path)
+        {
+            if !state.headline_capabilities.contains_key(path)
+                && state.headline_capabilities.len() >= MAX_CACHED
+                && let Some(evicted) = state.headline_capabilities.keys().next().cloned()
+            {
+                state.headline_capabilities.remove(&evicted);
+            }
+            state
+                .headline_capabilities
+                .insert(path.to_owned(), HeadlineCapability { identity, supports });
+        }
+        changed.notify_all();
+        shared_rich
+    }
+
     fn finish(&self, key: String, result: Result<(Summary, usize), String>) {
         let (guard, changed) = &*self.0;
         let mut state = guard
@@ -1320,6 +1408,7 @@ struct SummaryQuery<'a> {
 fn fetch(
     source: &CodexUsageSource,
     query: SummaryQuery<'_>,
+    note_capability: impl FnOnce(bool) -> bool,
     deadline: Instant,
 ) -> Result<(Summary, usize), String> {
     let SummaryQuery {
@@ -1333,6 +1422,13 @@ fn fetch(
         projection,
     } = query;
     let (mut socket, supports_headlines) = connect(source, deadline)?;
+    let rich_read_is_occupied = note_capability(supports_headlines);
+    if projection == QueryProjection::Headline && !supports_headlines && rich_read_is_occupied {
+        // A changed or false capability cannot silently turn the compact lane
+        // into a second rich query. The next ordinary retry will use the
+        // single heavy lane after the existing read completes.
+        return Err("api_contract_unsupported".into());
+    }
     let actual_projection = if projection == QueryProjection::Headline && supports_headlines {
         QueryProjection::Headline
     } else {

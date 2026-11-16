@@ -128,6 +128,12 @@ checked arithmetic and leaves an out-of-range result unavailable with a fixed
 coverage reason. Components never reconstruct the provider total or imply a
 refund or a new price; source-declared price amounts remain authoritative.
 
+When a source explicitly negotiates the token-headline projection, one compact
+read may run beside one rich read for a different exact scope. The cache keeps
+their projection and scope keys separate, and the global byte and job bounds
+still apply. A missing, false, or changed capability stays on the single rich
+read lane; it is never silently promoted into a second heavy query.
+
 Ordinary reports omit credentials, raw arguments, prompts, response bodies,
 private paths and contributing account identities. Source references used by
 the collector remain internal; human-facing source labels do not expose UIDs or

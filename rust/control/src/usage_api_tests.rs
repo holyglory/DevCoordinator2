@@ -94,6 +94,189 @@ fn cold_occupied_source_wakes_and_consumes_requested_exact_query() {
 }
 
 #[test]
+fn negotiated_headline_can_cross_repository_while_rich_read_is_occupied() {
+    use crate::usage_api_fixture::{Peer, ResponseGate, headline_response};
+    let directory = tempfile::tempdir().unwrap();
+    let gate = ResponseGate::default();
+    let response_gate = gate.clone();
+    let rich_key = KEY.to_owned();
+    let response_key = rich_key.clone();
+    let headline_key = "repo_cccccccccccccccccccccccccccccccccccccccc".to_owned();
+    let mut cap = capability();
+    cap["supportsTokenHeadlines"] = json!(true);
+    let peer = Peer::with_capability_concurrent(
+        directory.path(),
+        &directory.path().join("home"),
+        Some(cap),
+        move |params| {
+            if params["repositoryKey"].as_str() == Some(response_key.as_str())
+                && params["includeReview"] == true
+            {
+                response_gate.wait();
+                response(params, 20, 135)
+            } else {
+                headline_response(params, 20)
+            }
+        },
+    );
+    let release = gate.release_on_drop();
+    let api = CollectorApi::default();
+    assert_eq!(
+        api.summary(
+            &peer.source,
+            Some(KEY),
+            None,
+            true,
+            10,
+            20,
+            Instant::now() + Duration::from_millis(50),
+        )
+        .err()
+        .as_deref(),
+        Some("api_refresh_pending")
+    );
+    let started = Instant::now();
+    while started.elapsed() < Duration::from_secs(1)
+        && !peer.requests.lock().unwrap().iter().any(|request| {
+            request["method"] == "localUsage/summary"
+                && request["params"]["includeReview"] == true
+                && request["params"]["repositoryKey"] == rich_key
+        })
+    {
+        std::thread::yield_now();
+    }
+    assert!(
+        peer.requests.lock().unwrap().iter().any(|request| {
+            request["method"] == "localUsage/summary" && request["params"]["includeReview"] == true
+        }),
+        "the rich source read must be occupying the source before the switch"
+    );
+    let began = Instant::now();
+    let headline = api.summary_headline(
+        &peer.source,
+        Some(&headline_key),
+        None,
+        true,
+        10,
+        20,
+        Instant::now() + API_BUDGET,
+    );
+    assert!(
+        began.elapsed() < Duration::from_secs(1),
+        "a compact repository switch must not inherit the rich read latency"
+    );
+    let headline = headline.expect("negotiated compact reads have an independent bounded lane");
+    assert_eq!(
+        headline
+            .report
+            .provider_tokens
+            .iter()
+            .find(|token| token.category == "total_tokens")
+            .map(|token| token.measured_tokens),
+        Some(120)
+    );
+    release.release();
+    assert!(api.wait_until_idle(Instant::now() + Duration::from_secs(2)));
+    let summaries = peer
+        .requests
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|request| request["method"] == "localUsage/summary")
+        .cloned()
+        .collect::<Vec<_>>();
+    assert_eq!(summaries.len(), 2, "one rich and one compact read only");
+    assert_eq!(summaries[0]["params"]["includeReview"], true);
+    assert_eq!(summaries[1]["params"]["includeReview"], false);
+    assert_eq!(summaries[1]["params"]["repositoryKey"], headline_key);
+}
+
+#[test]
+fn unnegotiated_headline_stays_on_the_single_heavy_lane() {
+    use crate::usage_api_fixture::{Peer, ResponseGate};
+    let directory = tempfile::tempdir().unwrap();
+    let gate = ResponseGate::default();
+    let response_gate = gate.clone();
+    let mut cap = capability();
+    cap["supportsTokenHeadlines"] = json!(false);
+    let peer = Peer::with_capability_concurrent(
+        directory.path(),
+        &directory.path().join("home"),
+        Some(cap),
+        move |params| {
+            if params["includeReview"] == true && params["repositoryKey"] == KEY {
+                response_gate.wait();
+            }
+            response(params, 20, 135)
+        },
+    );
+    let release = gate.release_on_drop();
+    let api = CollectorApi::default();
+    assert_eq!(
+        api.summary(
+            &peer.source,
+            Some(KEY),
+            None,
+            true,
+            10,
+            20,
+            Instant::now() + Duration::from_millis(50),
+        )
+        .err()
+        .as_deref(),
+        Some("api_refresh_pending")
+    );
+    let began = Instant::now();
+    let pending = api.summary_headline(
+        &peer.source,
+        Some("repo_dddddddddddddddddddddddddddddddddddddddd"),
+        None,
+        true,
+        10,
+        20,
+        Instant::now() + API_BUDGET,
+    );
+    assert!(began.elapsed() < Duration::from_secs(1));
+    assert_eq!(pending.err().as_deref(), Some("api_source_busy"));
+    assert_eq!(
+        peer.requests
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|request| request["method"] == "localUsage/summary")
+            .count(),
+        1,
+        "an unnegotiated headline cannot launch a second rich read"
+    );
+    release.release();
+    assert!(api.wait_until_idle(Instant::now() + Duration::from_secs(2)));
+    let fallback = api
+        .summary_headline(
+            &peer.source,
+            Some("repo_dddddddddddddddddddddddddddddddddddddddd"),
+            None,
+            true,
+            10,
+            20,
+            Instant::now() + API_BUDGET,
+        )
+        .unwrap();
+    assert!(
+        fallback.review.is_some(),
+        "old producers use rich fallback after the lane clears"
+    );
+    assert_eq!(
+        peer.requests
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|request| request["method"] == "localUsage/summary")
+            .count(),
+        2
+    );
+}
+
+#[test]
 fn cold_wait_budget_does_not_delay_cached_data_or_cancel_owned_source() {
     use crate::usage_api_fixture::{Peer, ResponseGate};
     let directory = tempfile::tempdir().unwrap();
