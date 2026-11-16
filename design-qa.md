@@ -1055,3 +1055,19 @@ The existing rendered journey now passes 543 checks, including bare-URL reload, 
 These fixture captures verify loading semantics and rendered behavior, not live query latency. The bare-URL/reload acceptance must be repeated after deployment. The visual-reference question documented in the earlier recovery entry remains unresolved; no source-comparison or qualified visual-delivery pass is claimed.
 
 final result: blocked
+
+## Performance token summary loading comparison — 2026-11-16
+
+The current continuation source is the Coordinator-resolved `console-performance-loading` sketch `sa883456b1cc80992`, revision 6, image SHA-256 `c1d649763a8023f28a601bf9361b874a79f8bc36ec5efd2fe2cf2b8c0ca38b59`, a single dark Performance window at 1975×796. The rendered comparison uses the matching formal cell `cell-0172` at the same viewport and dark theme; its viewport and full-page captures are retained under `/mnt/build-storage/codex/console-usage-83-20261116/formal-complete4/screenshots/`.
+
+The source and render keep the same repository shell, Performance heading and range controls, right-aligned summary cards, Overview usage row, inline loading indicator, token breakdown strip, outcome card and review details. The source illustrates a comparable-read estimate of about two minutes; the render correctly shows `Estimated remaining: unknown` because this state has no qualifying comparable reads. Source values and repository names differ because the render uses the populated Performance fixture. These are allowed data-state differences under the selected sketch constraints.
+
+The comparison found no P0, P1 or P2 visual issue. The loading signal remains inline and does not displace the page, the unknown estimate is explicit, and the dark palette, spacing and hierarchy remain coherent. Minor legend wrapping at narrow widths is existing P3 polish and does not block the journey.
+
+Evidence:
+- Approved source: `/mnt/build-storage/codex/console-usage-83-20261116/approved-performance-loading.png`.
+- Formal receipt: `/mnt/build-storage/codex/console-usage-83-20261116/formal-complete4/formal-receipt.json`, `formal.result: passed`, 180/180 required cells.
+- Manual receipt: `/mnt/build-storage/codex/console-usage-83-20261116/formal-complete4/manual-review.json`, `manual.result: passed`, 180/180 cells reviewed.
+- Product Design audit: `/mnt/build-storage/codex/console-usage-83-20261116/product-design-audit.json`.
+
+final result: passed
