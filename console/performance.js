@@ -99,7 +99,7 @@ window.DevCoordinatorPerformance = (() => {
       const rowLabel = row => phases.get(row.activity).size > 1 && row.phase
         ? `${activityLabel(row.activity)} · ${window.DevCoordinatorI18n.t('common.phase_' + row.phase)}`
         : activityLabel(row.activity);
-      return `<section class="performance-cost-matrix"><div class="performance-section-head"><div><h2>Activity breakdown</h2><p class="muted">Provider tokens and API-equivalent estimate by activity.</p></div><small class="muted">Standard API-equivalent basis</small></div><div class="tablewrap"><table><thead><tr><th>Activity</th><th>Tokens</th><th>API-equivalent USD</th><th>Requests</th><th>Coverage</th></tr></thead><tbody>${activityRows.map(row => `<tr><td>${esc(rowLabel(row))}</td><td>${tokenDetail(rowLabel(row), { measured: row.total_tokens, exact: usage.coverage.state === 'complete' ? row.total_tokens : null }, row.cost)}</td><td><strong>${esc(costAmount(row.cost))}</strong></td><td>${integer(row.operations)}</td><td><span class="performance-status ${esc(costState(row.cost).toLowerCase())}">${esc(costState(row.cost))}</span></td></tr>`).join('')}</tbody></table></div></section>`;
+      return `<section class="performance-cost-matrix"><div class="performance-section-head"><div><h2>Activity breakdown</h2><p class="muted">Provider tokens and API-equivalent estimate by activity.</p></div><small class="muted">Standard API-equivalent basis</small></div><div class="tablewrap"><table><thead><tr><th>Activity</th><th>Tokens</th><th>API-equivalent USD</th><th>Requests</th><th>Coverage</th></tr></thead><tbody>${activityRows.map(row => `<tr><td>${esc(rowLabel(row))}</td><td>${tokenDetail(rowLabel(row), { measured: row.total_tokens, exact: usage.coverage.state === 'complete' ? row.total_tokens : null }, row.cost)}</td><td><strong>${esc(costAmount(row.cost))}</strong></td><td>${integer(row.cost?.model_requests)}</td><td><span class="performance-status ${esc(costState(row.cost).toLowerCase())}">${esc(costState(row.cost))}</span></td></tr>`).join('')}</tbody></table></div></section>`;
     }
     async function render(root, repositoryId, signal) {
       if (!identity()?.administrator) { root.innerHTML = "<h1><a class=\"destination-link\" href=\"#/performance\"><span data-i18n=\"performance.performance_442ade\">Performance</span></a></h1><p class=\"notice\"><span data-i18n=\"performance.administrator_access_is_required_to_read_perform_81e663\">Administrator access is required to read performance reviews.</span></p>"; return; }
@@ -359,7 +359,7 @@ window.DevCoordinatorPerformance = (() => {
           if (!active()) return;
           showPeriodTotal(data);
           if (!reference) {
-            if (data.usage) showUsage(!waitForRefresh && session.periodUsage?.start === start && session.periodUsage?.end === end ? session.periodUsage.usage : data.usage);
+            if (data.usage) showUsage(data.usage);
             if (session.scroll) window.scrollTo({ top: session.scroll });
           }
           if (needsRefresh(data)) scheduleRefresh('period', loadPeriod, waitForRefresh);

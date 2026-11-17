@@ -3254,7 +3254,7 @@ function continueUsageRefresh(coverages, refresh, waiting) {
   const identity = usageViewIdentity();
   const scheduled = usageRefreshTimers.get(identity);
   const controller = viewAbort;
-  const pending = coverages.some((coverage) => coverage?.snapshot?.refreshing || window.DevCoordinatorUsageLoading.pending(coverage));
+  const pending = coverages.some((coverage) => window.DevCoordinatorUsageLoading.pending(coverage));
   if (!pending || scheduled?.controller !== controller) {
     if (scheduled) window.clearTimeout(scheduled.timer);
     usageRefreshTimers.delete(identity);
