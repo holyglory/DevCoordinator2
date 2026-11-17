@@ -15,6 +15,10 @@ use std::path::PathBuf;
 use std::time::Duration;
 use tokio::sync::watch;
 
+/// Not request data: only execute_cleanup constructs a large final-hash permit.
+#[derive(Clone, Debug)]
+pub(super) struct IgnoredCleanupPermit(());
+
 /// Private discovery state is retained by the active job, never an API reply.
 pub struct ScanCursor {
     job_id: String,
@@ -1053,7 +1057,8 @@ impl StorageService {
                 {
                     return Err(conflict("artifact_changed"));
                 }
-                let context = self.context()?;
+                let mut context = self.context()?;
+                context.ignored_cleanup_permit = Some(IgnoredCleanupPermit(()));
                 if (completed_resources.contains(&record.resource_key)
                     || record
                         .ancestor_keys
@@ -1541,6 +1546,73 @@ mod tests {
         mpsc,
     };
     use tokio::sync::oneshot;
+
+    // The root storage journey verifies the real admitted cleanup. This
+    // isolated regression distinguishes full SHA verification from metadata
+    // checks even when a fixture deliberately supplies matching new metadata.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn large_ignored_hash_requires_the_cleanup_worker_capability() {
+        use super::super::model::{
+            IgnoredFileStability, IgnoredReview, IgnoredReviewFile, JobIgnoredReview,
+        };
+        use std::os::unix::fs::MetadataExt;
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("capture.bin");
+        let original = vec![42_u8; 8 * 1024 * 1024 + 1];
+        std::fs::write(&path, &original).unwrap();
+        let snapshot = || {
+            let metadata = std::fs::metadata(&path).unwrap();
+            IgnoredFileStability {
+                modified_seconds: metadata.mtime(),
+                modified_nanoseconds: metadata.mtime_nsec(),
+                changed_seconds: metadata.ctime(),
+                changed_nanoseconds: metadata.ctime_nsec(),
+            }
+        };
+        let metadata = std::fs::metadata(&path).unwrap();
+        let (device, inode) = super::super::fs::identity(root.path()).unwrap();
+        let mut review = IgnoredReview {
+            worktree_device: device,
+            worktree_inode: inode,
+            files: vec![IgnoredReviewFile {
+                path: "capture.bin".into(),
+                device: metadata.dev(),
+                inode: metadata.ino(),
+                size: metadata.len(),
+                sha256: hash(&original),
+                stability: Some(snapshot()),
+            }],
+            total_bytes: metadata.len(),
+            job: Some(JobIgnoredReview {
+                source_baseline: "fixture-source".into(),
+                verified_at_ms: 123,
+            }),
+        };
+        let mut context = Context::default();
+        assert_eq!(
+            super::super::native::validate_job_files(root.path(), &review, &context)
+                .unwrap_err()
+                .message,
+            "ignored_review_job_required"
+        );
+        context.discovering = true;
+        super::super::native::validate_job_files(root.path(), &review, &context).unwrap();
+        context.discovering = false;
+        context.ignored_cleanup_permit = Some(IgnoredCleanupPermit(()));
+        super::super::native::validate_job_files(root.path(), &review, &context).unwrap();
+        let mut changed = original;
+        changed[0] ^= 1;
+        std::fs::write(&path, changed).unwrap();
+        review.files[0].stability = Some(snapshot());
+        assert_eq!(
+            super::super::native::validate_job_files(root.path(), &review, &context)
+                .unwrap_err()
+                .message,
+            "ignored_review_file_changed"
+        );
+        assert_eq!(review.job.unwrap().verified_at_ms, 123);
+    }
 
     #[derive(Default)]
     struct ScanDocker {

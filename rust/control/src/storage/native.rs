@@ -3,6 +3,7 @@ mod discovery;
 mod docker;
 mod docker_engine;
 mod evidence;
+mod ignored_review;
 mod mounts;
 mod revalidate;
 mod sources;
@@ -19,6 +20,9 @@ use crate::{
 };
 use devcoordinator2_api::{ProtocolError, storage as api};
 pub use discovery::{DiscoveryBudget, DiscoveryCursor};
+#[cfg(all(test, target_os = "linux"))]
+pub(super) use ignored_review::validate_job_files;
+pub(super) use ignored_review::validate_job_manifest;
 pub(crate) use mounts::execute as run_mount_helper;
 pub use revalidate::ReobserveCursor;
 use std::ffi::OsString;

@@ -2534,6 +2534,307 @@ fn targeted_worktree_revalidation(
     Ok(after)
 }
 
+fn prepare_large_retained_evidence(world: &World, path: &Path) -> Result<Vec<Value>, String> {
+    let relative = ".local/test-evidence/retained-large";
+    let source = path.join(relative);
+    let retained = world.base.join("retained-large-evidence");
+    fs::create_dir_all(&source).map_err(|e| e.to_string())?;
+    fs::create_dir(&retained).map_err(|e| e.to_string())?;
+    for directory in [
+        path.join(".local"),
+        path.join(".local/test-evidence"),
+        source.clone(),
+        retained.clone(),
+    ] {
+        chown_path(
+            &directory,
+            world.harness.caller_uid,
+            world.harness.caller_gid,
+        )?;
+    }
+    let mut manifest = Vec::new();
+    // Match the original refusal's 113 files / 28,566,965 bytes, using only
+    // synthetic content and a separate retained copy outside the worktree.
+    for index in 0..113 {
+        let bytes = vec![index as u8; 252_805];
+        let name = format!("file-{index:03}.bin");
+        let file = source.join(&name);
+        fs::write(&file, &bytes).map_err(|e| e.to_string())?;
+        let copy = retained.join(&name);
+        fs::copy(&file, &copy).map_err(|e| e.to_string())?;
+        for file in [&file, &copy] {
+            chown_path(file, world.harness.caller_uid, world.harness.caller_gid)?;
+        }
+        let digest = sha256_hex(&bytes);
+        ensure!(
+            sha256_hex(&fs::read(&copy).map_err(|e| e.to_string())?) == digest,
+            "retained large evidence copy did not match"
+        );
+        manifest.push(json!({"path":format!("{relative}/{name}"),"sha256":digest}));
+    }
+    Ok(manifest)
+}
+
+fn large_retained_worktree_review(
+    world: &mut World,
+    repo: &str,
+    target: &Value,
+    path: &Path,
+    manifest: &[Value],
+) -> Result<(), String> {
+    let registration = json!({"artifact_id":target["artifact_id"],"expected_revision":target["revision"],
+        "repository_id":repo,"effect":"source_worktree","reason":"Retained exact large fixture evidence"});
+    let mut small = registration.clone();
+    small["reviewed_ignored_files"] = json!(manifest);
+    let refusal = world.call("storage.register", small.clone())?;
+    ensure!(
+        refusal["error"]["message"] == "ignored_review_size_limit",
+        "synchronous review no longer enforces the original 8-MiB ceiling: {}",
+        bounded_json(&refusal)
+    );
+    let mut many = manifest.to_vec();
+    while many.len() < 129 {
+        many.push(json!({"path":format!("extra-{}",many.len()),"sha256":"0".repeat(64)}));
+    }
+    small["reviewed_ignored_files"] = json!(many);
+    ensure!(
+        world.call("storage.register", small)?["error"]["message"] == "ignored_review_file_limit",
+        "synchronous review no longer enforces the original 128-file ceiling"
+    );
+    let mut owned = mcp(world, "storage_register", registration)?;
+    ensure!(
+        owned["deletable"] == false,
+        "unreviewed large evidence became disposable at registration"
+    );
+    let first = path.join(manifest[0]["path"].as_str().ok_or("fixture path missing")?);
+    let original = fs::read(&first).map_err(|e| e.to_string())?;
+    let barrier = world.state.join("storage-pause-revalidation-hash");
+    for (key, restart) in [
+        ("large-review-cancel-partial-hash", false),
+        ("large-review-restart-partial-hash", true),
+    ] {
+        fs::write(&barrier, key).map_err(|e| e.to_string())?;
+        let _ = fs::remove_file(barrier.with_extension("ready"));
+        let started = mcp(
+            world,
+            "storage_revalidate",
+            json!({"artifact_id":owned["artifact_id"],
+            "expected_revision":owned["revision"],"idempotency_key":key,"reviewed_ignored_files":manifest}),
+        )?;
+        let id = started["job_id"]
+            .as_str()
+            .ok_or("partial large review missing")?;
+        let deadline = Instant::now() + Duration::from_secs(60);
+        while !barrier.with_extension("ready").exists() {
+            ensure!(
+                Instant::now() < deadline,
+                "large review never reached its partial-hash boundary"
+            );
+            thread::sleep(Duration::from_millis(25));
+        }
+        let concurrent = world.call("storage.register", json!({"artifact_id":owned["artifact_id"],
+            "expected_revision":owned["revision"],"repository_id":repo,"effect":"source_worktree",
+            "reviewed_ignored_files":[],"reason":"Concurrent revocation must respect the existing job lock"}))?;
+        ensure!(
+            error_code(&concurrent) == Some("busy"),
+            "a concurrent registration replaced an in-flight review"
+        );
+        if restart {
+            world.stop_daemon(true)?;
+            let mut changed = original.clone();
+            changed[0] ^= 1;
+            fs::write(&first, changed).map_err(|e| e.to_string())?;
+            fs::remove_file(&barrier).map_err(|e| e.to_string())?;
+            world.start_daemon(None, None, None)?;
+            let result = wait_job(world, id)?;
+            ensure!(
+                result["state"] == "failed"
+                    && matches!(
+                        result["error_code"].as_str(),
+                        Some("ignored_review_digest_mismatch" | "ignored_review_file_changed")
+                    )
+                    && path.is_dir(),
+                "restarted large review reused a partial proof"
+            );
+            fs::write(&first, &original).map_err(|e| e.to_string())?;
+        } else {
+            mcp(world, "storage_job_cancel", json!({"job_id":id}))?;
+            fs::remove_file(&barrier).map_err(|e| e.to_string())?;
+            let result = wait_job(world, id)?;
+            ensure!(
+                result["state"] == "cancelled" && result["receipts"][0]["status"] == "cancelled",
+                "cancelled large review lacked its exact terminal receipt"
+            );
+        }
+        owned = mcp(
+            world,
+            "storage_artifact_get",
+            json!({"artifact_id":target["artifact_id"]}),
+        )?;
+        ensure!(
+            owned["deletable"] == false && path.is_dir(),
+            "a partial review made retained data disposable"
+        );
+    }
+    let review = |row: &Value, key: &str| -> Result<(Value, Value), String> {
+        let job = mcp(
+            world,
+            "storage_revalidate",
+            json!({"artifact_id":row["artifact_id"],
+            "expected_revision":row["revision"],"idempotency_key":key,"reviewed_ignored_files":manifest}),
+        )?;
+        let result = wait_job(
+            world,
+            job["job_id"].as_str().ok_or("large review job missing")?,
+        )?;
+        let artifact = mcp(
+            world,
+            "storage_artifact_get",
+            json!({"artifact_id":row["artifact_id"]}),
+        )?;
+        Ok((result, artifact))
+    };
+    let (job, mut reviewed) = review(&owned, "large-retained-review")?;
+    ensure!(
+        job["state"] == "completed" && reviewed["deletable"] == true && path.is_dir(),
+        "large retained evidence failed ordinary revalidation: {}",
+        bounded_json(&job)
+    );
+    let public = json!({"job":job,"artifact":reviewed}).to_string();
+    ensure!(
+        !public.contains("retained-large/file-") && !public.contains("sha256"),
+        "private review manifest leaked through public storage results"
+    );
+    let (default_job, default_review) =
+        refreshed_target(world, &reviewed, "large-default-revalidation")?;
+    ensure!(
+        default_job["state"] == "completed" && default_review["deletable"] == true,
+        "default revalidation did not repeat the existing large manifest's full hash"
+    );
+    reviewed = default_review;
+    let verified_at = reviewed["verified_at_ms"].clone();
+    for key in ["large-review-discovery-one", "large-review-discovery-two"] {
+        let inventory = scanned(world, repo, key)?;
+        reviewed = inventory["artifacts"]
+            .as_array()
+            .and_then(|rows| {
+                rows.iter()
+                    .find(|row| row["artifact_id"] == target["artifact_id"])
+            })
+            .cloned()
+            .ok_or("large worktree disappeared during discovery")?;
+        ensure!(
+            reviewed["deletable"] == true && reviewed["verified_at_ms"] == verified_at,
+            "discovery erased or renewed the completed full-hash proof: {}",
+            bounded_json(&reviewed)
+        );
+    }
+    let stale_plan = mcp(
+        world,
+        "storage_cleanup_plan",
+        json!({"artifact_ids":[reviewed["artifact_id"]],"include_persistent_data":true}),
+    )?;
+    let revoked = mcp(
+        world,
+        "storage_register",
+        json!({"artifact_id":reviewed["artifact_id"],
+        "expected_revision":reviewed["revision"],"repository_id":repo,"effect":"source_worktree",
+        "reviewed_ignored_files":[],"reason":"Revoke the large fixture review"}),
+    )?;
+    ensure!(
+        revoked["deletable"] == false && path.is_dir(),
+        "review revocation left the worktree disposable"
+    );
+    ensure!(
+        error_code(&world.call(
+            "storage.cleanup.start",
+            json!({"plan_id":stale_plan["plan_id"],
+        "idempotency_key":"large-review-revoked-plan"})
+        )?) == Some("storage_conflict"),
+        "a revoked large review's old cleanup plan was accepted"
+    );
+    let (job, refreshed) = review(&revoked, "large-review-after-revocation")?;
+    ensure!(
+        job["state"] == "completed",
+        "large review did not recover after explicit re-review"
+    );
+    let plan = mcp(
+        world,
+        "storage_cleanup_plan",
+        json!({"artifact_ids":[refreshed["artifact_id"]],"include_persistent_data":true}),
+    )?;
+    ensure!(
+        plan["ready"] == true,
+        "large reviewed worktree did not yield a ready ordinary cleanup plan"
+    );
+    let mut changed = original.clone();
+    changed[0] ^= 1;
+    fs::write(&first, &changed).map_err(|e| e.to_string())?;
+    let removal = mcp(
+        world,
+        "storage_cleanup_start",
+        json!({"plan_id":plan["plan_id"],"idempotency_key":"large-review-changed-after-plan"}),
+    )?;
+    let result = wait_job(
+        world,
+        removal["job_id"]
+            .as_str()
+            .ok_or("changed large cleanup missing")?,
+    )?;
+    ensure!(
+        result["state"] == "failed"
+            && result["receipts"][0]["code"] == "ignored_review_file_changed"
+            && path.is_dir(),
+        "changed large evidence was accepted by the deletion-time guard"
+    );
+    fs::write(&first, &original).map_err(|e| e.to_string())?;
+    let current = mcp(
+        world,
+        "storage_artifact_get",
+        json!({"artifact_id":target["artifact_id"]}),
+    )?;
+    let (job, final_review) = review(&current, "large-review-before-removal")?;
+    ensure!(
+        job["state"] == "completed",
+        "large evidence could not be re-reviewed after its change"
+    );
+    let plan = mcp(
+        world,
+        "storage_cleanup_plan",
+        json!({"artifact_ids":[final_review["artifact_id"]],"include_persistent_data":true}),
+    )?;
+    ensure!(
+        plan["ready"] == true,
+        "large retained evidence final plan was blocked"
+    );
+    let removal = mcp(
+        world,
+        "storage_cleanup_start",
+        json!({"plan_id":plan["plan_id"],"idempotency_key":"remove-large-retained-worktree"}),
+    )?;
+    let result = wait_job(
+        world,
+        removal["job_id"].as_str().ok_or("large cleanup missing")?,
+    )?;
+    ensure!(
+        result["state"] == "completed" && !path.exists(),
+        "normal large-evidence worktree removal failed: {}",
+        bounded_json(&result)
+    );
+    for file in manifest {
+        let name = Path::new(file["path"].as_str().unwrap())
+            .file_name()
+            .unwrap();
+        let bytes = fs::read(world.base.join("retained-large-evidence").join(name))
+            .map_err(|e| e.to_string())?;
+        ensure!(
+            json!(sha256_hex(&bytes)) == file["sha256"],
+            "retained evidence changed during source cleanup"
+        );
+    }
+    Ok(())
+}
+
 pub(super) fn worktrees_and_backup_floor(world: &mut World) -> Result<(), String> {
     // Own every filesystem and container fixture in a real private engine so
     // unrelated host-container churn cannot invalidate cleanup prerequisites.
@@ -2543,7 +2844,7 @@ pub(super) fn worktrees_and_backup_floor(world: &mut World) -> Result<(), String
     world.write_owned("package.json", "{\"name\":\"storage-fixture\"}\n")?;
     world.write_owned(
         ".gitignore",
-        "backups/\nnode_modules/\n.serena/\n.devcoordinator/\n.devcoordinator.toml\n",
+        "backups/\nnode_modules/\n.serena/\n.devcoordinator/\n.devcoordinator.toml\n.local/\n",
     )?;
     world.git(&["add", "."])?;
     world.git(&[
@@ -2595,6 +2896,7 @@ pub(super) fn worktrees_and_backup_floor(world: &mut World) -> Result<(), String
         "unique-worktree",
         "cache-worktree",
         "metadata-worktree",
+        "large-evidence-worktree",
     ] {
         let path = worktrees.join(name);
         fs::create_dir(&path).map_err(|e| e.to_string())?;
@@ -2768,6 +3070,7 @@ pub(super) fn worktrees_and_backup_floor(world: &mut World) -> Result<(), String
     world.write_owned("backups/invalid/data", "damaged backup")?;
     world.write_owned("backups/invalid/backup-manifest.json",json!({"lineage":"fixture-database","created_at_ms":now,"files":[{"file":"data","sha256":"0".repeat(64)}]}).to_string())?;
     data(&world.call("storage.roots.set",json!({"repository_id":repo,"expected_revision":0,"label":"Recovery generations","path":world.repo.join("backups"),"kind":"backup"}))?)?;
+    let large_manifest = prepare_large_retained_evidence(world, &trees[5])?;
     let inventory = scanned(world, &repo, "worktree-and-backup-inventory")?;
     let rows = inventory["artifacts"]
         .as_array()
@@ -2782,6 +3085,13 @@ pub(super) fn worktrees_and_backup_floor(world: &mut World) -> Result<(), String
     let dirty = row("dirty-worktree")?;
     let unique = row("unique-worktree")?;
     let ignored = row("metadata-worktree")?;
+    large_retained_worktree_review(
+        world,
+        &repo,
+        &row("large-evidence-worktree")?,
+        &trees[5],
+        &large_manifest,
+    )?;
     let cache = row("node_modules")?;
     ensure!(
         dirty["deletable"] == false && unique["deletable"] == false,

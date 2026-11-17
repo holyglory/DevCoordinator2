@@ -41,6 +41,9 @@ impl StorageService {
         caller: &Caller,
     ) -> Result<api::Job, ProtocolError> {
         text(&input.idempotency_key, 200)?;
+        if let Some(files) = &input.reviewed_ignored_files {
+            native::validate_job_manifest(files)?;
+        }
         let digest = hash(json(&input)?.as_bytes());
         let actor = caller.actor();
         let now = self.now_ms();
@@ -74,6 +77,11 @@ impl StorageService {
                 || !matches!(bound.locator, Locator::Directory { git_root: Some(_), .. })
             {
                 return Err(DatabaseError::Domain(blocked("revalidation_target_unsupported")));
+            }
+            if input.reviewed_ignored_files.is_some()
+                && (!bound.disposal_approved || bound.artifact.ownership != "cleanup_owned")
+            {
+                return Err(DatabaseError::Domain(blocked("ignored_review_requires_disposal_intent")));
             }
             let job = api::Job {
                 job_id: super::new_id("sj").map_err(DatabaseError::Domain)?, kind: "revalidate".into(),
@@ -145,7 +153,9 @@ impl StorageService {
                     job_id: id.into(),
                     bound: request.bound.clone(),
                     context: self.context()?,
-                    native: native::ReobserveCursor::default(),
+                    native: native::ReobserveCursor::with_review(
+                        request.input.reviewed_ignored_files.clone(),
+                    ),
                     _resources: resources,
                 });
             }
@@ -154,19 +164,31 @@ impl StorageService {
                 return Err(conflict("artifact_changed"));
             }
             #[cfg(feature = "root-acceptance")]
-            if state.native.awaiting_final_context()
-                && self
-                    .config
-                    .unit_prefix
-                    .starts_with("devcoordinator2-rustint-")
+            if self
+                .config
+                .unit_prefix
+                .starts_with("devcoordinator2-rustint-")
             {
-                let barrier = self.config.state_dir.join("storage-pause-revalidation");
-                if std::fs::read_to_string(&barrier).ok().as_deref()
-                    == Some(request.input.idempotency_key.as_str())
-                {
-                    std::fs::write(barrier.with_extension("ready"), id)
-                        .map_err(|_| blocked("fixture_revalidation_barrier_unavailable"))?;
-                    return Ok(None);
+                for (active, name) in [
+                    (
+                        state.native.awaiting_final_context(),
+                        "storage-pause-revalidation",
+                    ),
+                    (
+                        state.native.awaiting_ignored_hash(),
+                        "storage-pause-revalidation-hash",
+                    ),
+                ] {
+                    if active {
+                        let barrier = self.config.state_dir.join(name);
+                        if std::fs::read_to_string(&barrier).ok().as_deref()
+                            == Some(request.input.idempotency_key.as_str())
+                        {
+                            std::fs::write(barrier.with_extension("ready"), id)
+                                .map_err(|_| blocked("fixture_revalidation_barrier_unavailable"))?;
+                            return Ok(None);
+                        }
+                    }
                 }
             }
             if state.native.needs_context() {
@@ -327,6 +349,7 @@ mod tests {
             artifact_id: record.artifact.artifact_id.clone(),
             expected_revision: record.artifact.revision,
             idempotency_key: key.into(),
+            reviewed_ignored_files: None,
         }
     }
 
@@ -395,6 +418,42 @@ mod tests {
                 .discovery_requested
                 .load(std::sync::atomic::Ordering::SeqCst)
         );
+        let mut reviewed = request(&after, "review-private-manifest");
+        reviewed.reviewed_ignored_files = Some(vec![api::IgnoredFileReview {
+            path: "private-captures/image.png".into(),
+            sha256: "a".repeat(64),
+        }]);
+        let queued = service.revalidate(reviewed.clone(), &caller()).unwrap();
+        assert!(!json(&queued).unwrap().contains("private-captures"));
+        let saved: String = service
+            .database
+            .read(|db| {
+                Ok(db.query_row(
+                    "SELECT request_json FROM storage_jobs WHERE job_id=$1",
+                    [&queued.job_id],
+                    |row| row.get(0),
+                )?)
+            })
+            .unwrap();
+        let saved: Request = parse(&saved).unwrap();
+        assert_eq!(
+            saved.input.reviewed_ignored_files.unwrap()[0].path,
+            "private-captures/image.png"
+        );
+        reviewed.reviewed_ignored_files.as_mut().unwrap()[0].sha256 = "b".repeat(64);
+        assert_eq!(
+            service.revalidate(reviewed, &caller()).unwrap_err().message,
+            "idempotency_key_reused"
+        );
+        let cancelled = service
+            .cancel(
+                api::JobReference {
+                    job_id: queued.job_id,
+                },
+                &caller(),
+            )
+            .unwrap();
+        assert!(matches!(cancelled.state, api::JobState::Cancelled));
     }
 
     #[test]

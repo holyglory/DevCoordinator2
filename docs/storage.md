@@ -54,6 +54,32 @@ observation lifetimes nor cleanup-plan expiry are extended. Repeating a request
 with the same key recovers its original job even after that job changed the
 artifact revision; reusing the key for different input is rejected.
 
+Retain valuable ignored evidence before reviewing an archived worktree for
+removal. The optional `reviewed_ignored_files` manifest on `storage.register`
+keeps its synchronous limit of 128 files and 8 MiB. Each entry names an exact
+relative `path` and `sha256`; registration does not make unverified data safe.
+
+For a larger retained set, first record disposal intent without a manifest,
+then pass `reviewed_ignored_files` to `storage.revalidate`. This uses the same
+durable job and requires an already cleanup-owned, disposal-approved source
+worktree. Its separate limits are 1,024 files, 64 MiB of content and 48 KiB of
+compact encoded manifest. Hashing yields between bounded chunks through the
+existing maintenance and capacity service. Cancellation or restart discards
+partial proofs; a resumed job starts fresh. The complete Git ignored-file
+listing, source baseline, native file identities, contents and safety checks
+must agree before the job atomically saves the review. Warnings, truncation,
+changed files, forbidden paths, links and current protection remain blockers.
+
+Private file paths, hashes and metadata stay in authority records, outside
+inventory, job, event and log projections. Discovery can preserve an unchanged
+completed review but never renews its full-hash timestamp from metadata alone.
+An expired review needs another target revalidation, which repeats the full
+hash even when no replacement manifest is supplied. A normal cleanup plan and
+start are still required. Only the admitted cleanup worker can perform the
+larger deletion-time rehash, and every byte is checked again before ordinary
+non-force Git worktree removal. Re-registering an empty manifest revokes the
+previous review and invalidates existing plans.
+
 Selecting a directory also lists known nested directories affected by that
 removal. Their protection and ownership checks still apply. Aliases and nested
 data contribute to the planned space only once; each tracked identity retains

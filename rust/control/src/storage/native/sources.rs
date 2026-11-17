@@ -291,7 +291,7 @@ impl HostBackend {
         Err(blocked("required_recovery"))
     }
 
-    fn ignored_review_path_allowed(path: &Path) -> bool {
+    pub(super) fn ignored_review_path_allowed(path: &Path) -> bool {
         let components = path
             .components()
             .map(|component| match component {
@@ -346,7 +346,7 @@ impl HostBackend {
     }
 
     #[cfg(target_os = "linux")]
-    fn hash_ignored_file(
+    pub(super) fn hash_ignored_file(
         root: &Path,
         relative: &Path,
         remaining: u64,
@@ -407,6 +407,7 @@ impl HostBackend {
             inode: before.st_ino as u64,
             size,
             sha256: crate::storage::hex(&digest.finalize()),
+            stability: None,
         })
     }
 
@@ -454,6 +455,7 @@ impl HostBackend {
             worktree_inode: worktree_identity.1,
             files: reviewed,
             total_bytes: total,
+            job: None,
         })
     }
 
@@ -501,7 +503,18 @@ impl HostBackend {
         if listed != expected {
             return Err(blocked("unreviewed_ignored_files"));
         }
-        if review.total_bytes > MAX_IGNORED_REVIEW_BYTES {
+        let limit = if review.job.is_some() {
+            if review.files.len() > super::ignored_review::MAX_JOB_REVIEW_FILES {
+                return Err(blocked("ignored_review_file_limit"));
+            }
+            if !ignored.is_empty() && ignored.last() != Some(&0) {
+                return Err(blocked("ignored_review_listing_invalid"));
+            }
+            super::ignored_review::MAX_JOB_REVIEW_BYTES
+        } else {
+            MAX_IGNORED_REVIEW_BYTES
+        };
+        if review.total_bytes > limit {
             return Err(blocked("ignored_review_size_limit"));
         }
         if review
@@ -514,22 +527,26 @@ impl HostBackend {
         if listed.is_empty() && !review.files.is_empty() {
             return Err(blocked("unreviewed_ignored_files"));
         }
-        let mut remaining = MAX_IGNORED_REVIEW_BYTES;
-        let mut total = 0_u64;
-        for file in &review.files {
-            let current = Self::hash_ignored_file(path, &file.path, remaining)?;
-            remaining = remaining.saturating_sub(current.size);
-            total = total.saturating_add(current.size);
-            if current.device != file.device
-                || current.inode != file.inode
-                || current.size != file.size
-                || current.sha256 != file.sha256
-            {
+        if review.job.is_some() {
+            super::ignored_review::validate_job_files(path, review, context)?;
+        } else {
+            let mut remaining = limit;
+            let mut total = 0_u64;
+            for file in &review.files {
+                let current = Self::hash_ignored_file(path, &file.path, remaining)?;
+                if current.device != file.device
+                    || current.inode != file.inode
+                    || current.size != file.size
+                    || current.sha256 != file.sha256
+                {
+                    return Err(blocked("ignored_review_file_changed"));
+                }
+                remaining = remaining.saturating_sub(current.size);
+                total = total.saturating_add(current.size);
+            }
+            if total != review.total_bytes {
                 return Err(blocked("ignored_review_file_changed"));
             }
-        }
-        if total != review.total_bytes {
-            return Err(blocked("ignored_review_file_changed"));
         }
         if review
             .files
@@ -623,6 +640,14 @@ impl HostBackend {
         r.artifact.ownership = if recognized { "recognized" } else { "unknown" }.into();
         if let Some(review) = context.ignored_reviews.get(&r.resource_key) {
             r.ignored_review = Some(review.clone());
+            if let Some(job) = &review.job {
+                // Discovery checks current guards and metadata but cannot renew
+                // the full-hash proof. Preserve its original observation age.
+                r.artifact.verified_at_ms = r
+                    .artifact
+                    .verified_at_ms
+                    .map(|at| at.min(job.verified_at_ms));
+            }
         }
         if !recognized {
             r.blockers.push("ownership_unknown".into());
@@ -694,7 +719,15 @@ impl HostBackend {
         if !ignored.is_empty() && record.ignored_review.is_none() {
             return Err(blocked("unreviewed_ignored_files"));
         }
-        self.worktree_baseline(path, main, context)?;
+        let baseline = self.worktree_baseline(path, main, context)?;
+        if record
+            .ignored_review
+            .as_ref()
+            .and_then(|review| review.job.as_ref())
+            .is_some_and(|job| job.source_baseline != baseline)
+        {
+            return Err(blocked("ignored_review_source_changed"));
+        }
         if processes_reference(&[path.into()])? {
             return Err(blocked("active_worktree"));
         }

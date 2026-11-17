@@ -2516,6 +2516,24 @@
       },
       "description": "Refresh one existing source worktree without granting ownership or deleting data.",
       "inputSchema": {
+        "$defs": {
+          "IgnoredFileReview": {
+            "additionalProperties": false,
+            "properties": {
+              "path": {
+                "type": "string"
+              },
+              "sha256": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "path",
+              "sha256"
+            ],
+            "type": "object"
+          }
+        },
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "additionalProperties": false,
         "properties": {
@@ -2529,6 +2547,16 @@
           },
           "idempotency_key": {
             "type": "string"
+          },
+          "reviewed_ignored_files": {
+            "description": "Review retained ignored data in the admitted job, without granting disposal intent.",
+            "items": {
+              "$ref": "#/$defs/IgnoredFileReview"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
           }
         },
         "required": [
@@ -2543,6 +2571,24 @@
       "mcpTools": [
         {
           "inputSchema": {
+            "$defs": {
+              "IgnoredFileReview": {
+                "additionalProperties": false,
+                "properties": {
+                  "path": {
+                    "type": "string"
+                  },
+                  "sha256": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "path",
+                  "sha256"
+                ],
+                "type": "object"
+              }
+            },
             "$schema": "https://json-schema.org/draft/2020-12/schema",
             "additionalProperties": false,
             "properties": {
@@ -2556,6 +2602,16 @@
               },
               "idempotency_key": {
                 "type": "string"
+              },
+              "reviewed_ignored_files": {
+                "description": "Review retained ignored data in the admitted job, without granting disposal intent.",
+                "items": {
+                  "$ref": "#/$defs/IgnoredFileReview"
+                },
+                "type": [
+                  "array",
+                  "null"
+                ]
               }
             },
             "required": [

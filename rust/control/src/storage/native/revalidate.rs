@@ -1,8 +1,11 @@
 //! A target-only observation, never a partial whole-inventory discovery.
-use super::{Backend, DiscoveryBudget, HostBackend, git_bytes, git_worktree_bytes};
+use super::{
+    Backend, DiscoveryBudget, HostBackend, git_bytes, git_bytes_with_stderr, git_worktree_bytes,
+    ignored_review,
+};
 use crate::storage::{
     blocked, fs, hash, json,
-    model::{Context, Locator, Record},
+    model::{Context, IgnoredReview, Locator, Record},
 };
 use devcoordinator2_api::{ProtocolError, storage as api};
 use std::{collections::BTreeSet, path::Path};
@@ -10,12 +13,15 @@ use std::{collections::BTreeSet, path::Path};
 #[derive(Default)]
 pub struct ReobserveCursor {
     host: Option<HostReobserve>,
+    review_files: Option<Vec<api::IgnoredFileReview>>,
 }
 
 struct HostReobserve {
     context: Context,
     context_signature: String,
     baseline: String,
+    hashing: Option<ignored_review::JobReviewCursor>,
+    review: Option<IgnoredReview>,
     measurement: fs::MeasurementCursor,
     first: Option<fs::Measurement>,
     candidate: Option<Record>,
@@ -23,9 +29,27 @@ struct HostReobserve {
 }
 
 impl ReobserveCursor {
+    pub(crate) fn with_review(files: Option<Vec<api::IgnoredFileReview>>) -> Self {
+        Self {
+            host: None,
+            review_files: files,
+        }
+    }
+
     #[cfg(feature = "root-acceptance")]
     pub(crate) fn awaiting_final_context(&self) -> bool {
         self.host.as_ref().is_some_and(|state| state.phase == 3)
+    }
+
+    #[cfg(feature = "root-acceptance")]
+    pub(crate) fn awaiting_ignored_hash(&self) -> bool {
+        self.host.as_ref().is_some_and(|state| {
+            state.phase == 0
+                && state
+                    .hashing
+                    .as_ref()
+                    .is_some_and(|hashing| hashing.bytes_hashed() > 0)
+        })
     }
 
     pub(crate) fn needs_context(&self) -> bool {
@@ -192,14 +216,75 @@ impl HostBackend {
             context.docker_snapshot = Some(std::sync::Arc::new(self.container_rows()?));
             context.docker_unavailable = false;
             context.discovery_measurements.clear();
+            let baseline = self.worktree_baseline(path, main, &context)?;
+            let files = cursor.review_files.clone().or_else(|| {
+                record
+                    .ignored_review
+                    .as_ref()
+                    .filter(|review| review.job.is_some())
+                    .map(|review| {
+                        review
+                            .files
+                            .iter()
+                            .map(|file| api::IgnoredFileReview {
+                                path: file.path.to_string_lossy().into_owned(),
+                                sha256: file.sha256.clone(),
+                            })
+                            .collect()
+                    })
+            });
+            if cursor.review_files.is_none()
+                && record
+                    .ignored_review
+                    .as_ref()
+                    .and_then(|review| review.job.as_ref())
+                    .is_some_and(|job| job.source_baseline != baseline)
+            {
+                return Err(blocked("ignored_review_source_changed"));
+            }
+            let hashing = files
+                .map(|files| {
+                    if !record.disposal_approved || record.artifact.ownership != "cleanup_owned" {
+                        return Err(blocked("ignored_review_requires_disposal_intent"));
+                    }
+                    if !git_bytes(
+                        path,
+                        &["status", "--porcelain=v1", "-z", "--untracked-files=all"],
+                        &context,
+                    )?
+                    .is_empty()
+                    {
+                        return Err(blocked("dirty_worktree"));
+                    }
+                    let (ignored, stderr) = git_bytes_with_stderr(
+                        path,
+                        &[
+                            "ls-files",
+                            "--others",
+                            "--ignored",
+                            "--exclude-standard",
+                            "-z",
+                        ],
+                        &context,
+                    )?;
+                    if !stderr.is_empty() {
+                        return Err(blocked("ignored_files_unverified"));
+                    }
+                    ignored_review::check_listing(&files, &ignored)?;
+                    ignored_review::JobReviewCursor::new(path, files)
+                })
+                .transpose()?;
+            let phase = if hashing.is_some() { 0 } else { 1 };
             cursor.host = Some(HostReobserve {
                 context_signature: context_signature(&context, record)?,
-                baseline: self.worktree_baseline(path, main, &context)?,
+                baseline,
+                hashing,
+                review: record.ignored_review.clone(),
                 measurement: fs::MeasurementCursor::new(path)?,
                 context,
                 first: None,
                 candidate: None,
-                phase: 1,
+                phase,
             });
             return Ok(None);
         }
@@ -207,6 +292,23 @@ impl HostBackend {
             .host
             .as_mut()
             .expect("target observation initialized");
+        if state.phase == 0 {
+            let hashing = state.hashing.as_mut().expect("job review initialized");
+            if hashing.step(budget)? {
+                let review = state.hashing.take().expect("job review complete").finish(
+                    (*device, *inode),
+                    state.baseline.clone(),
+                    state.context.now_ms,
+                );
+                state
+                    .context
+                    .ignored_reviews
+                    .insert(record.resource_key.clone(), review.clone());
+                state.review = Some(review);
+                state.phase = 1;
+            }
+            return Ok(None);
+        }
         if state.phase == 3 {
             let mut fresh = context.clone();
             fresh.discovering = true;
@@ -265,7 +367,7 @@ impl HostBackend {
             candidate.private_aliases = record.private_aliases.clone();
             candidate.disposal_approved = record.disposal_approved;
             candidate.disposal_reason = record.disposal_reason.clone();
-            candidate.ignored_review = record.ignored_review.clone();
+            candidate.ignored_review = state.review.clone();
             candidate.owner_deployment = record.owner_deployment.clone();
             if candidate.disposal_approved {
                 candidate

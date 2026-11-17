@@ -1350,6 +1350,18 @@ mod tests {
             refresh["inputSchema"]["required"],
             serde_json::json!(["artifact_id", "expected_revision", "idempotency_key"])
         );
+        let old_input = serde_json::json!({"artifact_id":"target","expected_revision":1,"idempotency_key":"retry"});
+        let decoded: storage::Revalidate = serde_json::from_value(old_input.clone()).unwrap();
+        assert!(decoded.reviewed_ignored_files.is_none());
+        // Existing durable jobs hash the serialized input. Adding an absent
+        // optional review must not change that hash on a lost-reply retry.
+        assert_eq!(serde_json::to_value(decoded).unwrap(), old_input);
+        let reviewed: storage::Revalidate = serde_json::from_value(serde_json::json!({
+            "artifact_id":"target","expected_revision":1,"idempotency_key":"review",
+            "reviewed_ignored_files":[{"path":"evidence/capture.png","sha256":"a".repeat(64)}]
+        }))
+        .unwrap();
+        assert_eq!(reviewed.reviewed_ignored_files.unwrap().len(), 1);
         assert_eq!(
             mcp_tool("storage_revalidate").unwrap().operation.name,
             "storage.revalidate"

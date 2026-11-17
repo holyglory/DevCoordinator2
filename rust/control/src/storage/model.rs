@@ -40,6 +40,23 @@ pub struct IgnoredReviewFile {
     pub inode: u64,
     pub size: u64,
     pub sha256: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stability: Option<IgnoredFileStability>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IgnoredFileStability {
+    pub modified_seconds: i64,
+    pub modified_nanoseconds: i64,
+    pub changed_seconds: i64,
+    pub changed_nanoseconds: i64,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct JobIgnoredReview {
+    pub source_baseline: String,
+    /// The original full-hash observation, never renewed by metadata-only discovery.
+    pub verified_at_ms: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -48,6 +65,8 @@ pub struct IgnoredReview {
     pub worktree_inode: u64,
     pub files: Vec<IgnoredReviewFile>,
     pub total_bytes: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub job: Option<JobIgnoredReview>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -131,6 +150,8 @@ pub struct Context {
     pub deployment_repositories: BTreeMap<String, String>,
     pub current_paths: Vec<PathBuf>,
     pub ignored_reviews: BTreeMap<String, IgnoredReview>,
+    /// Only the admitted cleanup worker can construct this private capability.
+    pub(super) ignored_cleanup_permit: Option<super::worker::IgnoredCleanupPermit>,
     pub current_container_ids: Vec<String>,
     pub current_projects: BTreeMap<String, String>,
     pub current_images: Vec<String>,

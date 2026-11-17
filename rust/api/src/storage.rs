@@ -224,6 +224,9 @@ pub struct Revalidate {
     pub artifact_id: String,
     pub expected_revision: u64,
     pub idempotency_key: String,
+    /// Review retained ignored data in the admitted job, without granting disposal intent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reviewed_ignored_files: Option<Vec<IgnoredFileReview>>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
