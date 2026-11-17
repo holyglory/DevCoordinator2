@@ -55,6 +55,24 @@ export async function verifyWorkspace({ page, daemon, check, scenario, baseUrl, 
     new PerformanceObserver((list) => { for (const entry of list.getEntries()) window.workspaceTiming.lcp = entry.startTime; }).observe({ type: 'largest-contentful-paint', buffered: true });
     new PerformanceObserver((list) => { for (const entry of list.getEntries()) window.workspaceTiming.longTasks.push({ start: entry.startTime, duration: entry.duration }); }).observe({ type: 'longtask', buffered: true });
   });
+  if ([1440, 390].includes(viewport.width)) {
+    await isolateScenario(page, daemon, { ...scenario, workspaceHeaderPending: true });
+    const earlyHeadlines = Promise.all([false, true].map(lifetime => page.waitForResponse(response => {
+      if (!response.url().endsWith('/api/v3/performance.overview')) return false;
+      const params = response.request().postDataJSON();
+      return params.repository_id === repositoryId && params.totals_only === true && (params.window_start_ms === 0) === lifetime;
+    }, { timeout: 3000 }).then(() => true, () => false)));
+    await page.goto(`${baseUrl}#/performance/${repositoryId}`);
+    verify('both Performance summaries start while repository headers are held', (await earlyHeadlines).every(Boolean));
+    const scope = new URL(page.url()).hash.split('?')[1];
+    daemon.releaseDelayed();
+    await page.locator('.performance-cost-matrix tbody tr').first().waitFor();
+    const summaryReads = daemon.calls.filter(call => call.operation === 'performance.overview' && call.params.totals_only);
+    const anchored = new URLSearchParams(scope);
+    verify('Performance consumes each prepared scope once after headers settle', summaryReads.length === 2
+      && summaryReads.every(call => call.params.window_end_ms === Number(anchored.get(call.params.window_start_ms === 0 ? 'recordedTo' : 'to')))
+      && summaryReads.some(call => call.params.window_start_ms === Number(anchored.get('from'))));
+  }
   for (const [target, viewer] of [['rffffffffffffffff', false], ['rffffffffffffffff', true], ['release-clone', false]]) {
     await isolateScenario(page, daemon, { ...scenario, admin: !viewer, workspacePaging: true, workspaceViewer: viewer });
     await page.goto(`${baseUrl}#/plan/${target}`);

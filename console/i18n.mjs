@@ -172,6 +172,10 @@ function shortLocale(tag) {
 }
 function paintMenu() {
   if (!menu) return;
+  trigger.setAttribute('aria-label', `${t('shell.language')}: ${displayName(locale)}`);
+  // Hidden language options must not queue dozens of flag images before the
+  // scripts and selected page. Opening the menu paints its current locale.
+  if (menu.hidden) return;
   const search = menu.querySelector('input');
   const query = search.value.trim().toLocaleLowerCase(locale);
   const browser = browserLocales(navigator.languages, manifest.locales);
@@ -185,7 +189,6 @@ function paintMenu() {
   if (!menu.querySelector('.language-option')) menu.querySelector('.language-results').textContent = t('shell.noLanguages');
   search.placeholder = t('shell.searchLanguages'); search.setAttribute('aria-label', t('shell.searchLanguages'));
   menu.setAttribute('aria-label', t('shell.language'));
-  trigger.setAttribute('aria-label', `${t('shell.language')}: ${displayName(locale)}`);
   menu.querySelector('[data-browser-language]').textContent = t('shell.useBrowserLanguage');
   if (currentFocus) menu.querySelector(`[data-locale="${CSS.escape(currentFocus)}"]`)?.focus({ preventScroll: true });
 }
