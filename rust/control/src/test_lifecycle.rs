@@ -1930,7 +1930,7 @@ impl TestLifecycle {
             return Ok((worktree, id));
         }
         let info = resolve_worktree(Path::new(path), Some((caller.uid, caller.gid)))?;
-        let (_, worktree_id) = self.inner.registry.identity_for_info(&info)?;
+        let (_, worktree_id) = self.inner.registry.observed_identity_for_info(&info)?;
         Ok((info.worktree_root, worktree_id))
     }
 

@@ -3530,6 +3530,7 @@ fn shared_postgres_restart_recovers_failed_cleanup_without_pool_memory() {
 
 #[test]
 fn shared_postgres_inspection_stays_available_while_docker_cleanup_is_stalled() {
+    use devcoordinator2_control::persistence::Lane;
     let docker = Arc::new(PostgresDocker::new());
     let world = shared_postgres_world(docker.clone());
     let started = world.start();
@@ -3548,6 +3549,17 @@ fn shared_postgres_inspection_stays_available_while_docker_cleanup_is_stalled() 
         "cleanup did not reach the Docker boundary"
     );
     drop(state);
+    world
+        .database
+        .transaction(|connection| {
+            connection.execute("DELETE FROM worktree_native_identities", [])?;
+            connection.execute("DELETE FROM repository_native_identities", [])?;
+            Ok(())
+        })
+        .unwrap();
+    let held_writes = (0..world.database.persistence().pool(Lane::Write).max_size())
+        .map(|_| world.database.persistence().acquire(Lane::Write).unwrap())
+        .collect::<Vec<_>>();
     let retry_service = world.containers.clone();
     let retry_caller = world.caller.clone();
     let retry_reference = reference.clone();
@@ -3563,6 +3575,7 @@ fn shared_postgres_inspection_stays_available_while_docker_cleanup_is_stalled() 
     });
     let result = received.recv_timeout(Duration::from_secs(2));
     let retry = retry_received.recv_timeout(Duration::from_secs(2));
+    drop(held_writes);
     // Always release the disposable Docker fixture, including a failed check.
     gate.0.lock().unwrap().1 = true;
     gate.1.notify_all();
@@ -3572,6 +3585,11 @@ fn shared_postgres_inspection_stays_available_while_docker_cleanup_is_stalled() 
         .expect("a stalled Docker removal must not hold the metadata lock")
         .unwrap();
     assert!(result.inspection.is_some());
+    assert_eq!(
+        world.registration_counts(),
+        [1, 1, 0, 0],
+        "inspection and cleanup observation never pin an upgraded source"
+    );
     world.wait_status(TestStatus::Passed);
     let error = retry
         .expect("concurrent cleanup observation must remain bounded")

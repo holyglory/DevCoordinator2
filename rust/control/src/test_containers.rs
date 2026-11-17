@@ -637,6 +637,7 @@ impl TestContainerService {
         let mut record = records[index].clone();
         self.verify_record(&record, &context)?;
         context.unlock()?;
+        self.pin_execution_source(&context)?;
         self.refresh_record(&context, &mut record)?;
         self.verify_record(&record, &context)?;
         if record.cleanup_status == ContainerCleanupStatus::Complete {
@@ -1024,6 +1025,19 @@ impl TestContainerService {
         )
     }
 
+    fn pin_execution_source(&self, context: &Context) -> Result<(), ProtocolError> {
+        let info = resolve_worktree(
+            &context.worktree,
+            Some((context.execution_uid, context.gid)),
+        )?;
+        let identity =
+            crate::repository::Registry::new(self.database.clone()).identity_for_info(&info)?;
+        if identity != (context.repository_id.clone(), context.worktree_id.clone()) {
+            return Err(ownership_error());
+        }
+        Ok(())
+    }
+
     fn resolve_owned(
         &self,
         path: &str,
@@ -1039,7 +1053,15 @@ impl TestContainerService {
                 "path must be an absolute registered worktree path",
             ));
         }
-        let (worktree, worktree_id, repository_id) = if caller.is_console() {
+        let registry = crate::repository::Registry::new(self.database.clone());
+        let (worktree, worktree_id, repository_id) = if caller.is_console() && create {
+            let (source, _, _) = registry.registered_execution_source(Path::new(path))?;
+            (
+                PathBuf::from(source.worktree_path),
+                source.worktree_id,
+                source.repository_id,
+            )
+        } else if caller.is_console() {
             let requested = path.to_owned();
             self.database
                 .read(move |connection| {
@@ -1074,8 +1096,11 @@ impl TestContainerService {
                     )
                 },
             )?;
-            let (repository_id, worktree_id) =
-                crate::repository::Registry::new(self.database.clone()).identity_for_info(&info)?;
+            let (repository_id, worktree_id) = if create {
+                registry.identity_for_info(&info)?
+            } else {
+                registry.observed_identity_for_info(&info)?
+            };
             (info.worktree_root.to_path_buf(), worktree_id, repository_id)
         };
         if create {

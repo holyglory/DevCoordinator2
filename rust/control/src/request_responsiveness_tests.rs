@@ -248,6 +248,14 @@ fn observe_with_executor(
 #[test]
 fn observation_reads_do_not_queue_behind_actions_or_maintenance() {
     let world = World::new();
+    // Schema-upgraded sources can have authoritative registry rows before
+    // their first physical pin. Observations verify them without taking one.
+    world.fixture.database.transaction(|connection| {
+        let path = world.fixture.repository.to_string_lossy().into_owned();
+        connection.execute("DELETE FROM worktree_native_identities WHERE worktree_id IN (SELECT worktree_id FROM worktrees WHERE worktree_path=$1)", [&path])?;
+        connection.execute("DELETE FROM repository_native_identities WHERE repository_id IN (SELECT repository_id FROM repositories WHERE root_path=$1)", [&path])?;
+        Ok(())
+    }).unwrap();
     let holds = vec![
         HeldLane::new(world.fixture.database.clone(), Lane::Write),
         HeldLane::new(world.fixture.database.clone(), Lane::Maintenance),
@@ -282,6 +290,26 @@ fn observation_reads_do_not_queue_behind_actions_or_maintenance() {
         )
         .collect::<Vec<_>>();
     assert!(failures.is_empty(), "blocked read surfaces: {failures:?}");
+    let pins = || {
+        world.fixture.database.read(|connection| {
+        Ok(connection.query_row("SELECT (SELECT count(*) FROM repository_native_identities),(SELECT count(*) FROM worktree_native_identities)", [], |row| Ok([row.get::<_, i64>(0)?, row.get::<_, i64>(1)?]))?)
+    }).unwrap()
+    };
+    assert_eq!(
+        pins(),
+        [0, 0],
+        "status/log observations never create native pins"
+    );
+    world
+        .plane
+        .registry()
+        .registered_execution_source(&world.fixture.repository)
+        .unwrap();
+    assert_eq!(
+        pins(),
+        [1, 1],
+        "execution admission still pins through the write lane"
+    );
 }
 
 #[test]

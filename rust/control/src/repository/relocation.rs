@@ -311,6 +311,22 @@ pub(super) fn register(
         .map_err(db_error)
 }
 
+fn current_registered_identity(
+    connection: &Connection,
+    info: &WorktreeInfo,
+) -> Result<(String, String), DatabaseError> {
+    let root = path_text(&info.repository_root).map_err(DatabaseError::Domain)?;
+    let path = path_text(&info.worktree_root).map_err(DatabaseError::Domain)?;
+    let (repository_id,worktree_id)=connection.query_row("SELECT r.repository_id,w.worktree_id FROM repositories r JOIN worktrees w USING(repository_id) WHERE r.root_path=$1 AND w.worktree_path=$2",(&root,&path),|row|Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?))).optional()?.ok_or_else(||DatabaseError::Domain(repository_not_found("no current registered checkout matches this physical source")))?;
+    if pending(connection, &repository_id)? {
+        return Err(blocked(
+            "source relocation is prepared; finish or cancel it before starting execution",
+        )
+        .into());
+    }
+    Ok((repository_id, worktree_id))
+}
+
 impl Registry {
     /// Preview desired-source IDs without registering a new checkout. Execution
     /// still registers it, and recorded generation origins remain strict.
@@ -349,22 +365,38 @@ impl Registry {
         }).map_err(db_error)
     }
 
-    /// Resolve opaque IDs from the verified current paths and their native Git
-    /// identities. Path hashes allocate new registrations only.
+    /// Verify a registered source without recording an initial native pin.
+    /// Existing pins, relocation admission and physical Git membership still
+    /// apply; an observation never waits for the action/write connection lane.
+    pub(crate) fn observed_identity_for_info(
+        &self,
+        info: &WorktreeInfo,
+    ) -> Result<(String, String), ProtocolError> {
+        let native = native_identity(info)?;
+        self.database
+            .read(|connection| {
+                let (repository_id, worktree_id) = current_registered_identity(connection, info)?;
+                validate_native_bindings(connection, &repository_id, &worktree_id, &native)?;
+                Ok((repository_id, worktree_id))
+            })
+            .map_err(db_error)
+    }
+
+    /// Pin a verified registered source before an action uses it. New source
+    /// allocation belongs to explicit registration, never to this lookup.
     pub(crate) fn identity_for_info(
         &self,
         info: &WorktreeInfo,
     ) -> Result<(String, String), ProtocolError> {
         let native = native_identity(info)?;
-        let root = path_text(&info.repository_root)?;
-        let path = path_text(&info.worktree_root)?;
         let now = timestamp()?;
-        self.database.transaction(move|connection|{
-            let (repository_id,worktree_id)=connection.query_row("SELECT r.repository_id,w.worktree_id FROM repositories r JOIN worktrees w USING(repository_id) WHERE r.root_path=$1 AND w.worktree_path=$2",(&root,&path),|row|Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?))).optional()?.ok_or_else(||DatabaseError::Domain(repository_not_found("no current registered checkout matches this physical source")))?;
-            if pending(connection,&repository_id)? {return Err(blocked("source relocation is prepared; finish or cancel it before starting execution").into());}
-            bind_native(connection,&repository_id,&worktree_id,&native,&now)?;
-            Ok((repository_id,worktree_id))
-        }).map_err(db_error)
+        self.database
+            .transaction(move |connection| {
+                let (repository_id, worktree_id) = current_registered_identity(connection, info)?;
+                bind_native(connection, &repository_id, &worktree_id, &native, &now)?;
+                Ok((repository_id, worktree_id))
+            })
+            .map_err(db_error)
     }
 
     /// Historical paths support metadata links only. Existing replacement paths

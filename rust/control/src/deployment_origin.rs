@@ -13,6 +13,27 @@ pub(crate) fn resolve(
     uid: u32,
     gid: u32,
 ) -> Result<PathBuf, ProtocolError> {
+    resolve_origin(registry, origin, repository_id, uid, gid, false)
+}
+
+pub(crate) fn resolve_for_execution(
+    registry: &crate::repository::Registry,
+    origin: &GenerationSourceOrigin,
+    repository_id: &str,
+    uid: u32,
+    gid: u32,
+) -> Result<PathBuf, ProtocolError> {
+    resolve_origin(registry, origin, repository_id, uid, gid, true)
+}
+
+fn resolve_origin(
+    registry: &crate::repository::Registry,
+    origin: &GenerationSourceOrigin,
+    repository_id: &str,
+    uid: u32,
+    gid: u32,
+    pin: bool,
+) -> Result<PathBuf, ProtocolError> {
     let invalid = || {
         ProtocolError::new(
             ErrorCode::DeploymentApplyFailed,
@@ -24,9 +45,12 @@ pub(crate) fn resolve(
         .map_err(|_| invalid())?;
     let resolved =
         crate::repository::resolve_worktree(&current, Some((uid, gid))).map_err(|_| invalid())?;
-    let (registered_repository_id, registered_worktree_id) = registry
-        .identity_for_info(&resolved)
-        .map_err(|_| invalid())?;
+    let identity = if pin {
+        registry.identity_for_info(&resolved)
+    } else {
+        registry.observed_identity_for_info(&resolved)
+    };
+    let (registered_repository_id, registered_worktree_id) = identity.map_err(|_| invalid())?;
     if resolved.worktree_root != current
         || registered_repository_id != repository_id
         || registered_worktree_id != origin.worktree_id

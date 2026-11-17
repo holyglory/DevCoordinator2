@@ -910,6 +910,9 @@ impl Deployments {
                 "repository code never runs as root; call as a non-root account",
             ));
         }
+        if source_origin.is_none() {
+            self.pin_declared_source(&target)?;
+        }
         let _busy = self.acquire_busy(&target.deployment_id)?;
         let snapshot = self
             .git
@@ -1200,6 +1203,17 @@ impl Deployments {
         let source_origin = self
             .store
             .generation_origin(&target.deployment_id, previous)?;
+        if let Some(origin) = source_origin.as_ref() {
+            crate::deployment_origin::resolve_for_execution(
+                &self.registry,
+                origin,
+                &target.repository_id,
+                target.caller_uid,
+                target.caller_gid,
+            )?;
+        } else {
+            self.pin_declared_source(&target)?;
+        }
         if source_origin.is_some()
             || self
                 .store
@@ -1294,6 +1308,27 @@ impl Deployments {
             .row
             .clone()
             .ok_or_else(|| not_found(&target.deployment_id))?;
+        if action != "stop" {
+            let origin = row
+                .current_generation
+                .map(|generation| {
+                    self.store
+                        .generation_origin(&target.deployment_id, generation)
+                })
+                .transpose()?
+                .flatten();
+            if let Some(origin) = origin.as_ref() {
+                crate::deployment_origin::resolve_for_execution(
+                    &self.registry,
+                    origin,
+                    &target.repository_id,
+                    target.caller_uid,
+                    target.caller_gid,
+                )?;
+            } else {
+                self.pin_declared_source(&target)?;
+            }
+        }
         if matches!(action, "start" | "restart") && deployment_id.is_none() {
             // Runtime controls must use the exact specification recorded by
             // the applied generation. The checkout may have changed since
@@ -4747,6 +4782,21 @@ impl Deployments {
             row,
             specification: target.specification,
         })
+    }
+
+    fn pin_declared_source(&self, target: &DeploymentTarget) -> Result<(), ProtocolError> {
+        let info = crate::repository::resolve_worktree(
+            &target.worktree,
+            Some((target.caller_uid, target.caller_gid)),
+        )?;
+        let identity = self.registry.identity_for_info(&info)?;
+        if identity != (target.repository_id.clone(), target.worktree_id.clone()) {
+            return Err(ProtocolError::new(
+                ErrorCode::ConfigurationConflict,
+                "registered deployment source identity changed before execution",
+            ));
+        }
+        Ok(())
     }
 
     fn resolve_target(

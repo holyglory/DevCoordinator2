@@ -334,7 +334,7 @@ impl Registry {
                 format!("no registered repository contains {}", path.display()),
             )
         })?;
-        let (repository_id, worktree_id) = self.identity_for_info(&info)?;
+        let (repository_id, worktree_id) = self.observed_identity_for_info(&info)?;
         let listed = self.list_repositories(true)?;
         let repository = listed
             .repositories

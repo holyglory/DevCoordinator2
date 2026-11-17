@@ -227,7 +227,11 @@ fn legacy_explicit_origin_upgrade_preserves_status_rollback_and_native_source_id
         crate::deployment_origin::resolve(&registry, &origin, &repository_id, uid, gid).unwrap(),
         linked
     );
-    assert_eq!(pin_counts(), [1, 1]);
+    assert_eq!(
+        pin_counts(),
+        [0, 0],
+        "a verified legacy origin remains unpinned during observation"
+    );
 
     let deployments = Deployments::with_runtime_adapters(
         config.clone(),
@@ -247,9 +251,32 @@ fn legacy_explicit_origin_upgrade_preserves_status_rollback_and_native_source_id
         gid,
         ..World::caller()
     };
-    let status = deployments
-        .status(None, None, Some(&deployment_id), &caller)
-        .unwrap();
+    let status = {
+        let holds = [
+            crate::request_responsiveness_tests::HeldLane::new(
+                upgraded.clone(),
+                crate::persistence::Lane::Write,
+            ),
+            crate::request_responsiveness_tests::HeldLane::new(
+                upgraded.clone(),
+                crate::persistence::Lane::Maintenance,
+            ),
+        ];
+        let began = Instant::now();
+        let status = deployments.status(None, None, Some(&deployment_id), &caller);
+        let elapsed = began.elapsed();
+        drop(holds);
+        assert!(
+            elapsed < Duration::from_secs(1),
+            "legacy deployment status waited for a writer: {elapsed:?}"
+        );
+        status.unwrap()
+    };
+    assert_eq!(
+        pin_counts(),
+        [0, 0],
+        "deployment status does not pin a legacy source"
+    );
     assert_eq!(status.current_generation, Some(2));
     assert_eq!(status.readiness.unwrap().source_state, "current");
     assert_eq!(
@@ -266,6 +293,15 @@ fn legacy_explicit_origin_upgrade_preserves_status_rollback_and_native_source_id
             .generation_origin(&deployment_id, 2)
             .unwrap(),
         Some(origin.clone())
+    );
+    let started = deployments
+        .control("start", None, None, Some(&deployment_id), None, &caller)
+        .unwrap();
+    assert_eq!(started.current_generation, Some(2));
+    assert_eq!(
+        pin_counts(),
+        [1, 1],
+        "execution admission performs the first native pin"
     );
     let rolled_back = deployments
         .rollback(None, None, Some(&deployment_id), &caller)

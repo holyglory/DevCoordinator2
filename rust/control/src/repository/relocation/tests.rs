@@ -191,6 +191,11 @@ impl World {
         self.registry.preview_source_identity(&info)
     }
 
+    fn observe(&self, path: &Path) -> Result<(String, String), ProtocolError> {
+        let info = resolve_worktree(path, Some((self.caller.uid, self.caller.gid)))?;
+        self.registry.observed_identity_for_info(&info)
+    }
+
     fn add_linked(&self, path: &Path) -> RegisteredRepository {
         git(
             &self.old,
@@ -478,6 +483,7 @@ fn real_git_prepare_refuses_a_process_in_the_source_then_recovers() {
         world.preview(&world.old).is_err(),
         "a pending move never becomes a new desired source"
     );
+    assert!(world.observe(&world.old).is_err());
     world
         .registry
         .relocate_cancel(World::reference(&prepared), &world.caller)
@@ -646,6 +652,7 @@ fn real_git_interrupted_move_verification_rejects_changed_content_and_replacemen
         world.preview(&world.old).is_err(),
         "a committed historical alias cannot preview a replacement source"
     );
+    assert!(world.observe(&world.old).is_err());
     assert!(
         world
             .registry
@@ -667,6 +674,7 @@ fn real_git_interrupted_move_verification_rejects_changed_content_and_replacemen
         world.preview(&world.new).is_err(),
         "the current location still requires its bound physical source"
     );
+    assert!(world.observe(&world.new).is_err());
     assert!(
         world
             .registry
@@ -762,6 +770,7 @@ fn real_git_registration_rejects_replacement_before_any_relocation() {
         world.preview(&preserved).is_err(),
         "an uncommitted move cannot allocate a replacement identity"
     );
+    assert!(world.observe(&preserved).is_err());
     std::fs::create_dir(&world.old).unwrap();
     own(&world.old);
     git(&world.old, &["init", "-q", "-b", "replacement"]);
@@ -769,6 +778,7 @@ fn real_git_registration_rejects_replacement_before_any_relocation() {
         world.preview(&world.old).is_err(),
         "a replaced physical source cannot inherit its old identity"
     );
+    assert!(world.observe(&world.old).is_err());
     assert!(
         world
             .registry
