@@ -50,6 +50,21 @@ export async function verifyProjects({page,browser,base,call,request,check,cooki
     const denied=await request('project.branch.update',{project_id:id,branch_id:b.branch_id,expected_revision:b.revision,intent:'Stale draft'},'owner@example.test');
     assert.equal(denied.ok,false);assert.match(denied.error.code,/conflict/);
   });
+  await check('Selecting a branch loads its complete stored description',async()=>{
+    const data=await call('project.status',{project_id:id});const row=data.branches.find(b=>b.branch_name==='codex/clock-divider-drag');
+    const full='Preserve every attached connection and label while the clock divider moves. '.repeat(18)+' Complete intent ends here.';
+    await call('project.branch.update',{project_id:id,branch_id:row.branch_id,expected_revision:row.revision,intent:full});
+    try {
+      const list=await call('project.branch.list',{project_id:id,limit:50});
+      assert.equal(list.branches.find(b=>b.branch_id===row.branch_id).details_omitted,true);
+      await page.reload();await branch().waitFor();await branch().click();
+      await page.locator('[data-pe-inspector]').getByText(full,{exact:true}).waitFor();
+    } finally {
+      const current=await call('project.branch.get',{project_id:id,branch_id:row.branch_id});
+      await call('project.branch.update',{project_id:id,branch_id:row.branch_id,expected_revision:current.revision,intent:row.intent});
+      await page.reload();await branch().waitFor();await branch().click();
+    }
+  },page);
   await check('Commit disclosure comes from actual Git history',async()=>{
     if(await page.locator('[data-pe-cancel-edit]').isVisible()) await page.locator('[data-pe-cancel-edit]').click();
     await page.locator('[data-pe-show-commits]').check();
@@ -86,16 +101,23 @@ export async function verifyProjects({page,browser,base,call,request,check,cooki
     try {await context.addCookies([cookieFor('viewer@example.test')]);const p=await context.newPage();await p.goto(route);await p.locator('[data-pe-branch]').first().waitFor();await p.locator('[data-pe-branch]').first().click();assert.equal(await p.locator('[data-pe-edit]').count(),0);assert.equal(await p.locator('[data-pe-remove]').count(),0);}finally{await context.close();}
   });
   await check('Primary local edits remain protected from removal',async()=>{
-    const data=await call('project.status',{project_id:id});const primary=data.checkouts.find(c=>c.role==='primary');assert.ok(primary);
+    const data=await call('project.status',{project_id:id});const primary=data.checkouts.find(c=>c.role==='primary'&&c.absolute_path===fixture.primary);assert.ok(primary);
     const result=await request('project.checkout.remove.plan',{project_id:id,expected_project_revision:data.revision,targets:[{worktree_id:primary.worktree_id,expected_revision:primary.revision}]},'operator@example.test');
     if (result.ok) {
       assert.equal(result.data.ready,false);
       assert.ok([...result.data.blockers,...result.data.targets.flatMap(t=>t.blockers)].some(reason=>/primary|canonical|protected|linked_worktrees/.test(reason)),JSON.stringify(result.data));
     } else {
-      assert.equal(result.error.code,'storage_blocked');
+      assert.equal(result.error.code,'storage_blocked',JSON.stringify(result.error));
       assert.match(result.error.message,/primary|canonical|clone_has_linked_worktrees/);
     }
     assert.equal((await fs.readFile(path.join(fixture.primary,'unsaved-notes.txt'),'utf8')).includes('must survive'),true);
+    await page.goto(route); await page.locator(`[data-pe-copy="${primary.worktree_id}"]`).waitFor();
+    await page.locator(`[data-pe-copy="${primary.worktree_id}"]`).click();
+    await page.locator('[data-pe-remove]').click();
+    const dialog=page.locator('.pe-removal-dialog[data-removal-result]'); await dialog.waitFor();
+    assert.match(await dialog.innerText(),/primary|canonical|protected|linked.worktrees/i);
+    assert.equal(await dialog.locator('[data-start]:enabled').count(),0);
+    await dialog.locator('footer [data-close]').click();
   });
   for (const theme of ['light','dark']) for(const width of [390,760,1050,1440,1487]) await check(`Project explorer ${theme} ${width}: visible tree and no horizontal page overflow`,async()=>{
     await page.setViewportSize({width,height:width===1487?1058:900});await page.emulateMedia({colorScheme:theme});
@@ -113,12 +135,15 @@ export async function verifyProjects({page,browser,base,call,request,check,cooki
   },page);
   if(process.env.PROJECT_EXPLORER_FORMAL_BINARY) await check('Project explorer fresh formal light and dark coverage',async()=>{
     const binary=process.env.PROJECT_EXPLORER_FORMAL_BINARY;const pw=process.env.CONSOLE_VERIFY_PLAYWRIGHT||'/opt/holyskills-validation-runtime';
+    const status=await call('project.status',{project_id:id});const branchId=status.branches.find(b=>b.branch_name==='codex/clock-divider-drag').branch_id;
+    const failures=[];
     for(const theme of ['light','dark']) {
-      const config=explorerFormalConfig({root,base,projectId:id,theme,playwrightModuleDir:path.join(pw,'node_modules'),cookie:`dc2_session=${cookieFor('owner@example.test').value}`});
+      const config=explorerFormalConfig({root,base,projectId:id,branchId,theme,playwrightModuleDir:path.join(pw,'node_modules'),cookie:`dc2_session=${cookieFor('owner@example.test').value}`});
       const configFile=path.join(temporary,`projects-formal-${theme}.json`);await fs.writeFile(configFile,JSON.stringify(config),{mode:0o600});
       const dir=path.join(out,`formal-${theme}`);await fs.mkdir(dir,{recursive:true});
-      let result;try{result=await execute(binary,['formal-ui','verify','--config',configFile,'--json-out',path.join(dir,'report.json'),'--markdown-out',path.join(dir,'report.md'),'--screenshot-dir',path.join(dir,'screenshots')],{cwd:root,maxBuffer:1024*1024});}catch(error){await fs.writeFile(path.join(dir,'receipt.json'),error.stdout||'');throw error;}
-      await fs.writeFile(path.join(dir,'receipt.json'),result.stdout);const receipt=JSON.parse(result.stdout);assert.equal(receipt.formal.result,'passed');
+      let result;try{result=await execute(binary,['formal-ui','verify','--config',configFile,'--json-out',path.join(dir,'report.json'),'--markdown-out',path.join(dir,'report.md'),'--screenshot-dir',path.join(dir,'screenshots')],{cwd:root,maxBuffer:1024*1024});}catch(error){await fs.writeFile(path.join(dir,'receipt.json'),error.stdout||'');await fs.writeFile(path.join(dir,'failure.log'),error.stderr||error.message);failures.push(theme);continue;}
+      await fs.writeFile(path.join(dir,'receipt.json'),result.stdout);const receipt=JSON.parse(result.stdout);if(receipt.formal?.result!=='passed')failures.push(theme);
     }
+    assert.deepEqual(failures,[],`Formal verification did not pass for: ${failures.join(', ')}`);
   },page);
 }

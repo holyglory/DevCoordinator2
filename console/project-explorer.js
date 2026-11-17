@@ -20,9 +20,11 @@ window.DevCoordinatorProjectExplorer = (() => {
   };
   const date = value => value && Number.isFinite(Date.parse(value)) ? i18n().date(value, { dateStyle: 'medium', timeStyle: 'short' }) : t('notObserved');
   const external = url => { try { const parsed = new URL(url); return parsed.protocol === 'https:' && !parsed.username && !parsed.password ? parsed.href : null; } catch { return null; } };
-  const stateLabel = value => t(`state_${value || 'unknown'}`);
+  const knownStates = new Set('unknown planned active paused parked blocked ready merged abandoned retired removed missing dirty primary deployed current rollback retained cleanup_pending failed completed complete queued refreshing idle fresh stale unavailable unverified local remote succeeded unreviewed'.split(' '));
+  const stateLabel = value => knownStates.has(value || 'unknown') ? t(`state_${value || 'unknown'}`) : String(value).replaceAll('_', ' ');
   const status = value => `<span class="pe-state pe-state-${/^[a-z_]+$/.test(value || '') ? value : 'unknown'}"><span aria-hidden="true"></span>${escape(stateLabel(value))}</span>`;
-  const reasonText = reason => t(`reason_${reason}`) === `projects.reason_${reason}` ? String(reason).replaceAll('_', ' ') : t(`reason_${reason}`);
+  const knownReasons = new Set('current_deployment active_worktree dirty_worktree canonical_checkout unreviewed_ignored_files unique_worktree_commits active_lease credential_unavailable github_auth_failed remote_unavailable github_rate_limited process_inventory_incomplete process_inventory_unavailable ignored_files_unverified checkout_status_unverified clone_has_linked_worktrees'.split(' '));
+  const reasonText = reason => knownReasons.has(reason) ? t(`reason_${reason}`) : String(reason).replaceAll('_', ' ');
 
   async function mount(root, { api, signal, projectId, identity }) {
     await i18n().ensure('projects');
@@ -31,8 +33,8 @@ window.DevCoordinatorProjectExplorer = (() => {
     const s = {
       projectId, view: ['overview', 'copies', 'branches', 'storage', 'history'].includes(query.get('view')) ? query.get('view') : 'copies',
       data: null, projects: [], projectCursor: null, branchId: query.get('branch') || '', checkoutId: query.get('checkout') || '',
-      open: new Set(), collapsed: new Set(), commits: new Map(), showCommits: false, query: '', edit: null,
-      error: '', refreshing: false, job: null, retireKeys: new Map(), pageRequest: 0, read: 0, queryRead: 0, disposed: false, observer: null,
+      open: new Set(), collapsed: new Set(), commits: new Map(), detailReads: new Map(), showCommits: false, query: '', edit: null,
+      error: '', refreshing: false, retireKeys: new Map(), pageRequest: 0, read: 0, queryRead: 0, disposed: false, observer: null,
     };
     const alive = () => !signal.aborted && !s.disposed && root.isConnected;
     const cacheKey = `${identity?.email || 'local'}:${identity?.administrator ? 'admin' : 'member'}:${projectId}`;
@@ -60,7 +62,8 @@ window.DevCoordinatorProjectExplorer = (() => {
     function closeRail() { shell.classList.remove('pe-rail-visible'); find('open-rail').setAttribute('aria-expanded', 'false'); }
     find('open-rail').addEventListener('click', () => { shell.classList.add('pe-rail-visible'); find('open-rail').setAttribute('aria-expanded', 'true'); find('project-list').querySelector('a')?.focus(); });
     find('close-rail').addEventListener('click', () => { closeRail(); find('open-rail').focus(); });
-    root.addEventListener('keydown', event => { if (event.key === 'Escape') closeRail(); });
+    const railEscape = event => { if (event.key === 'Escape') closeRail(); };
+    root.addEventListener('keydown', railEscape);
     find('project-list').addEventListener('click', closeRail);
     find('refresh').addEventListener('click', () => action(refresh));
     find('more-projects').addEventListener('click', () => action(() => loadProjects(true)));
@@ -69,7 +72,7 @@ window.DevCoordinatorProjectExplorer = (() => {
     find('show-commits').addEventListener('change', event => { s.showCommits = event.target.checked; if (s.showCommits && s.branchId) s.open.add(s.branchId); paintBody(); if (s.showCommits && selectedBranch()) void loadCommits(selectedBranch()); });
     root.addEventListener('keydown', treeKeyboard);
     root.addEventListener('click', onClick);
-    signal.addEventListener('abort', () => { s.disposed = true; s.observer?.disconnect(); root.removeEventListener('click', onClick); root.removeEventListener('keydown', treeKeyboard); root.querySelector('dialog')?.remove(); }, { once: true });
+    signal.addEventListener('abort', () => { s.disposed = true; s.observer?.disconnect(); root.removeEventListener('click', onClick); root.removeEventListener('keydown', treeKeyboard); root.removeEventListener('keydown', railEscape); root.querySelector('dialog')?.remove(); }, { once: true });
     function paintProjects() {
       find('project-list').innerHTML = s.projects.map(p => `<a class="pe-project" href="${href(p.project_id)}"${p.project_id === s.projectId ? ' aria-current="page"' : ''}>${icon('folder')}<span>${escape(p.name)}</span></a>`).join('') || `<p class="pe-muted">${h('noProjects')}</p>`;
       find('more-projects').hidden = !s.projectCursor;
@@ -191,12 +194,29 @@ window.DevCoordinatorProjectExplorer = (() => {
       panel.hidden = !item || !['copies', 'branches'].includes(s.view);
       if (panel.hidden) return;
       const isCopy = Boolean(item.worktree_id), rights = itemPermissions(item);
+      panel.setAttribute('aria-busy', String(Boolean(item.details_omitted)));
+      if (item.details_omitted) void action(() => loadSelectionDetails(item, isCopy));
       const title = isCopy ? item.relative_path : item.branch_name;
       const taskLink = item.task_id ? `#/plan/${encodeURIComponent(item.repository_id)}?task=${encodeURIComponent(item.task_id)}` : null;
       const pr = !isCopy && item.pr?.url ? external(item.pr.url) : null;
       panel.innerHTML = `<header>${icon(isCopy ? 'database' : 'git-branch')}<h2>${escape(title)}</h2>${status(item.lifecycle)}<div class="pe-inspector-links">${item.owner ? `<span>${h('owner')} <strong>${escape(item.owner)}</strong></span>` : ''}${taskLink ? `<a href="${taskLink}">${h('linkedOutcome')}${icon('external-link')}</a>` : ''}${pr ? `<a href="${escape(pr)}" target="_blank" rel="noopener noreferrer">PR #${escape(item.pr.number)}${icon('external-link')}</a>` : ''}</div><div class="pe-inspector-actions">${rights.edit ? `<button class="btn btn-primary" type="button" data-pe-edit>${icon('pencil')}${h('editDetails')}</button>` : ''}${rights.cleanup && (isCopy || item.worktree_ids.length) ? `<button class="btn" type="button" data-pe-remove>${icon('trash')}${h('reviewRemoval')}</button>` : ''}${!isCopy && rights.admin && item.merge_proof ? `<button class="btn" type="button" data-pe-retire>${h('retireBranch')}</button>` : ''}${isCopy && item.absolute_path ? `<button class="pe-icon-button" type="button" data-pe-copy-path aria-label="${escape(t('copyAbsolutePath'))}">${icon('copy')}</button>` : ''}</div></header>
         <dl class="pe-detail-fields"><div><dt>${h('intent')}</dt><dd>${escape(item.intent || t('notRecorded'))}</dd></div><div><dt>${h('outcome')}</dt><dd>${escape(item.outcome || t('notRecorded'))}</dd></div>${item.next_action ? `<div><dt>${h('nextAction')}</dt><dd>${escape(item.next_action)}</dd></div>` : ''}</dl>
         <details class="pe-facts"><summary>${h('localAndGitDetails')}</summary><dl><div><dt>${h('head')}</dt><dd><code>${escape(item.head || t('unknown'))}</code></dd></div><div><dt>${h('sourceSpace')}</dt><dd>${escape(size(item.source_bytes))}</dd></div><div><dt>${h('buildSpace')}</dt><dd>${escape(size(item.build_bytes))}</dd></div>${!isCopy && item.merge_proof ? `<div><dt>${h('integration')}</dt><dd>${escape(item.merge_proof.kind)} · ${escape(item.merge_proof.merged_into)}</dd></div>` : ''}</dl>${isCopy && item.protection_reasons.length ? `<p>${item.protection_reasons.map(reason => escape(reasonText(reason))).join(' · ')}</p>` : ''}</details>`;
+    }
+    async function loadSelectionDetails(item, isCopy) {
+      const field = isCopy ? 'worktree_id' : 'branch_id', collection = isCopy ? 'checkouts' : 'branches';
+      const id = item[field], requestKey = `${field}:${id}:${item.revision}`;
+      if (s.detailReads.has(requestKey)) return s.detailReads.get(requestKey);
+      const read = (async () => {
+        const full = await api(`project.${isCopy ? 'checkout' : 'branch'}.get`, { project_id: s.projectId, [field]: id });
+        if (!alive()) return;
+        const index = s.data[collection].findIndex(row => row[field] === id && row.revision === item.revision);
+        if (index < 0) return;
+        s.data[collection][index] = full;
+        if (id === (isCopy ? s.checkoutId : s.branchId)) paintInspector();
+      })();
+      s.detailReads.set(requestKey, read);
+      try { await read; } finally { if (s.detailReads.get(requestKey) === read) s.detailReads.delete(requestKey); }
     }
     function paintStorage(body) {
       const m = s.data.storage;
@@ -317,14 +337,15 @@ window.DevCoordinatorProjectExplorer = (() => {
       } finally { s.refreshing = false; if (alive()) paintState(); }
     }
     async function watch(job) {
-      s.job = job; let cursor = null;
-      while (alive() && !finalJobs.has(s.job.state)) {
+      let current = job, cursor = null;
+      while (alive() && !finalJobs.has(current.state)) {
         const events = await api('event.wait', { cursor, filters: [{ filter_id: 'project-explorer', categories: ['other'], kinds: ['project.refreshed', 'project.refresh.completed', 'project.refresh.failed', 'project.updated', 'storage.job.finished', 'storage.job.failed'], deadline_at: new Date(Date.now() + 15000).toISOString() }] });
         if (!alive()) return;
         cursor = events.cursor;
-        s.job = await api('project.job.status', { project_id: s.projectId, job_id: job.job_id });
+        current = await api('project.job.status', { project_id: s.projectId, job_id: job.job_id });
       }
-      if (alive() && s.job.error) throw new Error(reasonText(s.job.error));
+      if (alive() && current.error) throw new Error(reasonText(current.error));
+      return current;
     }
     async function historyPage(more = false) {
       const page = await api('project.history', { project_id: s.projectId, cursor: more ? s.historyCursor : null, limit: 30 });
@@ -426,19 +447,30 @@ window.DevCoordinatorProjectExplorer = (() => {
       if (!ids.length) return;
       const targets = ids.map(worktree_id => s.data.checkouts.find(c => c.worktree_id === worktree_id)).filter(Boolean);
       if (targets.length !== ids.length) { throw new Error(t('loadCopiesBeforeRemoval')); }
-      const plan = await api('project.checkout.remove.plan', { project_id: s.projectId, expected_project_revision: s.data.revision, targets: targets.map(c => ({ worktree_id: c.worktree_id, expected_revision: c.revision })) }, false);
-      if (!alive()) return;
-      await showRemoval(plan);
-    }
-    async function showRemoval(plan) {
-      const approvalKey = key('approve'), removalKey = key('remove');
       const dialog = document.createElement('dialog'); dialog.className = 'pe-removal-dialog';
       dialog.setAttribute('aria-labelledby', 'pe-removal-title');
+      dialog.innerHTML = `<header><h2 id="pe-removal-title">${h('reviewRemoval')}</h2><button class="pe-icon-button" type="button" data-close aria-label="${escape(t('close'))}">${icon('x')}</button></header><ul class="pe-removal-targets">${targets.map(c => `<li><strong>${escape(c.relative_path)}</strong></li>`).join('')}</ul><p data-removal-progress role="status">${h('reviewingRemoval')}</p><p data-removal-error role="alert" hidden></p><footer><button class="btn" type="button" data-close>${h('cancel')}</button></footer>`;
+      root.append(dialog);
+      const close = () => { dialog.close(); dialog.remove(); find('inspector').querySelector('[data-pe-remove]')?.focus({ preventScroll: true }); };
+      dialog.addEventListener('click', event => { if (event.target.closest('[data-close]')) close(); });
+      dialog.addEventListener('cancel', event => { event.preventDefault(); close(); });
+      dialog.showModal();
+      try {
+        const plan = await api('project.checkout.remove.plan', { project_id: s.projectId, expected_project_revision: s.data.revision, targets: targets.map(c => ({ worktree_id: c.worktree_id, expected_revision: c.revision })) }, false);
+        if (alive() && dialog.isConnected) showRemoval(plan, dialog, close);
+      } catch (error) {
+        if (!alive() || !dialog.isConnected) return;
+        dialog.querySelector('[data-removal-progress]').hidden = true;
+        const box = dialog.querySelector('[data-removal-error]'); box.hidden = false; box.textContent = reasonText(error.message);
+        dialog.dataset.removalResult = 'blocked';
+      }
+    }
+    function showRemoval(plan, dialog, close) {
+      const approvalKey = key('approve'), removalKey = key('remove');
       const items = plan.targets || [];
       const canApprove = plan.requires_approval && s.data.permissions.admin && !plan.blockers.length;
       dialog.innerHTML = `<header><h2 id="pe-removal-title">${h('reviewRemoval')}</h2><button class="pe-icon-button" type="button" data-close aria-label="${escape(t('close'))}">${icon('x')}</button></header><p>${escape(plan.effect || t('removalEffect'))}</p><ul class="pe-removal-targets">${items.map(item => `<li><strong>${escape(item.path)}</strong><span>${escape(size(item.estimated_reclaimable_bytes))}</span><small>${escape(item.branch_name || t('detached'))} · ${escape(short(item.head))}</small><dl class="pe-removal-facts"><div><dt>${h('remotePreservation')}</dt><dd>${h(item.remote_recoverable ? 'verified' : 'notVerified')}</dd></div><div><dt>${h('untrackedFiles')}</dt><dd>${item.untracked_files}</dd></div><div><dt>${h('ignoredFiles')}</dt><dd>${item.ignored_files}</dd></div><div><dt>${h('stashEntries')}</dt><dd>${item.stash_entries}</dd></div></dl>${[...item.active_uses, ...item.protections, ...item.blockers].length ? `<p>${[...new Set([...item.active_uses, ...item.protections, ...item.blockers])].map(r => escape(reasonText(r))).join(' · ')}</p>` : ''}${item.possible_data_loss.length ? `<p class="pe-data-loss"><strong>${h('dataWouldBeLost')}</strong> ${item.possible_data_loss.map(r => escape(reasonText(r))).join(' · ')}</p>` : ''}${item.task_stays_open ? `<p>${h('taskRemainsOpen')}</p>` : ''}</li>`).join('')}</ul><p>${h('estimatedReclaim')} <strong>${escape(size(plan.estimated_reclaimable_bytes))}</strong></p>${plan.blockers.length ? `<p class="pe-data-loss">${plan.blockers.map(r => escape(reasonText(r))).join(' · ')}</p>` : ''}${plan.requires_approval && !canApprove ? `<p>${h('adminApprovalNeeded')}</p>` : ''}<p data-removal-error role="alert" hidden></p><footer><button class="btn" type="button" data-close>${h('cancel')}</button><button class="btn btn-danger" type="button" data-start${!plan.ready && !canApprove ? ' disabled' : ''}>${h(canApprove ? 'approveLossAndRemove' : 'removeSelectedCopies')}</button></footer>`;
-      root.append(dialog); const close = () => { dialog.close(); dialog.remove(); find('inspector').querySelector('[data-pe-remove]')?.focus(); };
-      dialog.querySelectorAll('[data-close]').forEach(b => b.onclick = close); dialog.addEventListener('cancel', event => { event.preventDefault(); close(); });
+      dialog.dataset.removalResult = plan.ready ? 'ready' : 'review';
       dialog.querySelector('[data-start]').onclick = async event => {
         event.currentTarget.disabled = true;
         try {
@@ -449,7 +481,7 @@ window.DevCoordinatorProjectExplorer = (() => {
         }
         catch (error) { if (dialog.isConnected) { const box = dialog.querySelector('[data-removal-error]'); box.hidden = false; box.textContent = error.message; event.target.disabled = false; } else fault(error); }
       };
-      dialog.showModal();
+      dialog.querySelector('[data-close]').focus({ preventScroll: true });
     }
     function paintRemovalJob() {
       if (!alive() || !s.removalJob) return;

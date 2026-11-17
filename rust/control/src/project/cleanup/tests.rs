@@ -287,6 +287,9 @@ impl CheckoutFixture {
     }
 
     fn plan(&self) -> removal::RemovalPlan {
+        // Setup writes run as root, while Git must use the registered owner.
+        // Normalize this explicitly recorded fixture scope before observation.
+        own_fixture_tree(self.fixture._temporary.path());
         self.service
             .checkout_remove_plan(
                 removal::Plan {
@@ -428,6 +431,35 @@ fn exact_console_approval_allows_known_loss_but_stale_content_requires_a_new_pla
     let current = fixture.checkout.join(".devcoordinator/test/current");
     fs::create_dir_all(&current).unwrap();
     fs::write(current.join("check-report.json"), "{\"fixture\":true}").unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(
+        fixture.checkout.join(".devcoordinator"),
+        fs::Permissions::from_mode(0o700),
+    )
+    .unwrap();
+    let inaccessible = fixture
+        .service
+        .checkout_remove_plan(
+            removal::Plan {
+                project_id: "product".into(),
+                expected_project_revision: 1,
+                targets: vec![removal::Target {
+                    worktree_id: "feature-checkout".into(),
+                    expected_revision: 1,
+                }],
+                include_absolute_paths: false,
+            },
+            &caller(),
+        )
+        .unwrap_err();
+    assert!(
+        matches!(
+            inaccessible.message.as_str(),
+            "ignored_files_unverified" | "checkout_status_unverified"
+        ),
+        "{inaccessible:?}"
+    );
+    assert!(current.join("check-report.json").exists());
     let plan = fixture.plan();
     assert!(plan.requires_approval);
     assert!(!plan.ready);

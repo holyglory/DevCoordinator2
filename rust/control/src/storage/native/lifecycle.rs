@@ -56,7 +56,6 @@ impl HostBackend {
                     | "unique_worktree_commits"
                     | "git_baseline_unverified"
                     | "unreviewed_ignored_files"
-                    | "ignored_files_unverified"
                     | "canonical_checkout"
             )
         });
@@ -464,17 +463,18 @@ fn git_state(
             return Err(blocked("worktree_membership_changed"));
         }
     }
-    let status = git_bytes(
+    let status = observed_git_bytes(
         path,
         &["status", "--porcelain=v1", "-z", "--untracked-files=all"],
         context,
+        "checkout_status_unverified",
     )?;
     let dirty = !status.is_empty();
     let untracked = status
         .split(|byte| *byte == 0)
         .filter(|field| field.starts_with(b"?? "))
         .count() as u64;
-    let ignored = git_bytes(
+    let ignored = observed_git_bytes(
         path,
         &[
             "ls-files",
@@ -484,12 +484,13 @@ fn git_state(
             "-z",
         ],
         context,
+        "ignored_files_unverified",
     )?;
     let ignored_count = ignored
         .split(|byte| *byte == 0)
         .filter(|field| !field.is_empty())
         .count() as u64;
-    let refs = git_bytes(
+    let refs = observed_git_bytes(
         path,
         &[
             "for-each-ref",
@@ -497,6 +498,7 @@ fn git_state(
             "refs/",
         ],
         context,
+        "checkout_refs_unverified",
     )?;
     let mut local = Vec::new();
     for row in refs
@@ -513,7 +515,12 @@ fn git_state(
         }
         local.push((name, hash));
     }
-    let stash = git_bytes(path, &["stash", "list", "--format=%H"], context)?;
+    let stash = observed_git_bytes(
+        path,
+        &["stash", "list", "--format=%H"],
+        context,
+        "checkout_stashes_unverified",
+    )?;
     let stash_heads =
         String::from_utf8(stash.clone()).map_err(|_| blocked("checkout_stashes_unverified"))?;
     let mut stashes = 0;
@@ -646,6 +653,21 @@ fn git_string(path: &Path, arguments: &[&str], context: &Context) -> Result<Stri
     String::from_utf8(git_bytes(path, arguments, context)?)
         .map(|value| value.trim().to_owned())
         .map_err(|_| blocked("checkout_git_unverified"))
+}
+
+/// Git can exit successfully after warning that it skipped unreadable paths
+/// or refs. That output cannot authorize a complete checkout review.
+fn observed_git_bytes(
+    path: &Path,
+    arguments: &[&str],
+    context: &Context,
+    incomplete: &str,
+) -> Result<Vec<u8>, ProtocolError> {
+    let (stdout, stderr) = git_bytes_with_stderr(path, arguments, context)?;
+    if !stderr.is_empty() {
+        return Err(blocked(incomplete));
+    }
+    Ok(stdout)
 }
 
 fn oid(value: &str) -> bool {
