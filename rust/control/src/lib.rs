@@ -44,6 +44,7 @@ pub mod platform;
 pub use devcoordinator2_persistence as persistence;
 pub mod ports;
 pub mod progress;
+pub mod project;
 pub mod rate_card;
 pub mod repository;
 pub mod repository_config;

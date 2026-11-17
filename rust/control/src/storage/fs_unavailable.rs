@@ -23,6 +23,14 @@ pub fn absent(_: &Path) -> Result<bool, ProtocolError> {
 pub fn measure(_: &Path) -> Result<Measurement, ProtocolError> {
     unsupported()
 }
+pub struct CheckoutSnapshot {
+    pub fingerprint: String,
+    pub protected: bool,
+    pub nested_git: bool,
+}
+pub fn checkout_snapshot(_: &Path) -> Result<CheckoutSnapshot, ProtocolError> {
+    unsupported()
+}
 pub struct MeasurementCursor;
 impl MeasurementCursor {
     pub fn new(_: &Path) -> Result<Self, ProtocolError> {

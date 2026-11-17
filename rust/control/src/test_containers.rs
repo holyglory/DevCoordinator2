@@ -1071,9 +1071,7 @@ impl TestContainerService {
                     )
                 },
             )?;
-            let worktree_id = crate::ids::worktree_id(&info.worktree_root).map_err(id_error)?;
-            let repository_id =
-                crate::ids::repository_id(&info.repository_root).map_err(id_error)?;
+            let (repository_id,worktree_id)=crate::repository::Registry::new(self.database.clone()).identity_for_info(&info)?;
             (info.worktree_root.to_path_buf(), worktree_id, repository_id)
         };
         validate_identity(run_id, "run_id", 96)?;
@@ -2231,14 +2229,6 @@ fn database_error(error: DatabaseError) -> ProtocolError {
     ProtocolError::new(
         ErrorCode::InternalError,
         "container ownership lookup failed",
-    )
-    .with_detail(error.to_string())
-}
-
-fn id_error(error: crate::ids::IdError) -> ProtocolError {
-    ProtocolError::new(
-        ErrorCode::InternalError,
-        "cannot derive governed container ownership",
     )
     .with_detail(error.to_string())
 }

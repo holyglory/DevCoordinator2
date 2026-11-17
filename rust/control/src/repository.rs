@@ -21,6 +21,8 @@ use time::{OffsetDateTime, macros::format_description};
 use crate::database::{Database, DatabaseError};
 use crate::ids;
 
+mod relocation;
+
 const GIT_TIMEOUT: Duration = Duration::from_secs(10);
 const PROCESS_POLL: Duration = Duration::from_millis(10);
 const PROCESS_OUTPUT_CAP: usize = 64 * 1024;
@@ -104,11 +106,10 @@ impl Registry {
         let gid = crate::systemd::primary_gid(uid)
             .map_err(|_| repository_not_found("Registered execution account is unavailable."))?;
         let resolved = resolve_worktree(path, Some((uid, gid)))?;
+        let (repository_id, worktree_id) = self.identity_for_info(&resolved)?;
         if path_text(&resolved.worktree_root)? != registration.worktree_path
-            || ids::repository_id(&resolved.repository_root).map_err(id_error)?
-                != registration.repository_id
-            || ids::worktree_id(&resolved.worktree_root).map_err(id_error)?
-                != registration.worktree_id
+            || repository_id != registration.repository_id
+            || worktree_id != registration.worktree_id
         {
             return Err(repository_not_found(
                 "Registered source identity changed; refresh its local registration.",
@@ -130,129 +131,13 @@ impl Registry {
         }
     }
 
-    /// Resolve and upsert a repository and its selected worktree.
     pub fn register(
         &self,
         path: &Path,
         caller_uid: u32,
         caller_gid: u32,
     ) -> Result<RegisteredRepository, ProtocolError> {
-        validate_absolute_path(path)?;
-        let info = resolve_worktree(path, Some((caller_uid, caller_gid)))?;
-        let repository_id = ids::repository_id(&info.repository_root).map_err(id_error)?;
-        let worktree_id = ids::worktree_id(&info.worktree_root).map_err(id_error)?;
-        let root_path = path_text(&info.repository_root)?;
-        let worktree_path = path_text(&info.worktree_root)?;
-        let display_name = info
-            .repository_root
-            .file_name()
-            .and_then(OsStr::to_str)
-            .unwrap_or("")
-            .to_owned();
-        let now = timestamp()?;
-        let transaction_repository_id = repository_id.clone();
-        let transaction_worktree_id = worktree_id.clone();
-        let transaction_root_path = root_path.clone();
-        let transaction_worktree_path = worktree_path.clone();
-        let transaction_display_name = display_name.clone();
-
-        let outcome = self
-            .database
-            .transaction(move |connection| {
-                let existing = connection
-                    .query_row(
-                        "SELECT archived_at, merged_into_repository_id \
-                         FROM repositories WHERE repository_id=$1",
-                        [&transaction_repository_id],
-                        |row| {
-                            Ok((
-                                row.get::<_, Option<String>>(0)?,
-                                row.get::<_, Option<String>>(1)?,
-                            ))
-                        },
-                    )
-                    .optional()?;
-                if let Some((Some(_), merged_into_repository_id)) = existing.as_ref() {
-                    return Ok(RegisterOutcome::Archived {
-                        repository_id: transaction_repository_id,
-                        merged_into_repository_id: merged_into_repository_id.clone(),
-                    });
-                }
-
-                let newly_registered = existing.is_none();
-                if newly_registered {
-                    connection.execute(
-                        "INSERT INTO repositories(\
-                           repository_id,root_path,display_name,registered_at,\
-                           registered_by_uid,last_seen_at\
-                         ) VALUES($1,$2,$3,$4,$5,$4)",
-                        (
-                            &transaction_repository_id,
-                            &transaction_root_path,
-                            &transaction_display_name,
-                            &now,
-                            i64::from(caller_uid),
-                        ),
-                    )?;
-                } else {
-                    connection.execute(
-                        "UPDATE repositories SET last_seen_at=$1 WHERE repository_id=$2",
-                        (&now, &transaction_repository_id),
-                    )?;
-                }
-
-                let worktree_exists = connection
-                    .query_row(
-                        "SELECT 1 FROM worktrees WHERE worktree_id=$1",
-                        [&transaction_worktree_id],
-                        |_| Ok(()),
-                    )
-                    .optional()?
-                    .is_some();
-                if worktree_exists {
-                    connection.execute(
-                        "UPDATE worktrees SET last_seen_at=$1 WHERE worktree_id=$2",
-                        (&now, &transaction_worktree_id),
-                    )?;
-                } else {
-                    connection.execute(
-                        "INSERT INTO worktrees(\
-                           worktree_id,repository_id,worktree_path,registered_at,last_seen_at\
-                         ) VALUES($1,$2,$3,$4,$4)",
-                        (
-                            &transaction_worktree_id,
-                            &transaction_repository_id,
-                            &transaction_worktree_path,
-                            &now,
-                        ),
-                    )?;
-                }
-                Ok(RegisterOutcome::Registered(newly_registered))
-            })
-            .map_err(database_error)?;
-
-        match outcome {
-            RegisterOutcome::Registered(newly_registered) => Ok(RegisteredRepository {
-                repository_id,
-                worktree_id,
-                root_path,
-                worktree_path,
-                display_name,
-                registered: newly_registered,
-            }),
-            RegisterOutcome::Archived {
-                repository_id,
-                merged_into_repository_id,
-            } => {
-                let suffix = merged_into_repository_id
-                    .map(|replacement| format!("; use {replacement}"))
-                    .unwrap_or_default();
-                Err(ProtocolError::new(
-                    ErrorCode::RepositoryArchived,
-                    format!("repository {repository_id} is archived{suffix}"),
-                ))
-            }
-        }
+        relocation::register(self, path, caller_uid, caller_gid)
     }
 
     /// Read one already registered worktree without invoking Git or updating
@@ -437,14 +322,18 @@ impl Registry {
         run_as: Option<(u32, u32)>,
     ) -> Result<RepositoryStatus, ProtocolError> {
         validate_absolute_path(path)?;
-        let info = resolve_worktree(path, run_as).map_err(|_| {
+        let selected_path = if let Some(alias) = self.historical_path(path)? {
+            PathBuf::from(alias.worktree_path)
+        } else {
+            path.to_owned()
+        };
+        let info = resolve_worktree(&selected_path, run_as).map_err(|_| {
             ProtocolError::new(
                 ErrorCode::RepositoryNotFound,
                 format!("no registered repository contains {}", path.display()),
             )
         })?;
-        let repository_id = ids::repository_id(&info.repository_root).map_err(id_error)?;
-        let worktree_id = ids::worktree_id(&info.worktree_root).map_err(id_error)?;
+        let (repository_id, worktree_id) = self.identity_for_info(&info)?;
         let listed = self.list_repositories(true)?;
         let repository = listed
             .repositories
@@ -759,7 +648,8 @@ impl Registry {
                 .map_err(|_| retirement_blocked("registered repository owner is unavailable"))?
         };
         let root = PathBuf::from(&target.0);
-        let root_id = ids::repository_id(&root).map_err(id_error)?;
+        let root_info = resolve_worktree(&root, Some((owner_uid, owner_gid)))?;
+        let (root_id, _) = self.identity_for_info(&root_info)?;
         if root_id != repository_id {
             return Err(retirement_blocked("repository identity changed"));
         }
@@ -782,7 +672,13 @@ impl Registry {
             };
             let path = PathBuf::from(path);
             if !worktree_targets.iter().any(|(_, known)| known == &path) {
-                let id = ids::worktree_id(&path).map_err(id_error)?;
+                let discovered = self.register(&path, owner_uid, owner_gid)?;
+                if discovered.repository_id != repository_id {
+                    return Err(retirement_blocked(
+                        "discovered worktree belongs to a different repository",
+                    ));
+                }
+                let id = discovered.worktree_id;
                 worktree_targets.push((id, path.to_string_lossy().into_owned()));
             }
         }
@@ -798,6 +694,7 @@ impl Registry {
         for (worktree_id, path) in &worktree_targets {
             let path = PathBuf::from(path);
             validate_retirement_worktree(
+                self,
                 repository_id,
                 worktree_id,
                 &root,
@@ -1122,14 +1019,6 @@ impl Registry {
     }
 }
 
-enum RegisterOutcome {
-    Registered(bool),
-    Archived {
-        repository_id: String,
-        merged_into_repository_id: Option<String>,
-    },
-}
-
 enum ArchiveOutcome {
     Repository(Repository),
     Blocked(String),
@@ -1384,7 +1273,7 @@ fn repository_source_from_remote(
     Some(devcoordinator2_api::results::TestRepositorySource { key, name })
 }
 
-fn run_git_arguments(
+pub(crate) fn run_git_arguments(
     probe: &Path,
     run_as: Option<(u32, u32)>,
     arguments: &[&str],
@@ -1434,10 +1323,10 @@ fn run_git_arguments(
     }
 }
 
-struct GitOutput {
-    status: ExitStatus,
-    stdout: Vec<u8>,
-    stderr: Vec<u8>,
+pub(crate) struct GitOutput {
+    pub(crate) status: ExitStatus,
+    pub(crate) stdout: Vec<u8>,
+    pub(crate) stderr: Vec<u8>,
 }
 
 fn run_command_with_timeout(command: Command, timeout: Duration) -> io::Result<GitOutput> {
@@ -1720,6 +1609,7 @@ fn persistent_retirement_blocker(
 }
 
 fn validate_retirement_worktree(
+    registry: &Registry,
     repository_id: &str,
     worktree_id: &str,
     repository_root: &Path,
@@ -1741,9 +1631,9 @@ fn validate_retirement_worktree(
             "repository or worktree identity changed",
         ));
     }
-    if ids::repository_id(repository_root).map_err(id_error)? != repository_id
-        || ids::worktree_id(worktree).map_err(id_error)? != worktree_id
-    {
+    let (registered_repository_id, registered_worktree_id) =
+        registry.identity_for_info(&resolved)?;
+    if registered_repository_id != repository_id || registered_worktree_id != worktree_id {
         return Err(retirement_blocked(
             "repository or worktree identity changed",
         ));

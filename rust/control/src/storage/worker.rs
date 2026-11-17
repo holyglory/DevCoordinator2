@@ -435,6 +435,22 @@ impl StorageService {
             now_ms: now,
             ..Context::default()
         };
+        // Only explicitly committed relocations reuse a path-bound historical
+        // storage ID. Ordinary newly observed aliases retain normal identity.
+        let relocated=self.database.read(|connection| {
+            let mut query=connection.prepare("SELECT record_json FROM storage_artifacts a WHERE a.removed_at_ms IS NULL AND EXISTS(SELECT 1 FROM storage_changes s WHERE s.artifact_id=a.artifact_id AND s.kind='source_paths_relocated') ORDER BY a.artifact_id LIMIT 10001")?;
+            Ok(query.query_map([],|row|row.get::<_,String>(0))?.collect::<Result<Vec<_>,_>>()?)
+        }).map_err(db_error)?;
+        if relocated.len() > 10_000 {
+            return Err(unavailable("relocated_storage_catalogue_too_large"));
+        }
+        for value in relocated {
+            let record: super::model::Record = parse(&value)?;
+            context.relocated_artifact_ids.insert(
+                hash(json(&record.locator)?.as_bytes()),
+                record.artifact.artifact_id,
+            );
+        }
         let reviewed = self.database.read(|connection| {
             let mut query = connection.prepare(
                 "SELECT record_json FROM storage_artifacts WHERE kind='worktree' AND removed_at_ms IS NULL AND jsonb_typeof(record_json->'ignored_review')='object' ORDER BY artifact_id LIMIT 1025",
@@ -1053,7 +1069,8 @@ impl StorageService {
                 {
                     return Err(conflict("artifact_changed"));
                 }
-                let context = self.context()?;
+                let mut context = self.context()?;
+                self.checkout_job_context(&plan, job, &mut context)?;
                 if (completed_resources.contains(&record.resource_key)
                     || record
                         .ancestor_keys
@@ -1069,7 +1086,11 @@ impl StorageService {
                     if self.backend.absent(&record, &context)? {
                         return Ok(());
                     }
-                    if matches!(record.locator, super::model::Locator::Mount { .. }) {
+                    if matches!(record.locator, super::model::Locator::Mount { .. })
+                        || context
+                            .checkout_removals
+                            .contains_key(&record.artifact.artifact_id)
+                    {
                         attempted = true;
                         self.backend
                             .resume(&record, &context, &selected, &job.job_id)?;

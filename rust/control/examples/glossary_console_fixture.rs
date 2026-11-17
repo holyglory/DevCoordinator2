@@ -12,6 +12,9 @@ use devcoordinator2_control::database::Database;
 use devcoordinator2_control::platform::HostClock;
 use serde_json::json;
 
+#[path = "fixture_support/projects.rs"]
+mod projects_fixture;
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let root = PathBuf::from(
         std::env::args()
@@ -19,6 +22,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .ok_or("an unused external fixture directory is required")?,
     );
     let tickets = std::env::args().nth(2).as_deref() == Some("tickets");
+    let projects = std::env::args().nth(2).as_deref() == Some("projects");
     let sketches = std::env::args().nth(2).as_deref() == Some("sketches");
     if !(tickets || sketches) || !root.join("glossary-fixture.marker").is_file() {
         std::fs::create_dir(&root)?;
@@ -104,6 +108,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Arc::new(HostClock),
     )?;
     let mut output = std::io::stdout().lock();
+    let project_fixture = if projects { Some(projects_fixture::seed(&root, &plane, &database)?) } else { None };
     for line in std::io::stdin().lock().lines() {
         let request: RequestEnvelope = serde_json::from_str(&line?)?;
         let public = request.client.identity.is_some();
@@ -123,6 +128,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             work: None,
             identity: request.client.identity,
         };
+        if projects && request.operation == "fixture.projects.context" {
+            writeln!(output, "{}", json!({"protocol":3,"id":request.id,"ok":true,"data":project_fixture}))?;
+            output.flush()?;
+            continue;
+        }
+        if projects && request.operation == "event.wait" {
+            projects_fixture::run_jobs(&plane)?;
+            writeln!(output, "{}", json!({"protocol":3,"id":request.id,"ok":true,"data":{"cursor":0,"events":[],"heartbeat_due":["project-explorer"]}}))?;
+            output.flush()?;
+            continue;
+        }
         // Fixture-only recovery/recurrence lets the rendered incident journey
         // exercise new occurrences without touching the installed daemon.
         if health && request.operation == "fixture.incident.recur" {

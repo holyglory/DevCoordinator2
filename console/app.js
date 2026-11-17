@@ -344,8 +344,9 @@ function stateBlock(kind, text) {
   return `<div class="notice muted">${window.DevCoordinatorI18n.computedMarkup(value)}</div>`;
 }
 function currentDestinationHeading() {
-  const [, view, arg] = (location.hash || '#/plan').split('?')[0].slice(1).split('/');
+  const [, view, arg] = (location.hash || '#/projects').split('?')[0].slice(1).split('/');
   const destinations = {
+    projects: ['Projects', '#/projects'],
     deployments: ['Deployments', '#/deployments'], plan: ['Plan', '#/plan'],
     progress: ['Progress', '#/progress'], usage: ['Codex Usage', '#/usage'], performance: ['Performance', '#/performance'],
     decisions: ['Decisions', '#/decisions'], sketches: ['Sketches', '#/sketches'],
@@ -5132,6 +5133,7 @@ async function render() {
   main.classList.toggle('performance-page', view === 'performance');
   main.classList.toggle('health-page', view === 'health');
   main.classList.toggle('storage-page', view === 'storage');
+  main.classList.toggle('project-explorer-page', view === 'projects');
   main.classList.toggle('tickets-page', view === 'requests');
   if (view !== 'requests') main.classList.remove('ticket-selected');
   main.classList.toggle('deployments-page', view === 'deployments' && !arg);
@@ -5169,18 +5171,19 @@ async function render() {
   if (view === 'sketches') return viewSketches(arg, sketchQuery.get('sketch'), sketchQuery.get('set'));
   if (view === 'health') return viewHealth(arg);
   if (view === 'storage') return storagePage.show(main, state.who?.administrator, signal);
+  if (view === 'projects') return window.DevCoordinatorProjectExplorer.mount(main, { api: apiPage, signal, projectId: arg || null, identity: state.who });
   if (view === 'bugs') return viewBugs();
   if (view === 'requests') return window.DevCoordinatorTickets.mount(main, {api:(operation,params)=>api(operation,params,false),administrator:state.who?.administrator,signal});
   if (view === 'admin') return viewAdmin();
   if (view === 'agent-settings') return viewAgentSettings();
-  location.hash = '#/plan';
+  location.hash = '#/projects';
   return undefined;
 }
 window.render = render;
 window.addEventListener('hashchange', render);
 setupTopNavigation();
 {
-  const [, initialView] = (location.hash || '#/deployments').slice(1).split('/');
+  const [, initialView] = (location.hash || '#/projects').slice(1).split('/');
   document.querySelectorAll('#nav a').forEach((anchor) => anchor.classList.toggle('active', anchor.dataset.view === initialView));
   main.innerHTML = `${currentDestinationHeading()}${skeleton()}`;
 }

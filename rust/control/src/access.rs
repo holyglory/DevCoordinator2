@@ -919,6 +919,18 @@ impl Access {
         // to any admitted Console user. It returns only opaque profiles and
         // bounded room/message data; private agent transport tokens remain
         // required for agent-to-agent operations.
+        // ProjectService rechecks exact physical/source membership on every
+        // request. This exact allowlist does not widen other endpoint policies.
+        if matches!(operation_name,
+            "project.list" | "project.status" | "project.context" |
+            "project.branch.list" | "project.branch.get" | "project.checkout.list" | "project.checkout.get" | "project.history" |
+            "project.branch.commits" | "project.branch.commits.refresh" | "project.branch.update" |
+            "project.checkout.update" | "project.refresh" | "project.job.status" |
+            "project.checkout.remove.plan" | "project.checkout.remove.approve" |
+            "project.checkout.remove.start" | "project.checkout.remove.job" | "project.checkout.remove.cancel"
+        ) && matches!(definition.policy.role, Role::Viewer | Role::Operator) {
+            return Ok(allow(principal, params.clone()));
+        }
         if operation_name.starts_with("agent.hub.console.")
             && definition.policy.scope == Scope::Server
             && definition.policy.role == Role::Viewer
@@ -1099,6 +1111,32 @@ impl Access {
                 Ok(repositories)
             })
             .map_err(database_or_domain)
+    }
+
+    /// Project Explorer's bounded grant join. No host scans and no widening of
+    /// existing repository-scoped operation rules.
+    pub(crate) fn project_repositories(
+        &self,
+        principal: &Principal,
+    ) -> Result<(BTreeSet<String>, BTreeSet<String>), ProtocolError> {
+        let viewers = deployment_ids_at_least(principal, &AccessRole::Viewer);
+        let operators = deployment_ids_at_least(principal, &AccessRole::Operator);
+        let viewers = serde_json::to_string(&viewers).map_err(|_| malformed_filtered_result("project", "invalid grant set"))?;
+        let operators = serde_json::to_string(&operators).map_err(|_| malformed_filtered_result("project", "invalid grant set"))?;
+        self.database.read(|connection| {
+            let rows = connection.prepare(
+                "WITH grants AS (SELECT repository_id,deployment_id FROM deployments WHERE deployment_id IN(SELECT jsonb_array_elements_text($1::jsonb)) UNION SELECT repository_id,observed_deployment_id FROM observed_deployments WHERE observed_deployment_id IN(SELECT jsonb_array_elements_text($1::jsonb))) SELECT repository_id,bool_or(deployment_id IN(SELECT jsonb_array_elements_text($2::jsonb))) FROM grants GROUP BY repository_id"
+            )?.query_map(crate::database::params![viewers, operators], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, bool>(1)?))
+            })?.collect::<crate::database::Result<Vec<_>>>()?;
+            let mut view = BTreeSet::new();
+            let mut edit = BTreeSet::new();
+            for (repository, operator) in rows {
+                view.insert(repository.clone());
+                if operator { edit.insert(repository); }
+            }
+            Ok((view, edit))
+        }).map_err(database_or_domain)
     }
 
     fn repository_for(

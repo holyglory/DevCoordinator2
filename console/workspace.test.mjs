@@ -29,6 +29,22 @@ test('matching names and nested paths alone never combine repositories', () => {
   assert.deepEqual(new Set(groups.map(group => group.rootPath)), new Set(['/source', '/source/workspace']));
 });
 
+test('explicit projects group distinct sources and missing historical copies without changing exact routes', () => {
+  const project = { project_id: 'project-hdl', project_name: 'HDL Ripper' };
+  const rows = [
+    { ...project, repository_id: 'core', source_repository_id: 'core', display_name: 'core', root_path: '/new/source/core', repository_source: { key: 'core-origin', name: 'core' } },
+    { ...project, repository_id: 'docs', source_repository_id: 'docs', display_name: 'docs', root_path: '/new/source/docs', repository_source: { key: 'docs-origin', name: 'docs' } },
+    { ...project, repository_id: 'old-verification', source_repository_id: 'core', display_name: 'hdlripper-clock-divider-drag-verification-20261031', root_path: '/tmp/already-missing' },
+    { project_id: 'unrelated', project_name: 'Another product', repository_id: 'fork', display_name: 'core', repository_source: { key: 'core-origin', name: 'core' } },
+  ];
+  const groups = catalogue(rows, [], []);
+  assert.equal(groups.length, 2);
+  const group = groups.find(g => g.projectId === 'project-hdl');
+  assert.equal(group.name, 'HDL Ripper');
+  assert.deepEqual(new Set(group.records.map(r => r.repository_id)), new Set(['core', 'docs', 'old-verification']));
+  assert.equal(href('plan', 'old-verification'), '#/plan/old-verification');
+});
+
 test('governed test scratch repositories stay under their owning project', () => {
   const source = { key: 'kaizen-origin', name: 'Kaizen' };
   const groups = catalogue([

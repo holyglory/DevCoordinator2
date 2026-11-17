@@ -15,6 +15,7 @@ enum Kind {
     Previews,
     Routes,
     Reviews,
+    Projects,
     Capabilities,
     Callbacks,
     TelegramPoll,
@@ -37,6 +38,7 @@ impl Job for ServiceJob {
             Kind::Previews => "preview-expiry",
             Kind::Routes => "route-reconcile",
             Kind::Reviews => "review-reminders",
+            Kind::Projects => "project-refresh",
             Kind::Capabilities => "capability-refresh",
             Kind::Callbacks => "hub-callbacks",
             Kind::TelegramPoll => "telegram-poll",
@@ -48,6 +50,7 @@ impl Job for ServiceJob {
             Kind::Tests => Some(self.plane.tests().reconciliation_signal()),
             Kind::Logs => Some(self.plane.logs().maintenance_signal()),
             Kind::TelegramDeliver => Some(self.plane.telegram().delivery_signal()),
+            Kind::Projects => Some(self.plane.project().refresh_signal()),
             _ => None,
         }
     }
@@ -146,6 +149,7 @@ impl Job for ServiceJob {
                     ));
                 }
                 Kind::Reviews => self.plane.deliver_review_reminders()?,
+                Kind::Projects => return Ok(self.plane.project().refresh_step(budget)),
                 Kind::Capabilities => self.plane.refresh_agent_capabilities()?,
                 Kind::TelegramPoll | Kind::TelegramDeliver => {
                     let poll = matches!(self.kind, Kind::TelegramPoll);
@@ -200,6 +204,7 @@ pub fn periodic(plane: &ControlPlane) -> Vec<PeriodicJob> {
         (Previews, 60, 10),
         (Routes, 60, 10),
         (Reviews, 5, 10),
+        (Projects, 1, 10),
         (Capabilities, 60, 10),
         (Callbacks, 1, 10),
         (TelegramPoll, 1, 4),

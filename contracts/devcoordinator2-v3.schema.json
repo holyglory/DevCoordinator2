@@ -9348,6 +9348,5966 @@
         "routes": [
           {
             "dispatch": "protocol",
+            "route": "call project.list"
+          }
+        ]
+      },
+      "description": "List persistent projects from the authorized cached inventory.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "after_project_id": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "limit": {
+            "default": 50,
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "query": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "title": "List",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "after_project_id": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "limit": {
+                "default": 50,
+                "format": "uint16",
+                "maximum": 65535,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "query": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "title": "List",
+            "type": "object"
+          },
+          "name": "project_list",
+          "transform": "identity"
+        }
+      ],
+      "name": "project.list",
+      "outputSchema": {
+        "$defs": {
+          "ProjectSummary": {
+            "additionalProperties": false,
+            "properties": {
+              "branch_count": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "checkout_count": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "local_bytes": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "name": {
+                "type": "string"
+              },
+              "project_id": {
+                "type": "string"
+              },
+              "repository_count": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "revision": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "slug": {
+                "type": "string"
+              },
+              "unmeasured_count": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "project_id",
+              "name",
+              "slug",
+              "revision",
+              "repository_count",
+              "checkout_count",
+              "branch_count",
+              "unmeasured_count"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "next_project_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "projects": {
+            "items": {
+              "$ref": "#/$defs/ProjectSummary"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "projects"
+        ],
+        "title": "ProjectList",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "viewer",
+        "scope": "server"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "call project.status"
+          }
+        ]
+      },
+      "description": "Read one project's authorized cached explorer view.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "project_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_id"
+        ],
+        "title": "Reference",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "project_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "project_id"
+            ],
+            "title": "Reference",
+            "type": "object"
+          },
+          "name": "project_status",
+          "transform": "identity"
+        }
+      ],
+      "name": "project.status",
+      "outputSchema": {
+        "$defs": {
+          "Branch": {
+            "additionalProperties": false,
+            "properties": {
+              "branch_id": {
+                "type": "string"
+              },
+              "branch_name": {
+                "type": "string"
+              },
+              "build_bytes": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "head": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "intent": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "lifecycle": {
+                "type": "string"
+              },
+              "local_bytes": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "local_present": {
+                "type": "boolean"
+              },
+              "merge_proof": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/MergeProof"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "next_action": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "outcome": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "owner": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "pr": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/PullRequest"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "remote_present": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              },
+              "repository_id": {
+                "type": "string"
+              },
+              "revision": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "source_bytes": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "task_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "upstream": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "worktree_ids": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "branch_id",
+              "repository_id",
+              "branch_name",
+              "local_present",
+              "lifecycle",
+              "revision",
+              "worktree_ids"
+            ],
+            "type": "object"
+          },
+          "Checkout": {
+            "additionalProperties": false,
+            "properties": {
+              "absolute_path": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "artifact_ids": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "branch_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "branch_name": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "build_bytes": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "can_remove": {
+                "type": "boolean"
+              },
+              "dirty": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              },
+              "exists": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              },
+              "head": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "intent": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "lifecycle": {
+                "type": "string"
+              },
+              "local_bytes": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "locations": {
+                "items": {
+                  "$ref": "#/$defs/Location"
+                },
+                "type": "array"
+              },
+              "next_action": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "outcome": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "owner": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "protection_reasons": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "relative_path": {
+                "type": "string"
+              },
+              "repository_id": {
+                "type": "string"
+              },
+              "revision": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "role": {
+                "type": "string"
+              },
+              "root_kind": {
+                "type": "string"
+              },
+              "source_bytes": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "task_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "worktree_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "worktree_id",
+              "repository_id",
+              "relative_path",
+              "root_kind",
+              "role",
+              "lifecycle",
+              "revision",
+              "artifact_ids",
+              "protection_reasons",
+              "can_remove",
+              "locations"
+            ],
+            "type": "object"
+          },
+          "Event": {
+            "additionalProperties": false,
+            "properties": {
+              "at": {
+                "type": "string"
+              },
+              "event_id": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string"
+              },
+              "repository_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "summary": {
+                "type": "string"
+              },
+              "target_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "event_id",
+              "kind",
+              "summary",
+              "at"
+            ],
+            "type": "object"
+          },
+          "Location": {
+            "additionalProperties": false,
+            "properties": {
+              "allocated_bytes": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "artifact_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "kind": {
+                "type": "string"
+              },
+              "relative_path": {
+                "type": "string"
+              },
+              "root_kind": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "relative_path",
+              "root_kind"
+            ],
+            "type": "object"
+          },
+          "MergeProof": {
+            "additionalProperties": false,
+            "properties": {
+              "head_sha": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string"
+              },
+              "merged_into": {
+                "type": "string"
+              },
+              "observed_at": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "head_sha",
+              "merged_into",
+              "observed_at"
+            ],
+            "type": "object"
+          },
+          "Permissions": {
+            "additionalProperties": false,
+            "properties": {
+              "admin": {
+                "type": "boolean"
+              },
+              "cleanup": {
+                "type": "boolean"
+              },
+              "edit": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "edit",
+              "cleanup",
+              "admin"
+            ],
+            "type": "object"
+          },
+          "ProjectSummary": {
+            "additionalProperties": false,
+            "properties": {
+              "branch_count": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "checkout_count": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "local_bytes": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "name": {
+                "type": "string"
+              },
+              "project_id": {
+                "type": "string"
+              },
+              "repository_count": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "revision": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "slug": {
+                "type": "string"
+              },
+              "unmeasured_count": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "project_id",
+              "name",
+              "slug",
+              "revision",
+              "repository_count",
+              "checkout_count",
+              "branch_count",
+              "unmeasured_count"
+            ],
+            "type": "object"
+          },
+          "PullRequest": {
+            "additionalProperties": false,
+            "properties": {
+              "head_sha": {
+                "type": "string"
+              },
+              "merge_commit_sha": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "merged": {
+                "type": "boolean"
+              },
+              "number": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "state": {
+                "type": "string"
+              },
+              "url": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "number",
+              "url",
+              "state",
+              "merged",
+              "head_sha"
+            ],
+            "type": "object"
+          },
+          "Repository": {
+            "additionalProperties": false,
+            "properties": {
+              "default_branch": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "error": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "github_url": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "last_success": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "name": {
+                "type": "string"
+              },
+              "permissions": {
+                "$ref": "#/$defs/Permissions"
+              },
+              "primary_checkout_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "refresh_state": {
+                "type": "string"
+              },
+              "repository_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "repository_id",
+              "name",
+              "refresh_state",
+              "permissions"
+            ],
+            "type": "object"
+          },
+          "Root": {
+            "additionalProperties": false,
+            "properties": {
+              "absolute_path": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "kind": {
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "relative_path": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "label",
+              "relative_path"
+            ],
+            "type": "object"
+          },
+          "Storage": {
+            "additionalProperties": false,
+            "properties": {
+              "allocated_bytes": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "build_bytes": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "measured_at": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "shared_bytes": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "source_bytes": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "unmeasured_count": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "unmeasured_count"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "activity": {
+            "items": {
+              "$ref": "#/$defs/Event"
+            },
+            "type": "array"
+          },
+          "branches": {
+            "items": {
+              "$ref": "#/$defs/Branch"
+            },
+            "type": "array"
+          },
+          "checkouts": {
+            "items": {
+              "$ref": "#/$defs/Checkout"
+            },
+            "type": "array"
+          },
+          "next_branch_cursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "next_checkout_cursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "permissions": {
+            "$ref": "#/$defs/Permissions"
+          },
+          "project": {
+            "$ref": "#/$defs/ProjectSummary"
+          },
+          "refreshed_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "refreshing": {
+            "type": "boolean"
+          },
+          "repositories": {
+            "items": {
+              "$ref": "#/$defs/Repository"
+            },
+            "type": "array"
+          },
+          "revision": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "roots": {
+            "items": {
+              "$ref": "#/$defs/Root"
+            },
+            "type": "array"
+          },
+          "storage": {
+            "$ref": "#/$defs/Storage"
+          }
+        },
+        "required": [
+          "project",
+          "roots",
+          "repositories",
+          "branches",
+          "checkouts",
+          "storage",
+          "activity",
+          "permissions",
+          "revision",
+          "refreshing"
+        ],
+        "title": "Status",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "viewer",
+        "scope": "server"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "call project.context"
+          }
+        ]
+      },
+      "description": "Map existing repository identities to their explicitly configured projects.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "repository_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "repository_ids"
+        ],
+        "title": "Context",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "repository_ids": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "repository_ids"
+            ],
+            "title": "Context",
+            "type": "object"
+          },
+          "name": "project_context",
+          "transform": "identity"
+        }
+      ],
+      "name": "project.context",
+      "outputSchema": {
+        "$defs": {
+          "Membership": {
+            "additionalProperties": false,
+            "properties": {
+              "project_id": {
+                "type": "string"
+              },
+              "project_name": {
+                "type": "string"
+              },
+              "project_slug": {
+                "type": "string"
+              },
+              "repository_id": {
+                "type": "string"
+              },
+              "source_repository_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "project_id",
+              "project_name",
+              "project_slug",
+              "repository_id",
+              "source_repository_id"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "memberships": {
+            "items": {
+              "$ref": "#/$defs/Membership"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "memberships"
+        ],
+        "title": "Memberships",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "viewer",
+        "scope": "server"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "call project.configure"
+          }
+        ]
+      },
+      "description": "Create or configure explicit project sources, clones and roots.",
+      "inputSchema": {
+        "$defs": {
+          "RepositoryInput": {
+            "additionalProperties": false,
+            "properties": {
+              "default_branch": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "github_url": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "name": {
+                "type": "string"
+              },
+              "physical_repository_ids": {
+                "description": "Registered physical clones explicitly assigned to this source.",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "repository_id": {
+                "description": "Existing canonical source identity. Its histories are never rewritten.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "repository_id",
+              "name",
+              "physical_repository_ids"
+            ],
+            "type": "object"
+          },
+          "RootInput": {
+            "additionalProperties": false,
+            "properties": {
+              "kind": {
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "path": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "label",
+              "path"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "expected_revision": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "name": {
+            "type": "string"
+          },
+          "project_id": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "repositories": {
+            "items": {
+              "$ref": "#/$defs/RepositoryInput"
+            },
+            "type": "array"
+          },
+          "roots": {
+            "items": {
+              "$ref": "#/$defs/RootInput"
+            },
+            "type": "array"
+          },
+          "slug": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "expected_revision",
+          "name",
+          "slug",
+          "roots",
+          "repositories"
+        ],
+        "title": "Configure",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$defs": {
+              "RepositoryInput": {
+                "additionalProperties": false,
+                "properties": {
+                  "default_branch": {
+                    "default": null,
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "github_url": {
+                    "default": null,
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "name": {
+                    "type": "string"
+                  },
+                  "physical_repository_ids": {
+                    "description": "Registered physical clones explicitly assigned to this source.",
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  "repository_id": {
+                    "description": "Existing canonical source identity. Its histories are never rewritten.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "repository_id",
+                  "name",
+                  "physical_repository_ids"
+                ],
+                "type": "object"
+              },
+              "RootInput": {
+                "additionalProperties": false,
+                "properties": {
+                  "kind": {
+                    "type": "string"
+                  },
+                  "label": {
+                    "type": "string"
+                  },
+                  "path": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "label",
+                  "path"
+                ],
+                "type": "object"
+              }
+            },
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "expected_revision": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "name": {
+                "type": "string"
+              },
+              "project_id": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "repositories": {
+                "items": {
+                  "$ref": "#/$defs/RepositoryInput"
+                },
+                "type": "array"
+              },
+              "roots": {
+                "items": {
+                  "$ref": "#/$defs/RootInput"
+                },
+                "type": "array"
+              },
+              "slug": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "expected_revision",
+              "name",
+              "slug",
+              "roots",
+              "repositories"
+            ],
+            "title": "Configure",
+            "type": "object"
+          },
+          "name": "project_configure",
+          "transform": "identity"
+        }
+      ],
+      "name": "project.configure",
+      "outputSchema": {
+        "$defs": {
+          "Branch": {
+            "additionalProperties": false,
+            "properties": {
+              "branch_id": {
+                "type": "string"
+              },
+              "branch_name": {
+                "type": "string"
+              },
+              "build_bytes": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "head": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "intent": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "lifecycle": {
+                "type": "string"
+              },
+              "local_bytes": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "local_present": {
+                "type": "boolean"
+              },
+              "merge_proof": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/MergeProof"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "next_action": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "outcome": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "owner": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "pr": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/PullRequest"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "remote_present": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              },
+              "repository_id": {
+                "type": "string"
+              },
+              "revision": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "source_bytes": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "task_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "upstream": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "worktree_ids": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "branch_id",
+              "repository_id",
+              "branch_name",
+              "local_present",
+              "lifecycle",
+              "revision",
+              "worktree_ids"
+            ],
+            "type": "object"
+          },
+          "Checkout": {
+            "additionalProperties": false,
+            "properties": {
+              "absolute_path": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "artifact_ids": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "branch_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "branch_name": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "build_bytes": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "can_remove": {
+                "type": "boolean"
+              },
+              "dirty": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              },
+              "exists": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              },
+              "head": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "intent": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "lifecycle": {
+                "type": "string"
+              },
+              "local_bytes": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "locations": {
+                "items": {
+                  "$ref": "#/$defs/Location"
+                },
+                "type": "array"
+              },
+              "next_action": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "outcome": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "owner": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "protection_reasons": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "relative_path": {
+                "type": "string"
+              },
+              "repository_id": {
+                "type": "string"
+              },
+              "revision": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "role": {
+                "type": "string"
+              },
+              "root_kind": {
+                "type": "string"
+              },
+              "source_bytes": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "task_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "worktree_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "worktree_id",
+              "repository_id",
+              "relative_path",
+              "root_kind",
+              "role",
+              "lifecycle",
+              "revision",
+              "artifact_ids",
+              "protection_reasons",
+              "can_remove",
+              "locations"
+            ],
+            "type": "object"
+          },
+          "Event": {
+            "additionalProperties": false,
+            "properties": {
+              "at": {
+                "type": "string"
+              },
+              "event_id": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string"
+              },
+              "repository_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "summary": {
+                "type": "string"
+              },
+              "target_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "event_id",
+              "kind",
+              "summary",
+              "at"
+            ],
+            "type": "object"
+          },
+          "Location": {
+            "additionalProperties": false,
+            "properties": {
+              "allocated_bytes": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "artifact_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "kind": {
+                "type": "string"
+              },
+              "relative_path": {
+                "type": "string"
+              },
+              "root_kind": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "relative_path",
+              "root_kind"
+            ],
+            "type": "object"
+          },
+          "MergeProof": {
+            "additionalProperties": false,
+            "properties": {
+              "head_sha": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string"
+              },
+              "merged_into": {
+                "type": "string"
+              },
+              "observed_at": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "head_sha",
+              "merged_into",
+              "observed_at"
+            ],
+            "type": "object"
+          },
+          "Permissions": {
+            "additionalProperties": false,
+            "properties": {
+              "admin": {
+                "type": "boolean"
+              },
+              "cleanup": {
+                "type": "boolean"
+              },
+              "edit": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "edit",
+              "cleanup",
+              "admin"
+            ],
+            "type": "object"
+          },
+          "ProjectSummary": {
+            "additionalProperties": false,
+            "properties": {
+              "branch_count": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "checkout_count": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "local_bytes": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "name": {
+                "type": "string"
+              },
+              "project_id": {
+                "type": "string"
+              },
+              "repository_count": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "revision": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "slug": {
+                "type": "string"
+              },
+              "unmeasured_count": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "project_id",
+              "name",
+              "slug",
+              "revision",
+              "repository_count",
+              "checkout_count",
+              "branch_count",
+              "unmeasured_count"
+            ],
+            "type": "object"
+          },
+          "PullRequest": {
+            "additionalProperties": false,
+            "properties": {
+              "head_sha": {
+                "type": "string"
+              },
+              "merge_commit_sha": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "merged": {
+                "type": "boolean"
+              },
+              "number": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "state": {
+                "type": "string"
+              },
+              "url": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "number",
+              "url",
+              "state",
+              "merged",
+              "head_sha"
+            ],
+            "type": "object"
+          },
+          "Repository": {
+            "additionalProperties": false,
+            "properties": {
+              "default_branch": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "error": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "github_url": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "last_success": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "name": {
+                "type": "string"
+              },
+              "permissions": {
+                "$ref": "#/$defs/Permissions"
+              },
+              "primary_checkout_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "refresh_state": {
+                "type": "string"
+              },
+              "repository_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "repository_id",
+              "name",
+              "refresh_state",
+              "permissions"
+            ],
+            "type": "object"
+          },
+          "Root": {
+            "additionalProperties": false,
+            "properties": {
+              "absolute_path": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "kind": {
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "relative_path": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "label",
+              "relative_path"
+            ],
+            "type": "object"
+          },
+          "Storage": {
+            "additionalProperties": false,
+            "properties": {
+              "allocated_bytes": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "build_bytes": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "measured_at": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "shared_bytes": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "source_bytes": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "unmeasured_count": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "unmeasured_count"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "activity": {
+            "items": {
+              "$ref": "#/$defs/Event"
+            },
+            "type": "array"
+          },
+          "branches": {
+            "items": {
+              "$ref": "#/$defs/Branch"
+            },
+            "type": "array"
+          },
+          "checkouts": {
+            "items": {
+              "$ref": "#/$defs/Checkout"
+            },
+            "type": "array"
+          },
+          "next_branch_cursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "next_checkout_cursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "permissions": {
+            "$ref": "#/$defs/Permissions"
+          },
+          "project": {
+            "$ref": "#/$defs/ProjectSummary"
+          },
+          "refreshed_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "refreshing": {
+            "type": "boolean"
+          },
+          "repositories": {
+            "items": {
+              "$ref": "#/$defs/Repository"
+            },
+            "type": "array"
+          },
+          "revision": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "roots": {
+            "items": {
+              "$ref": "#/$defs/Root"
+            },
+            "type": "array"
+          },
+          "storage": {
+            "$ref": "#/$defs/Storage"
+          }
+        },
+        "required": [
+          "project",
+          "roots",
+          "repositories",
+          "branches",
+          "checkouts",
+          "storage",
+          "activity",
+          "permissions",
+          "revision",
+          "refreshing"
+        ],
+        "title": "Status",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "reversible",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "server"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "call project.branch.list"
+          }
+        ]
+      },
+      "description": "Read a bounded filtered cached branch page.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "cursor": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "lifecycle": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "limit": {
+            "default": 50,
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "project_id": {
+            "type": "string"
+          },
+          "query": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "project_id"
+        ],
+        "title": "Page",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "cursor": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "lifecycle": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "limit": {
+                "default": 50,
+                "format": "uint16",
+                "maximum": 65535,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "project_id": {
+                "type": "string"
+              },
+              "query": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "project_id"
+            ],
+            "title": "Page",
+            "type": "object"
+          },
+          "name": "project_branch_list",
+          "transform": "identity"
+        }
+      ],
+      "name": "project.branch.list",
+      "outputSchema": {
+        "$defs": {
+          "Branch": {
+            "additionalProperties": false,
+            "properties": {
+              "branch_id": {
+                "type": "string"
+              },
+              "branch_name": {
+                "type": "string"
+              },
+              "build_bytes": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "head": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "intent": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "lifecycle": {
+                "type": "string"
+              },
+              "local_bytes": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "local_present": {
+                "type": "boolean"
+              },
+              "merge_proof": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/MergeProof"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "next_action": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "outcome": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "owner": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "pr": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/PullRequest"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "remote_present": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              },
+              "repository_id": {
+                "type": "string"
+              },
+              "revision": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "source_bytes": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "task_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "upstream": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "worktree_ids": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "branch_id",
+              "repository_id",
+              "branch_name",
+              "local_present",
+              "lifecycle",
+              "revision",
+              "worktree_ids"
+            ],
+            "type": "object"
+          },
+          "MergeProof": {
+            "additionalProperties": false,
+            "properties": {
+              "head_sha": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string"
+              },
+              "merged_into": {
+                "type": "string"
+              },
+              "observed_at": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "head_sha",
+              "merged_into",
+              "observed_at"
+            ],
+            "type": "object"
+          },
+          "PullRequest": {
+            "additionalProperties": false,
+            "properties": {
+              "head_sha": {
+                "type": "string"
+              },
+              "merge_commit_sha": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "merged": {
+                "type": "boolean"
+              },
+              "number": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "state": {
+                "type": "string"
+              },
+              "url": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "number",
+              "url",
+              "state",
+              "merged",
+              "head_sha"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "branches": {
+            "items": {
+              "$ref": "#/$defs/Branch"
+            },
+            "type": "array"
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "branches"
+        ],
+        "title": "BranchPage",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "viewer",
+        "scope": "server"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "call project.checkout.list"
+          }
+        ]
+      },
+      "description": "Read a bounded filtered cached checkout page.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "cursor": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "lifecycle": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "limit": {
+            "default": 50,
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "project_id": {
+            "type": "string"
+          },
+          "query": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "project_id"
+        ],
+        "title": "Page",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "cursor": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "lifecycle": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "limit": {
+                "default": 50,
+                "format": "uint16",
+                "maximum": 65535,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "project_id": {
+                "type": "string"
+              },
+              "query": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "project_id"
+            ],
+            "title": "Page",
+            "type": "object"
+          },
+          "name": "project_checkout_list",
+          "transform": "identity"
+        }
+      ],
+      "name": "project.checkout.list",
+      "outputSchema": {
+        "$defs": {
+          "Checkout": {
+            "additionalProperties": false,
+            "properties": {
+              "absolute_path": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "artifact_ids": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "branch_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "branch_name": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "build_bytes": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "can_remove": {
+                "type": "boolean"
+              },
+              "dirty": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              },
+              "exists": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              },
+              "head": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "intent": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "lifecycle": {
+                "type": "string"
+              },
+              "local_bytes": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "locations": {
+                "items": {
+                  "$ref": "#/$defs/Location"
+                },
+                "type": "array"
+              },
+              "next_action": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "outcome": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "owner": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "protection_reasons": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "relative_path": {
+                "type": "string"
+              },
+              "repository_id": {
+                "type": "string"
+              },
+              "revision": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "role": {
+                "type": "string"
+              },
+              "root_kind": {
+                "type": "string"
+              },
+              "source_bytes": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "task_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "worktree_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "worktree_id",
+              "repository_id",
+              "relative_path",
+              "root_kind",
+              "role",
+              "lifecycle",
+              "revision",
+              "artifact_ids",
+              "protection_reasons",
+              "can_remove",
+              "locations"
+            ],
+            "type": "object"
+          },
+          "Location": {
+            "additionalProperties": false,
+            "properties": {
+              "allocated_bytes": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "artifact_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "kind": {
+                "type": "string"
+              },
+              "relative_path": {
+                "type": "string"
+              },
+              "root_kind": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "relative_path",
+              "root_kind"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "checkouts": {
+            "items": {
+              "$ref": "#/$defs/Checkout"
+            },
+            "type": "array"
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "checkouts"
+        ],
+        "title": "CheckoutPage",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "viewer",
+        "scope": "server"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "call project.history"
+          }
+        ]
+      },
+      "description": "Read a bounded authorized project activity page.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "cursor": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "lifecycle": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "limit": {
+            "default": 50,
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "project_id": {
+            "type": "string"
+          },
+          "query": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "project_id"
+        ],
+        "title": "Page",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "cursor": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "lifecycle": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "limit": {
+                "default": 50,
+                "format": "uint16",
+                "maximum": 65535,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "project_id": {
+                "type": "string"
+              },
+              "query": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "project_id"
+            ],
+            "title": "Page",
+            "type": "object"
+          },
+          "name": "project_history",
+          "transform": "identity"
+        }
+      ],
+      "name": "project.history",
+      "outputSchema": {
+        "$defs": {
+          "Event": {
+            "additionalProperties": false,
+            "properties": {
+              "at": {
+                "type": "string"
+              },
+              "event_id": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string"
+              },
+              "repository_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "summary": {
+                "type": "string"
+              },
+              "target_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "event_id",
+              "kind",
+              "summary",
+              "at"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "events": {
+            "items": {
+              "$ref": "#/$defs/Event"
+            },
+            "type": "array"
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "events"
+        ],
+        "title": "History",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "viewer",
+        "scope": "server"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "call project.branch.commits"
+          }
+        ]
+      },
+      "description": "Read one bounded cached commit page with parent identities.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "branch_id": {
+            "type": "string"
+          },
+          "cursor": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "limit": {
+            "default": 50,
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "project_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_id",
+          "branch_id"
+        ],
+        "title": "BranchReference",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "branch_id": {
+                "type": "string"
+              },
+              "cursor": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "limit": {
+                "default": 50,
+                "format": "uint16",
+                "maximum": 65535,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "project_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "project_id",
+              "branch_id"
+            ],
+            "title": "BranchReference",
+            "type": "object"
+          },
+          "name": "project_branch_commits",
+          "transform": "identity"
+        }
+      ],
+      "name": "project.branch.commits",
+      "outputSchema": {
+        "$defs": {
+          "Commit": {
+            "additionalProperties": false,
+            "properties": {
+              "author": {
+                "type": "string"
+              },
+              "authored_at": {
+                "type": "string"
+              },
+              "parents": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "sha": {
+                "type": "string"
+              },
+              "subject": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "sha",
+              "parents",
+              "subject",
+              "author",
+              "authored_at"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "branch_id": {
+            "type": "string"
+          },
+          "commits": {
+            "items": {
+              "$ref": "#/$defs/Commit"
+            },
+            "type": "array"
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "refresh_required": {
+            "type": "boolean"
+          },
+          "refreshed_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "repository_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "repository_id",
+          "branch_id",
+          "commits",
+          "refresh_required"
+        ],
+        "title": "CommitPage",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "viewer",
+        "scope": "server"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "call project.branch.commits.refresh"
+          }
+        ]
+      },
+      "description": "Queue one bounded commit-history page refresh at an exact observed head.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "branch_id": {
+            "type": "string"
+          },
+          "cursor": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "idempotency_key": {
+            "type": "string"
+          },
+          "project_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_id",
+          "branch_id",
+          "idempotency_key"
+        ],
+        "title": "CommitRefresh",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "branch_id": {
+                "type": "string"
+              },
+              "cursor": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "idempotency_key": {
+                "type": "string"
+              },
+              "project_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "project_id",
+              "branch_id",
+              "idempotency_key"
+            ],
+            "title": "CommitRefresh",
+            "type": "object"
+          },
+          "name": "project_branch_commits_refresh",
+          "transform": "identity"
+        }
+      ],
+      "name": "project.branch.commits.refresh",
+      "outputSchema": {
+        "$defs": {
+          "RetirementReceipt": {
+            "additionalProperties": false,
+            "properties": {
+              "branch_id": {
+                "type": "string"
+              },
+              "branch_name": {
+                "type": "string"
+              },
+              "head_sha": {
+                "type": "string"
+              },
+              "local_branch_receipt_ids": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "local_cleanup_receipt_id": {
+                "type": "string"
+              },
+              "observed_at": {
+                "type": "string"
+              },
+              "remote_receipt_id": {
+                "type": "string"
+              },
+              "repository_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "branch_id",
+              "repository_id",
+              "branch_name",
+              "head_sha",
+              "local_cleanup_receipt_id",
+              "local_branch_receipt_ids",
+              "remote_receipt_id",
+              "observed_at"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "finished_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "job_id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "project_id": {
+            "type": "string"
+          },
+          "queued_at": {
+            "type": "string"
+          },
+          "retirement": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/RetirementReceipt"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "revision": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "started_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "state": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_id",
+          "job_id",
+          "kind",
+          "state",
+          "queued_at",
+          "revision"
+        ],
+        "title": "Job",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "reversible",
+        "idempotent": true,
+        "role": "viewer",
+        "scope": "repository"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "call project.branch.update"
+          }
+        ]
+      },
+      "description": "Patch one branch's intent and declared lifecycle using its revision.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "branch_id": {
+            "type": "string"
+          },
+          "expected_revision": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "intent": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "lifecycle": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "next_action": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "outcome": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "owner": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "project_id": {
+            "type": "string"
+          },
+          "task_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "project_id",
+          "branch_id",
+          "expected_revision"
+        ],
+        "title": "BranchUpdate",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "branch_id": {
+                "type": "string"
+              },
+              "expected_revision": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "intent": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "lifecycle": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "next_action": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "outcome": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "owner": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "project_id": {
+                "type": "string"
+              },
+              "task_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "project_id",
+              "branch_id",
+              "expected_revision"
+            ],
+            "title": "BranchUpdate",
+            "type": "object"
+          },
+          "name": "project_branch_update",
+          "transform": "identity"
+        }
+      ],
+      "name": "project.branch.update",
+      "outputSchema": {
+        "$defs": {
+          "MergeProof": {
+            "additionalProperties": false,
+            "properties": {
+              "head_sha": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string"
+              },
+              "merged_into": {
+                "type": "string"
+              },
+              "observed_at": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "head_sha",
+              "merged_into",
+              "observed_at"
+            ],
+            "type": "object"
+          },
+          "PullRequest": {
+            "additionalProperties": false,
+            "properties": {
+              "head_sha": {
+                "type": "string"
+              },
+              "merge_commit_sha": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "merged": {
+                "type": "boolean"
+              },
+              "number": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "state": {
+                "type": "string"
+              },
+              "url": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "number",
+              "url",
+              "state",
+              "merged",
+              "head_sha"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "branch_id": {
+            "type": "string"
+          },
+          "branch_name": {
+            "type": "string"
+          },
+          "build_bytes": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "head": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "intent": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "lifecycle": {
+            "type": "string"
+          },
+          "local_bytes": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "local_present": {
+            "type": "boolean"
+          },
+          "merge_proof": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/MergeProof"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "next_action": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "outcome": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "owner": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "pr": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/PullRequest"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "remote_present": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "repository_id": {
+            "type": "string"
+          },
+          "revision": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "source_bytes": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "task_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "upstream": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "worktree_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "branch_id",
+          "repository_id",
+          "branch_name",
+          "local_present",
+          "lifecycle",
+          "revision",
+          "worktree_ids"
+        ],
+        "title": "Branch",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "reversible",
+        "idempotent": true,
+        "role": "operator",
+        "scope": "repository"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "call project.branch.retire"
+          }
+        ]
+      },
+      "description": "Queue verified branch retirement after exact local cleanup and proven GitHub integration.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "branch_id": {
+            "type": "string"
+          },
+          "cleanup_job_id": {
+            "type": "string"
+          },
+          "expected_head": {
+            "type": "string"
+          },
+          "expected_revision": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "idempotency_key": {
+            "type": "string"
+          },
+          "integration_branch": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "project_id": {
+            "type": "string"
+          },
+          "pull_request_number": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "worktree_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_id",
+          "branch_id",
+          "expected_revision",
+          "expected_head",
+          "cleanup_job_id",
+          "worktree_id",
+          "idempotency_key",
+          "pull_request_number"
+        ],
+        "title": "BranchRetire",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "branch_id": {
+                "type": "string"
+              },
+              "cleanup_job_id": {
+                "type": "string"
+              },
+              "expected_head": {
+                "type": "string"
+              },
+              "expected_revision": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "idempotency_key": {
+                "type": "string"
+              },
+              "integration_branch": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "project_id": {
+                "type": "string"
+              },
+              "pull_request_number": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "worktree_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "project_id",
+              "branch_id",
+              "expected_revision",
+              "expected_head",
+              "cleanup_job_id",
+              "worktree_id",
+              "idempotency_key",
+              "pull_request_number"
+            ],
+            "title": "BranchRetire",
+            "type": "object"
+          },
+          "name": "project_branch_retire",
+          "transform": "identity"
+        }
+      ],
+      "name": "project.branch.retire",
+      "outputSchema": {
+        "$defs": {
+          "RetirementReceipt": {
+            "additionalProperties": false,
+            "properties": {
+              "branch_id": {
+                "type": "string"
+              },
+              "branch_name": {
+                "type": "string"
+              },
+              "head_sha": {
+                "type": "string"
+              },
+              "local_branch_receipt_ids": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "local_cleanup_receipt_id": {
+                "type": "string"
+              },
+              "observed_at": {
+                "type": "string"
+              },
+              "remote_receipt_id": {
+                "type": "string"
+              },
+              "repository_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "branch_id",
+              "repository_id",
+              "branch_name",
+              "head_sha",
+              "local_cleanup_receipt_id",
+              "local_branch_receipt_ids",
+              "remote_receipt_id",
+              "observed_at"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "finished_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "job_id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "project_id": {
+            "type": "string"
+          },
+          "queued_at": {
+            "type": "string"
+          },
+          "retirement": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/RetirementReceipt"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "revision": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "started_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "state": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_id",
+          "job_id",
+          "kind",
+          "state",
+          "queued_at",
+          "revision"
+        ],
+        "title": "Job",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "destructive",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "server"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "call project.checkout.update"
+          }
+        ]
+      },
+      "description": "Patch one checkout's intent, declared role and lifecycle.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "expected_revision": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "intent": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "lifecycle": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "next_action": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "outcome": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "owner": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "project_id": {
+            "type": "string"
+          },
+          "role": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "task_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "worktree_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_id",
+          "worktree_id",
+          "expected_revision"
+        ],
+        "title": "CheckoutUpdate",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "expected_revision": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "intent": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "lifecycle": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "next_action": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "outcome": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "owner": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "project_id": {
+                "type": "string"
+              },
+              "role": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "task_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "worktree_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "project_id",
+              "worktree_id",
+              "expected_revision"
+            ],
+            "title": "CheckoutUpdate",
+            "type": "object"
+          },
+          "name": "project_checkout_update",
+          "transform": "identity"
+        }
+      ],
+      "name": "project.checkout.update",
+      "outputSchema": {
+        "$defs": {
+          "Location": {
+            "additionalProperties": false,
+            "properties": {
+              "allocated_bytes": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "artifact_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "kind": {
+                "type": "string"
+              },
+              "relative_path": {
+                "type": "string"
+              },
+              "root_kind": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "relative_path",
+              "root_kind"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "absolute_path": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "artifact_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "branch_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "branch_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "build_bytes": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "can_remove": {
+            "type": "boolean"
+          },
+          "dirty": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "exists": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "head": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "intent": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "lifecycle": {
+            "type": "string"
+          },
+          "local_bytes": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "locations": {
+            "items": {
+              "$ref": "#/$defs/Location"
+            },
+            "type": "array"
+          },
+          "next_action": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "outcome": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "owner": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "protection_reasons": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "relative_path": {
+            "type": "string"
+          },
+          "repository_id": {
+            "type": "string"
+          },
+          "revision": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "role": {
+            "type": "string"
+          },
+          "root_kind": {
+            "type": "string"
+          },
+          "source_bytes": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "task_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "worktree_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "worktree_id",
+          "repository_id",
+          "relative_path",
+          "root_kind",
+          "role",
+          "lifecycle",
+          "revision",
+          "artifact_ids",
+          "protection_reasons",
+          "can_remove",
+          "locations"
+        ],
+        "title": "Checkout",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "reversible",
+        "idempotent": true,
+        "role": "operator",
+        "scope": "repository"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "call project.refresh"
+          }
+        ]
+      },
+      "description": "Queue an idempotent bounded source refresh on the existing maintenance lane.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "idempotency_key": {
+            "type": "string"
+          },
+          "include_remote": {
+            "default": true,
+            "type": "boolean"
+          },
+          "project_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_id",
+          "idempotency_key"
+        ],
+        "title": "Refresh",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "idempotency_key": {
+                "type": "string"
+              },
+              "include_remote": {
+                "default": true,
+                "type": "boolean"
+              },
+              "project_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "project_id",
+              "idempotency_key"
+            ],
+            "title": "Refresh",
+            "type": "object"
+          },
+          "name": "project_refresh",
+          "transform": "identity"
+        }
+      ],
+      "name": "project.refresh",
+      "outputSchema": {
+        "$defs": {
+          "RetirementReceipt": {
+            "additionalProperties": false,
+            "properties": {
+              "branch_id": {
+                "type": "string"
+              },
+              "branch_name": {
+                "type": "string"
+              },
+              "head_sha": {
+                "type": "string"
+              },
+              "local_branch_receipt_ids": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "local_cleanup_receipt_id": {
+                "type": "string"
+              },
+              "observed_at": {
+                "type": "string"
+              },
+              "remote_receipt_id": {
+                "type": "string"
+              },
+              "repository_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "branch_id",
+              "repository_id",
+              "branch_name",
+              "head_sha",
+              "local_cleanup_receipt_id",
+              "local_branch_receipt_ids",
+              "remote_receipt_id",
+              "observed_at"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "finished_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "job_id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "project_id": {
+            "type": "string"
+          },
+          "queued_at": {
+            "type": "string"
+          },
+          "retirement": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/RetirementReceipt"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "revision": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "started_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "state": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_id",
+          "job_id",
+          "kind",
+          "state",
+          "queued_at",
+          "revision"
+        ],
+        "title": "Job",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "reversible",
+        "idempotent": true,
+        "role": "viewer",
+        "scope": "repository"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "call project.job.status"
+          }
+        ]
+      },
+      "description": "Read a durable project refresh job.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "job_id": {
+            "type": "string"
+          },
+          "project_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_id",
+          "job_id"
+        ],
+        "title": "JobReference",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "job_id": {
+                "type": "string"
+              },
+              "project_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "project_id",
+              "job_id"
+            ],
+            "title": "JobReference",
+            "type": "object"
+          },
+          "name": "project_job_status",
+          "transform": "identity"
+        }
+      ],
+      "name": "project.job.status",
+      "outputSchema": {
+        "$defs": {
+          "RetirementReceipt": {
+            "additionalProperties": false,
+            "properties": {
+              "branch_id": {
+                "type": "string"
+              },
+              "branch_name": {
+                "type": "string"
+              },
+              "head_sha": {
+                "type": "string"
+              },
+              "local_branch_receipt_ids": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "local_cleanup_receipt_id": {
+                "type": "string"
+              },
+              "observed_at": {
+                "type": "string"
+              },
+              "remote_receipt_id": {
+                "type": "string"
+              },
+              "repository_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "branch_id",
+              "repository_id",
+              "branch_name",
+              "head_sha",
+              "local_cleanup_receipt_id",
+              "local_branch_receipt_ids",
+              "remote_receipt_id",
+              "observed_at"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "finished_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "job_id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "project_id": {
+            "type": "string"
+          },
+          "queued_at": {
+            "type": "string"
+          },
+          "retirement": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/RetirementReceipt"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "revision": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "started_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "state": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_id",
+          "job_id",
+          "kind",
+          "state",
+          "queued_at",
+          "revision"
+        ],
+        "title": "Job",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "viewer",
+        "scope": "server"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "call project.checkout.remove.plan"
+          }
+        ]
+      },
+      "description": "Inspect exact checkouts and retain a reviewed cleanup plan.",
+      "inputSchema": {
+        "$defs": {
+          "Target": {
+            "additionalProperties": false,
+            "properties": {
+              "expected_revision": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "worktree_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "worktree_id",
+              "expected_revision"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "expected_project_revision": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "include_absolute_paths": {
+            "default": false,
+            "type": "boolean"
+          },
+          "project_id": {
+            "type": "string"
+          },
+          "targets": {
+            "items": {
+              "$ref": "#/$defs/Target"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "project_id",
+          "expected_project_revision",
+          "targets"
+        ],
+        "title": "Plan",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$defs": {
+              "Target": {
+                "additionalProperties": false,
+                "properties": {
+                  "expected_revision": {
+                    "format": "uint64",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "worktree_id": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "worktree_id",
+                  "expected_revision"
+                ],
+                "type": "object"
+              }
+            },
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "expected_project_revision": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "include_absolute_paths": {
+                "default": false,
+                "type": "boolean"
+              },
+              "project_id": {
+                "type": "string"
+              },
+              "targets": {
+                "items": {
+                  "$ref": "#/$defs/Target"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "project_id",
+              "expected_project_revision",
+              "targets"
+            ],
+            "title": "Plan",
+            "type": "object"
+          },
+          "name": "project_checkout_remove_plan",
+          "transform": "identity"
+        }
+      ],
+      "name": "project.checkout.remove.plan",
+      "outputSchema": {
+        "$defs": {
+          "CheckoutEffect": {
+            "additionalProperties": false,
+            "properties": {
+              "active_uses": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "blockers": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "branch_name": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "content_fingerprint": {
+                "type": "string"
+              },
+              "dirty": {
+                "type": "boolean"
+              },
+              "estimated_reclaimable_bytes": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "head": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "ignored_files": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "independent_clone": {
+                "type": "boolean"
+              },
+              "integration_merge_commit": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "local_refs": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "nested_repositories": {
+                "type": "boolean"
+              },
+              "path": {
+                "description": "Relative to the project's source/build roots unless an administrator\nexplicitly requested absolute paths.",
+                "type": "string"
+              },
+              "path_is_absolute": {
+                "type": "boolean"
+              },
+              "possible_data_loss": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "protections": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "remote_recoverable": {
+                "type": "boolean"
+              },
+              "repository_id": {
+                "type": "string"
+              },
+              "revision": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "stash_entries": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "task_stays_open": {
+                "description": "Removing a parked or unfinished checkout does not finish its task.",
+                "type": "boolean"
+              },
+              "unpublished_refs": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "untracked_files": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "upstream": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "worktree_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "worktree_id",
+              "repository_id",
+              "revision",
+              "path",
+              "path_is_absolute",
+              "independent_clone",
+              "dirty",
+              "untracked_files",
+              "ignored_files",
+              "stash_entries",
+              "local_refs",
+              "unpublished_refs",
+              "nested_repositories",
+              "remote_recoverable",
+              "active_uses",
+              "protections",
+              "possible_data_loss",
+              "blockers",
+              "content_fingerprint",
+              "task_stays_open"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "blockers": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "created_at_ms": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "effect": {
+            "type": "string"
+          },
+          "estimated_reclaimable_bytes": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "expires_at_ms": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "fingerprint": {
+            "type": "string"
+          },
+          "plan_id": {
+            "type": "string"
+          },
+          "project_id": {
+            "type": "string"
+          },
+          "project_revision": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "ready": {
+            "type": "boolean"
+          },
+          "requires_approval": {
+            "type": "boolean"
+          },
+          "targets": {
+            "items": {
+              "$ref": "#/$defs/CheckoutEffect"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "project_id",
+          "project_revision",
+          "plan_id",
+          "fingerprint",
+          "created_at_ms",
+          "expires_at_ms",
+          "targets",
+          "blockers",
+          "requires_approval",
+          "ready",
+          "effect"
+        ],
+        "title": "RemovalPlan",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "reversible",
+        "idempotent": true,
+        "role": "operator",
+        "scope": "repository"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "call project.checkout.remove.approve"
+          }
+        ]
+      },
+      "description": "Approve one fingerprint-bound cleanup plan.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "consent_decision_id": {
+            "default": null,
+            "description": "Trusted local agents cite the recorded human decision authorizing this\nexact loss; an agent's assertion or force flag is not consent.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "fingerprint": {
+            "type": "string"
+          },
+          "idempotency_key": {
+            "type": "string"
+          },
+          "plan_id": {
+            "type": "string"
+          },
+          "project_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_id",
+          "plan_id",
+          "fingerprint",
+          "idempotency_key"
+        ],
+        "title": "Approve",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "consent_decision_id": {
+                "default": null,
+                "description": "Trusted local agents cite the recorded human decision authorizing this\nexact loss; an agent's assertion or force flag is not consent.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "fingerprint": {
+                "type": "string"
+              },
+              "idempotency_key": {
+                "type": "string"
+              },
+              "plan_id": {
+                "type": "string"
+              },
+              "project_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "project_id",
+              "plan_id",
+              "fingerprint",
+              "idempotency_key"
+            ],
+            "title": "Approve",
+            "type": "object"
+          },
+          "name": "project_checkout_remove_approve",
+          "transform": "identity"
+        }
+      ],
+      "name": "project.checkout.remove.approve",
+      "outputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "approved_at_ms": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "consent_decision_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "effect": {
+            "type": "string"
+          },
+          "expires_at_ms": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "fingerprint": {
+            "type": "string"
+          },
+          "plan_id": {
+            "type": "string"
+          },
+          "project_id": {
+            "type": "string"
+          },
+          "receipt_id": {
+            "type": "string"
+          },
+          "user_consent_source": {
+            "description": "A cited local conversation is trusted recorded provenance; the server\ndoes not claim to authenticate messages in a separate agent runtime.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "receipt_id",
+          "project_id",
+          "plan_id",
+          "fingerprint",
+          "approved_at_ms",
+          "expires_at_ms",
+          "effect"
+        ],
+        "title": "ApprovalReceipt",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "reversible",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "server"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "call project.checkout.remove.start"
+          }
+        ]
+      },
+      "description": "Start exact approved checkout cleanup on the shared storage engine.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "approval_receipt_id": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "fingerprint": {
+            "type": "string"
+          },
+          "idempotency_key": {
+            "type": "string"
+          },
+          "plan_id": {
+            "type": "string"
+          },
+          "project_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_id",
+          "plan_id",
+          "fingerprint",
+          "idempotency_key"
+        ],
+        "title": "Start",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "approval_receipt_id": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "fingerprint": {
+                "type": "string"
+              },
+              "idempotency_key": {
+                "type": "string"
+              },
+              "plan_id": {
+                "type": "string"
+              },
+              "project_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "project_id",
+              "plan_id",
+              "fingerprint",
+              "idempotency_key"
+            ],
+            "title": "Start",
+            "type": "object"
+          },
+          "name": "project_checkout_remove_start",
+          "transform": "identity"
+        }
+      ],
+      "name": "project.checkout.remove.start",
+      "outputSchema": {
+        "$defs": {
+          "CheckoutResult": {
+            "additionalProperties": false,
+            "properties": {
+              "artifact_id": {
+                "type": "string"
+              },
+              "fully_removed": {
+                "type": "boolean"
+              },
+              "receipt_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "task_stays_open": {
+                "type": "boolean"
+              },
+              "worktree_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "worktree_id",
+              "artifact_id",
+              "fully_removed",
+              "task_stays_open"
+            ],
+            "type": "object"
+          },
+          "ItemReceipt": {
+            "additionalProperties": false,
+            "properties": {
+              "artifact_id": {
+                "type": "string"
+              },
+              "code": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "measured_bytes_before": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "removed_at_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "space_change": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/SpaceChange"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "status": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "artifact_id",
+              "status"
+            ],
+            "type": "object"
+          },
+          "Job": {
+            "additionalProperties": false,
+            "properties": {
+              "actor": {
+                "type": "string"
+              },
+              "completed_at_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "created_at_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "error_code": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "job_id": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string"
+              },
+              "plan_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "receipts": {
+                "items": {
+                  "$ref": "#/$defs/ItemReceipt"
+                },
+                "type": "array"
+              },
+              "reclaimed_bytes": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "started_at_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "state": {
+                "$ref": "#/$defs/JobState"
+              },
+              "unmeasured_items": {
+                "default": 0,
+                "description": "Items whose removal was verified but whose space change was unavailable.",
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "job_id",
+              "kind",
+              "state",
+              "created_at_ms",
+              "actor",
+              "receipts",
+              "reclaimed_bytes"
+            ],
+            "type": "object"
+          },
+          "JobState": {
+            "enum": [
+              "queued",
+              "running",
+              "cancelling",
+              "cancelled",
+              "completed",
+              "partial",
+              "failed"
+            ],
+            "type": "string"
+          },
+          "SpaceChange": {
+            "additionalProperties": false,
+            "properties": {
+              "available_after": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "available_before": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "filesystem_id": {
+                "type": "string"
+              },
+              "measured_at_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "filesystem_id",
+              "available_before",
+              "available_after",
+              "measured_at_ms"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "job": {
+            "$ref": "#/$defs/Job"
+          },
+          "plan_id": {
+            "type": "string"
+          },
+          "project_id": {
+            "type": "string"
+          },
+          "targets": {
+            "items": {
+              "$ref": "#/$defs/CheckoutResult"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "project_id",
+          "plan_id",
+          "job",
+          "targets"
+        ],
+        "title": "RemovalJob",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "destructive",
+        "idempotent": true,
+        "role": "operator",
+        "scope": "repository"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "call project.checkout.remove.job"
+          }
+        ]
+      },
+      "description": "Verify a checkout cleanup job and its exact removal receipts.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "job_id": {
+            "type": "string"
+          },
+          "project_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_id",
+          "job_id"
+        ],
+        "title": "JobReference",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "job_id": {
+                "type": "string"
+              },
+              "project_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "project_id",
+              "job_id"
+            ],
+            "title": "JobReference",
+            "type": "object"
+          },
+          "name": "project_checkout_remove_job",
+          "transform": "identity"
+        }
+      ],
+      "name": "project.checkout.remove.job",
+      "outputSchema": {
+        "$defs": {
+          "CheckoutResult": {
+            "additionalProperties": false,
+            "properties": {
+              "artifact_id": {
+                "type": "string"
+              },
+              "fully_removed": {
+                "type": "boolean"
+              },
+              "receipt_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "task_stays_open": {
+                "type": "boolean"
+              },
+              "worktree_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "worktree_id",
+              "artifact_id",
+              "fully_removed",
+              "task_stays_open"
+            ],
+            "type": "object"
+          },
+          "ItemReceipt": {
+            "additionalProperties": false,
+            "properties": {
+              "artifact_id": {
+                "type": "string"
+              },
+              "code": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "measured_bytes_before": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "removed_at_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "space_change": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/SpaceChange"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "status": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "artifact_id",
+              "status"
+            ],
+            "type": "object"
+          },
+          "Job": {
+            "additionalProperties": false,
+            "properties": {
+              "actor": {
+                "type": "string"
+              },
+              "completed_at_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "created_at_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "error_code": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "job_id": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string"
+              },
+              "plan_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "receipts": {
+                "items": {
+                  "$ref": "#/$defs/ItemReceipt"
+                },
+                "type": "array"
+              },
+              "reclaimed_bytes": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "started_at_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "state": {
+                "$ref": "#/$defs/JobState"
+              },
+              "unmeasured_items": {
+                "default": 0,
+                "description": "Items whose removal was verified but whose space change was unavailable.",
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "job_id",
+              "kind",
+              "state",
+              "created_at_ms",
+              "actor",
+              "receipts",
+              "reclaimed_bytes"
+            ],
+            "type": "object"
+          },
+          "JobState": {
+            "enum": [
+              "queued",
+              "running",
+              "cancelling",
+              "cancelled",
+              "completed",
+              "partial",
+              "failed"
+            ],
+            "type": "string"
+          },
+          "SpaceChange": {
+            "additionalProperties": false,
+            "properties": {
+              "available_after": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "available_before": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "filesystem_id": {
+                "type": "string"
+              },
+              "measured_at_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "filesystem_id",
+              "available_before",
+              "available_after",
+              "measured_at_ms"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "job": {
+            "$ref": "#/$defs/Job"
+          },
+          "plan_id": {
+            "type": "string"
+          },
+          "project_id": {
+            "type": "string"
+          },
+          "targets": {
+            "items": {
+              "$ref": "#/$defs/CheckoutResult"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "project_id",
+          "plan_id",
+          "job",
+          "targets"
+        ],
+        "title": "RemovalJob",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "viewer",
+        "scope": "server"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "call project.checkout.remove.cancel"
+          }
+        ]
+      },
+      "description": "Request cancellation of one owned checkout cleanup job.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "job_id": {
+            "type": "string"
+          },
+          "project_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_id",
+          "job_id"
+        ],
+        "title": "JobReference",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "job_id": {
+                "type": "string"
+              },
+              "project_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "project_id",
+              "job_id"
+            ],
+            "title": "JobReference",
+            "type": "object"
+          },
+          "name": "project_checkout_remove_cancel",
+          "transform": "identity"
+        }
+      ],
+      "name": "project.checkout.remove.cancel",
+      "outputSchema": {
+        "$defs": {
+          "CheckoutResult": {
+            "additionalProperties": false,
+            "properties": {
+              "artifact_id": {
+                "type": "string"
+              },
+              "fully_removed": {
+                "type": "boolean"
+              },
+              "receipt_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "task_stays_open": {
+                "type": "boolean"
+              },
+              "worktree_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "worktree_id",
+              "artifact_id",
+              "fully_removed",
+              "task_stays_open"
+            ],
+            "type": "object"
+          },
+          "ItemReceipt": {
+            "additionalProperties": false,
+            "properties": {
+              "artifact_id": {
+                "type": "string"
+              },
+              "code": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "measured_bytes_before": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "removed_at_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "space_change": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/SpaceChange"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "status": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "artifact_id",
+              "status"
+            ],
+            "type": "object"
+          },
+          "Job": {
+            "additionalProperties": false,
+            "properties": {
+              "actor": {
+                "type": "string"
+              },
+              "completed_at_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "created_at_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "error_code": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "job_id": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string"
+              },
+              "plan_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "receipts": {
+                "items": {
+                  "$ref": "#/$defs/ItemReceipt"
+                },
+                "type": "array"
+              },
+              "reclaimed_bytes": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "started_at_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "state": {
+                "$ref": "#/$defs/JobState"
+              },
+              "unmeasured_items": {
+                "default": 0,
+                "description": "Items whose removal was verified but whose space change was unavailable.",
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "job_id",
+              "kind",
+              "state",
+              "created_at_ms",
+              "actor",
+              "receipts",
+              "reclaimed_bytes"
+            ],
+            "type": "object"
+          },
+          "JobState": {
+            "enum": [
+              "queued",
+              "running",
+              "cancelling",
+              "cancelled",
+              "completed",
+              "partial",
+              "failed"
+            ],
+            "type": "string"
+          },
+          "SpaceChange": {
+            "additionalProperties": false,
+            "properties": {
+              "available_after": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "available_before": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "filesystem_id": {
+                "type": "string"
+              },
+              "measured_at_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "filesystem_id",
+              "available_before",
+              "available_after",
+              "measured_at_ms"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "job": {
+            "$ref": "#/$defs/Job"
+          },
+          "plan_id": {
+            "type": "string"
+          },
+          "project_id": {
+            "type": "string"
+          },
+          "targets": {
+            "items": {
+              "$ref": "#/$defs/CheckoutResult"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "project_id",
+          "plan_id",
+          "job",
+          "targets"
+        ],
+        "title": "RemovalJob",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "reversible",
+        "idempotent": true,
+        "role": "operator",
+        "scope": "repository"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
             "route": "call server.register"
           }
         ]

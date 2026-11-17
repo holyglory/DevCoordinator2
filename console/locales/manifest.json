@@ -18,8 +18,8 @@
     "decisions",
     "glossary",
     "artifacts",
-    "performance"
-    ,"storage"
+    "performance",
+    "storage"
   ],
   "locales": [
     {
@@ -90,6 +90,9 @@
         ],
         "storage": [
           "en/storage.json"
+        ],
+        "projects": [
+          "en/projects.json"
         ]
       }
     },
@@ -3032,6 +3035,10 @@
   ],
   "featureNamespaces": {
     "tickets": {
+      "sourceLocale": "en",
+      "status": "source-only"
+    },
+    "projects": {
       "sourceLocale": "en",
       "status": "source-only"
     }

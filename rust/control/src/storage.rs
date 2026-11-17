@@ -1,7 +1,9 @@
 //! One authority for discovery, safety, policy, manual and automatic cleanup.
 pub(crate) mod evidence;
 pub mod fs;
+pub(crate) mod lifecycle;
 mod locks;
+pub(crate) use lifecycle::relocate_source_paths;
 pub mod model;
 pub mod native;
 #[cfg(test)]
@@ -940,6 +942,7 @@ impl StorageService {
             public: public.clone(),
             records: bound,
             policies,
+            checkout_removal: None,
         };
         let id = public.plan_id.clone();
         let encoded = json(&plan)?;
@@ -974,6 +977,9 @@ impl StorageService {
             return parse(&value);
         }
         let plan = self.stored_plan(&p.plan_id)?;
+        if plan.checkout_removal.is_some() {
+            return Err(blocked("checkout_plan_requires_project_start"));
+        }
         if !plan.public.ready {
             return Err(blocked("plan_has_blockers"));
         }
@@ -1673,6 +1679,10 @@ fn visit(
 }
 
 fn next_sequence(c: &crate::database::Transaction<'_>) -> Result<u64, DatabaseError> {
+    next_sequence_in(c)
+}
+
+fn next_sequence_in(c: &crate::database::Connection) -> Result<u64, DatabaseError> {
     c.execute(
         "UPDATE storage_scan_state SET revision=revision+1 WHERE singleton=1",
         [],

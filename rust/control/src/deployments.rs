@@ -399,13 +399,8 @@ impl Deployments {
                 Path::new(&candidate.path),
                 Some((target.caller_uid, target.caller_gid)),
             )?;
-            let repository_id =
-                crate::ids::repository_id(&resolved.repository_root).map_err(|_| {
-                    ProtocolError::new(
-                        ErrorCode::RepositoryNotFound,
-                        "cannot resolve candidate repository identity",
-                    )
-                })?;
+            let registered=self.registry.register(&resolved.worktree_root,target.caller_uid,target.caller_gid)?;
+            let repository_id = registered.repository_id;
             if repository_id != target.repository_id {
                 return Err(ProtocolError::new(
                     ErrorCode::ParamsInvalid,
@@ -872,13 +867,8 @@ impl Deployments {
                 Path::new(&candidate.path),
                 Some((target.caller_uid, target.caller_gid)),
             )?;
-            let repository_id =
-                crate::ids::repository_id(&resolved.repository_root).map_err(|_| {
-                    ProtocolError::new(
-                        ErrorCode::RepositoryNotFound,
-                        "cannot resolve candidate repository identity",
-                    )
-                })?;
+            let registered=self.registry.register(&resolved.worktree_root,target.caller_uid,target.caller_gid)?;
+            let repository_id = registered.repository_id;
             if repository_id != target.repository_id {
                 return Err(ProtocolError::new(
                     ErrorCode::ParamsInvalid,
@@ -903,12 +893,7 @@ impl Deployments {
             // Keep the target identity, owner, leases and generation history. Only
             // the immutable generation's source/configuration comes from the candidate.
             source_origin = Some(GenerationSourceOrigin {
-                worktree_id: crate::ids::worktree_id(&resolved.worktree_root).map_err(|_| {
-                    ProtocolError::new(
-                        ErrorCode::RepositoryNotFound,
-                        "cannot resolve candidate worktree identity",
-                    )
-                })?,
+                worktree_id: registered.worktree_id,
                 path: resolved.worktree_root.clone(),
             });
             target.worktree = resolved.worktree_root;
@@ -4702,7 +4687,7 @@ impl Deployments {
             (caller.uid, caller.gid)
         };
         let worktree =
-            crate::deployment_origin::resolve(origin, &row.repository_id, caller_uid, caller_gid)?;
+            crate::deployment_origin::resolve(&self.registry, origin, &row.repository_id, caller_uid, caller_gid)?;
         let specification = load_deployment_spec(&worktree, &row.name).map_err(config_error)?;
         if !specification.sources.contains(&row.source) {
             return Err(ProtocolError::new(
@@ -4869,18 +4854,7 @@ impl Deployments {
                 caller.gid,
             )
         };
-        let repository_id = crate::ids::repository_id(&resolved.repository_root).map_err(|_| {
-            ProtocolError::new(
-                ErrorCode::RepositoryNotFound,
-                "cannot resolve repository identity",
-            )
-        })?;
-        let worktree_id = crate::ids::worktree_id(&resolved.worktree_root).map_err(|_| {
-            ProtocolError::new(
-                ErrorCode::RepositoryNotFound,
-                "cannot resolve worktree identity",
-            )
-        })?;
+        let (repository_id,worktree_id)=self.registry.identity_for_info(&resolved)?;
         let worktree = resolved.worktree_root;
         let (name, explicit_source) = selected
             .split_once('@')

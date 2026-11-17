@@ -466,6 +466,37 @@ trees (`<repo>/.devcoordinator/`), it must:
 - treat all request content and repository configuration as untrusted input
   with strict validation.
 
+## Project Explorer authority (owner-confirmed 2026-11-17)
+
+- The owner selected product projects containing multiple source repositories,
+  with explicit membership and stable identities across moves. Membership does
+  not widen the existing repository grants: a viewer sees only authorized
+  sources and their copies, and aggregate counts exclude inaccessible sources.
+- The owner selected operator metadata editing and proven-safe local cleanup.
+  The exact source must grant operator access; a role on another source in the
+  same product does not authorize its mutation. Global administrators handle
+  remote feature-ref deletion and explicit approval of known local data loss.
+- Relative project locations are the normal public representation. Absolute
+  filesystem paths are administrator details. Coordinator uses its managed
+  private GitHub credential for bounded branch, commit and PR observations;
+  neither that credential nor credential-bearing URLs enter public responses,
+  source, prompts or logs. No per-user GitHub login is introduced.
+- A removal approval names the exact target, observed contents, potential loss
+  and effect. Changed identity or contents invalidate it. An agent's generic
+  force flag is not user consent. Existing same-owner local caller authority
+  remains; a local agent must record the user's actual exact-loss authorization
+  before invoking an approval operation on the user's behalf.
+- The owner approved brief coordinated local deployment restarts during
+  project-by-project relocation to the approved source and build project
+  directories. Preserve dirty primary work, private
+  credentials and persistent service data. No automatic bulk migration is
+  authorized. DevCoordinator's own eventual move must use its reviewed source
+  and installer workflow and retain clean-main verification.
+- Squash completion permits removing the exact integrated feature's local and
+  GitHub branch refs after verified cleanup. Keep PR/integration and Coordinator
+  history; do not introduce local archive copies or archive tags. This does not
+  authorize deletion of arbitrary unmerged remote work or protected refs.
+
 ## Review triggers
 
 Review this file before: adding an account not controlled by the same
