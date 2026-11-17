@@ -497,6 +497,19 @@ fn retention_next_name(
     directory: &File,
     cookie: &mut u64,
 ) -> Result<Option<String>, LogQueryError> {
+    // A resumed descriptor may first have been read at its terminal cookie.
+    // On some filesystems rewinding that open description still reads EOF.
+    // Restart on an independent stream; dup/try_clone shares that state.
+    let fresh = if *cookie == 0 {
+        let fresh = open_dir(directory, ".")?;
+        if file_identity(&fresh)? != file_identity(directory)? {
+            return Err(LogQueryError::CursorStale);
+        }
+        Some(fresh)
+    } else {
+        None
+    };
+    let directory = fresh.as_ref().unwrap_or(directory);
     unix_fs::seek(directory, unix_fs::SeekFrom::Start(*cookie))
         .map_err(|_| LogQueryError::CursorStale)?;
     let mut buffer = [std::mem::MaybeUninit::<u8>::uninit(); 4096];
@@ -5589,6 +5602,128 @@ mod tests {
                 }
             }
             panic!("bounded container retirement did not finish");
+        }
+        for entries in [1, 16] {
+            let root = temporary("initial-eof-container-inventory");
+            let run = run_id(60 + entries);
+            let path = root.join(".devcoordinator/test/logs/runs").join(&run);
+            fs::create_dir(&path).unwrap();
+            let lease = RunLogLease::acquire(&path, &run).unwrap();
+            lease
+                .publish_run_metadata(&RunLogMetadata {
+                    schema: 2,
+                    run_id: run.clone(),
+                    test: "complete".into(),
+                    started_at_epoch_ms: 1,
+                    finished_at_epoch_ms: Some(2),
+                    status: RunStatus::Failed,
+                    complete: true,
+                })
+                .unwrap();
+            drop(lease);
+            let (_, runs) = retention_roots(&root).unwrap();
+            let directory = open_dir(&runs, &run).unwrap();
+            let mut terminal = 0;
+            while retention_next_name(&directory, &mut terminal)
+                .unwrap()
+                .is_some()
+            {}
+            assert_ne!(terminal, 0);
+            // Resume with a fresh descriptor whose first read is already EOF,
+            // exactly as the bounded filesystem walk does at a page boundary.
+            let resumed = open_dir(&runs, &run).unwrap();
+            assert!(
+                retention_next_name(&resumed, &mut terminal)
+                    .unwrap()
+                    .is_none()
+            );
+            let expected = BTreeSet::from(["active.lock".to_owned(), "run.json".to_owned()]);
+            assert_eq!(
+                retention_names(&resumed, 3)
+                    .unwrap()
+                    .into_iter()
+                    .collect::<BTreeSet<_>>(),
+                expected
+            );
+            let mut reset = 0;
+            let first = retention_next_name(&resumed, &mut reset).unwrap().unwrap();
+            assert_ne!(reset, 0);
+            let second = retention_next_name(&resumed, &mut reset).unwrap().unwrap();
+            assert!(retention_next_name(&resumed, &mut reset).unwrap().is_none());
+            assert_eq!(
+                BTreeSet::from([first, second]),
+                expected,
+                "returning to the original descriptor truncated the reset inventory"
+            );
+            let request = LogPruneRequest {
+                schema: 2,
+                repository_id: "raaaaaaaaaaaaaaaa".into(),
+                max_age_seconds: 86400,
+                case_depth: 3,
+                active_run_id: None,
+            };
+            let mut cursor = None;
+            let mut expired = 0;
+            for page in 0..100 {
+                let step = prune_retention_containers_step(
+                    &root,
+                    &request,
+                    cursor.as_deref(),
+                    entries as usize,
+                    Duration::from_secs(1),
+                    |_| Ok(false),
+                    |_| {
+                        expired += 1;
+                        Ok(())
+                    },
+                )
+                .unwrap();
+                assert!(step.visited_entries <= entries as usize);
+                cursor = step.next_cursor;
+                if cursor.is_none() {
+                    break;
+                }
+                assert!(page < 99);
+            }
+            assert_eq!(expired, 1);
+            assert!(!path.exists());
+            let (logs, _) = retention_roots(&root).unwrap();
+            let garbage = open_dir(&logs, ".garbage").unwrap();
+            let mut terminal = 0;
+            while retention_next_name(&garbage, &mut terminal)
+                .unwrap()
+                .is_some()
+            {}
+            let mut saved = retention_cursor(&garbage, None, 256).unwrap();
+            saved.frames[0].cookie = terminal;
+            let saved = serde_json::to_string(&saved).unwrap();
+            let step =
+                collect_retention_garbage_step(&root, Some(&saved), 1, Duration::from_secs(1))
+                    .unwrap();
+            assert!(
+                step.next_cursor.is_some(),
+                "a stale EOF cookie incorrectly certified nonempty garbage as empty"
+            );
+            let mut cursor = step.next_cursor;
+            for page in 0..100 {
+                let step = collect_retention_garbage_step(
+                    &root,
+                    cursor.as_deref(),
+                    entries as usize,
+                    Duration::from_secs(1),
+                )
+                .unwrap();
+                assert!(step.visited_entries <= entries as usize);
+                cursor = step.next_cursor;
+                if cursor.is_none() {
+                    break;
+                }
+                assert!(page < 99);
+            }
+            assert!(retention_names(&garbage, 1).unwrap().is_empty());
+            prune_empty_retention_containers(&root).unwrap();
+            assert!(!root.join(".devcoordinator/test/logs").exists());
+            fs::remove_dir_all(root).unwrap();
         }
         let root = temporary("empty-containers");
         let (run, _) = create_run(&root, 51, "metadata", b"retained\n", epoch_ms(), false);
