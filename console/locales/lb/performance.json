@@ -112,5 +112,20 @@
   "reviewScopeTotal": "Iwwerpréiwung Total: {tokens}",
   "periodScopeTotal": "Period Total: {tokens}",
   "reviewTotalLabel": "Total fir Iwwerpréiwung",
-  "periodTotalLabel": "Total fir Period"
+  "periodTotalLabel": "Total fir Period",
+  "summaryRecorded": "Erfaasst",
+  "summaryPeriod": "Period",
+  "summaryReviews": "Iwwerpréiwungen",
+  "apiEquivalentCost": "Käschten no API-Präisser",
+  "costData": "Käschtendaten",
+  "requests": "Ufroen",
+  "notRecorded": "Net erfaasst",
+  "noCostBreakdown": "Keng Käschtenopdeelung",
+  "noMatchingRates": "Keng passend Tariffer",
+  "pricingUnavailable": "Präisser net disponibel",
+  "pricesComplete": "Mat Präisser",
+  "pricesPartial": "Verschidde Präisser feelen",
+  "missingRatesNote": "D’Zuel vun den Tokenen ass erfaasst; déi passend Modellpräisser feelen.",
+  "missingBreakdownNote": "D’Zuel vun den Ufroen an d’Käschtendetailer pro Aktivitéit sinn net disponibel.",
+  "recordedData": "Erfaassten Donnéeën"
 }

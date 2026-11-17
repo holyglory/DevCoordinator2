@@ -121,5 +121,20 @@
   "reviewScopeTotal": "reviżjoni totali: {tokens}",
   "periodScopeTotal": "perjodu totali: {tokens}",
   "reviewTotalLabel": "totali għal reviżjoni",
-  "periodTotalLabel": "totali għal perjodu"
+  "periodTotalLabel": "totali għal perjodu",
+  "summaryRecorded": "Irreġistrat",
+  "summaryPeriod": "Perjodu",
+  "summaryReviews": "Reviżjonijiet",
+  "apiEquivalentCost": "Spiża ekwivalenti skont il-prezzijiet tal-API",
+  "costData": "Data dwar l-ispejjeż",
+  "requests": "Talbiet",
+  "notRecorded": "Mhux irreġistrat",
+  "noCostBreakdown": "Ebda analiżi tal-ispejjeż",
+  "noMatchingRates": "Ebda tariffa korrispondenti",
+  "pricingUnavailable": "Il-prezzijiet mhumiex disponibbli",
+  "pricesComplete": "Ipprezzat",
+  "pricesPartial": "Xi prezzijiet huma nieqsa",
+  "missingRatesNote": "L-għadd ta’ tokens huwa rreġistrat; il-prezzijiet korrispondenti tal-mudelli huma nieqsa.",
+  "missingBreakdownNote": "L-għadd ta’ talbiet u d-dettalji tal-ispejjeż għal kull attività mhumiex disponibbli.",
+  "recordedData": "Data rreġistrata"
 }

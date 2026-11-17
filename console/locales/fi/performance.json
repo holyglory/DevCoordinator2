@@ -114,5 +114,20 @@
   "reviewScopeTotal": "Tarkastelun yhteismäärä: {tokens}",
   "periodScopeTotal": "Ajanjakson yhteismäärä: {tokens}",
   "reviewTotalLabel": "Tarkastelun yhteismäärä",
-  "periodTotalLabel": "Ajanjakson yhteismäärä"
+  "periodTotalLabel": "Ajanjakson yhteismäärä",
+  "summaryRecorded": "Tallennettu",
+  "summaryPeriod": "Ajanjakso",
+  "summaryReviews": "Tarkastelut",
+  "apiEquivalentCost": "API-hintoja vastaava kustannus",
+  "costData": "Kustannustiedot",
+  "requests": "Pyynnöt",
+  "notRecorded": "Ei tallennettu",
+  "noCostBreakdown": "Ei kustannuserittelyä",
+  "noMatchingRates": "Ei vastaavia hintoja",
+  "pricingUnavailable": "Hintatietoja ei saatavilla",
+  "pricesComplete": "Hinnoiteltu",
+  "pricesPartial": "Joitakin hintoja puuttuu",
+  "missingRatesNote": "Tokenien määrät on tallennettu; vastaavat mallihinnat puuttuvat.",
+  "missingBreakdownNote": "Pyyntöjen määriä ja kustannustietoja toiminnoittain ei ole saatavilla.",
+  "recordedData": "Tallennetut tiedot"
 }

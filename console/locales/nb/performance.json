@@ -112,5 +112,20 @@
   "reviewScopeTotal": "Gjennomgang totalt: {tokens}",
   "periodScopeTotal": "Periode totalt: {tokens}",
   "reviewTotalLabel": "Totalt for gjennomgang",
-  "periodTotalLabel": "Totalt for periode"
+  "periodTotalLabel": "Totalt for periode",
+  "summaryRecorded": "Registrert",
+  "summaryPeriod": "Periode",
+  "summaryReviews": "Vurderinger",
+  "apiEquivalentCost": "Tilsvarende kostnad til API-priser",
+  "costData": "Kostnadsdata",
+  "requests": "Forespørsler",
+  "notRecorded": "Ikke registrert",
+  "noCostBreakdown": "Ingen kostnadsfordeling",
+  "noMatchingRates": "Ingen samsvarende satser",
+  "pricingUnavailable": "Priser er ikke tilgjengelige",
+  "pricesComplete": "Prissatt",
+  "pricesPartial": "Noen priser mangler",
+  "missingRatesNote": "Antall token er registrert; de tilhørende modellprisene mangler.",
+  "missingBreakdownNote": "Antall forespørsler og kostnadsdetaljer per aktivitet er ikke tilgjengelige.",
+  "recordedData": "Registrerte data"
 }

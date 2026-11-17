@@ -112,5 +112,20 @@
   "reviewScopeTotal": "Gesamtsumme der Prüfung: {tokens}",
   "periodScopeTotal": "Gesamtsumme des Zeitraums: {tokens}",
   "reviewTotalLabel": "Gesamtsumme der Prüfung",
-  "periodTotalLabel": "Gesamtsumme des Zeitraums"
+  "periodTotalLabel": "Gesamtsumme des Zeitraums",
+  "summaryRecorded": "Erfasst",
+  "summaryPeriod": "Zeitraum",
+  "summaryReviews": "Reviews",
+  "apiEquivalentCost": "Kosten zu API-Preisen",
+  "costData": "Kostendaten",
+  "requests": "Anfragen",
+  "notRecorded": "Nicht erfasst",
+  "noCostBreakdown": "Keine Kostenaufschlüsselung",
+  "noMatchingRates": "Keine passenden Tarife",
+  "pricingUnavailable": "Preise nicht verfügbar",
+  "pricesComplete": "Bepreist",
+  "pricesPartial": "Einige Preise fehlen",
+  "missingRatesNote": "Die Tokenzahlen sind erfasst; passende Modellpreise fehlen.",
+  "missingBreakdownNote": "Anfragezahlen und Kostendetails je Aktivität sind nicht verfügbar.",
+  "recordedData": "Erfasste Daten"
 }

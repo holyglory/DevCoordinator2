@@ -121,5 +121,20 @@
   "reviewScopeTotal": "Iomlán an athbhreithnithe: {tokens}",
   "periodScopeTotal": "Iomlán na tréimhse: {tokens}",
   "reviewTotalLabel": "Iomlán don athbhreithniú",
-  "periodTotalLabel": "Iomlán don tréimhse"
+  "periodTotalLabel": "Iomlán don tréimhse",
+  "summaryRecorded": "Taifeadta",
+  "summaryPeriod": "Tréimhse",
+  "summaryReviews": "Athbhreithnithe",
+  "apiEquivalentCost": "Costas coibhéiseach de réir praghsanna API",
+  "costData": "Sonraí costais",
+  "requests": "Iarratais",
+  "notRecorded": "Gan taifead",
+  "noCostBreakdown": "Gan miondealú costais",
+  "noMatchingRates": "Gan rátaí comhoiriúnacha",
+  "pricingUnavailable": "Níl praghsanna ar fáil",
+  "pricesComplete": "Praghsáilte",
+  "pricesPartial": "Tá roinnt praghsanna ar iarraidh",
+  "missingRatesNote": "Tá líon na gcomharthaí taifeadta; tá praghsanna comhfhreagracha na samhlacha ar iarraidh.",
+  "missingBreakdownNote": "Níl líon na n-iarratas ná sonraí costais in aghaidh na gníomhaíochta ar fáil.",
+  "recordedData": "Sonraí taifeadta"
 }

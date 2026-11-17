@@ -933,6 +933,21 @@ fn performance_activity_breakdowns_survive_paging_and_keep_review_scope() {
             .all(|activity| activity.cost.status == "unavailable"
                 && activity.cost.estimated_usd_micros.is_none())
     );
+    for activity in &usage.activities {
+        assert_eq!(activity.operations, None);
+        assert_eq!(
+            activity.cost.model_requests, None,
+            "activity token observations do not establish unique request counts"
+        );
+        assert_eq!(activity.cost.priced_requests, None);
+        assert_eq!(activity.cost.unknown_requests, None);
+    }
+    assert_eq!(
+        usage.totals.model_requests,
+        Some(2),
+        "the independently measured repository request count remains available"
+    );
+    assert_eq!(shown.cost.model_requests, Some(2));
     assert_eq!(shown.cost.estimated_usd_micros, None);
     let envelope =
         devcoordinator2_api::ResponseEnvelope::success("activity-regression", result.clone())

@@ -115,5 +115,20 @@
   "reviewScopeTotal": "revizuire total: {tokens}",
   "periodScopeTotal": "perioadă total: {tokens}",
   "reviewTotalLabel": "total pentru revizuire",
-  "periodTotalLabel": "total pentru perioadă"
+  "periodTotalLabel": "total pentru perioadă",
+  "summaryRecorded": "Înregistrat",
+  "summaryPeriod": "Perioadă",
+  "summaryReviews": "Revizuiri",
+  "apiEquivalentCost": "Cost echivalent la tarife API",
+  "costData": "Date despre costuri",
+  "requests": "Cereri",
+  "notRecorded": "Neînregistrat",
+  "noCostBreakdown": "Fără defalcare a costurilor",
+  "noMatchingRates": "Fără tarife corespunzătoare",
+  "pricingUnavailable": "Prețuri indisponibile",
+  "pricesComplete": "Evaluat",
+  "pricesPartial": "Lipsesc unele prețuri",
+  "missingRatesNote": "Numărul de tokenuri este înregistrat; lipsesc prețurile corespunzătoare ale modelelor.",
+  "missingBreakdownNote": "Numărul de cereri și detaliile costurilor pe activitate nu sunt disponibile.",
+  "recordedData": "Date înregistrate"
 }

@@ -118,5 +118,20 @@
   "reviewScopeTotal": "Vertinimo suma: {tokens}",
   "periodScopeTotal": "Laikotarpio suma: {tokens}",
   "reviewTotalLabel": "Iš viso vertinime",
-  "periodTotalLabel": "Iš viso laikotarpiu"
+  "periodTotalLabel": "Iš viso laikotarpiu",
+  "summaryRecorded": "Užregistruota",
+  "summaryPeriod": "Laikotarpis",
+  "summaryReviews": "Vertinimai",
+  "apiEquivalentCost": "Lygiavertės išlaidos pagal API kainas",
+  "costData": "Išlaidų duomenys",
+  "requests": "Užklausos",
+  "notRecorded": "Neužregistruota",
+  "noCostBreakdown": "Nėra išlaidų išklotinės",
+  "noMatchingRates": "Nėra atitinkamų tarifų",
+  "pricingUnavailable": "Kainos neprieinamos",
+  "pricesComplete": "Įkainota",
+  "pricesPartial": "Trūksta kai kurių kainų",
+  "missingRatesNote": "Žetonų skaičiai užregistruoti; trūksta atitinkamų modelių kainų.",
+  "missingBreakdownNote": "Užklausų skaičiai ir išlaidų informacija pagal veiklą neprieinami.",
+  "recordedData": "Užregistruoti duomenys"
 }

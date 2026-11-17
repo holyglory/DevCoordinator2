@@ -112,5 +112,20 @@
   "reviewScopeTotal": "이 검토의 총 토큰 수: {tokens}",
   "periodScopeTotal": "이 기간의 총 토큰 수: {tokens}",
   "reviewTotalLabel": "이 검토의 합계",
-  "periodTotalLabel": "이 기간의 합계"
+  "periodTotalLabel": "이 기간의 합계",
+  "summaryRecorded": "기록됨",
+  "summaryPeriod": "기간",
+  "summaryReviews": "검토",
+  "apiEquivalentCost": "API 요금 환산 비용",
+  "costData": "비용 데이터",
+  "requests": "요청 수",
+  "notRecorded": "기록되지 않음",
+  "noCostBreakdown": "비용 내역 없음",
+  "noMatchingRates": "일치하는 요금 없음",
+  "pricingUnavailable": "요금 정보 사용 불가",
+  "pricesComplete": "가격 적용됨",
+  "pricesPartial": "일부 가격 누락",
+  "missingRatesNote": "토큰 수는 기록되어 있지만 해당 모델의 가격이 없습니다.",
+  "missingBreakdownNote": "활동별 요청 수와 비용 세부 정보를 사용할 수 없습니다.",
+  "recordedData": "기록된 데이터"
 }
