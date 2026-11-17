@@ -34,6 +34,8 @@ export async function verifyLocalization({ page, daemon, check, baseUrl, output,
   }
   verify('initial language matches browser preference', await page.locator('html').getAttribute('lang') === 'uk');
   verify('only active namespaces loaded', !loads.some(value => /performance|glossary/.test(value)));
+  verify('closed language menu does not fetch unused flags before page content', await page.evaluate(() =>
+    !performance.getEntriesByType('resource').some(entry => new URL(entry.name).pathname.startsWith('/icons/flags/'))));
   await page.locator('#bug-form input[name=summary]').fill('Repositories <script>user content</script>');
   const draft = await page.locator('#bug-form input[name=summary]').inputValue();
   await page.locator('#bug-form').evaluate(node => { node.dataset.identityProof = 'retained'; });

@@ -5113,6 +5113,8 @@ async function render() {
   viewAbort?.abort();
   viewAbort = new AbortController();
   const signal = viewAbort.signal;
+  const [, requestedView, requestedRepository] = (location.hash || '').split('?')[0].split('/');
+  const preparedPerformance = requestedView === 'performance' ? performancePage.prepare(requestedRepository, signal) : null;
   let route;
   try { route = await workspace.resolve(signal); }
   catch (error) {
@@ -5161,7 +5163,7 @@ async function render() {
   if (view === 'plan' && new URLSearchParams(location.hash.split('?')[1] || '').has('task')) state.planRequestedTaskId = new URLSearchParams(location.hash.split('?')[1]).get('task');
   if (view === 'plan') return arg ? viewPlan(arg, route.planModel) : viewPlanPicker('plan');
   if (view === 'progress') return arg ? viewProgress(arg) : viewProgressRepositories();
-  if (view === 'performance') return performancePage.render(main, arg, signal);
+  if (view === 'performance') return performancePage.render(main, arg, signal, preparedPerformance);
   if (view === 'usage') return arg ? viewCodexUsage(arg) : viewCodexUsageRepositories();
   if (view === 'decisions' && new URLSearchParams(location.hash.split('?')[1] || '').has('q')) state.decisionQuery = new URLSearchParams(location.hash.split('?')[1]).get('q');
   if (view === 'decisions') return arg ? viewDecisions(arg) : viewPlanPicker('decisions');

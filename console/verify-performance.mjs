@@ -104,6 +104,30 @@ export async function verifyPerformance({ page, daemon, check, scenario, baseUrl
   const tokenPopoverText = await tokenPopover.innerText();
   verify('token detail popovers retain provider components', tokenPopoverText.includes('Cached input') && !/Cached input\s+—/.test(tokenPopoverText));
   await tokenBadge.click();
+  await page.locator('.performance-cost-matrix tbody tr').first().waitFor();
+  const tokenPopoverPlacement = element => {
+    const rect = element.getBoundingClientRect();
+    const points = [[rect.left + 8, rect.top + 8], [rect.right - 8, rect.top + 8], [rect.left + 8, rect.bottom - 8], [rect.right - 8, rect.bottom - 8]];
+    return { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom, width: innerWidth, height: innerHeight, unclipped: points.every(([x, y]) => element.contains(document.elementFromPoint(x, y))) };
+  };
+  const contained = placement => placement.left >= 8 && placement.top >= 8 && placement.right <= placement.width - 8 && placement.bottom <= placement.height - 8 && placement.unclipped;
+  const tokenButtons = page.locator('.performance-token-detail-button');
+  for (let index = 0; index < await tokenButtons.count(); index++) {
+    const button = tokenButtons.nth(index);
+    const label = await button.getAttribute('aria-label');
+    await button.evaluate(element => element.scrollIntoView({ block: 'end', inline: 'nearest' }));
+    await button.click();
+    const popover = button.locator('..').locator('.performance-token-popover');
+    const placement = await popover.evaluate(tokenPopoverPlacement);
+    verify(`token popover ${index + 1} fits the viewport after scrolling: ${label}`, contained(placement), JSON.stringify(placement));
+    if (viewport.width === 390 && label.includes('All recorded total')) await page.screenshot({ path: path.join(output, `performance-${theme}-390-lifetime-popover.png`) });
+    await page.evaluate(() => window.scrollBy(0, -80));
+    await button.evaluate(element => element.closest('.tablewrap')?.scrollBy({ left: 80 }));
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(resolve)));
+    const scrolled = await popover.evaluate(tokenPopoverPlacement);
+    verify(`open token popover ${index + 1} stays contained while scrolling: ${label}`, contained(scrolled), JSON.stringify(scrolled));
+    await button.click();
+  }
   daemon.setScenario({ ...scenario, performancePublicationBacklog: true });
   await page.reload();
   await page.locator('.performance-cost-matrix tbody tr').first().waitFor();
