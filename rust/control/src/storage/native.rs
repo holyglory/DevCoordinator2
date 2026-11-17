@@ -22,6 +22,7 @@ use crate::{
 };
 use devcoordinator2_api::{ProtocolError, storage as api};
 pub use discovery::{DiscoveryBudget, DiscoveryCursor};
+pub use lifecycle::CheckoutObservationCursor;
 pub(crate) use mounts::execute as run_mount_helper;
 pub use revalidate::ReobserveCursor;
 use std::ffi::OsString;
@@ -30,6 +31,16 @@ use std::sync::Arc;
 use std::time::Duration;
 
 pub trait Backend: Send + Sync {
+    fn observe_checkout_step(
+        &self,
+        _binding: &super::lifecycle::CheckoutBinding,
+        _integration: Option<super::lifecycle::IntegrationProof>,
+        _context: &Context,
+        _cursor: &mut CheckoutObservationCursor,
+        _budget: DiscoveryBudget,
+    ) -> Result<Option<(Record, super::lifecycle::BoundCheckout)>, ProtocolError> {
+        Err(blocked("checkout_provider_unsupported"))
+    }
     fn observe_checkout(
         &self,
         _binding: &super::lifecycle::CheckoutBinding,
@@ -140,6 +151,16 @@ impl HostBackend {
 }
 
 impl Backend for HostBackend {
+    fn observe_checkout_step(
+        &self,
+        binding: &super::lifecycle::CheckoutBinding,
+        integration: Option<super::lifecycle::IntegrationProof>,
+        context: &Context,
+        cursor: &mut CheckoutObservationCursor,
+        budget: DiscoveryBudget,
+    ) -> Result<Option<(Record, super::lifecycle::BoundCheckout)>, ProtocolError> {
+        self.observe_checkout_target_step(binding, integration, context, cursor, budget)
+    }
     fn observe_checkout(
         &self,
         binding: &super::lifecycle::CheckoutBinding,
@@ -452,7 +473,7 @@ impl Backend for HostBackend {
             } => {
                 if r.artifact.kind == api::Kind::Worktree {
                     if let Some(target) = context.checkout_removals.get(&r.artifact.artifact_id) {
-                        return self.remove_checkout_target(r, target, context);
+                        return self.remove_checkout_target(r, target, context, job_id);
                     }
                     let git = git_root
                         .as_deref()
@@ -608,7 +629,10 @@ pub(super) fn candidate(
 ) -> Result<Record, ProtocolError> {
     let encoded = json(&locator)?;
     let fingerprint = hash(encoded.as_bytes());
-    let id = context.relocated_artifact_ids.get(&fingerprint).cloned()
+    let id = context
+        .relocated_artifact_ids
+        .get(&fingerprint)
+        .cloned()
         .unwrap_or_else(|| stable_id("sa", encoded.as_bytes()));
     Ok(Record {
         update_sequence: 0,
@@ -810,51 +834,6 @@ pub(crate) fn processes_reference(paths: &[PathBuf]) -> Result<bool, ProtocolErr
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(_) => return Err(unavailable("process_inventory_incomplete")),
-        }
-    }
-    Ok(false)
-}
-
-/// A trusted local non-root relocation can encounter unrelated root-owned
-/// process descriptors that are unreadable. Keep the strict cleanup guard
-/// above unchanged; relocation still checks every process handle visible to
-/// the caller and treats only inaccessible unrelated entries as unknown.
-pub(crate) fn processes_reference_relaxed(paths: &[PathBuf]) -> Result<bool, ProtocolError> {
-    if paths.is_empty() {
-        return Ok(false);
-    }
-    let Ok(entries) = std::fs::read_dir("/proc") else {
-        return Ok(false);
-    };
-    let own = std::process::id();
-    for entry in entries.flatten() {
-        let Some(pid) = entry.file_name().to_str().and_then(|s| s.parse::<u32>().ok()) else {
-            continue;
-        };
-        if pid == own {
-            continue;
-        }
-        let root = entry.path();
-        let mut links = vec![root.join("cwd"), root.join("exe")];
-        if let Ok(fd) = std::fs::read_dir(root.join("fd")) {
-            links.extend(fd.flatten().map(|item| item.path()));
-        }
-        for link in links {
-            if let Ok(target) = std::fs::read_link(link)
-                && paths.iter().any(|path| target == *path || target.starts_with(path))
-            {
-                return Ok(true);
-            }
-        }
-        if let Ok(maps) = std::fs::read_to_string(root.join("maps")) {
-            for line in maps.lines() {
-                if let Some(position) = line.find('/') {
-                    let path = Path::new(&line[position..]);
-                    if paths.iter().any(|candidate| path == candidate || path.starts_with(candidate)) {
-                        return Ok(true);
-                    }
-                }
-            }
         }
     }
     Ok(false)

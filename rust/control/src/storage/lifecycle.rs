@@ -5,7 +5,7 @@ use super::*;
 use devcoordinator2_api::project::cleanup as checkout;
 use serde::{Deserialize, Serialize};
 
-pub(crate) const CHECKOUT_EFFECT: &str = "Remove the selected local checkout directories and their Git worktree registrations; preserve tasks, history, deployment data and remote branches.";
+pub(crate) const CHECKOUT_EFFECT: &str = "Remove the selected local checkout directories and their Git worktree registrations; retain project tasks and their recorded history, deployment data and remote branches.";
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CheckoutBinding {
@@ -63,6 +63,22 @@ pub(crate) struct CheckoutReviewRequest {
     pub plan: checkout::Plan,
     pub bindings: Vec<CheckoutBinding>,
     pub paths: BTreeMap<String, (String, bool)>,
+    #[serde(default)]
+    pub progress: checkout::ReviewProgress,
+}
+
+pub(crate) struct CheckoutReviewCursor {
+    job_id: String,
+    request: CheckoutReviewRequest,
+    context: Context,
+    records: Vec<Record>,
+    targets: Vec<BoundCheckout>,
+    current: super::native::CheckoutObservationCursor,
+    completed_entries: u64,
+    completed_bytes: u64,
+    pub(crate) last_rows: u64,
+    pub(crate) last_bytes: u64,
+    refreshed_after_walk: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -72,6 +88,45 @@ struct StoredApproval {
     request_sha256: String,
     actor: String,
     consent_decision_id: Option<String>,
+}
+
+pub(crate) fn checkout_artifact_retention(
+    connection: &crate::database::Connection,
+    binding: &CheckoutBinding,
+) -> Result<(u32, Option<u64>, bool), DatabaseError> {
+    let records = crate::project::artifacts::active_records(
+        connection,
+        &binding.project_id,
+        &binding.worktree_id,
+    )?;
+    let mut external = 0u32;
+    let mut bytes = Some(0u64);
+    let mut shared_inside = false;
+    for record in records {
+        let path = match &record.locator {
+            Locator::Directory { path, .. } => path,
+            Locator::Mount { target, .. } => target,
+            _ => {
+                return Err(DatabaseError::Domain(blocked(
+                    "checkout_artifact_identity_unverified",
+                )));
+            }
+        };
+        if path.starts_with(&binding.path) {
+            shared_inside|=connection.query_row("SELECT EXISTS(SELECT 1 FROM project_checkout_artifacts a WHERE a.project_id=$1 AND a.worktree_id=$2 AND a.artifact_id=$3 AND a.active AND (a.ownership='shared' OR EXISTS(SELECT 1 FROM project_checkout_artifacts other WHERE other.active AND other.association_id<>a.association_id AND (other.artifact_id=a.artifact_id OR (other.bound_device=a.bound_device AND other.bound_inode=a.bound_inode)))))",crate::database::params![binding.project_id,binding.worktree_id,record.artifact.artifact_id],|row|row.get::<_,bool>(0))?;
+        } else {
+            external = external.saturating_add(1);
+            bytes = bytes.and_then(|total| {
+                record
+                    .artifact
+                    .allocated_bytes
+                    .and_then(|size| total.checked_add(size))
+            });
+        }
+    }
+    let path = binding.path.to_string_lossy().into_owned();
+    shared_inside|=connection.query_row("SELECT EXISTS(SELECT 1 FROM project_checkout_artifacts a JOIN storage_artifacts s ON s.artifact_id=a.artifact_id WHERE a.active AND s.record_json#>>'{artifact,repository_id}'=$1 AND EXISTS(SELECT 1 FROM (VALUES(s.record_json#>>'{locator,path}'),(s.record_json#>>'{locator,target}')) location(path) WHERE path=$2 OR strpos(path,$2||'/')=1 OR strpos($2,path||'/')=1) AND (a.project_id<>$3 OR a.worktree_id<>$4 OR a.ownership='shared' OR EXISTS(SELECT 1 FROM project_checkout_artifacts other WHERE other.active AND other.association_id<>a.association_id AND (other.artifact_id=a.artifact_id OR (other.bound_device=a.bound_device AND other.bound_inode=a.bound_inode)))))",crate::database::params![binding.physical_repository_id,path,binding.project_id,binding.worktree_id],|row|row.get::<_,bool>(0))?;
+    Ok((external, bytes, shared_inside))
 }
 
 /// Called only inside the registry relocation commit transaction after the
@@ -207,53 +262,219 @@ impl StorageService {
         )
     }
 
-    pub(crate) fn checkout_plan(
+    /// A native review keeps a private bounded cursor in the existing storage
+    /// maintenance lane. Only complete observations are committed as a plan.
+    pub(crate) fn execute_checkout_review_step(
+        &self,
+        id: &str,
+        cursor: &mut Option<CheckoutReviewCursor>,
+        budget: super::native::DiscoveryBudget,
+    ) -> Result<bool, ProtocolError> {
+        let (job, request) = self.checkout_review(id)?;
+        if matches!(
+            job.state,
+            api::JobState::Cancelling | api::JobState::Cancelled
+        ) {
+            if matches!(job.state, api::JobState::Cancelling) {
+                self.finish(id, api::JobState::Cancelled, None)?;
+            }
+            *cursor = None;
+            return Ok(true);
+        }
+        if matches!(job.state, api::JobState::Completed) {
+            *cursor = None;
+            return Ok(true);
+        }
+        if !matches!(job.state, api::JobState::Running) {
+            return Err(blocked("checkout_review_not_running"));
+        }
+        if cursor.as_ref().is_some_and(|state| state.job_id != id) {
+            return Err(blocked("checkout_review_cursor_mismatch"));
+        }
+        if cursor.is_none() {
+            if request.bindings.is_empty() || request.bindings.len() > MAX_SELECTION {
+                return Err(invalid("selection_requires_1_to_200_checkouts"));
+            }
+            let mut request = request;
+            request.progress = checkout::ReviewProgress {
+                targets_total: request.bindings.len() as u32,
+                ..Default::default()
+            };
+            self.checkout_save_review_progress(id, &request.progress)?;
+            *cursor = Some(CheckoutReviewCursor {
+                job_id: id.into(),
+                request,
+                context: self.context()?,
+                records: Vec::new(),
+                targets: Vec::new(),
+                current: super::native::CheckoutObservationCursor::default(),
+                completed_entries: 0,
+                completed_bytes: 0,
+                last_rows: 0,
+                last_bytes: 0,
+                refreshed_after_walk: false,
+            });
+            return Ok(false);
+        }
+        let state = cursor.as_mut().expect("checkout review initialized");
+        state.last_rows = 0;
+        state.last_bytes = 0;
+        let Some(binding) = state.request.bindings.get(state.targets.len()).cloned() else {
+            let plan = self.checkout_store_review(
+                &state.request.plan,
+                state.records.clone(),
+                state.targets.clone(),
+                &job.actor,
+                id,
+                &state.request.progress,
+            )?;
+            *cursor = None;
+            return Ok(plan.is_some());
+        };
+        state.context.now_ms = self.now_ms();
+        if state.current.content_ready() && !state.refreshed_after_walk {
+            state.context = self.context()?;
+            state.refreshed_after_walk = true;
+        }
+        let integration = self.checkout_integration(&binding)?;
+        let observed = self.backend.observe_checkout_step(
+            &binding,
+            integration,
+            &state.context,
+            &mut state.current,
+            budget,
+        );
+        let old = state.request.progress.clone();
+        state.request.progress.targets_done = state.targets.len() as u32;
+        state.request.progress.current_worktree_id = Some(binding.worktree_id.clone());
+        state.request.progress.entries_hashed = state
+            .completed_entries
+            .saturating_add(state.current.entries_hashed);
+        state.request.progress.bytes_hashed = state
+            .completed_bytes
+            .saturating_add(state.current.bytes_hashed);
+        state.last_rows = state
+            .request
+            .progress
+            .entries_hashed
+            .saturating_sub(old.entries_hashed);
+        state.last_bytes = state
+            .request
+            .progress
+            .bytes_hashed
+            .saturating_sub(old.bytes_hashed);
+        self.checkout_save_review_progress(id, &state.request.progress)?;
+        if state.request.progress.bytes_hashed / (4 * 1024 * 1024)
+            != old.bytes_hashed / (4 * 1024 * 1024)
+        {
+            self.publish(&job, "progress");
+        }
+        let Some((mut record, mut target)) = observed? else {
+            return Ok(false);
+        };
+        let (display_path, absolute) = state
+            .request
+            .paths
+            .get(&binding.worktree_id)
+            .ok_or_else(|| invalid("checkout_display_path_missing"))?;
+        target.observed.path = display_path.clone();
+        target.observed.path_is_absolute = *absolute;
+        // An observation cannot silently release an existing pin, lease,
+        // or a lock held by a different cleanup operation.
+        let current = self.reconcile_matches(&[record.artifact.artifact_id.clone()])?;
+        if let Some(old) = current.get(&record.artifact.artifact_id) {
+            if old.artifact.removed_at_ms.is_some() {
+                return Err(conflict("checkout_identity_previously_removed"));
+            }
+            record.artifact.protected = old.artifact.protected;
+            record.artifact.revision = old.artifact.revision.saturating_add(1);
+            record.disposal_approved = old.disposal_approved;
+            record.disposal_reason = old.disposal_reason.clone();
+            if old.artifact.protected {
+                target
+                    .observed
+                    .protections
+                    .push("explicitly_protected".into());
+                target.observed.blockers.push("explicitly_protected".into());
+            }
+        }
+        let retained = self
+            .database
+            .read(|connection| checkout_artifact_retention(connection, &binding))
+            .map_err(db_error)?;
+        target.observed.retained_external_artifacts = retained.0;
+        target.observed.retained_external_bytes = retained.1;
+        if retained.2 {
+            target
+                .observed
+                .blockers
+                .push("shared_artifact_inside_checkout".into());
+            record
+                .blockers
+                .push("shared_artifact_inside_checkout".into());
+        }
+        state.records.push(record);
+        state.targets.push(target);
+        state.completed_entries = state.request.progress.entries_hashed;
+        state.completed_bytes = state.request.progress.bytes_hashed;
+        state.request.progress.targets_done = state.targets.len() as u32;
+        state.request.progress.current_worktree_id = None;
+        self.checkout_save_review_progress(id, &state.request.progress)?;
+        self.publish(&job, "progress");
+        state.current = super::native::CheckoutObservationCursor::default();
+        state.refreshed_after_walk = false;
+        Ok(false)
+    }
+
+    pub(crate) fn checkout_review(
+        &self,
+        id: &str,
+    ) -> Result<(api::Job, CheckoutReviewRequest), ProtocolError> {
+        let (value, raw) = self
+            .database
+            .read(|connection| {
+                Ok(connection
+                    .query_row(
+                        "SELECT job_json,request_json FROM storage_jobs WHERE job_id=$1",
+                        [id],
+                        |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+                    )
+                    .optional()?)
+            })
+            .map_err(db_error)?
+            .ok_or_else(|| not_found("checkout_review_not_found"))?;
+        let job: api::Job = parse(&value)?;
+        if job.kind != "checkout_review" {
+            return Err(invalid("job_is_not_checkout_review"));
+        }
+        Ok((job, parse(&raw)?))
+    }
+
+    fn checkout_save_review_progress(
+        &self,
+        id: &str,
+        progress: &checkout::ReviewProgress,
+    ) -> Result<(), ProtocolError> {
+        let value = json(progress)?;
+        self.database.maintenance_transaction(|connection| {
+            connection.execute("UPDATE storage_jobs SET request_json=jsonb_set(request_json,'{progress}',$1::jsonb) WHERE job_id=$2 AND state='running'",crate::database::params![value,id])?;
+            Ok(())
+        }).map_err(db_error)
+    }
+
+    fn checkout_store_review(
         &self,
         request: &checkout::Plan,
-        bindings: Vec<CheckoutBinding>,
-        paths: BTreeMap<String, (String, bool)>,
-        caller: &Caller,
-    ) -> Result<checkout::RemovalPlan, ProtocolError> {
-        if bindings.is_empty() || bindings.len() > MAX_SELECTION {
-            return Err(invalid("selection_requires_1_to_200_checkouts"));
-        }
-        let context = self.context()?;
+        records: Vec<Record>,
+        mut targets: Vec<BoundCheckout>,
+        actor: &str,
+        job_id: &str,
+        progress: &checkout::ReviewProgress,
+    ) -> Result<Option<checkout::RemovalPlan>, ProtocolError> {
         let now = self.now_ms();
         let expires = now.saturating_add(SAFETY_FRESH_MS);
-        let mut records = Vec::new();
-        let mut targets = Vec::new();
-        for binding in bindings {
-            let integration = self.checkout_integration(&binding)?;
-            let (mut record, mut target) =
-                self.backend
-                    .observe_checkout(&binding, integration, &context)?;
+        for target in &mut targets {
             target.expires_at_ms = expires;
-            let (display_path, absolute) = paths
-                .get(&binding.worktree_id)
-                .ok_or_else(|| invalid("checkout_display_path_missing"))?;
-            target.observed.path = display_path.clone();
-            target.observed.path_is_absolute = *absolute;
-            // An observation cannot silently release an existing pin, lease,
-            // or a lock held by a different cleanup operation.
-            let current = self.reconcile_matches(&[record.artifact.artifact_id.clone()])?;
-            if let Some(old) = current.get(&record.artifact.artifact_id) {
-                if old.artifact.removed_at_ms.is_some() {
-                    return Err(conflict("checkout_identity_previously_removed"));
-                }
-                record.artifact.protected = old.artifact.protected;
-                record.artifact.revision = old.artifact.revision.saturating_add(1);
-                record.disposal_approved = old.disposal_approved;
-                record.disposal_reason = old.disposal_reason.clone();
-                if old.artifact.protected {
-                    target
-                        .observed
-                        .protections
-                        .push("explicitly_protected".into());
-                    target.observed.blockers.push("explicitly_protected".into());
-                }
-            }
-            records.push(record);
-            targets.push(target);
         }
         let mut effects = targets
             .iter()
@@ -331,8 +552,11 @@ impl StorageService {
             }),
         };
         let value = json(&plan)?;
-        let actor = caller.actor();
         self.database.transaction(move |connection| {
+            let raw=connection.query_row("SELECT job_json FROM storage_jobs WHERE job_id=$1 FOR UPDATE",[job_id],|row|row.get::<_,String>(0))?;
+            let mut job:api::Job=parse(&raw).map_err(DatabaseError::Domain)?;
+            if matches!(job.state,api::JobState::Cancelling|api::JobState::Cancelled) {return Ok(false);}
+            if !matches!(job.state,api::JobState::Running) {return Err(DatabaseError::Domain(blocked("checkout_review_not_running")));}
             for mut record in records {
                 locks::ensure_tree_editable(connection,&record.resource_key,&record.ancestor_keys,None)?;
                 record.update_sequence=next_sequence(connection)?;
@@ -344,10 +568,16 @@ impl StorageService {
                 }
             }
             connection.execute("INSERT INTO storage_plans(plan_id,plan_json,created_at_ms,actor) VALUES($1,$2,$3,$4)",crate::database::params![plan.public.plan_id,value,now as i64,actor])?;
-            change(connection,None,"checkout_removal_planned",&actor,now,&json(&plan.checkout_removal.as_ref().map(|data|(&data.public.project_id,&data.public.plan_id,&data.public.fingerprint))).map_err(DatabaseError::Domain)?)?;
-            Ok(())
-        }).map_err(db_error)?;
-        Ok(public)
+            change(connection,None,"checkout_removal_planned",actor,now,&json(&plan.checkout_removal.as_ref().map(|data|(&data.public.project_id,&data.public.plan_id,&data.public.fingerprint))).map_err(DatabaseError::Domain)?)?;
+            job.plan_id=Some(plan.public.plan_id.clone());
+            job.state=api::JobState::Completed;
+            job.completed_at_ms=Some(now);
+            let mut completed=progress.clone();completed.current_worktree_id=None;
+            connection.execute("UPDATE storage_jobs SET state='completed',job_json=$1,request_json=jsonb_set(request_json,'{progress}',$2::jsonb) WHERE job_id=$3",crate::database::params![json(&job).map_err(DatabaseError::Domain)?,json(&completed).map_err(DatabaseError::Domain)?,job_id])?;
+            Ok(true)
+        }).map_err(db_error).and_then(|committed| {
+            if committed {self.publish(&self.job(job_id)?,"finished");Ok(Some(public))} else {self.finish(job_id,api::JobState::Cancelled,None)?;Ok(None)}
+        })
     }
 
     pub(crate) fn checkout_approve(
@@ -368,7 +598,7 @@ impl StorageService {
         let plan = self.stored_plan(&request.plan_id)?;
         let data =
             self.checkout_validate_request(&plan, &request.project_id, &request.fingerprint)?;
-        self.checkout_revalidate(&plan, data, false)?;
+        self.checkout_validate_records(&plan, data)?;
         let consent_source = self.checkout_consent(caller, &request, data)?;
         let now = self.now_ms();
         let mut approval = StoredApproval {
@@ -423,8 +653,8 @@ impl StorageService {
         let plan = self.stored_plan(&request.plan_id)?;
         let data =
             self.checkout_validate_request(&plan, &request.project_id, &request.fingerprint)?;
-        let approved = self.checkout_approval_for_start(data, &request, false)?;
-        self.checkout_revalidate(&plan, data, approved)?;
+        self.checkout_approval_for_start(data, &request, false)?;
+        self.checkout_validate_records(&plan, data)?;
         self.queue(
             "cleanup",
             &request.idempotency_key,
@@ -545,31 +775,31 @@ impl StorageService {
         Ok(data)
     }
 
-    fn checkout_revalidate(
+    /// Request handling binds the immutable reviewed plan and current registry
+    /// metadata. Native content/use verification belongs to the admitted worker
+    /// immediately before deletion, including after an approval is recorded.
+    fn checkout_validate_records(
         &self,
         plan: &StoredPlan,
         data: &CheckoutPlanData,
-        approved: bool,
     ) -> Result<(), ProtocolError> {
-        let mut context = self.context()?;
-        for target in &data.targets {
-            let mut target = target.clone();
-            // Reviewing a loss approval may observe risky data, but cannot
-            // bypass identity, content or any active/protected-use check.
-            target.data_loss_approved = approved || data.public.requires_approval;
-            context
-                .checkout_removals
-                .insert(target.artifact_id.clone(), target);
-        }
+        self.database.read(|connection| {
+            for target in &data.targets {
+                let binding=&target.binding;
+                let matches=connection.query_row("SELECT EXISTS(SELECT 1 FROM project_checkouts WHERE project_id=$1 AND worktree_id=$2 AND repository_id=$3 AND physical_repository_id=$4 AND absolute_path=$5 AND revision=$6 AND protected_role IS NOT DISTINCT FROM $7)",crate::database::params![binding.project_id,binding.worktree_id,binding.repository_id,binding.physical_repository_id,binding.path.to_string_lossy().into_owned(),binding.revision,binding.protected_role],|row|row.get::<_,bool>(0))?;
+                if !matches {return Err(DatabaseError::Domain(conflict("checkout_binding_changed")));}
+            }
+            Ok(())
+        }).map_err(db_error)?;
         for original in &plan.records {
             let current = self.record(&original.artifact.artifact_id)?;
             if original.artifact.revision != current.artifact.revision
                 || original.fingerprint != current.fingerprint
                 || original.resource_key != current.resource_key
+                || current.artifact.protected
             {
                 return Err(conflict("artifact_changed"));
             }
-            self.backend.validate(&current, &context, &[])?;
         }
         Ok(())
     }

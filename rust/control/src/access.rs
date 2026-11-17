@@ -921,16 +921,34 @@ impl Access {
         // required for agent-to-agent operations.
         // ProjectService rechecks exact physical/source membership on every
         // request. This exact allowlist does not widen other endpoint policies.
-        if matches!(operation_name,
-            "project.list" | "project.status" | "project.context" |
-            "project.branch.list" | "project.branch.get" | "project.checkout.list" | "project.checkout.get" | "project.history" |
-            "project.branch.commits" | "project.branch.commits.refresh" | "project.branch.update" |
-            "project.checkout.update" | "project.refresh" | "project.job.status" |
-            "project.checkout.remove.plan" | "project.checkout.remove.approve" |
-            "project.checkout.remove.plan.status" | "project.checkout.remove.plan.cancel" |
-            "project.checkout.remove.start" | "project.checkout.remove.job" | "project.checkout.remove.cancel" |
-            "project.checkout.artifact.list" | "project.checkout.artifact.adopt" | "project.checkout.artifact.detach"
-        ) && matches!(definition.policy.role, Role::Viewer | Role::Operator) {
+        if matches!(
+            operation_name,
+            "project.list"
+                | "project.status"
+                | "project.context"
+                | "project.branch.list"
+                | "project.branch.get"
+                | "project.checkout.list"
+                | "project.checkout.get"
+                | "project.history"
+                | "project.branch.commits"
+                | "project.branch.commits.refresh"
+                | "project.branch.update"
+                | "project.checkout.update"
+                | "project.refresh"
+                | "project.job.status"
+                | "project.checkout.remove.plan"
+                | "project.checkout.remove.approve"
+                | "project.checkout.remove.plan.status"
+                | "project.checkout.remove.plan.cancel"
+                | "project.checkout.remove.start"
+                | "project.checkout.remove.job"
+                | "project.checkout.remove.cancel"
+                | "project.checkout.artifact.list"
+                | "project.checkout.artifact.adopt"
+                | "project.checkout.artifact.detach"
+        ) && matches!(definition.policy.role, Role::Viewer | Role::Operator)
+        {
             return Ok(allow(principal, params.clone()));
         }
         if operation_name.starts_with("agent.hub.console.")
@@ -1123,8 +1141,10 @@ impl Access {
     ) -> Result<(BTreeSet<String>, BTreeSet<String>), ProtocolError> {
         let viewers = deployment_ids_at_least(principal, &AccessRole::Viewer);
         let operators = deployment_ids_at_least(principal, &AccessRole::Operator);
-        let viewers = serde_json::to_string(&viewers).map_err(|_| malformed_filtered_result("project", "invalid grant set"))?;
-        let operators = serde_json::to_string(&operators).map_err(|_| malformed_filtered_result("project", "invalid grant set"))?;
+        let viewers = serde_json::to_string(&viewers)
+            .map_err(|_| malformed_filtered_result("project", "invalid grant set"))?;
+        let operators = serde_json::to_string(&operators)
+            .map_err(|_| malformed_filtered_result("project", "invalid grant set"))?;
         self.database.read(|connection| {
             let rows = connection.prepare(
                 "WITH grants AS (SELECT repository_id,deployment_id FROM deployments WHERE deployment_id IN(SELECT jsonb_array_elements_text($1::jsonb)) UNION SELECT repository_id,observed_deployment_id FROM observed_deployments WHERE observed_deployment_id IN(SELECT jsonb_array_elements_text($1::jsonb))) SELECT repository_id,bool_or(deployment_id IN(SELECT jsonb_array_elements_text($2::jsonb))) FROM grants GROUP BY repository_id"

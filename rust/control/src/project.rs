@@ -13,8 +13,8 @@ use std::{
     path::Path,
     sync::Arc,
 };
-pub mod cleanup;
 pub(crate) mod artifacts;
+pub mod cleanup;
 pub mod github;
 mod refresh;
 mod retirement;
@@ -24,6 +24,7 @@ mod tests;
 #[derive(Clone)]
 pub struct ProjectService {
     database: Database,
+    registry: Registry,
     storage: Option<StorageService>,
     access: Option<Access>,
     github: Option<github::GithubClient>,
@@ -62,9 +63,10 @@ const BRANCH_VISIBLE: &str = "EXISTS(SELECT 1 FROM project_repository_membership
 const BRANCH_HEAD: &str = "coalesce((SELECT o.head FROM project_branch_observations o WHERE o.project_id=b.project_id AND o.branch_id=b.branch_id AND ($2::jsonb IS NULL OR o.physical_repository_id IN(SELECT jsonb_array_elements_text($2::jsonb))) ORDER BY o.local_present DESC,o.observed_at DESC,o.physical_repository_id LIMIT 1),b.remote_head)";
 
 impl ProjectService {
-    pub fn new(database: Database, _registry: Registry) -> Self {
+    pub fn new(database: Database, registry: Registry) -> Self {
         Self {
             database,
+            registry,
             storage: None,
             access: None,
             github: None,
@@ -248,7 +250,7 @@ impl ProjectService {
         let scope = self.scope(caller)?;
         self.database
             .read_transaction(|c| {
-                let worktree_id=canonical_checkout_id(c,&p.project_id,&p.worktree_id)?;
+                let worktree_id = canonical_checkout_id(c, &p.project_id, &p.worktree_id)?;
                 let page = api::Page {
                     project_id: p.project_id,
                     cursor: None,
@@ -380,7 +382,8 @@ impl ProjectService {
         let result=self.database.transaction(|c|{
             let target=canonical_checkout_id(c,&p.project_id,&p.worktree_id)?;
             let (revision,physical,protected,raw)=c.query_row("SELECT revision,physical_repository_id,protected_role,record_json::text FROM project_checkouts WHERE project_id=$1 AND worktree_id=$2 FOR UPDATE",params![p.project_id,target],|r|Ok((r.get::<_,u32>(0)?,r.get::<_,String>(1)?,r.get::<_,Option<String>>(2)?,r.get::<_,String>(3)?))).optional()?.ok_or_else(not_found_db)?;
-            if !scope.edits(&physical){return Err(denied("operator on this checkout's repository is required").into());}if revision!=p.expected_revision{return Err(conflict().into());}
+            if !scope.edits(&physical){return Err(denied("operator on this checkout's repository is required").into());}
+            if revision!=p.expected_revision{return Err(conflict().into());}
             let mut row:api::Checkout=from_json(&raw)?;
             if row.immutable_generation&&p.lifecycle.is_some(){return Err(invalid("immutable deployment generation lifecycle is observed from its owner").into());}
             if let Some(role)=&p.role{if protected.as_ref().is_some_and(|v|v!=role)||matches!(role.as_str(),"primary"|"deployment"){return Err(invalid("primary and deployment roles are assigned from protected ownership and cannot be changed").into());}row.role=role.clone();}
@@ -589,8 +592,8 @@ fn ensure_not_relocating(c: &Connection, physical: &[String]) -> Result<(), Data
 }
 fn storage_summary(c: &Connection, id: &str, scope: &Scope) -> Result<api::Storage, DatabaseError> {
     let visible = scope.visible_json();
-    let (total,source,build,shared,unmeasured,measured):(Option<u64>,Option<u64>,Option<u64>,Option<u64>,u32,Option<String>)=c.query_row("SELECT sum(allocated_bytes)::bigint,sum(allocated_bytes) FILTER(WHERE kind='source')::bigint,sum(allocated_bytes) FILTER(WHERE kind='build')::bigint,sum(allocated_bytes) FILTER(WHERE kind='shared')::bigint,count(*) FILTER(WHERE allocated_bytes IS NULL),min(measured_at) FROM project_storage WHERE project_id=$1 AND ($2::jsonb IS NULL OR physical_repository_id IN(SELECT jsonb_array_elements_text($2::jsonb)))",params![id,visible],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?)))?;
-    let missing:u32=c.query_row("SELECT count(*) FROM project_checkouts c WHERE c.project_id=$1 AND ($2::jsonb IS NULL OR c.physical_repository_id IN(SELECT jsonb_array_elements_text($2::jsonb))) AND NOT EXISTS(SELECT 1 FROM project_storage s WHERE s.project_id=c.project_id AND s.worktree_id=c.worktree_id AND s.kind='source')",params![id,visible],|r|r.get(0))?;
+    let api::Storage{allocated_bytes:total,source_bytes:source,build_bytes:build,shared_bytes:shared,unmeasured_count:unmeasured,measured_at:measured}=c.query_row("SELECT sum(allocated_bytes)::bigint,sum(allocated_bytes) FILTER(WHERE kind='source')::bigint,sum(allocated_bytes) FILTER(WHERE kind='build')::bigint,sum(allocated_bytes) FILTER(WHERE kind='shared')::bigint,count(*) FILTER(WHERE allocated_bytes IS NULL),min(measured_at) FROM project_storage WHERE project_id=$1 AND ($2::jsonb IS NULL OR physical_repository_id IN(SELECT jsonb_array_elements_text($2::jsonb)))",params![id,visible],|r|Ok(api::Storage{allocated_bytes:r.get(0)?,source_bytes:r.get(1)?,build_bytes:r.get(2)?,shared_bytes:r.get(3)?,unmeasured_count:r.get(4)?,measured_at:r.get(5)?}))?;
+    let missing:u32=c.query_row("SELECT count(*) FROM project_checkouts c WHERE c.project_id=$1 AND c.exists_on_disk IS DISTINCT FROM false AND NOT coalesce((c.record_json->>'immutable_generation')::boolean,false) AND ($2::jsonb IS NULL OR c.physical_repository_id IN(SELECT jsonb_array_elements_text($2::jsonb))) AND NOT EXISTS(SELECT 1 FROM project_storage s WHERE s.project_id=c.project_id AND s.worktree_id=c.worktree_id AND s.kind='source')",params![id,visible],|r|r.get(0))?;
     let (unknown_source,unknown_build,unknown_shared):(bool,bool,bool)=c.query_row("SELECT coalesce(bool_or(allocated_bytes IS NULL) FILTER(WHERE kind='source'),false),coalesce(bool_or(allocated_bytes IS NULL) FILTER(WHERE kind='build'),false),coalesce(bool_or(allocated_bytes IS NULL) FILTER(WHERE kind='shared'),false) FROM project_storage WHERE project_id=$1 AND ($2::jsonb IS NULL OR physical_repository_id IN(SELECT jsonb_array_elements_text($2::jsonb)))",params![id,visible],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?)))?;
     let missing_build:u32=c.query_row(&format!("SELECT count(*) FROM project_sources s WHERE s.project_id=$1 AND {SOURCE_VISIBLE} AND EXISTS(SELECT 1 FROM project_roots r WHERE r.project_id=s.project_id AND r.kind='build') AND NOT EXISTS(SELECT 1 FROM project_storage a WHERE a.project_id=s.project_id AND a.repository_id=s.repository_id AND a.kind='build' AND ($2::jsonb IS NULL OR a.physical_repository_id IN(SELECT jsonb_array_elements_text($2::jsonb))))"),params![id,visible],|r|r.get(0))?;
     let unknown = unmeasured
@@ -806,7 +809,9 @@ fn empty_checkout(
         can_remove: false,
         locations: Vec::new(),
         permissions: api::Permissions::default(),
-        registration_state:"unregistered".into(),immutable_generation:false,deployment_references:Vec::new(),
+        registration_state: "unregistered".into(),
+        immutable_generation: false,
+        deployment_references: Vec::new(),
         details_omitted: false,
     }
 }
@@ -843,6 +848,18 @@ fn changed(c: &Connection, id: &str, actor: &str, now: &str) -> Result<(), Datab
     )?;
     Ok(())
 }
+/// Refreshes replace cached facts without editing the project's metadata.
+/// Keep activity timestamps while preserving the revision held by editors and
+/// removal reviews; their target-specific native checks still run separately.
+fn observed(c: &Connection, id: &str, actor: &str, now: &str) -> Result<(), DatabaseError> {
+    c.execute(
+        "UPDATE projects SET updated_at=$2,updated_by=$3 WHERE project_id=$1",
+        params![id, now, actor],
+    )?;
+    Ok(())
+}
+// Event ownership and actor fields mirror the append-only database projection.
+#[allow(clippy::too_many_arguments)]
 fn event(
     c: &Connection,
     project: &str,
@@ -906,10 +923,10 @@ fn validate_metadata(
     lifecycle: Option<&str>,
 ) -> Result<(), ProtocolError> {
     for field in fields {
-        if let Some(Some(value)) = field {
-            if value.trim().is_empty() || value.len() > 2000 || value.contains('\0') {
-                return Err(invalid("metadata text must contain 1–2000 bytes"));
-            }
+        if let Some(Some(value)) = field
+            && (value.trim().is_empty() || value.len() > 2000 || value.contains('\0'))
+        {
+            return Err(invalid("metadata text must contain 1–2000 bytes"));
         }
     }
     if lifecycle.is_some_and(|l| {
@@ -1153,10 +1170,8 @@ fn preview(value: &mut String, max: usize) -> bool {
 }
 fn preview_metadata(fields: [&mut Option<String>; 5]) -> bool {
     let mut omitted = false;
-    for field in fields {
-        if let Some(text) = field {
-            omitted |= preview(text, 512);
-        }
+    for text in fields.into_iter().flatten() {
+        omitted |= preview(text, 512);
     }
     omitted
 }
@@ -1261,17 +1276,45 @@ fn bound_status(status: &mut api::Status) {
     }
 }
 
-pub(crate) fn canonical_checkout_id(c:&Connection,project:&str,id:&str)->Result<String,DatabaseError>{
+pub(crate) fn canonical_checkout_id(
+    c: &Connection,
+    project: &str,
+    id: &str,
+) -> Result<String, DatabaseError> {
     c.query_row("SELECT worktree_id FROM project_checkouts WHERE project_id=$1 AND worktree_id=$2 UNION ALL SELECT worktree_id FROM project_checkout_aliases WHERE project_id=$1 AND alias_worktree_id=$2 LIMIT 1",params![project,id],|r|r.get(0)).optional()?.ok_or_else(not_found_db)
 }
-fn rekey_project_checkout(c:&Connection,project:&str,old:&str,new:&str,now:&str,actor:&str)->Result<(),DatabaseError>{
-    if old==new{return Ok(());}
+fn rekey_project_checkout(
+    c: &Connection,
+    project: &str,
+    old: &str,
+    new: &str,
+    now: &str,
+    actor: &str,
+) -> Result<(), DatabaseError> {
+    if old == new {
+        return Ok(());
+    }
     let (path,physical)=c.query_row("SELECT absolute_path,physical_repository_id FROM project_checkouts WHERE project_id=$1 AND worktree_id=$2 FOR UPDATE",params![project,old],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?)))?;
     let valid=c.query_row("SELECT EXISTS(SELECT 1 FROM worktrees WHERE worktree_id=$1 AND repository_id=$2 AND worktree_path=$3) AND NOT EXISTS(SELECT 1 FROM project_checkouts WHERE project_id=$4 AND worktree_id=$1)",params![new,physical,path,project],|r|r.get::<_,bool>(0))?;
-    if !valid{return Err(conflict().into());}
+    if !valid {
+        return Err(conflict().into());
+    }
     c.execute("UPDATE project_checkouts SET worktree_id=$3,registration_state='registered',revision=revision+1,record_json=record_json||jsonb_build_object('worktree_id',$3::text,'registration_state','registered','revision',revision+1),updated_at=$4,updated_by=$5 WHERE project_id=$1 AND worktree_id=$2",params![project,old,new,now,actor])?;
     c.execute("INSERT INTO project_checkout_aliases(project_id,alias_worktree_id,worktree_id,created_at) VALUES($1,$2,$3,$4) ON CONFLICT(project_id,alias_worktree_id) DO UPDATE SET worktree_id=excluded.worktree_id",params![project,old,new,now])?;
     c.execute("UPDATE project_sources SET primary_checkout_id=$3 WHERE project_id=$1 AND primary_checkout_id=$2",params![project,old,new])?;
-    c.execute("UPDATE project_storage SET worktree_id=$3 WHERE project_id=$1 AND worktree_id=$2",params![project,old,new])?;
-    event(c,project,None,Some(&physical),Some(new),"checkout.identity_adopted","Checkout identity was linked to the execution registry; historical links remain valid",actor,now)
+    c.execute(
+        "UPDATE project_storage SET worktree_id=$3 WHERE project_id=$1 AND worktree_id=$2",
+        params![project, old, new],
+    )?;
+    event(
+        c,
+        project,
+        None,
+        Some(&physical),
+        Some(new),
+        "checkout.identity_adopted",
+        "Checkout identity was linked to the execution registry; historical links remain valid",
+        actor,
+        now,
+    )
 }

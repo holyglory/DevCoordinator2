@@ -27,7 +27,8 @@ silently overwriting another operator. Absolute paths are administrator-only;
 other users see paths relative to a configured project folder.
 
 **Review removal** inspects the exact selected copies before offering an action.
-It shows local changes, ignored and untracked files, stashes, remote preservation,
+It shows local changes, ignored and untracked files, stashes, recoverable Git
+history, remote preservation,
 active uses, protections and estimated reclaimed space. An incomplete inspection
 does not authorize deletion. Proven-safe removal needs no additional chat
 approval. Possible loss requires an administrator's explicit approval of the
@@ -38,6 +39,15 @@ Inspection is a durable background job. Its progress reports completed copies,
 entries and bytes inspected; cancelling a review does not remove files. Reloading
 the Console resumes the pending review. Approval binds the completed plan, and
 the removal worker rechecks the exact content before deleting anything.
+An otherwise clean, pushed checkout can still contain unpublished commits in
+its recovery history. Those commits require the same explicit loss approval.
+For linked worktrees, the review distinguishes their private history from the
+shared Git history that remains available in other copies.
+
+Recorded build outputs outside the selected checkout remain in place. The
+review lists their retained count and measured size; removing a source copy
+does not silently remove its external outputs. Shared outputs inside a removal
+target prevent removal until their ownership is resolved.
 
 ## Folder roles
 
@@ -91,15 +101,18 @@ remote archive tags.
 ## Local migration and recovery
 
 The Console edits metadata and manages removal; it is not a bulk directory mover.
-Trusted local migration proceeds one project at a time. Inventory ownership and
-active consumers first. Prepare the exact old/new location with
+Trusted local migration currently supports inactive checkouts renamed within
+one filesystem. Inventory ownership and active consumers first. Prepare the exact old/new location with
 `project.checkout.relocate.prepare`, perform the supported filesystem move,
 verify the resulting content and Git identity, then commit the relocation.
 Use the returned fingerprint for verify, commit or cancellation. A path alias is
 history, never permission to remove a replacement directory at an old path.
 
-Resolve unsupported filesystem changes or active deployment bindings before
-moving a live checkout. Failed migration keeps the pending record and exact
+Cross-filesystem copies and deployment-bound checkouts, including stopped applied
+or rollback generations, remain unavailable. Their runtime recreation and
+content-pinned copy recovery require separate verified implementations; this
+release never removes an original source after a copy. Preserve those locations
+and their pending records for recovery. Failed migration keeps the pending record and exact
 paths available for recovery. Registry, project and storage identities must
 remain stable through relocation; directory reuse must never inherit an old
 copy's cleanup authorization.

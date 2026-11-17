@@ -16,7 +16,8 @@ const MAX_DEPTH: usize = 128;
 #[path = "fs_snapshot_linux.rs"]
 mod checkout_content;
 pub use checkout_content::{
-    CheckoutSnapshot, CheckoutSnapshotCursor, checkout_index_fingerprint, checkout_snapshot,
+    CheckoutIndexCursor, CheckoutSnapshot, CheckoutSnapshotCursor, checkout_index_fingerprint,
+    checkout_snapshot,
 };
 
 pub fn open_directory(path: &Path) -> Result<File, ProtocolError> {

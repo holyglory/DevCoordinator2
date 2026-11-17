@@ -1,4 +1,5 @@
-//! Explicit trusted-local relocation. This is not a public Console mover.
+//! Explicit trusted-local, inactive, same-filesystem checkout relocation.
+//! Cross-filesystem copies and deployment-bound moves are unavailable.
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -32,6 +33,7 @@ pub struct Receipt {
     pub old_path: String,
     pub new_path: String,
     pub fingerprint: String,
+    /// New plans use `rename`; historical copy receipts may retain `verified_copy`.
     #[serde(default)]
     pub method: String,
     #[serde(default)]

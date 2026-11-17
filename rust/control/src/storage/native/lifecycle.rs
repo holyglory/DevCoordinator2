@@ -6,6 +6,7 @@ use crate::storage::db_error;
 use crate::storage::lifecycle::{BoundCheckout, CheckoutBinding, IntegrationProof};
 use devcoordinator2_api::project::cleanup::CheckoutEffect;
 
+#[derive(Clone)]
 struct GitState {
     branch: Option<String>,
     head: String,
@@ -15,12 +16,184 @@ struct GitState {
     untracked: u64,
     ignored: u64,
     stashes: u64,
+    reflog_entries: u64,
+    unpreserved_history: Vec<String>,
     refs: u64,
     unpublished: Vec<String>,
     remote_recoverable: bool,
     fingerprint: String,
     merge_commit: Option<String>,
     locked: bool,
+}
+
+/// One native command or one bounded index read per maintenance step. Cached
+/// responses are private observation state, never returned as repository data.
+type GitProbeKey = (PathBuf, Vec<String>, bool);
+type GitProbeResult = Result<(Vec<u8>, Vec<u8>), (devcoordinator2_api::ErrorCode, String, String)>;
+#[derive(Default)]
+struct GitProbe {
+    results: std::collections::BTreeMap<GitProbeKey, GitProbeResult>,
+    files: std::collections::BTreeMap<PathBuf, fs::CheckoutIndexCursor>,
+    file_results: std::collections::BTreeMap<PathBuf, Option<String>>,
+    used: bool,
+}
+const GIT_PENDING: &str = "checkout_git_observation_pending";
+impl GitProbe {
+    fn read(
+        &mut self,
+        path: &Path,
+        args: &[&str],
+        context: &Context,
+        worktrees: bool,
+    ) -> Result<(Vec<u8>, Vec<u8>), ProtocolError> {
+        let key = (
+            path.to_path_buf(),
+            args.iter().map(|s| (*s).to_owned()).collect(),
+            worktrees,
+        );
+        if let Some(result) = self.results.get(&key) {
+            return match result {
+                Ok(bytes) => Ok(bytes.clone()),
+                Err((code, message, detail)) => {
+                    Err(ProtocolError::new(*code, message.clone()).with_detail(detail.clone()))
+                }
+            };
+        }
+        if self.used {
+            return Err(blocked(GIT_PENDING));
+        }
+        self.used = true;
+        let result = if worktrees {
+            git_bytes_with_stderr_limit(path, args, context, Some(WORKTREE_LIST_OUTPUT_LIMIT))
+        } else {
+            git_bytes_with_stderr(path, args, context)
+        };
+        self.results.insert(
+            key,
+            match &result {
+                Ok(bytes) => Ok(bytes.clone()),
+                Err(error) => Err((error.code, error.message.clone(), error.detail.clone())),
+            },
+        );
+        result
+    }
+    fn bytes(
+        &mut self,
+        path: &Path,
+        args: &[&str],
+        context: &Context,
+    ) -> Result<Vec<u8>, ProtocolError> {
+        self.read(path, args, context, false).map(|(out, _)| out)
+    }
+    fn optional(
+        &mut self,
+        path: &Path,
+        args: &[&str],
+        context: &Context,
+    ) -> Result<Option<Vec<u8>>, ProtocolError> {
+        match self.bytes(path, args, context) {
+            Err(error) if error.message == GIT_PENDING => Err(error),
+            result => Ok(result.ok()),
+        }
+    }
+    fn string(
+        &mut self,
+        path: &Path,
+        args: &[&str],
+        context: &Context,
+    ) -> Result<String, ProtocolError> {
+        String::from_utf8(self.bytes(path, args, context)?)
+            .map(|value| value.trim().to_owned())
+            .map_err(|_| blocked("checkout_git_unverified"))
+    }
+    fn observed(
+        &mut self,
+        path: &Path,
+        args: &[&str],
+        context: &Context,
+        incomplete: &str,
+    ) -> Result<Vec<u8>, ProtocolError> {
+        let (stdout, stderr) = self.read(path, args, context, false)?;
+        if !stderr.is_empty() {
+            return Err(blocked(incomplete));
+        }
+        Ok(stdout)
+    }
+    fn index(&mut self, path: &Path) -> Result<Option<String>, ProtocolError> {
+        self.file_fingerprint(path, false)
+    }
+    fn reflog(&mut self, path: &Path) -> Result<Option<String>, ProtocolError> {
+        self.file_fingerprint(path, true)
+    }
+    fn file_fingerprint(
+        &mut self,
+        path: &Path,
+        reflog: bool,
+    ) -> Result<Option<String>, ProtocolError> {
+        if let Some(result) = self.file_results.get(path) {
+            return Ok(result.clone());
+        }
+        if self.used {
+            return Err(blocked(GIT_PENDING));
+        }
+        self.used = true;
+        if let std::collections::btree_map::Entry::Vacant(entry) = self.files.entry(path.to_owned())
+        {
+            entry.insert(if reflog {
+                fs::CheckoutIndexCursor::new_reflog(path)?
+            } else {
+                fs::CheckoutIndexCursor::new(path)?
+            });
+        }
+        match self
+            .files
+            .get_mut(path)
+            .expect("private Git file cursor initialized")
+            .step(256 * 1024, Duration::from_millis(25))?
+        {
+            Some(result) => {
+                self.file_results.insert(path.to_owned(), result.clone());
+                Ok(result)
+            }
+            None => Err(blocked(GIT_PENDING)),
+        }
+    }
+    fn bytes_hashed(&self) -> u64 {
+        self.files.values().fold(0u64, |total, file| {
+            total.saturating_add(file.bytes_hashed())
+        })
+    }
+    fn step(
+        &mut self,
+        binding: &CheckoutBinding,
+        integration: Option<&IntegrationProof>,
+        context: &Context,
+    ) -> Result<Option<GitState>, ProtocolError> {
+        self.used = false;
+        match git_state_probed(binding, integration, context, self) {
+            Err(error) if error.message == GIT_PENDING => Ok(None),
+            result => result.map(Some),
+        }
+    }
+}
+
+/// Ephemeral handles and digest state are deliberately not restored after a
+/// daemon restart. A recovered durable review starts observation again and
+/// cannot publish a partial proof acquired before the interruption.
+#[derive(Default)]
+pub struct CheckoutObservationCursor {
+    git_before: GitProbe,
+    before: Option<GitState>,
+    snapshot: Option<fs::CheckoutSnapshotCursor>,
+    content: Option<fs::CheckoutSnapshot>,
+    git_after: GitProbe,
+    pub(crate) entries_hashed: u64,
+    pub(crate) bytes_hashed: u64,
+}
+impl CheckoutObservationCursor {
+    pub(crate) fn content_ready(&self) -> bool {
+        self.content.is_some()
+    }
 }
 
 impl HostBackend {
@@ -30,19 +203,123 @@ impl HostBackend {
         integration: Option<IntegrationProof>,
         context: &Context,
     ) -> Result<(Record, BoundCheckout), ProtocolError> {
+        let mut cursor = CheckoutObservationCursor::default();
+        loop {
+            if let Some(result) = self.observe_checkout_target_step(
+                binding,
+                integration.clone(),
+                context,
+                &mut cursor,
+                DiscoveryBudget::default(),
+            )? {
+                return Ok(result);
+            }
+        }
+    }
+
+    pub(super) fn observe_checkout_target_step(
+        &self,
+        binding: &CheckoutBinding,
+        integration: Option<IntegrationProof>,
+        context: &Context,
+        cursor: &mut CheckoutObservationCursor,
+        budget: DiscoveryBudget,
+    ) -> Result<Option<(Record, BoundCheckout)>, ProtocolError> {
         validate_path(&binding.path, &self.config, false, &self.database)?;
         self.checkout_binding_current(binding)?;
+        if cursor.before.is_none() {
+            cursor.before = cursor
+                .git_before
+                .step(binding, integration.as_ref(), context)?;
+            cursor.bytes_hashed = cursor.git_before.bytes_hashed();
+            return Ok(None);
+        }
+        if cursor.content.is_none() {
+            if cursor.snapshot.is_none() {
+                cursor.snapshot = Some(fs::CheckoutSnapshotCursor::new(&binding.path)?);
+            }
+            let walk = cursor
+                .snapshot
+                .as_mut()
+                .expect("checkout snapshot initialized");
+            cursor.content = walk.step(budget.entries, 256 * 1024, budget.elapsed)?;
+            let (entries, bytes, _) = walk.progress();
+            cursor.entries_hashed = entries;
+            cursor.bytes_hashed = cursor.git_before.bytes_hashed().saturating_add(bytes);
+            return Ok(None);
+        }
+        let state = cursor
+            .git_after
+            .step(binding, integration.as_ref(), context)?;
+        cursor.bytes_hashed = cursor
+            .git_before
+            .bytes_hashed()
+            .saturating_add(cursor.snapshot.as_ref().map_or(0, |walk| walk.progress().1))
+            .saturating_add(cursor.git_after.bytes_hashed());
+        let Some(state) = state else {
+            return Ok(None);
+        };
+        if state.fingerprint
+            != cursor
+                .before
+                .as_ref()
+                .expect("checkout git observed")
+                .fingerprint
+        {
+            return Err(blocked("checkout_git_changed"));
+        }
+        let snapshot = cursor.content.take().expect("checkout content observed");
         let identity = fs::identity(&binding.path)?;
-        let state = git_state(binding, integration.as_ref(), context)?;
-        let snapshot = fs::checkout_snapshot(&binding.path)?;
-        let mut record = self.directory_candidate(
-            &binding.path,
-            &binding.path,
-            Some(&binding.canonical_path),
+        if identity != (snapshot.measurement.device, snapshot.measurement.inode) {
+            return Err(blocked("identity_changed"));
+        }
+        self.checkout_binding_current(binding)?;
+        let result =
+            self.checkout_record(binding, integration, context, state, snapshot, identity)?;
+        Ok(Some(result))
+    }
+
+    fn checkout_record(
+        &self,
+        binding: &CheckoutBinding,
+        integration: Option<IntegrationProof>,
+        context: &Context,
+        state: GitState,
+        snapshot: fs::CheckoutSnapshot,
+        identity: (u64, u64),
+    ) -> Result<(Record, BoundCheckout), ProtocolError> {
+        let mut record = candidate(
             api::Kind::Worktree,
-            true,
+            api::Effect::SourceWorktree,
+            binding
+                .path
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned(),
+            Locator::Directory {
+                path: binding.path.clone(),
+                device: identity.0,
+                inode: identity.1,
+                root: binding.path.clone(),
+                git_root: Some(binding.canonical_path.clone()),
+            },
             context,
         )?;
+        record.resource_key = format!("fs:{}:{}", identity.0, identity.1);
+        record.artifact.filesystem_id = Some(format!("fs-{}", identity.0));
+        record.artifact.allocated_bytes = Some(snapshot.measurement.bytes);
+        record.last_activity_signature = format!(
+            "{}:{}:{}",
+            snapshot.measurement.newest_modified_ns,
+            snapshot.measurement.bytes,
+            snapshot.measurement.entries
+        );
+        record.private_aliases.push(binding.path.clone());
+        record.artifact.ownership = "recognized".into();
+        if let Err(error) = self.validate_mount_consumers(&record, context, &[]) {
+            record.blockers.push(error.message);
+        }
         record.artifact.repository_id = Some(binding.physical_repository_id.clone());
         record.artifact.repository_name = context
             .repositories
@@ -107,6 +384,9 @@ impl HostBackend {
         if !state.remote_recoverable {
             losses.push("remote_recoverability_unverified".into());
         }
+        if !state.unpreserved_history.is_empty() {
+            losses.push("unpreserved_local_history".into());
+        }
         if state.independent
             && state.stashes > 0
             && state
@@ -150,6 +430,8 @@ impl HostBackend {
             untracked_files: state.untracked,
             ignored_files: state.ignored,
             stash_entries: state.stashes,
+            reflog_entries: state.reflog_entries,
+            unpreserved_git_history: state.unpreserved_history,
             local_refs: state.refs,
             unpublished_refs: state.unpublished,
             nested_repositories: snapshot.nested_git,
@@ -161,6 +443,8 @@ impl HostBackend {
             blockers,
             estimated_reclaimable_bytes: record.artifact.allocated_bytes,
             content_fingerprint: snapshot.fingerprint,
+            retained_external_artifacts: 0,
+            retained_external_bytes: Some(0),
             task_stays_open: binding.task_id.is_some()
                 || !matches!(
                     binding.lifecycle.as_str(),
@@ -202,6 +486,27 @@ impl HostBackend {
             return Err(blocked("canonical_checkout"));
         }
         self.checkout_binding_current(binding)?;
+        // Linked outputs are retained. A missing or changed association must
+        // still be reviewed again before the exact checkout can be removed.
+        self.database
+            .read(|connection| {
+                let (count, bytes, shared_inside) =
+                    crate::storage::lifecycle::checkout_artifact_retention(connection, binding)?;
+                if shared_inside {
+                    return Err(crate::database::DatabaseError::Domain(blocked(
+                        "shared_artifact_inside_checkout",
+                    )));
+                }
+                if count != target.observed.retained_external_artifacts
+                    || bytes != target.observed.retained_external_bytes
+                {
+                    return Err(crate::database::DatabaseError::Domain(blocked(
+                        "checkout_external_outputs_changed",
+                    )));
+                }
+                Ok(())
+            })
+            .map_err(db_error)?;
         if fs::identity(&binding.path)? != (target.device, target.inode) {
             return Err(blocked("identity_changed"));
         }
@@ -233,8 +538,32 @@ impl HostBackend {
         record: &Record,
         target: &BoundCheckout,
         context: &Context,
+        job_id: &str,
     ) -> Result<(), ProtocolError> {
+        let started = std::time::Instant::now();
         self.validate_checkout_target(record, target, context)?;
+        let running = self
+            .database
+            .read(|connection| {
+                connection
+                    .query_row(
+                        "SELECT state='running' FROM storage_jobs WHERE job_id=$1",
+                        [job_id],
+                        |row| row.get::<_, bool>(0),
+                    )
+                    .map_err(crate::database::DatabaseError::from)
+            })
+            .map_err(db_error)?;
+        if !running {
+            return Err(blocked("cleanup_cancelled"));
+        }
+        if context
+            .now_ms
+            .saturating_add(started.elapsed().as_millis() as u64)
+            > target.expires_at_ms
+        {
+            return Err(blocked("plan_expired"));
+        }
         // The existing nofollow, inode-bound storage deletion engine removes
         // files. Git then removes only the exact worktree registration. Using
         // Git alone for file deletion would lose the path-replacement guard.
@@ -394,35 +723,55 @@ fn git_state(
     integration: Option<&IntegrationProof>,
     context: &Context,
 ) -> Result<GitState, ProtocolError> {
+    let mut probe = GitProbe::default();
+    loop {
+        if let Some(state) = probe.step(binding, integration, context)? {
+            return Ok(state);
+        }
+    }
+}
+
+fn git_state_probed(
+    binding: &CheckoutBinding,
+    integration: Option<&IntegrationProof>,
+    context: &Context,
+    probe: &mut GitProbe,
+) -> Result<GitState, ProtocolError> {
     let path = &binding.path;
     if !std::fs::symlink_metadata(path.join(".git"))
         .is_ok_and(|metadata| !metadata.file_type().is_symlink())
     {
         return Err(blocked("checkout_git_identity_unverified"));
     }
-    let head = git_string(path, &["rev-parse", "--verify", "HEAD"], context)?;
+    let head = probe.string(path, &["rev-parse", "--verify", "HEAD"], context)?;
     if !oid(&head) {
         return Err(blocked("checkout_head_unverified"));
     }
-    let branch = git_string(path, &["rev-parse", "--abbrev-ref", "HEAD"], context)?;
+    let branch = probe.string(path, &["rev-parse", "--abbrev-ref", "HEAD"], context)?;
     let branch = (branch != "HEAD").then_some(branch);
-    let upstream = git_string(
+    let upstream = probe.optional(
         path,
         &["rev-parse", "--symbolic-full-name", "@{upstream}"],
         context,
-    )
-    .ok();
-    let common = git_string(
+    )?;
+    let upstream = upstream
+        .map(|bytes| {
+            String::from_utf8(bytes)
+                .map(|text| text.trim().to_owned())
+                .map_err(|_| blocked("checkout_git_unverified"))
+        })
+        .transpose()?;
+    let common = probe.string(
         path,
         &["rev-parse", "--path-format=absolute", "--git-common-dir"],
         context,
     )?;
-    let git_dir = git_string(
+    let git_dir = probe.string(
         path,
         &["rev-parse", "--path-format=absolute", "--git-dir"],
         context,
     )?;
-    let index = git_string(
+    let index = probe.string(
         path,
         &["rev-parse", "--path-format=absolute", "--git-path", "index"],
         context,
@@ -430,18 +779,63 @@ fn git_state(
     if !Path::new(&index).starts_with(&git_dir) {
         return Err(blocked("checkout_index_outside_git_directory"));
     }
-    let index_fingerprint = fs::checkout_index_fingerprint(Path::new(&index))?;
+    let index_fingerprint = probe.index(Path::new(&index))?;
+    let staged = probe.observed(
+        path,
+        &["ls-files", "--stage", "-z"],
+        context,
+        "checkout_index_unverified",
+    )?;
     let common_identity = fs::identity(Path::new(&common))?;
     let owner_identity = fs::identity(&binding.canonical_path)?;
     let independent = common == git_dir
         && std::fs::symlink_metadata(path.join(".git")).is_ok_and(|metadata| metadata.is_dir());
-    let membership = git_worktree_bytes(path, context)?;
+    let mut private_reflog_roots = Vec::new();
+    let private_head_log = if independent {
+        None
+    } else {
+        let log = Path::new(&git_dir).join("logs/HEAD");
+        match std::fs::symlink_metadata(&log) {
+            Ok(_) => {
+                let digest = probe.reflog(&log)?;
+                private_reflog_roots = probe
+                    .files
+                    .get(&log)
+                    .map(fs::CheckoutIndexCursor::reflog_roots)
+                    .unwrap_or_default();
+                digest
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(_) => return Err(blocked("checkout_reflogs_unverified")),
+        }
+    };
+    let membership = probe
+        .read(
+            path,
+            &["worktree", "list", "--porcelain", "-z"],
+            context,
+            true,
+        )?
+        .0;
     use std::os::unix::ffi::OsStrExt;
     let mut selected_member = false;
     let mut locked = false;
+    let mut other_member_exists = false;
+    let mut retained_worktree_heads = Vec::new();
     for field in membership.split(|byte| *byte == 0) {
         if let Some(member) = field.strip_prefix(b"worktree ") {
             selected_member = member == path.as_os_str().as_bytes();
+            other_member_exists = !selected_member
+                && fs::identity(Path::new(std::ffi::OsStr::from_bytes(member))).is_ok();
+        } else if let Some(head) = field.strip_prefix(b"HEAD ") {
+            let head = std::str::from_utf8(head)
+                .map_err(|_| blocked("checkout_worktree_history_unverified"))?;
+            if !oid(head) {
+                return Err(blocked("checkout_worktree_history_unverified"));
+            }
+            if other_member_exists {
+                retained_worktree_heads.push(head.to_owned());
+            }
         } else if selected_member && (field == b"locked" || field.starts_with(b"locked ")) {
             locked = true;
         }
@@ -456,7 +850,7 @@ fn git_state(
             return Err(blocked("clone_has_linked_worktrees"));
         }
     } else {
-        let canonical_common = git_string(
+        let canonical_common = probe.string(
             &binding.canonical_path,
             &["rev-parse", "--path-format=absolute", "--git-common-dir"],
             context,
@@ -472,7 +866,7 @@ fn git_state(
             return Err(blocked("worktree_membership_changed"));
         }
     }
-    let status = observed_git_bytes(
+    let status = probe.observed(
         path,
         &["status", "--porcelain=v1", "-z", "--untracked-files=all"],
         context,
@@ -483,7 +877,7 @@ fn git_state(
         .split(|byte| *byte == 0)
         .filter(|field| field.starts_with(b"?? "))
         .count() as u64;
-    let ignored = observed_git_bytes(
+    let ignored = probe.observed(
         path,
         &[
             "ls-files",
@@ -499,7 +893,7 @@ fn git_state(
         .split(|byte| *byte == 0)
         .filter(|field| !field.is_empty())
         .count() as u64;
-    let refs = observed_git_bytes(
+    let refs = probe.observed(
         path,
         &[
             "for-each-ref",
@@ -524,7 +918,7 @@ fn git_state(
         }
         local.push((name, hash));
     }
-    let stash = observed_git_bytes(
+    let stash = probe.observed(
         path,
         &["stash", "list", "--format=%H"],
         context,
@@ -541,13 +935,62 @@ fn git_state(
         local.push((format!("stash@{{{index}}}"), hash.into()));
         stashes += 1;
     }
-    let remote_url = git_bytes(path, &["remote", "get-url", "--", "origin"], context).ok();
-    let remote = git_bytes(
+    let reflog = probe.observed(
+        path,
+        if independent {
+            &["reflog", "show", "--all", "--format=%H%x00%gD%x00%gs"]
+        } else {
+            &["reflog", "show", "--format=%H%x00%gD%x00%gs", "HEAD"]
+        },
+        context,
+        "checkout_reflogs_unverified",
+    )?;
+    let mut reflog_heads = private_reflog_roots
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    let mut reflog_entries = 0u64;
+    for row in reflog
+        .split(|byte| *byte == b'\n')
+        .filter(|row| !row.is_empty())
+    {
+        let fields = row.splitn(3, |byte| *byte == 0).collect::<Vec<_>>();
+        if fields.len() != 3 {
+            return Err(blocked("checkout_reflogs_unverified"));
+        }
+        let entry =
+            std::str::from_utf8(fields[0]).map_err(|_| blocked("checkout_reflogs_unverified"))?;
+        if !oid(entry) {
+            return Err(blocked("checkout_reflogs_unverified"));
+        }
+        reflog_entries = reflog_entries.saturating_add(1);
+        reflog_heads.insert(entry.to_owned());
+    }
+    // This runs only in the admitted maintenance lane, with the native Git
+    // runner's hard time/output caps. Any incomplete/corrupt object inspection
+    // fails review; it cannot be waived as uncertain remote recoverability.
+    let unreachable = if independent {
+        probe.observed(
+            path,
+            &[
+                "fsck",
+                "--full",
+                "--unreachable",
+                "--no-reflogs",
+                "--no-dangling",
+                "--no-progress",
+            ],
+            context,
+            "checkout_objects_unverified",
+        )?
+    } else {
+        Vec::new()
+    };
+    let remote_url = probe.optional(path, &["remote", "get-url", "--", "origin"], context)?;
+    let remote = probe.optional(
         path,
         &["ls-remote", "--heads", "--tags", "--", "origin"],
         context,
-    )
-    .ok();
+    )?;
     let mut remote_heads = Vec::new();
     if let Some(bytes) = &remote {
         for line in String::from_utf8_lossy(bytes).lines() {
@@ -567,34 +1010,23 @@ fn git_state(
             remote_heads.push(hash.to_owned());
         }
     }
-    let reachable = |hash: &str| {
-        remote_heads.iter().any(|remote| {
-            hash == remote
-                || git_bytes(
-                    path,
-                    &["merge-base", "--is-ancestor", hash, remote],
-                    context,
-                )
-                .is_ok()
-        })
-    };
     let mut merge_commit = None;
     let mut integrated = false;
     if let (Some(proof), Some(url), Some(branch)) =
         (integration, remote_url.as_ref(), branch.as_ref())
+        && proof.original_head == head
+        && proof.branch_name == *branch
+        && proof.remote_identity == hash(url)
     {
-        if proof.original_head == head
-            && proof.branch_name == *branch
-            && proof.remote_identity == hash(url)
-        {
-            let expected = format!("refs/heads/{}", proof.integration_branch);
-            if let Some(bytes) = &remote {
-                integrated = String::from_utf8_lossy(bytes).lines().any(|line| {
-                    let fields = line.split_whitespace().collect::<Vec<_>>();
-                    fields.len() == 2
-                        && fields[1] == expected
-                        && (fields[0] == proof.integration_head
-                            || git_bytes(
+        let expected = format!("refs/heads/{}", proof.integration_branch);
+        if let Some(bytes) = &remote {
+            for line in String::from_utf8_lossy(bytes).lines() {
+                let fields = line.split_whitespace().collect::<Vec<_>>();
+                if fields.len() == 2
+                    && fields[1] == expected
+                    && (fields[0] == proof.integration_head
+                        || probe
+                            .optional(
                                 path,
                                 &[
                                     "merge-base",
@@ -603,26 +1035,72 @@ fn git_state(
                                     fields[0],
                                 ],
                                 context,
-                            )
-                            .is_ok())
-                });
-            }
-            if integrated {
-                merge_commit = Some(proof.merge_commit.clone());
+                            )?
+                            .is_some())
+                {
+                    integrated = true;
+                    break;
+                }
             }
         }
+        if integrated {
+            merge_commit = Some(proof.merge_commit.clone());
+        }
     }
-    let remote_recoverable = reachable(&head) || integrated;
+    let remote_recoverable = reachable(probe, path, &head, &remote_heads, context)? || integrated;
     let mut unpublished = Vec::new();
     if independent {
         for (name, hash) in &local {
             let approved_original = integrated && hash == &head;
-            if !approved_original && !reachable(hash) {
+            if !approved_original && !reachable(probe, path, hash, &remote_heads, context)? {
                 unpublished.push(name.clone());
             }
         }
     }
-    let remote_recoverable = remote_recoverable && (!independent || unpublished.is_empty());
+    let mut preservation_roots = if independent {
+        remote_heads.clone()
+    } else {
+        local
+            .iter()
+            .map(|(_, oid)| oid.clone())
+            .chain(retained_worktree_heads.iter().cloned())
+            .collect::<Vec<_>>()
+    };
+    if integrated {
+        preservation_roots.push(head.clone());
+    }
+    preservation_roots.sort();
+    preservation_roots.dedup();
+    let mut unpreserved_history = std::collections::BTreeSet::new();
+    for entry in reflog_heads {
+        if !reachable(probe, path, &entry, &preservation_roots, context)? {
+            unpreserved_history.insert(format!("commit:{entry}"));
+        }
+    }
+    let mut unreachable_objects = std::collections::BTreeSet::new();
+    for row in std::str::from_utf8(&unreachable)
+        .map_err(|_| blocked("checkout_objects_unverified"))?
+        .lines()
+    {
+        let fields = row.split_whitespace().collect::<Vec<_>>();
+        if fields.len() != 3
+            || fields[0] != "unreachable"
+            || !matches!(fields[1], "commit" | "tree" | "blob" | "tag")
+            || !oid(fields[2])
+        {
+            return Err(blocked("checkout_objects_unverified"));
+        }
+        unreachable_objects.insert(format!("{}:{}", fields[1], fields[2]));
+        if fields[1] != "commit"
+            || !reachable(probe, path, fields[2], &preservation_roots, context)?
+        {
+            unpreserved_history.insert(format!("{}:{}", fields[1], fields[2]));
+        }
+    }
+    let unpreserved_history = unpreserved_history.into_iter().collect::<Vec<_>>();
+    let remote_recoverable = remote_recoverable
+        && (!independent || unpublished.is_empty())
+        && unpreserved_history.is_empty();
     let fingerprint = hash(
         json(&(
             branch.clone(),
@@ -630,11 +1108,11 @@ fn git_state(
             &upstream,
             (&common, common_identity, owner_identity),
             &git_dir,
-            (&index, &index_fingerprint),
+            (&index, &index_fingerprint, &staged, &private_head_log),
             &status,
             &ignored,
-            &refs,
-            &stash,
+            (&refs, &membership, &retained_worktree_heads),
+            (&stash, &reflog, &unreachable_objects, &unpreserved_history),
             &remote_url,
             &remote,
             integrated,
@@ -651,6 +1129,8 @@ fn git_state(
         untracked,
         ignored: ignored_count,
         stashes,
+        reflog_entries,
+        unpreserved_history,
         refs: local_ref_count,
         unpublished,
         remote_recoverable,
@@ -660,25 +1140,27 @@ fn git_state(
     })
 }
 
-fn git_string(path: &Path, arguments: &[&str], context: &Context) -> Result<String, ProtocolError> {
-    String::from_utf8(git_bytes(path, arguments, context)?)
-        .map(|value| value.trim().to_owned())
-        .map_err(|_| blocked("checkout_git_unverified"))
-}
-
-/// Git can exit successfully after warning that it skipped unreadable paths
-/// or refs. That output cannot authorize a complete checkout review.
-fn observed_git_bytes(
+fn reachable(
+    probe: &mut GitProbe,
     path: &Path,
-    arguments: &[&str],
+    hash: &str,
+    remote_heads: &[String],
     context: &Context,
-    incomplete: &str,
-) -> Result<Vec<u8>, ProtocolError> {
-    let (stdout, stderr) = git_bytes_with_stderr(path, arguments, context)?;
-    if !stderr.is_empty() {
-        return Err(blocked(incomplete));
+) -> Result<bool, ProtocolError> {
+    for remote in remote_heads {
+        if hash == remote
+            || probe
+                .optional(
+                    path,
+                    &["merge-base", "--is-ancestor", hash, remote],
+                    context,
+                )?
+                .is_some()
+        {
+            return Ok(true);
+        }
     }
-    Ok(stdout)
+    Ok(false)
 }
 
 fn oid(value: &str) -> bool {

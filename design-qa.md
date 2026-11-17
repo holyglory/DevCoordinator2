@@ -1084,7 +1084,17 @@ The approved image was compared with current dark 1975×796 captures for pending
 
 # Project Explorer design QA — 2026-11-17
 
-final result: passed
+final result: blocked
+
+Release correction: the following section is retained as historical evidence of
+an invalid handoff claim. The previous manual decisions were generated for all
+cells without inspecting every required screenshot pair, and the Product Design
+pass lacked the paired source/rendered comparison and shared live preview.
+Those receipts do not establish manual review, design approval or delivery.
+Coordinator decision `DC2-PROJECT-EXPLORER-RELEASE-EVIDENCE-CORRECTION-20261117`
+records the correction. Current-source formal, manual and live comparison
+evidence must replace this claim before handoff; unrelated earlier audits above
+remain untouched.
 
 ## Source and implementation
 

@@ -112,7 +112,8 @@ impl ProjectService {
                     }
                     _ => {
                         if self.refresh_inventory(&p, &physical, budget)? {
-                            p.cursor.stage = "status".into();p.cursor.after.clear();
+                            p.cursor.stage = "status".into();
+                            p.cursor.after.clear();
                         }
                     }
                 }
@@ -162,7 +163,8 @@ impl ProjectService {
                     if p.cursor.failed_sources.contains(source){c.execute("UPDATE project_sources SET refresh_state='failed',error='One or more source observations failed; previous data retained' WHERE project_id=$1 AND repository_id=$2",params![p.project,source])?;}
                     else {c.execute("UPDATE project_sources SET last_success=$3,error=NULL WHERE project_id=$1 AND repository_id=$2",params![p.project,source,now])?;}
                 }
-                c.execute("UPDATE projects SET refreshed_at=$2,revision=revision+1,updated_at=$2 WHERE project_id=$1",params![p.project,now])?;
+                c.execute("UPDATE projects SET refreshed_at=$2 WHERE project_id=$1",params![p.project,now])?;
+                observed(c,&p.project,&p.actor,&now)?;
                 event(c,&p.project,None,None,None,"project.refreshed",if p.cursor.had_error{"Refresh finished with unavailable source observations"}else{"Project source observations were refreshed"},&p.actor,&now)?;
                 c.execute("DELETE FROM project_remote_observations WHERE job_id=$1",[&p.id])?;
             }
@@ -195,8 +197,7 @@ impl ProjectService {
         // Registration verifies/binds the native identity, preserving existing
         // IDs. It also adopts a real primary checkout when only a linked one
         // had previously been registered. A reused path cannot bypass it.
-        let current =
-            Registry::new(self.database.clone()).register(&physical.path, physical.uid, gid)?;
+        let current = self.registry.register(&physical.path, physical.uid, gid)?;
         if current.repository_id != physical.id {
             return Err(ProtocolError::new(
                 ErrorCode::ConfigurationConflict,
@@ -230,20 +231,34 @@ impl ProjectService {
         }
         let roots = self.root_inputs(&p.project)?;
         let now = timestamp();
-        let gid=crate::systemd::primary_gid(physical.uid).map_err(|_|denied("registered source owner is unavailable"))?;
-        let registry=Registry::new(self.database.clone());
+        let gid = crate::systemd::primary_gid(physical.uid)
+            .map_err(|_| denied("registered source owner is unavailable"))?;
+        let registry = &self.registry;
         let mut registrations=self.database.read(|c|c.prepare("SELECT worktree_path,worktree_id FROM worktrees WHERE repository_id=$1 ORDER BY worktree_id LIMIT 4097")?.query_map([&physical.id],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?)))?.collect::<crate::database::Result<BTreeMap<_,_>>>().map_err(DatabaseError::from)).map_err(database_error)?;
-        let mut adopted=0;
-        for worktree in &worktrees{
-            if worktree.bare||registrations.contains_key(&worktree.path)||!Path::new(&worktree.path).is_dir(){continue;}
+        let mut adopted = 0;
+        for worktree in &worktrees {
+            if worktree.bare
+                || registrations.contains_key(&worktree.path)
+                || !Path::new(&worktree.path).is_dir()
+            {
+                continue;
+            }
             // New identities persist in the registry between bounded steps;
             // a large first discovery never restarts from an empty counter.
-            if adopted>=4||budget.remaining()<Duration::from_millis(250){return Ok(false);}
-            verify_checkout_common(physical,Path::new(&worktree.path),budget)?;
-            let registered=registry.register(Path::new(&worktree.path),physical.uid,gid)?;
-            if registered.repository_id!=physical.id||registered.worktree_path!=worktree.path{return Err(ProtocolError::new(ErrorCode::ConfigurationConflict,"Git checkout does not match its registered physical source"));}
-            registrations.insert(worktree.path.clone(),registered.worktree_id);
-            adopted+=1;
+            if adopted >= 4 || budget.remaining() < Duration::from_millis(250) {
+                return Ok(false);
+            }
+            verify_checkout_common(physical, Path::new(&worktree.path), budget)?;
+            let registered = registry.register(Path::new(&worktree.path), physical.uid, gid)?;
+            if registered.repository_id != physical.id || registered.worktree_path != worktree.path
+            {
+                return Err(ProtocolError::new(
+                    ErrorCode::ConfigurationConflict,
+                    "Git checkout does not match its registered physical source",
+                ));
+            }
+            registrations.insert(worktree.path.clone(), registered.worktree_id);
+            adopted += 1;
         }
         self.database.transaction(|c|{
             let mut branch_ids=BTreeMap::new();
@@ -262,25 +277,47 @@ impl ProjectService {
                 let existing=c.query_row("SELECT worktree_id FROM project_checkouts WHERE project_id=$1 AND absolute_path=$2",params![p.project,worktree.path],|r|r.get::<_,String>(0)).optional()?;
                 let registered=c.query_row("SELECT worktree_id FROM worktrees WHERE worktree_path=$1 AND repository_id=$2",params![worktree.path,physical.id],|r|r.get::<_,String>(0)).optional()?;
                 let wid=registrations.get(&worktree.path).cloned().or(registered).or(existing.clone()).unwrap_or(new_id("missing").map_err(DatabaseError::Domain)?);
-                if let Some(old)=existing.as_deref(){if old!=wid{rekey_project_checkout(c,&p.project,old,&wid,&now,&p.actor)?;}}
+                if let Some(old)=existing.as_deref() && old!=wid{rekey_project_checkout(c,&p.project,old,&wid,&now,&p.actor)?;}
                 seen.insert(wid.clone());
                 let (relative,kind)=display_path(&roots,&worktree.path);
                 let mut row=load_checkout(c,&p.project,&wid)?.unwrap_or_else(||empty_checkout(&wid,&physical.source,&worktree.path,relative.clone(),kind.clone(),if Path::new(&worktree.path)==physical.path {if physical.id==physical.source{"primary"}else{"clone"}}else{"worktree"}));
                 row.relative_path=relative;row.root_kind=kind;row.branch_name=worktree.branch.clone();row.branch_id=worktree.branch.as_ref().and_then(|name|branch_ids.get(name).cloned());row.head=worktree.head.clone();row.revision+=1;
                 row.registration_state=if registrations.contains_key(&worktree.path){"registered".into()}else{c.query_row("SELECT CASE WHEN EXISTS(SELECT 1 FROM worktrees WHERE worktree_id=$1 AND repository_id=$2) THEN 'registered' ELSE 'unregistered' END",params![wid,physical.id],|r|r.get(0))?};
-                row.protection_reasons.clear();if worktree.locked{row.protection_reasons.push("Git worktree is locked".into());}if worktree.prunable{row.protection_reasons.push("Git reports a missing or prunable checkout".into());}
+                row.protection_reasons.clear();
+                if worktree.locked{row.protection_reasons.push("Git worktree is locked".into());}
+                if worktree.prunable{row.protection_reasons.push("Git reports a missing or prunable checkout".into());}
                 decorate_deployment_checkout(c,physical,&mut row)?;
                 if row.role=="primary"{row.protection_reasons.push("primary checkout".into());}
                 row.can_remove=false;
                 persist_checkout(c,&p.project,&physical.id,&row,&now,&p.actor)?;
                 if row.role=="primary"{c.execute("UPDATE project_sources SET primary_checkout_id=$3 WHERE project_id=$1 AND repository_id=$2",params![p.project,physical.source,wid])?;}
             }
+            // Immutable deployment copies are ordinary directories and may
+            // never appear in Git's worktree list. Their retained exact paths
+            // are the authority; no synthetic build directory is inferred.
+            let generations=c.prepare("SELECT DISTINCT g.path,g.commit_hash FROM generations g JOIN deployments d USING(deployment_id) WHERE d.repository_id=$1 ORDER BY g.path,g.commit_hash LIMIT 4097")?.query_map([&physical.id],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?)))?.collect::<crate::database::Result<Vec<_>>>()?;
+            if generations.len()>MAX_CHECKOUTS{return Err(invalid("deployment generation inventory exceeds its fixed refresh bound").into());}
+            for (path,head) in generations {
+                if !Path::new(&path).is_absolute(){return Err(invalid("stored deployment generation path is not absolute").into());}
+                let prior=c.query_row("SELECT worktree_id,physical_repository_id FROM project_checkouts WHERE project_id=$1 AND absolute_path=$2",params![p.project,path],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?))).optional()?;
+                if prior.as_ref().is_some_and(|(_,owner)|owner!=&physical.id){return Err(ProtocolError::new(ErrorCode::ConfigurationConflict,"deployment generation path belongs to another physical source").into());}
+                let wid=prior.map(|(id,_)|id).unwrap_or(new_id("generation").map_err(DatabaseError::Domain)?);
+                if seen.contains(&wid){continue;}
+                let (relative,kind)=display_path(&roots,&path);
+                let mut row=load_checkout(c,&p.project,&wid)?.unwrap_or_else(||empty_checkout(&wid,&physical.source,&path,relative.clone(),kind.clone(),"deployment"));
+                row.relative_path=relative;row.root_kind=kind;row.head=Some(head);row.revision+=1;
+                decorate_deployment_checkout(c,physical,&mut row)?;
+                row.can_remove=false;
+                persist_checkout(c,&p.project,&physical.id,&row,&now,&p.actor)?;
+                seen.insert(wid);
+            }
             // Preserve registered and metadata-only checkouts missing from Git's list.
             let existing=c.prepare("SELECT worktree_id,record_json::text FROM project_checkouts WHERE project_id=$1 AND physical_repository_id=$2 LIMIT 4097")?.query_map(params![p.project,physical.id],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?)))?.collect::<crate::database::Result<Vec<_>>>()?;
             for (wid,raw) in existing {if !seen.contains(&wid){let mut row:api::Checkout=from_json(&raw)?;decorate_deployment_checkout(c,physical,&mut row)?;row.protection_reasons.retain(|r|r!="checkout is absent from Git inventory");row.protection_reasons.push("checkout is absent from Git inventory".into());row.can_remove=false;row.revision+=1;persist_checkout(c,&p.project,&physical.id,&row,&now,&p.actor)?;}}
             c.execute("UPDATE project_sources SET refresh_state='local' WHERE project_id=$1 AND repository_id=$2",params![p.project,physical.source])?;
-            changed(c,&p.project,&p.actor,&now)?;Ok(())
-        }).map_err(database_error)?;Ok(true)
+            observed(c,&p.project,&p.actor,&now)?;Ok(())
+        }).map_err(database_error)?;
+        Ok(true)
     }
     fn root_inputs(&self, id: &str) -> Result<Vec<api::RootInput>, ProtocolError> {
         self.database.read(|c|{c.prepare("SELECT kind,label,absolute_path FROM project_roots WHERE project_id=$1 ORDER BY root_id LIMIT 64")?.query_map([id],|r|Ok(api::RootInput{kind:r.get(0)?,label:r.get(1)?,path:r.get(2)?}))?.collect::<crate::database::Result<Vec<_>>>().map_err(DatabaseError::from)}).map_err(database_error)
@@ -303,15 +340,22 @@ impl ProjectService {
                 .ok_or_else(|| invalid("checkout path is unavailable"))?,
         );
         row.exists = Some(path.is_dir());
-        if row.exists == Some(true) {
+        if row.exists == Some(true) && !row.immutable_generation {
             let current = Physical {
                 path: path.clone(),
                 ..physical.clone()
             };
-            verify_checkout_common(physical,&path,budget)?;
-            let gid=crate::systemd::primary_gid(physical.uid).map_err(|_|denied("registered source owner is unavailable"))?;
-            let registered=Registry::new(self.database.clone()).register(&path,physical.uid,gid)?;
-            if registered.repository_id!=physical.id||registered.worktree_id!=row.worktree_id{return Err(ProtocolError::new(ErrorCode::ConfigurationConflict,"checkout execution identity changed"));}
+            verify_checkout_common(physical, &path, budget)?;
+            let gid = crate::systemd::primary_gid(physical.uid)
+                .map_err(|_| denied("registered source owner is unavailable"))?;
+            let registered = self.registry.register(&path, physical.uid, gid)?;
+            if registered.repository_id != physical.id || registered.worktree_id != row.worktree_id
+            {
+                return Err(ProtocolError::new(
+                    ErrorCode::ConfigurationConflict,
+                    "checkout execution identity changed",
+                ));
+            }
             row.dirty = Some(
                 !git(
                     &current,
@@ -326,6 +370,10 @@ impl ProjectService {
                 )?
                 .is_empty(),
             );
+        } else if row.immutable_generation && row.exists == Some(true) {
+            // Generation bytes are inspected below without registering an
+            // immutable copy as a source checkout or running Git inside it.
+            row.dirty = None;
         } else {
             row.dirty = None;
         }
@@ -334,7 +382,7 @@ impl ProjectService {
                 && r != "checkout contains local changes"
                 && r != "checkout is missing"
         });
-        if row.dirty != Some(false) {
+        if row.dirty != Some(false) && !row.immutable_generation {
             row.protection_reasons.push(
                 if row.exists == Some(false) {
                     "checkout is missing"
@@ -344,12 +392,12 @@ impl ProjectService {
                 .into(),
             );
         }
-        if (row.head.is_none() || row.branch_name.is_none())&&!row.immutable_generation {
+        if (row.head.is_none() || row.branch_name.is_none()) && !row.immutable_generation {
             row.protection_reasons
                 .push("detached or unresolved checkout".into());
         }
         row.can_remove = row.protection_reasons.is_empty()
-            && row.registration_state=="registered"
+            && row.registration_state == "registered"
             && row.dirty == Some(false)
             && row.exists == Some(true)
             && !matches!(row.role.as_str(), "primary" | "deployment");
@@ -361,7 +409,7 @@ impl ProjectService {
         self.database
             .transaction(|c| {
                 persist_checkout(c, &p.project, &physical.id, &row, &now, &p.actor)?;
-                changed(c, &p.project, &p.actor, &now)
+                observed(c, &p.project, &p.actor, &now)
             })
             .map_err(database_error)?;
         Ok(Some(wid))
@@ -463,7 +511,7 @@ impl ProjectService {
                 if request.offset==0{c.execute("DELETE FROM project_commits WHERE project_id=$1 AND branch_id=$2",params![project,request.branch])?;c.execute("DELETE FROM project_commit_pages WHERE project_id=$1 AND branch_id=$2",params![project,request.branch])?;}
                 for (position,commit) in commits.iter().enumerate(){c.execute("INSERT INTO project_commits(project_id,branch_id,sha,position,record_json,observed_at) VALUES($1,$2,$3,$4,$5::jsonb,$6) ON CONFLICT(project_id,branch_id,sha) DO UPDATE SET position=excluded.position,record_json=excluded.record_json,observed_at=excluded.observed_at",params![project,request.branch,commit.sha,i64::from(request.offset)+position as i64+1,json(commit)?,now])?;}
                 c.execute("INSERT INTO project_commit_pages(project_id,branch_id,after_position,head,end_position,has_more,remote_cursor,observed_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT(project_id,branch_id,after_position) DO UPDATE SET head=excluded.head,end_position=excluded.end_position,has_more=excluded.has_more,remote_cursor=excluded.remote_cursor,observed_at=excluded.observed_at",params![project,request.branch,request.offset,request.head,i64::from(request.offset)+commits.len() as i64,more,next_remote,now])?;
-                changed(c,&project,"project-refresh",&now)?;event(c,&project,Some(&source),None,Some(&request.branch),"commits.refreshed","A bounded commit history page was refreshed","project-refresh",&now)
+                observed(c,&project,"project-refresh",&now)?;event(c,&project,Some(&source),None,Some(&request.branch),"commits.refreshed","A bounded commit history page was refreshed","project-refresh",&now)
             }).map_err(database_error)
         })();
         self.database.transaction(|c|{c.execute("UPDATE project_jobs SET state=$2,error=$3,finished_at=$4,revision=revision+1 WHERE job_id=$1",params![id,if result.is_ok(){"succeeded"}else{"failed"},result.as_ref().err().map(|_|"commit history refresh unavailable; cached page retained"),timestamp()])?;Ok(())}).map_err(database_error)?;
@@ -537,8 +585,9 @@ impl ProjectService {
                     head_sha: pr.head_sha.clone(),
                     merge_commit_sha: pr.merge_commit_sha.clone(),
                 });
-                if pr.merged && budget.remaining() > Duration::from_millis(500) {
-                    if let Ok(proof) = remote_call(
+                if pr.merged
+                    && budget.remaining() > Duration::from_millis(500)
+                    && let Ok(proof) = remote_call(
                         &runtime,
                         budget,
                         github.verify_integration(
@@ -548,25 +597,25 @@ impl ProjectService {
                             pr.number,
                             None,
                         ),
-                    ) {
-                        for physical in &p.physical {
-                            if self
-                                .physical(&p.project, physical)
-                                .is_ok_and(|member| member.source == *source)
-                            {
-                                let _ = self.record_checkout_integration_from_refresh(
-                                    &p.project, physical, &proof, &p.actor,
-                                );
-                            }
+                    )
+                {
+                    for physical in &p.physical {
+                        if self
+                            .physical(&p.project, physical)
+                            .is_ok_and(|member| member.source == *source)
+                        {
+                            let _ = self.record_checkout_integration_from_refresh(
+                                &p.project, physical, &proof, &p.actor,
+                            );
                         }
-                        branch.merge_proof = Some(api::MergeProof {
-                            kind: "github_pull_request".into(),
-                            head_sha: proof.head_sha().into(),
-                            merged_into: proof.integration_branch().into(),
-                            observed_at: proof.observed_at().into(),
-                        });
-                        branch.lifecycle = "merged".into();
                     }
+                    branch.merge_proof = Some(api::MergeProof {
+                        kind: "github_pull_request".into(),
+                        head_sha: proof.head_sha().into(),
+                        merged_into: proof.integration_branch().into(),
+                        observed_at: proof.observed_at().into(),
+                    });
+                    branch.lifecycle = "merged".into();
                 }
             }
             branch.revision += 1;
@@ -574,7 +623,7 @@ impl ProjectService {
             self.database
                 .transaction(|c| {
                     persist_branch(c, &p.project, &branch, &now, &p.actor)?;
-                    changed(c, &p.project, &p.actor, &now)
+                    observed(c, &p.project, &p.actor, &now)
                 })
                 .map_err(database_error)?;
             p.cursor.remote_after = branch.branch_id;
@@ -602,7 +651,7 @@ impl ProjectService {
                     for raw in absent{let mut row:api::Branch=from_json(&raw)?;row.remote_present=Some(false);row.revision+=1;persist_branch(c,&p.project,&row,&now,&p.actor)?;}
                     c.execute("UPDATE project_sources SET refresh_state='fresh' WHERE project_id=$1 AND repository_id=$2",params![p.project,source])?;
                 }
-                changed(c,&p.project,&p.actor,&now)
+                observed(c,&p.project,&p.actor,&now)
             }).map_err(database_error)?;
             p.cursor.remote_cursor = page.next_cursor;
             if page.complete {
@@ -612,6 +661,9 @@ impl ProjectService {
         }
         Ok(())
     }
+    // Keep the bounded refresh identity, timestamp and measurement budget
+    // explicit at the single caller of this storage projection.
+    #[allow(clippy::too_many_arguments)]
     fn attach_storage(
         &self,
         project: &str,
@@ -624,7 +676,13 @@ impl ProjectService {
     ) -> Result<(), ProtocolError> {
         use crate::storage::model::{Locator, Record};
         use devcoordinator2_api::storage::Kind;
-        let records=self.database.read(|c|{c.prepare("SELECT record_json::text FROM storage_artifacts WHERE repository_id=$1 AND removed_at_ms IS NULL ORDER BY artifact_id LIMIT 4097")?.query_map([&physical.id],|r|r.get::<_,String>(0))?.collect::<crate::database::Result<Vec<_>>>().map_err(DatabaseError::from)}).map_err(database_error)?;
+        let bindings=self.database.read(|c|c.prepare("SELECT artifact_id,bound_device,bound_inode FROM project_checkout_artifacts WHERE project_id=$1 AND worktree_id=$2 AND active ORDER BY artifact_id LIMIT 4097")?.query_map(params![project,row.worktree_id],|r|Ok((r.get::<_,String>(0)?,(r.get::<_,String>(1)?,r.get::<_,String>(2)?))))?.collect::<crate::database::Result<BTreeMap<_,_>>>().map_err(DatabaseError::from)).map_err(database_error)?;
+        if bindings.len() > 4096 {
+            return Err(invalid(
+                "checkout artifact associations exceed their fixed refresh bound",
+            ));
+        }
+        let records=self.database.read(|c|{c.prepare("SELECT record_json::text FROM storage_artifacts WHERE repository_id=$1 AND (removed_at_ms IS NULL OR artifact_id IN(SELECT artifact_id FROM project_checkout_artifacts WHERE project_id=$2 AND worktree_id=$3 AND active)) ORDER BY artifact_id LIMIT 4097")?.query_map(params![physical.id,project,row.worktree_id],|r|r.get::<_,String>(0))?.collect::<crate::database::Result<Vec<_>>>().map_err(DatabaseError::from)}).map_err(database_error)?;
         if records.len() > 4096 {
             return Err(invalid(
                 "storage membership exceeds its fixed refresh bound",
@@ -635,22 +693,79 @@ impl ProjectService {
                 .as_deref()
                 .ok_or_else(|| invalid("checkout path is unavailable"))?,
         );
+        let absent = crate::storage::fs::absent(checkout).unwrap_or(false);
+        if row.immutable_generation {
+            let observed = if absent {
+                None
+            } else {
+                bounded_measure(checkout, budget)
+            };
+            let bytes = if absent {
+                Some(0)
+            } else {
+                observed
+                    .as_ref()
+                    .and_then(|m| (!m.multiply_linked).then_some(m.bytes))
+            };
+            row.source_bytes = Some(0);
+            row.build_bytes = bytes;
+            row.local_bytes = bytes;
+            row.artifact_ids.clear();
+            row.locations = vec![api::Location {
+                kind: "generation".into(),
+                relative_path: row.relative_path.clone(),
+                root_kind: row.root_kind.clone(),
+                allocated_bytes: bytes,
+                artifact_id: None,
+            }];
+            let accounting = observed
+                .as_ref()
+                .map(|m| format!("generation-fs-{:x}-{:x}", m.device, m.inode))
+                .unwrap_or_else(|| format!("generation-{}", row.worktree_id));
+            self.database.transaction(|c|{
+                c.execute("DELETE FROM project_storage WHERE project_id=$1 AND worktree_id=$2",params![project,row.worktree_id])?;
+                if !absent{c.execute("INSERT INTO project_storage(project_id,repository_id,physical_repository_id,accounting_id,artifact_id,worktree_id,kind,allocated_bytes,measured_at) VALUES($1,$2,$3,$4,'',$5,'build',$6,$7) ON CONFLICT(project_id,accounting_id) DO UPDATE SET allocated_bytes=excluded.allocated_bytes,measured_at=excluded.measured_at",params![project,physical.source,physical.id,accounting,row.worktree_id,bytes,observed.as_ref().map(|_|now)])?;}
+                Ok(())
+            }).map_err(database_error)?;
+            return Ok(());
+        }
         let mut candidates = Vec::new();
         let mut root_measurement = None;
         for raw in records {
-            let record: Record = from_json(&raw).map_err(database_error)?;
-            if let Locator::Directory { path, .. } = &record.locator {
-                if path == checkout && record.artifact.kind == Kind::Worktree {
+            let mut record: Record = from_json(&raw).map_err(database_error)?;
+            if let Locator::Directory { path, .. } | Locator::Mount { target: path, .. } =
+                &record.locator
+            {
+                let path = path.clone();
+                let explicit = bindings.get(&record.artifact.artifact_id);
+                let native = match &record.locator {
+                    Locator::Directory { device, inode, .. }
+                    | Locator::Mount { device, inode, .. } => (*device, *inode),
+                    _ => unreachable!(),
+                };
+                let valid = explicit
+                    .map(|(dev, ino)| artifacts::binding_valid(&record, dev, ino))
+                    .unwrap_or_else(|| {
+                        record.artifact.removed_at_ms.is_none()
+                            && crate::storage::fs::identity(&path).is_ok_and(|pair| pair == native)
+                    });
+                if !valid {
+                    if explicit.is_none() {
+                        continue;
+                    }
+                    record.artifact.allocated_bytes = None;
+                    record.artifact.verified_at_ms = None;
+                }
+                if path == checkout && record.artifact.kind == Kind::Worktree && valid {
                     root_measurement = Some(record.clone());
                 }
-                if path.starts_with(checkout)
-                    && path != checkout
+                if ((path.starts_with(checkout) && path != checkout) || explicit.is_some())
                     && matches!(
                         record.artifact.kind,
                         Kind::BuildOutput | Kind::DependencyCache
                     )
                 {
-                    candidates.push((path.clone(), record));
+                    candidates.push((path, record));
                 }
             }
         }
@@ -659,11 +774,9 @@ impl ProjectService {
         let mut selected: Vec<(PathBuf, Record)> = Vec::new();
         let mut accounting = BTreeSet::new();
         for (path, record) in candidates {
-            let key = if record.artifact.accounting_id.is_empty() {
-                record.resource_key.clone()
-            } else {
-                record.artifact.accounting_id.clone()
-            };
+            // Match the storage inventory projection: raw serialized artifact
+            // IDs can differ for aliases of one native allocation.
+            let key = crate::storage::hash(record.resource_key.as_bytes());
             if !accounting.insert(key)
                 || selected.iter().any(|(parent, _)| path.starts_with(parent))
             {
@@ -678,6 +791,8 @@ impl ProjectService {
         } else {
             Some(0u64)
         };
+        let mut nested_build = Some(0u64);
+        let mut external_build = Some(0u64);
         for (path, record) in &selected {
             let (relative, kind) = display_path(roots, &path.to_string_lossy());
             row.locations.push(api::Location {
@@ -689,18 +804,27 @@ impl ProjectService {
             });
             row.artifact_ids.push(record.artifact.artifact_id.clone());
             add_optional(&mut build, record.artifact.allocated_bytes);
+            if path.starts_with(checkout) {
+                add_optional(&mut nested_build, record.artifact.allocated_bytes);
+            } else {
+                add_optional(&mut external_build, record.artifact.allocated_bytes);
+            }
         }
         let observed = if row.exists == Some(true) {
             bounded_measure(checkout, budget)
         } else {
             None
         };
-        let total = match observed.as_ref() {
-            Some(m) if !m.multiply_linked => Some(m.bytes),
-            Some(_) => None,
-            None => root_measurement
-                .as_ref()
-                .and_then(|r| r.artifact.allocated_bytes),
+        let total = if absent {
+            Some(0)
+        } else {
+            match observed.as_ref() {
+                Some(m) if !m.multiply_linked => Some(m.bytes),
+                Some(_) => None,
+                None => root_measurement
+                    .as_ref()
+                    .and_then(|r| r.artifact.allocated_bytes),
+            }
         };
         let source_measured_at = if observed.is_some() {
             Some(now.to_owned())
@@ -735,34 +859,29 @@ impl ProjectService {
         } else {
             total
         };
-        row.source_bytes = local.and_then(|t| {
-            if selected.is_empty() {
-                Some(t)
-            } else {
-                build.and_then(|b| t.checked_sub(b))
-            }
-        });
-        row.local_bytes = local;
+        row.source_bytes = local.and_then(|t| nested_build.and_then(|b| t.checked_sub(b)));
+        row.local_bytes = local.and_then(|t| external_build.and_then(|b| t.checked_add(b)));
         if let Some(root) = &root_measurement {
             row.artifact_ids.push(root.artifact.artifact_id.clone());
         }
         let source_accounting = observed
             .as_ref()
-            .map(|m| format!("source-fs-{:x}-{:x}", m.device, m.inode))
+            .map(|m| {
+                format!(
+                    "source-{}",
+                    crate::storage::hash(format!("fs:{}:{}", m.device, m.inode).as_bytes())
+                )
+            })
             .or_else(|| {
-                root_measurement.as_ref().map(|r| {
-                    if r.artifact.accounting_id.is_empty() {
-                        format!("source-{}", r.resource_key)
-                    } else {
-                        format!("source-{}", r.artifact.accounting_id)
-                    }
-                })
+                root_measurement
+                    .as_ref()
+                    .map(|r| format!("source-{}", crate::storage::hash(r.resource_key.as_bytes())))
             })
             .unwrap_or_else(|| format!("unmeasured-{}", row.worktree_id));
         self.database.transaction(|c|{
             c.execute("DELETE FROM project_storage WHERE project_id=$1 AND worktree_id=$2",params![project,row.worktree_id])?;
-            c.execute("INSERT INTO project_storage(project_id,repository_id,physical_repository_id,accounting_id,artifact_id,worktree_id,kind,allocated_bytes,measured_at) VALUES($1,$2,$3,$4,$5,$6,'source',$7,$8) ON CONFLICT(project_id,accounting_id) DO NOTHING",params![project,physical.source,physical.id,source_accounting,root_measurement.as_ref().map(|r|r.artifact.artifact_id.as_str()).unwrap_or(""),row.worktree_id,row.source_bytes,source_measured_at])?;
-            for (_,record) in &selected {let key=if record.artifact.accounting_id.is_empty(){record.resource_key.clone()}else{record.artifact.accounting_id.clone()};c.execute("INSERT INTO project_storage(project_id,repository_id,physical_repository_id,accounting_id,artifact_id,worktree_id,kind,allocated_bytes,measured_at) VALUES($1,$2,$3,$4,$5,$6,'build',$7,$8) ON CONFLICT(project_id,accounting_id) DO NOTHING",params![project,physical.source,physical.id,key,record.artifact.artifact_id,row.worktree_id,record.artifact.allocated_bytes,measurement_time(record.artifact.verified_at_ms)])?;}
+            if !absent{c.execute("INSERT INTO project_storage(project_id,repository_id,physical_repository_id,accounting_id,artifact_id,worktree_id,kind,allocated_bytes,measured_at) VALUES($1,$2,$3,$4,$5,$6,'source',$7,$8) ON CONFLICT(project_id,accounting_id) DO NOTHING",params![project,physical.source,physical.id,source_accounting,root_measurement.as_ref().map(|r|r.artifact.artifact_id.as_str()).unwrap_or(""),row.worktree_id,row.source_bytes,source_measured_at])?;}
+            for (_,record) in &selected {let key=crate::storage::hash(record.resource_key.as_bytes());c.execute("INSERT INTO project_storage(project_id,repository_id,physical_repository_id,accounting_id,artifact_id,worktree_id,kind,allocated_bytes,measured_at) VALUES($1,$2,$3,$4,$5,$6,'build',$7,$8) ON CONFLICT(project_id,accounting_id) DO UPDATE SET artifact_id=excluded.artifact_id,worktree_id=excluded.worktree_id,allocated_bytes=excluded.allocated_bytes,measured_at=excluded.measured_at",params![project,physical.source,physical.id,key,record.artifact.artifact_id,row.worktree_id,record.artifact.allocated_bytes,measurement_time(record.artifact.verified_at_ms)])?;}
             c.execute("DELETE FROM project_storage WHERE project_id=$1 AND physical_repository_id=$2 AND kind='shared' AND accounting_id<>$3",params![project,physical.id,shared_key])?;
             c.execute("INSERT INTO project_storage(project_id,repository_id,physical_repository_id,accounting_id,artifact_id,kind,allocated_bytes,measured_at) VALUES($1,$2,$3,$4,'','shared',$5,$6) ON CONFLICT(project_id,accounting_id) DO UPDATE SET allocated_bytes=excluded.allocated_bytes,measured_at=excluded.measured_at",params![project,physical.source,physical.id,shared_key,shared_bytes,shared_measured_at])?;
             Ok(())
@@ -995,15 +1114,27 @@ pub(super) fn persist_checkout(
         row.owner = current.owner;
         row.next_action = current.next_action;
         row.task_id = current.task_id;
-        if !row.immutable_generation {row.lifecycle = current.lifecycle.clone();}
-        if current.role == "primary"||(row.role!="deployment"&&current.role!="deployment") {
+        if !row.immutable_generation {
+            row.lifecycle = current.lifecycle.clone();
+        }
+        if current.role == "primary" || (row.role != "deployment" && current.role != "deployment") {
             row.role = current.role.clone();
         }
         row.revision = current.revision.saturating_add(u32::from(
             row.role != current.role || row.lifecycle != current.lifecycle,
         ));
     }
-    let protected=if row.role=="primary"{Some("primary")}else if row.deployment_references.iter().any(|r|r.kind!="historical"){Some("deployment")}else{None};
+    let protected = if row.role == "primary" {
+        Some("primary")
+    } else if row
+        .deployment_references
+        .iter()
+        .any(|r| r.kind != "historical")
+    {
+        Some("deployment")
+    } else {
+        None
+    };
     c.execute("INSERT INTO project_checkouts(project_id,worktree_id,repository_id,physical_repository_id,absolute_path,role,protected_role,branch_id,branch_name,head,dirty,exists_on_disk,lifecycle,revision,record_json,observed_at,updated_at,updated_by,registration_state) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15::jsonb,$16,$16,$17,$18) ON CONFLICT(project_id,worktree_id) DO UPDATE SET role=excluded.role,protected_role=excluded.protected_role,branch_id=excluded.branch_id,branch_name=excluded.branch_name,head=excluded.head,dirty=excluded.dirty,exists_on_disk=excluded.exists_on_disk,lifecycle=excluded.lifecycle,revision=excluded.revision,record_json=excluded.record_json,observed_at=excluded.observed_at,updated_at=excluded.updated_at,updated_by=excluded.updated_by,registration_state=excluded.registration_state",params![project,row.worktree_id,row.repository_id,physical,row.absolute_path,row.role,protected,row.branch_id,row.branch_name,row.head,row.dirty,row.exists,row.lifecycle,row.revision,json(&row)?,now,actor,row.registration_state])?;
     Ok(())
 }
@@ -1024,28 +1155,110 @@ fn remote_call<T>(
             )
         })
 }
-fn verify_checkout_common(physical:&Physical,path:&Path,budget:&Budget)->Result<(),ProtocolError>{
-    crate::storage::fs::identity(path).map_err(|_|invalid("checkout physical identity is unavailable"))?;
-    let current=Physical{path:path.to_path_buf(),..physical.clone()};
-    let common=git(&current,&["rev-parse","--path-format=absolute","--git-common-dir"],budget)?;
-    let common=std::str::from_utf8(&common).map_err(|_|invalid("checkout Git identity is invalid"))?;
-    let common=Path::new(common.strip_suffix('\n').unwrap_or(common));
-    let observed=crate::storage::fs::identity(common).map_err(|_|invalid("checkout Git identity is unavailable"))?;
-    let expected=crate::storage::fs::identity(&physical.path.join(".git")).map_err(|_|invalid("registered Git identity is unavailable"))?;
-    if observed!=expected{return Err(ProtocolError::new(ErrorCode::ConfigurationConflict,"checkout belongs to a different physical Git source"));}Ok(())
+fn verify_checkout_common(
+    physical: &Physical,
+    path: &Path,
+    budget: &Budget,
+) -> Result<(), ProtocolError> {
+    crate::storage::fs::identity(path)
+        .map_err(|_| invalid("checkout physical identity is unavailable"))?;
+    let current = Physical {
+        path: path.to_path_buf(),
+        ..physical.clone()
+    };
+    let common = git(
+        &current,
+        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+        budget,
+    )?;
+    let common =
+        std::str::from_utf8(&common).map_err(|_| invalid("checkout Git identity is invalid"))?;
+    let common = Path::new(common.strip_suffix('\n').unwrap_or(common));
+    let observed = crate::storage::fs::identity(common)
+        .map_err(|_| invalid("checkout Git identity is unavailable"))?;
+    let expected = crate::storage::fs::identity(&physical.path.join(".git"))
+        .map_err(|_| invalid("registered Git identity is unavailable"))?;
+    if observed != expected {
+        return Err(ProtocolError::new(
+            ErrorCode::ConfigurationConflict,
+            "checkout belongs to a different physical Git source",
+        ));
+    }
+    Ok(())
 }
-pub(crate) fn checkout_deployment_references(c:&Connection,physical:&str,path:&str)->Result<Vec<api::DeploymentReference>,DatabaseError>{
+pub(crate) fn checkout_deployment_references(
+    c: &Connection,
+    physical: &str,
+    path: &str,
+) -> Result<Vec<api::DeploymentReference>, DatabaseError> {
     c.prepare("SELECT deployment_id,name,number,kind,state FROM (SELECT d.deployment_id,d.name,NULL::bigint AS number,'source'::text AS kind,d.state FROM deployments d JOIN worktrees w ON w.worktree_id=d.worktree_id WHERE d.repository_id=$1 AND w.worktree_path=$2 AND d.state NOT IN('removed','retired') UNION ALL SELECT d.deployment_id,d.name,g.number,CASE WHEN g.number=d.current_generation THEN 'current' WHEN g.number=d.previous_generation THEN 'rollback' ELSE 'historical' END,g.state FROM generations g JOIN deployments d USING(deployment_id) WHERE d.repository_id=$1 AND g.path=$2 UNION ALL SELECT d.deployment_id,d.name,o.number,CASE WHEN o.number=d.current_generation THEN 'current_source' ELSE 'rollback_source' END,d.state FROM generation_source_origins o JOIN deployments d USING(deployment_id) WHERE d.repository_id=$1 AND o.path=$2 AND o.number IN(d.current_generation,d.previous_generation) AND d.state NOT IN('removed','retired')) refs ORDER BY CASE kind WHEN 'current' THEN 0 WHEN 'rollback' THEN 1 WHEN 'source' THEN 2 WHEN 'current_source' THEN 3 WHEN 'rollback_source' THEN 4 ELSE 5 END,deployment_id,number LIMIT 65")?.query_map(params![physical,path],|r|Ok(api::DeploymentReference{deployment_id:r.get(0)?,name:r.get(1)?,generation:r.get(2)?,kind:r.get(3)?,state:r.get(4)?}))?.collect::<crate::database::Result<Vec<_>>>().map_err(DatabaseError::from)
 }
-fn decorate_deployment_checkout(c:&Connection,physical:&Physical,row:&mut api::Checkout)->Result<(),DatabaseError>{
-    let path=row.absolute_path.as_deref().ok_or_else(||DatabaseError::Domain(invalid("checkout path is unavailable")))?;
-    let mut refs=checkout_deployment_references(c,&physical.id,path)?;
-    row.immutable_generation=row.role!="primary"&&!refs.iter().any(|r|r.kind=="source")&&refs.iter().any(|r|matches!(r.kind.as_str(),"current"|"rollback"|"historical"));
-    row.protection_reasons.retain(|r|!matches!(r.as_str(),"checkout is a deployment source"|"current deployment generation"|"rollback deployment generation"|"retire through owning deployment lifecycle"));
-    if row.role!="primary" {if !refs.is_empty(){row.role="deployment".into();}else if row.role=="deployment"{row.role=if Path::new(path)==physical.path {"clone"}else{"worktree"}.into();}}
-    if refs.iter().any(|r|r.kind=="current"){row.protection_reasons.push("current deployment generation".into());if row.immutable_generation{row.lifecycle="active".into();}}
-    else if refs.iter().any(|r|r.kind=="rollback"){row.protection_reasons.push("rollback deployment generation".into());if row.immutable_generation{row.lifecycle="paused".into();}}
-    else if row.immutable_generation{row.lifecycle="ready".into();row.protection_reasons.push("retire through owning deployment lifecycle".into());}
-    if refs.iter().any(|r|matches!(r.kind.as_str(),"source"|"current_source"|"rollback_source")){row.protection_reasons.push("checkout is a deployment source".into());}
-    if refs.len()>64{refs.truncate(64);row.details_omitted=true;}row.deployment_references=refs;Ok(())
+fn decorate_deployment_checkout(
+    c: &Connection,
+    physical: &Physical,
+    row: &mut api::Checkout,
+) -> Result<(), DatabaseError> {
+    let path = row
+        .absolute_path
+        .as_deref()
+        .ok_or_else(|| DatabaseError::Domain(invalid("checkout path is unavailable")))?;
+    let mut refs = checkout_deployment_references(c, &physical.id, path)?;
+    row.immutable_generation = row.role != "primary"
+        && !refs.iter().any(|r| r.kind == "source")
+        && refs
+            .iter()
+            .any(|r| matches!(r.kind.as_str(), "current" | "rollback" | "historical"));
+    row.protection_reasons.retain(|r| {
+        !matches!(
+            r.as_str(),
+            "checkout is a deployment source"
+                | "current deployment generation"
+                | "rollback deployment generation"
+                | "retire through owning deployment lifecycle"
+        )
+    });
+    if row.role != "primary" {
+        if !refs.is_empty() {
+            row.role = "deployment".into();
+        } else if row.role == "deployment" {
+            row.role = if Path::new(path) == physical.path {
+                "clone"
+            } else {
+                "worktree"
+            }
+            .into();
+        }
+    }
+    if refs.iter().any(|r| r.kind == "current") {
+        row.protection_reasons
+            .push("current deployment generation".into());
+        if row.immutable_generation {
+            row.lifecycle = "active".into();
+        }
+    } else if refs.iter().any(|r| r.kind == "rollback") {
+        row.protection_reasons
+            .push("rollback deployment generation".into());
+        if row.immutable_generation {
+            row.lifecycle = "paused".into();
+        }
+    } else if row.immutable_generation {
+        row.lifecycle = "ready".into();
+        row.protection_reasons
+            .push("retire through owning deployment lifecycle".into());
+    }
+    if refs.iter().any(|r| {
+        matches!(
+            r.kind.as_str(),
+            "source" | "current_source" | "rollback_source"
+        )
+    }) {
+        row.protection_reasons
+            .push("checkout is a deployment source".into());
+    }
+    if refs.len() > 64 {
+        refs.truncate(64);
+        row.details_omitted = true;
+    }
+    row.deployment_references = refs;
+    Ok(())
 }

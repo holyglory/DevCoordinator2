@@ -31,6 +31,23 @@ export async function verifyProjects({page,browser,base,call,request,check,cooki
     const state=await call('project.status',{project_id:id});
     assert.equal(state.checkouts.find(c=>c.worktree_id===fixture.feature_worktree_id).dirty,false);
     assert.ok(state.checkouts.some(c=>c.dirty===true));
+    // Every folder leaf represents an observed checkout or its declared
+    // artifact location; deployment references must never invent paths.
+    const copyIds=await page.locator('.pe-copy').evaluateAll(rows=>rows.map(row=>row.dataset.peCopy));
+    assert.ok(copyIds.every(copyId=>state.checkouts.some(c=>c.worktree_id===copyId)));
+    await page.locator('.pe-project[aria-current=page]').waitFor();
+  },page);
+  await check('Projects connect host navigation to the existing Plan',async()=>{
+    await page.locator('[data-pe-context-links] a[href^="#/plan/"]').click();
+    await page.locator('.plan-context').waitFor();
+    assert.match(await page.locator('#workspace-heading').innerText(),/HDL Ripper/);
+    await page.locator('#nav-toggle').click();
+    await page.locator('#nav a[data-view=health]').click();
+    await page.locator('#nav-toggle').click();
+    await page.locator('#nav a[data-view=projects]').click();
+    await page.locator(`.pe-project-index a[href="#/projects/${id}?view=copies"]`).click();
+    await branch().waitFor();await branch().click();
+    assert.match(await page.locator('[data-pe-title]').innerText(),/HDL Ripper/);
   },page);
   await check('Branch metadata editing persists and reloads',async()=>{
     await page.locator('[data-pe-edit]').click();
@@ -71,6 +88,21 @@ export async function verifyProjects({page,browser,base,call,request,check,cooki
     await page.locator('[data-pe-show-commits]').check();
     await page.locator('.pe-commit').first().waitFor();
     assert.match(await page.locator('.pe-commits').innerText(),/Preserve connections while dragging/);
+    await fs.writeFile(path.join(fixture.feature,'continued-work.txt'),'The selected branch continues after the first observation.\n');
+    await execute('git',['-C',fixture.feature,'add','continued-work.txt']);
+    await execute('git',['-C',fixture.feature,'-c','user.name=Explorer fixture','-c','user.email=fixture@example.test','commit','-qm','Continue the selected branch']);
+    await execute('git',['-C',fixture.feature,'push','-q','origin','HEAD']);
+    await page.locator('[data-pe-refresh]:not([disabled])').waitFor();await page.locator('[data-pe-refresh]').click();
+    await page.locator('.pe-commit').filter({hasText:'Continue the selected branch'}).waitFor({timeout:30000});
+  },page);
+  await check('A background refresh preserves the active branch and path search',async()=>{
+    await page.locator('[data-pe-search] input').fill('clock-divider');await page.locator('[data-pe-search] button').click();
+    await branch().waitFor();
+    await page.locator('[data-pe-refresh]:not([disabled])').waitFor();await page.locator('[data-pe-refresh]').click();
+    await page.locator('[data-pe-refresh]:not([disabled])').waitFor({timeout:30000});
+    assert.ok((await page.locator('[data-pe-branch]').allTextContents()).every(text=>text.includes('clock-divider')));
+    await page.locator('[data-pe-search] input').fill('');await page.locator('[data-pe-search] button').click();
+    await page.locator('[data-pe-branch]').filter({hasText:'waveform-export'}).waitFor();
   },page);
   await check('Source and build space keeps missing values explicit',async()=>{
     await page.locator('[data-pe-view=storage]').click();
@@ -131,6 +163,59 @@ export async function verifyProjects({page,browser,base,call,request,check,cooki
     assert.equal(await dialog.locator('[data-start]:enabled').count(),0);
     await dialog.locator('footer [data-close]').click();
   });
+  await check('Reloading a pending review restores exactly one dialog and one job',async()=>{
+    const data=await call('project.status',{project_id:id});const primary=data.checkouts.find(c=>c.role==='primary'&&c.absolute_path===fixture.primary);
+    let release;const held=new Promise(resolve=>{release=resolve;});
+    const holdEvents=async request=>{await held;await request.continue().catch(()=>{});};
+    await page.route('**/api/v3/event.wait',holdEvents);
+    try {
+      await page.goto(`${route}?checkout=${primary.worktree_id}`);await page.locator('[data-pe-remove]').waitFor();
+      const requested=page.waitForResponse(response=>response.url().endsWith('/api/v3/project.checkout.remove.plan'));
+      await page.locator('[data-pe-remove]').click();const queued=await (await requested).json();assert.equal(queued.ok,true);
+      await page.waitForFunction(jobId=>Object.keys(sessionStorage).some(key=>key.startsWith('dc2-project-review:')&&JSON.parse(sessionStorage.getItem(key)).job_id===jobId),queued.data.job.job_id);
+      await page.reload();await page.locator('.pe-removal-dialog[open]').waitFor();
+      assert.equal(await page.locator('.pe-removal-dialog').count(),1);release();
+      await page.locator('.pe-removal-dialog[data-removal-result]').waitFor();
+      assert.equal(await page.locator('.pe-removal-dialog [data-start]:enabled').count(),0);
+      await page.locator('.pe-removal-dialog footer [data-close]').click();
+      await page.locator('[data-pe-remove]').click();await page.locator('.pe-removal-dialog[data-removal-result]').waitFor();
+      assert.equal(await page.locator('.pe-removal-dialog').count(),1);
+      await page.locator('.pe-removal-dialog footer [data-close]').click();
+    } finally {release();await page.unroute('**/api/v3/event.wait',holdEvents);}
+  },page);
+  if (fixture.native) {
+    await check('Operator removes a remotely preserved temporary checkout through Console',async()=>{
+      const context=await browser.newContext({viewport:{width:1487,height:1058}});
+      try {
+        await context.addCookies([cookieFor('operator@example.test')]);const p=await context.newPage();p.setDefaultTimeout(30000);
+        await p.goto(`${route}?checkout=${fixture.safe_worktree_id}`);await p.locator('[data-pe-remove]').click();
+        await p.locator('.pe-removal-dialog[data-removal-result=ready]').waitFor();
+        const started=p.waitForResponse(r=>r.url().endsWith('/api/v3/project.checkout.remove.start'));
+        await p.locator('.pe-removal-dialog [data-start]').click();const reply=await(await started).json();assert.equal(reply.ok,true);
+        await p.locator('[data-pe-job]').filter({hasText:'Removal verified'}).waitFor();
+        await assert.rejects(fs.stat(fixture.safe),{code:'ENOENT'});
+        const result=await call('project.checkout.remove.job',{project_id:id,job_id:reply.data.job.job_id},'operator@example.test');
+        assert.equal(result.targets.find(t=>t.worktree_id===fixture.safe_worktree_id).fully_removed,true);
+        assert.ok(await fs.stat(fixture.primary));
+      } finally {await context.close();}
+    });
+    await check('Dirty local data requires the explicit administrator approval shown in Console',async()=>{
+      await page.goto(`${route}?checkout=${fixture.dirty_worktree_id}`);await page.locator('[data-pe-remove]').click();
+      const dialog=page.locator('.pe-removal-dialog[data-removal-result=review]');await dialog.waitFor();
+      assert.match(await dialog.innerText(),/Local data may be lost/);
+      await page.locator('.pe-removal-dialog footer [data-close]').click();assert.ok(await fs.stat(fixture.dirty));
+      await page.locator('[data-pe-remove]').click();await dialog.waitFor();
+      const approved=page.waitForResponse(r=>r.url().endsWith('/api/v3/project.checkout.remove.approve'));
+      const started=page.waitForResponse(r=>r.url().endsWith('/api/v3/project.checkout.remove.start'));
+      await page.getByRole('button',{name:'Discard the listed data and remove',exact:true}).click();
+      const approval=await(await approved).json(),job=await(await started).json();assert.equal(approval.ok,true);assert.equal(job.ok,true);
+      await page.locator('[data-pe-job]').filter({hasText:'Removal verified'}).waitFor({timeout:30000});
+      await assert.rejects(fs.stat(fixture.dirty),{code:'ENOENT'});
+      const result=await call('project.checkout.remove.job',{project_id:id,job_id:job.data.job.job_id});
+      assert.equal(result.targets.find(t=>t.worktree_id===fixture.dirty_worktree_id).fully_removed,true);
+      assert.match(await fs.readFile(path.join(fixture.primary,'unsaved-notes.txt'),'utf8'),/must survive/);
+    },page);
+  }
   for (const theme of ['light','dark']) for(const width of [390,760,1050,1440,1487]) await check(`Project explorer ${theme} ${width}: visible tree and no horizontal page overflow`,async()=>{
     await page.setViewportSize({width,height:width===1487?1058:900});await page.emulateMedia({colorScheme:theme});
     await page.goto(`${route}?view=copies`);await branch().waitFor();await branch().click();

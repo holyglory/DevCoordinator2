@@ -1,8 +1,8 @@
 //! Persistent product projects, explicit source membership, and cached explorer views.
 use schemars::JsonSchema;
 use serde::{Deserialize, Deserializer, Serialize};
-pub mod cleanup;
 pub mod artifacts;
+pub mod cleanup;
 pub mod relocation;
 fn default_limit() -> u16 {
     50
@@ -350,16 +350,27 @@ pub struct Checkout {
     pub locations: Vec<Location>,
     #[serde(default)]
     pub permissions: Permissions,
-    #[serde(default="unregistered")] pub registration_state: String,
-    #[serde(default)] pub immutable_generation: bool,
-    #[serde(default)] pub deployment_references: Vec<DeploymentReference>,
+    #[serde(default = "unregistered")]
+    pub registration_state: String,
+    #[serde(default)]
+    pub immutable_generation: bool,
+    #[serde(default)]
+    pub deployment_references: Vec<DeploymentReference>,
     #[serde(default)]
     pub details_omitted: bool,
 }
-fn unregistered()->String{"unregistered".into()}
-#[derive(Clone,Debug,JsonSchema,PartialEq,Serialize,Deserialize)]
+fn unregistered() -> String {
+    "unregistered".into()
+}
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct DeploymentReference {pub deployment_id:String,pub name:String,pub generation:Option<u32>,pub kind:String,pub state:String}
+pub struct DeploymentReference {
+    pub deployment_id: String,
+    pub name: String,
+    pub generation: Option<u32>,
+    pub kind: String,
+    pub state: String,
+}
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Location {

@@ -374,8 +374,9 @@ impl DeliveryService {
             }
             let gid = crate::systemd::primary_gid(row.9)
                 .map_err(|_| invalid("Cannot verify web deployment source owner"))?;
-            let registry=crate::repository::Registry::new(self.database.clone());
-            let path = crate::deployment_origin::resolve(&registry, &origin, repository_id, row.9, gid)?;
+            let registry = crate::repository::Registry::new(self.database.clone());
+            let path =
+                crate::deployment_origin::resolve(&registry, &origin, repository_id, row.9, gid)?;
             let spec = crate::repository_config::load_deployment_spec(&path, &row.10)
                 .map_err(|_| invalid("Cannot verify current web candidate specification"))?;
             let snapshot = crate::deployment_git::DeploymentGit::snapshot(

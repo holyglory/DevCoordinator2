@@ -34,12 +34,18 @@ fn web_candidate_origin_is_checked_before_qualification_and_never_substituted() 
         }
         let uid = rustix::process::getuid().as_raw();
         let gid = rustix::process::getgid().as_raw();
-        let resolved = crate::repository::resolve_worktree(path, Some((uid, gid))).unwrap();
-        let repository_id = crate::ids::repository_id(&resolved.repository_root).unwrap();
+        let registry = Registry::new(world.fixture.database.clone());
+        let registered = registry.register(path, uid, gid).unwrap();
+        let repository_id = registered.repository_id;
+        assert_eq!(
+            repository_id, "project-alpha",
+            "registration preserves the seeded opaque repository identity"
+        );
         let origin = crate::deployment_state::GenerationSourceOrigin {
-            worktree_id: crate::ids::worktree_id(&resolved.worktree_root).unwrap(),
-            path: resolved.worktree_root,
+            worktree_id: registered.worktree_id,
+            path: registered.worktree_path.into(),
         };
+        assert_eq!(origin.worktree_id, "w1111111111111111");
         let snapshot = crate::deployment_git::DeploymentGit::snapshot(
             &crate::deployment_git::GitCli,
             path,
@@ -58,7 +64,6 @@ fn web_candidate_origin_is_checked_before_qualification_and_never_substituted() 
         let mut verification = proof(Kind::WebDeployment);
         verification.source_sha256 = params.source_sha256.clone();
         let actual_id = repository_id.clone();
-        let root = path.to_string_lossy().into_owned();
         let retained = world
             .service
             .deployment_files
@@ -76,8 +81,7 @@ fn web_candidate_origin_is_checked_before_qualification_and_never_substituted() 
         .unwrap();
         let retained_path = retained.to_string_lossy().into_owned();
         world.fixture.database.transaction(move |db| {
-        db.execute("UPDATE repositories SET root_path='/fixture/unused-legacy' WHERE repository_id='project-alpha'", [])?;
-        db.execute("INSERT INTO repositories(repository_id,root_path,display_name,registered_at,registered_by_uid,last_seen_at) VALUES($1,$2,'Candidate','t',$3,'t')", crate::database::params![actual_id,root,uid])?;
+        db.execute("UPDATE repositories SET registered_by_uid=$1 WHERE repository_id=$2", crate::database::params![uid,actual_id])?;
         db.execute("UPDATE deployments SET repository_id=$1,source=$5,created_by_uid=$2,spec_json=$3,spec_fingerprint=$4 WHERE deployment_id='d1111111111111111'", crate::database::params![actual_id,uid,spec.to_string(),fingerprint,source])?;
         db.execute("UPDATE generations SET commit_hash=$1,dirty=$2,fingerprint=$3,path=$4 WHERE deployment_id='d1111111111111111'", crate::database::params![snapshot.commit,i64::from(snapshot.dirty),fingerprint,retained_path])?;
         db.execute("INSERT INTO generation_source_origins(deployment_id,number,worktree_id,path) VALUES('d1111111111111111',1,$1,$2)", crate::database::params![origin.worktree_id,origin.path.to_string_lossy().into_owned()])?;
@@ -156,7 +160,9 @@ fn web_candidate_origin_is_checked_before_qualification_and_never_substituted() 
                     .success()
             );
         }
-        let foreign_origin = crate::ids::worktree_id(&foreign).unwrap();
+        let foreign_registered = registry.register(&foreign, uid, gid).unwrap();
+        assert_ne!(foreign_registered.repository_id, repository_id);
+        let foreign_origin = foreign_registered.worktree_id;
         let foreign_path = foreign.to_string_lossy().into_owned();
         world.fixture.database.transaction(move |db| {
         db.execute("UPDATE generation_source_origins SET path=$1,worktree_id=$2 WHERE deployment_id='d1111111111111111'", crate::database::params![foreign_path,foreign_origin])?;

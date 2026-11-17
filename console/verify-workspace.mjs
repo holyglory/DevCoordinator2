@@ -304,9 +304,11 @@ export async function verifyWorkspace({ page, daemon, check, scenario, baseUrl, 
   await page.locator('.hi-host').waitFor();
   verify('host tools do not pretend to be repository-scoped', !await page.locator('#workspace-context').isVisible());
   await page.click('#nav-toggle');
-  await page.locator('#nav a[data-view="plan"]').click();
-  await page.locator('.plan-context').waitFor();
-  verify('returning from host tools remembers the repository', await page.locator('#workspace-heading').innerText() === 'repo-one');
+  verify('host navigation exposes the project destination', await page.locator('#nav a[data-view="projects"]').isVisible());
+  await page.keyboard.press('Escape');
+  await page.goBack();
+  await page.locator('.test-result').first().waitFor();
+  verify('browser Back from host tools remembers the repository and aspect', await page.locator('#workspace-heading').innerText() === 'repo-one' && new URL(page.url()).hash === `#/tests?repository=${repositoryId}`);
   await page.goto(`${baseUrl}#/glossary/${repositoryId}`);
   const glossaryAspect=page.locator(`#workspace-aspects a[aria-current][href="#/glossary/${repositoryId}"]`);
   await glossaryAspect.waitFor();

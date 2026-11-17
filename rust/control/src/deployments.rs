@@ -399,8 +399,7 @@ impl Deployments {
                 Path::new(&candidate.path),
                 Some((target.caller_uid, target.caller_gid)),
             )?;
-            let registered=self.registry.register(&resolved.worktree_root,target.caller_uid,target.caller_gid)?;
-            let repository_id = registered.repository_id;
+            let (repository_id, _) = self.registry.preview_source_identity(&resolved)?;
             if repository_id != target.repository_id {
                 return Err(ProtocolError::new(
                     ErrorCode::ParamsInvalid,
@@ -847,6 +846,8 @@ impl Deployments {
         } else {
             self.resolve_target(path, name, deployment_id, caller)?
         };
+        self.registry
+            .ensure_execution_available(&target.repository_id)?;
         let mut source_origin = None;
         if let Some(candidate) = candidate {
             if caller.identity.is_some() || caller.via_edge {
@@ -867,7 +868,11 @@ impl Deployments {
                 Path::new(&candidate.path),
                 Some((target.caller_uid, target.caller_gid)),
             )?;
-            let registered=self.registry.register(&resolved.worktree_root,target.caller_uid,target.caller_gid)?;
+            let registered = self.registry.register(
+                &resolved.worktree_root,
+                target.caller_uid,
+                target.caller_gid,
+            )?;
             let repository_id = registered.repository_id;
             if repository_id != target.repository_id {
                 return Err(ProtocolError::new(
@@ -1157,6 +1162,8 @@ impl Deployments {
         } else {
             self.resolve_target(path, name, None, caller)?
         };
+        self.registry
+            .ensure_execution_available(&target.repository_id)?;
         let row = target
             .row
             .as_ref()
@@ -1279,6 +1286,10 @@ impl Deployments {
         } else {
             self.resolve_target(path, name, None, caller)?
         };
+        if action != "stop" {
+            self.registry
+                .ensure_execution_available(&target.repository_id)?;
+        }
         let row = target
             .row
             .clone()
@@ -4686,8 +4697,13 @@ impl Deployments {
         } else {
             (caller.uid, caller.gid)
         };
-        let worktree =
-            crate::deployment_origin::resolve(&self.registry, origin, &row.repository_id, caller_uid, caller_gid)?;
+        let worktree = crate::deployment_origin::resolve(
+            &self.registry,
+            origin,
+            &row.repository_id,
+            caller_uid,
+            caller_gid,
+        )?;
         let specification = load_deployment_spec(&worktree, &row.name).map_err(config_error)?;
         if !specification.sources.contains(&row.source) {
             return Err(ProtocolError::new(
@@ -4742,8 +4758,17 @@ impl Deployments {
     ) -> Result<DeploymentTarget, ProtocolError> {
         let target = self.resolve_target_readonly(path, name, deployment_id, caller)?;
         if deployment_id.is_none() {
-            self.registry
-                .register(&target.worktree, target.caller_uid, target.caller_gid)?;
+            let registered =
+                self.registry
+                    .register(&target.worktree, target.caller_uid, target.caller_gid)?;
+            if registered.repository_id != target.repository_id
+                || registered.worktree_id != target.worktree_id
+            {
+                return Err(ProtocolError::new(
+                    ErrorCode::ConfigurationConflict,
+                    "source registration changed after its desired-source preview",
+                ));
+            }
         }
         Ok(target)
     }
@@ -4854,7 +4879,7 @@ impl Deployments {
                 caller.gid,
             )
         };
-        let (repository_id,worktree_id)=self.registry.identity_for_info(&resolved)?;
+        let (repository_id, worktree_id) = self.registry.preview_source_identity(&resolved)?;
         let worktree = resolved.worktree_root;
         let (name, explicit_source) = selected
             .split_once('@')
@@ -7186,10 +7211,35 @@ image="cache:1"
             "managed repository commands require non-root fixture uid"
         );
         let path = worktree.to_str().unwrap();
+        let registration_counts = || {
+            database.read(|connection| {
+                Ok(connection.query_row(
+                    "SELECT (SELECT count(*) FROM repositories),(SELECT count(*) FROM worktrees),(SELECT count(*) FROM repository_native_identities),(SELECT count(*) FROM worktree_native_identities)",
+                    [],
+                    |row| Ok([row.get::<_, i64>(0)?, row.get::<_, i64>(1)?, row.get::<_, i64>(2)?, row.get::<_, i64>(3)?]),
+                )?)
+            }).unwrap()
+        };
+        assert_eq!(registration_counts(), [0, 0, 0, 0]);
+        let preflight = deployments
+            .preflight(Some(path), Some("web"), None, None, &caller)
+            .unwrap();
+        assert!(preflight.ready);
+        assert_eq!(
+            registration_counts(),
+            [0, 0, 0, 0],
+            "first-source preflight does not register or bind native identities"
+        );
+        assert!(docker.actions.lock().unwrap().is_empty());
         let applied = deployments
             .apply(Some(path), Some("web"), None, &caller)
             .unwrap();
         assert_eq!(applied.state, "running");
+        assert_eq!(
+            registration_counts(),
+            [1, 1, 1, 1],
+            "apply registers and binds the real source before runtime execution"
+        );
         assert_eq!(applied.current_generation, Some(1));
         assert_eq!(applied.components[0].state, "running");
         let deployment_id = applied.deployment_id.clone();

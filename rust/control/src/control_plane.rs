@@ -88,6 +88,16 @@ impl ControlPlane {
         &self.storage
     }
 
+    #[cfg(feature = "test-fixtures")]
+    pub fn with_fixture_storage_backend(
+        mut self,
+        backend: Arc<dyn crate::storage::native::Backend>,
+    ) -> Self {
+        self.storage = self.storage.clone().with_fixture_backend(backend);
+        self.project = self.project.clone().with_storage(self.storage.clone());
+        self
+    }
+
     pub fn database(&self) -> &Database {
         &self.database
     }
@@ -167,7 +177,9 @@ impl ControlPlane {
             .with_storage(storage.clone())
             .with_access(access.clone())
             .with_events(events.clone());
-        let project = match crate::project::github::GithubClient::new(config.secrets_dir().join("github.token")) {
+        let project = match crate::project::github::GithubClient::new(
+            config.secrets_dir().join("github.token"),
+        ) {
             Ok(github) => project.with_github(github),
             Err(_) => project,
         };

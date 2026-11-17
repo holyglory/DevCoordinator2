@@ -563,6 +563,52 @@ fn viewer_operator_admin_and_clone_isolation_apply_to_every_cached_projection() 
     );
     assert!(full.permissions.admin);
     assert!(full.checkouts.iter().all(|c| c.absolute_path.is_some()));
+    let public_checkout = full
+        .checkouts
+        .iter()
+        .find(|row| row.absolute_path.as_deref() == fixture.repository.to_str())
+        .unwrap();
+    let public_output = fixture._temporary.path().join("public-output");
+    let private_output = fixture._temporary.path().join("private-output");
+    save_project_artifact(&fixture, &public_output, "public-artifact", "project-alpha");
+    save_project_artifact(
+        &fixture,
+        &private_output,
+        "private-artifact",
+        "private-clone",
+    );
+    let adopt = api::artifacts::Adopt {
+        project_id: product.project.project_id.clone(),
+        worktree_id: public_checkout.worktree_id.clone(),
+        artifact_id: "public-artifact".into(),
+        expected_checkout_revision: public_checkout.revision,
+        expected_artifact_revision: 1,
+        expected_revision: 0,
+        ownership: "shared".into(),
+        idempotency_key: "operator-artifact".into(),
+    };
+    assert_eq!(
+        service
+            .adopt_artifact(adopt.clone(), &viewer)
+            .unwrap_err()
+            .code,
+        ErrorCode::PermissionDenied
+    );
+    assert_eq!(
+        service
+            .adopt_artifact(
+                api::artifacts::Adopt {
+                    artifact_id: "private-artifact".into(),
+                    idempotency_key: "private-artifact-denied".into(),
+                    ..adopt.clone()
+                },
+                &operator
+            )
+            .unwrap_err()
+            .code,
+        ErrorCode::PermissionDenied
+    );
+    service.adopt_artifact(adopt, &operator).unwrap();
     let input = serde_json::json!({"project_id":product.project.project_id});
     assert!(access.authorize("project.status", &input, &viewer).is_ok());
     assert_eq!(
@@ -645,10 +691,16 @@ fn refreshing_facts_does_not_reject_or_overwrite_concurrent_intent_edits() {
         "Concurrent",
         vec![source("project-alpha", &["project-alpha"])],
     );
+    let configured_revision = status.project.revision;
     drain(&service, &status.project.project_id, "initial");
     let status = service
         .status(reference(&status.project.project_id), &caller())
         .unwrap();
+    assert_eq!(
+        status.project.revision, configured_revision,
+        "initial discovery changes observations, not project metadata"
+    );
+    assert!(status.refreshed_at.is_some());
     let snapshot = status
         .branches
         .iter()
@@ -675,8 +727,27 @@ fn refreshing_facts_does_not_reject_or_overwrite_concurrent_intent_edits() {
     // The inventory step observes the same refs while an editor holds the old
     // revision. Its metadata save must remain valid during the remaining steps.
     service.refresh_step(&mut Budget::new(Duration::from_secs(10), 256, 1024 * 1024));
+    assert_eq!(
+        service
+            .status(reference(&status.project.project_id), &caller())
+            .unwrap()
+            .project
+            .revision,
+        status.project.revision,
+        "an inventory chunk must preserve the page's project metadata revision"
+    );
     let edited=service.update_branch(serde_json::from_value(serde_json::json!({"project_id":status.project.project_id,"branch_id":snapshot.branch_id,"expected_revision":snapshot.revision,"intent":"Keep the newer user intent","owner":"Owner","outcome":"Accepted result","lifecycle":"paused"})).unwrap(),&caller()).unwrap();
     let edited_checkout=service.update_checkout(serde_json::from_value(serde_json::json!({"project_id":status.project.project_id,"worktree_id":checkout.worktree_id,"expected_revision":checkout.revision,"intent":"Preserve checkout intent","role":"scratch"})).unwrap(),&caller()).unwrap();
+    let edited_revision = service
+        .status(reference(&status.project.project_id), &caller())
+        .unwrap()
+        .project
+        .revision;
+    assert_eq!(
+        edited_revision,
+        status.project.revision + 2,
+        "each real metadata edit must invalidate the earlier project revision"
+    );
     // A slow remote observation may have loaded its row before either save.
     // Apply that actual persistence path against the old captured rows.
     fixture
@@ -700,8 +771,18 @@ fn refreshing_facts_does_not_reject_or_overwrite_concurrent_intent_edits() {
             Ok(())
         })
         .unwrap();
+    let mut finished = false;
     for _ in 0..30 {
         service.refresh_step(&mut Budget::new(Duration::from_secs(10), 256, 1024 * 1024));
+        assert_eq!(
+            service
+                .status(reference(&status.project.project_id), &caller())
+                .unwrap()
+                .project
+                .revision,
+            edited_revision,
+            "background facts must preserve the newer metadata revision in every chunk"
+        );
         if service
             .job(
                 api::JobReference {
@@ -714,9 +795,21 @@ fn refreshing_facts_does_not_reject_or_overwrite_concurrent_intent_edits() {
             .state
             == "succeeded"
         {
+            finished = true;
             break;
         }
     }
+    assert!(finished, "the complete observation refresh must finish");
+    let refreshed = service
+        .status(reference(&status.project.project_id), &caller())
+        .unwrap();
+    assert!(refreshed.refreshed_at.is_some());
+    assert!(
+        refreshed
+            .activity
+            .iter()
+            .any(|event| event.kind == "project.refreshed")
+    );
     let branch = service
         .branch(
             api::BranchItem {
@@ -734,7 +827,7 @@ fn refreshing_facts_does_not_reject_or_overwrite_concurrent_intent_edits() {
     let checkout = service
         .checkout(
             api::CheckoutItem {
-                project_id: status.project.project_id,
+                project_id: status.project.project_id.clone(),
                 worktree_id: checkout.worktree_id,
             },
             &caller(),
@@ -743,6 +836,25 @@ fn refreshing_facts_does_not_reject_or_overwrite_concurrent_intent_edits() {
     assert_eq!(checkout.intent, edited_checkout.intent);
     assert_eq!(checkout.role, "scratch");
     assert_eq!(checkout.revision, edited_checkout.revision);
+    let configured = api::Configure {
+        project_id: Some(status.project.project_id.clone()),
+        expected_revision: edited_revision,
+        name: "Updated Concurrent".into(),
+        slug: "concurrent".into(),
+        roots: vec![api::RootInput {
+            kind: "source".into(),
+            label: "Sources".into(),
+            path: fixture._temporary.path().to_string_lossy().into_owned(),
+        }],
+        repositories: vec![source("project-alpha", &["project-alpha"])],
+    };
+    let updated = service.configure(configured.clone(), &caller()).unwrap();
+    assert_eq!(updated.project.revision, edited_revision + 1);
+    assert_eq!(
+        service.configure(configured, &caller()).unwrap_err().code,
+        ErrorCode::ConfigurationConflict,
+        "a real configuration edit must still refuse the old revision"
+    );
 }
 
 #[test]
@@ -1036,8 +1148,559 @@ fn measured_source_allocations_exclude_shared_git_and_declared_unmeasured_builds
     let build = fixture._temporary.path().join("declared-build");
     fs::create_dir(&build).unwrap();
     fixture.database.transaction(|c|{c.execute("INSERT INTO project_roots(project_id,root_id,kind,label,absolute_path) VALUES($1,'build-root','build','Build',$2)",params![project,build.to_string_lossy().into_owned()])?;Ok(())}).unwrap();
-    let status = service.status(reference(&project), &caller()).unwrap();
-    assert_eq!(status.storage.allocated_bytes, None);
-    assert_eq!(status.storage.build_bytes, None);
-    assert!(status.storage.unmeasured_count > 0);
+    let declared = service.status(reference(&project), &caller()).unwrap();
+    assert_eq!(declared.storage.allocated_bytes, None);
+    assert_eq!(declared.storage.build_bytes, None);
+    assert!(declared.storage.unmeasured_count > 0);
+    let current = fixture._temporary.path().join("immutable-current");
+    let rollback = fixture._temporary.path().join("immutable-rollback");
+    for path in [&current, &rollback] {
+        fs::create_dir(path).unwrap();
+        fs::write(path.join("app.bin"), vec![7u8; 8192]).unwrap();
+    }
+    let current_bytes = crate::storage::fs::measure(&current).unwrap().bytes;
+    let rollback_bytes = crate::storage::fs::measure(&rollback).unwrap().bytes;
+    let primary = status
+        .checkouts
+        .iter()
+        .find(|row| row.role == "primary")
+        .unwrap();
+    fixture.database.transaction(|c|{
+        c.execute("INSERT INTO deployments(deployment_id,repository_id,worktree_id,name,source,spec_fingerprint,spec_json,state,current_generation,previous_generation,created_at,created_by_uid,client,updated_at) VALUES('measured-deployment','project-alpha',$1,'Web','checkout','fixture','{}','stopped',2,1,'t',$2,'fixture','t')",params![primary.worktree_id,caller().uid])?;
+        for (number,path) in [(2,&current),(1,&rollback)]{c.execute("INSERT INTO generations(deployment_id,number,commit_hash,dirty,path,fingerprint,created_at,state) VALUES('measured-deployment',$1,'fixture',0,$2,'fixture','t','current')",params![number,path.to_string_lossy().into_owned()])?;}
+        Ok(())
+    }).unwrap();
+    drain(&service, &project, "measure-generations");
+    let measured = service.status(reference(&project), &caller()).unwrap();
+    assert_eq!(
+        measured.storage.build_bytes,
+        Some(current_bytes + rollback_bytes)
+    );
+    assert_eq!(
+        measured.storage.allocated_bytes,
+        Some(whole + current_bytes + rollback_bytes)
+    );
+    let generations: Vec<_> = measured
+        .checkouts
+        .iter()
+        .filter(|row| row.immutable_generation)
+        .collect();
+    assert_eq!(generations.len(), 2);
+    for row in generations {
+        assert_eq!(row.registration_state, "unregistered");
+        assert_eq!(row.locations.len(), 1);
+        assert_eq!(row.locations[0].kind, "generation");
+        assert!(row.locations[0].allocated_bytes.is_some());
+        assert!(!row.can_remove);
+    }
+    fs::remove_dir_all(&rollback).unwrap();
+    drain(&service, &project, "measure-disappeared-generation");
+    let missing = service.status(reference(&project), &caller()).unwrap();
+    assert_eq!(missing.storage.build_bytes, Some(current_bytes));
+    assert_eq!(missing.storage.allocated_bytes, Some(whole + current_bytes));
+    let gone = missing
+        .checkouts
+        .iter()
+        .find(|row| row.absolute_path.as_deref() == rollback.to_str())
+        .unwrap();
+    assert_eq!(gone.exists, Some(false));
+    assert_eq!(gone.local_bytes, Some(0));
+}
+
+fn save_project_artifact(
+    fixture: &Fixture,
+    path: &Path,
+    id: &str,
+    repository: &str,
+) -> crate::storage::model::Record {
+    use crate::storage::model::{Locator, Record};
+    use devcoordinator2_api::storage::{Artifact, Effect, Kind, Safety};
+    fs::create_dir_all(path).unwrap();
+    fs::write(path.join("output.bin"), vec![3u8; 16384]).unwrap();
+    let measured = crate::storage::fs::measure(path).unwrap();
+    let record = Record {
+        update_sequence: 1,
+        artifact: Artifact {
+            artifact_id: id.into(),
+            revision: 1,
+            repository_id: Some(repository.into()),
+            repository_name: None,
+            group_id: None,
+            group_name: None,
+            accounting_id: format!("allocation-{id}"),
+            name: id.into(),
+            kind: Kind::BuildOutput,
+            effect: Effect::Rebuildable,
+            ownership: "explicit".into(),
+            filesystem_id: None,
+            allocated_bytes: Some(measured.bytes),
+            last_used_at_ms: None,
+            observed_since_ms: 1,
+            verified_at_ms: Some(1),
+            eligible_at_ms: None,
+            safety: Safety::NeedsReview,
+            reasons: vec![],
+            protected: false,
+            deletable: false,
+            automatic_eligible: false,
+            dependencies: vec![],
+            aliases: vec![],
+            removed_at_ms: None,
+        },
+        locator: Locator::Directory {
+            path: path.into(),
+            device: measured.device,
+            inode: measured.inode,
+            root: fixture._temporary.path().into(),
+            git_root: None,
+        },
+        resource_key: format!("fs:{}:{}", measured.device, measured.inode),
+        ancestor_keys: vec![],
+        fingerprint: "fixture".into(),
+        owner_deployment: None,
+        last_activity_signature: "fixture".into(),
+        discovered_effect: Effect::Rebuildable,
+        disposal_approved: false,
+        disposal_reason: None,
+        blockers: vec![],
+        recovery_lineage: None,
+        recovery_verified: false,
+        recovery_created_at_ms: None,
+        private_aliases: vec![],
+        retention_eligible: false,
+        ignored_review: None,
+    };
+    fixture.database.transaction(|c|{c.execute("INSERT INTO storage_artifacts(artifact_id,repository_id,kind,revision,record_json,updated_at_ms) VALUES($1,$2,'build_output',1,$3::jsonb,1)",params![id,repository,json(&record)?])?;Ok(())}).unwrap();
+    record
+}
+
+#[test]
+fn artifact_associations_bind_retry_intent_ownership_and_real_external_bytes() {
+    use api::artifacts::{Adopt, Detach, List};
+    let fixture = Fixture::new();
+    initialize(&fixture.repository);
+    fixture
+        .database
+        .transaction(|c| {
+            c.execute(
+                "UPDATE repositories SET registered_by_uid=$1",
+                [caller().uid],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    let linked = fixture._temporary.path().join("artifact-feature");
+    git(
+        &fixture.repository,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "feature",
+            linked.to_str().unwrap(),
+        ],
+    );
+    let service = ProjectService::new(
+        fixture.database.clone(),
+        Registry::new(fixture.database.clone()),
+    );
+    let initial = configure(
+        &service,
+        &fixture,
+        "Artifacts",
+        vec![source("project-alpha", &["project-alpha"])],
+    );
+    let project = initial.project.project_id;
+    drain(&service, &project, "artifact-inventory");
+    let snapshot = service.status(reference(&project), &caller()).unwrap();
+    let primary = snapshot
+        .checkouts
+        .iter()
+        .find(|row| row.role == "primary")
+        .unwrap()
+        .clone();
+    let feature = snapshot
+        .checkouts
+        .iter()
+        .find(|row| row.absolute_path.as_deref() == linked.to_str())
+        .unwrap()
+        .clone();
+    let output = fixture._temporary.path().join("external-output");
+    let record = save_project_artifact(&fixture, &output, "external-artifact", "project-alpha");
+    let request = Adopt {
+        project_id: project.clone(),
+        worktree_id: primary.worktree_id.clone(),
+        artifact_id: record.artifact.artifact_id.clone(),
+        expected_checkout_revision: primary.revision,
+        expected_artifact_revision: 1,
+        expected_revision: 0,
+        ownership: "exclusive".into(),
+        idempotency_key: "adopt-first".into(),
+    };
+    let first = service.adopt_artifact(request.clone(), &caller()).unwrap();
+    assert!(first.identity_valid);
+    let mut changed = request.clone();
+    changed.ownership = "shared".into();
+    assert_eq!(
+        service.adopt_artifact(changed, &caller()).unwrap_err().code,
+        ErrorCode::ConfigurationConflict
+    );
+    let other = Adopt {
+        worktree_id: feature.worktree_id.clone(),
+        expected_checkout_revision: feature.revision,
+        idempotency_key: "adopt-other".into(),
+        ownership: "shared".into(),
+        ..request.clone()
+    };
+    assert!(service.adopt_artifact(other.clone(), &caller()).is_err());
+    let shared = service
+        .adopt_artifact(
+            Adopt {
+                expected_checkout_revision: primary.revision + 1,
+                expected_revision: first.revision,
+                ownership: "shared".into(),
+                idempotency_key: "make-shared".into(),
+                ..request.clone()
+            },
+            &caller(),
+        )
+        .unwrap();
+    let second = service.adopt_artifact(other, &caller()).unwrap();
+    assert!(second.has_other_owners);
+    assert_eq!(second.other_checkout_count, 1);
+    assert!(
+        service
+            .adopt_artifact(
+                Adopt {
+                    expected_checkout_revision: primary.revision + 2,
+                    expected_revision: shared.revision,
+                    idempotency_key: "reject-exclusive-update".into(),
+                    ..request.clone()
+                },
+                &caller()
+            )
+            .is_err()
+    );
+    let nested = linked.join("target");
+    save_project_artifact(&fixture, &nested, "nested-artifact", "project-alpha");
+    let reserved_plan = serde_json::json!({"checkout_removal":{"targets":[{"binding":{"project_id":project,"worktree_id":feature.worktree_id,"physical_repository_id":"project-alpha","path":linked}}]},"records":[]});
+    fixture.database.transaction(|c|{
+        c.execute("INSERT INTO storage_plans(plan_id,plan_json,created_at_ms,actor) VALUES('ownership-plan',$1::jsonb,1,'fixture')",[reserved_plan.to_string()])?;
+        c.execute("INSERT INTO storage_jobs(job_id,kind,state,idempotency_key,request_sha256,actor,caller_uid,job_json,request_json,created_at_ms) VALUES('ownership-cleanup','cleanup','queued','ownership-cleanup','fixture','fixture',$1,$2::jsonb,'{}',1)",params![caller().uid,serde_json::json!({"plan_id":"ownership-plan"}).to_string()])?;
+        Ok(())
+    }).unwrap();
+    assert_eq!(
+        service
+            .adopt_artifact(
+                Adopt {
+                    expected_checkout_revision: primary.revision + 2,
+                    artifact_id: "nested-artifact".into(),
+                    ownership: "shared".into(),
+                    idempotency_key: "queued-nested-owner".into(),
+                    ..request.clone()
+                },
+                &caller()
+            )
+            .unwrap_err()
+            .code,
+        ErrorCode::Busy,
+        "an accepted removal reserves nested output even when adoption targets another checkout"
+    );
+    assert_eq!(
+        service
+            .detach_artifact(
+                Detach {
+                    project_id: project.clone(),
+                    worktree_id: feature.worktree_id.clone(),
+                    association_id: second.association_id.clone(),
+                    expected_revision: second.revision,
+                    idempotency_key: "queued-detach".into()
+                },
+                &caller()
+            )
+            .unwrap_err()
+            .code,
+        ErrorCode::Busy
+    );
+    fixture
+        .database
+        .transaction(|c| {
+            c.execute(
+                "UPDATE storage_jobs SET state='cancelled' WHERE job_id='ownership-cleanup'",
+                [],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    fs::remove_dir_all(&nested).unwrap();
+    let detach = Detach {
+        project_id: project.clone(),
+        worktree_id: feature.worktree_id.clone(),
+        association_id: second.association_id,
+        expected_revision: second.revision,
+        idempotency_key: "detach-other".into(),
+    };
+    let detached = service.detach_artifact(detach.clone(), &caller()).unwrap();
+    assert!(!detached.active);
+    assert_eq!(
+        service.detach_artifact(detach, &caller()).unwrap().revision,
+        detached.revision
+    );
+    // Native storage can retain distinct locator records for one allocation.
+    // Keep their raw per-artifact accounting IDs different, just as production
+    // candidates do before the storage read projection normalizes them.
+    let alias = save_project_artifact(
+        &fixture,
+        &output,
+        "external-artifact-alias",
+        "project-alpha",
+    );
+    assert_eq!(alias.resource_key, record.resource_key);
+    assert_ne!(alias.artifact.accounting_id, record.artifact.accounting_id);
+    let feature_current = service
+        .checkout(
+            api::CheckoutItem {
+                project_id: project.clone(),
+                worktree_id: feature.worktree_id.clone(),
+            },
+            &caller(),
+        )
+        .unwrap();
+    let alias_owner = service
+        .adopt_artifact(
+            Adopt {
+                project_id: project.clone(),
+                worktree_id: feature.worktree_id.clone(),
+                artifact_id: alias.artifact.artifact_id,
+                expected_checkout_revision: feature_current.revision,
+                expected_artifact_revision: 1,
+                expected_revision: 0,
+                ownership: "shared".into(),
+                idempotency_key: "adopt-shared-allocation-alias".into(),
+            },
+            &caller(),
+        )
+        .unwrap();
+    assert!(alias_owner.has_other_owners);
+    drain(&service, &project, "artifact-accounting");
+    assert_eq!(
+        service
+            .adopt_artifact(request.clone(), &caller())
+            .unwrap()
+            .association_id,
+        first.association_id,
+        "an exact retry survives checkout observation revisions"
+    );
+    let measured = service.status(reference(&project), &caller()).unwrap();
+    assert_eq!(
+        measured.storage.build_bytes, record.artifact.allocated_bytes,
+        "different records for the same native allocation must contribute bytes once"
+    );
+    assert_eq!(
+        fixture
+            .database
+            .read(|c| Ok(c.query_row(
+                "SELECT count(*) FROM project_storage WHERE project_id=$1 AND kind='build'",
+                [&project],
+                |row| row.get::<_, u32>(0)
+            )?))
+            .unwrap(),
+        1
+    );
+    let shared_feature = measured
+        .checkouts
+        .iter()
+        .find(|row| row.worktree_id == feature.worktree_id)
+        .unwrap();
+    assert_eq!(
+        shared_feature.build_bytes, record.artifact.allocated_bytes,
+        "each owner still displays its linked output"
+    );
+    service
+        .detach_artifact(
+            Detach {
+                project_id: project.clone(),
+                worktree_id: feature.worktree_id.clone(),
+                association_id: alias_owner.association_id,
+                expected_revision: alias_owner.revision,
+                idempotency_key: "detach-allocation-alias".into(),
+            },
+            &caller(),
+        )
+        .unwrap();
+    let primary = measured
+        .checkouts
+        .iter()
+        .find(|row| row.worktree_id == primary.worktree_id)
+        .unwrap();
+    assert_eq!(primary.build_bytes, record.artifact.allocated_bytes);
+    assert!(
+        primary
+            .locations
+            .iter()
+            .any(|location| location.artifact_id.as_deref() == Some("external-artifact"))
+    );
+    let moved = fixture._temporary.path().join("retained-old-output");
+    fs::rename(&output, &moved).unwrap();
+    fs::create_dir(&output).unwrap();
+    let associations = service
+        .artifact_associations(
+            List {
+                project_id: project.clone(),
+                worktree_id: primary.worktree_id.clone(),
+                cursor: None,
+                limit: 50,
+            },
+            &caller(),
+        )
+        .unwrap();
+    assert!(!associations.associations[0].identity_valid);
+    assert_eq!(associations.associations[0].location.allocated_bytes, None);
+    assert!(
+        fixture
+            .database
+            .read(|c| artifacts::active_records(c, &project, &primary.worktree_id))
+            .is_err()
+    );
+    drain(&service, &project, "replacement-output");
+    let stale = service.status(reference(&project), &caller()).unwrap();
+    assert_eq!(stale.storage.build_bytes, None);
+    assert!(stale.storage.unmeasured_count > 0);
+    let detached = service
+        .detach_artifact(
+            Detach {
+                project_id: project.clone(),
+                worktree_id: primary.worktree_id.clone(),
+                association_id: first.association_id,
+                expected_revision: shared.revision,
+                idempotency_key: "detach-stale".into(),
+            },
+            &caller(),
+        )
+        .unwrap();
+    assert!(
+        !detached.active,
+        "stale ownership can be detached without treating the replacement as owned"
+    );
+    drain(&service, &project, "remove-stale-accounting");
+    assert_eq!(
+        fixture
+            .database
+            .read(|c| Ok(c.query_row(
+                "SELECT count(*) FROM project_storage WHERE project_id=$1 AND kind='build'",
+                [&project],
+                |r| r.get::<_, u32>(0)
+            )?))
+            .unwrap(),
+        0
+    );
+    let race_output = fixture._temporary.path().join("racing-output");
+    save_project_artifact(&fixture, &race_output, "racing-artifact", "project-alpha");
+    let current = service.status(reference(&project), &caller()).unwrap();
+    let barrier = Arc::new(std::sync::Barrier::new(2));
+    let threads: Vec<_> = current
+        .checkouts
+        .iter()
+        .take(2)
+        .enumerate()
+        .map(|(index, checkout)| {
+            let service = service.clone();
+            let barrier = barrier.clone();
+            let request = Adopt {
+                project_id: project.clone(),
+                worktree_id: checkout.worktree_id.clone(),
+                artifact_id: "racing-artifact".into(),
+                expected_checkout_revision: checkout.revision,
+                expected_artifact_revision: 1,
+                expected_revision: 0,
+                ownership: "exclusive".into(),
+                idempotency_key: format!("racing-owner-{index}"),
+            };
+            std::thread::spawn(move || {
+                barrier.wait();
+                service.adopt_artifact(request, &caller())
+            })
+        })
+        .collect();
+    let results: Vec<_> = threads
+        .into_iter()
+        .map(|thread| thread.join().unwrap())
+        .collect();
+    assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
+    assert_eq!(
+        results
+            .iter()
+            .filter(
+                |result| matches!(result,Err(error) if error.code==ErrorCode::ConfigurationConflict)
+            )
+            .count(),
+        1
+    );
+    let concurrent_output = fixture._temporary.path().join("refresh-concurrent-output");
+    save_project_artifact(
+        &fixture,
+        &concurrent_output,
+        "refresh-concurrent-artifact",
+        "project-alpha",
+    );
+    let current = service.status(reference(&project), &caller()).unwrap();
+    let target = &current.checkouts[0];
+    let concurrent = Adopt {
+        project_id: project.clone(),
+        worktree_id: target.worktree_id.clone(),
+        artifact_id: "refresh-concurrent-artifact".into(),
+        expected_checkout_revision: target.revision,
+        expected_artifact_revision: 1,
+        expected_revision: 0,
+        ownership: "exclusive".into(),
+        idempotency_key: "refresh-concurrent-adoption".into(),
+    };
+    let barrier = Arc::new(std::sync::Barrier::new(2));
+    let refresh_thread = {
+        let service = service.clone();
+        let project = project.clone();
+        let barrier = barrier.clone();
+        std::thread::spawn(move || {
+            barrier.wait();
+            drain(&service, &project, "refresh-with-association-edit")
+        })
+    };
+    barrier.wait();
+    let adopted = service.adopt_artifact(concurrent.clone(), &caller());
+    refresh_thread.join().unwrap();
+    if let Err(error) = adopted {
+        assert_eq!(
+            error.code,
+            ErrorCode::ConfigurationConflict,
+            "a refreshed observation may require a newer revision; a lock-order failure is not a valid conflict"
+        );
+        let current = service.status(reference(&project), &caller()).unwrap();
+        let target = current
+            .checkouts
+            .iter()
+            .find(|row| row.worktree_id == concurrent.worktree_id)
+            .unwrap();
+        service
+            .adopt_artifact(
+                Adopt {
+                    expected_checkout_revision: target.revision,
+                    ..concurrent.clone()
+                },
+                &caller(),
+            )
+            .unwrap();
+    }
+    drain(&service, &project, "concurrent-association-accounted");
+    let current = service.status(reference(&project), &caller()).unwrap();
+    assert!(
+        current
+            .checkouts
+            .iter()
+            .find(|row| row.worktree_id == concurrent.worktree_id)
+            .unwrap()
+            .artifact_ids
+            .iter()
+            .any(|id| id == "refresh-concurrent-artifact")
+    );
 }

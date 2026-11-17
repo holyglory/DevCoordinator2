@@ -26,7 +26,7 @@ struct Step {
     echo_mutation: bool,
     declared_length: Option<usize>,
     chunked: bool,
-    delay: Duration,
+    response_gate: Option<Arc<tokio::sync::Notify>>,
     expected_token: &'static str,
 }
 
@@ -41,7 +41,7 @@ impl Step {
             echo_mutation: false,
             declared_length: None,
             chunked: false,
-            delay: Duration::ZERO,
+            response_gate: None,
             expected_token: TOKEN,
         }
     }
@@ -69,7 +69,7 @@ impl Step {
             echo_mutation: value.is_none(),
             declared_length: None,
             chunked: false,
-            delay: Duration::ZERO,
+            response_gate: None,
             expected_token: TOKEN,
         }
     }
@@ -185,7 +185,9 @@ impl Fixture {
                     ));
                 }
                 response.push_str("\r\n");
-                tokio::time::sleep(step.delay).await;
+                if let Some(gate) = step.response_gate {
+                    gate.notified().await;
+                }
                 if stream.write_all(response.as_bytes()).await.is_ok() {
                     if step.chunked {
                         let _ = stream
@@ -375,7 +377,11 @@ async fn http_journey_reads_remote_pages_parents_and_atomically_retires_squash_h
         .await
         .unwrap();
     let captured = fixture.finish().await;
-    assert!(captured.iter().all(|request| request.target == "/graphql" || request.target.starts_with(root())));
+    assert!(
+        captured
+            .iter()
+            .all(|request| request.target == "/graphql" || request.target.starts_with(root()))
+    );
     assert!(
         captured
             .iter()
@@ -606,7 +612,8 @@ async fn http_enforces_response_and_page_bounds_before_exposing_rows() {
 #[tokio::test]
 async fn http_deadline_does_not_turn_a_slow_remote_into_missing_data() {
     let mut slow = Step::get(root(), repo_json());
-    slow.delay = Duration::from_millis(200);
+    let gate = Arc::new(tokio::sync::Notify::new());
+    slow.response_gate = Some(gate.clone());
     let fixture = Fixture::start(vec![slow]).await;
     let mut client = fixture.client();
     client.http = reqwest::Client::builder()
@@ -618,6 +625,7 @@ async fn http_deadline_does_not_turn_a_slow_remote_into_missing_data() {
         client.repository(&repository()).await.unwrap_err(),
         GithubError::Timeout
     );
+    gate.notify_one();
     fixture.finish().await;
 }
 

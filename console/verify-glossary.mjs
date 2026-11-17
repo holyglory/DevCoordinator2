@@ -32,6 +32,7 @@ let edge;
 let socketServer;
 let bridge;
 let temporary;
+let nativeTemporary;
 const pending = new Map();
 
 function request(operation, params = {}, identity = 'owner@example.test') {
@@ -72,8 +73,15 @@ async function main() {
   await fs.mkdir(out, { recursive: true });
   temporary = await fs.mkdtemp(path.join(os.tmpdir(), 'dc2-glossary-browser-'));
   const fixture = process.env.GLOSSARY_FIXTURE_BINARY || path.join(root, 'target/debug/examples/glossary_console_fixture');
+  const projectsNative = process.env.CONSOLE_VERIFY_PROJECTS_NATIVE === '1';
+  if (projectsNative) {
+    assert.equal(process.env.CONSOLE_VERIFY_PROJECTS_ONLY, '1');
+    assert.ok(process.getuid() > 0, 'The browser must remain under the nonroot execution account');
+    nativeTemporary = await fs.mkdtemp(path.join(process.env.CONSOLE_VERIFY_NATIVE_TEMP_ROOT || os.tmpdir(), 'pe-ui-'));
+    await fs.writeFile(path.join(nativeTemporary, 'project-console-fixture.marker'), 'project-console-fixture-v1\n', {mode:0o600,flag:'wx'});
+  }
   const startBridge = () => {
-  bridge = spawn(fixture, [path.join(temporary, 'authority'), ...(process.env.CONSOLE_VERIFY_PROJECTS_ONLY ? ['projects'] : process.env.CONSOLE_VERIFY_HEALTH_ONLY ? ['health'] : process.env.CONSOLE_VERIFY_SKETCHES_ONLY ? ['sketches'] : [])], { stdio: ['pipe', 'pipe', 'pipe'] });
+  bridge = projectsNative ? spawn('/usr/bin/sudo', ['-n', '/usr/bin/env', `DEVCOORDINATOR2_PROJECT_CONSOLE_TEST_ROOT=${nativeTemporary}`, `DEVCOORDINATOR2_TEST_POSTGRES_UID=${process.getuid()}`, `DEVCOORDINATOR2_TEST_POSTGRES_GID=${process.getgid()}`, `TMPDIR=${path.join(nativeTemporary,'tmp')}`, `DEVCOORDINATOR2_TEST_POSTGRES_ROOT=${path.join(nativeTemporary,'postgres')}`, fixture, nativeTemporary, 'projects-native'], {stdio:['pipe','pipe','pipe']}) : spawn(fixture, [path.join(temporary, 'authority'), ...(process.env.CONSOLE_VERIFY_PROJECTS_ONLY ? ['projects'] : process.env.CONSOLE_VERIFY_HEALTH_ONLY ? ['health'] : process.env.CONSOLE_VERIFY_SKETCHES_ONLY ? ['sketches'] : [])], { stdio: ['pipe', 'pipe', 'pipe'] });
   bridge.stderr.on('data', (bytes) => fs.appendFile(path.join(out, 'backend.stderr.log'), bytes));
   bridge.on('exit', (code) => { for (const callback of pending.values()) callback.reject(new Error(`Fixture exited with ${code}`)); pending.clear(); });
   readline.createInterface({ input: bridge.stdout }).on('line', (line) => {
@@ -505,4 +513,5 @@ finally {
   if (socketServer?.listening) await new Promise((resolve) => socketServer.close(resolve));
   if (bridge && bridge.exitCode == null) { bridge.stdin.end(); await new Promise((resolve) => bridge.once('exit', resolve)); }
   if (temporary) await fs.rm(temporary, { recursive: true, force: true });
+  if (nativeTemporary) await fs.rm(nativeTemporary, { recursive: true, force: true });
 }

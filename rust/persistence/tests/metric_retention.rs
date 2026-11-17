@@ -2,6 +2,7 @@ use devcoordinator2_persistence::{
     Error, Persistence,
     fixture::FixtureCluster,
     maintenance::{ensure_metric_partitions, retain_metrics},
+    schema::DATABASE_SCHEMA_VERSION,
 };
 use std::time::Instant;
 use time::macros::datetime;
@@ -90,7 +91,7 @@ fn retention_is_bounded_and_partition_drop_is_separate_from_row_receipts() {
     let read_time = read_start.elapsed();
     let blocked = worker.join().unwrap();
     held.rollback().unwrap();
-    assert_eq!(cheap.unwrap(), "35");
+    assert_eq!(cheap.unwrap(), DATABASE_SCHEMA_VERSION.to_string());
     assert!(read_time < std::time::Duration::from_millis(250));
     assert!(blocked.as_ref().err().is_some_and(Error::is_timeout));
     let report = database

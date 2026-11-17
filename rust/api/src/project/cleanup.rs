@@ -60,6 +60,13 @@ pub struct CheckoutEffect {
     pub untracked_files: u64,
     pub ignored_files: u64,
     pub stash_entries: u64,
+    /// All clone reflogs, or only the selected linked worktree's HEAD reflog.
+    #[serde(default)]
+    pub reflog_entries: u64,
+    /// Deduplicated kind:OID labels whose survival after this exact removal
+    /// could not be proved. Source bytes and reflog messages are never returned.
+    #[serde(default)]
+    pub unpreserved_git_history: Vec<String>,
     pub local_refs: u64,
     pub unpublished_refs: Vec<String>,
     pub nested_repositories: bool,
@@ -70,6 +77,12 @@ pub struct CheckoutEffect {
     pub possible_data_loss: Vec<String>,
     pub blockers: Vec<String>,
     pub estimated_reclaimable_bytes: Option<u64>,
+    /// External outputs survive this exact-checkout operation. Ownership of an
+    /// association does not itself authorize deleting a different path.
+    #[serde(default)]
+    pub retained_external_artifacts: u32,
+    #[serde(default)]
+    pub retained_external_bytes: Option<u64>,
     pub content_fingerprint: String,
     /// Removing a parked or unfinished checkout does not finish its task.
     pub task_stays_open: bool,

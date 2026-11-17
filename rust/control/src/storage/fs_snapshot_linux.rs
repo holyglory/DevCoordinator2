@@ -16,73 +16,191 @@ pub struct CheckoutSnapshot {
 /// complete contents (including staged blob IDs and split-index linkage), and
 /// reject either replacement or mutation while it is being read.
 pub fn checkout_index_fingerprint(path: &Path) -> Result<Option<String>, ProtocolError> {
-    let parent = open_directory(
-        path.parent()
-            .ok_or_else(|| blocked("checkout_index_unverified"))?,
-    )?;
-    let name = path
-        .file_name()
-        .ok_or_else(|| blocked("checkout_index_unverified"))?;
-    let opened = unix::openat(
-        &parent,
-        name,
-        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC | OFlags::NONBLOCK,
-        Mode::empty(),
-    );
-    let mut file = match opened {
-        Ok(file) => File::from(file),
-        Err(rustix::io::Errno::NOENT) => return Ok(None),
-        Err(_) => return Err(blocked("checkout_index_unverified")),
-    };
-    let before = file
-        .metadata()
-        .map_err(|_| blocked("checkout_index_unverified"))?;
-    if !before.is_file() {
-        return Err(blocked("checkout_index_unverified"));
-    }
-    let mut digest = Sha256::new();
-    digest.update(before.dev().to_be_bytes());
-    digest.update(before.ino().to_be_bytes());
-    digest.update(before.mode().to_be_bytes());
-    digest.update(before.len().to_be_bytes());
-    digest.update(before.mtime().to_be_bytes());
-    digest.update(before.mtime_nsec().to_be_bytes());
-    digest.update(before.ctime().to_be_bytes());
-    digest.update(before.ctime_nsec().to_be_bytes());
-    let mut bytes = [0; 64 * 1024];
+    let mut cursor = CheckoutIndexCursor::new(path)?;
     loop {
-        let count = file
-            .read(&mut bytes)
-            .map_err(|_| blocked("checkout_index_unverified"))?;
-        if count == 0 {
-            break;
+        if let Some(result) = cursor.step(256 * 1024, std::time::Duration::from_millis(25))? {
+            return Ok(result);
         }
-        digest.update(&bytes[..count]);
     }
-    let after = unix::statat(&parent, name, AtFlags::SYMLINK_NOFOLLOW)
-        .map_err(|_| blocked("checkout_index_changed"))?;
-    if (
-        before.dev(),
-        before.ino(),
-        before.mode(),
-        before.len(),
-        before.mtime(),
-        before.mtime_nsec(),
-        before.ctime(),
-        before.ctime_nsec(),
-    ) != (
-        after.st_dev,
-        after.st_ino,
-        after.st_mode,
-        after.st_size as u64,
-        after.st_mtime,
-        after.st_mtime_nsec as i64,
-        after.st_ctime,
-        after.st_ctime_nsec as i64,
-    ) {
-        return Err(blocked("checkout_index_changed"));
+}
+
+pub struct CheckoutIndexCursor {
+    parent: File,
+    name: OsString,
+    file: Option<File>,
+    before: Option<std::fs::Metadata>,
+    digest: Sha256,
+    bytes: u64,
+    reflog: Option<ReflogRoots>,
+}
+#[derive(Default)]
+struct ReflogRoots {
+    prefix: Vec<u8>,
+    body: bool,
+    roots: std::collections::BTreeSet<String>,
+}
+impl ReflogRoots {
+    fn feed(&mut self, bytes: &[u8]) -> Result<(), ProtocolError> {
+        for byte in bytes {
+            if *byte == b'\n' {
+                if !self.body {
+                    return Err(blocked("checkout_reflogs_unverified"));
+                }
+                self.body = false;
+                self.prefix.clear();
+            } else if !self.body {
+                self.prefix.push(*byte);
+                if self.prefix.len() > 130 {
+                    return Err(blocked("checkout_reflogs_unverified"));
+                }
+                if self.prefix.iter().filter(|byte| **byte == b' ').count() == 2 {
+                    let fields = self.prefix.split(|byte| *byte == b' ').collect::<Vec<_>>();
+                    for oid in fields.into_iter().take(2) {
+                        if !matches!(oid.len(), 40 | 64) || !oid.iter().all(u8::is_ascii_hexdigit) {
+                            return Err(blocked("checkout_reflogs_unverified"));
+                        }
+                        if !oid.iter().all(|byte| *byte == b'0') {
+                            self.roots.insert(
+                                std::str::from_utf8(oid)
+                                    .map_err(|_| blocked("checkout_reflogs_unverified"))?
+                                    .to_owned(),
+                            );
+                            if self.roots.len() > 16_384 {
+                                return Err(blocked(
+                                    "checkout_reflog_history_exceeds_review_bound",
+                                ));
+                            }
+                        }
+                    }
+                    self.body = true;
+                    self.prefix.clear();
+                }
+            }
+        }
+        Ok(())
     }
-    Ok(Some(crate::storage::hex(&digest.finalize())))
+    fn finish(&self) -> Result<(), ProtocolError> {
+        if self.body || !self.prefix.is_empty() {
+            return Err(blocked("checkout_reflogs_unverified"));
+        }
+        Ok(())
+    }
+}
+impl CheckoutIndexCursor {
+    pub fn new_reflog(path: &Path) -> Result<Self, ProtocolError> {
+        let mut cursor = Self::new(path)?;
+        cursor.reflog = Some(ReflogRoots::default());
+        Ok(cursor)
+    }
+    pub fn reflog_roots(&self) -> Vec<String> {
+        self.reflog
+            .as_ref()
+            .map(|log| log.roots.iter().cloned().collect())
+            .unwrap_or_default()
+    }
+    pub fn new(path: &Path) -> Result<Self, ProtocolError> {
+        let parent = open_directory(
+            path.parent()
+                .ok_or_else(|| blocked("checkout_index_unverified"))?,
+        )?;
+        let name = path
+            .file_name()
+            .ok_or_else(|| blocked("checkout_index_unverified"))?;
+        let opened = unix::openat(
+            &parent,
+            name,
+            OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC | OFlags::NONBLOCK,
+            Mode::empty(),
+        );
+        let file = match opened {
+            Ok(file) => File::from(file),
+            Err(rustix::io::Errno::NOENT) => {
+                return Ok(Self {
+                    parent,
+                    name: name.to_owned(),
+                    file: None,
+                    before: None,
+                    digest: Sha256::new(),
+                    bytes: 0,
+                    reflog: None,
+                });
+            }
+            Err(_) => return Err(blocked("checkout_index_unverified")),
+        };
+        let before = file
+            .metadata()
+            .map_err(|_| blocked("checkout_index_unverified"))?;
+        if !before.is_file() {
+            return Err(blocked("checkout_index_unverified"));
+        }
+        let mut digest = Sha256::new();
+        digest.update(before.dev().to_be_bytes());
+        digest.update(before.ino().to_be_bytes());
+        digest.update(before.mode().to_be_bytes());
+        digest.update(before.len().to_be_bytes());
+        digest.update(before.mtime().to_be_bytes());
+        digest.update(before.mtime_nsec().to_be_bytes());
+        digest.update(before.ctime().to_be_bytes());
+        digest.update(before.ctime_nsec().to_be_bytes());
+        Ok(Self {
+            parent,
+            name: name.to_owned(),
+            file: Some(file),
+            before: Some(before),
+            digest,
+            bytes: 0,
+            reflog: None,
+        })
+    }
+
+    pub fn bytes_hashed(&self) -> u64 {
+        self.bytes
+    }
+
+    pub fn step(
+        &mut self,
+        max_bytes: usize,
+        elapsed: std::time::Duration,
+    ) -> Result<Option<Option<String>>, ProtocolError> {
+        let Some(before) = self.before.as_ref() else {
+            match unix::statat(&self.parent, &self.name, AtFlags::SYMLINK_NOFOLLOW) {
+                Err(rustix::io::Errno::NOENT) => return Ok(Some(None)),
+                _ => return Err(blocked("checkout_index_changed")),
+            }
+        };
+        let started = std::time::Instant::now();
+        let mut bytes = [0; 64 * 1024];
+        let mut read = 0;
+        while read < max_bytes && started.elapsed() < elapsed {
+            let limit = bytes.len().min(max_bytes - read);
+            let count = self
+                .file
+                .as_mut()
+                .expect("opened checkout index")
+                .read(&mut bytes[..limit])
+                .map_err(|_| blocked("checkout_index_unverified"))?;
+            if count == 0 {
+                if let Some(reflog) = &self.reflog {
+                    reflog.finish()?;
+                }
+                let after = unix::statat(&self.parent, &self.name, AtFlags::SYMLINK_NOFOLLOW)
+                    .map_err(|_| blocked("checkout_index_changed"))?;
+                if !same_file(before, &after) {
+                    return Err(blocked("checkout_index_changed"));
+                }
+                return Ok(Some(Some(crate::storage::hex(
+                    &self.digest.clone().finalize(),
+                ))));
+            }
+            self.digest.update(&bytes[..count]);
+            if let Some(reflog) = &mut self.reflog {
+                reflog.feed(&bytes[..count])?;
+            }
+            self.bytes = self.bytes.saturating_add(count as u64);
+            read += count;
+        }
+        Ok(None)
+    }
 }
 
 struct SnapshotFrame {

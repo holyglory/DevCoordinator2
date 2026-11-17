@@ -97,36 +97,51 @@ impl ProjectService {
             plan: request.clone(),
             bindings,
             paths,
+            progress: removal::ReviewProgress {
+                targets_total: target_count,
+                ..Default::default()
+            },
         };
-        let job = self.cleanup_storage()?.queue_checkout_review(review, caller)?;
-        Ok(review_job_from_storage(&job, &request.project_id, target_count, None))
+        let job = self
+            .cleanup_storage()?
+            .queue_checkout_review(review, caller)?;
+        self.checkout_remove_plan_status(
+            removal::JobReference {
+                project_id: request.project_id,
+                job_id: job.job_id,
+            },
+            caller,
+        )
     }
 
-    /// The review is currently executed through the existing storage
-    /// observation engine and retained as a completed review job. Keeping the
-    /// review DTO/job boundary here lets the Console resume and poll it while
-    /// the bounded worker implementation is expanded without changing the
-    /// approval contract.
+    /// Both pending and complete reviews retain the exact project/source
+    /// authorization. A job ID never grants access through a different project.
     pub fn checkout_remove_plan_status(
         &self,
         request: removal::JobReference,
         caller: &Caller,
     ) -> Result<removal::ReviewJob, ProtocolError> {
-        let storage = self.cleanup_storage()?;
-        let job = storage.job(&request.job_id)?;
-        if job.kind != "checkout_review" {
-            return Err(invalid("job_is_not_checkout_review"));
-        }
-        self.status(api::Reference { project_id: request.project_id.clone() }, caller)?;
-        if let Some(plan_id) = job.plan_id.as_deref() {
-            let stored = storage.stored_plan(plan_id)?;
+        let (job, review) = self.checkout_authorize_review(&request, caller)?;
+        let plan = if matches!(job.state, storage_api::JobState::Completed) {
+            let stored = self.cleanup_storage()?.stored_plan(
+                job.plan_id
+                    .as_deref()
+                    .ok_or_else(|| invalid("checkout_review_plan_missing"))?,
+            )?;
             let data = stored
                 .checkout_removal
                 .ok_or_else(|| invalid("checkout_review_plan_missing"))?;
             self.checkout_authorize_plan(&request.project_id, &data.public.plan_id, caller, false)?;
-            return Ok(review_job_from_storage(&job, &request.project_id, data.public.targets.len() as u32, Some(data.public)));
-        }
-        Ok(review_job_from_storage(&job, &request.project_id, 0, None))
+            Some(data.public)
+        } else {
+            None
+        };
+        Ok(removal::ReviewJob {
+            project_id: request.project_id,
+            job,
+            progress: review.progress,
+            plan,
+        })
     }
 
     pub fn checkout_remove_plan_cancel(
@@ -134,12 +149,70 @@ impl ProjectService {
         request: removal::JobReference,
         caller: &Caller,
     ) -> Result<removal::ReviewJob, ProtocolError> {
-        let storage = self.cleanup_storage()?;
-        let job = storage.job(&request.job_id)?;
-        if matches!(job.state, storage_api::JobState::Queued | storage_api::JobState::Running | storage_api::JobState::Cancelling) {
-            storage.cancel(storage_api::JobReference { job_id: request.job_id.clone() }, caller)?;
+        // Authorize the original request before any cancellation write.
+        let (job, _) = self.checkout_authorize_review(&request, caller)?;
+        if matches!(
+            job.state,
+            storage_api::JobState::Queued
+                | storage_api::JobState::Running
+                | storage_api::JobState::Cancelling
+        ) {
+            self.cleanup_storage()?.cancel(
+                storage_api::JobReference {
+                    job_id: request.job_id.clone(),
+                },
+                caller,
+            )?;
         }
         self.checkout_remove_plan_status(request, caller)
+    }
+
+    fn checkout_authorize_review(
+        &self,
+        request: &removal::JobReference,
+        caller: &Caller,
+    ) -> Result<
+        (
+            storage_api::Job,
+            crate::storage::lifecycle::CheckoutReviewRequest,
+        ),
+        ProtocolError,
+    > {
+        validate_id(&request.project_id)?;
+        validate_id(&request.job_id)?;
+        let (job, review) = self.cleanup_storage()?.checkout_review(&request.job_id)?;
+        if review.plan.project_id != request.project_id
+            || review
+                .bindings
+                .iter()
+                .any(|binding| binding.project_id != request.project_id)
+        {
+            return Err(missing("checkout review is not registered in this project"));
+        }
+        let scope = self.scope(caller)?;
+        if review.plan.include_absolute_paths && !scope.admin {
+            return Err(denied(
+                "absolute checkout paths require administrator access",
+            ));
+        }
+        if review.bindings.is_empty()
+            || review
+                .bindings
+                .iter()
+                .any(|binding| !scope.edits(&binding.physical_repository_id))
+        {
+            return Err(denied(
+                "checkout review requires operator access to every selected source",
+            ));
+        }
+        self.database.read(|connection| {
+            for binding in &review.bindings {
+                let member=connection.query_row("SELECT EXISTS(SELECT 1 FROM project_repository_memberships WHERE project_id=$1 AND repository_id=$2 AND physical_repository_id=$3)",params![request.project_id,binding.repository_id,binding.physical_repository_id],|row|row.get::<_,bool>(0))?;
+                if !member {return Err(DatabaseError::Domain(missing("checkout review source is no longer registered in this project")));}
+            }
+            Ok(())
+        }).map_err(database_error)?;
+        Ok((job, review))
     }
 
     pub fn checkout_remove_approve(
@@ -299,6 +372,7 @@ impl ProjectService {
                         "local branch changed after the checkout was removed",
                     ));
                 }
+                verify_branch_reflog_preserved(&root, owner, &reference, cleanup.head_sha())?;
                 let result = repository::run_git_arguments(
                     &root,
                     owner,
@@ -533,9 +607,23 @@ impl ProjectService {
         let actor = format!("storage:{job_id}");
         let repository = target.binding.repository_id.clone();
         let physical = target.binding.physical_repository_id.clone();
+        let now_ms = self.cleanup_storage()?.now_ms();
         self.database.transaction(move |connection| {
             let changed=connection.execute("UPDATE project_checkouts SET exists_on_disk=false,lifecycle='retired',revision=revision+1,record_json=record_json || jsonb_build_object('exists',false,'lifecycle','retired','can_remove',false,'protection_reasons',jsonb_build_array('already_removed'),'revision',revision+1),updated_at=$1,updated_by=$2 WHERE project_id=$3 AND worktree_id=$4 AND absolute_path=$5 AND exists_on_disk IS DISTINCT FROM false",params![at,actor,project_id,worktree_id,expected_path])?;
             if changed>0 {
+                let nested=connection.prepare("SELECT s.record_json FROM storage_artifacts s WHERE s.removed_at_ms IS NULL AND EXISTS(SELECT 1 FROM (VALUES(s.record_json#>>'{locator,path}'),(s.record_json#>>'{locator,target}')) location(path) WHERE path=$1 OR strpos(path,$1||'/')=1) AND (EXISTS(SELECT 1 FROM project_storage p WHERE p.project_id=$2 AND p.worktree_id=$3 AND p.artifact_id=s.artifact_id) OR EXISTS(SELECT 1 FROM project_checkout_artifacts a WHERE a.project_id=$2 AND a.worktree_id=$3 AND a.artifact_id=s.artifact_id AND a.active)) ORDER BY s.artifact_id FOR UPDATE")?.query_map(params![expected_path,project_id,worktree_id],|row|row.get::<_,String>(0))?.collect::<crate::database::Result<Vec<_>>>()?;
+                for raw in nested {
+                    let mut record:crate::storage::model::Record=from_json(&raw)?;
+                    record.artifact.removed_at_ms=Some(now_ms);
+                    record.artifact.deletable=false;
+                    record.artifact.automatic_eligible=false;
+                    record.artifact.revision=record.artifact.revision.saturating_add(1);
+                    record.update_sequence=crate::storage::next_sequence_in(connection)?;
+                    connection.execute("UPDATE storage_artifacts SET removed_at_ms=$1,revision=$2,record_json=$3,updated_at_ms=$1 WHERE artifact_id=$4",params![now_ms,record.artifact.revision,json(&record)?,record.artifact.artifact_id])?;
+                    connection.execute("UPDATE project_checkout_artifacts SET active=false,revision=revision+1,updated_at=$1,updated_by=$2 WHERE project_id=$3 AND worktree_id=$4 AND artifact_id=$5 AND active",params![at,actor,project_id,worktree_id,record.artifact.artifact_id])?;
+                }
+                connection.execute("DELETE FROM project_storage p WHERE p.project_id=$1 AND p.worktree_id=$2 AND (p.kind='source' OR EXISTS(SELECT 1 FROM storage_artifacts s WHERE s.artifact_id=p.artifact_id AND EXISTS(SELECT 1 FROM (VALUES(s.record_json#>>'{locator,path}'),(s.record_json#>>'{locator,target}')) location(path) WHERE path=$3 OR strpos(path,$3||'/')=1)))",params![project_id,worktree_id,expected_path])?;
+                connection.execute("UPDATE project_checkouts c SET record_json=c.record_json || jsonb_build_object('source_bytes',0,'build_bytes',(SELECT CASE WHEN count(*)=count(allocated_bytes) THEN COALESCE(sum(allocated_bytes),0) ELSE NULL END FROM project_storage WHERE project_id=$1 AND worktree_id=$2 AND kind='build'),'local_bytes',(SELECT CASE WHEN count(*)=count(allocated_bytes) THEN COALESCE(sum(allocated_bytes),0) ELSE NULL END FROM project_storage WHERE project_id=$1 AND worktree_id=$2 AND kind='build'),'locations',COALESCE((SELECT jsonb_agg(location) FROM jsonb_array_elements(COALESCE(c.record_json->'locations','[]'::jsonb)) location WHERE EXISTS(SELECT 1 FROM project_storage p WHERE p.project_id=$1 AND p.worktree_id=$2 AND p.kind='build' AND p.artifact_id=location->>'artifact_id')),'[]'::jsonb),'artifact_ids',COALESCE((SELECT jsonb_agg(artifact_id) FROM project_storage WHERE project_id=$1 AND worktree_id=$2 AND kind='build'),'[]'::jsonb)) WHERE c.project_id=$1 AND c.worktree_id=$2",params![project_id,worktree_id])?;
                 connection.execute("UPDATE projects SET revision=revision+1,updated_at=$1,updated_by=$2 WHERE project_id=$3",params![at,actor,project_id])?;
                 connection.execute("INSERT INTO project_events(project_id,repository_id,physical_repository_id,target_id,kind,summary,actor,at) VALUES($1,$2,$3,$4,'checkout_removed','The local checkout and its Git registration were removed; tasks and history were retained.',$5,$6)",params![project_id,repository,physical,worktree_id,actor,at])?;
             }
@@ -544,25 +632,112 @@ impl ProjectService {
     }
 }
 
-fn review_job_from_storage(
-    job: &storage_api::Job,
-    project_id: &str,
-    target_count: u32,
-    plan: Option<removal::RemovalPlan>,
-) -> removal::ReviewJob {
-    let done = plan.as_ref().map_or(0, |_| target_count);
-    removal::ReviewJob {
-        project_id: project_id.into(),
-        job: job.clone(),
-        progress: removal::ReviewProgress {
-            targets_total: target_count,
-            targets_done: done,
-            bytes_hashed: plan.as_ref().and_then(|p| p.estimated_reclaimable_bytes).unwrap_or(0),
-            entries_hashed: 0,
-            current_worktree_id: None,
-        },
-        plan,
+/// Deleting a ref also deletes its own reflog. Prove those commits are still
+/// reachable through retained refs before the existing compare-and-swap delete.
+fn verify_branch_reflog_preserved(
+    root: &Path,
+    owner: Option<(u32, u32)>,
+    reference: &str,
+    current_head: &str,
+) -> Result<(), ProtocolError> {
+    let observe = |arguments: &[&str]| {
+        let result = repository::run_git_arguments_complete(
+            root,
+            owner,
+            arguments,
+            GIT_TIMEOUT,
+            1024 * 1024,
+        )
+        .map_err(|_| conflict("local branch history cannot be completely inspected"))?;
+        if !result.status.success() || !result.stderr.is_empty() {
+            return Err(conflict(
+                "local branch history cannot be completely inspected",
+            ));
+        }
+        Ok(result.stdout)
+    };
+    let reflog_arguments = [
+        "--no-optional-locks",
+        "-c",
+        "core.hooksPath=/dev/null",
+        "reflog",
+        "show",
+        "--format=%H%x00%gD%x00%gs",
+        reference,
+    ];
+    let before = observe(&reflog_arguments)?;
+    let log_name = format!("logs/{reference}");
+    let location = observe(&[
+        "rev-parse",
+        "--path-format=absolute",
+        "--git-path",
+        &log_name,
+    ])?;
+    let location = std::str::from_utf8(&location)
+        .map_err(|_| conflict("local branch history cannot be completely inspected"))?
+        .trim();
+    let log_path = PathBuf::from(location);
+    if !log_path.is_absolute() {
+        return Err(conflict(
+            "local branch history cannot be completely inspected",
+        ));
     }
+    let read_raw = || -> Result<(Option<String>, Vec<String>), ProtocolError> {
+        match std::fs::symlink_metadata(&log_path) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok((None, Vec::new()));
+            }
+            Err(_) => {
+                return Err(conflict(
+                    "local branch history cannot be completely inspected",
+                ));
+            }
+            Ok(_) => {}
+        }
+        let mut cursor = crate::storage::fs::CheckoutIndexCursor::new_reflog(&log_path)
+            .map_err(|_| conflict("local branch history cannot be completely inspected"))?;
+        let started = std::time::Instant::now();
+        loop {
+            if cursor.bytes_hashed() > 1024 * 1024 || started.elapsed() > GIT_TIMEOUT {
+                return Err(conflict(
+                    "local branch history cannot be completely inspected",
+                ));
+            }
+            if let Some(digest) = cursor
+                .step(256 * 1024, std::time::Duration::from_millis(25))
+                .map_err(|_| conflict("local branch history cannot be completely inspected"))?
+            {
+                return Ok((digest, cursor.reflog_roots()));
+            }
+        }
+    };
+    let (raw_fingerprint, roots) = read_raw()?;
+    if raw_fingerprint.is_none() && !before.is_empty() {
+        return Err(conflict(
+            "local branch history cannot be completely inspected",
+        ));
+    }
+    let mut tips = roots.into_iter().collect::<BTreeSet<_>>();
+    tips.insert(current_head.to_owned());
+    let exclusion = format!("--exclude={reference}");
+    let mut arguments = vec![
+        "--no-optional-locks",
+        "-c",
+        "core.hooksPath=/dev/null",
+        "rev-list",
+        "--max-count=1",
+    ];
+    arguments.extend(tips.iter().map(String::as_str));
+    arguments.extend(["--not", &exclusion, "--all"]);
+    if !observe(&arguments)?.is_empty() {
+        return Err(conflict(
+            "local branch reflog contains history not preserved by retained refs",
+        ));
+    }
+    if observe(&reflog_arguments)? != before || read_raw()?.0 != raw_fingerprint {
+        return Err(conflict("local branch history changed during retirement"));
+    }
+    Ok(())
 }
 
 fn missing(message: &str) -> ProtocolError {

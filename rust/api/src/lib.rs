@@ -30,7 +30,7 @@ pub mod tickets;
 pub mod work_context;
 
 pub const PROTOCOL_VERSION: u8 = 3;
-pub const DATABASE_SCHEMA_VERSION: u32 = 38;
+pub const DATABASE_SCHEMA_VERSION: u32 = 39;
 pub const MAX_REQUEST_BYTES: usize = 65_536;
 pub const MAX_RESPONSE_BYTES: usize = 262_144;
 pub const MAX_ERROR_DETAIL_BYTES: usize = 4_096;
@@ -1368,12 +1368,42 @@ mod tests {
         for tool in mcp_tools() {
             assert!(tools.insert(tool.name), "duplicate MCP tool");
         }
-        assert_eq!(OPERATIONS.len(), 221);
-        assert_eq!(tools.len(), 191);
-        assert_eq!(operation("project.refresh").unwrap().policy.role,Role::Viewer);
-        assert_eq!(operation("project.branch.commits.refresh").unwrap().policy.role,Role::Viewer);
-        assert_eq!(operation("project.checkout.remove.start").unwrap().policy.effect,Effect::Destructive);
-        assert_eq!(operation("project.branch.retire").unwrap().policy.role,Role::Administrator);
+        assert_eq!(OPERATIONS.len(), 226);
+        assert_eq!(tools.len(), 196);
+        for name in [
+            "project.checkout.remove.plan.status",
+            "project.checkout.remove.plan.cancel",
+            "project.checkout.artifact.list",
+            "project.checkout.artifact.adopt",
+            "project.checkout.artifact.detach",
+        ] {
+            assert!(
+                operations.contains(name),
+                "missing Explorer operation {name}"
+            );
+        }
+        assert_eq!(
+            operation("project.refresh").unwrap().policy.role,
+            Role::Viewer
+        );
+        assert_eq!(
+            operation("project.branch.commits.refresh")
+                .unwrap()
+                .policy
+                .role,
+            Role::Viewer
+        );
+        assert_eq!(
+            operation("project.checkout.remove.start")
+                .unwrap()
+                .policy
+                .effect,
+            Effect::Destructive
+        );
+        assert_eq!(
+            operation("project.branch.retire").unwrap().policy.role,
+            Role::Administrator
+        );
         assert_eq!(cli_routes.len(), OPERATIONS.len());
         let discovered = catalog_summary("storage.");
         assert!(

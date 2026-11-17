@@ -84,7 +84,6 @@ where
 pub struct Registry {
     database: Database,
     additional_archive_blockers: Arc<dyn ArchiveBlockerQuery>,
-    relocation_runtime: Arc<std::sync::OnceLock<Arc<dyn relocation::RelocationRuntime>>>,
 }
 
 impl Registry {
@@ -98,6 +97,7 @@ impl Registry {
         let (registration,uid)=self.database.read(move|connection|{
             connection.query_row("SELECT repository.repository_id,repository.root_path,repository.display_name,worktree.worktree_id,worktree.worktree_path,repository.registered_by_uid FROM worktrees worktree JOIN repositories repository USING(repository_id) WHERE worktree.worktree_path=$1 AND repository.archived_at IS NULL",[requested],|row|Ok((RegisteredRepository{repository_id:row.get(0)?,root_path:row.get(1)?,display_name:row.get(2)?,worktree_id:row.get(3)?,worktree_path:row.get(4)?,registered:false},row.get::<_,u32>(5)?))).optional().map_err(DatabaseError::from)
         }).map_err(database_error)?.ok_or_else(||repository_not_found("No registered worktree matches this request."))?;
+        self.ensure_execution_available(&registration.repository_id)?;
         if uid == 0 {
             return Err(ProtocolError::new(
                 ErrorCode::ParamsInvalid,
@@ -129,7 +129,6 @@ impl Registry {
         Self {
             database,
             additional_archive_blockers: Arc::new(blockers),
-            relocation_runtime: Arc::new(std::sync::OnceLock::new()),
         }
     }
 
@@ -1281,6 +1280,29 @@ pub(crate) fn run_git_arguments(
     arguments: &[&str],
     timeout: Duration,
 ) -> io::Result<GitOutput> {
+    let limit = arguments
+        .starts_with(&["worktree", "list"])
+        .then_some(WORKTREE_LIST_OUTPUT_LIMIT);
+    run_git_arguments_with_limit(probe, run_as, arguments, timeout, limit)
+}
+
+pub(crate) fn run_git_arguments_complete(
+    probe: &Path,
+    run_as: Option<(u32, u32)>,
+    arguments: &[&str],
+    timeout: Duration,
+    limit: usize,
+) -> io::Result<GitOutput> {
+    run_git_arguments_with_limit(probe, run_as, arguments, timeout, Some(limit))
+}
+
+fn run_git_arguments_with_limit(
+    probe: &Path,
+    run_as: Option<(u32, u32)>,
+    arguments: &[&str],
+    timeout: Duration,
+    limit: Option<usize>,
+) -> io::Result<GitOutput> {
     let git = trusted_executable("git")?;
     let drop_identity = run_as.filter(|(uid, _)| effective_uid() == 0 && *uid != 0);
     let mut command = if let Some((uid, gid)) = drop_identity {
@@ -1318,10 +1340,9 @@ pub(crate) fn run_git_arguments(
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    if arguments.starts_with(&["worktree", "list"]) {
-        run_command_with_limit(command, timeout, Some(WORKTREE_LIST_OUTPUT_LIMIT))
-    } else {
-        run_command_with_timeout(command, timeout)
+    match limit {
+        Some(limit) => run_command_with_limit(command, timeout, Some(limit)),
+        None => run_command_with_timeout(command, timeout),
     }
 }
 

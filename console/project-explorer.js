@@ -2,6 +2,7 @@
 
 window.DevCoordinatorProjectExplorer = (() => {
   const snapshots = new Map();
+  const mounts = new WeakMap();
   const editableStates = ['planned', 'active', 'paused', 'blocked', 'ready', 'abandoned'];
   const finalJobs = new Set(['succeeded', 'completed', 'complete', 'failed', 'cancelled', 'partial', 'blocked']);
   const retiredStates = new Set(['merged', 'retired', 'abandoned']);
@@ -23,12 +24,16 @@ window.DevCoordinatorProjectExplorer = (() => {
   const knownStates = new Set('unknown planned active paused parked blocked ready merged abandoned retired removed missing dirty primary deployed current rollback retained cleanup_pending failed completed complete queued refreshing idle fresh stale unavailable unverified local remote succeeded unreviewed'.split(' '));
   const stateLabel = value => knownStates.has(value || 'unknown') ? t(`state_${value || 'unknown'}`) : String(value).replaceAll('_', ' ');
   const status = value => `<span class="pe-state pe-state-${/^[a-z_]+$/.test(value || '') ? value : 'unknown'}"><span aria-hidden="true"></span>${escape(stateLabel(value))}</span>`;
-  const knownReasons = new Set('current_deployment active_worktree dirty_worktree canonical_checkout unreviewed_ignored_files unique_worktree_commits active_lease credential_unavailable github_auth_failed remote_unavailable github_rate_limited process_inventory_incomplete process_inventory_unavailable ignored_files_unverified checkout_status_unverified clone_has_linked_worktrees'.split(' '));
+  const knownReasons = new Set('current_deployment active_worktree dirty_worktree canonical_checkout unreviewed_ignored_files unique_worktree_commits active_lease credential_unavailable github_auth_failed remote_unavailable github_rate_limited process_inventory_incomplete process_inventory_unavailable ignored_files_unverified checkout_status_unverified clone_has_linked_worktrees unpreserved_local_history'.split(' '));
   const reasonText = reason => knownReasons.has(reason) ? t(`reason_${reason}`) : String(reason).replaceAll('_', ' ');
+  const lifecycleLabel = item => item.immutable_generation ? (item.deployment_references || []).find(r => ['current', 'rollback'].includes(r.kind))?.kind || item.lifecycle : item.lifecycle;
 
   async function mount(root, { api, signal, projectId, identity }) {
+    mounts.get(root)?.dispose();
+    const session = { dispose() {} };
+    mounts.set(root, session);
     await i18n().ensure('projects');
-    if (signal.aborted) return;
+    if (signal.aborted || mounts.get(root) !== session) return;
     const query = new URLSearchParams(location.hash.split('?')[1] || '');
     const s = {
       projectId, view: ['overview', 'copies', 'branches', 'storage', 'history'].includes(query.get('view')) ? query.get('view') : 'copies',
@@ -36,10 +41,16 @@ window.DevCoordinatorProjectExplorer = (() => {
       open: new Set(), collapsed: new Set(), commits: new Map(), detailReads: new Map(), showCommits: false, query: '', edit: null,
       error: '', refreshing: false, retireKeys: new Map(), pageRequest: 0, read: 0, queryRead: 0, disposed: false, observer: null,
     };
-    const alive = () => !signal.aborted && !s.disposed && root.isConnected;
+    const alive = () => !signal.aborted && !s.disposed && root.isConnected && mounts.get(root) === session;
     const cacheKey = `${identity?.email || 'local'}:${identity?.administrator ? 'admin' : 'member'}:${projectId}`;
     const pendingRemovalKey = `dc2-project-removal:${cacheKey}`;
     const pendingReviewKey = `dc2-project-review:${cacheKey}`;
+    const readPending = key => { try { return JSON.parse(sessionStorage.getItem(key) || 'null'); } catch { return null; } };
+    // Read recovery state before controls become interactive. A review started
+    // during initial loading must not also be resumed as a previous session.
+    const reviewPending = readPending(pendingReviewKey);
+    const removalPending = readPending(pendingRemovalKey);
+    const dialogs = new Set();
     const selectedBranch = () => s.data?.branches.find(b => b.branch_id === s.branchId);
     const selectedCopy = () => s.data?.checkouts.find(c => c.worktree_id === s.checkoutId);
     const repository = id => s.data?.repositories.find(r => r.repository_id === id);
@@ -73,7 +84,8 @@ window.DevCoordinatorProjectExplorer = (() => {
     find('show-commits').addEventListener('change', event => { s.showCommits = event.target.checked; if (s.showCommits && s.branchId) s.open.add(s.branchId); paintBody(); if (s.showCommits && selectedBranch()) void loadCommits(selectedBranch()); });
     root.addEventListener('keydown', treeKeyboard);
     root.addEventListener('click', onClick);
-    signal.addEventListener('abort', () => { s.disposed = true; s.observer?.disconnect(); root.removeEventListener('click', onClick); root.removeEventListener('keydown', treeKeyboard); root.removeEventListener('keydown', railEscape); root.querySelector('dialog')?.remove(); }, { once: true });
+    session.dispose = () => { s.disposed = true; s.observer?.disconnect(); s.disconnectLinks?.(); root.removeEventListener('click', onClick); root.removeEventListener('keydown', treeKeyboard); root.removeEventListener('keydown', railEscape); dialogs.forEach(dialog => dialog.remove()); };
+    signal.addEventListener('abort', session.dispose, { once: true });
     function paintProjects() {
       const projects = [...s.projects];
       if (s.data?.project && !projects.some(p => p.project_id === s.data.project.project_id)) {
@@ -96,7 +108,10 @@ window.DevCoordinatorProjectExplorer = (() => {
     function paint() {
       if (!alive()) return;
       const data = s.data;
+      paintProjects();
       find('toolbar').hidden = !data;
+      find('show-commits').closest('label').hidden = !['copies', 'branches'].includes(s.view);
+      find('search').hidden = !['copies', 'branches', 'storage'].includes(s.view);
       find('title').textContent = data?.project.name || t('projects');
       find('tabs').innerHTML = data ? ['overview', 'copies', 'branches', 'storage', 'history'].map(view => `<a href="${href(s.projectId, view, s.branchId, s.checkoutId)}" data-pe-view="${view}"${s.view === view ? ' aria-current="page"' : ''}>${h(view)}</a>`).join('') : '';
       const repo = data?.repositories.find(r => r.repository_id === selectedBranch()?.repository_id) || data?.repositories[0];
@@ -117,10 +132,25 @@ window.DevCoordinatorProjectExplorer = (() => {
         body.innerHTML = `<section class="pe-overview"><h2>${h('projectSources')}</h2>${s.data.repositories.map(r => `<article><div><h3>${escape(r.name)}</h3>${external(r.github_url) ? `<a href="${escape(external(r.github_url))}" target="_blank" rel="noopener noreferrer">${escape(r.github_url)}${icon('external-link')}</a>` : `<p class="pe-muted">${h('githubNotConfigured')}</p>`}</div><span>${escape(r.default_branch || t('notRecorded'))}</span><span>${escape(r.error ? reasonText(r.error) : t('state_' + r.refresh_state))}</span></article>`).join('')}<h2>${h('projectRoots')}</h2>${s.data.roots.map(r => `<p class="pe-root-description">${icon('folder')}<strong>${escape(r.label)}</strong><span>${escape(r.absolute_path || r.relative_path)}</span></p>`).join('')}<div class="pe-overview-footer"><span>${h('measuredLocalSpace')} <strong>${escape(size(s.data.storage.allocated_bytes))}</strong></span><span>${h('unmeasuredCount', { count: s.data.storage.unmeasured_count })}</span></div></section>`;
         return;
       }
-      body.innerHTML = `<div class="pe-trees${s.view === 'branches' ? ' pe-branches-view' : ''}" data-pe-trees>
+      const markup = `<div class="pe-trees${s.view === 'branches' ? ' pe-branches-view' : ''}" data-pe-trees>
         <section class="pe-tree-panel pe-remote" aria-label="${escape(t('githubTree'))}"><header>${icon('brand-github')}<div><h2>GitHub</h2><p>${h('remoteDescription')}</p></div></header><ul class="pe-tree" role="tree" aria-label="${escape(t('githubTree'))}">${remoteTree()}</ul>${s.data.next_branch_cursor ? `<button class="pe-more btn btn-small" data-pe-more="branches">${h('moreBranches')}</button>` : ''}</section>
         <section class="pe-tree-panel pe-local" aria-label="${escape(t('localTree'))}"><header>${icon('database')}<div><h2>${h('onThisServer')}</h2><p>${h('localDescription')}</p></div></header><ul class="pe-tree" role="tree" aria-label="${escape(t('localTree'))}">${localTree()}</ul>${s.data.next_checkout_cursor ? `<button class="pe-more btn btn-small" data-pe-more="checkouts">${h('moreCopies')}</button>` : ''}</section>
         <svg class="pe-links" aria-hidden="true" data-pe-links></svg></div>`;
+      if (s.treeMarkup === markup && body.querySelector('[data-pe-trees]')) { connect(); return; }
+      const scroll = ['remote', 'local'].map(kind => body.querySelector(`.pe-${kind} [role=tree]`)?.scrollTop || 0);
+      s.treeMarkup = markup; body.innerHTML = markup;
+      ['remote', 'local'].forEach((kind,index) => { const tree=body.querySelector(`.pe-${kind} [role=tree]`); if(tree)tree.scrollTop=scroll[index]; });
+      if (matchMedia('(min-width: 1051px)').matches) {
+        const reveal = selector => {
+          const node=body.querySelector(selector);if(!node)return;
+          const tree=node.closest('[role=tree]'), bounds=tree.getBoundingClientRect(), item=node.getBoundingClientRect();
+          if(item.top<bounds.top)tree.scrollTop+=item.top-bounds.top;
+          else if(item.bottom>bounds.bottom)tree.scrollTop+=item.bottom-bounds.bottom;
+        };
+        if(s.revealedBranch!==s.branchId){reveal('.pe-branch.selected');s.revealedBranch=s.branchId;}
+        const copyKey=`${s.checkoutId}:${s.branchId}`;
+        if(s.revealedCopy!==copyKey){reveal('.pe-copy.selected, .pe-copy.linked');s.revealedCopy=copyKey;}
+      }
       if (focused) body.querySelector(`[data-node="${CSS.escape(focused)}"]`)?.focus({ preventScroll: true });
       connect();
     }
@@ -144,7 +174,10 @@ window.DevCoordinatorProjectExplorer = (() => {
       const commits = s.commits.get(branch.branch_id);
       const expanded = s.showCommits && s.open.has(branch.branch_id);
       const availability = branch.remote_present === false ? (branch.local_present ? t('localOnly') : t('remoteRemoved')) : branch.remote_present == null ? t('remoteUnverified') : '';
-      const commitRows = commits?.items?.map(c => `<li role="none" class="pe-commit"><span class="pe-commit-point" aria-hidden="true"></span><a href="${escape(commitUrl(branch, c.sha) || '#')}"${commitUrl(branch, c.sha) ? ' target="_blank" rel="noopener noreferrer"' : ' aria-disabled="true" tabindex="-1"'}><code>${escape(short(c.sha))}</code><span>${escape(c.subject)}</span></a>${c.parents.length ? `<span class="pe-commit-parents" title="${escape(c.parents.join(', '))}">${h('parents')}: ${c.parents.map(p => escape(short(p))).join(', ')}</span>` : ''}</li>`).join('');
+      const commitRows = commits?.items?.map(c => {
+        const url = commitUrl(branch, c.sha), summary = `<code>${escape(short(c.sha))}</code><span>${escape(c.subject)}</span>`;
+        return `<li role="none" class="pe-commit"><span class="pe-commit-point" aria-hidden="true"></span>${url ? `<a href="${escape(url)}" target="_blank" rel="noopener noreferrer">${summary}</a>` : `<span class="pe-commit-summary">${summary}</span>`}${c.parents.length ? `<span class="pe-commit-parents" title="${escape(c.parents.join(', '))}">${h('parents')}: ${c.parents.map(p => escape(short(p))).join(', ')}</span>` : ''}</li>`;
+      }).join('');
       return `<li role="none"><button class="pe-node pe-branch${selected ? ' selected' : ''}" type="button" role="treeitem" aria-level="${level}" aria-selected="${selected}"${s.showCommits ? ` aria-expanded="${expanded}"` : ''} data-node="branch-${escape(branch.branch_id)}" data-pe-branch="${escape(branch.branch_id)}" tabindex="${selected ? 0 : -1}">${icon(expanded ? 'chevron-down' : 'chevron-right')}${icon('git-branch')}<span class="pe-node-name">${escape(branch.branch_name)}${availability ? `<small>${escape(availability)}</small>` : ''}</span>${status(branch.lifecycle)}<code class="pe-node-sha">${escape(short(branch.head))}</code></button>${expanded ? `<ul role="group" class="pe-commits">${commits?.loading ? `<li role="none" class="pe-empty">${h('loadingCommits')}</li>` : commits?.error ? `<li role="none" class="pe-source-warning">${escape(commits.error)}<button type="button" class="btn btn-small" data-pe-retry-commits="${escape(branch.branch_id)}">${h('retry')}</button></li>` : commitRows || `<li role="none" class="pe-empty">${h('noCommits')}</li>`}${commits?.cursor ? `<li role="none"><button class="btn btn-small pe-more" type="button" data-pe-more-commits="${escape(branch.branch_id)}">${h('moreCommits')}</button></li>` : ''}</ul>` : ''}</li>`;
     }
     function commitUrl(branch, sha) {
@@ -160,20 +193,6 @@ window.DevCoordinatorProjectExplorer = (() => {
         const entries = current.map(c => ({ id: c.worktree_id, path: c.relative_path, copy: c }));
         for (const copy of copies) for (const location of copy.locations || []) {
           if (location.root_kind === kind && location.relative_path && location.relative_path !== copy.relative_path) entries.push({ id: `${copy.worktree_id}:${location.relative_path}`, path: location.relative_path, copy, location });
-        }
-        // Deployment generations are immutable local copies owned by the
-        // deployment lifecycle. Keep them in the same project tree so current
-        // and rollback space is visible beside source/build work.
-        if (kind === 'build') for (const copy of copies) for (const reference of copy.deployment_references || []) {
-          const deploymentKind = reference.kind === 'current_source' ? 'current' : reference.kind === 'rollback_source' ? 'rollback' : reference.kind;
-          const generation = reference.generation == null ? '' : `/${reference.generation}`;
-          entries.push({
-            id: `${copy.worktree_id}:deployment:${reference.deployment_id}:${deploymentKind}:${reference.generation ?? ''}`,
-            path: `deployments/${reference.name}/${deploymentKind}${generation}`,
-            copy,
-            deploymentRef: reference,
-            location: { root_kind: 'build', relative_path: `deployments/${reference.name}/${reference.kind}${generation}`, allocated_bytes: null },
-          });
         }
         const tree = pathTree(entries);
         return disclosure('root-' + kind, projectRoot?.label || t('outsideRoots'), renderPaths(tree, 2, kind), { trailing: projectRoot ? `<span class="pe-root-path">${escape(projectRoot.absolute_path || projectRoot.relative_path)}</span>` : '' });
@@ -199,13 +218,11 @@ window.DevCoordinatorProjectExplorer = (() => {
         const key = `${prefix}/${node.label}`;
         const rows = node.entries.map(entry => {
           const c = entry.copy;
-          const deployment = entry.deploymentRef;
           const linked = (c.branch_id && c.branch_id === s.branchId) || c.worktree_id === s.checkoutId;
           const actualState = c.exists === false ? c.lifecycle === 'removed' ? 'removed' : 'missing' : c.dirty === true ? 'dirty' : c.role === 'primary' ? 'primary' : c.lifecycle;
-          const deploymentKind = deployment && (deployment.kind === 'current_source' ? 'current' : deployment.kind === 'rollback_source' ? 'rollback' : deployment.kind);
-          const displayState = deployment ? deploymentKind === 'current' ? 'current' : deploymentKind === 'rollback' ? 'rollback' : deployment.state : actualState;
-          const displayRole = deployment ? deploymentKind === 'current' ? 'current' : deploymentKind === 'rollback' ? 'rollback' : 'deployed' : t('role_' + c.role);
-          return `<li role="none"><button class="pe-node pe-copy${linked && !deployment ? ' linked' : ''}${c.worktree_id === s.checkoutId && !deployment ? ' selected' : ''}" role="treeitem" aria-level="${level}" aria-selected="${linked && !deployment}" type="button" tabindex="${linked && !deployment ? 0 : -1}" data-node="copy-${escape(entry.id)}"${deployment ? '' : ` data-pe-copy="${escape(c.worktree_id)}" data-pe-related="${escape(c.branch_id || '')}"`}>${icon('database')}<span class="pe-node-name">${escape(node.label)}<small>${escape(stateLabel(displayRole))}${entry.location && !deployment ? ` · ${escape(t('buildOutput'))}` : c.head && !c.branch_id && !deployment ? ` · ${escape(short(c.head))}` : ''}</small></span>${status(displayState)}<span class="pe-node-space">${escape(size(entry.location ? entry.location.allocated_bytes : c.source_bytes))}</span></button></li>`;
+          const generation = (c.deployment_references || []).find(r => ['current', 'rollback'].includes(r.kind));
+          const displayState = c.immutable_generation && generation ? generation.kind : actualState;
+          return `<li role="none"><button class="pe-node pe-copy${linked ? ' linked' : ''}${c.worktree_id === s.checkoutId ? ' selected' : ''}" role="treeitem" aria-level="${level}" aria-selected="${linked}" type="button" tabindex="${linked ? 0 : -1}" data-node="copy-${escape(entry.id)}" data-pe-copy="${escape(c.worktree_id)}" data-pe-related="${escape(c.branch_id || '')}">${icon('database')}<span class="pe-node-name">${escape(node.label)}<small>${escape(t('role_' + c.role))}${entry.location ? ` · ${escape(t('buildOutput'))}` : c.head && !c.branch_id ? ` · ${escape(short(c.head))}` : ''}</small></span>${status(displayState)}<span class="pe-node-space">${escape(size(entry.location ? entry.location.allocated_bytes : c.source_bytes))}</span></button></li>`;
         }).join('');
         return rows + (node.children.size ? disclosure('path-' + key, node.label, renderPaths(node.children, level + 1, key), { level }) : '');
       }).join('');
@@ -222,9 +239,10 @@ window.DevCoordinatorProjectExplorer = (() => {
       const title = isCopy ? item.relative_path : item.branch_name;
       const taskLink = item.task_id ? `#/plan/${encodeURIComponent(item.repository_id)}?task=${encodeURIComponent(item.task_id)}` : null;
       const pr = !isCopy && item.pr?.url ? external(item.pr.url) : null;
-      panel.innerHTML = `<header>${icon(isCopy ? 'database' : 'git-branch')}<h2>${escape(title)}</h2>${status(item.lifecycle)}<div class="pe-inspector-links">${item.owner ? `<span>${h('owner')} <strong>${escape(item.owner)}</strong></span>` : ''}${taskLink ? `<a href="${taskLink}">${h('linkedOutcome')}${icon('external-link')}</a>` : ''}${pr ? `<a href="${escape(pr)}" target="_blank" rel="noopener noreferrer">PR #${escape(item.pr.number)}${icon('external-link')}</a>` : ''}</div><div class="pe-inspector-actions">${rights.edit ? `<button class="btn btn-primary" type="button" data-pe-edit>${icon('pencil')}${h('editDetails')}</button>` : ''}${rights.cleanup && (isCopy || item.worktree_ids.length) ? `<button class="btn" type="button" data-pe-remove>${icon('trash')}${h('reviewRemoval')}</button>` : ''}${!isCopy && rights.admin && item.merge_proof ? `<button class="btn" type="button" data-pe-retire>${h('retireBranch')}</button>` : ''}${isCopy && item.absolute_path ? `<button class="pe-icon-button" type="button" data-pe-copy-path aria-label="${escape(t('copyAbsolutePath'))}">${icon('copy')}</button>` : ''}</div></header>
+      const markup = `<header>${icon(isCopy ? 'database' : 'git-branch')}<h2>${escape(title)}</h2>${status(lifecycleLabel(item))}<div class="pe-inspector-links">${item.owner ? `<span>${h('owner')} <strong>${escape(item.owner)}</strong></span>` : ''}${taskLink ? `<a href="${taskLink}">${h('linkedOutcome')}${icon('external-link')}</a>` : ''}${pr ? `<a href="${escape(pr)}" target="_blank" rel="noopener noreferrer">PR #${escape(item.pr.number)}${icon('external-link')}</a>` : ''}</div><div class="pe-inspector-actions">${rights.edit ? `<button class="btn btn-primary" type="button" data-pe-edit>${icon('pencil')}${h('editDetails')}</button>` : ''}${rights.cleanup && (isCopy || item.worktree_ids.length) ? `<button class="btn" type="button" data-pe-remove>${icon('trash')}${h('reviewRemoval')}</button>` : ''}${!isCopy && rights.admin && item.merge_proof ? `<button class="btn" type="button" data-pe-retire${!item.cleanup_receipt || !item.pr || !item.head ? ` disabled title="${escape(t('completeLocalCleanupFirst'))}"` : ''}>${h('retireBranch')}</button>` : ''}${isCopy && item.absolute_path ? `<button class="pe-icon-button" type="button" data-pe-copy-path aria-label="${escape(t('copyAbsolutePath'))}">${icon('copy')}</button>` : ''}</div></header>
         <dl class="pe-detail-fields"><div><dt>${h('intent')}</dt><dd>${escape(item.intent || t('notRecorded'))}</dd></div><div><dt>${h('outcome')}</dt><dd>${escape(item.outcome || t('notRecorded'))}</dd></div>${item.next_action ? `<div><dt>${h('nextAction')}</dt><dd>${escape(item.next_action)}</dd></div>` : ''}</dl>
-        <details class="pe-facts"><summary>${h('localAndGitDetails')}</summary><dl><div><dt>${h('head')}</dt><dd><code>${escape(item.head || t('unknown'))}</code></dd></div><div><dt>${h('sourceSpace')}</dt><dd>${escape(size(item.source_bytes))}</dd></div><div><dt>${h('buildSpace')}</dt><dd>${escape(size(item.build_bytes))}</dd></div>${!isCopy && item.merge_proof ? `<div><dt>${h('integration')}</dt><dd>${escape(item.merge_proof.kind)} · ${escape(item.merge_proof.merged_into)}</dd></div>` : ''}</dl>${isCopy && item.protection_reasons.length ? `<p>${item.protection_reasons.map(reason => escape(reasonText(reason))).join(' · ')}</p>` : ''}</details>`;
+        <details class="pe-facts"><summary>${h('localAndGitDetails')}</summary><dl><div><dt>${h('head')}</dt><dd><code>${escape(item.head || t('unknown'))}</code></dd></div><div><dt>${h('sourceSpace')}</dt><dd>${escape(size(item.source_bytes))}</dd></div><div><dt>${h('buildSpace')}</dt><dd>${escape(size(item.build_bytes))}</dd></div>${isCopy && item.deployment_references?.length ? `<div><dt>${h('deployments')}</dt><dd>${item.deployment_references.map(ref => `<a href="#/deployments/${encodeURIComponent(ref.deployment_id)}">${escape(ref.name)}</a> · ${escape(ref.kind.replaceAll('_', ' '))}${ref.generation == null ? '' : ` #${ref.generation}`}`).join('<br>')}</dd></div>` : ''}${!isCopy && item.merge_proof ? `<div><dt>${h('integration')}</dt><dd>${escape(item.merge_proof.kind)} · ${escape(item.merge_proof.merged_into)}</dd></div>` : ''}</dl>${isCopy && item.protection_reasons.length ? `<p>${item.protection_reasons.map(reason => escape(reasonText(reason))).join(' · ')}</p>` : ''}</details>`;
+      if (s.inspectorMarkup !== markup) { panel.innerHTML = markup; s.inspectorMarkup = markup; }
       if (s.removalJob && !finalJobs.has(s.removalJob.job.state)) panel.querySelector('[data-pe-remove]')?.setAttribute('disabled', '');
     }
     async function loadSelectionDetails(item, isCopy) {
@@ -244,28 +262,34 @@ window.DevCoordinatorProjectExplorer = (() => {
     }
     function paintStorage(body) {
       const m = s.data.storage;
-      body.innerHTML = `<section class="pe-storage"><h2>${h('localStorage')}</h2><dl class="pe-storage-totals">${[['sourceSpace', m.source_bytes], ['buildSpace', m.build_bytes], ['sharedSpace', m.shared_bytes], ['measuredLocalSpace', m.allocated_bytes]].map(([label, value]) => `<div><dt>${h(label)}</dt><dd>${escape(size(value))}</dd></div>`).join('')}</dl><p class="pe-muted">${h('unmeasuredCount', { count: m.unmeasured_count })} · ${h('measuredAt')} ${escape(date(m.measured_at))}</p><div class="pe-storage-table"><table><caption>${h('spaceByCopy')}</caption><thead><tr><th>${h('location')}</th><th>${h('lifecycle')}</th><th>${h('sourceSpace')}</th><th>${h('buildSpace')}</th></tr></thead><tbody>${s.data.checkouts.map(c => `<tr><td><button type="button" class="pe-text-button" data-pe-storage-copy="${escape(c.worktree_id)}">${escape(c.relative_path)}</button></td><td>${status(c.lifecycle)}</td><td>${escape(size(c.source_bytes))}</td><td>${escape(size(c.build_bytes))}</td></tr>`).join('')}</tbody></table></div>${s.data.next_checkout_cursor ? `<button class="btn" data-pe-more="checkouts">${h('moreCopies')}</button>` : ''}</section>`;
+      body.innerHTML = `<section class="pe-storage"><h2>${h('localStorage')}</h2><dl class="pe-storage-totals">${[['sourceSpace', m.source_bytes], ['buildSpace', m.build_bytes], ['sharedSpace', m.shared_bytes], ['measuredLocalSpace', m.allocated_bytes]].map(([label, value]) => `<div><dt>${h(label)}</dt><dd>${escape(size(value))}</dd></div>`).join('')}</dl><p class="pe-muted">${h('unmeasuredCount', { count: m.unmeasured_count })} · ${h('measuredAt')} ${escape(date(m.measured_at))}</p><div class="pe-storage-table"><table><caption>${h('spaceByCopy')}</caption><thead><tr><th>${h('location')}</th><th>${h('lifecycle')}</th><th>${h('sourceSpace')}</th><th>${h('buildSpace')}</th></tr></thead><tbody>${s.data.checkouts.map(c => `<tr><td><button type="button" class="pe-text-button" data-pe-storage-copy="${escape(c.worktree_id)}">${escape(c.relative_path)}</button></td><td>${status(lifecycleLabel(c))}</td><td>${escape(size(c.source_bytes))}</td><td>${escape(size(c.build_bytes))}</td></tr>`).join('')}</tbody></table></div>${s.data.next_checkout_cursor ? `<button class="btn" data-pe-more="checkouts">${h('moreCopies')}</button>` : ''}</section>`;
     }
     function paintHistory(body) {
       body.innerHTML = `<section class="pe-history"><h2>${h('history')}</h2><ol>${(s.events || s.data.activity).map(e => `<li><time datetime="${escape(e.at)}">${escape(date(e.at))}</time><p>${escape(e.summary)}</p></li>`).join('') || `<li class="pe-empty">${h('noHistory')}</li>`}</ol>${s.historyCursor ? `<button class="btn" data-pe-history-more>${h('earlierHistory')}</button>` : ''}</section>`;
     }
     function connect() {
-      s.observer?.disconnect();
+      s.observer?.disconnect(); s.disconnectLinks?.();
       const trees = find('trees'), links = find('links'); if (!trees || !links) return;
       const update = () => {
         if (!alive() || !links.isConnected) return;
         links.replaceChildren(); if (matchMedia('(max-width: 1050px)').matches) return;
         const from = trees.querySelector('.pe-branch.selected'); if (!from) return;
         const origin = trees.getBoundingClientRect(), a = from.getBoundingClientRect();
+        const fromBounds = from.closest('[role=tree]').getBoundingClientRect();
+        if (a.bottom <= fromBounds.top || a.top >= fromBounds.bottom) return;
         links.setAttribute('viewBox', `0 0 ${origin.width} ${origin.height}`);
         for (const to of trees.querySelectorAll('.pe-copy.linked')) {
           const b = to.getBoundingClientRect();
+          const toBounds = to.closest('[role=tree]').getBoundingClientRect();
+          if (b.bottom <= toBounds.top || b.top >= toBounds.bottom) continue;
           const x1 = a.right - origin.left, y1 = a.top + a.height / 2 - origin.top, x2 = b.left - origin.left, y2 = b.top + b.height / 2 - origin.top;
           const line = document.createElementNS('http://www.w3.org/2000/svg', 'path');
           line.setAttribute('d', `M${x1},${y1} C${x1 + 18},${y1} ${x2 - 18},${y2} ${x2},${y2}`); links.append(line);
         }
       };
       s.observer = new ResizeObserver(update); s.observer.observe(trees); requestAnimationFrame(update);
+      trees.addEventListener('scroll', update, true);
+      s.disconnectLinks = () => trees.removeEventListener('scroll', update, true);
     }
     function treeKeyboard(event) {
       const node = event.target.closest('[role="treeitem"]'); if (!node) return;
@@ -306,12 +330,17 @@ window.DevCoordinatorProjectExplorer = (() => {
       if (points[0].status === 'fulfilled' && points[0].value) data.branches.push(points[0].value);
       if (points[1].status === 'fulfilled' && points[1].value) data.checkouts.push(points[1].value);
       s.data = data; snapshots.set(cacheKey, data); s.error = '';
+      for (const branch of data.branches) {
+        if (s.commits.has(branch.branch_id) && s.commits.get(branch.branch_id).head !== branch.head) s.commits.delete(branch.branch_id);
+      }
       if (s.branchId && !data.branches.some(b => b.branch_id === s.branchId)) {
         // Keep deep-link selections while later inventory pages load.
         if (!data.next_branch_cursor) s.branchId = '';
       }
       if (!s.branchId && !s.checkoutId) s.branchId = data.branches.find(b => b.lifecycle === 'active' || b.lifecycle === 'ready')?.branch_id || data.branches[0]?.branch_id || '';
-      paint();
+      if (s.query) await search(s.query); else paint();
+      if (s.view === 'history') await historyPage();
+      if (s.showCommits && s.open.has(s.branchId)) void loadCommits(selectedBranch());
     }
     async function search(text) {
       const ticket = ++s.queryRead; s.query = text;
@@ -335,8 +364,8 @@ window.DevCoordinatorProjectExplorer = (() => {
     }
     async function loadCommits(branch, append = false) {
       if (!branch) return;
-      const prev = s.commits.get(branch.branch_id); if (prev?.loading || (!append && prev?.items?.length && !prev.error)) return;
-      s.commits.set(branch.branch_id, { items: append ? prev?.items || [] : [], loading: true }); paintBody();
+      const prev = s.commits.get(branch.branch_id); if (prev?.head === branch.head && (prev.loading || (!append && prev.items?.length && !prev.error))) return;
+      s.commits.set(branch.branch_id, { head: branch.head, items: append ? prev?.items || [] : [], loading: true }); paintBody();
       try {
         const params = { project_id: s.projectId, branch_id: branch.branch_id, cursor: append ? prev?.cursor : null, limit: 30 };
         let page = await api('project.branch.commits', params);
@@ -346,8 +375,9 @@ window.DevCoordinatorProjectExplorer = (() => {
           page = await api('project.branch.commits', params);
         }
         if (!alive()) return;
-        s.commits.set(branch.branch_id, { items: [...(append ? prev?.items || [] : []), ...page.commits], cursor: page.next_cursor, loading: false });
-      } catch (error) { if (alive()) s.commits.set(branch.branch_id, { items: prev?.items || [], error: error.message }); }
+        if (s.data.branches.find(b => b.branch_id === branch.branch_id)?.head !== branch.head) return;
+        s.commits.set(branch.branch_id, { head: branch.head, items: [...(append ? prev?.items || [] : []), ...page.commits], cursor: page.next_cursor, loading: false });
+      } catch (error) { if (alive() && s.data.branches.find(b => b.branch_id === branch.branch_id)?.head === branch.head) s.commits.set(branch.branch_id, { head: branch.head, items: prev?.items || [], error: error.message }); }
       paintBody();
     }
     async function refresh() {
@@ -385,8 +415,8 @@ window.DevCoordinatorProjectExplorer = (() => {
       const panel = document.createElement('dialog');
       panel.className = 'pe-metadata-dialog';
       panel.setAttribute('aria-label', t('editDetails'));
-      panel.innerHTML = `<form data-pe-editor class="pe-editor" data-ui-region="metadata-editor"><header><h2>${h('editDetails')}</h2><span>${escape(isCopy ? item.relative_path : item.branch_name)}</span></header><div class="pe-edit-fields">${['intent', 'outcome', 'owner', 'task_id', 'next_action'].map(field => `<label>${h({ task_id: 'taskId', next_action: 'nextAction' }[field] || field)}${['intent', 'outcome', 'next_action'].includes(field) ? `<textarea name="${field}" rows="2" maxlength="2000">${escape(item[field] || '')}</textarea>` : `<input name="${field}" maxlength="200" value="${escape(item[field] || '')}">`}</label>`).join('')}<label>${h('lifecycle')}<select name="lifecycle">${[...new Set([item.lifecycle, ...editableStates])].map(value => `<option value="${escape(value)}"${value === item.lifecycle ? ' selected' : ''}${!editableStates.includes(value) ? ' disabled' : ''}>${escape(stateLabel(value))}</option>`).join('')}</select></label>${isCopy ? `<label>${h('role')}<select name="role"${['primary', 'deployment'].includes(item.role) ? ' disabled' : ''}>${[...new Set([item.role, 'worktree', 'clone', 'scratch'])].map(value => `<option value="${value}"${value === item.role ? ' selected' : ''}>${escape(t('role_' + value))}</option>`).join('')}</select></label>` : ''}</div><p data-pe-edit-error role="alert" hidden></p><footer><button class="btn" data-pe-cancel-edit type="button">${h('cancel')}</button><button class="btn btn-primary" type="submit">${h('saveChanges')}</button></footer></form>`;
-      root.append(panel); s.edit = { item, isCopy };
+      panel.innerHTML = `<form data-pe-editor class="pe-editor" data-ui-region="metadata-editor"><header><h2>${h('editDetails')}</h2><span>${escape(isCopy ? item.relative_path : item.branch_name)}</span></header><div class="pe-edit-fields">${['intent', 'outcome', 'owner', 'task_id', 'next_action'].map(field => `<label>${h({ task_id: 'taskId', next_action: 'nextAction' }[field] || field)}${['intent', 'outcome', 'next_action'].includes(field) ? `<textarea name="${field}" rows="2" maxlength="2000">${escape(item[field] || '')}</textarea>` : `<input name="${field}" maxlength="200" value="${escape(item[field] || '')}">`}</label>`).join('')}<label>${h('lifecycle')}<select name="lifecycle"${isCopy && item.immutable_generation ? ' disabled' : ''}>${[...new Set([item.lifecycle, ...editableStates])].map(value => `<option value="${escape(value)}"${value === item.lifecycle ? ' selected' : ''}${!editableStates.includes(value) ? ' disabled' : ''}>${escape(stateLabel(value))}</option>`).join('')}</select></label>${isCopy ? `<label>${h('role')}<select name="role"${item.immutable_generation || ['primary', 'deployment'].includes(item.role) ? ' disabled' : ''}>${[...new Set([item.role, 'worktree', 'clone', 'scratch'])].map(value => `<option value="${value}"${value === item.role ? ' selected' : ''}>${escape(t('role_' + value))}</option>`).join('')}</select></label>` : ''}</div><p data-pe-edit-error role="alert" hidden></p><footer><button class="btn" data-pe-cancel-edit type="button">${h('cancel')}</button><button class="btn btn-primary" type="submit">${h('saveChanges')}</button></footer></form>`;
+      root.append(panel); dialogs.add(panel); s.edit = { item, isCopy };
       const close = () => { s.edit = null; panel.close(); panel.remove(); paintInspector(); find('inspector').querySelector('[data-pe-edit]')?.focus({preventScroll:true}); };
       panel.addEventListener('cancel', event => { event.preventDefault(); close(); });
       panel.showModal(); panel.querySelector('textarea').focus({ preventScroll: true });
@@ -474,25 +504,29 @@ window.DevCoordinatorProjectExplorer = (() => {
       const copy = selectedCopy(), branch = selectedBranch();
       const ids = copy ? [copy.worktree_id] : branch?.worktree_ids || [];
       if (!ids.length) return;
-      const targets = ids.map(worktree_id => s.data.checkouts.find(c => c.worktree_id === worktree_id)).filter(Boolean);
-      if (targets.length !== ids.length) { throw new Error(t('loadCopiesBeforeRemoval')); }
-      const view = openRemovalReview(targets);
-      const request = { project_id: s.projectId, expected_project_revision: s.data.revision, targets: targets.map(c => ({ worktree_id: c.worktree_id, expected_revision: c.revision })), idempotency_key: key('review') };
-      try { sessionStorage.setItem(pendingReviewKey, JSON.stringify({ project_id: s.projectId, request })); } catch {}
+      const view = openRemovalReview(ids.map(id => s.data.checkouts.find(c => c.worktree_id === id)).filter(Boolean));
+      let request;
       try {
+        await loadStatus();
+        if (!alive() || !view.dialog.isConnected) return;
+        const targets = await Promise.all(ids.map(worktree_id => api('project.checkout.get', {project_id:s.projectId,worktree_id})));
+        if (!alive() || !view.dialog.isConnected) return;
+        request = { project_id: s.projectId, expected_project_revision: s.data.revision, targets: targets.map(c => ({ worktree_id: c.worktree_id, expected_revision: c.revision })), idempotency_key: key('review') };
+        try { sessionStorage.setItem(pendingReviewKey, JSON.stringify({ project_id: s.projectId, request })); } catch {}
         const review = await api('project.checkout.remove.plan', request, false);
         rememberReview(review, ids);
         if (alive()) await watchReview(review, view);
       } catch (error) {
-        if (error.code && error.code !== 'stale') clearPendingReview(request.idempotency_key);
+        if (request && error.code && error.code !== 'stale') clearPendingReview(request.idempotency_key);
         reviewError(view, error.message);
       }
     }
     function openRemovalReview(targets = []) {
+      if (s.reviewView?.dialog.isConnected) return s.reviewView;
       const dialog = document.createElement('dialog'); dialog.className = 'pe-removal-dialog';
       dialog.setAttribute('aria-labelledby', 'pe-removal-title');
       dialog.innerHTML = `<header><h2 id="pe-removal-title">${h('reviewRemoval')}</h2><button class="pe-icon-button" type="button" data-close aria-label="${escape(t('close'))}">${icon('x')}</button></header><ul class="pe-removal-targets">${targets.map(c => `<li><strong>${escape(c.relative_path)}</strong></li>`).join('')}</ul><p data-removal-progress role="status">${h('reviewingRemoval')}</p><p data-removal-error role="alert" hidden></p><footer><button class="btn" type="button" data-close>${h('cancel')}</button></footer>`;
-      root.append(dialog);
+      root.append(dialog); dialogs.add(dialog);
       const view = { dialog, cancelled: false, finished: false, review: null };
       const close = () => {
         view.cancelled = true; dialog.close(); dialog.remove();
@@ -546,7 +580,7 @@ window.DevCoordinatorProjectExplorer = (() => {
       const approvalKey = key('approve'), removalKey = key('remove');
       const items = plan.targets || [];
       const canApprove = plan.requires_approval && s.data.permissions.admin && !plan.blockers.length;
-      dialog.innerHTML = `<header><h2 id="pe-removal-title">${h('reviewRemoval')}</h2><button class="pe-icon-button" type="button" data-close aria-label="${escape(t('close'))}">${icon('x')}</button></header><p>${escape(plan.effect || t('removalEffect'))}</p><ul class="pe-removal-targets">${items.map(item => `<li><strong>${escape(item.path)}</strong><span>${escape(size(item.estimated_reclaimable_bytes))}</span><small>${escape(item.branch_name || t('detached'))} · ${escape(short(item.head))}</small><dl class="pe-removal-facts"><div><dt>${h('remotePreservation')}</dt><dd>${h(item.remote_recoverable ? 'verified' : 'notVerified')}</dd></div><div><dt>${h('untrackedFiles')}</dt><dd>${item.untracked_files}</dd></div><div><dt>${h('ignoredFiles')}</dt><dd>${item.ignored_files}</dd></div><div><dt>${h('stashEntries')}</dt><dd>${item.stash_entries}</dd></div></dl>${[...item.active_uses, ...item.protections, ...item.blockers].length ? `<p>${[...new Set([...item.active_uses, ...item.protections, ...item.blockers])].map(r => escape(reasonText(r))).join(' · ')}</p>` : ''}${item.possible_data_loss.length ? `<p class="pe-data-loss"><strong>${h('dataWouldBeLost')}</strong> ${item.possible_data_loss.map(r => escape(reasonText(r))).join(' · ')}</p>` : ''}${item.task_stays_open ? `<p>${h('taskRemainsOpen')}</p>` : ''}</li>`).join('')}</ul><p>${h('estimatedReclaim')} <strong>${escape(size(plan.estimated_reclaimable_bytes))}</strong></p>${plan.blockers.length ? `<p class="pe-data-loss">${plan.blockers.map(r => escape(reasonText(r))).join(' · ')}</p>` : ''}${plan.requires_approval && !canApprove ? `<p>${h('adminApprovalNeeded')}</p>` : ''}<p data-removal-error role="alert" hidden></p><footer><button class="btn" type="button" data-close>${h('cancel')}</button><button class="btn btn-danger" type="button" data-start${!plan.ready && !canApprove ? ' disabled' : ''}>${h(canApprove ? 'approveLossAndRemove' : 'removeSelectedCopies')}</button></footer>`;
+      dialog.innerHTML = `<header><h2 id="pe-removal-title">${h('reviewRemoval')}</h2><button class="pe-icon-button" type="button" data-close aria-label="${escape(t('close'))}">${icon('x')}</button></header><p>${escape(plan.effect || t('removalEffect'))}</p><ul class="pe-removal-targets">${items.map(item => `<li><strong>${escape(item.path)}</strong><span>${escape(size(item.estimated_reclaimable_bytes))}</span><small>${escape(item.branch_name || t('detached'))} · ${escape(short(item.head))}</small><dl class="pe-removal-facts"><div><dt>${h('remotePreservation')}</dt><dd>${h(item.remote_recoverable ? 'verified' : 'notVerified')}</dd></div><div><dt>${h('untrackedFiles')}</dt><dd>${item.untracked_files}</dd></div><div><dt>${h('ignoredFiles')}</dt><dd>${item.ignored_files}</dd></div><div><dt>${h('stashEntries')}</dt><dd>${item.stash_entries}</dd></div><div><dt>${h('localReferences')}</dt><dd>${item.local_refs}</dd></div><div><dt>${h('unpreservedHistory')}</dt><dd>${item.unpreserved_git_history?.length || 0}</dd></div></dl>${[...item.active_uses, ...item.protections, ...item.blockers].length ? `<p>${[...new Set([...item.active_uses, ...item.protections, ...item.blockers])].map(r => escape(reasonText(r))).join(' · ')}</p>` : ''}${item.possible_data_loss.length ? `<p class="pe-data-loss"><strong>${h('dataWouldBeLost')}</strong> ${item.possible_data_loss.map(r => escape(reasonText(r))).join(' · ')}</p>` : ''}${item.retained_external_artifacts ? `<p>${h('retainedExternalArtifacts', {count:item.retained_external_artifacts,space:size(item.retained_external_bytes)})}</p>` : ''}${item.task_stays_open ? `<p>${h('taskRemainsOpen')}</p>` : ''}</li>`).join('')}</ul><p>${h('estimatedReclaim')} <strong>${escape(size(plan.estimated_reclaimable_bytes))}</strong></p>${plan.blockers.length ? `<p class="pe-data-loss">${plan.blockers.map(r => escape(reasonText(r))).join(' · ')}</p>` : ''}${plan.requires_approval && !canApprove ? `<p>${h('adminApprovalNeeded')}</p>` : ''}<p data-removal-error role="alert" hidden></p><footer><button class="btn" type="button" data-close>${h('cancel')}</button><button class="btn btn-danger" type="button" data-start${!plan.ready && !canApprove ? ' disabled' : ''}>${h(canApprove ? 'approveLossAndRemove' : 'removeSelectedCopies')}</button></footer>`;
       dialog.dataset.removalResult = plan.ready ? 'ready' : 'review';
       dialog.querySelector('[data-start]').onclick = async event => {
         event.currentTarget.disabled = true;
@@ -590,8 +624,7 @@ window.DevCoordinatorProjectExplorer = (() => {
     if (s.projectId) {
       if (snapshots.has(cacheKey)) { s.data = snapshots.get(cacheKey); paint(); }
       await action(loadStatus);
-      let reviewPending; try { reviewPending = JSON.parse(sessionStorage.getItem(pendingReviewKey) || 'null'); } catch {}
-      if (alive() && reviewPending?.project_id === s.projectId && (reviewPending.job_id || reviewPending.request)) {
+      if (alive() && s.data && !s.reviewView && reviewPending?.project_id === s.projectId && (reviewPending.job_id || reviewPending.request)) {
         const ids = reviewPending.worktree_ids || reviewPending.request?.targets.map(c => c.worktree_id) || [];
         const view = openRemovalReview(ids.map(id => s.data?.checkouts.find(c => c.worktree_id === id)).filter(Boolean));
         void action(async () => {
@@ -601,7 +634,7 @@ window.DevCoordinatorProjectExplorer = (() => {
           } catch (error) { reviewError(view, error.message); }
         });
       }
-      let pending; try { pending = JSON.parse(sessionStorage.getItem(pendingRemovalKey) || 'null'); } catch {}
+      const pending = removalPending;
       if (alive() && pending?.project_id === s.projectId && typeof pending.job_id === 'string') {
         void action(async () => { const job = await api('project.checkout.remove.job', pending); await watchRemoval(job); await loadStatus(); });
       }

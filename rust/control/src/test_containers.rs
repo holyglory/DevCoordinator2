@@ -625,6 +625,8 @@ impl TestContainerService {
         caller: &Caller,
     ) -> Result<ContainerOperationResult, ProtocolError> {
         let context = self.resolve_reference(&params, caller)?;
+        crate::repository::Registry::new(self.database.clone())
+            .ensure_execution_available(&context.repository_id)?;
         if context.status != TestStatus::Running {
             return Err(ProtocolError::new(
                 ErrorCode::TestStartFailed,
@@ -1072,9 +1074,14 @@ impl TestContainerService {
                     )
                 },
             )?;
-            let (repository_id,worktree_id)=crate::repository::Registry::new(self.database.clone()).identity_for_info(&info)?;
+            let (repository_id, worktree_id) =
+                crate::repository::Registry::new(self.database.clone()).identity_for_info(&info)?;
             (info.worktree_root.to_path_buf(), worktree_id, repository_id)
         };
+        if create {
+            crate::repository::Registry::new(self.database.clone())
+                .ensure_execution_available(&repository_id)?;
+        }
         validate_identity(run_id, "run_id", 96)?;
         let summary = self
             .store

@@ -768,29 +768,33 @@ fn assert_pristine(connection: &Connection) -> Result<Vec<String>> {
     }
     for table in defaults.keys() {
         // The bootstrap snapshot was captured at schema 35. Later migrations
-        // intentionally advance only meta.schema_version; every other default
-        // value remains immutable and must still match byte-for-byte.
+        // intentionally advance only meta.schema_version. Keep row identity
+        // and every other default value in the comparison, and require the
+        // version declared by the complete current migration set.
         let matches: bool = if *table == "meta" {
             let current: serde_json::Value = connection.query_row(
-                "SELECT COALESCE(jsonb_agg(to_jsonb(t) ORDER BY rowid),'[]'::jsonb) FROM (SELECT key,value FROM meta WHERE key<>'schema_version') t",
+                "SELECT COALESCE(jsonb_agg(to_jsonb(t) ORDER BY rowid),'[]'::jsonb) FROM meta t",
                 [],
                 |r| r.get(0),
             )?;
-            let original: serde_json::Value = connection.query_row(
+            let mut original: serde_json::Value = connection.query_row(
                 "SELECT rows_json FROM dc2_bootstrap_defaults WHERE table_name=$1",
                 [*table],
                 |r| r.get(0),
             )?;
-            let original = original
-                .as_array()
-                .map(|rows| {
-                    rows.iter()
-                        .filter(|row| row.get("key").and_then(serde_json::Value::as_str) != Some("schema_version"))
-                        .cloned()
-                        .collect::<Vec<_>>()
-                })
-                .unwrap_or_default();
-            current == serde_json::Value::Array(original)
+            let mut version_rows = 0;
+            if let Some(rows) = original.as_array_mut() {
+                for row in rows {
+                    if row.get("key").and_then(serde_json::Value::as_str) == Some("schema_version")
+                    {
+                        row["value"] = serde_json::Value::String(
+                            crate::schema::DATABASE_SCHEMA_VERSION.to_string(),
+                        );
+                        version_rows += 1;
+                    }
+                }
+            }
+            version_rows == 1 && current == original
         } else {
             connection.query_row(&format!("SELECT (SELECT rows_json FROM dc2_bootstrap_defaults WHERE table_name=$1) = (SELECT jsonb_agg(to_jsonb(t) ORDER BY rowid) FROM {} t)",quoted(table)),[*table],|r|r.get(0))?
         };
@@ -862,7 +866,11 @@ pub fn import_sqlite(database: &Persistence, path: &Path) -> Result<ImportReceip
         let known=target_tables.iter().map(String::as_str).collect::<BTreeSet<_>>();
         for table in &source_tables{if !known.contains(table.name.as_str()){return Err(Error::Migration(format!("source table {} has no reviewed target; refusing data loss",table.name)));}target_columns(tx,table)?;}
         let source_names=source_tables.iter().map(|t|t.name.as_str()).collect::<BTreeSet<_>>();
-        for table in &target_tables{if !matches!(table.as_str(),"coordinator_maintenance"|"test_log_retention_projection"|"generation_source_origins"|"codex_usage_contexts"|"codex_usage_operation_contexts") && !source_names.contains(table.as_str()){return Err(Error::Migration(format!("source is missing required authority table {table}")));}}
+        for table in &target_tables{if !matches!(table.as_str(),
+            "coordinator_maintenance"|"test_log_retention_projection"|"generation_source_origins"|"codex_usage_contexts"|"codex_usage_operation_contexts"|
+            "projects"|"project_roots"|"project_sources"|"project_repository_memberships"|"project_branches"|"project_checkouts"|"project_events"|"project_jobs"|"project_commits"|"project_storage"|"project_branch_observations"|"project_remote_observations"|"project_commit_pages"|
+            "repository_native_identities"|"worktree_native_identities"|"repository_relocations"|"registry_path_aliases"|
+            "project_checkout_aliases"|"project_checkout_artifacts"|"project_artifact_requests"|"relocation_consumers") && !source_names.contains(table.as_str()){return Err(Error::Migration(format!("source is missing required authority table {table}")));}}
         tx.execute_batch(&format!("TRUNCATE {} RESTART IDENTITY",target_tables.iter().map(|t|quoted(t)).chain(["dc2_delivery_protection_heads","dc2_storage_lease_artifacts","dc2_review_run_refs","dc2_active_review_runs","dc2_test_log_retention_heads","dc2_test_log_retention_runs"].iter().map(|t|quoted(t))).collect::<Vec<_>>().join(",")))?;
         tx.execute_batch("SET CONSTRAINTS ALL DEFERRED")?;
         let mut partition_report=crate::maintenance::PartitionReport::default();

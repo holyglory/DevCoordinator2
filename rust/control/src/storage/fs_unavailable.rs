@@ -52,6 +52,28 @@ pub fn checkout_snapshot(_: &Path) -> Result<CheckoutSnapshot, ProtocolError> {
 pub fn checkout_index_fingerprint(_: &Path) -> Result<Option<String>, ProtocolError> {
     unsupported()
 }
+pub struct CheckoutIndexCursor;
+impl CheckoutIndexCursor {
+    pub fn new_reflog(_: &Path) -> Result<Self, ProtocolError> {
+        unsupported()
+    }
+    pub fn reflog_roots(&self) -> Vec<String> {
+        Vec::new()
+    }
+    pub fn new(_: &Path) -> Result<Self, ProtocolError> {
+        unsupported()
+    }
+    pub fn bytes_hashed(&self) -> u64 {
+        0
+    }
+    pub fn step(
+        &mut self,
+        _: usize,
+        _: std::time::Duration,
+    ) -> Result<Option<Option<String>>, ProtocolError> {
+        unsupported()
+    }
+}
 pub struct MeasurementCursor;
 impl MeasurementCursor {
     pub fn new(_: &Path) -> Result<Self, ProtocolError> {

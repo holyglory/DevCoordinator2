@@ -1883,7 +1883,9 @@ impl TestLifecycle {
             ));
         }
         if !caller.is_console() {
-            return self.resolve(path, caller).map(|(worktree, _)| worktree);
+            let info = resolve_worktree(Path::new(path), Some((caller.uid, caller.gid)))?;
+            self.inner.registry.preview_source_identity(&info)?;
+            return Ok(info.worktree_root);
         }
         let requested = path.to_owned();
         self.inner
@@ -1928,7 +1930,7 @@ impl TestLifecycle {
             return Ok((worktree, id));
         }
         let info = resolve_worktree(Path::new(path), Some((caller.uid, caller.gid)))?;
-        let (_,worktree_id) = self.inner.registry.identity_for_info(&info)?;
+        let (_, worktree_id) = self.inner.registry.identity_for_info(&info)?;
         Ok((info.worktree_root, worktree_id))
     }
 

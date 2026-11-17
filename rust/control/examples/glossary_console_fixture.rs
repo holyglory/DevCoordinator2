@@ -22,9 +22,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .ok_or("an unused external fixture directory is required")?,
     );
     let tickets = std::env::args().nth(2).as_deref() == Some("tickets");
-    let projects = std::env::args().nth(2).as_deref() == Some("projects");
+    let projects_native = std::env::args().nth(2).as_deref() == Some("projects-native");
+    let projects = projects_native || std::env::args().nth(2).as_deref() == Some("projects");
+    let _native_guard = if projects_native {
+        Some(projects_fixture::NativeFixture::admit(&root)?)
+    } else {
+        None
+    };
     let sketches = std::env::args().nth(2).as_deref() == Some("sketches");
-    if !(tickets || sketches) || !root.join("glossary-fixture.marker").is_file() {
+    if !projects_native
+        && (!(tickets || sketches) || !root.join("glossary-fixture.marker").is_file())
+    {
         std::fs::create_dir(&root)?;
     }
     std::fs::write(
@@ -102,13 +110,58 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         codex_usage_sources: Vec::new(),
     };
     let plane = ControlPlane::with_adapters(
-        config,
+        config.clone(),
         database.clone(),
         Arc::new(|_: &RouteAccessSection| Ok(())),
         Arc::new(HostClock),
     )?;
+    let plane = if projects_native {
+        let backend = Arc::new(
+            devcoordinator2_control::storage::native::HostBackend::with_docker(
+                config,
+                database.clone(),
+                Arc::new(projects_fixture::NoHostDocker),
+            ),
+        );
+        plane.with_fixture_storage_backend(backend)
+    } else {
+        plane
+    };
     let mut output = std::io::stdout().lock();
-    let project_fixture = if projects { Some(projects_fixture::seed(&root, &plane, &database)?) } else { None };
+    let project_fixture = if projects {
+        Some(projects_fixture::seed(&root, &plane, &database)?)
+    } else {
+        None
+    };
+    let native_runtime = if projects_native {
+        Some(
+            tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(2)
+                .enable_all()
+                .build()?,
+        )
+    } else {
+        None
+    };
+    let native_worker = if let Some(runtime) = &native_runtime {
+        let scheduler = Arc::new(devcoordinator2_control::maintenance::Scheduler::new(
+            database.clone(),
+            1,
+            32,
+        )?);
+        plane
+            .storage()
+            .set_maintenance_scheduler(Arc::downgrade(&scheduler));
+        let storage = plane.storage().clone();
+        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+        let handle = runtime.spawn(async move {
+            storage.serve(shutdown_rx).await;
+        });
+        Some((shutdown_tx, handle, scheduler))
+    } else {
+        None
+    };
+
     for line in std::io::stdin().lock().lines() {
         let request: RequestEnvelope = serde_json::from_str(&line?)?;
         let public = request.client.identity.is_some();
@@ -129,13 +182,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             identity: request.client.identity,
         };
         if projects && request.operation == "fixture.projects.context" {
-            writeln!(output, "{}", json!({"protocol":3,"id":request.id,"ok":true,"data":project_fixture}))?;
+            writeln!(
+                output,
+                "{}",
+                json!({"protocol":3,"id":request.id,"ok":true,"data":project_fixture})
+            )?;
             output.flush()?;
             continue;
         }
         if projects && request.operation == "event.wait" {
             projects_fixture::run_jobs(&plane)?;
-            writeln!(output, "{}", json!({"protocol":3,"id":request.id,"ok":true,"data":{"cursor":0,"events":[],"heartbeat_due":["project-explorer"]}}))?;
+            writeln!(
+                output,
+                "{}",
+                json!({"protocol":3,"id":request.id,"ok":true,"data":{"cursor":0,"events":[],"heartbeat_due":["project-explorer"]}})
+            )?;
             output.flush()?;
             continue;
         }
@@ -163,6 +224,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         writeln!(output, "{response}")?;
         output.flush()?;
     }
+    if let (Some(runtime), Some((shutdown, handle, scheduler))) = (&native_runtime, native_worker) {
+        let _ = shutdown.send(true);
+        runtime.block_on(handle)?;
+        scheduler.shutdown_and_join();
+    }
+    drop(native_runtime);
     drop(plane);
     database.close()?;
     Ok(())

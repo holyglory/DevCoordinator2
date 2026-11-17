@@ -1190,10 +1190,9 @@ fn decode<T: for<'de> Deserialize<'de>>(value: Value) -> Result<T, GithubError> 
     serde_json::from_value(value).map_err(|_| GithubError::InvalidResponse)
 }
 
-fn page_query(
-    cursor: Option<&str>,
-    page_size: u32,
-) -> Result<(u32, Vec<(&'static str, String)>), GithubError> {
+type PageQuery = (u32, Vec<(&'static str, String)>);
+
+fn page_query(cursor: Option<&str>, page_size: u32) -> Result<PageQuery, GithubError> {
     if !(1..=100).contains(&page_size) {
         return Err(GithubError::InvalidInput);
     }

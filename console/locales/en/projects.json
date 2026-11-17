@@ -167,5 +167,9 @@
   "searchOutcomes": "Search outcomes…",
   "currentOutcome": "Current linked outcome",
   "chooseOutcomeResult": "Choose a matching outcome or clear this field.",
-  "noMatchingOutcomes": "No matching outcomes."
+  "noMatchingOutcomes": "No matching outcomes.",
+  "retainedExternalArtifacts": "Separate build outputs will remain: {count} ({space}). They can be reviewed in Storage.",
+  "localReferences": "Local references",
+  "unpreservedHistory": "Unpreserved recovery objects",
+  "reason_unpreserved_local_history": "Recoverable local Git history is not preserved remotely"
 }

@@ -15124,11 +15124,34 @@
                 },
                 "type": "array"
               },
+              "reflog_entries": {
+                "default": 0,
+                "description": "All clone reflogs, or only the selected linked worktree's HEAD reflog.",
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
               "remote_recoverable": {
                 "type": "boolean"
               },
               "repository_id": {
                 "type": "string"
+              },
+              "retained_external_artifacts": {
+                "default": 0,
+                "description": "External outputs survive this exact-checkout operation. Ownership of an\nassociation does not itself authorize deleting a different path.",
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "retained_external_bytes": {
+                "default": null,
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
               },
               "revision": {
                 "format": "uint64",
@@ -15143,6 +15166,14 @@
               "task_stays_open": {
                 "description": "Removing a parked or unfinished checkout does not finish its task.",
                 "type": "boolean"
+              },
+              "unpreserved_git_history": {
+                "default": [],
+                "description": "Deduplicated kind:OID labels whose survival after this exact removal\ncould not be proved. Source bytes and reflog messages are never returned.",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
               },
               "unpublished_refs": {
                 "items": {
@@ -15652,11 +15683,34 @@
                 },
                 "type": "array"
               },
+              "reflog_entries": {
+                "default": 0,
+                "description": "All clone reflogs, or only the selected linked worktree's HEAD reflog.",
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
               "remote_recoverable": {
                 "type": "boolean"
               },
               "repository_id": {
                 "type": "string"
+              },
+              "retained_external_artifacts": {
+                "default": 0,
+                "description": "External outputs survive this exact-checkout operation. Ownership of an\nassociation does not itself authorize deleting a different path.",
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "retained_external_bytes": {
+                "default": null,
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
               },
               "revision": {
                 "format": "uint64",
@@ -15671,6 +15725,14 @@
               "task_stays_open": {
                 "description": "Removing a parked or unfinished checkout does not finish its task.",
                 "type": "boolean"
+              },
+              "unpreserved_git_history": {
+                "default": [],
+                "description": "Deduplicated kind:OID labels whose survival after this exact removal\ncould not be proved. Source bytes and reflog messages are never returned.",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
               },
               "unpublished_refs": {
                 "items": {
@@ -16180,11 +16242,34 @@
                 },
                 "type": "array"
               },
+              "reflog_entries": {
+                "default": 0,
+                "description": "All clone reflogs, or only the selected linked worktree's HEAD reflog.",
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
               "remote_recoverable": {
                 "type": "boolean"
               },
               "repository_id": {
                 "type": "string"
+              },
+              "retained_external_artifacts": {
+                "default": 0,
+                "description": "External outputs survive this exact-checkout operation. Ownership of an\nassociation does not itself authorize deleting a different path.",
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "retained_external_bytes": {
+                "default": null,
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
               },
               "revision": {
                 "format": "uint64",
@@ -16199,6 +16284,14 @@
               "task_stays_open": {
                 "description": "Removing a parked or unfinished checkout does not finish its task.",
                 "type": "boolean"
+              },
+              "unpreserved_git_history": {
+                "default": [],
+                "description": "Deduplicated kind:OID labels whose survival after this exact removal\ncould not be proved. Source bytes and reflog messages are never returned.",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
               },
               "unpublished_refs": {
                 "items": {
@@ -17752,6 +17845,10 @@
               "has_other_owners": {
                 "type": "boolean"
               },
+              "identity_valid": {
+                "default": false,
+                "type": "boolean"
+              },
               "location": {
                 "$ref": "#/$defs/Location"
               },
@@ -18050,6 +18147,10 @@
           "has_other_owners": {
             "type": "boolean"
           },
+          "identity_valid": {
+            "default": false,
+            "type": "boolean"
+          },
           "location": {
             "$ref": "#/$defs/Location"
           },
@@ -18260,6 +18361,10 @@
           "has_other_owners": {
             "type": "boolean"
           },
+          "identity_valid": {
+            "default": false,
+            "type": "boolean"
+          },
           "location": {
             "$ref": "#/$defs/Location"
           },
@@ -18448,6 +18553,7 @@
           },
           "method": {
             "default": "",
+            "description": "New plans use `rename`; historical copy receipts may retain `verified_copy`.",
             "type": "string"
           },
           "new_path": {
@@ -18590,6 +18696,7 @@
           },
           "method": {
             "default": "",
+            "description": "New plans use `rename`; historical copy receipts may retain `verified_copy`.",
             "type": "string"
           },
           "new_path": {
@@ -18732,6 +18839,7 @@
           },
           "method": {
             "default": "",
+            "description": "New plans use `rename`; historical copy receipts may retain `verified_copy`.",
             "type": "string"
           },
           "new_path": {
@@ -18874,6 +18982,7 @@
           },
           "method": {
             "default": "",
+            "description": "New plans use `rename`; historical copy receipts may retain `verified_copy`.",
             "type": "string"
           },
           "new_path": {
