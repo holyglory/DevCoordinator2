@@ -4964,6 +4964,10 @@ impl Deployments {
             "cancelled"
         } else if row.state == "applying" {
             "applying"
+        } else if row.state == "failed" && row.current_generation.is_none() {
+            // Rollback stops candidate components, but a failed first apply
+            // remains failed until an intentional stop or successful apply.
+            "failed"
         } else if !missing_components.is_empty() {
             "degraded"
         } else if !owned.is_empty() && owned.iter().all(|component| component.state == "completed")

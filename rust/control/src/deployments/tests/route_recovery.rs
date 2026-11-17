@@ -1484,19 +1484,72 @@ fn reconcile_does_not_restart_stopped_or_repair_a_mismatched_route_lease() {
 
 #[test]
 fn first_publication_failure_can_retry_without_a_previous_generation() {
-    let fixture = RouteWorld::new("checkout");
-    let route_path = fixture.deployments.config.routes_path();
-    std::fs::create_dir_all(&route_path).unwrap();
-    let error = fixture.apply().unwrap_err();
-    assert_eq!(error.code, ErrorCode::DeploymentApplyFailed);
-    let rows = fixture.deployments.store.list(None).unwrap();
-    let row = rows.first().unwrap();
-    let failed = fixture.status(&row.deployment_id);
-    assert!(failed.current_generation.is_none());
-    assert!(failed.route_port.is_none());
-    assert!(!failed.readiness.unwrap().ready);
-    std::fs::remove_dir(&route_path).unwrap();
-    assert!(fixture.apply().unwrap().readiness.unwrap().ready);
+    for stop_before_retry in [false, true] {
+        let fixture = RouteWorld::new("checkout");
+        let route_path = fixture.deployments.config.routes_path();
+        std::fs::create_dir_all(&route_path).unwrap();
+        let error = fixture.apply().unwrap_err();
+        assert_eq!(error.code, ErrorCode::DeploymentApplyFailed);
+        let rows = fixture.deployments.store.list(None).unwrap();
+        let row = rows.first().unwrap();
+        let failed = fixture.status(&row.deployment_id);
+        assert_eq!(
+            failed.state, "failed",
+            "Rollback must not present a failed first apply as an intentional stop."
+        );
+        assert!(failed.current_generation.is_none());
+        assert!(failed.route_port.is_none());
+        assert!(!failed.readiness.unwrap().ready);
+        let list = fixture
+            .deployments
+            .list(DeploymentListParams { path: None }, &fixture.caller)
+            .unwrap();
+        assert_eq!(
+            list.deployments
+                .iter()
+                .find(|entry| entry.deployment_id == row.deployment_id)
+                .unwrap()
+                .state,
+            "failed"
+        );
+        std::fs::remove_dir(&route_path).unwrap();
+        if stop_before_retry {
+            let stopped = fixture
+                .deployments
+                .control(
+                    "stop",
+                    None,
+                    None,
+                    Some(&row.deployment_id),
+                    None,
+                    &fixture.caller,
+                )
+                .unwrap();
+            assert_eq!(
+                stopped.state, "stopped",
+                "An explicit stop must retain its ordinary state."
+            );
+            assert_eq!(fixture.status(&row.deployment_id).state, "stopped");
+        } else {
+            assert_eq!(fixture.status(&row.deployment_id).state, "failed");
+        }
+        let running = fixture.apply().unwrap();
+        assert_eq!(running.state, "running");
+        assert!(running.readiness.unwrap().ready);
+        let removed = fixture
+            .deployments
+            .remove(None, None, Some(&row.deployment_id), false, &fixture.caller)
+            .unwrap();
+        assert!(removed.removed);
+        assert!(
+            fixture
+                .deployments
+                .store
+                .get(&row.deployment_id)
+                .unwrap()
+                .is_none()
+        );
+    }
 }
 
 #[test]
