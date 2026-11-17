@@ -40,7 +40,8 @@ const TIMESTAMP_FORMAT: &[FormatItem<'static>] =
 const RECORD_CAP: usize = 256;
 const MAX_LABEL_BYTES: usize = 256;
 const CONTAINER_DIAGNOSTIC_TAIL_LINES: u16 = 500;
-pub(crate) const FIXTURE_PHASE_TIMEOUT_SECONDS: u64 = 120;
+/// Shared fixture phase budget, also used by the source-owned acceptance wait.
+pub const FIXTURE_PHASE_TIMEOUT_SECONDS: u64 = 120;
 
 #[derive(Clone)]
 pub struct TestContainerService {

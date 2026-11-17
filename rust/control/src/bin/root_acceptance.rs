@@ -2405,12 +2405,28 @@ fn await_database_case(listener: &std::os::unix::net::UnixListener) -> Result<Un
         events: libc::POLLIN,
         revents: 0,
     };
-    // The test waits for the case's actual readiness message, with a failure deadline.
-    // SAFETY: event points to one initialized descriptor owned by this fixture.
-    ensure!(
-        unsafe { libc::poll(&mut event, 1, 60_000) } == 1,
-        "database case readiness deadline reached"
-    );
+    let started = Instant::now();
+    wait_database_case_readiness(
+        Duration::from_secs(
+            devcoordinator2_control::test_containers::FIXTURE_PHASE_TIMEOUT_SECONDS,
+        ),
+        || started.elapsed(),
+        |remaining| {
+            // SAFETY: event is one initialized descriptor owned by this fixture.
+            let result = unsafe {
+                libc::poll(
+                    &mut event,
+                    1,
+                    remaining.as_millis().clamp(1, i32::MAX as u128) as i32,
+                )
+            };
+            if result < 0 {
+                Err(std::io::Error::last_os_error())
+            } else {
+                Ok(result == 1)
+            }
+        },
+    )?;
     let (mut socket, _) = listener.accept().map_err(|e| e.to_string())?;
     socket
         .set_read_timeout(Some(Duration::from_secs(10)))
@@ -2419,6 +2435,26 @@ fn await_database_case(listener: &std::os::unix::net::UnixListener) -> Result<Un
     socket.read_exact(&mut ready).map_err(|e| e.to_string())?;
     ensure!(&ready == b"ready", "unexpected database readiness message");
     Ok(socket)
+}
+
+fn wait_database_case_readiness(
+    budget: Duration,
+    mut elapsed: impl FnMut() -> Duration,
+    mut poll: impl FnMut(Duration) -> std::io::Result<bool>,
+) -> Result<(), String> {
+    loop {
+        let remaining = budget.saturating_sub(elapsed());
+        ensure!(
+            !remaining.is_zero(),
+            "database case readiness deadline reached"
+        );
+        match poll(remaining) {
+            Ok(true) => return Ok(()),
+            Ok(false) => return Err("database case readiness deadline reached".into()),
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(error) => return Err(format!("database case readiness wait failed: {error}")),
+        }
+    }
 }
 
 fn held_database_config(world: &World, gate: &Path) -> Result<String, String> {
@@ -4977,8 +5013,34 @@ fn case_failed_component_is_degraded_and_busy_is_immediate(
     world: &mut World,
 ) -> Result<(), String> {
     world.write_owned("marker.txt", "broken\n")?;
-    let broken = web_deployment_config(world, "broken", Some(vec!["/usr/bin/false".to_owned()]))?
-        .replace("timeout_seconds = 30", "timeout_seconds = 120");
+    let mut broken: toml::Value = toml::from_str(&web_deployment_config(
+        world,
+        "broken",
+        Some(vec!["/usr/bin/false".to_owned()]),
+    )?)
+    .map_err(|error| error.to_string())?;
+    let deployment = broken["deployment"]["web"]
+        .as_table_mut()
+        .ok_or("web fixture missing")?;
+    deployment.insert(
+        "components".into(),
+        toml::Value::Array(vec![toml::Value::String("api".into())]),
+    );
+    let components = deployment
+        .get_mut("component")
+        .and_then(toml::Value::as_table_mut)
+        .ok_or("web components missing")?;
+    components.retain(|name, _| name == "api");
+    components
+        .get_mut("api")
+        .and_then(toml::Value::as_table_mut)
+        .ok_or("API fixture missing")?
+        .remove("depends_on");
+    components.get_mut("api").ok_or("API fixture missing")?["health"]["timeout_seconds"] =
+        toml::Value::Integer(120);
+    // Time the terminal process boundary without unrelated database/cache
+    // rollback. The later concurrent applies retain the full web fixture.
+    let broken = toml::to_string(&broken).map_err(|error| error.to_string())?;
     world.write_config(&broken)?;
     let started = Instant::now();
     let failed = world.call(
@@ -7946,6 +8008,59 @@ mod tests {
         })
         .unwrap_err();
         assert!(timeout.contains("deadline"));
+    }
+
+    #[test]
+    fn database_readiness_obeys_fixture_budget_without_real_time_waits() {
+        use std::cell::Cell;
+        let budget = Duration::from_secs(
+            devcoordinator2_control::test_containers::FIXTURE_PHASE_TIMEOUT_SECONDS,
+        );
+        assert_eq!(budget, Duration::from_secs(120));
+        let wait = |ready_at: Duration, budget: Duration| {
+            let elapsed = Cell::new(Duration::ZERO);
+            wait_database_case_readiness(
+                budget,
+                || elapsed.get(),
+                |remaining| {
+                    let ready = ready_at <= elapsed.get() + remaining;
+                    elapsed.set(if ready {
+                        ready_at
+                    } else {
+                        elapsed.get() + remaining
+                    });
+                    Ok(ready)
+                },
+            )
+        };
+        assert!(wait(Duration::from_secs(62), budget).is_ok());
+        assert!(wait(Duration::from_secs(62), Duration::from_secs(60)).is_err());
+        assert_eq!(
+            wait(Duration::from_secs(121), budget).unwrap_err(),
+            "database case readiness deadline reached"
+        );
+        let elapsed = Cell::new(Duration::ZERO);
+        let calls = Cell::new(0);
+        assert!(
+            wait_database_case_readiness(
+                budget,
+                || elapsed.get(),
+                |remaining| {
+                    let call = calls.get();
+                    calls.set(call + 1);
+                    if call == 0 {
+                        elapsed.set(Duration::from_secs(60));
+                        Err(std::io::Error::from(std::io::ErrorKind::Interrupted))
+                    } else {
+                        assert_eq!(remaining, Duration::from_secs(60));
+                        elapsed.set(Duration::from_secs(62));
+                        Ok(true)
+                    }
+                }
+            )
+            .is_ok()
+        );
+        assert_eq!(calls.get(), 2);
     }
 
     #[test]
