@@ -6861,7 +6861,10 @@ tcp="127.0.0.1:25"
 
     #[test]
     fn managed_status_and_list_refresh_real_runtime_shapes() {
-        let world = World::new();
+        let mut world = World::new();
+        // This fixture's .git points to /missing; keep source-comparison
+        // failures separate from the runtime failure evidence asserted below.
+        world.deployments.git = Arc::new(FixtureGit);
         let deployment_id = world.seed_managed();
         let status = world
             .deployments
@@ -6894,6 +6897,123 @@ tcp="127.0.0.1:25"
             .unwrap();
         assert_eq!(list.deployments.len(), 1);
         assert_eq!(list.deployments[0].deployment_id, deployment_id);
+
+        // A partial failure still reports its running and failed components.
+        world
+            .deployments
+            .store
+            .set_component_runtime(
+                &deployment_id,
+                "api",
+                ComponentRuntimePatch {
+                    state: Some("failed".into()),
+                    health: Some("unhealthy".into()),
+                    binding_kind: Some(None),
+                    binding_identity: Some(None),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        world
+            .deployments
+            .store
+            .set_deployment_runtime(&deployment_id, "failed", Some(1), None)
+            .unwrap();
+        let partial = world
+            .deployments
+            .status(None, None, Some(&deployment_id), &World::caller())
+            .unwrap();
+        assert_eq!(partial.state, "degraded");
+        assert!(
+            partial
+                .components
+                .iter()
+                .any(|component| component.state == "running")
+        );
+        assert!(
+            partial
+                .components
+                .iter()
+                .any(|component| component.state == "failed")
+        );
+
+        // Complete candidate cleanup leaves a stopped runtime, while the
+        // unsuccessful apply remains explicit in readiness and durable state.
+        world
+            .deployments
+            .store
+            .set_route(None, &deployment_id, None, None, None)
+            .unwrap();
+        for component in partial
+            .components
+            .iter()
+            .filter(|component| component.owned)
+        {
+            world
+                .deployments
+                .store
+                .set_component_runtime(
+                    &deployment_id,
+                    &component.name,
+                    ComponentRuntimePatch {
+                        state: Some("stopped".into()),
+                        health: Some("none".into()),
+                        generation: Some(None),
+                        binding_kind: Some(None),
+                        binding_identity: Some(None),
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+        }
+        world
+            .deployments
+            .store
+            .set_deployment_runtime(&deployment_id, "failed", None, None)
+            .unwrap();
+        let cleaned = world
+            .deployments
+            .status(None, None, Some(&deployment_id), &World::caller())
+            .unwrap();
+        assert_eq!(cleaned.state, "stopped");
+        assert_eq!(cleaned.route_port, None);
+        assert_eq!(cleaned.current_generation, None);
+        assert!(
+            cleaned
+                .components
+                .iter()
+                .filter(|component| component.owned)
+                .all(|component| component.state == "stopped"
+                    && component.binding.kind.is_none()
+                    && component.binding.identity.is_none())
+        );
+        let readiness = cleaned.readiness.unwrap();
+        assert!(!readiness.ready);
+        assert!(
+            readiness
+                .blockers
+                .iter()
+                .any(|blocker| blocker.code == ErrorCode::DeploymentApplyFailed)
+        );
+
+        world
+            .deployments
+            .store
+            .set_deployment_runtime(&deployment_id, "stopped", None, None)
+            .unwrap();
+        let stopped = world
+            .deployments
+            .status(None, None, Some(&deployment_id), &World::caller())
+            .unwrap();
+        assert_eq!(stopped.state, "stopped");
+        assert!(
+            !stopped
+                .readiness
+                .unwrap()
+                .blockers
+                .iter()
+                .any(|blocker| blocker.code == ErrorCode::DeploymentApplyFailed)
+        );
     }
 
     #[test]

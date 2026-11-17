@@ -5009,6 +5009,34 @@ fn case_exact_candidate_keeps_data_route_and_rollback(world: &mut World) -> Resu
     Ok(())
 }
 
+fn failed_apply_has_terminal_status(status: &Value) -> bool {
+    if status["state"] == "degraded" || status["state"] == "failed" {
+        return true;
+    }
+    // A first candidate can be completely removed by failure cleanup. Status
+    // then describes a stopped runtime; the unsuccessful apply must remain
+    // explicit, with no selected generation, route or active binding.
+    status["state"] == "stopped"
+        && status.get("current_generation") == Some(&Value::Null)
+        && status.get("route_port") == Some(&Value::Null)
+        && status["readiness"]["ready"] == false
+        && status["readiness"]["blockers"]
+            .as_array()
+            .is_some_and(|blockers| {
+                blockers
+                    .iter()
+                    .any(|blocker| blocker["code"] == "deployment_apply_failed")
+            })
+        && status["components"].as_array().is_some_and(|components| {
+            !components.is_empty()
+                && components.iter().all(|component| {
+                    component["state"] == "stopped"
+                        && component["binding"].get("kind") == Some(&Value::Null)
+                        && component["binding"].get("identity") == Some(&Value::Null)
+                })
+        })
+}
+
 fn case_failed_component_is_degraded_and_busy_is_immediate(
     world: &mut World,
 ) -> Result<(), String> {
@@ -5066,8 +5094,8 @@ fn case_failed_component_is_degraded_and_busy_is_immediate(
     )?;
     let status = data(&status)?.clone();
     ensure!(
-        status["state"] == "degraded" || status["state"] == "failed",
-        "failed deployment state was not degraded or failed"
+        failed_apply_has_terminal_status(&status),
+        "failed deployment did not retain an evidenced terminal failure state"
     );
     ensure!(
         status["route_port"].is_null(),
@@ -7962,6 +7990,63 @@ fn main() -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn failed_apply_requires_failure_evidence_after_complete_rollback() {
+        let rolled_back = json!({
+            "state":"stopped", "current_generation":null, "route_port":null,
+            "components":[{"state":"stopped", "binding":{"kind":null,"identity":null}}],
+            "readiness":{"ready":false,"blockers":[{"code":"deployment_apply_failed"}]}
+        });
+        assert!(failed_apply_has_terminal_status(&rolled_back));
+        for pointer in [
+            "/readiness/blockers",
+            "/readiness/ready",
+            "/components",
+            "/current_generation",
+            "/route_port",
+            "/components/0/binding",
+            "/components/0/state",
+        ] {
+            let mut missing = rolled_back.clone();
+            let (parent, key) = pointer.rsplit_once('/').unwrap();
+            missing
+                .pointer_mut(parent)
+                .unwrap()
+                .as_object_mut()
+                .unwrap()
+                .remove(key);
+            assert!(
+                !failed_apply_has_terminal_status(&missing),
+                "accepted missing {pointer}"
+            );
+        }
+        for (pointer, value) in [
+            ("/readiness/ready", json!(true)),
+            ("/readiness/blockers", json!([])),
+            (
+                "/readiness/blockers",
+                json!([{"code":"route_lease_conflict"}]),
+            ),
+            ("/components", json!([])),
+            ("/components/0/state", json!("running")),
+            ("/components/0/binding/kind", json!("unit")),
+            ("/components/0/binding/identity", json!("candidate.service")),
+            ("/current_generation", json!(1)),
+            ("/route_port", json!(32001)),
+        ] {
+            let mut unsafe_status = rolled_back.clone();
+            *unsafe_status.pointer_mut(pointer).unwrap() = value;
+            assert!(
+                !failed_apply_has_terminal_status(&unsafe_status),
+                "accepted {pointer}"
+            );
+        }
+        assert!(failed_apply_has_terminal_status(&json!({"state":"failed"})));
+        assert!(failed_apply_has_terminal_status(&json!({
+            "state":"degraded", "components":[{"state":"running"},{"state":"failed"}]
+        })));
+    }
 
     #[test]
     fn fresh_test_starts_wait_for_retirement_and_bind_the_accepted_identity() {
