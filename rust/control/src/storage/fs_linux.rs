@@ -15,7 +15,9 @@ const MAX_DEPTH: usize = 128;
 
 #[path = "fs_snapshot_linux.rs"]
 mod checkout_content;
-pub use checkout_content::checkout_snapshot;
+pub use checkout_content::{
+    CheckoutSnapshot, CheckoutSnapshotCursor, checkout_index_fingerprint, checkout_snapshot,
+};
 
 pub fn open_directory(path: &Path) -> Result<File, ProtocolError> {
     open_directory_if_present(path)?.ok_or_else(|| blocked("directory_identity_unavailable"))

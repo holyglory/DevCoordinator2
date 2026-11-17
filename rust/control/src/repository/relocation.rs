@@ -168,6 +168,8 @@ pub(super) fn register(
     let now = timestamp()?;
     registry.database.transaction(move|connection| {
         connection.query_row("SELECT pg_advisory_xact_lock(29162844963183719)",[],|_|Ok(()))?;
+        let reserved:bool=connection.query_row("SELECT EXISTS(SELECT 1 FROM repository_relocations WHERE state IN ('prepared','verified') AND (new_path=$1 OR new_path=$2 OR strpos($2,new_path||'/')=1))",(&root_path,&worktree_path),|row|row.get(0))?;
+        if reserved {return Err(blocked("relocation destination is reserved; verify and commit its original identity before registration").into());}
         let aliases:bool=connection.query_row("SELECT EXISTS(SELECT 1 FROM registry_path_aliases WHERE old_path=$1 OR old_path=$2)",(&root_path,&worktree_path),|row|row.get(0))?;
         if aliases {return Err(blocked("a historical source path cannot register a replacement checkout").into());}
         let repository=connection.query_row("SELECT repository_id,display_name,archived_at FROM repositories WHERE root_path=$1",[&root_path],|row|Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?,row.get::<_,Option<String>>(2)?))).optional()?;
@@ -262,7 +264,32 @@ struct PreparedNative {
     owner_gid: u32,
     moves_repository_root: bool,
     linked: Vec<(String, PathBuf, NativeIdentity)>,
+    #[serde(default)]
+    copied: bool,
+    #[serde(default = "legacy_fingerprint_version")]
+    fingerprint_version: u32,
+    #[serde(default)]
+    target: Option<VerifiedTarget>,
+    #[serde(default)]
+    removal_started_at: Option<String>,
+    #[serde(default)]
+    source_removed_at: Option<String>,
+    #[serde(default)]
+    consumers: Vec<RelocationConsumer>,
 }
+
+fn legacy_fingerprint_version() -> u32 {
+    1
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+struct VerifiedTarget {
+    identity: NativeIdentity,
+    linked: Vec<(String, PathBuf, NativeIdentity)>,
+}
+
+mod consumers;
+pub(crate) use consumers::{RelocationComponent, RelocationConsumer, RelocationRuntime};
 
 #[derive(Clone)]
 struct StoredRelocation {
@@ -289,9 +316,19 @@ fn safe_identifier(value: &str) -> bool {
 }
 
 fn load_relocation(connection: &Connection, id: &str) -> Result<StoredRelocation, DatabaseError> {
-    let (receipt,native):(api::Receipt,String)=connection.query_row("SELECT relocation_id,project_id,repository_id,worktree_id,old_path,new_path,fingerprint,state,checkout_revision,prepared_at,verified_at,committed_at,native_json FROM repository_relocations WHERE relocation_id=$1",[id],|row|Ok((api::Receipt{relocation_id:row.get(0)?,project_id:row.get(1)?,repository_id:row.get(2)?,worktree_id:row.get(3)?,old_path:row.get(4)?,new_path:row.get(5)?,fingerprint:row.get(6)?,state:row.get(7)?,checkout_revision:row.get(8)?,prepared_at:row.get(9)?,verified_at:row.get(10)?,committed_at:row.get(11)?},row.get(12)?))).optional()?.ok_or_else(||DatabaseError::Domain(repository_not_found("relocation plan does not exist")))?;
-    let native = serde_json::from_str(&native)
+    let (mut receipt,native):(api::Receipt,String)=connection.query_row("SELECT relocation_id,project_id,repository_id,worktree_id,old_path,new_path,fingerprint,state,checkout_revision,prepared_at,verified_at,committed_at,native_json FROM repository_relocations WHERE relocation_id=$1",[id],|row|Ok((api::Receipt{relocation_id:row.get(0)?,project_id:row.get(1)?,repository_id:row.get(2)?,worktree_id:row.get(3)?,old_path:row.get(4)?,new_path:row.get(5)?,fingerprint:row.get(6)?,method:String::new(),pending_deployments:Vec::new(),state:row.get(7)?,checkout_revision:row.get(8)?,prepared_at:row.get(9)?,verified_at:row.get(10)?,committed_at:row.get(11)?},row.get(12)?))).optional()?.ok_or_else(||DatabaseError::Domain(repository_not_found("relocation plan does not exist")))?;
+    let native: PreparedNative = serde_json::from_str(&native)
         .map_err(|_| DatabaseError::Domain(blocked("stored relocation identity is invalid")))?;
+    receipt.method = if native.copied {
+        "verified_copy"
+    } else {
+        "rename"
+    }
+    .into();
+    let mut query=connection.prepare("SELECT deployment_id FROM relocation_consumers WHERE relocation_id=$1 AND state<>'rebound' ORDER BY deployment_id")?;
+    receipt.pending_deployments = query
+        .query_map([id], |row| row.get::<_, String>(0))?
+        .collect::<Result<Vec<_>, _>>()?;
     Ok(StoredRelocation { receipt, native })
 }
 
@@ -314,10 +351,7 @@ fn existing_request(
 }
 
 fn inactive(connection: &Connection, repository_id: &str) -> Result<(), DatabaseError> {
-    let deployment:bool=connection.query_row("SELECT EXISTS(SELECT 1 FROM deployments d WHERE d.repository_id=$1 AND (d.current_generation IS NOT NULL OR d.previous_generation IS NOT NULL OR d.state NOT IN ('removed','failed','stopped'))) OR EXISTS(SELECT 1 FROM generation_source_origins o JOIN deployments d ON d.deployment_id=o.deployment_id JOIN worktrees w ON w.worktree_id=o.worktree_id WHERE w.repository_id=$1 AND (o.number=d.current_generation OR o.number=d.previous_generation))",[repository_id],|row|row.get(0))?;
-    if deployment {
-        return Err(blocked("current or rollback deployments use this repository; migrate their consumers through the supported stop and rebind workflow first").into());
-    }
+    consumers::collect(connection, repository_id)?;
     let project_job:bool=connection.query_row("SELECT EXISTS(SELECT 1 FROM project_jobs j JOIN project_repository_memberships m USING(project_id) WHERE m.physical_repository_id=$1 AND j.state IN ('queued','running'))",[repository_id],|row|row.get(0))?;
     if project_job {
         return Err(
@@ -387,17 +421,12 @@ impl Registry {
                 "relocation requires distinct exact paths and an absent destination",
             ));
         }
-        if std::fs::metadata(&old)
+        let copied = std::fs::metadata(&old)
             .map_err(|_| blocked("source metadata unavailable"))?
             .dev()
             != std::fs::metadata(parent)
                 .map_err(|_| blocked("destination metadata unavailable"))?
-                .dev()
-        {
-            return Err(blocked(
-                "cross-filesystem relocation requires a separately verified copy workflow; this operation accepts inode-preserving moves only",
-            ));
-        }
+                .dev();
         let (root,uid,revision)=self.database.read(|connection|{
             let row=connection.query_row("SELECT r.root_path,r.registered_by_uid,c.revision FROM project_checkouts c JOIN worktrees w USING(worktree_id) JOIN repositories r ON r.repository_id=w.repository_id WHERE c.project_id=$1 AND c.worktree_id=$2 AND c.physical_repository_id=$3 AND w.repository_id=$3 AND c.absolute_path=$4 AND w.worktree_path=$4 AND r.archived_at IS NULL",(&request.project_id,&request.worktree_id,&request.repository_id,&request.old_path),|row|Ok((row.get::<_,String>(0)?,row.get::<_,u32>(1)?,row.get::<_,u64>(2)?))).optional()?.ok_or_else(||DatabaseError::Domain(blocked("project checkout, physical repository and source path do not match")))?;
             if row.2!=request.expected_checkout_revision {return Err(blocked("checkout changed; refresh its revision before preparing relocation").into());}
@@ -465,6 +494,12 @@ impl Registry {
             }
             linked_native.push((id, path, native_identity(&resolved)?));
         }
+        let mut consumer_snapshots = self
+            .database
+            .read(|connection| consumers::collect(connection, &repository_id))
+            .map_err(db_error)?;
+        let _consumer_lease = self.lease_relocation_consumers(&mut consumer_snapshots, None)?;
+        crate::storage::ensure_relocation_inactive(&[old.clone(), new.clone()])?;
         let native = PreparedNative {
             identity,
             repository_root: info.repository_root.clone(),
@@ -472,8 +507,19 @@ impl Registry {
             owner_gid: gid,
             moves_repository_root: info.repository_root == old,
             linked: linked_native,
+            copied,
+            fingerprint_version: 2,
+            target: None,
+            removal_started_at: None,
+            source_removed_at: None,
+            consumers: consumer_snapshots,
         };
-        let fingerprint = relocation_fingerprint(&old, &native.repository_root, &native.identity)?;
+        let fingerprint = relocation_fingerprint(
+            &old,
+            &native.repository_root,
+            &native.identity,
+            native.fingerprint_version,
+        )?;
         let relocation_id = format!("m{}", ids::retirement_receipt_id().map_err(id_error)?);
         let now = timestamp()?;
         self.database.transaction(|connection|{
@@ -481,10 +527,12 @@ impl Registry {
             if let Some(existing)=existing_request(connection,&request)? {return Ok(existing);}
             if pending(connection,&request.repository_id)? {return Err(blocked("another relocation already owns this repository").into());}
             inactive(connection,&request.repository_id)?;
+            consumers::assert_unchanged(connection,&request.repository_id,&native.consumers)?;
             let changed=connection.execute("UPDATE project_checkouts SET revision=revision+1,record_json=jsonb_set(record_json,'{revision}',to_jsonb(revision+1)),updated_at=$1,updated_by=$2 WHERE project_id=$3 AND worktree_id=$4 AND absolute_path=$5 AND revision=$6",(&now,caller.actor(),&request.project_id,&request.worktree_id,&request.old_path,revision))?;
             if changed!=1 {return Err(blocked("checkout changed while relocation was being prepared").into());}
-            let receipt=api::Receipt{relocation_id:relocation_id.clone(),project_id:request.project_id.clone(),repository_id:request.repository_id.clone(),worktree_id:request.worktree_id.clone(),old_path:request.old_path.clone(),new_path:request.new_path.clone(),fingerprint:fingerprint.clone(),state:"prepared".into(),checkout_revision:revision+1,prepared_at:now.clone(),verified_at:None,committed_at:None};
+            let receipt=api::Receipt{relocation_id:relocation_id.clone(),project_id:request.project_id.clone(),repository_id:request.repository_id.clone(),worktree_id:request.worktree_id.clone(),old_path:request.old_path.clone(),new_path:request.new_path.clone(),fingerprint:fingerprint.clone(),method:if copied {"verified_copy"}else{"rename"}.into(),pending_deployments:native.consumers.iter().map(|consumer|consumer.deployment_id.clone()).collect(),state:"prepared".into(),checkout_revision:revision+1,prepared_at:now.clone(),verified_at:None,committed_at:None};
             connection.execute("INSERT INTO repository_relocations(relocation_id,project_id,repository_id,worktree_id,old_path,new_path,moves_repository_root,idempotency_key,request_json,fingerprint,native_json,state,checkout_revision,actor_uid,prepared_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'prepared',$12,$13,$14)",crate::database::params![relocation_id,request.project_id,request.repository_id,request.worktree_id,request.old_path,request.new_path,native.moves_repository_root,request.idempotency_key,serde_json::to_string(&request).map_err(|_|DatabaseError::Domain(blocked("relocation request cannot be retained")))?,fingerprint,serde_json::to_string(&native).map_err(|_|DatabaseError::Domain(blocked("relocation identity cannot be retained")))?,revision+1,i64::from(caller.uid),now])?;
+            consumers::retain(connection,&relocation_id,&native.consumers,&now)?;
             Ok(receipt)
         }).map_err(db_error)
     }
@@ -519,39 +567,95 @@ impl Registry {
         Ok(stored)
     }
 
-    fn verify_relocation_target(&self, stored: &StoredRelocation) -> Result<(), ProtocolError> {
+    fn verify_relocation_target(
+        &self,
+        stored: &StoredRelocation,
+    ) -> Result<VerifiedTarget, ProtocolError> {
         let receipt = &stored.receipt;
         let native = &stored.native;
         if receipt.state == "cancelled" {
             return Err(blocked("relocation was cancelled"));
         }
-        if !crate::storage::fs::absent(Path::new(&receipt.old_path))? {
+        let old = Path::new(&receipt.old_path);
+        let new = Path::new(&receipt.new_path);
+        crate::storage::ensure_relocation_inactive(&[old.to_owned(), new.to_owned()])?;
+        let old_absent = crate::storage::fs::absent(old)?;
+        if !native.copied && !old_absent {
             return Err(blocked(
                 "the old source path still exists or was replaced; no relocation is committed",
             ));
         }
-        let info = resolve_worktree(
-            Path::new(&receipt.new_path),
-            Some((native.owner_uid, native.owner_gid)),
-        )?;
+        if native.copied {
+            if old_absent {
+                if native.removal_started_at.is_none() || native.target.is_none() {
+                    return Err(blocked(
+                        "the original disappeared before a verified copy removal was recorded",
+                    ));
+                }
+            } else {
+                let original = WorktreeInfo {
+                    repository_root: native.repository_root.clone(),
+                    worktree_root: old.to_owned(),
+                };
+                if native_identity(&original)? != native.identity
+                    || relocation_fingerprint(
+                        old,
+                        &native.repository_root,
+                        &native.identity,
+                        native.fingerprint_version,
+                    )? != receipt.fingerprint
+                {
+                    return Err(blocked(
+                        "the original source changed after copy preparation",
+                    ));
+                }
+            }
+        }
+        let info = resolve_worktree(new, Some((native.owner_uid, native.owner_gid)))?;
         let expected_root = if native.moves_repository_root {
-            PathBuf::from(&receipt.new_path)
+            new.to_owned()
         } else {
             native.repository_root.clone()
         };
-        if info.worktree_root != Path::new(&receipt.new_path)
-            || info.repository_root != expected_root
-            || native_identity(&info)? != native.identity
-        {
+        if info.worktree_root != new || info.repository_root != expected_root {
             return Err(blocked(
-                "relocation destination is not the exact original physical Git checkout",
+                "destination Git links have not been repaired to the exact prepared source",
             ));
         }
-        for (_, path, identity) in &native.linked {
+        let identity = native_identity(&info)?;
+        if !native.copied && identity != native.identity {
+            return Err(blocked(
+                "relocation destination is not the original physical checkout",
+            ));
+        }
+        if native.copied && identity.git_relative != native.identity.git_relative {
+            return Err(blocked(
+                "copied Git worktree metadata has a different identity",
+            ));
+        }
+        if native.copied
+            && !native.moves_repository_root
+            && (identity.repository_root != native.identity.repository_root
+                || identity.common != native.identity.common
+                || identity.git != native.identity.git)
+        {
+            return Err(blocked(
+                "copied linked checkout no longer belongs to its original Git common directory",
+            ));
+        }
+        let mut linked_targets = Vec::new();
+        for (id, path, original) in &native.linked {
             let linked = resolve_worktree(path, Some((native.owner_uid, native.owner_gid)))?;
-            if linked.repository_root != expected_root || native_identity(&linked)? != *identity {
+            let current = native_identity(&linked)?;
+            if linked.repository_root != expected_root
+                || current.worktree_root != original.worktree_root
+                || current.git_relative != original.git_relative
+                || current.repository_root != identity.repository_root
+                || current.common != identity.common
+                || (!native.copied && current != *original)
+            {
                 return Err(blocked(
-                    "linked worktree Git metadata has not been repaired or its identity changed",
+                    "linked worktree Git metadata is unrepaired or was replaced",
                 ));
             }
             if self
@@ -559,31 +663,44 @@ impl Registry {
                 .first_blocker(&receipt.repository_id, path)?
                 .is_some()
             {
-                return Err(blocked("an active test or process uses a linked checkout"));
+                return Err(blocked("an active test uses a linked checkout"));
             }
+            linked_targets.push((id.clone(), path.clone(), current));
         }
         if self
             .additional_archive_blockers
-            .first_blocker(&receipt.repository_id, Path::new(&receipt.new_path))?
+            .first_blocker(&receipt.repository_id, new)?
             .is_some()
         {
-            return Err(blocked(
-                "an active test or process uses the relocation destination",
-            ));
+            return Err(blocked("an active test uses the relocation destination"));
         }
-        if relocation_fingerprint(
-            Path::new(&receipt.new_path),
-            &expected_root,
-            &native.identity,
-        )? != receipt.fingerprint
+        if relocation_fingerprint(new, &expected_root, &identity, native.fingerprint_version)?
+            != receipt.fingerprint
         {
             return Err(blocked(
-                "source files, dirty work, ignored data or Git refs changed during relocation",
+                "destination files, dirty work, ignored data, index or Git refs do not match the prepared source",
+            ));
+        }
+        let target = VerifiedTarget {
+            identity,
+            linked: linked_targets,
+        };
+        if native
+            .target
+            .as_ref()
+            .is_some_and(|expected| expected != &target)
+        {
+            return Err(blocked(
+                "the verified copy destination was replaced before relocation commit",
             ));
         }
         self.database
-            .read(|connection| inactive(connection, &receipt.repository_id))
-            .map_err(db_error)
+            .read(|connection| {
+                inactive(connection, &receipt.repository_id)?;
+                consumers::assert_unchanged(connection, &receipt.repository_id, &native.consumers)
+            })
+            .map_err(db_error)?;
+        Ok(target)
     }
 
     pub(crate) fn relocate_verify(
@@ -591,15 +708,23 @@ impl Registry {
         request: api::Reference,
         caller: &Caller,
     ) -> Result<api::Receipt, ProtocolError> {
-        let stored = self.relocation_reference(&request, caller)?;
-        self.verify_relocation_target(&stored)?;
+        let mut stored = self.relocation_reference(&request, caller)?;
         if stored.receipt.state == "committed" {
             return Ok(stored.receipt);
         }
+        let mut observed = self
+            .database
+            .read(|connection| consumers::collect(connection, &stored.receipt.repository_id))
+            .map_err(db_error)?;
+        let _consumer_lease =
+            self.lease_relocation_consumers(&mut observed, Some(&stored.native.consumers))?;
+        let target = self.verify_relocation_target(&stored)?;
         let now = timestamp()?;
+        stored.native.target = Some(target);
         self.database.transaction(|connection|{
             inactive(connection,&stored.receipt.repository_id)?;
-            connection.execute("UPDATE repository_relocations SET state='verified',verified_at=$1 WHERE relocation_id=$2 AND state IN ('prepared','verified')",(&now,&request.relocation_id))?;
+            consumers::assert_unchanged(connection,&stored.receipt.repository_id,&stored.native.consumers)?;
+            connection.execute("UPDATE repository_relocations SET state='verified',verified_at=$1,native_json=$3 WHERE relocation_id=$2 AND state IN ('prepared','verified')",(&now,&request.relocation_id,encode_native(&stored.native)?))?;
             Ok(load_relocation(connection,&request.relocation_id)?.receipt)
         }).map_err(db_error)
     }
@@ -609,19 +734,50 @@ impl Registry {
         request: api::Reference,
         caller: &Caller,
     ) -> Result<api::Receipt, ProtocolError> {
-        let stored = self.relocation_reference(&request, caller)?;
-        self.verify_relocation_target(&stored)?;
+        let mut stored = self.relocation_reference(&request, caller)?;
         if stored.receipt.state == "committed" {
             return Ok(stored.receipt);
         }
-        let receipt = &stored.receipt;
+        let mut observed = self
+            .database
+            .read(|connection| consumers::collect(connection, &stored.receipt.repository_id))
+            .map_err(db_error)?;
+        let _consumer_lease =
+            self.lease_relocation_consumers(&mut observed, Some(&stored.native.consumers))?;
+        let target = self.verify_relocation_target(&stored)?;
+        stored.native.target = Some(target.clone());
         let now = timestamp()?;
+        if stored.native.copied && !crate::storage::fs::absent(Path::new(&stored.receipt.old_path))?
+        {
+            stored.native.removal_started_at = Some(now.clone());
+            self.database.transaction(|connection|{
+                inactive(connection,&stored.receipt.repository_id)?;
+                consumers::assert_unchanged(connection,&stored.receipt.repository_id,&stored.native.consumers)?;
+                validate_project_destinations(connection,&stored.receipt)?;
+                connection.execute("UPDATE repository_relocations SET state='verified',verified_at=$1,native_json=$2 WHERE relocation_id=$3 AND state IN ('prepared','verified')",(&now,encode_native(&stored.native)?,&stored.receipt.relocation_id))?;
+                Ok(())
+            }).map_err(db_error)?;
+            let proof = VerifiedCopyRemoval {
+                old: PathBuf::from(&stored.receipt.old_path),
+                new: PathBuf::from(&stored.receipt.new_path),
+                source: native_pair(&stored.native.identity.worktree_root)?,
+                target: native_pair(&target.identity.worktree_root)?,
+            };
+            proof.remove_original()?;
+            stored.native.source_removed_at = Some(timestamp()?);
+        }
+        if !crate::storage::fs::absent(Path::new(&stored.receipt.old_path))? {
+            return Err(blocked("old source removal could not be verified"));
+        }
+        let receipt = &stored.receipt;
         self.database.transaction(|connection|{
             connection.query_row("SELECT pg_advisory_xact_lock(29162844963183719)",[],|_|Ok(()))?;
             let current=load_relocation(connection,&request.relocation_id)?;
             if current.receipt.state=="committed" {return Ok(current.receipt);}
             if !matches!(current.receipt.state.as_str(),"prepared"|"verified") {return Err(blocked("relocation is no longer pending").into());}
             inactive(connection,&receipt.repository_id)?;
+            consumers::assert_unchanged(connection,&receipt.repository_id,&stored.native.consumers)?;
+            validate_project_destinations(connection,receipt)?;
             let new=Path::new(&receipt.new_path);let old=Path::new(&receipt.old_path);
             let changed=connection.execute("UPDATE worktrees SET worktree_path=$1 WHERE worktree_id=$2 AND repository_id=$3 AND worktree_path=$4",(&receipt.new_path,&receipt.worktree_id,&receipt.repository_id,&receipt.old_path))?;
             if changed!=1 {return Err(blocked("registered source path changed before relocation commit").into());}
@@ -629,10 +785,12 @@ impl Registry {
                 let changed=connection.execute("UPDATE repositories SET root_path=$1 WHERE repository_id=$2 AND root_path=$3",(&receipt.new_path,&receipt.repository_id,&receipt.old_path))?;
                 if changed!=1 {return Err(blocked("registered repository root changed before relocation commit").into());}
             }
+            rebind_native(connection,receipt,&stored.native,&target)?;
             update_project_paths(connection,receipt,&now,&caller.actor())?;
+            consumers::rebind_generation_paths(connection,receipt)?;
             crate::storage::relocate_source_paths(connection,old,new,&receipt.relocation_id,OffsetDateTime::now_utc().unix_timestamp_nanos().max(0) as u64/1_000_000)?;
             connection.execute("INSERT INTO registry_path_aliases(old_path,repository_id,worktree_id,new_path,relocation_id,created_at) VALUES($1,$2,$3,$4,$5,$6)",(&receipt.old_path,&receipt.repository_id,&receipt.worktree_id,&receipt.new_path,&receipt.relocation_id,&now))?;
-            connection.execute("UPDATE repository_relocations SET state='committed',verified_at=coalesce(verified_at,$1),committed_at=$1,checkout_revision=checkout_revision+1 WHERE relocation_id=$2",(&now,&receipt.relocation_id))?;
+            connection.execute("UPDATE repository_relocations SET state='committed',verified_at=coalesce(verified_at,$1),committed_at=$1,checkout_revision=checkout_revision+1,native_json=$3 WHERE relocation_id=$2",(&now,&receipt.relocation_id,encode_native(&stored.native)?))?;
             Ok(load_relocation(connection,&receipt.relocation_id)?.receipt)
         }).map_err(db_error)
     }
@@ -658,13 +816,7 @@ impl Registry {
             Path::new(&stored.receipt.old_path),
             Some((stored.native.owner_uid, stored.native.owner_gid)),
         )?;
-        if native_identity(&info)? != stored.native.identity
-            || relocation_fingerprint(
-                &info.worktree_root,
-                &info.repository_root,
-                &stored.native.identity,
-            )? != stored.receipt.fingerprint
-        {
+        if native_identity(&info)? != stored.native.identity {
             return Err(blocked(
                 "the original source no longer matches the prepared plan",
             ));
@@ -674,6 +826,101 @@ impl Registry {
             Ok(load_relocation(connection,&request.relocation_id)?.receipt)
         }).map_err(db_error)
     }
+}
+
+fn encode_native(native: &PreparedNative) -> Result<String, DatabaseError> {
+    serde_json::to_string(native)
+        .map_err(|_| DatabaseError::Domain(blocked("relocation proof cannot be retained")))
+}
+
+fn native_pair(value: &str) -> Result<(u64, u64), ProtocolError> {
+    let (device, inode) = value
+        .split_once(':')
+        .ok_or_else(|| blocked("stored native identity is invalid"))?;
+    Ok((
+        u64::from_str_radix(device, 16)
+            .map_err(|_| blocked("stored device identity is invalid"))?,
+        u64::from_str_radix(inode, 16).map_err(|_| blocked("stored inode identity is invalid"))?,
+    ))
+}
+
+/// Constructible only after fresh full source/copy verification and a durable
+/// removal-start. No request JSON can manufacture the proof used by this call.
+struct VerifiedCopyRemoval {
+    old: PathBuf,
+    new: PathBuf,
+    source: (u64, u64),
+    target: (u64, u64),
+}
+impl VerifiedCopyRemoval {
+    fn remove_original(self) -> Result<(), ProtocolError> {
+        crate::storage::remove_relocated_source(&self.old, self.source, &self.new, self.target)
+    }
+}
+
+fn rebind_native(
+    connection: &Connection,
+    receipt: &api::Receipt,
+    native: &PreparedNative,
+    target: &VerifiedTarget,
+) -> Result<(), DatabaseError> {
+    let changed=connection.execute("UPDATE repository_native_identities SET root_identity=$1,common_identity=$2 WHERE repository_id=$3 AND root_identity=$4 AND common_identity=$5",(&target.identity.repository_root,&target.identity.common,&receipt.repository_id,&native.identity.repository_root,&native.identity.common))?;
+    if changed != 1 {
+        return Err(blocked("registered repository native identity changed before commit").into());
+    }
+    let mut worktrees = vec![(&receipt.worktree_id, &native.identity, &target.identity)];
+    for (id, _, identity) in &native.linked {
+        let rebound = target
+            .linked
+            .iter()
+            .find(|(candidate, _, _)| candidate == id)
+            .map(|(_, _, identity)| identity)
+            .ok_or_else(|| {
+                DatabaseError::Domain(blocked("verified linked checkout identity is missing"))
+            })?;
+        worktrees.push((id, identity, rebound));
+    }
+    for (id, old, new) in worktrees {
+        let changed=connection.execute("UPDATE worktree_native_identities SET root_identity=$1,git_identity=$2 WHERE worktree_id=$3 AND root_identity=$4 AND git_identity=$5",(&new.worktree_root,&new.git,id,&old.worktree_root,&old.git))?;
+        if changed != 1 {
+            return Err(
+                blocked("registered checkout native identity changed before commit").into(),
+            );
+        }
+    }
+    Ok(())
+}
+
+fn validate_project_destinations(
+    connection: &Connection,
+    receipt: &api::Receipt,
+) -> Result<(), DatabaseError> {
+    let rows = {
+        let mut query=connection.prepare("SELECT c.project_id,c.revision,EXISTS(SELECT 1 FROM project_roots r WHERE r.project_id=c.project_id AND ($3=r.absolute_path OR strpos($3,r.absolute_path||'/')=1)) FROM project_checkouts c WHERE c.worktree_id=$1 AND c.physical_repository_id=$2 ORDER BY c.project_id")?;
+        query
+            .query_map(
+                (
+                    &receipt.worktree_id,
+                    &receipt.repository_id,
+                    &receipt.new_path,
+                ),
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, u64>(1)?,
+                        row.get::<_, bool>(2)?,
+                    ))
+                },
+            )?
+            .collect::<Result<Vec<_>, _>>()?
+    };
+    if !rows.iter().any(|(project, revision, _)| {
+        project == &receipt.project_id && *revision == receipt.checkout_revision
+    }) || rows.iter().any(|(_, _, inside)| !inside)
+    {
+        return Err(blocked("checkout revision changed or the destination is outside an owning project's declared roots").into());
+    }
+    Ok(())
 }
 
 fn update_project_paths(
@@ -754,6 +1001,7 @@ fn relocation_fingerprint(
     source: &Path,
     repository_root: &Path,
     native: &NativeIdentity,
+    version: u32,
 ) -> Result<String, ProtocolError> {
     use rustix::fs::{self as unix, AtFlags, Dir, Mode, OFlags};
     use std::fs::File;
@@ -977,6 +1225,16 @@ fn relocation_fingerprint(
         .dev();
     let mut digest = Sha256::new();
     digest.update(b"dc2-inode-preserving-relocation-v1\0");
+    if version >= 2 {
+        for directory in [&source, &git] {
+            let metadata = directory
+                .metadata()
+                .map_err(|_| blocked("relocation root metadata unavailable"))?;
+            digest.update(metadata.mode().to_be_bytes());
+            digest.update(metadata.uid().to_be_bytes());
+            digest.update(metadata.gid().to_be_bytes());
+        }
+    }
     let mut budget = Budget {
         entries: 0,
         bytes: 0,
@@ -1016,7 +1274,12 @@ fn relocation_fingerprint(
 }
 
 #[cfg(not(target_os = "linux"))]
-fn relocation_fingerprint(_: &Path, _: &Path, _: &NativeIdentity) -> Result<String, ProtocolError> {
+fn relocation_fingerprint(
+    _: &Path,
+    _: &Path,
+    _: &NativeIdentity,
+    _: u32,
+) -> Result<String, ProtocolError> {
     Err(blocked(
         "verified relocation is unavailable on this platform",
     ))

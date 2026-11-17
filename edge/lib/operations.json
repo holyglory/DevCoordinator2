@@ -1040,6 +1040,36 @@
       },
       "responseTimeoutSeconds": 10
     },
+    "project.checkout.artifact.adopt": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "reversible",
+        "idempotent": true,
+        "role": "operator",
+        "scope": "repository"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "project.checkout.artifact.detach": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "reversible",
+        "idempotent": true,
+        "role": "operator",
+        "scope": "repository"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "project.checkout.artifact.list": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "viewer",
+        "scope": "server"
+      },
+      "responseTimeoutSeconds": 10
+    },
     "project.checkout.get": {
       "passiveWait": false,
       "policy": {
@@ -1137,6 +1167,26 @@
         "idempotent": true,
         "role": "operator",
         "scope": "repository"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "project.checkout.remove.plan.cancel": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "reversible",
+        "idempotent": true,
+        "role": "operator",
+        "scope": "repository"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "project.checkout.remove.plan.status": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "viewer",
+        "scope": "server"
       },
       "responseTimeoutSeconds": 10
     },

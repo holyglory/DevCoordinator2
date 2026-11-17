@@ -4,6 +4,7 @@ use super::*;
 use crate::repository;
 use crate::storage::lifecycle::{BoundCheckout, CheckoutBinding, IntegrationProof};
 use devcoordinator2_api::project::cleanup as removal;
+use devcoordinator2_api::storage as storage_api;
 use std::path::PathBuf;
 
 const GIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
@@ -52,7 +53,7 @@ impl ProjectService {
         &self,
         request: removal::Plan,
         caller: &Caller,
-    ) -> Result<removal::RemovalPlan, ProtocolError> {
+    ) -> Result<removal::ReviewJob, ProtocolError> {
         validate_id(&request.project_id)?;
         if request.targets.is_empty() || request.targets.len() > 200 {
             return Err(invalid("select between 1 and 200 exact checkouts"));
@@ -91,8 +92,54 @@ impl ProjectService {
             }
             Ok((bindings,paths))
         }).map_err(database_error)?;
-        self.cleanup_storage()?
-            .checkout_plan(&request, bindings, paths, caller)
+        let target_count = bindings.len() as u32;
+        let review = crate::storage::lifecycle::CheckoutReviewRequest {
+            plan: request.clone(),
+            bindings,
+            paths,
+        };
+        let job = self.cleanup_storage()?.queue_checkout_review(review, caller)?;
+        Ok(review_job_from_storage(&job, &request.project_id, target_count, None))
+    }
+
+    /// The review is currently executed through the existing storage
+    /// observation engine and retained as a completed review job. Keeping the
+    /// review DTO/job boundary here lets the Console resume and poll it while
+    /// the bounded worker implementation is expanded without changing the
+    /// approval contract.
+    pub fn checkout_remove_plan_status(
+        &self,
+        request: removal::JobReference,
+        caller: &Caller,
+    ) -> Result<removal::ReviewJob, ProtocolError> {
+        let storage = self.cleanup_storage()?;
+        let job = storage.job(&request.job_id)?;
+        if job.kind != "checkout_review" {
+            return Err(invalid("job_is_not_checkout_review"));
+        }
+        self.status(api::Reference { project_id: request.project_id.clone() }, caller)?;
+        if let Some(plan_id) = job.plan_id.as_deref() {
+            let stored = storage.stored_plan(plan_id)?;
+            let data = stored
+                .checkout_removal
+                .ok_or_else(|| invalid("checkout_review_plan_missing"))?;
+            self.checkout_authorize_plan(&request.project_id, &data.public.plan_id, caller, false)?;
+            return Ok(review_job_from_storage(&job, &request.project_id, data.public.targets.len() as u32, Some(data.public)));
+        }
+        Ok(review_job_from_storage(&job, &request.project_id, 0, None))
+    }
+
+    pub fn checkout_remove_plan_cancel(
+        &self,
+        request: removal::JobReference,
+        caller: &Caller,
+    ) -> Result<removal::ReviewJob, ProtocolError> {
+        let storage = self.cleanup_storage()?;
+        let job = storage.job(&request.job_id)?;
+        if matches!(job.state, storage_api::JobState::Queued | storage_api::JobState::Running | storage_api::JobState::Cancelling) {
+            storage.cancel(storage_api::JobReference { job_id: request.job_id.clone() }, caller)?;
+        }
+        self.checkout_remove_plan_status(request, caller)
     }
 
     pub fn checkout_remove_approve(
@@ -494,6 +541,27 @@ impl ProjectService {
             }
             Ok(())
         }).map_err(database_error)
+    }
+}
+
+fn review_job_from_storage(
+    job: &storage_api::Job,
+    project_id: &str,
+    target_count: u32,
+    plan: Option<removal::RemovalPlan>,
+) -> removal::ReviewJob {
+    let done = plan.as_ref().map_or(0, |_| target_count);
+    removal::ReviewJob {
+        project_id: project_id.into(),
+        job: job.clone(),
+        progress: removal::ReviewProgress {
+            targets_total: target_count,
+            targets_done: done,
+            bytes_hashed: plan.as_ref().and_then(|p| p.estimated_reclaimable_bytes).unwrap_or(0),
+            entries_hashed: 0,
+            current_worktree_id: None,
+        },
+        plan,
     }
 }
 

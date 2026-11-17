@@ -39,6 +39,7 @@ window.DevCoordinatorProjectExplorer = (() => {
     const alive = () => !signal.aborted && !s.disposed && root.isConnected;
     const cacheKey = `${identity?.email || 'local'}:${identity?.administrator ? 'admin' : 'member'}:${projectId}`;
     const pendingRemovalKey = `dc2-project-removal:${cacheKey}`;
+    const pendingReviewKey = `dc2-project-review:${cacheKey}`;
     const selectedBranch = () => s.data?.branches.find(b => b.branch_id === s.branchId);
     const selectedCopy = () => s.data?.checkouts.find(c => c.worktree_id === s.checkoutId);
     const repository = id => s.data?.repositories.find(r => r.repository_id === id);
@@ -74,7 +75,11 @@ window.DevCoordinatorProjectExplorer = (() => {
     root.addEventListener('click', onClick);
     signal.addEventListener('abort', () => { s.disposed = true; s.observer?.disconnect(); root.removeEventListener('click', onClick); root.removeEventListener('keydown', treeKeyboard); root.removeEventListener('keydown', railEscape); root.querySelector('dialog')?.remove(); }, { once: true });
     function paintProjects() {
-      find('project-list').innerHTML = s.projects.map(p => `<a class="pe-project" href="${href(p.project_id)}"${p.project_id === s.projectId ? ' aria-current="page"' : ''}>${icon('folder')}<span>${escape(p.name)}</span></a>`).join('') || `<p class="pe-muted">${h('noProjects')}</p>`;
+      const projects = [...s.projects];
+      if (s.data?.project && !projects.some(p => p.project_id === s.data.project.project_id)) {
+        projects.unshift({ project_id: s.data.project.project_id, name: s.data.project.name });
+      }
+      find('project-list').innerHTML = projects.map(p => `<a class="pe-project" href="${href(p.project_id)}"${p.project_id === s.projectId ? ' aria-current="page"' : ''}>${icon('folder')}<span>${escape(p.name)}</span></a>`).join('') || `<p class="pe-muted">${h('noProjects')}</p>`;
       find('more-projects').hidden = !s.projectCursor;
     }
     function paintState() {
@@ -156,6 +161,20 @@ window.DevCoordinatorProjectExplorer = (() => {
         for (const copy of copies) for (const location of copy.locations || []) {
           if (location.root_kind === kind && location.relative_path && location.relative_path !== copy.relative_path) entries.push({ id: `${copy.worktree_id}:${location.relative_path}`, path: location.relative_path, copy, location });
         }
+        // Deployment generations are immutable local copies owned by the
+        // deployment lifecycle. Keep them in the same project tree so current
+        // and rollback space is visible beside source/build work.
+        if (kind === 'build') for (const copy of copies) for (const reference of copy.deployment_references || []) {
+          const deploymentKind = reference.kind === 'current_source' ? 'current' : reference.kind === 'rollback_source' ? 'rollback' : reference.kind;
+          const generation = reference.generation == null ? '' : `/${reference.generation}`;
+          entries.push({
+            id: `${copy.worktree_id}:deployment:${reference.deployment_id}:${deploymentKind}:${reference.generation ?? ''}`,
+            path: `deployments/${reference.name}/${deploymentKind}${generation}`,
+            copy,
+            deploymentRef: reference,
+            location: { root_kind: 'build', relative_path: `deployments/${reference.name}/${reference.kind}${generation}`, allocated_bytes: null },
+          });
+        }
         const tree = pathTree(entries);
         return disclosure('root-' + kind, projectRoot?.label || t('outsideRoots'), renderPaths(tree, 2, kind), { trailing: projectRoot ? `<span class="pe-root-path">${escape(projectRoot.absolute_path || projectRoot.relative_path)}</span>` : '' });
       }).join('') || `<li role="none" class="pe-empty">${h('noCopies')}</li>`;
@@ -180,9 +199,13 @@ window.DevCoordinatorProjectExplorer = (() => {
         const key = `${prefix}/${node.label}`;
         const rows = node.entries.map(entry => {
           const c = entry.copy;
+          const deployment = entry.deploymentRef;
           const linked = (c.branch_id && c.branch_id === s.branchId) || c.worktree_id === s.checkoutId;
           const actualState = c.exists === false ? c.lifecycle === 'removed' ? 'removed' : 'missing' : c.dirty === true ? 'dirty' : c.role === 'primary' ? 'primary' : c.lifecycle;
-          return `<li role="none"><button class="pe-node pe-copy${linked ? ' linked' : ''}${c.worktree_id === s.checkoutId ? ' selected' : ''}" role="treeitem" aria-level="${level}" aria-selected="${linked}" type="button" tabindex="${linked ? 0 : -1}" data-node="copy-${escape(entry.id)}" data-pe-copy="${escape(c.worktree_id)}" data-pe-related="${escape(c.branch_id || '')}">${icon('database')}<span class="pe-node-name">${escape(node.label)}<small>${escape(t('role_' + c.role))}${entry.location ? ` · ${escape(t('buildOutput'))}` : c.head && !c.branch_id ? ` · ${escape(short(c.head))}` : ''}</small></span>${status(actualState)}<span class="pe-node-space">${escape(size(entry.location ? entry.location.allocated_bytes : c.source_bytes))}</span></button></li>`;
+          const deploymentKind = deployment && (deployment.kind === 'current_source' ? 'current' : deployment.kind === 'rollback_source' ? 'rollback' : deployment.kind);
+          const displayState = deployment ? deploymentKind === 'current' ? 'current' : deploymentKind === 'rollback' ? 'rollback' : deployment.state : actualState;
+          const displayRole = deployment ? deploymentKind === 'current' ? 'current' : deploymentKind === 'rollback' ? 'rollback' : 'deployed' : t('role_' + c.role);
+          return `<li role="none"><button class="pe-node pe-copy${linked && !deployment ? ' linked' : ''}${c.worktree_id === s.checkoutId && !deployment ? ' selected' : ''}" role="treeitem" aria-level="${level}" aria-selected="${linked && !deployment}" type="button" tabindex="${linked && !deployment ? 0 : -1}" data-node="copy-${escape(entry.id)}"${deployment ? '' : ` data-pe-copy="${escape(c.worktree_id)}" data-pe-related="${escape(c.branch_id || '')}"`}>${icon('database')}<span class="pe-node-name">${escape(node.label)}<small>${escape(stateLabel(displayRole))}${entry.location && !deployment ? ` · ${escape(t('buildOutput'))}` : c.head && !c.branch_id && !deployment ? ` · ${escape(short(c.head))}` : ''}</small></span>${status(displayState)}<span class="pe-node-space">${escape(size(entry.location ? entry.location.allocated_bytes : c.source_bytes))}</span></button></li>`;
         }).join('');
         return rows + (node.children.size ? disclosure('path-' + key, node.label, renderPaths(node.children, level + 1, key), { level }) : '');
       }).join('');
@@ -202,6 +225,7 @@ window.DevCoordinatorProjectExplorer = (() => {
       panel.innerHTML = `<header>${icon(isCopy ? 'database' : 'git-branch')}<h2>${escape(title)}</h2>${status(item.lifecycle)}<div class="pe-inspector-links">${item.owner ? `<span>${h('owner')} <strong>${escape(item.owner)}</strong></span>` : ''}${taskLink ? `<a href="${taskLink}">${h('linkedOutcome')}${icon('external-link')}</a>` : ''}${pr ? `<a href="${escape(pr)}" target="_blank" rel="noopener noreferrer">PR #${escape(item.pr.number)}${icon('external-link')}</a>` : ''}</div><div class="pe-inspector-actions">${rights.edit ? `<button class="btn btn-primary" type="button" data-pe-edit>${icon('pencil')}${h('editDetails')}</button>` : ''}${rights.cleanup && (isCopy || item.worktree_ids.length) ? `<button class="btn" type="button" data-pe-remove>${icon('trash')}${h('reviewRemoval')}</button>` : ''}${!isCopy && rights.admin && item.merge_proof ? `<button class="btn" type="button" data-pe-retire>${h('retireBranch')}</button>` : ''}${isCopy && item.absolute_path ? `<button class="pe-icon-button" type="button" data-pe-copy-path aria-label="${escape(t('copyAbsolutePath'))}">${icon('copy')}</button>` : ''}</div></header>
         <dl class="pe-detail-fields"><div><dt>${h('intent')}</dt><dd>${escape(item.intent || t('notRecorded'))}</dd></div><div><dt>${h('outcome')}</dt><dd>${escape(item.outcome || t('notRecorded'))}</dd></div>${item.next_action ? `<div><dt>${h('nextAction')}</dt><dd>${escape(item.next_action)}</dd></div>` : ''}</dl>
         <details class="pe-facts"><summary>${h('localAndGitDetails')}</summary><dl><div><dt>${h('head')}</dt><dd><code>${escape(item.head || t('unknown'))}</code></dd></div><div><dt>${h('sourceSpace')}</dt><dd>${escape(size(item.source_bytes))}</dd></div><div><dt>${h('buildSpace')}</dt><dd>${escape(size(item.build_bytes))}</dd></div>${!isCopy && item.merge_proof ? `<div><dt>${h('integration')}</dt><dd>${escape(item.merge_proof.kind)} · ${escape(item.merge_proof.merged_into)}</dd></div>` : ''}</dl>${isCopy && item.protection_reasons.length ? `<p>${item.protection_reasons.map(reason => escape(reasonText(reason))).join(' · ')}</p>` : ''}</details>`;
+      if (s.removalJob && !finalJobs.has(s.removalJob.job.state)) panel.querySelector('[data-pe-remove]')?.setAttribute('disabled', '');
     }
     async function loadSelectionDetails(item, isCopy) {
       const field = isCopy ? 'worktree_id' : 'branch_id', collection = isCopy ? 'checkouts' : 'branches';
@@ -442,28 +466,81 @@ window.DevCoordinatorProjectExplorer = (() => {
 
     // The lifecycle service owns loss classification, target identity and receipts.
     async function removalPlan() {
+      const existingDialog = document.querySelector('.pe-removal-dialog[open]');
+      if (existingDialog) { existingDialog.focus(); return; }
+      if (s.reviewView?.dialog.isConnected) { s.reviewView.dialog.focus(); return; }
+      if (s.reviewView && !s.reviewView.finished) { throw new Error(t('removalReviewCancelling')); }
+      if (s.removalJob && !finalJobs.has(s.removalJob.job.state)) { find('job').scrollIntoView({ block: 'nearest' }); return; }
       const copy = selectedCopy(), branch = selectedBranch();
       const ids = copy ? [copy.worktree_id] : branch?.worktree_ids || [];
       if (!ids.length) return;
       const targets = ids.map(worktree_id => s.data.checkouts.find(c => c.worktree_id === worktree_id)).filter(Boolean);
       if (targets.length !== ids.length) { throw new Error(t('loadCopiesBeforeRemoval')); }
+      const view = openRemovalReview(targets);
+      const request = { project_id: s.projectId, expected_project_revision: s.data.revision, targets: targets.map(c => ({ worktree_id: c.worktree_id, expected_revision: c.revision })), idempotency_key: key('review') };
+      try { sessionStorage.setItem(pendingReviewKey, JSON.stringify({ project_id: s.projectId, request })); } catch {}
+      try {
+        const review = await api('project.checkout.remove.plan', request, false);
+        rememberReview(review, ids);
+        if (alive()) await watchReview(review, view);
+      } catch (error) {
+        if (error.code && error.code !== 'stale') clearPendingReview(request.idempotency_key);
+        reviewError(view, error.message);
+      }
+    }
+    function openRemovalReview(targets = []) {
       const dialog = document.createElement('dialog'); dialog.className = 'pe-removal-dialog';
       dialog.setAttribute('aria-labelledby', 'pe-removal-title');
       dialog.innerHTML = `<header><h2 id="pe-removal-title">${h('reviewRemoval')}</h2><button class="pe-icon-button" type="button" data-close aria-label="${escape(t('close'))}">${icon('x')}</button></header><ul class="pe-removal-targets">${targets.map(c => `<li><strong>${escape(c.relative_path)}</strong></li>`).join('')}</ul><p data-removal-progress role="status">${h('reviewingRemoval')}</p><p data-removal-error role="alert" hidden></p><footer><button class="btn" type="button" data-close>${h('cancel')}</button></footer>`;
       root.append(dialog);
-      const close = () => { dialog.close(); dialog.remove(); find('inspector').querySelector('[data-pe-remove]')?.focus({ preventScroll: true }); };
+      const view = { dialog, cancelled: false, finished: false, review: null };
+      const close = () => {
+        view.cancelled = true; dialog.close(); dialog.remove();
+        find('inspector').querySelector('[data-pe-remove]')?.focus({ preventScroll: true });
+        if (view.review && !finalJobs.has(view.review.job.state)) void action(async () => {
+          view.review = await api('project.checkout.remove.plan.cancel', { project_id: s.projectId, job_id: view.review.job.job_id }, false);
+        });
+      };
+      view.close = close; s.reviewView = view;
       dialog.addEventListener('click', event => { if (event.target.closest('[data-close]')) close(); });
       dialog.addEventListener('cancel', event => { event.preventDefault(); close(); });
       dialog.showModal();
+      return view;
+    }
+    function rememberReview(review, ids = []) {
+      try { sessionStorage.setItem(pendingReviewKey, JSON.stringify({ project_id: s.projectId, job_id: review.job.job_id, worktree_ids: ids })); } catch {}
+    }
+    function clearPendingReview(reference) {
       try {
-        const plan = await api('project.checkout.remove.plan', { project_id: s.projectId, expected_project_revision: s.data.revision, targets: targets.map(c => ({ worktree_id: c.worktree_id, expected_revision: c.revision })) }, false);
-        if (alive() && dialog.isConnected) showRemoval(plan, dialog, close);
-      } catch (error) {
-        if (!alive() || !dialog.isConnected) return;
-        dialog.querySelector('[data-removal-progress]').hidden = true;
-        const box = dialog.querySelector('[data-removal-error]'); box.hidden = false; box.textContent = reasonText(error.message);
-        dialog.dataset.removalResult = 'blocked';
+        const pending = JSON.parse(sessionStorage.getItem(pendingReviewKey) || 'null');
+        if (pending?.job_id === reference || pending?.request?.idempotency_key === reference) sessionStorage.removeItem(pendingReviewKey);
+      } catch {}
+    }
+    function reviewError(view, message) {
+      view.finished = true;
+      const dialog = view.dialog;
+      if (!alive() || !dialog.isConnected) return;
+      dialog.querySelector('[data-removal-progress]').hidden = true;
+      const box = dialog.querySelector('[data-removal-error]'); box.hidden = false; box.textContent = reasonText(message);
+      dialog.dataset.removalResult = 'blocked';
+    }
+    async function watchReview(review, view) {
+      view.review = review; let cursor = null;
+      if (view.cancelled && !finalJobs.has(review.job.state)) view.review = await api('project.checkout.remove.plan.cancel', { project_id: s.projectId, job_id: review.job.job_id }, false);
+      while (alive() && !finalJobs.has(view.review.job.state)) {
+        if (view.dialog.isConnected) {
+          const p = view.review.progress;
+          view.dialog.querySelector('[data-removal-progress]').textContent = t('removalReviewProgress', { done: p.targets_done, total: p.targets_total, space: size(p.bytes_hashed) });
+        }
+        const events = await api('event.wait', { cursor, filters: [{ filter_id: 'project-removal-review', categories: ['other'], kinds: ['storage.job.progress', 'storage.job.finished', 'storage.job.failed'], deadline_at: new Date(Date.now() + 15000).toISOString() }] });
+        if (!alive()) return; cursor = events.cursor;
+        view.review = await api('project.checkout.remove.plan.status', { project_id: s.projectId, job_id: review.job.job_id });
       }
+      if (!alive()) return;
+      view.finished = true; clearPendingReview(review.job.job_id);
+      if (!view.dialog.isConnected) return;
+      if (view.review.plan && ['completed', 'succeeded'].includes(view.review.job.state)) showRemoval(view.review.plan, view.dialog, view.close);
+      else reviewError(view, view.review.job.error_code || t('removalReviewIncomplete'));
     }
     function showRemoval(plan, dialog, close) {
       const approvalKey = key('approve'), removalKey = key('remove');
@@ -488,6 +565,7 @@ window.DevCoordinatorProjectExplorer = (() => {
       const box = find('job'), {job, targets} = s.removalJob; box.hidden = false;
       const finished = finalJobs.has(job.state);
       const complete = finished && targets.length > 0 && targets.every(target => target.fully_removed);
+      const remove = find('inspector').querySelector('[data-pe-remove]'); if (remove) remove.disabled = !finished;
       box.innerHTML = `<span>${h(complete ? 'removalVerified' : finished ? 'removalIncomplete' : 'removalRunning')} · ${escape(size(job.reclaimed_bytes))}</span>${!finished ? `<button class="btn btn-small" data-pe-cancel-removal>${h('cancelRemaining')}</button>` : ''}${job.error_code ? `<span>${escape(reasonText(job.error_code))}</span>` : ''}`;
     }
     async function watchRemoval(job) {
@@ -512,6 +590,17 @@ window.DevCoordinatorProjectExplorer = (() => {
     if (s.projectId) {
       if (snapshots.has(cacheKey)) { s.data = snapshots.get(cacheKey); paint(); }
       await action(loadStatus);
+      let reviewPending; try { reviewPending = JSON.parse(sessionStorage.getItem(pendingReviewKey) || 'null'); } catch {}
+      if (alive() && reviewPending?.project_id === s.projectId && (reviewPending.job_id || reviewPending.request)) {
+        const ids = reviewPending.worktree_ids || reviewPending.request?.targets.map(c => c.worktree_id) || [];
+        const view = openRemovalReview(ids.map(id => s.data?.checkouts.find(c => c.worktree_id === id)).filter(Boolean));
+        void action(async () => {
+          try {
+            const review = reviewPending.job_id ? await api('project.checkout.remove.plan.status', { project_id: s.projectId, job_id: reviewPending.job_id }) : await api('project.checkout.remove.plan', reviewPending.request, false);
+            rememberReview(review, ids); await watchReview(review, view);
+          } catch (error) { reviewError(view, error.message); }
+        });
+      }
       let pending; try { pending = JSON.parse(sessionStorage.getItem(pendingRemovalKey) || 'null'); } catch {}
       if (alive() && pending?.project_id === s.projectId && typeof pending.job_id === 'string') {
         void action(async () => { const job = await api('project.checkout.remove.job', pending); await watchRemoval(job); await loadStatus(); });

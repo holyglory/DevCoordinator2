@@ -32,6 +32,10 @@ pub struct Receipt {
     pub old_path: String,
     pub new_path: String,
     pub fingerprint: String,
+    #[serde(default)]
+    pub method: String,
+    #[serde(default)]
+    pub pending_deployments: Vec<String>,
     pub state: String,
     pub checkout_revision: u64,
     pub prepared_at: String,

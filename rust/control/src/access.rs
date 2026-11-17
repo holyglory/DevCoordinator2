@@ -927,7 +927,9 @@ impl Access {
             "project.branch.commits" | "project.branch.commits.refresh" | "project.branch.update" |
             "project.checkout.update" | "project.refresh" | "project.job.status" |
             "project.checkout.remove.plan" | "project.checkout.remove.approve" |
-            "project.checkout.remove.start" | "project.checkout.remove.job" | "project.checkout.remove.cancel"
+            "project.checkout.remove.plan.status" | "project.checkout.remove.plan.cancel" |
+            "project.checkout.remove.start" | "project.checkout.remove.job" | "project.checkout.remove.cancel" |
+            "project.checkout.artifact.list" | "project.checkout.artifact.adopt" | "project.checkout.artifact.detach"
         ) && matches!(definition.policy.role, Role::Viewer | Role::Operator) {
             return Ok(allow(principal, params.clone()));
         }

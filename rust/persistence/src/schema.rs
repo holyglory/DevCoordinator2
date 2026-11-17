@@ -4,7 +4,7 @@ use crate::{Error, Persistence, Result};
 use sha2::{Digest, Sha256};
 
 pub const LEGACY_SCHEMA_VERSION: u32 = 34;
-pub const DATABASE_SCHEMA_VERSION: u32 = 36;
+pub const DATABASE_SCHEMA_VERSION: u32 = 38;
 pub const MIGRATIONS: &[(i64, &str, &str)] = &[
     (
         1,
@@ -96,6 +96,8 @@ pub const MIGRATIONS: &[(i64, &str, &str)] = &[
         "repository_relocation",
         include_str!("../migrations/0018_repository_relocation.sql"),
     ),
+    (19,"project_checkout_artifacts",include_str!("../migrations/0019_project_checkout_artifacts.sql")),
+    (20,"relocation_consumers",include_str!("../migrations/0020_relocation_consumers.sql")),
 ];
 
 pub fn migrate(database: &Persistence) -> Result<()> {

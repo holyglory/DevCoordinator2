@@ -14,10 +14,32 @@ pub struct Target {
 #[serde(deny_unknown_fields)]
 pub struct Plan {
     pub project_id: String,
+    pub idempotency_key: String,
     pub expected_project_revision: u64,
     pub targets: Vec<Target>,
     #[serde(default)]
     pub include_absolute_paths: bool,
+}
+
+#[derive(Clone, Debug, Default, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReviewProgress {
+    pub targets_total: u32,
+    pub targets_done: u32,
+    pub bytes_hashed: u64,
+    pub entries_hashed: u64,
+    pub current_worktree_id: Option<String>,
+}
+
+#[derive(Clone, Debug, JsonSchema, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReviewJob {
+    pub project_id: String,
+    pub job: crate::storage::Job,
+    pub progress: ReviewProgress,
+    /// Present only after the entire review completes. A blocked plan remains
+    /// informational; no partial or failed review enables an effect.
+    pub plan: Option<RemovalPlan>,
 }
 
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]

@@ -767,7 +767,33 @@ fn assert_pristine(connection: &Connection) -> Result<Vec<String>> {
         }
     }
     for table in defaults.keys() {
-        let matches:bool=connection.query_row(&format!("SELECT (SELECT rows_json FROM dc2_bootstrap_defaults WHERE table_name=$1) = (SELECT jsonb_agg(to_jsonb(t) ORDER BY rowid) FROM {} t)",quoted(table)),[*table],|r|r.get(0))?;
+        // The bootstrap snapshot was captured at schema 35. Later migrations
+        // intentionally advance only meta.schema_version; every other default
+        // value remains immutable and must still match byte-for-byte.
+        let matches: bool = if *table == "meta" {
+            let current: serde_json::Value = connection.query_row(
+                "SELECT COALESCE(jsonb_agg(to_jsonb(t) ORDER BY rowid),'[]'::jsonb) FROM (SELECT key,value FROM meta WHERE key<>'schema_version') t",
+                [],
+                |r| r.get(0),
+            )?;
+            let original: serde_json::Value = connection.query_row(
+                "SELECT rows_json FROM dc2_bootstrap_defaults WHERE table_name=$1",
+                [*table],
+                |r| r.get(0),
+            )?;
+            let original = original
+                .as_array()
+                .map(|rows| {
+                    rows.iter()
+                        .filter(|row| row.get("key").and_then(serde_json::Value::as_str) != Some("schema_version"))
+                        .cloned()
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            current == serde_json::Value::Array(original)
+        } else {
+            connection.query_row(&format!("SELECT (SELECT rows_json FROM dc2_bootstrap_defaults WHERE table_name=$1) = (SELECT jsonb_agg(to_jsonb(t) ORDER BY rowid) FROM {} t)",quoted(table)),[*table],|r|r.get(0))?
+        };
         if !matches {
             return Err(Error::Migration(
                 "target defaults were modified; refusing overwrite".into(),

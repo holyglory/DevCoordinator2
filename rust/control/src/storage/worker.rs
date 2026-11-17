@@ -922,7 +922,7 @@ impl StorageService {
 
     /// Drive the real queued-to-running admission before finite fixture work.
     /// Test callers cannot bypass the production running-state intent guard.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-fixtures"))]
     pub(crate) fn execute_queued_job_for_fixture(&self, id: &str) -> Result<(), ProtocolError> {
         if self.begin_job(id)?.is_some() {
             self.execute_job(id)?;
@@ -1002,9 +1002,47 @@ impl StorageService {
                 self.finish(id, api::JobState::Completed, None)?;
             }
             "cleanup" => self.execute_cleanup(&job)?,
+            "checkout_review" => {
+                let request: super::lifecycle::CheckoutReviewRequest = parse(&raw)?;
+                let identity = (!job.actor.starts_with("uid:")).then(|| job.actor.clone());
+                let caller = Caller {
+                    via_edge: false,
+                    pid: std::process::id(),
+                    uid: 0,
+                    gid: 0,
+                    client_kind: ClientKind::Other,
+                    model: None,
+                    effort: None,
+                    client_session: None,
+                    work: None,
+                    identity,
+                };
+                let plan = match self.checkout_plan(&request.plan, request.bindings, request.paths, &caller) {
+                    Ok(plan) => plan,
+                    Err(error) => {
+                        self.finish(id, api::JobState::Failed, Some(error.message))?;
+                        return Ok(());
+                    }
+                };
+                let mut updated = self.job(id)?;
+                updated.plan_id = Some(plan.plan_id.clone());
+                self.database.transaction(|connection| {
+                    connection.execute(
+                        "UPDATE storage_jobs SET job_json=$1,request_json=request_json WHERE job_id=$2",
+                        crate::database::params![json(&updated).map_err(DatabaseError::Domain)?, id],
+                    )?;
+                    Ok(())
+                }).map_err(db_error)?;
+                self.finish(id, api::JobState::Completed, None)?;
+            }
             _ => return Err(blocked("unknown_storage_job")),
         }
         Ok(())
+    }
+
+    #[cfg(feature = "test-fixtures")]
+    pub fn execute_checkout_review_for_fixture(&self, id: &str) -> Result<(), ProtocolError> {
+        self.execute_queued_job_for_fixture(id)
     }
 
     fn execute_cleanup(&self, job: &api::Job) -> Result<(), ProtocolError> {

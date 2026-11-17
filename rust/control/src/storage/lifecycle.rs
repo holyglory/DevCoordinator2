@@ -55,6 +55,16 @@ pub(crate) struct CheckoutPlanData {
     pub targets: Vec<BoundCheckout>,
 }
 
+/// Durable review input. The request connection only enqueues this bounded
+/// identity set; the worker performs the native Git/filesystem observation and
+/// writes the reviewed plan before approval can bind to it.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub(crate) struct CheckoutReviewRequest {
+    pub plan: checkout::Plan,
+    pub bindings: Vec<CheckoutBinding>,
+    pub paths: BTreeMap<String, (String, bool)>,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct StoredApproval {
     receipt: checkout::ApprovalReceipt,
@@ -183,6 +193,20 @@ pub(crate) fn relocate_source_paths(
 }
 
 impl StorageService {
+    pub(crate) fn queue_checkout_review(
+        &self,
+        request: CheckoutReviewRequest,
+        caller: &Caller,
+    ) -> Result<api::Job, ProtocolError> {
+        self.queue(
+            "checkout_review",
+            &request.plan.idempotency_key,
+            &request,
+            caller,
+            None,
+        )
+    }
+
     pub(crate) fn checkout_plan(
         &self,
         request: &checkout::Plan,

@@ -4,6 +4,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { createHash } from 'node:crypto';
 import { explorerFormalConfig } from './project-explorer-formal.mjs';
 const execute = promisify(execFile);
 
@@ -102,10 +103,21 @@ export async function verifyProjects({page,browser,base,call,request,check,cooki
   });
   await check('Primary local edits remain protected from removal',async()=>{
     const data=await call('project.status',{project_id:id});const primary=data.checkouts.find(c=>c.role==='primary'&&c.absolute_path===fixture.primary);assert.ok(primary);
-    const result=await request('project.checkout.remove.plan',{project_id:id,expected_project_revision:data.revision,targets:[{worktree_id:primary.worktree_id,expected_revision:primary.revision}]},'operator@example.test');
+    const params={project_id:id,expected_project_revision:data.revision,targets:[{worktree_id:primary.worktree_id,expected_revision:primary.revision}],idempotency_key:'browser-primary-removal-review'};
+    const result=await request('project.checkout.remove.plan',params,'operator@example.test');
     if (result.ok) {
-      assert.equal(result.data.ready,false);
-      assert.ok([...result.data.blockers,...result.data.targets.flatMap(t=>t.blockers)].some(reason=>/primary|canonical|protected|linked_worktrees/.test(reason)),JSON.stringify(result.data));
+      let review=result.data;
+      const retry=await call('project.checkout.remove.plan',params,'operator@example.test');assert.equal(retry.job.job_id,review.job.job_id);
+      const deadline=Date.now()+30000;
+      while(['queued','running','cancelling'].includes(review.job.state)&&Date.now()<deadline){
+        await call('event.wait',{cursor:null,filters:[{filter_id:'project-browser-review',categories:['other'],kinds:['storage.job.progress','storage.job.finished','storage.job.failed'],deadline_at:new Date(Date.now()+1000).toISOString()}]},'operator@example.test');
+        review=await call('project.checkout.remove.plan.status',{project_id:id,job_id:review.job.job_id},'operator@example.test');
+      }
+      assert.ok(!['queued','running','cancelling'].includes(review.job.state),'Review job did not finish');
+      if(review.plan){
+        assert.equal(review.plan.ready,false);
+        assert.ok([...review.plan.blockers,...review.plan.targets.flatMap(t=>t.blockers)].some(reason=>/primary|canonical|protected|linked_worktrees/.test(reason)),JSON.stringify(review.plan));
+      }else{assert.equal(review.job.state,'failed');assert.match(review.job.error_code,/primary|canonical|clone_has_linked_worktrees/);}
     } else {
       assert.equal(result.error.code,'storage_blocked',JSON.stringify(result.error));
       assert.match(result.error.message,/primary|canonical|clone_has_linked_worktrees/);
@@ -136,9 +148,24 @@ export async function verifyProjects({page,browser,base,call,request,check,cooki
   if(process.env.PROJECT_EXPLORER_FORMAL_BINARY) await check('Project explorer fresh formal light and dark coverage',async()=>{
     const binary=process.env.PROJECT_EXPLORER_FORMAL_BINARY;const pw=process.env.CONSOLE_VERIFY_PLAYWRIGHT||'/opt/holyskills-validation-runtime';
     const status=await call('project.status',{project_id:id});const branchId=status.branches.find(b=>b.branch_name==='codex/clock-divider-drag').branch_id;
+    const index=await page.request.get(base);assert.equal(index.status(),200);
+    assert.ok((await index.body()).equals(await fs.readFile(path.join(root,'console/index.html'))));
+    const sourceBinding={expected:index.headers().etag,responseHeader:'etag',metaName:null};
+    assert.ok(sourceBinding.expected,'Served Console must expose its source identity');
     const failures=[];
     for(const theme of ['light','dark']) {
-      const config=explorerFormalConfig({root,base,projectId:id,branchId,theme,playwrightModuleDir:path.join(pw,'node_modules'),cookie:`dc2_session=${cookieFor('owner@example.test').value}`});
+      const config=explorerFormalConfig({root,base,projectId:id,branchId,theme,playwrightModuleDir:path.join(pw,'node_modules'),cookie:`dc2_session=${cookieFor('owner@example.test').value}`,sourceBinding});
+      const files=config.targets[0].reviewInputs.map(input=>input.path);
+      const css=await fs.readFile(path.join(root,'console/project-explorer.css'),'utf8');
+      for(const match of css.matchAll(/url\('\/(icons\/tabler\/[^']+)'\)/g))files.push(`console/${match[1]}`);
+      const observed=[];
+      for(const file of new Set(files)) {
+        if(!(await fs.stat(path.join(root,file))).isFile())continue;
+        const response=await page.request.get(new URL(file.slice('console/'.length),base).href),bytes=await response.body();
+        assert.equal(response.status(),200,file);assert.ok(bytes.equals(await fs.readFile(path.join(root,file))),file);
+        observed.push({path:file,sha256:createHash('sha256').update(bytes).digest('hex')});
+      }
+      await fs.writeFile(path.join(out,`served-ui-inputs-${theme}.json`),JSON.stringify({sourceBinding,files:observed},null,2));
       const configFile=path.join(temporary,`projects-formal-${theme}.json`);await fs.writeFile(configFile,JSON.stringify(config),{mode:0o600});
       const dir=path.join(out,`formal-${theme}`);await fs.mkdir(dir,{recursive:true});
       let result;try{result=await execute(binary,['formal-ui','verify','--config',configFile,'--json-out',path.join(dir,'report.json'),'--markdown-out',path.join(dir,'report.md'),'--screenshot-dir',path.join(dir,'screenshots')],{cwd:root,maxBuffer:1024*1024});}catch(error){await fs.writeFile(path.join(dir,'receipt.json'),error.stdout||'');await fs.writeFile(path.join(dir,'failure.log'),error.stderr||error.message);failures.push(theme);continue;}

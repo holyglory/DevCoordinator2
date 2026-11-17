@@ -9749,6 +9749,13 @@
               "can_remove": {
                 "type": "boolean"
               },
+              "deployment_references": {
+                "default": [],
+                "items": {
+                  "$ref": "#/$defs/DeploymentReference"
+                },
+                "type": "array"
+              },
               "details_omitted": {
                 "default": false,
                 "type": "boolean"
@@ -9770,6 +9777,10 @@
                   "string",
                   "null"
                 ]
+              },
+              "immutable_generation": {
+                "default": false,
+                "type": "boolean"
               },
               "intent": {
                 "type": [
@@ -9812,11 +9823,23 @@
                   "null"
                 ]
               },
+              "permissions": {
+                "$ref": "#/$defs/Permissions",
+                "default": {
+                  "admin": false,
+                  "cleanup": false,
+                  "edit": false
+                }
+              },
               "protection_reasons": {
                 "items": {
                   "type": "string"
                 },
                 "type": "array"
+              },
+              "registration_state": {
+                "default": "unregistered",
+                "type": "string"
               },
               "relative_path": {
                 "type": "string"
@@ -9881,6 +9904,38 @@
             "required": [
               "job_id",
               "worktree_id"
+            ],
+            "type": "object"
+          },
+          "DeploymentReference": {
+            "additionalProperties": false,
+            "properties": {
+              "deployment_id": {
+                "type": "string"
+              },
+              "generation": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "kind": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "state": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "deployment_id",
+              "name",
+              "kind",
+              "state"
             ],
             "type": "object"
           },
@@ -10856,6 +10911,13 @@
               "can_remove": {
                 "type": "boolean"
               },
+              "deployment_references": {
+                "default": [],
+                "items": {
+                  "$ref": "#/$defs/DeploymentReference"
+                },
+                "type": "array"
+              },
               "details_omitted": {
                 "default": false,
                 "type": "boolean"
@@ -10877,6 +10939,10 @@
                   "string",
                   "null"
                 ]
+              },
+              "immutable_generation": {
+                "default": false,
+                "type": "boolean"
               },
               "intent": {
                 "type": [
@@ -10919,11 +10985,23 @@
                   "null"
                 ]
               },
+              "permissions": {
+                "$ref": "#/$defs/Permissions",
+                "default": {
+                  "admin": false,
+                  "cleanup": false,
+                  "edit": false
+                }
+              },
               "protection_reasons": {
                 "items": {
                   "type": "string"
                 },
                 "type": "array"
+              },
+              "registration_state": {
+                "default": "unregistered",
+                "type": "string"
               },
               "relative_path": {
                 "type": "string"
@@ -10988,6 +11066,38 @@
             "required": [
               "job_id",
               "worktree_id"
+            ],
+            "type": "object"
+          },
+          "DeploymentReference": {
+            "additionalProperties": false,
+            "properties": {
+              "deployment_id": {
+                "type": "string"
+              },
+              "generation": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "kind": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "state": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "deployment_id",
+              "name",
+              "kind",
+              "state"
             ],
             "type": "object"
           },
@@ -12234,6 +12344,13 @@
               "can_remove": {
                 "type": "boolean"
               },
+              "deployment_references": {
+                "default": [],
+                "items": {
+                  "$ref": "#/$defs/DeploymentReference"
+                },
+                "type": "array"
+              },
               "details_omitted": {
                 "default": false,
                 "type": "boolean"
@@ -12255,6 +12372,10 @@
                   "string",
                   "null"
                 ]
+              },
+              "immutable_generation": {
+                "default": false,
+                "type": "boolean"
               },
               "intent": {
                 "type": [
@@ -12297,11 +12418,23 @@
                   "null"
                 ]
               },
+              "permissions": {
+                "$ref": "#/$defs/Permissions",
+                "default": {
+                  "admin": false,
+                  "cleanup": false,
+                  "edit": false
+                }
+              },
               "protection_reasons": {
                 "items": {
                   "type": "string"
                 },
                 "type": "array"
+              },
+              "registration_state": {
+                "default": "unregistered",
+                "type": "string"
               },
               "relative_path": {
                 "type": "string"
@@ -12353,6 +12486,38 @@
             ],
             "type": "object"
           },
+          "DeploymentReference": {
+            "additionalProperties": false,
+            "properties": {
+              "deployment_id": {
+                "type": "string"
+              },
+              "generation": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "kind": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "state": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "deployment_id",
+              "name",
+              "kind",
+              "state"
+            ],
+            "type": "object"
+          },
           "Location": {
             "additionalProperties": false,
             "properties": {
@@ -12384,6 +12549,26 @@
               "kind",
               "relative_path",
               "root_kind"
+            ],
+            "type": "object"
+          },
+          "Permissions": {
+            "additionalProperties": false,
+            "properties": {
+              "admin": {
+                "type": "boolean"
+              },
+              "cleanup": {
+                "type": "boolean"
+              },
+              "edit": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "edit",
+              "cleanup",
+              "admin"
             ],
             "type": "object"
           }
@@ -12479,6 +12664,38 @@
       "name": "project.checkout.get",
       "outputSchema": {
         "$defs": {
+          "DeploymentReference": {
+            "additionalProperties": false,
+            "properties": {
+              "deployment_id": {
+                "type": "string"
+              },
+              "generation": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "kind": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "state": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "deployment_id",
+              "name",
+              "kind",
+              "state"
+            ],
+            "type": "object"
+          },
           "Location": {
             "additionalProperties": false,
             "properties": {
@@ -12510,6 +12727,26 @@
               "kind",
               "relative_path",
               "root_kind"
+            ],
+            "type": "object"
+          },
+          "Permissions": {
+            "additionalProperties": false,
+            "properties": {
+              "admin": {
+                "type": "boolean"
+              },
+              "cleanup": {
+                "type": "boolean"
+              },
+              "edit": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "edit",
+              "cleanup",
+              "admin"
             ],
             "type": "object"
           }
@@ -12552,6 +12789,13 @@
           "can_remove": {
             "type": "boolean"
           },
+          "deployment_references": {
+            "default": [],
+            "items": {
+              "$ref": "#/$defs/DeploymentReference"
+            },
+            "type": "array"
+          },
           "details_omitted": {
             "default": false,
             "type": "boolean"
@@ -12573,6 +12817,10 @@
               "string",
               "null"
             ]
+          },
+          "immutable_generation": {
+            "default": false,
+            "type": "boolean"
           },
           "intent": {
             "type": [
@@ -12615,11 +12863,23 @@
               "null"
             ]
           },
+          "permissions": {
+            "$ref": "#/$defs/Permissions",
+            "default": {
+              "admin": false,
+              "cleanup": false,
+              "edit": false
+            }
+          },
           "protection_reasons": {
             "items": {
               "type": "string"
             },
             "type": "array"
+          },
+          "registration_state": {
+            "default": "unregistered",
+            "type": "string"
           },
           "relative_path": {
             "type": "string"
@@ -14011,6 +14271,38 @@
       "name": "project.checkout.update",
       "outputSchema": {
         "$defs": {
+          "DeploymentReference": {
+            "additionalProperties": false,
+            "properties": {
+              "deployment_id": {
+                "type": "string"
+              },
+              "generation": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "kind": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "state": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "deployment_id",
+              "name",
+              "kind",
+              "state"
+            ],
+            "type": "object"
+          },
           "Location": {
             "additionalProperties": false,
             "properties": {
@@ -14042,6 +14334,26 @@
               "kind",
               "relative_path",
               "root_kind"
+            ],
+            "type": "object"
+          },
+          "Permissions": {
+            "additionalProperties": false,
+            "properties": {
+              "admin": {
+                "type": "boolean"
+              },
+              "cleanup": {
+                "type": "boolean"
+              },
+              "edit": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "edit",
+              "cleanup",
+              "admin"
             ],
             "type": "object"
           }
@@ -14084,6 +14396,13 @@
           "can_remove": {
             "type": "boolean"
           },
+          "deployment_references": {
+            "default": [],
+            "items": {
+              "$ref": "#/$defs/DeploymentReference"
+            },
+            "type": "array"
+          },
           "details_omitted": {
             "default": false,
             "type": "boolean"
@@ -14105,6 +14424,10 @@
               "string",
               "null"
             ]
+          },
+          "immutable_generation": {
+            "default": false,
+            "type": "boolean"
           },
           "intent": {
             "type": [
@@ -14147,11 +14470,23 @@
               "null"
             ]
           },
+          "permissions": {
+            "$ref": "#/$defs/Permissions",
+            "default": {
+              "admin": false,
+              "cleanup": false,
+              "edit": false
+            }
+          },
           "protection_reasons": {
             "items": {
               "type": "string"
             },
             "type": "array"
+          },
+          "registration_state": {
+            "default": "unregistered",
+            "type": "string"
           },
           "relative_path": {
             "type": "string"
@@ -14586,7 +14921,7 @@
           }
         ]
       },
-      "description": "Inspect exact checkouts and retain a reviewed cleanup plan.",
+      "description": "Inspect exact checkouts and queue a reviewed cleanup plan.",
       "inputSchema": {
         "$defs": {
           "Target": {
@@ -14616,6 +14951,9 @@
             "minimum": 0,
             "type": "integer"
           },
+          "idempotency_key": {
+            "type": "string"
+          },
           "include_absolute_paths": {
             "default": false,
             "type": "boolean"
@@ -14632,6 +14970,7 @@
         },
         "required": [
           "project_id",
+          "idempotency_key",
           "expected_project_revision",
           "targets"
         ],
@@ -14670,6 +15009,9 @@
                 "minimum": 0,
                 "type": "integer"
               },
+              "idempotency_key": {
+                "type": "string"
+              },
               "include_absolute_paths": {
                 "default": false,
                 "type": "boolean"
@@ -14686,6 +15028,7 @@
             },
             "required": [
               "project_id",
+              "idempotency_key",
               "expected_project_revision",
               "targets"
             ],
@@ -14845,79 +15188,1373 @@
               "task_stays_open"
             ],
             "type": "object"
+          },
+          "ItemReceipt": {
+            "additionalProperties": false,
+            "properties": {
+              "artifact_id": {
+                "type": "string"
+              },
+              "code": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "measured_bytes_before": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "removed_at_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "space_change": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/SpaceChange"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "status": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "artifact_id",
+              "status"
+            ],
+            "type": "object"
+          },
+          "Job": {
+            "additionalProperties": false,
+            "properties": {
+              "actor": {
+                "type": "string"
+              },
+              "completed_at_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "created_at_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "error_code": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "job_id": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string"
+              },
+              "plan_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "receipts": {
+                "items": {
+                  "$ref": "#/$defs/ItemReceipt"
+                },
+                "type": "array"
+              },
+              "reclaimed_bytes": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "started_at_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "state": {
+                "$ref": "#/$defs/JobState"
+              },
+              "unmeasured_items": {
+                "default": 0,
+                "description": "Items whose removal was verified but whose space change was unavailable.",
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "job_id",
+              "kind",
+              "state",
+              "created_at_ms",
+              "actor",
+              "receipts",
+              "reclaimed_bytes"
+            ],
+            "type": "object"
+          },
+          "JobState": {
+            "enum": [
+              "queued",
+              "running",
+              "cancelling",
+              "cancelled",
+              "completed",
+              "partial",
+              "failed"
+            ],
+            "type": "string"
+          },
+          "RemovalPlan": {
+            "additionalProperties": false,
+            "properties": {
+              "blockers": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "created_at_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "effect": {
+                "type": "string"
+              },
+              "estimated_reclaimable_bytes": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "expires_at_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "fingerprint": {
+                "type": "string"
+              },
+              "plan_id": {
+                "type": "string"
+              },
+              "project_id": {
+                "type": "string"
+              },
+              "project_revision": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "ready": {
+                "type": "boolean"
+              },
+              "requires_approval": {
+                "type": "boolean"
+              },
+              "targets": {
+                "items": {
+                  "$ref": "#/$defs/CheckoutEffect"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "project_id",
+              "project_revision",
+              "plan_id",
+              "fingerprint",
+              "created_at_ms",
+              "expires_at_ms",
+              "targets",
+              "blockers",
+              "requires_approval",
+              "ready",
+              "effect"
+            ],
+            "type": "object"
+          },
+          "ReviewProgress": {
+            "additionalProperties": false,
+            "properties": {
+              "bytes_hashed": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "current_worktree_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "entries_hashed": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "targets_done": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "targets_total": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "targets_total",
+              "targets_done",
+              "bytes_hashed",
+              "entries_hashed"
+            ],
+            "type": "object"
+          },
+          "SpaceChange": {
+            "additionalProperties": false,
+            "properties": {
+              "available_after": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "available_before": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "filesystem_id": {
+                "type": "string"
+              },
+              "measured_at_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "filesystem_id",
+              "available_before",
+              "available_after",
+              "measured_at_ms"
+            ],
+            "type": "object"
           }
         },
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "additionalProperties": false,
         "properties": {
-          "blockers": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
+          "job": {
+            "$ref": "#/$defs/Job"
           },
-          "created_at_ms": {
-            "format": "uint64",
-            "minimum": 0,
-            "type": "integer"
+          "plan": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/RemovalPlan"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Present only after the entire review completes. A blocked plan remains\ninformational; no partial or failed review enables an effect."
           },
-          "effect": {
-            "type": "string"
-          },
-          "estimated_reclaimable_bytes": {
-            "format": "uint64",
-            "minimum": 0,
-            "type": [
-              "integer",
-              "null"
-            ]
-          },
-          "expires_at_ms": {
-            "format": "uint64",
-            "minimum": 0,
-            "type": "integer"
-          },
-          "fingerprint": {
-            "type": "string"
-          },
-          "plan_id": {
-            "type": "string"
+          "progress": {
+            "$ref": "#/$defs/ReviewProgress"
           },
           "project_id": {
             "type": "string"
-          },
-          "project_revision": {
-            "format": "uint64",
-            "minimum": 0,
-            "type": "integer"
-          },
-          "ready": {
-            "type": "boolean"
-          },
-          "requires_approval": {
-            "type": "boolean"
-          },
-          "targets": {
-            "items": {
-              "$ref": "#/$defs/CheckoutEffect"
-            },
-            "type": "array"
           }
         },
         "required": [
           "project_id",
-          "project_revision",
-          "plan_id",
-          "fingerprint",
-          "created_at_ms",
-          "expires_at_ms",
-          "targets",
-          "blockers",
-          "requires_approval",
-          "ready",
-          "effect"
+          "job",
+          "progress"
         ],
-        "title": "RemovalPlan",
+        "title": "ReviewJob",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "reversible",
+        "idempotent": true,
+        "role": "operator",
+        "scope": "repository"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "call project.checkout.remove.plan.status"
+          }
+        ]
+      },
+      "description": "Read progress for one asynchronous checkout review.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "job_id": {
+            "type": "string"
+          },
+          "project_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_id",
+          "job_id"
+        ],
+        "title": "JobReference",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "job_id": {
+                "type": "string"
+              },
+              "project_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "project_id",
+              "job_id"
+            ],
+            "title": "JobReference",
+            "type": "object"
+          },
+          "name": "project_checkout_remove_plan_status",
+          "transform": "identity"
+        }
+      ],
+      "name": "project.checkout.remove.plan.status",
+      "outputSchema": {
+        "$defs": {
+          "CheckoutEffect": {
+            "additionalProperties": false,
+            "properties": {
+              "active_uses": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "blockers": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "branch_name": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "content_fingerprint": {
+                "type": "string"
+              },
+              "dirty": {
+                "type": "boolean"
+              },
+              "estimated_reclaimable_bytes": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "head": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "ignored_files": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "independent_clone": {
+                "type": "boolean"
+              },
+              "integration_merge_commit": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "local_refs": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "nested_repositories": {
+                "type": "boolean"
+              },
+              "path": {
+                "description": "Relative to the project's source/build roots unless an administrator\nexplicitly requested absolute paths.",
+                "type": "string"
+              },
+              "path_is_absolute": {
+                "type": "boolean"
+              },
+              "possible_data_loss": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "protections": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "remote_recoverable": {
+                "type": "boolean"
+              },
+              "repository_id": {
+                "type": "string"
+              },
+              "revision": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "stash_entries": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "task_stays_open": {
+                "description": "Removing a parked or unfinished checkout does not finish its task.",
+                "type": "boolean"
+              },
+              "unpublished_refs": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "untracked_files": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "upstream": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "worktree_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "worktree_id",
+              "repository_id",
+              "revision",
+              "path",
+              "path_is_absolute",
+              "independent_clone",
+              "dirty",
+              "untracked_files",
+              "ignored_files",
+              "stash_entries",
+              "local_refs",
+              "unpublished_refs",
+              "nested_repositories",
+              "remote_recoverable",
+              "active_uses",
+              "protections",
+              "possible_data_loss",
+              "blockers",
+              "content_fingerprint",
+              "task_stays_open"
+            ],
+            "type": "object"
+          },
+          "ItemReceipt": {
+            "additionalProperties": false,
+            "properties": {
+              "artifact_id": {
+                "type": "string"
+              },
+              "code": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "measured_bytes_before": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "removed_at_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "space_change": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/SpaceChange"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "status": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "artifact_id",
+              "status"
+            ],
+            "type": "object"
+          },
+          "Job": {
+            "additionalProperties": false,
+            "properties": {
+              "actor": {
+                "type": "string"
+              },
+              "completed_at_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "created_at_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "error_code": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "job_id": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string"
+              },
+              "plan_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "receipts": {
+                "items": {
+                  "$ref": "#/$defs/ItemReceipt"
+                },
+                "type": "array"
+              },
+              "reclaimed_bytes": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "started_at_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "state": {
+                "$ref": "#/$defs/JobState"
+              },
+              "unmeasured_items": {
+                "default": 0,
+                "description": "Items whose removal was verified but whose space change was unavailable.",
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "job_id",
+              "kind",
+              "state",
+              "created_at_ms",
+              "actor",
+              "receipts",
+              "reclaimed_bytes"
+            ],
+            "type": "object"
+          },
+          "JobState": {
+            "enum": [
+              "queued",
+              "running",
+              "cancelling",
+              "cancelled",
+              "completed",
+              "partial",
+              "failed"
+            ],
+            "type": "string"
+          },
+          "RemovalPlan": {
+            "additionalProperties": false,
+            "properties": {
+              "blockers": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "created_at_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "effect": {
+                "type": "string"
+              },
+              "estimated_reclaimable_bytes": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "expires_at_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "fingerprint": {
+                "type": "string"
+              },
+              "plan_id": {
+                "type": "string"
+              },
+              "project_id": {
+                "type": "string"
+              },
+              "project_revision": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "ready": {
+                "type": "boolean"
+              },
+              "requires_approval": {
+                "type": "boolean"
+              },
+              "targets": {
+                "items": {
+                  "$ref": "#/$defs/CheckoutEffect"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "project_id",
+              "project_revision",
+              "plan_id",
+              "fingerprint",
+              "created_at_ms",
+              "expires_at_ms",
+              "targets",
+              "blockers",
+              "requires_approval",
+              "ready",
+              "effect"
+            ],
+            "type": "object"
+          },
+          "ReviewProgress": {
+            "additionalProperties": false,
+            "properties": {
+              "bytes_hashed": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "current_worktree_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "entries_hashed": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "targets_done": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "targets_total": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "targets_total",
+              "targets_done",
+              "bytes_hashed",
+              "entries_hashed"
+            ],
+            "type": "object"
+          },
+          "SpaceChange": {
+            "additionalProperties": false,
+            "properties": {
+              "available_after": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "available_before": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "filesystem_id": {
+                "type": "string"
+              },
+              "measured_at_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "filesystem_id",
+              "available_before",
+              "available_after",
+              "measured_at_ms"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "job": {
+            "$ref": "#/$defs/Job"
+          },
+          "plan": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/RemovalPlan"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Present only after the entire review completes. A blocked plan remains\ninformational; no partial or failed review enables an effect."
+          },
+          "progress": {
+            "$ref": "#/$defs/ReviewProgress"
+          },
+          "project_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_id",
+          "job",
+          "progress"
+        ],
+        "title": "ReviewJob",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "viewer",
+        "scope": "server"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "call project.checkout.remove.plan.cancel"
+          }
+        ]
+      },
+      "description": "Cancel one asynchronous checkout review without deleting files.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "job_id": {
+            "type": "string"
+          },
+          "project_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_id",
+          "job_id"
+        ],
+        "title": "JobReference",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "job_id": {
+                "type": "string"
+              },
+              "project_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "project_id",
+              "job_id"
+            ],
+            "title": "JobReference",
+            "type": "object"
+          },
+          "name": "project_checkout_remove_plan_cancel",
+          "transform": "identity"
+        }
+      ],
+      "name": "project.checkout.remove.plan.cancel",
+      "outputSchema": {
+        "$defs": {
+          "CheckoutEffect": {
+            "additionalProperties": false,
+            "properties": {
+              "active_uses": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "blockers": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "branch_name": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "content_fingerprint": {
+                "type": "string"
+              },
+              "dirty": {
+                "type": "boolean"
+              },
+              "estimated_reclaimable_bytes": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "head": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "ignored_files": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "independent_clone": {
+                "type": "boolean"
+              },
+              "integration_merge_commit": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "local_refs": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "nested_repositories": {
+                "type": "boolean"
+              },
+              "path": {
+                "description": "Relative to the project's source/build roots unless an administrator\nexplicitly requested absolute paths.",
+                "type": "string"
+              },
+              "path_is_absolute": {
+                "type": "boolean"
+              },
+              "possible_data_loss": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "protections": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "remote_recoverable": {
+                "type": "boolean"
+              },
+              "repository_id": {
+                "type": "string"
+              },
+              "revision": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "stash_entries": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "task_stays_open": {
+                "description": "Removing a parked or unfinished checkout does not finish its task.",
+                "type": "boolean"
+              },
+              "unpublished_refs": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "untracked_files": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "upstream": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "worktree_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "worktree_id",
+              "repository_id",
+              "revision",
+              "path",
+              "path_is_absolute",
+              "independent_clone",
+              "dirty",
+              "untracked_files",
+              "ignored_files",
+              "stash_entries",
+              "local_refs",
+              "unpublished_refs",
+              "nested_repositories",
+              "remote_recoverable",
+              "active_uses",
+              "protections",
+              "possible_data_loss",
+              "blockers",
+              "content_fingerprint",
+              "task_stays_open"
+            ],
+            "type": "object"
+          },
+          "ItemReceipt": {
+            "additionalProperties": false,
+            "properties": {
+              "artifact_id": {
+                "type": "string"
+              },
+              "code": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "measured_bytes_before": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "removed_at_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "space_change": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/SpaceChange"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "status": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "artifact_id",
+              "status"
+            ],
+            "type": "object"
+          },
+          "Job": {
+            "additionalProperties": false,
+            "properties": {
+              "actor": {
+                "type": "string"
+              },
+              "completed_at_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "created_at_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "error_code": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "job_id": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string"
+              },
+              "plan_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "receipts": {
+                "items": {
+                  "$ref": "#/$defs/ItemReceipt"
+                },
+                "type": "array"
+              },
+              "reclaimed_bytes": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "started_at_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "state": {
+                "$ref": "#/$defs/JobState"
+              },
+              "unmeasured_items": {
+                "default": 0,
+                "description": "Items whose removal was verified but whose space change was unavailable.",
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "job_id",
+              "kind",
+              "state",
+              "created_at_ms",
+              "actor",
+              "receipts",
+              "reclaimed_bytes"
+            ],
+            "type": "object"
+          },
+          "JobState": {
+            "enum": [
+              "queued",
+              "running",
+              "cancelling",
+              "cancelled",
+              "completed",
+              "partial",
+              "failed"
+            ],
+            "type": "string"
+          },
+          "RemovalPlan": {
+            "additionalProperties": false,
+            "properties": {
+              "blockers": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "created_at_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "effect": {
+                "type": "string"
+              },
+              "estimated_reclaimable_bytes": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "expires_at_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "fingerprint": {
+                "type": "string"
+              },
+              "plan_id": {
+                "type": "string"
+              },
+              "project_id": {
+                "type": "string"
+              },
+              "project_revision": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "ready": {
+                "type": "boolean"
+              },
+              "requires_approval": {
+                "type": "boolean"
+              },
+              "targets": {
+                "items": {
+                  "$ref": "#/$defs/CheckoutEffect"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "project_id",
+              "project_revision",
+              "plan_id",
+              "fingerprint",
+              "created_at_ms",
+              "expires_at_ms",
+              "targets",
+              "blockers",
+              "requires_approval",
+              "ready",
+              "effect"
+            ],
+            "type": "object"
+          },
+          "ReviewProgress": {
+            "additionalProperties": false,
+            "properties": {
+              "bytes_hashed": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "current_worktree_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "entries_hashed": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "targets_done": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "targets_total": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "targets_total",
+              "targets_done",
+              "bytes_hashed",
+              "entries_hashed"
+            ],
+            "type": "object"
+          },
+          "SpaceChange": {
+            "additionalProperties": false,
+            "properties": {
+              "available_after": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "available_before": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "filesystem_id": {
+                "type": "string"
+              },
+              "measured_at_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "filesystem_id",
+              "available_before",
+              "available_after",
+              "measured_at_ms"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "job": {
+            "$ref": "#/$defs/Job"
+          },
+          "plan": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/RemovalPlan"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Present only after the entire review completes. A blocked plan remains\ninformational; no partial or failed review enables an effect."
+          },
+          "progress": {
+            "$ref": "#/$defs/ReviewProgress"
+          },
+          "project_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_id",
+          "job",
+          "progress"
+        ],
+        "title": "ReviewJob",
         "type": "object"
       },
       "policy": {
@@ -16013,6 +17650,689 @@
         "routes": [
           {
             "dispatch": "protocol",
+            "route": "call project.checkout.artifact.list"
+          }
+        ]
+      },
+      "description": "List explicit build and dependency artifact ownership links for one checkout.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "cursor": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "limit": {
+            "default": 50,
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "project_id": {
+            "type": "string"
+          },
+          "worktree_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_id",
+          "worktree_id"
+        ],
+        "title": "List",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "cursor": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "limit": {
+                "default": 50,
+                "format": "uint16",
+                "maximum": 65535,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "project_id": {
+                "type": "string"
+              },
+              "worktree_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "project_id",
+              "worktree_id"
+            ],
+            "title": "List",
+            "type": "object"
+          },
+          "name": "project_checkout_artifact_list",
+          "transform": "identity"
+        }
+      ],
+      "name": "project.checkout.artifact.list",
+      "outputSchema": {
+        "$defs": {
+          "Association": {
+            "additionalProperties": false,
+            "properties": {
+              "active": {
+                "type": "boolean"
+              },
+              "artifact_id": {
+                "type": "string"
+              },
+              "artifact_revision": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "association_id": {
+                "type": "string"
+              },
+              "created_at": {
+                "type": "string"
+              },
+              "has_other_owners": {
+                "type": "boolean"
+              },
+              "location": {
+                "$ref": "#/$defs/Location"
+              },
+              "other_checkout_count": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "other_checkout_ids": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "ownership": {
+                "type": "string"
+              },
+              "project_id": {
+                "type": "string"
+              },
+              "provenance": {
+                "type": "string"
+              },
+              "revision": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "updated_at": {
+                "type": "string"
+              },
+              "worktree_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "association_id",
+              "project_id",
+              "worktree_id",
+              "artifact_id",
+              "revision",
+              "artifact_revision",
+              "ownership",
+              "active",
+              "other_checkout_ids",
+              "other_checkout_count",
+              "has_other_owners",
+              "location",
+              "provenance",
+              "created_at",
+              "updated_at"
+            ],
+            "type": "object"
+          },
+          "Location": {
+            "additionalProperties": false,
+            "properties": {
+              "allocated_bytes": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "artifact_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "kind": {
+                "type": "string"
+              },
+              "relative_path": {
+                "type": "string"
+              },
+              "root_kind": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "relative_path",
+              "root_kind"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "associations": {
+            "items": {
+              "$ref": "#/$defs/Association"
+            },
+            "type": "array"
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "associations"
+        ],
+        "title": "Page",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "viewer",
+        "scope": "server"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "call project.checkout.artifact.adopt"
+          }
+        ]
+      },
+      "description": "Bind one observed build artifact to a checkout with revision and identity proof.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "artifact_id": {
+            "type": "string"
+          },
+          "expected_artifact_revision": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "expected_checkout_revision": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "expected_revision": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "idempotency_key": {
+            "type": "string"
+          },
+          "ownership": {
+            "type": "string"
+          },
+          "project_id": {
+            "type": "string"
+          },
+          "worktree_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_id",
+          "worktree_id",
+          "artifact_id",
+          "expected_checkout_revision",
+          "expected_artifact_revision",
+          "expected_revision",
+          "ownership",
+          "idempotency_key"
+        ],
+        "title": "Adopt",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "artifact_id": {
+                "type": "string"
+              },
+              "expected_artifact_revision": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "expected_checkout_revision": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "expected_revision": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "idempotency_key": {
+                "type": "string"
+              },
+              "ownership": {
+                "type": "string"
+              },
+              "project_id": {
+                "type": "string"
+              },
+              "worktree_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "project_id",
+              "worktree_id",
+              "artifact_id",
+              "expected_checkout_revision",
+              "expected_artifact_revision",
+              "expected_revision",
+              "ownership",
+              "idempotency_key"
+            ],
+            "title": "Adopt",
+            "type": "object"
+          },
+          "name": "project_checkout_artifact_adopt",
+          "transform": "identity"
+        }
+      ],
+      "name": "project.checkout.artifact.adopt",
+      "outputSchema": {
+        "$defs": {
+          "Location": {
+            "additionalProperties": false,
+            "properties": {
+              "allocated_bytes": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "artifact_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "kind": {
+                "type": "string"
+              },
+              "relative_path": {
+                "type": "string"
+              },
+              "root_kind": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "relative_path",
+              "root_kind"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "active": {
+            "type": "boolean"
+          },
+          "artifact_id": {
+            "type": "string"
+          },
+          "artifact_revision": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "association_id": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "has_other_owners": {
+            "type": "boolean"
+          },
+          "location": {
+            "$ref": "#/$defs/Location"
+          },
+          "other_checkout_count": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "other_checkout_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "ownership": {
+            "type": "string"
+          },
+          "project_id": {
+            "type": "string"
+          },
+          "provenance": {
+            "type": "string"
+          },
+          "revision": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "updated_at": {
+            "type": "string"
+          },
+          "worktree_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "association_id",
+          "project_id",
+          "worktree_id",
+          "artifact_id",
+          "revision",
+          "artifact_revision",
+          "ownership",
+          "active",
+          "other_checkout_ids",
+          "other_checkout_count",
+          "has_other_owners",
+          "location",
+          "provenance",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "Association",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "reversible",
+        "idempotent": true,
+        "role": "operator",
+        "scope": "repository"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "call project.checkout.artifact.detach"
+          }
+        ]
+      },
+      "description": "Detach one explicit checkout artifact ownership link.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "association_id": {
+            "type": "string"
+          },
+          "expected_revision": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "idempotency_key": {
+            "type": "string"
+          },
+          "project_id": {
+            "type": "string"
+          },
+          "worktree_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_id",
+          "worktree_id",
+          "association_id",
+          "expected_revision",
+          "idempotency_key"
+        ],
+        "title": "Detach",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "association_id": {
+                "type": "string"
+              },
+              "expected_revision": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "idempotency_key": {
+                "type": "string"
+              },
+              "project_id": {
+                "type": "string"
+              },
+              "worktree_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "project_id",
+              "worktree_id",
+              "association_id",
+              "expected_revision",
+              "idempotency_key"
+            ],
+            "title": "Detach",
+            "type": "object"
+          },
+          "name": "project_checkout_artifact_detach",
+          "transform": "identity"
+        }
+      ],
+      "name": "project.checkout.artifact.detach",
+      "outputSchema": {
+        "$defs": {
+          "Location": {
+            "additionalProperties": false,
+            "properties": {
+              "allocated_bytes": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "artifact_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "kind": {
+                "type": "string"
+              },
+              "relative_path": {
+                "type": "string"
+              },
+              "root_kind": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "relative_path",
+              "root_kind"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "active": {
+            "type": "boolean"
+          },
+          "artifact_id": {
+            "type": "string"
+          },
+          "artifact_revision": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "association_id": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "has_other_owners": {
+            "type": "boolean"
+          },
+          "location": {
+            "$ref": "#/$defs/Location"
+          },
+          "other_checkout_count": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "other_checkout_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "ownership": {
+            "type": "string"
+          },
+          "project_id": {
+            "type": "string"
+          },
+          "provenance": {
+            "type": "string"
+          },
+          "revision": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "updated_at": {
+            "type": "string"
+          },
+          "worktree_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "association_id",
+          "project_id",
+          "worktree_id",
+          "artifact_id",
+          "revision",
+          "artifact_revision",
+          "ownership",
+          "active",
+          "other_checkout_ids",
+          "other_checkout_count",
+          "has_other_owners",
+          "location",
+          "provenance",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "Association",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "reversible",
+        "idempotent": true,
+        "role": "operator",
+        "scope": "repository"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
             "route": "call project.checkout.relocate.prepare"
           }
         ]
@@ -16126,11 +18446,22 @@
           "fingerprint": {
             "type": "string"
           },
+          "method": {
+            "default": "",
+            "type": "string"
+          },
           "new_path": {
             "type": "string"
           },
           "old_path": {
             "type": "string"
+          },
+          "pending_deployments": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
           },
           "prepared_at": {
             "type": "string"
@@ -16257,11 +18588,22 @@
           "fingerprint": {
             "type": "string"
           },
+          "method": {
+            "default": "",
+            "type": "string"
+          },
           "new_path": {
             "type": "string"
           },
           "old_path": {
             "type": "string"
+          },
+          "pending_deployments": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
           },
           "prepared_at": {
             "type": "string"
@@ -16388,11 +18730,22 @@
           "fingerprint": {
             "type": "string"
           },
+          "method": {
+            "default": "",
+            "type": "string"
+          },
           "new_path": {
             "type": "string"
           },
           "old_path": {
             "type": "string"
+          },
+          "pending_deployments": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
           },
           "prepared_at": {
             "type": "string"
@@ -16519,11 +18872,22 @@
           "fingerprint": {
             "type": "string"
           },
+          "method": {
+            "default": "",
+            "type": "string"
+          },
           "new_path": {
             "type": "string"
           },
           "old_path": {
             "type": "string"
+          },
+          "pending_deployments": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
           },
           "prepared_at": {
             "type": "string"

@@ -422,6 +422,15 @@ fn git_state(
         &["rev-parse", "--path-format=absolute", "--git-dir"],
         context,
     )?;
+    let index = git_string(
+        path,
+        &["rev-parse", "--path-format=absolute", "--git-path", "index"],
+        context,
+    )?;
+    if !Path::new(&index).starts_with(&git_dir) {
+        return Err(blocked("checkout_index_outside_git_directory"));
+    }
+    let index_fingerprint = fs::checkout_index_fingerprint(Path::new(&index))?;
     let common_identity = fs::identity(Path::new(&common))?;
     let owner_identity = fs::identity(&binding.canonical_path)?;
     let independent = common == git_dir
@@ -521,6 +530,7 @@ fn git_state(
         context,
         "checkout_stashes_unverified",
     )?;
+    let local_ref_count = local.len() as u64;
     let stash_heads =
         String::from_utf8(stash.clone()).map_err(|_| blocked("checkout_stashes_unverified"))?;
     let mut stashes = 0;
@@ -620,6 +630,7 @@ fn git_state(
             &upstream,
             (&common, common_identity, owner_identity),
             &git_dir,
+            (&index, &index_fingerprint),
             &status,
             &ignored,
             &refs,
@@ -640,7 +651,7 @@ fn git_state(
         untracked,
         ignored: ignored_count,
         stashes,
-        refs: local.len() as u64,
+        refs: local_ref_count,
         unpublished,
         remote_recoverable,
         fingerprint,

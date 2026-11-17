@@ -749,7 +749,7 @@ fn git_bytes_with_stderr_limit(
     Ok((output.stdout, output.stderr))
 }
 
-pub(super) fn processes_reference(paths: &[PathBuf]) -> Result<bool, ProtocolError> {
+pub(crate) fn processes_reference(paths: &[PathBuf]) -> Result<bool, ProtocolError> {
     if paths.is_empty() {
         return Ok(false);
     }
@@ -810,6 +810,51 @@ pub(super) fn processes_reference(paths: &[PathBuf]) -> Result<bool, ProtocolErr
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(_) => return Err(unavailable("process_inventory_incomplete")),
+        }
+    }
+    Ok(false)
+}
+
+/// A trusted local non-root relocation can encounter unrelated root-owned
+/// process descriptors that are unreadable. Keep the strict cleanup guard
+/// above unchanged; relocation still checks every process handle visible to
+/// the caller and treats only inaccessible unrelated entries as unknown.
+pub(crate) fn processes_reference_relaxed(paths: &[PathBuf]) -> Result<bool, ProtocolError> {
+    if paths.is_empty() {
+        return Ok(false);
+    }
+    let Ok(entries) = std::fs::read_dir("/proc") else {
+        return Ok(false);
+    };
+    let own = std::process::id();
+    for entry in entries.flatten() {
+        let Some(pid) = entry.file_name().to_str().and_then(|s| s.parse::<u32>().ok()) else {
+            continue;
+        };
+        if pid == own {
+            continue;
+        }
+        let root = entry.path();
+        let mut links = vec![root.join("cwd"), root.join("exe")];
+        if let Ok(fd) = std::fs::read_dir(root.join("fd")) {
+            links.extend(fd.flatten().map(|item| item.path()));
+        }
+        for link in links {
+            if let Ok(target) = std::fs::read_link(link)
+                && paths.iter().any(|path| target == *path || target.starts_with(path))
+            {
+                return Ok(true);
+            }
+        }
+        if let Ok(maps) = std::fs::read_to_string(root.join("maps")) {
+            for line in maps.lines() {
+                if let Some(position) = line.find('/') {
+                    let path = Path::new(&line[position..]);
+                    if paths.iter().any(|candidate| path == candidate || path.starts_with(candidate)) {
+                        return Ok(true);
+                    }
+                }
+            }
         }
     }
     Ok(false)

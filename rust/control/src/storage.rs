@@ -38,6 +38,52 @@ const OBSERVATION_FRESH_MS: u64 = 2 * 3_600_000;
 /// event-driven refreshes so one large tree cannot create a scan loop.
 pub(crate) const STORAGE_SCAN_INTERVAL_MS: u64 = 3_600_000;
 pub(crate) const STORAGE_SCAN_MIN_GAP_MS: u64 = 300_000;
+
+/// Relocation is a trusted local operation, but it still shares the native
+/// process and mount safety boundary with storage cleanup.
+pub(crate) fn ensure_relocation_inactive(
+    paths: &[std::path::PathBuf],
+) -> Result<(), ProtocolError> {
+    if paths.is_empty() {
+        return Ok(());
+    }
+    if fs::mount_targets()?
+        .iter()
+        .any(|mount| paths.iter().any(|path| mount == path || mount.starts_with(path)))
+    {
+        return Err(blocked("mounted_path"));
+    }
+    match native::processes_reference(paths) {
+        Ok(true) => return Err(blocked("active_process")),
+        Ok(false) => {}
+        Err(error)
+            if error.code == ErrorCode::StorageUnavailable
+                && error.message == "process_inventory_incomplete" =>
+        {
+            if native::processes_reference_relaxed(paths)? {
+                return Err(blocked("active_process"));
+            }
+        }
+        Err(error) => return Err(error),
+    }
+    Ok(())
+}
+
+/// Remove the old side of a verified cross-filesystem copy. Both native
+/// identities came from the completed verification and are checked again
+/// immediately before the one destructive native operation.
+pub(crate) fn remove_relocated_source(
+    old: &std::path::Path,
+    source: (u64, u64),
+    new: &std::path::Path,
+    target: (u64, u64),
+) -> Result<(), ProtocolError> {
+    ensure_relocation_inactive(&[old.to_owned(), new.to_owned()])?;
+    if fs::identity(new)? != target {
+        return Err(blocked("relocation destination identity changed"));
+    }
+    fs::remove_tree(old, source, true, false)
+}
 const MAX_SELECTION: usize = 200;
 const MAX_PLAN_ITEMS: usize = 500;
 type ArtifactProjection = (
@@ -1153,7 +1199,7 @@ impl StorageService {
         Ok(value)
     }
 
-    fn queue<T: Serialize>(
+    pub(crate) fn queue<T: Serialize>(
         &self,
         kind: &str,
         key: &str,

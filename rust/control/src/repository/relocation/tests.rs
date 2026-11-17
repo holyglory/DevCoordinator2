@@ -108,6 +108,9 @@ impl World {
             locations: vec![],
             details_omitted: false,
             permissions: devcoordinator2_api::project::Permissions { edit: true, cleanup: true, admin: true },
+            registration_state: "registered".into(),
+            immutable_generation: false,
+            deployment_references: vec![],
         };
         database.transaction(|connection|{
             connection.execute("INSERT INTO projects(project_id,name,slug,created_at,updated_at,updated_by) VALUES('p-relocation','Relocation fixture','relocation-fixture','t','t','fixture')",[])?;

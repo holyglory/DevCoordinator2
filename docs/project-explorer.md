@@ -34,6 +34,11 @@ approval. Possible loss requires an administrator's explicit approval of the
 listed effect and observed content; a changed target invalidates that approval.
 Hard protections cannot be overridden through data-loss approval.
 
+Inspection is a durable background job. Its progress reports completed copies,
+entries and bytes inspected; cancelling a review does not remove files. Reloading
+the Console resumes the pending review. Approval binds the completed plan, and
+the removal worker rechecks the exact content before deleting anything.
+
 ## Folder roles
 
 Each project has configurable source and build roots. The agreed organization,

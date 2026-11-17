@@ -30,7 +30,7 @@ pub mod tickets;
 pub mod work_context;
 
 pub const PROTOCOL_VERSION: u8 = 3;
-pub const DATABASE_SCHEMA_VERSION: u32 = 36;
+pub const DATABASE_SCHEMA_VERSION: u32 = 38;
 pub const MAX_REQUEST_BYTES: usize = 65_536;
 pub const MAX_RESPONSE_BYTES: usize = 262_144;
 pub const MAX_ERROR_DETAIL_BYTES: usize = 4_096;
@@ -862,11 +862,16 @@ operation_catalog! {
     ProjectCheckoutUpdate, "project.checkout.update", "Patch one checkout's intent, declared role and lifecycle.", REVERSIBLE_PROJECT_OPERATOR, Protocol, ["project_checkout_update"], project::CheckoutUpdate, project::Checkout;
     ProjectRefresh, "project.refresh", "Queue an idempotent bounded source refresh on the existing maintenance lane.", REVERSIBLE_PROJECT_VIEWER, Protocol, ["project_refresh"], project::Refresh, project::Job;
     ProjectJobStatus, "project.job.status", "Read a durable project refresh job.", READ_SERVER_VIEWER, Protocol, ["project_job_status"], project::JobReference, project::Job;
-    ProjectCheckoutRemovePlan, "project.checkout.remove.plan", "Inspect exact checkouts and retain a reviewed cleanup plan.", REVERSIBLE_PROJECT_OPERATOR, Protocol, ["project_checkout_remove_plan"], project::cleanup::Plan, project::cleanup::RemovalPlan;
+    ProjectCheckoutRemovePlan, "project.checkout.remove.plan", "Inspect exact checkouts and queue a reviewed cleanup plan.", REVERSIBLE_PROJECT_OPERATOR, Protocol, ["project_checkout_remove_plan"], project::cleanup::Plan, project::cleanup::ReviewJob;
+    ProjectCheckoutRemovePlanStatus, "project.checkout.remove.plan.status", "Read progress for one asynchronous checkout review.", READ_SERVER_VIEWER, Protocol, ["project_checkout_remove_plan_status"], project::cleanup::JobReference, project::cleanup::ReviewJob;
+    ProjectCheckoutRemovePlanCancel, "project.checkout.remove.plan.cancel", "Cancel one asynchronous checkout review without deleting files.", REVERSIBLE_PROJECT_OPERATOR, Protocol, ["project_checkout_remove_plan_cancel"], project::cleanup::JobReference, project::cleanup::ReviewJob;
     ProjectCheckoutRemoveApprove, "project.checkout.remove.approve", "Approve one fingerprint-bound cleanup plan.", REVERSIBLE_SERVER_ADMIN, Protocol, ["project_checkout_remove_approve"], project::cleanup::Approve, project::cleanup::ApprovalReceipt;
     ProjectCheckoutRemoveStart, "project.checkout.remove.start", "Start exact approved checkout cleanup on the shared storage engine.", DESTRUCTIVE_PROJECT_OPERATOR, Protocol, ["project_checkout_remove_start"], project::cleanup::Start, project::cleanup::RemovalJob;
     ProjectCheckoutRemoveJob, "project.checkout.remove.job", "Verify a checkout cleanup job and its exact removal receipts.", READ_SERVER_VIEWER, Protocol, ["project_checkout_remove_job"], project::cleanup::JobReference, project::cleanup::RemovalJob;
     ProjectCheckoutRemoveCancel, "project.checkout.remove.cancel", "Request cancellation of one owned checkout cleanup job.", REVERSIBLE_PROJECT_OPERATOR, Protocol, ["project_checkout_remove_cancel"], project::cleanup::JobReference, project::cleanup::RemovalJob;
+    ProjectCheckoutArtifactList, "project.checkout.artifact.list", "List explicit build and dependency artifact ownership links for one checkout.", READ_SERVER_VIEWER, Protocol, ["project_checkout_artifact_list"], project::artifacts::List, project::artifacts::Page;
+    ProjectCheckoutArtifactAdopt, "project.checkout.artifact.adopt", "Bind one observed build artifact to a checkout with revision and identity proof.", REVERSIBLE_PROJECT_OPERATOR, Protocol, ["project_checkout_artifact_adopt"], project::artifacts::Adopt, project::artifacts::Association;
+    ProjectCheckoutArtifactDetach, "project.checkout.artifact.detach", "Detach one explicit checkout artifact ownership link.", REVERSIBLE_PROJECT_OPERATOR, Protocol, ["project_checkout_artifact_detach"], project::artifacts::Detach, project::artifacts::Association;
     ProjectCheckoutRelocatePrepare, "project.checkout.relocate.prepare", "Prepare one trusted local checkout relocation while preserving its identities.", REVERSIBLE_SERVER_ADMIN, Protocol, ["project_checkout_relocate_prepare"], project::relocation::Prepare, project::relocation::Receipt;
     ProjectCheckoutRelocateVerify, "project.checkout.relocate.verify", "Verify an exact prepared local move and repaired Git metadata.", REVERSIBLE_SERVER_ADMIN, Protocol, ["project_checkout_relocate_verify"], project::relocation::Reference, project::relocation::Receipt;
     ProjectCheckoutRelocateCommit, "project.checkout.relocate.commit", "Commit verified current paths while retaining permanent identities and path aliases.", REVERSIBLE_SERVER_ADMIN, Protocol, ["project_checkout_relocate_commit"], project::relocation::Reference, project::relocation::Receipt;

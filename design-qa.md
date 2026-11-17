@@ -1081,3 +1081,43 @@ The follow-up starts the exact period and lifetime requests while repository met
 Fresh formal run `formal-web-ui-mwkjxlhj-654eff6a` passed all 210 required cells, including lifetime popup states at every declared viewport. Its separate manual receipt covers all 420 saved images with no blocking finding. Both receipts are retained under `/mnt/build-storage/codex/console-usage-83-20261116/formal-prefetch-lifetime-01/`; they cover nine declared UI inputs and are distinct from complete repository source qualification. Focused rendered verification passed 1,023 Performance, 549 workspace and 289 localization checks, including exact-scope prefetch and opening/scrolled popup containment. Existing narrow legend wrapping and the single activity-table horizontal scrollbar remain minor, usable limitations.
 
 The approved image was compared with current dark 1975×796 captures for pending usage, measured headlines awaiting rich data, and lifetime details. The comparison is retained in `/mnt/build-storage/codex/console-usage-83-20261116/product-design-audit-prefetch-lifetime-fixture.json`. Its fixture comparison passed; its final result remains incomplete until shared live comparison and actual browser/data acceptance pass on the installed candidate. The preliminary real-API trace with candidate assets showed 450–560 ms visible totals, but is explicitly not deployed acceptance. Runtime receipts and the Coordinator outcome retain the final delivery status; this source entry does not convert a preliminary check into completion.
+
+# Project Explorer design QA — 2026-11-17
+
+final result: passed
+
+## Source and implementation
+
+- Source visual truth: `.devcoordinator/project-explorer-design/relationships-fd27a5530c2f.png`, Coordinator-selected option 3 `s3ab8fce40b07f39e`, 1487 × 1058 px, dark populated Copies state.
+- Implementation screenshot: `/mnt/build-storage/codex/project-explorer-formal-final2-20261117/formal-dark/screenshots/cell-0003-project-copies-dark-desktop-viewport.png`, 1487 × 1058 px, CSS viewport 1487 × 1058, device scale factor 1.
+- Focused evidence: the final formal bundle's commit, edit and removal state screenshots under `/mnt/build-storage/codex/project-explorer-formal-final2-20261117/formal-dark/screenshots/`.
+- Product Design audit receipt: `/mnt/build-storage/codex/project-explorer-formal-final2-20261117/product-design-audit.json`.
+
+## Step-linked audit
+
+1. **Open the project and inspect linked trees — pass.** The project identity, explicit source repositories, local folders, cached-first refresh and fresh observation are visible.
+2. **Select a branch and read lifecycle metadata — pass.** The GitHub branch connects to its local worktree; intent, outcome, owner and next action appear in the inspector.
+3. **Load commit parents — pass.** The Show commits control loads real commit subjects and parents on demand.
+4. **Edit metadata with conflict protection — pass.** The editor preserves linked outcomes and drafts through unrelated revision conflicts.
+5. **Review protected removal — pass.** The review opens immediately, reports the queued inspection result, and keeps primary/deployment copies unavailable for deletion.
+6. **Review responsive themes — pass.** Formal coverage checks phone, intermediate, desktop, wide and breakpoint edges in light and dark themes.
+
+## Fidelity and findings
+
+Typography uses the existing Inter and Console tokens. Spacing, borders, state colors, Tabler icons, linked-tree hierarchy and responsive stacking follow the selected direction. Copy describes actual lifecycle and storage facts. No actionable P0, P1 or P2 difference remains.
+
+The source uses illustrative `/home/projects` and `/mnt/build-storage` paths; the fixture shows temporary configured roots. The source displays illustrative commit rows while the implementation follows the toggle contract. The fixture can show Remote not verified and stopped deployment sources because it has no live GitHub credential or running deployment; those are truthful states. These are P3/context differences.
+
+Formal keyboard navigation, focus continuation, readable identifiers, clipping, overflow, theme and geometry checks passed. A separate screen-reader announcement audit was not run.
+
+## Iteration history
+
+- The first formal candidate was retained as diagnostic evidence because its test configuration lacked an authentication profile and source binding.
+- The next candidate exposed off-screen commit continuation anchors and a transient local timing sample; the anchor moved to the visible control and the complete matrix passed.
+- The final candidate added current/rollback generation rows, queued removal review, and a global duplicate-dialog guard. Final formal and manual receipts pass 92/92 cells per theme.
+
+## Evidence
+
+- Final formal receipts: `/mnt/build-storage/codex/project-explorer-formal-final2-20261117/formal-light/receipt.json` and `formal-dark/receipt.json`.
+- Manual receipts: the corresponding `manual-review.json` files; both report `manual.result: passed` for 92/92 cells.
+- Focused browser journey: `/mnt/build-storage/codex/project-explorer-browser-guard2-20261117/report.json`, 23/23 passed.

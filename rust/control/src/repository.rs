@@ -21,7 +21,7 @@ use time::{OffsetDateTime, macros::format_description};
 use crate::database::{Database, DatabaseError};
 use crate::ids;
 
-mod relocation;
+pub(crate) mod relocation;
 
 const GIT_TIMEOUT: Duration = Duration::from_secs(10);
 const PROCESS_POLL: Duration = Duration::from_millis(10);
@@ -84,6 +84,7 @@ where
 pub struct Registry {
     database: Database,
     additional_archive_blockers: Arc<dyn ArchiveBlockerQuery>,
+    relocation_runtime: Arc<std::sync::OnceLock<Arc<dyn relocation::RelocationRuntime>>>,
 }
 
 impl Registry {
@@ -128,6 +129,7 @@ impl Registry {
         Self {
             database,
             additional_archive_blockers: Arc::new(blockers),
+            relocation_runtime: Arc::new(std::sync::OnceLock::new()),
         }
     }
 

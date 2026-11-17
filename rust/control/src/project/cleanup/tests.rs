@@ -294,6 +294,7 @@ impl CheckoutFixture {
             .checkout_remove_plan(
                 removal::Plan {
                     project_id: "product".into(),
+                    idempotency_key: "fixture-review".into(),
                     expected_project_revision: 1,
                     targets: vec![removal::Target {
                         worktree_id: "feature-checkout".into(),
@@ -304,6 +305,8 @@ impl CheckoutFixture {
                 &caller(),
             )
             .unwrap()
+            .plan
+            .expect("completed fixture review")
     }
     fn start(&self, plan: &removal::RemovalPlan, approval: Option<String>) -> removal::Start {
         removal::Start {
@@ -442,6 +445,7 @@ fn exact_console_approval_allows_known_loss_but_stale_content_requires_a_new_pla
         .checkout_remove_plan(
             removal::Plan {
                 project_id: "product".into(),
+                idempotency_key: "fixture-review".into(),
                 expected_project_revision: 1,
                 targets: vec![removal::Target {
                     worktree_id: "feature-checkout".into(),
@@ -799,6 +803,7 @@ fn partial_cleanup_and_late_leases_do_not_complete_unremoved_targets() {
         .checkout_remove_plan(
             removal::Plan {
                 project_id: "product".into(),
+                idempotency_key: "fixture-review".into(),
                 expected_project_revision: 1,
                 targets: vec![
                     removal::Target {
@@ -814,7 +819,9 @@ fn partial_cleanup_and_late_leases_do_not_complete_unremoved_targets() {
             },
             &caller(),
         )
-        .unwrap();
+        .unwrap()
+        .plan
+        .expect("completed fixture review");
     assert!(plan.ready, "{:?}", plan);
     let queued = fixture
         .service

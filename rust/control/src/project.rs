@@ -14,6 +14,7 @@ use std::{
     sync::Arc,
 };
 pub mod cleanup;
+pub(crate) mod artifacts;
 pub mod github;
 mod refresh;
 mod retirement;
@@ -247,6 +248,7 @@ impl ProjectService {
         let scope = self.scope(caller)?;
         self.database
             .read_transaction(|c| {
+                let worktree_id=canonical_checkout_id(c,&p.project_id,&p.worktree_id)?;
                 let page = api::Page {
                     project_id: p.project_id,
                     cursor: None,
@@ -254,7 +256,7 @@ impl ProjectService {
                     query: None,
                     lifecycle: None,
                 };
-                checkout_page(c, &page, &scope, Some(&p.worktree_id))?
+                checkout_page(c, &page, &scope, Some(&worktree_id))?
                     .checkouts
                     .into_iter()
                     .next()
@@ -313,8 +315,8 @@ impl ProjectService {
                     for (wid,path) in worktrees {
                         let role=if path==root {if physical==&source.repository_id {"primary"}else{"clone"}}else{"worktree"};
                         let (relative_path,root_kind)=display_path(&p.roots,&path);
-                        let row=empty_checkout(&wid,&source.repository_id,&path,relative_path,root_kind,role);
-                        c.execute("INSERT INTO project_checkouts(project_id,worktree_id,repository_id,physical_repository_id,absolute_path,role,protected_role,lifecycle,record_json,updated_at,updated_by) VALUES($1,$2,$3,$4,$5,$6,$7,'active',$8::jsonb,$9,$10) ON CONFLICT(project_id,worktree_id) DO NOTHING",params![id,wid,source.repository_id,physical,path,role,(role=="primary").then_some(role),json(&row)?,now,actor])?;
+                        let mut row=empty_checkout(&wid,&source.repository_id,&path,relative_path,root_kind,role);row.registration_state="registered".into();
+                        c.execute("INSERT INTO project_checkouts(project_id,worktree_id,repository_id,physical_repository_id,absolute_path,role,protected_role,lifecycle,record_json,updated_at,updated_by,registration_state) VALUES($1,$2,$3,$4,$5,$6,$7,'active',$8::jsonb,$9,$10,'registered') ON CONFLICT(project_id,worktree_id) DO NOTHING",params![id,wid,source.repository_id,physical,path,role,(role=="primary").then_some(role),json(&row)?,now,actor])?;
                         if role=="primary" {c.execute("UPDATE project_sources SET primary_checkout_id=$3 WHERE project_id=$1 AND repository_id=$2",params![id,source.repository_id,wid])?;}
                     }
                 }
@@ -376,13 +378,15 @@ impl ProjectService {
         let now = timestamp();
         let actor = caller.actor();
         let result=self.database.transaction(|c|{
-            let (revision,physical,protected,raw)=c.query_row("SELECT revision,physical_repository_id,protected_role,record_json::text FROM project_checkouts WHERE project_id=$1 AND worktree_id=$2 FOR UPDATE",params![p.project_id,p.worktree_id],|r|Ok((r.get::<_,u32>(0)?,r.get::<_,String>(1)?,r.get::<_,Option<String>>(2)?,r.get::<_,String>(3)?))).optional()?.ok_or_else(not_found_db)?;
+            let target=canonical_checkout_id(c,&p.project_id,&p.worktree_id)?;
+            let (revision,physical,protected,raw)=c.query_row("SELECT revision,physical_repository_id,protected_role,record_json::text FROM project_checkouts WHERE project_id=$1 AND worktree_id=$2 FOR UPDATE",params![p.project_id,target],|r|Ok((r.get::<_,u32>(0)?,r.get::<_,String>(1)?,r.get::<_,Option<String>>(2)?,r.get::<_,String>(3)?))).optional()?.ok_or_else(not_found_db)?;
             if !scope.edits(&physical){return Err(denied("operator on this checkout's repository is required").into());}if revision!=p.expected_revision{return Err(conflict().into());}
             let mut row:api::Checkout=from_json(&raw)?;
+            if row.immutable_generation&&p.lifecycle.is_some(){return Err(invalid("immutable deployment generation lifecycle is observed from its owner").into());}
             if let Some(role)=&p.role{if protected.as_ref().is_some_and(|v|v!=role)||matches!(role.as_str(),"primary"|"deployment"){return Err(invalid("primary and deployment roles are assigned from protected ownership and cannot be changed").into());}row.role=role.clone();}
             apply_patch(&mut row.intent,&p.intent);apply_patch(&mut row.outcome,&p.outcome);apply_patch(&mut row.owner,&p.owner);apply_patch(&mut row.next_action,&p.next_action);apply_patch(&mut row.task_id,&p.task_id);if let Some(lifecycle)=&p.lifecycle{row.lifecycle=lifecycle.clone();}row.revision=revision+1;validate_task(c,&p.project_id,row.task_id.as_deref())?;
-            c.execute("UPDATE project_checkouts SET revision=$3,intent=$4,outcome=$5,owner=$6,next_action=$7,task_id=$8,lifecycle=$9,role=$10,record_json=$11::jsonb,updated_at=$12,updated_by=$13 WHERE project_id=$1 AND worktree_id=$2",params![p.project_id,p.worktree_id,row.revision,row.intent,row.outcome,row.owner,row.next_action,row.task_id,row.lifecycle,row.role,json(&row)?,now,actor])?;
-            changed(c,&p.project_id,&actor,&now)?;event(c,&p.project_id,Some(&row.repository_id),Some(&physical),Some(&p.worktree_id),"checkout.updated","Checkout intent and lifecycle were updated",&actor,&now)?;redact_checkout(&mut row,&scope,&physical);Ok(row)
+            c.execute("UPDATE project_checkouts SET revision=$3,intent=$4,outcome=$5,owner=$6,next_action=$7,task_id=$8,lifecycle=$9,role=$10,record_json=$11::jsonb,updated_at=$12,updated_by=$13 WHERE project_id=$1 AND worktree_id=$2",params![p.project_id,target,row.revision,row.intent,row.outcome,row.owner,row.next_action,row.task_id,row.lifecycle,row.role,json(&row)?,now,actor])?;
+            changed(c,&p.project_id,&actor,&now)?;event(c,&p.project_id,Some(&row.repository_id),Some(&physical),Some(&target),"checkout.updated","Checkout intent and lifecycle were updated",&actor,&now)?;redact_checkout(&mut row,&scope,&physical);Ok(row)
         }).map_err(database_error)?;
         self.publish_change(&p.project_id, "project.updated");
         Ok(result)
@@ -802,6 +806,7 @@ fn empty_checkout(
         can_remove: false,
         locations: Vec::new(),
         permissions: api::Permissions::default(),
+        registration_state:"unregistered".into(),immutable_generation:false,deployment_references:Vec::new(),
         details_omitted: false,
     }
 }
@@ -1254,4 +1259,19 @@ fn bound_status(status: &mut api::Status) {
             source.details_omitted = true;
         }
     }
+}
+
+pub(crate) fn canonical_checkout_id(c:&Connection,project:&str,id:&str)->Result<String,DatabaseError>{
+    c.query_row("SELECT worktree_id FROM project_checkouts WHERE project_id=$1 AND worktree_id=$2 UNION ALL SELECT worktree_id FROM project_checkout_aliases WHERE project_id=$1 AND alias_worktree_id=$2 LIMIT 1",params![project,id],|r|r.get(0)).optional()?.ok_or_else(not_found_db)
+}
+fn rekey_project_checkout(c:&Connection,project:&str,old:&str,new:&str,now:&str,actor:&str)->Result<(),DatabaseError>{
+    if old==new{return Ok(());}
+    let (path,physical)=c.query_row("SELECT absolute_path,physical_repository_id FROM project_checkouts WHERE project_id=$1 AND worktree_id=$2 FOR UPDATE",params![project,old],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?)))?;
+    let valid=c.query_row("SELECT EXISTS(SELECT 1 FROM worktrees WHERE worktree_id=$1 AND repository_id=$2 AND worktree_path=$3) AND NOT EXISTS(SELECT 1 FROM project_checkouts WHERE project_id=$4 AND worktree_id=$1)",params![new,physical,path,project],|r|r.get::<_,bool>(0))?;
+    if !valid{return Err(conflict().into());}
+    c.execute("UPDATE project_checkouts SET worktree_id=$3,registration_state='registered',revision=revision+1,record_json=record_json||jsonb_build_object('worktree_id',$3::text,'registration_state','registered','revision',revision+1),updated_at=$4,updated_by=$5 WHERE project_id=$1 AND worktree_id=$2",params![project,old,new,now,actor])?;
+    c.execute("INSERT INTO project_checkout_aliases(project_id,alias_worktree_id,worktree_id,created_at) VALUES($1,$2,$3,$4) ON CONFLICT(project_id,alias_worktree_id) DO UPDATE SET worktree_id=excluded.worktree_id",params![project,old,new,now])?;
+    c.execute("UPDATE project_sources SET primary_checkout_id=$3 WHERE project_id=$1 AND primary_checkout_id=$2",params![project,old,new])?;
+    c.execute("UPDATE project_storage SET worktree_id=$3 WHERE project_id=$1 AND worktree_id=$2",params![project,old,new])?;
+    event(c,project,None,Some(&physical),Some(new),"checkout.identity_adopted","Checkout identity was linked to the execution registry; historical links remain valid",actor,now)
 }
