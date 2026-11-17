@@ -30,6 +30,19 @@ const MAX_PROFILES: usize = 96;
 const PROFILE_RETENTION: Duration = Duration::from_secs(24 * 60 * 60);
 pub(super) const API_BUDGET: Duration = Duration::from_millis(650);
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum QueryProjection {
+    Rich,
+    Headline,
+}
+
+fn projection_key(key: String, projection: QueryProjection) -> String {
+    match projection {
+        QueryProjection::Rich => key,
+        QueryProjection::Headline => format!("{key}:token_headline"),
+    }
+}
+
 pub(super) fn is_pending(reason: &str) -> bool {
     matches!(
         reason,
@@ -76,12 +89,25 @@ struct State {
     inflight: HashMap<String, Flight>,
     cold_waiters: HashMap<String, ColdWaiter>,
     profiles: HashMap<String, ProfileHistory>,
+    headline_capabilities: HashMap<PathBuf, HeadlineCapability>,
+}
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct SocketIdentity {
+    device: u64,
+    inode: u64,
+    uid: u32,
+}
+#[derive(Clone, Copy)]
+struct HeadlineCapability {
+    identity: SocketIdentity,
+    supports: bool,
 }
 struct Flight {
     source: PathBuf,
     bytes: usize,
     started: Instant,
     profile: String,
+    projection: QueryProjection,
 }
 
 struct ColdWaiter {
@@ -166,6 +192,29 @@ impl State {
         let samples = u8::try_from(values.len()).unwrap_or(u8::MAX);
         (values.get(values.len() / 2).copied().unwrap_or(0), samples)
     }
+
+    fn supports_headlines(
+        &mut self,
+        path: &Path,
+        identity: Option<SocketIdentity>,
+    ) -> Option<bool> {
+        let capability = self.headline_capabilities.get(path).copied()?;
+        if identity == Some(capability.identity) {
+            Some(capability.supports)
+        } else {
+            self.headline_capabilities.remove(path);
+            None
+        }
+    }
+}
+
+fn socket_identity(path: &Path) -> Option<SocketIdentity> {
+    let metadata = path.metadata().ok()?;
+    Some(SocketIdentity {
+        device: metadata.dev(),
+        inode: metadata.ino(),
+        uid: metadata.uid(),
+    })
 }
 
 struct Entry {
@@ -406,6 +455,133 @@ pub(super) struct Summary {
     pub review: Option<ReviewUsage>,
 }
 
+// A headline has a separate wire parser: rich summaries must continue to
+// reject nullable counts and activity vectors rather than accepting them as
+// an incomplete review. Only a negotiated headline can create Counts::Deferred.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct HeadlineSummary {
+    contract_version: Option<u32>,
+    source: Option<Value>,
+    generated_at: u64,
+    snapshot: Option<Snapshot>,
+    report: HeadlineReport,
+    summary: HeadlineNativeSummary,
+    review: Value,
+    work_contexts: Vec<Value>,
+    operation_bindings: Vec<Value>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct HeadlineNativeSummary {
+    projection: String,
+    counts: Value,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct HeadlineReport {
+    schema_version: u32,
+    kind: String,
+    projection: String,
+    #[serde(default)]
+    projection_schema_version: Option<u32>,
+    database_schema_version: u64,
+    taxonomy_version: i64,
+    scope: Scope,
+    time_range: Option<TimeRange>,
+    coverage: HeadlineCoverage,
+    counts: Value,
+    provider_tokens: Vec<Token>,
+    provider_tokens_by_activity: Value,
+    measured_execution_interval_sum_ms: Value,
+    cost: Value,
+    timing: Value,
+    lifecycle: Value,
+    context_size: Value,
+    work_bindings: Value,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct HeadlineCoverage {
+    #[serde(flatten)]
+    tokens: Coverage,
+    counts: String,
+    cost: String,
+    timing: String,
+    lifecycle: String,
+    context_size: String,
+    work_bindings: String,
+    activity: String,
+}
+
+impl HeadlineSummary {
+    fn into_summary(self) -> Result<Summary, String> {
+        let r = self.report;
+        if r.projection != "token_headline"
+            || r.projection_schema_version
+                .is_some_and(|version| version != 1)
+            || self.summary.projection != "token_headline"
+            || !self.summary.counts.is_null()
+            || !self.review.is_null()
+            || !self.work_contexts.is_empty()
+            || !self.operation_bindings.is_empty()
+            || [
+                r.counts,
+                r.provider_tokens_by_activity,
+                r.measured_execution_interval_sum_ms,
+                r.cost,
+                r.timing,
+                r.lifecycle,
+                r.context_size,
+                r.work_bindings,
+            ]
+            .iter()
+            .any(|value| !value.is_null())
+            || [
+                &r.coverage.counts,
+                &r.coverage.cost,
+                &r.coverage.timing,
+                &r.coverage.lifecycle,
+                &r.coverage.context_size,
+                &r.coverage.work_bindings,
+                &r.coverage.activity,
+            ]
+            .iter()
+            .any(|value| value.as_str() != "deferred")
+        {
+            return Err("api_contract_unsupported".into());
+        }
+        let tokens = r.provider_tokens;
+        Ok(Summary {
+            contract_version: self.contract_version,
+            source: self.source,
+            generated_at: self.generated_at,
+            snapshot: self.snapshot,
+            report: Report {
+                projection: Some(r.projection),
+                schema_version: r.schema_version,
+                kind: r.kind,
+                database_schema_version: r.database_schema_version,
+                taxonomy_version: r.taxonomy_version,
+                scope: r.scope,
+                time_range: r.time_range,
+                coverage: r.coverage.tokens,
+                counts: Counts::Deferred,
+                provider_tokens: tokens,
+                provider_tokens_by_activity: Vec::new(),
+                measured_execution_interval_sum_ms: None,
+                cost: None,
+                worktrees: Vec::new(),
+                worktree_coverage: None,
+            },
+            review: None,
+        })
+    }
+}
+
 #[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct Snapshot {
@@ -434,6 +610,8 @@ pub(super) struct Snapshot {
 #[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct Report {
+    #[serde(default)]
+    pub projection: Option<String>,
     pub schema_version: u32,
     pub kind: String,
     pub database_schema_version: u64,
@@ -502,16 +680,18 @@ pub(super) struct SourceCost {
     pub cached_input_usd_micros: Option<u64>,
     pub cache_write_usd_micros: Option<u64>,
     pub output_usd_micros: Option<u64>,
-    pub input_tokens: u64,
-    pub uncached_input_tokens: u64,
-    pub cached_input_tokens: u64,
+    pub input_tokens: i64,
+    pub uncached_input_tokens: i64,
+    pub cached_input_tokens: i64,
     pub cache_write_tokens: u64,
-    pub output_tokens: u64,
-    pub reasoning_tokens: u64,
+    pub output_tokens: i64,
+    pub reasoning_tokens: i64,
     pub provider_total_tokens: u64,
     pub priced_observations: u64,
     pub unknown_observations: u64,
     pub rate_card_refs: Vec<String>,
+    #[serde(default)]
+    pub unavailable_reasons: BTreeMap<String, u64>,
 }
 
 impl SourceCost {
@@ -535,14 +715,15 @@ impl SourceCost {
             uncached_input_tokens: Some(self.uncached_input_tokens),
             output_tokens: Some(self.output_tokens),
             reasoning_tokens: Some(self.reasoning_tokens),
-            unknown_requests: 0,
+            unknown_requests: None,
             unknown_tokens: 0,
-            unknown_observations: self.unknown_observations,
+            unknown_observations: Some(self.unknown_observations),
             rate_card_ref: self.rate_card_refs.first().cloned(),
             rate_card_refs: self.rate_card_refs.clone(),
-            model_requests: self.priced_observations,
-            priced_requests: self.priced_observations,
-            unavailable_reasons: BTreeMap::new(),
+            model_requests: None,
+            priced_requests: None,
+            priced_observations: Some(self.priced_observations),
+            unavailable_reasons: self.unavailable_reasons.clone(),
             matched_rate_cards: Vec::new(),
         }
     }
@@ -565,23 +746,91 @@ pub(super) struct Coverage {
     pub state: String,
     pub has_gaps: bool,
 }
+#[derive(Clone)]
+pub(super) enum Counts {
+    Measured(MeasuredCounts),
+    Deferred,
+}
+
+impl<'de> Deserialize<'de> for Counts {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        MeasuredCounts::deserialize(deserializer).map(Self::Measured)
+    }
+}
+
 #[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub(super) struct Counts {
+pub(super) struct MeasuredCounts {
     pub operations: u64,
     pub model_requests: u64,
     pub tools: u64,
 }
 #[derive(Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(try_from = "WireToken")]
 pub(super) struct Token {
     pub category: String,
     pub repository_bucket: String,
     pub measurement_provenance: String,
-    pub measured_tokens: u64,
-    pub exact_tokens: Option<u64>,
+    pub measured_tokens: i128,
+    pub exact_tokens: Option<i128>,
     pub unknown_observations: u64,
     pub observation_count: u64,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WireToken {
+    category: String,
+    repository_bucket: String,
+    measurement_provenance: String,
+    measured_tokens: i128,
+    exact_tokens: Option<i128>,
+    unknown_observations: u64,
+    observation_count: u64,
+}
+
+pub(super) fn signed_component(category: &str) -> bool {
+    matches!(
+        category,
+        "input_tokens"
+            | "input_tokens_details.cached_tokens"
+            | "output_tokens"
+            | "output_tokens_details.reasoning_tokens"
+    )
+}
+
+impl TryFrom<WireToken> for Token {
+    type Error = &'static str;
+    fn try_from(value: WireToken) -> Result<Self, Self::Error> {
+        let permitted = |quantity| {
+            if signed_component(&value.category) {
+                i64::try_from(quantity).is_ok()
+            } else {
+                u64::try_from(quantity).is_ok()
+            }
+        };
+        if !permitted(value.measured_tokens)
+            || value
+                .exact_tokens
+                .is_some_and(|quantity| !permitted(quantity))
+        {
+            return Err("token_quantity_invalid");
+        }
+        let category = if value.category == "cache_write_input_tokens" {
+            "input_tokens_details.cache_write_tokens".into()
+        } else {
+            value.category
+        };
+        Ok(Self {
+            category,
+            repository_bucket: value.repository_bucket,
+            measurement_provenance: value.measurement_provenance,
+            measured_tokens: value.measured_tokens,
+            exact_tokens: value.exact_tokens,
+            unknown_observations: value.unknown_observations,
+            observation_count: value.observation_count,
+        })
+    }
 }
 #[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -595,6 +844,33 @@ pub(super) struct Activity {
 }
 
 impl CollectorApi {
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Headline requests retain explicit exact repository scope"
+    )]
+    pub(super) fn summary_headline(
+        &self,
+        source: &CodexUsageSource,
+        repository: Option<&str>,
+        worktree_keys: Option<&[String]>,
+        include_unassigned: bool,
+        start: u64,
+        end: u64,
+        deadline: Instant,
+    ) -> Result<SummaryRead, String> {
+        self.summary_with_projection(
+            source,
+            repository,
+            worktree_keys,
+            include_unassigned,
+            None,
+            &[],
+            start,
+            end,
+            deadline,
+            QueryProjection::Headline,
+        )
+    }
     #[expect(
         clippy::too_many_arguments,
         reason = "Compatibility wrapper preserves the existing collector call shape"
@@ -638,27 +914,65 @@ impl CollectorApi {
         end: u64,
         deadline: Instant,
     ) -> Result<SummaryRead, String> {
+        self.summary_with_projection(
+            source,
+            repository,
+            worktree_keys,
+            include_unassigned,
+            workstream,
+            bindings,
+            start,
+            end,
+            deadline,
+            QueryProjection::Rich,
+        )
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Projection selection adds no ambiguity to exact source scope"
+    )]
+    fn summary_with_projection(
+        &self,
+        source: &CodexUsageSource,
+        repository: Option<&str>,
+        worktree_keys: Option<&[String]>,
+        include_unassigned: bool,
+        workstream: Option<&str>,
+        bindings: &[crate::usage_context::Binding],
+        start: u64,
+        end: u64,
+        deadline: Instant,
+        projection: QueryProjection,
+    ) -> Result<SummaryRead, String> {
+        let deadline = deadline.min(Instant::now() + API_BUDGET);
         let path = source.api_socket.as_ref().ok_or("api_not_configured")?;
-        let key = full_query_key(
-            source,
-            repository,
-            worktree_keys,
-            include_unassigned,
-            workstream,
-            bindings,
-            start,
-            end,
-        )?;
-        let profile = profile_key(
-            source,
-            repository,
-            worktree_keys,
-            include_unassigned,
-            workstream,
-            bindings,
-            start,
-            end,
-        )?;
+        let key = projection_key(
+            full_query_key(
+                source,
+                repository,
+                worktree_keys,
+                include_unassigned,
+                workstream,
+                bindings,
+                start,
+                end,
+            )?,
+            projection,
+        );
+        let profile = projection_key(
+            profile_key(
+                source,
+                repository,
+                worktree_keys,
+                include_unassigned,
+                workstream,
+                bindings,
+                start,
+                end,
+            )?,
+            projection,
+        );
         if bindings.len() > crate::usage_context::MAX_BINDINGS {
             return Err("api_contract_unsupported".into());
         }
@@ -667,104 +981,150 @@ impl CollectorApi {
             .len()
             .saturating_add(key.len())
             .saturating_add(source.codex_home.as_os_str().len());
+        let source_identity = socket_identity(path);
         let (guard, changed) = &*self.0;
         let mut state = guard.lock().map_err(|_| "api_busy")?;
-        state
-            .failed_until
-            .retain(|_, (until, _)| *until > Instant::now());
-        state
-            .cold_waiters
-            .retain(|_, waiter| waiter.touched.elapsed() < COLD_WAITER_FOR);
-        if let Some(entry) = state
-            .entries
-            .get(&key)
-            .filter(|entry| entry.loaded.elapsed() < FRESH_FOR)
-        {
-            return Ok(SummaryRead {
-                summary: entry.report.clone(),
-                refresh_reason: None,
-                loading: None,
-            });
-        }
-        let saved = state.entries.get(&key).map(|entry| entry.report.clone());
-        if let Some((_, reason)) = state.failed_until.get(&key) {
-            return SummaryRead::cached_or_error(saved, reason);
-        }
-        if !state.inflight.contains_key(&key) {
-            if state.inflight.values().any(|flight| &flight.source == path) {
-                if saved.is_none() {
-                    // Remember only bounded admission metadata, not another
-                    // worker or query payload. Its next foreground retry
-                    // claims the existing slot after this read completes.
-                    state.remember_cold_waiter(&key, path);
-                }
-                return SummaryRead::cached_or_error(saved, "api_source_busy");
-            }
-            if saved.is_some()
-                && state
-                    .cold_waiters
-                    .iter()
-                    .any(|(waiting_key, waiter)| waiting_key != &key && &waiter.source == path)
-            {
-                // A repeated stale read already has useful measurements.
-                // Give a still-polling cold query a turn before revalidating
-                // those measurements again, without borrowing its scope.
-                return SummaryRead::cached_or_error(saved, "api_source_busy");
-            }
-            state.cold_waiters.remove(&key);
-            let inflight_bytes = state.pending_bytes();
-            if state.inflight.len() >= MAX_CACHED
-                || request_bytes > MAX_INFLIGHT_BYTES.saturating_sub(inflight_bytes)
-            {
-                return SummaryRead::cached_or_error(saved, "api_busy");
-            }
-            state.inflight.insert(
-                key.clone(),
-                Flight {
-                    source: path.clone(),
-                    bytes: request_bytes,
-                    started: Instant::now(),
-                    profile: profile.clone(),
-                },
-            );
-            let cache = self.clone();
-            let request_key = key.clone();
-            let source = source.clone();
-            let repository = repository.map(str::to_owned);
-            let worktree_keys = worktree_keys.map(<[String]>::to_vec);
-            let workstream = workstream.map(str::to_owned);
-            let bindings = bindings.to_vec();
-            drop(state);
-            // A bounded source read may outlive this foreground request. It
-            // remains owned by this exact-query cache until completion; another
-            // request for the same source cannot launch a competing cold read.
-            let spawned = std::thread::Builder::new()
-                .name("usage-api-refresh".into())
-                .spawn(move || {
-                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        fetch(
-                            &source,
-                            SummaryQuery {
-                                repository: repository.as_deref(),
-                                worktree_keys: worktree_keys.as_deref(),
-                                include_unassigned,
-                                workstream: workstream.as_deref(),
-                                bindings: &bindings,
-                                start,
-                                end,
-                            },
-                            Instant::now() + SOURCE_READ_BUDGET,
-                        )
-                    }))
-                    .unwrap_or_else(|_| Err("api_refresh_failed".into()));
-                    cache.finish(request_key, result);
-                });
-            if spawned.is_err() {
-                self.finish(key.clone(), Err("api_refresh_failed".into()));
-            }
-            state = guard.lock().map_err(|_| "api_busy")?;
-        }
+        let mut waited_for_source = false;
         loop {
+            state
+                .failed_until
+                .retain(|_, (until, _)| *until > Instant::now());
+            state
+                .cold_waiters
+                .retain(|_, waiter| waiter.touched.elapsed() < COLD_WAITER_FOR);
+            if let Some(entry) = state
+                .entries
+                .get(&key)
+                .filter(|entry| entry.loaded.elapsed() < FRESH_FOR)
+            {
+                return Ok(SummaryRead {
+                    summary: entry.report.clone(),
+                    refresh_reason: None,
+                    loading: None,
+                });
+            }
+            let saved = state.entries.get(&key).map(|entry| entry.report.clone());
+            if let Some((_, reason)) = state.failed_until.get(&key) {
+                return SummaryRead::cached_or_error(saved, reason);
+            }
+            if !state.inflight.contains_key(&key) {
+                let known_headlines = state.supports_headlines(path, source_identity);
+                let same_source = state
+                    .inflight
+                    .values()
+                    .filter(|flight| &flight.source == path)
+                    .collect::<Vec<_>>();
+                let can_share_compact = known_headlines == Some(true)
+                    && same_source.len() == 1
+                    && ((projection == QueryProjection::Headline
+                        && same_source[0].projection == QueryProjection::Rich)
+                        || (projection == QueryProjection::Rich
+                            && same_source[0].projection == QueryProjection::Headline));
+                if !same_source.is_empty() && !can_share_compact {
+                    if let Some(saved) = saved {
+                        return SummaryRead::cached_or_error(Some(saved), "api_source_busy");
+                    }
+                    // Remember only bounded admission metadata, not another
+                    // worker or query payload. A cold foreground continuation
+                    // may claim the existing slot after this read completes.
+                    #[cfg(test)]
+                    let observer_notification = !state.cold_waiters.contains_key(&key);
+                    state.remember_cold_waiter(&key, path);
+                    #[cfg(test)]
+                    if observer_notification {
+                        changed.notify_all();
+                    }
+                    let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+                        return Err("api_source_busy".into());
+                    };
+                    waited_for_source = true;
+                    let (updated, _) = changed
+                        .wait_timeout(state, remaining)
+                        .map_err(|_| "api_busy")?;
+                    state = updated;
+                    // Completion or another waiter may have changed this exact
+                    // key. Recheck cache, failures and ownership under the lock.
+                    continue;
+                }
+                if waited_for_source && Instant::now() >= deadline {
+                    return SummaryRead::cached_or_error(saved, "api_source_busy");
+                }
+                if saved.is_some()
+                    && state
+                        .cold_waiters
+                        .iter()
+                        .any(|(waiting_key, waiter)| waiting_key != &key && &waiter.source == path)
+                {
+                    // A repeated stale read already has useful measurements.
+                    // Give a still-polling cold query a turn before revalidating
+                    // those measurements again, without borrowing its scope.
+                    return SummaryRead::cached_or_error(saved, "api_source_busy");
+                }
+                state.cold_waiters.remove(&key);
+                let inflight_bytes = state.pending_bytes();
+                if state.inflight.len() >= MAX_CACHED
+                    || request_bytes > MAX_INFLIGHT_BYTES.saturating_sub(inflight_bytes)
+                {
+                    return SummaryRead::cached_or_error(saved, "api_busy");
+                }
+                state.inflight.insert(
+                    key.clone(),
+                    Flight {
+                        source: path.clone(),
+                        bytes: request_bytes,
+                        started: Instant::now(),
+                        profile: profile.clone(),
+                        projection,
+                    },
+                );
+                let cache = self.clone();
+                let request_key = key.clone();
+                let source = source.clone();
+                let capability_source = source.api_socket.clone();
+                let repository = repository.map(str::to_owned);
+                let worktree_keys = worktree_keys.map(<[String]>::to_vec);
+                let workstream = workstream.map(str::to_owned);
+                let bindings = bindings.to_vec();
+                let capability_cache = cache.clone();
+                let capability_key = request_key.clone();
+                drop(state);
+                // A bounded source read may outlive this foreground request. It
+                // remains owned by this exact-query cache until completion; another
+                // request for the same source cannot launch a competing cold read.
+                let spawned = std::thread::Builder::new()
+                    .name("usage-api-refresh".into())
+                    .spawn(move || {
+                        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            fetch(
+                                &source,
+                                SummaryQuery {
+                                    repository: repository.as_deref(),
+                                    worktree_keys: worktree_keys.as_deref(),
+                                    include_unassigned,
+                                    workstream: workstream.as_deref(),
+                                    bindings: &bindings,
+                                    start,
+                                    end,
+                                    projection,
+                                },
+                                move |supports| {
+                                    capability_cache.note_headline_capability(
+                                        &capability_key,
+                                        capability_source.as_deref(),
+                                        supports,
+                                    )
+                                },
+                                Instant::now() + SOURCE_READ_BUDGET,
+                            )
+                        }))
+                        .unwrap_or_else(|_| Err("api_refresh_failed".into()));
+                        cache.finish(request_key, result);
+                    });
+                if spawned.is_err() {
+                    self.finish(key.clone(), Err("api_refresh_failed".into()));
+                }
+                state = guard.lock().map_err(|_| "api_busy")?;
+            }
             if let Some(entry) = state
                 .entries
                 .get(&key)
@@ -794,13 +1154,10 @@ impl CollectorApi {
             if remaining.is_zero() {
                 return Err("api_refresh_pending".into());
             }
-            let (updated, waited) = changed
+            let (updated, _) = changed
                 .wait_timeout(state, remaining)
                 .map_err(|_| "api_busy")?;
             state = updated;
-            if waited.timed_out() && state.inflight.contains_key(&key) {
-                return Err("api_refresh_pending".into());
-            }
         }
     }
 
@@ -819,7 +1176,7 @@ impl CollectorApi {
         start: u64,
         end: u64,
     ) -> Option<UsageLoading> {
-        let key = full_query_key(
+        self.loading_for_projection(
             source,
             repository,
             worktree_keys,
@@ -828,22 +1185,111 @@ impl CollectorApi {
             bindings,
             start,
             end,
+            QueryProjection::Rich,
         )
-        .ok()?;
-        let profile = profile_key(
+    }
+
+    pub(super) fn headline_loading_for(
+        &self,
+        source: &CodexUsageSource,
+        repository: Option<&str>,
+        worktree_keys: Option<&[String]>,
+        include_unassigned: bool,
+        start: u64,
+        end: u64,
+    ) -> Option<UsageLoading> {
+        self.loading_for_projection(
             source,
             repository,
             worktree_keys,
             include_unassigned,
-            workstream,
-            bindings,
+            None,
+            &[],
             start,
             end,
+            QueryProjection::Headline,
         )
-        .ok()?;
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Loading scope mirrors the selected cached projection"
+    )]
+    fn loading_for_projection(
+        &self,
+        source: &CodexUsageSource,
+        repository: Option<&str>,
+        worktree_keys: Option<&[String]>,
+        include_unassigned: bool,
+        workstream: Option<&str>,
+        bindings: &[crate::usage_context::Binding],
+        start: u64,
+        end: u64,
+        projection: QueryProjection,
+    ) -> Option<UsageLoading> {
+        let key = projection_key(
+            full_query_key(
+                source,
+                repository,
+                worktree_keys,
+                include_unassigned,
+                workstream,
+                bindings,
+                start,
+                end,
+            )
+            .ok()?,
+            projection,
+        );
+        let profile = projection_key(
+            profile_key(
+                source,
+                repository,
+                worktree_keys,
+                include_unassigned,
+                workstream,
+                bindings,
+                start,
+                end,
+            )
+            .ok()?,
+            projection,
+        );
         let (state, _) = &*self.0;
         let state = state.lock().ok()?;
         loading_from_state(&state, &key, &profile, Instant::now())
+    }
+
+    /// Publish the negotiated capability as soon as the handshake completes.
+    /// This lets one compact read share the source with one already-running
+    /// rich read; a false or changed capability stays on the ordinary lane.
+    fn note_headline_capability(&self, key: &str, path: Option<&Path>, supports: bool) -> bool {
+        let (guard, changed) = &*self.0;
+        let mut state = guard
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let shared_rich = path.is_some_and(|path| {
+            state.inflight.iter().any(|(other_key, flight)| {
+                other_key != key
+                    && flight.source == path
+                    && flight.projection == QueryProjection::Rich
+            })
+        });
+        if let Some(path) = path
+            && let Some(identity) = socket_identity(path)
+        {
+            if !state.headline_capabilities.contains_key(path)
+                && state.headline_capabilities.len() >= MAX_CACHED
+                && let Some(evicted) = state.headline_capabilities.keys().next().cloned()
+            {
+                state.headline_capabilities.remove(&evicted);
+            }
+            state
+                .headline_capabilities
+                .insert(path.to_owned(), HeadlineCapability { identity, supports });
+        }
+        changed.notify_all();
+        shared_rich
     }
 
     fn finish(&self, key: String, result: Result<(Summary, usize), String>) {
@@ -852,7 +1298,10 @@ impl CollectorApi {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let flight = state.inflight.remove(&key);
-        if let (Some(flight), Ok(_)) = (&flight, &result) {
+        if let (Some(flight), Ok((summary, _))) = (&flight, &result)
+            && (flight.projection == QueryProjection::Rich
+                || summary.report.projection.as_deref() == Some("token_headline"))
+        {
             let duration_ms =
                 u64::try_from(flight.started.elapsed().as_millis()).unwrap_or(u64::MAX);
             state.record_duration(flight.profile.clone(), duration_ms);
@@ -955,11 +1404,13 @@ struct SummaryQuery<'a> {
     bindings: &'a [crate::usage_context::Binding],
     start: u64,
     end: u64,
+    projection: QueryProjection,
 }
 
 fn fetch(
     source: &CodexUsageSource,
     query: SummaryQuery<'_>,
+    note_capability: impl FnOnce(bool) -> bool,
     deadline: Instant,
 ) -> Result<(Summary, usize), String> {
     let SummaryQuery {
@@ -970,20 +1421,45 @@ fn fetch(
         bindings,
         start,
         end,
+        projection,
     } = query;
-    let mut socket = connect(source, deadline)?;
+    let (mut socket, supports_headlines) = connect(source, deadline)?;
+    let rich_read_is_occupied = note_capability(supports_headlines);
+    if projection == QueryProjection::Headline && !supports_headlines && rich_read_is_occupied {
+        // A changed or false capability cannot silently turn the compact lane
+        // into a second rich query. The next ordinary retry will use the
+        // single heavy lane after the existing read completes.
+        return Err("api_contract_unsupported".into());
+    }
+    let actual_projection = if projection == QueryProjection::Headline && supports_headlines {
+        QueryProjection::Headline
+    } else {
+        QueryProjection::Rich
+    };
     let value = exchange(
         &mut socket,
         2,
         "localUsage/summary",
-        json!({"contractVersion":1,"repositoryKey":repository,"worktreeKeys":worktree_keys,"includeUnassigned":include_unassigned,"workstreamId":workstream,"fromAt":start,"toAt":end,"includeReview":true,"workContextBindings":bindings}),
+        json!({"contractVersion":1,"repositoryKey":repository,"worktreeKeys":worktree_keys,"includeUnassigned":include_unassigned,"workstreamId":workstream,"fromAt":start,"toAt":end,"includeReview":actual_projection == QueryProjection::Rich,"workContextBindings":bindings}),
         deadline,
     )?;
     let bytes = serde_json::to_vec(&value)
         .map_err(|_| "api_contract_unsupported")?
         .len();
-    let summary: Summary = serde_json::from_value(value).map_err(|_| "api_contract_unsupported")?;
-    validate(&summary, repository, start, end)?;
+    let summary: Summary = match actual_projection {
+        QueryProjection::Rich => {
+            serde_json::from_value(value).map_err(|_| "api_contract_unsupported")?
+        }
+        QueryProjection::Headline => serde_json::from_value::<HeadlineSummary>(value)
+            .map_err(|_| "api_contract_unsupported")?
+            .into_summary()?,
+    };
+    match actual_projection {
+        QueryProjection::Rich => validate(&summary, repository, start, end)?,
+        QueryProjection::Headline => {
+            validate_projection(&summary, repository, start, end, actual_projection)?
+        }
+    }
     // Dropping the connection stops response delivery. The producer keeps its
     // bounded read isolated in its local worker; this consumer does not claim
     // that transport closure cancels that worker synchronously.
@@ -993,7 +1469,7 @@ fn fetch(
 fn connect(
     source: &CodexUsageSource,
     deadline: Instant,
-) -> Result<WebSocket<DeadlineStream>, String> {
+) -> Result<(WebSocket<DeadlineStream>, bool), String> {
     let path = source.api_socket.as_ref().ok_or("api_not_configured")?;
     let metadata = path.metadata().map_err(|_| "api_socket_unavailable")?;
     if !metadata.file_type().is_socket() || metadata.uid() != source.uid {
@@ -1051,12 +1527,17 @@ fn connect(
         return Err("api_source_identity_mismatch".into());
     }
     validate_capability(&initialize)?;
+    let supports_headlines = initialize
+        .get("localUsageAccounting")
+        .and_then(|capability| capability.get("supportsTokenHeadlines"))
+        .and_then(Value::as_bool)
+        == Some(true);
     socket
         .send(Message::Text(
             json!({"method":"initialized"}).to_string().into(),
         ))
         .map_err(|_| "api_unavailable")?;
-    Ok(socket)
+    Ok((socket, supports_headlines))
 }
 
 fn validate_capability(initialize: &Value) -> Result<(), String> {
@@ -1095,7 +1576,7 @@ pub(super) fn repository_identity(
     path: &Path,
     deadline: Instant,
 ) -> Result<String, String> {
-    let mut socket = connect(source, deadline)?;
+    let (mut socket, _) = connect(source, deadline)?;
     let value = exchange(
         &mut socket,
         2,
@@ -1234,15 +1715,48 @@ fn validate(
     start: u64,
     end: u64,
 ) -> Result<(), String> {
+    validate_projection(summary, repository, start, end, QueryProjection::Rich)
+}
+
+fn validate_projection(
+    summary: &Summary,
+    repository: Option<&str>,
+    start: u64,
+    end: u64,
+    projection: QueryProjection,
+) -> Result<(), String> {
     if summary.contract_version != Some(1)
         || summary.source.as_ref().and_then(Value::as_str) != Some("usage-v2")
         || summary.snapshot.is_none()
-        || summary.review.is_none()
+        || match projection {
+            QueryProjection::Rich => {
+                summary.review.is_none()
+                    || summary.report.projection.is_some()
+                    || matches!(summary.report.counts, Counts::Deferred)
+            }
+            QueryProjection::Headline => {
+                summary.review.is_some()
+                    || summary.report.projection.as_deref() != Some("token_headline")
+                    || !matches!(summary.report.counts, Counts::Deferred)
+            }
+        }
     {
         return Err("api_contract_unsupported".into());
     }
     let r = &summary.report;
     if summary.source.is_some() && r.database_schema_version != 3 {
+        return Err("api_contract_unsupported".into());
+    }
+    if projection == QueryProjection::Headline
+        && r.provider_tokens.iter().any(|token| {
+            token.repository_bucket != repository.unwrap_or("all")
+                || token.measurement_provenance != "provider_reported"
+                || token.exact_tokens.is_some_and(|value| {
+                    value != token.measured_tokens || token.unknown_observations != 0
+                })
+                || token.unknown_observations > token.observation_count
+        })
+    {
         return Err("api_contract_unsupported".into());
     }
     if r.schema_version != 1
@@ -1308,8 +1822,9 @@ fn validate(
             .provider_tokens
             .iter()
             .filter(|token| token.category == "total_tokens")
-            .map(|token| token.measured_tokens)
-            .sum::<u64>();
+            .try_fold(0u64, |total, token| {
+                total.checked_add(u64::try_from(token.measured_tokens).ok()?)
+            });
         let components = [
             cost.input_usd_micros,
             cost.cached_input_usd_micros,
@@ -1329,12 +1844,20 @@ fn validate(
                     || total
                         .zip(cost.estimated_usd_micros)
                         .is_none_or(|(parts, total)| total < parts || total - parts > 3)
-                    || cost.provider_total_tokens != provider_total
+                    || Some(cost.provider_total_tokens) != provider_total
                     || cost.rate_card_refs.is_empty()))
             || cost
                 .rate_card_refs
                 .iter()
                 .any(|r| r.len() > 128 || r.chars().any(char::is_control))
+            || cost.unavailable_reasons.len() > 64
+            || cost.unavailable_reasons.keys().any(|reason| {
+                reason.is_empty()
+                    || reason.len() > 64
+                    || !reason
+                        .bytes()
+                        .all(|byte| byte.is_ascii_alphanumeric() || b"._-".contains(&byte))
+            })
         {
             return Err("api_contract_unsupported".into());
         }
@@ -1351,13 +1874,23 @@ impl Summary {
         include_unassigned: bool,
     ) -> SourceReport {
         let r = &self.report;
+        let headline = matches!(r.counts, Counts::Deferred);
         let source_partial = self.snapshot.as_ref().is_some_and(|snapshot| {
             snapshot.freshness != "fresh"
                 || snapshot.pending_entries.unwrap_or_default() != 0
                 || snapshot.pending_corrections.unwrap_or_default() != 0
         });
-        let partial = r.coverage.has_gaps || r.coverage.state != "complete" || source_partial;
+        let partial =
+            r.coverage.has_gaps || r.coverage.state != "complete" || (!headline && source_partial);
         let mut result = SourceReport {
+            supplied_execution_wall: self
+                .review
+                .as_ref()
+                .map(|review| review.time.execution_wall.clone()),
+            supplied_agent_active: self
+                .review
+                .as_ref()
+                .map(|review| review.time.summed_agent_active.clone()),
             source_snapshot: self.snapshot.as_ref().map(|s| {
                 devcoordinator2_api::results::UsageSourceSnapshot {
                     source: "usage-v2".into(),
@@ -1423,11 +1956,11 @@ impl Summary {
             bucket_coverage: vec![CoverageState::Unobserved; buckets],
             // Aggregated durations cannot be unioned across collectors. Do not invent intervals.
             request_unknown: 1,
-            execution_unknown: 1,
-            agent_unknown: 1,
+            execution_unknown: u64::from(self.review.is_none()),
+            agent_unknown: u64::from(self.review.is_none()),
             ..Default::default()
         };
-        if source_partial {
+        if source_partial && !headline {
             increment(&mut result.coverage_events, "partial");
         }
         for t in &r.provider_tokens {
@@ -1443,20 +1976,32 @@ impl Summary {
                 continue;
             }
             result.evidence |= t.observation_count > 0;
-            if t.observation_count > 0 && (t.exact_tokens.is_some() || t.measured_tokens > 0) {
-                *result.tokens.entry(t.category.clone()).or_default() += t.measured_tokens;
+            if t.observation_count > 0 && (t.exact_tokens.is_some() || t.measured_tokens != 0) {
+                add_token_quantity(
+                    &mut result.tokens,
+                    &mut result.unavailable_tokens,
+                    &t.category,
+                    t.measured_tokens,
+                );
             }
             let state = if partial || t.unknown_observations > 0 || t.exact_tokens.is_none() {
                 "partial"
             } else {
                 "complete"
             };
-            *result.token_observations.entry(state.into()).or_default() += t.observation_count;
+            if !headline || t.category == "total_tokens" {
+                *result.token_observations.entry(state.into()).or_default() += t.observation_count;
+            }
         }
         {
-            result.operation_count = r.counts.operations;
-            result.model_request_count = r.counts.model_requests;
-            result.tool_count = r.counts.tools;
+            match &r.counts {
+                Counts::Measured(counts) => {
+                    result.operation_count = counts.operations;
+                    result.model_request_count = counts.model_requests;
+                    result.tool_count = counts.tools;
+                }
+                Counts::Deferred => result.counts_deferred = true,
+            }
             for a in &r.provider_tokens_by_activity {
                 let key = (safe_phase(&a.phase), safe_label(&a.activity));
                 *result.activities.entry(key.clone()).or_default() += a.measured_tokens;
@@ -1477,7 +2022,11 @@ impl Summary {
             for ((phase, _), value) in &result.activities {
                 *result.phase_series[0].entry(phase.clone()).or_default() += value;
             }
-            if let Some(total) = result.tokens.get("total_tokens").copied() {
+            if let Some(total) = result
+                .tokens
+                .get("total_tokens")
+                .and_then(|v| u64::try_from(*v).ok())
+            {
                 let classified = result.phase_series[0]
                     .values()
                     .copied()
@@ -1570,8 +2119,8 @@ impl CodexUsage {
                 range: report.range,
                 coverage: report.coverage,
                 total_tokens: report.totals.total_tokens,
-                model_requests: Some(report.totals.model_requests),
-                tool_calls: Some(report.totals.tool_calls),
+                model_requests: report.totals.model_requests,
+                tool_calls: report.totals.tool_calls,
                 execution_wall_ms: Some(report.time.execution_wall.measured_ms),
                 cost: report.totals.cost,
             });
@@ -1595,18 +2144,38 @@ pub(super) fn merge_costs(costs: &[UsageCost], source_gaps: bool) -> UsageCost {
     };
     let mut partial = source_gaps;
     let mut refs = BTreeSet::new();
+    let counter = |select: fn(&UsageCost) -> Option<u64>| {
+        if costs.is_empty() {
+            return None;
+        }
+        costs
+            .iter()
+            .try_fold(0_u64, |total, cost| total.checked_add(select(cost)?))
+    };
+    result.model_requests = counter(|cost| cost.model_requests);
+    result.priced_requests = counter(|cost| cost.priced_requests);
+    result.unknown_requests = counter(|cost| cost.unknown_requests);
+    result.priced_observations = counter(|cost| cost.priced_observations);
+    result.unknown_observations = counter(|cost| cost.unknown_observations);
+    let mut quantity_overflow = false;
     macro_rules! sum {
         ($field:ident) => {{
-            let mut amount = None;
+            let mut amount: Option<i128> = None;
+            let mut overflow = false;
             for cost in costs {
                 match cost.$field {
                     Some(v) => {
-                        amount = Some(amount.unwrap_or(0u64).saturating_add(v));
+                        if !overflow {
+                            amount = amount.unwrap_or_default().checked_add(i128::from(v));
+                            overflow = amount.is_none();
+                            partial |= overflow;
+                        }
                     }
                     None => partial = true,
                 }
             }
-            result.$field = amount;
+            result.$field = amount.and_then(|value| value.try_into().ok());
+            quantity_overflow |= overflow || (amount.is_some() && result.$field.is_none());
         }};
     }
     sum!(estimated_usd_micros);
@@ -1620,21 +2189,22 @@ pub(super) fn merge_costs(costs: &[UsageCost], source_gaps: bool) -> UsageCost {
     sum!(uncached_input_tokens);
     sum!(output_tokens);
     // Reasoning is an optional output subset, not a separate billed component.
-    result.reasoning_tokens = costs
+    let reasoning = costs
         .iter()
         .filter_map(|c| c.reasoning_tokens)
-        .reduce(u64::saturating_add);
+        .collect::<Vec<_>>();
+    result.reasoning_tokens = (!reasoning.is_empty())
+        .then(|| {
+            reasoning
+                .iter()
+                .try_fold(0i128, |total, value| total.checked_add(i128::from(*value)))
+                .and_then(|value| i64::try_from(value).ok())
+        })
+        .flatten();
+    quantity_overflow |= !reasoning.is_empty() && result.reasoning_tokens.is_none();
     for cost in costs {
         partial |= cost.status != "complete";
-        result.model_requests = result.model_requests.saturating_add(cost.model_requests);
-        result.priced_requests = result.priced_requests.saturating_add(cost.priced_requests);
-        result.unknown_requests = result
-            .unknown_requests
-            .saturating_add(cost.unknown_requests);
         result.unknown_tokens = result.unknown_tokens.saturating_add(cost.unknown_tokens);
-        result.unknown_observations = result
-            .unknown_observations
-            .saturating_add(cost.unknown_observations);
         refs.extend(cost.rate_card_refs.clone());
         for card in &cost.matched_rate_cards {
             if !result.matched_rate_cards.contains(card) {
@@ -1645,6 +2215,10 @@ pub(super) fn merge_costs(costs: &[UsageCost], source_gaps: bool) -> UsageCost {
     }
     if source_gaps {
         increment(&mut result.unavailable_reasons, "unavailable_collectors");
+    }
+    if quantity_overflow {
+        partial = true;
+        increment(&mut result.unavailable_reasons, "quantity_overflow");
     }
     result.rate_card_refs = refs.into_iter().collect();
     result.rate_card_ref = result.rate_card_refs.first().cloned();

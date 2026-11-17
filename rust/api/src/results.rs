@@ -2418,13 +2418,13 @@ pub struct UsageRepositories {
 #[serde(deny_unknown_fields)]
 pub struct UsageTotals {
     pub total_tokens: Option<u64>,
-    pub input_tokens: Option<u64>,
-    pub cached_input_tokens: Option<u64>,
-    pub output_tokens: Option<u64>,
-    pub reasoning_tokens: Option<u64>,
-    pub model_requests: u64,
-    pub tool_calls: u64,
-    pub operations: u64,
+    pub input_tokens: Option<i64>,
+    pub cached_input_tokens: Option<i64>,
+    pub output_tokens: Option<i64>,
+    pub reasoning_tokens: Option<i64>,
+    pub model_requests: Option<u64>,
+    pub tool_calls: Option<u64>,
+    pub operations: Option<u64>,
     #[serde(default, skip_serializing_if = "UsageCost::is_empty")]
     pub cost: UsageCost,
 }
@@ -2446,27 +2446,29 @@ pub struct UsageCost {
     pub output_usd_micros: Option<u64>,
     /// Provider-reported token components used by the cost/detail popover.
     /// Unavailable components remain null; they are never inferred as zero.
-    pub input_tokens: Option<u64>,
-    pub cached_input_tokens: Option<u64>,
+    pub input_tokens: Option<i64>,
+    pub cached_input_tokens: Option<i64>,
     pub cache_write_tokens: Option<u64>,
-    pub uncached_input_tokens: Option<u64>,
-    pub output_tokens: Option<u64>,
-    pub reasoning_tokens: Option<u64>,
+    pub uncached_input_tokens: Option<i64>,
+    pub output_tokens: Option<i64>,
+    pub reasoning_tokens: Option<i64>,
     #[serde(default)]
-    pub unknown_requests: u64,
+    pub unknown_requests: Option<u64>,
     #[serde(default)]
     pub unknown_tokens: u64,
     #[serde(default)]
-    pub unknown_observations: u64,
+    pub unknown_observations: Option<u64>,
+    #[serde(default)]
+    pub priced_observations: Option<u64>,
     pub rate_card_ref: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub rate_card_refs: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub matched_rate_cards: Vec<crate::rate_card::RateCard>,
     #[serde(default)]
-    pub model_requests: u64,
+    pub model_requests: Option<u64>,
     #[serde(default)]
-    pub priced_requests: u64,
+    pub priced_requests: Option<u64>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub unavailable_reasons: BTreeMap<String, u64>,
 }
@@ -2484,9 +2486,12 @@ impl UsageCost {
             && self.uncached_input_tokens.is_none()
             && self.output_tokens.is_none()
             && self.reasoning_tokens.is_none()
-            && self.unknown_requests == 0
+            && self.unknown_requests.is_none()
+            && self.model_requests.is_none()
+            && self.priced_requests.is_none()
+            && self.priced_observations.is_none()
             && self.unknown_tokens == 0
-            && self.unknown_observations == 0
+            && self.unknown_observations.is_none()
             && self.status.is_empty()
             && self.basis.is_empty()
             && self.currency.is_empty()

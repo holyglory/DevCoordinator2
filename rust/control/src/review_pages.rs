@@ -92,39 +92,25 @@ impl ReviewService {
             params.window_end_ms,
             deadline,
         )?;
-        if tokens_only {
-            usage.outcomes.basis = "Provider total observations in the exact period, deduplicated by effective owner and source event. Activity and outcome declarations come from their recorded owner. Undeclared and multi-repository work stays explicit. This display projects token-owning operations only; complete execution timing remains part of review evidence.".into();
-            for effort in std::iter::once(&mut usage.outcomes.totals)
-                .chain(std::iter::once(&mut usage.outcomes.attributed))
-                .chain(std::iter::once(&mut usage.outcomes.unattributed))
-                .chain(usage.outcomes.rows.iter_mut().map(|r| &mut r.effort))
-            {
-                for metric in [
-                    &mut effort.active_agent_ms,
-                    &mut effort.elapsed_execution_ms,
-                    &mut effort.recorded_wait_ms,
-                ] {
-                    metric.exact = None;
-                    metric.unknown = metric.unknown.max(1);
-                }
-            }
-            if params.workstream_id.is_none() && usage.outcomes.totals.activities.is_empty() {
-                // Repository activity rows are a measured repository summary.
-                // They can fill its missing chart aggregate, but cannot
-                // allocate effort to a named workstream or outcome.
-                for activity in &usage.activities {
-                    let entry = usage
-                        .outcomes
-                        .totals
-                        .activities
-                        .entry(activity.activity.clone())
-                        .or_default();
-                    entry.measured = entry
-                        .measured
-                        .checked_add(activity.total_tokens)
-                        .ok_or_else(|| invalid("Usage overflow"))?;
-                    entry.exact = None;
-                }
+        if tokens_only
+            && params.workstream_id.is_none()
+            && usage.outcomes.totals.activities.is_empty()
+        {
+            // Repository activity rows are a measured repository summary.
+            // They can fill its missing chart aggregate, but cannot
+            // allocate effort to a named workstream or outcome.
+            for activity in &usage.activities {
+                let entry = usage
+                    .outcomes
+                    .totals
+                    .activities
+                    .entry(activity.activity.clone())
+                    .or_default();
+                entry.measured = entry
+                    .measured
+                    .checked_add(activity.total_tokens)
+                    .ok_or_else(|| invalid("Usage overflow"))?;
+                entry.exact = None;
             }
         }
         let ids = usage

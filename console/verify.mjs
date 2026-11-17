@@ -552,19 +552,39 @@ async function startFakeDaemon(dir) {
         }
       };
       const reply = (payload) => {
+        if (scenario.usageUnknownMeasurements && payload.ok && req.operation === 'usage.repository') {
+          payload = structuredClone(payload);
+          for (const row of payload.data.models.slice(0, 2)) row.cost.unknown_observations = null;
+          payload.data.totals.cached_input_tokens = null;
+        }
+        if (scenario.usageSignedComponents && payload.ok && req.operation === 'usage.repository') {
+          payload = structuredClone(payload);
+          Object.assign(payload.data.totals, { input_tokens: -4, cached_input_tokens: -2, output_tokens: payload.data.totals.total_tokens + 4, reasoning_tokens: -1 });
+          const row = payload.data.models[0];
+          Object.assign(row.cost, { input_tokens: -4, cached_input_tokens: -2, output_tokens: row.total_tokens + 4, reasoning_tokens: -1 });
+        }
         if (scenario.cacheState && payload.ok && ['usage.repository', 'usage.repositories', 'progress.repository'].includes(req.operation)) {
           payload = structuredClone(payload);
           const ready = !!req.params.wait_for_refresh;
           const failed = ['failed', 'unavailable'].includes(scenario.cacheState);
           const cold = scenario.cacheState === 'unavailable' || scenario.cacheState === 'loading' && !ready;
+          const publication = ['publication', 'publication_refresh'].includes(scenario.cacheState);
           const snapshot = { updated_at_ms: cold ? null : Date.UTC(2026, 8, 4, 12),
-            refreshing: !ready && !failed, refresh_failed: failed,
-            progress_completed: cold ? 3426 : 3926, progress_total: 3926,
-            progress_stage: cold ? 'token_observations' : null };
+            refreshing: publication || !ready && !failed, refresh_failed: failed,
+            progress_completed: publication ? null : cold ? 3426 : 3926, progress_total: publication ? null : 3926,
+            progress_stage: publication ? scenario.cacheState === 'publication_refresh' && !ready ? 'cache_refresh' : null : cold ? 'token_observations' : null };
           const items = req.operation === 'usage.repositories' ? payload.data.repositories : [payload.data];
           for (const item of items) {
             const coverage = req.operation === 'progress.repository' ? item.coverage.tokens : item.coverage;
             coverage.snapshot = snapshot;
+            if (publication) Object.assign(coverage, {
+              state: 'partial', has_gaps: true, configured_collectors: 1, available_collectors: 1, contributing_collectors: 1,
+              loading: null, unavailable_reasons: {}, database_schemas: [3],
+              sources: [{ source: 'fixture-collector', contract_version: 1, format_version: 3,
+                source_watermark: 'usage-v2:fixture:g12:w34', generated_at_ms: snapshot.updated_at_ms,
+                generation: 12, watermark: 34, journal_watermark: 131, watermark_at_ms: snapshot.updated_at_ms,
+                updated_at_ms: snapshot.updated_at_ms, freshness: 'stale', pending_entries: 97, pending_corrections: 0, refresh_id: null }],
+            });
             if (cold) {
               coverage.state = 'unavailable';
               coverage.available_collectors = 0;
@@ -608,8 +628,10 @@ async function startFakeDaemon(dir) {
       if (scenario.denied && ADMIN_ONLY.includes(cmd)) return reply({ ok: false, error: { code: 'permission_denied', message: `${cmd} requires administrator`, detail: '' } });
       if (cmd.startsWith('performance.') && !scenario.admin) return reply({ ok:false, error:{code:'permission_denied',message:'Administrator access required',detail:''} });
       if (cmd.startsWith('performance.')) {
-        const pendingKey = cmd === 'performance.review' ? `review:${req.params.reference}` : scenario.performancePendingByWindow ? JSON.stringify([req.params.repository_id, req.params.window_start_ms, req.params.window_end_ms, !!req.params.totals_only]) : req.params.totals_only ? 'lifetime' : 'period';
-        const pending = ['performance.overview', 'performance.review'].includes(cmd) && scenario.performancePendingRepository === req.params.repository_id || (cmd === 'performance.overview' && (scenario.performancePendingOnce || scenario.performancePendingByWindow) || cmd === 'performance.review' && scenario.performanceReviewPendingOnce) && !mutable.performancePendingServed.has(pendingKey);
+        if (scenario.performanceDetailsError && cmd === 'performance.overview' && !req.params.totals_only) return reply({ ok: false, error: { code: 'api_source_unavailable', message: 'Detailed measurements are temporarily unavailable.', detail: '' } });
+        if ((scenario.performanceHoldDetails || scenario.performanceHoldDetailsFrom === req.params.window_start_ms) && cmd === 'performance.overview' && !req.params.totals_only && !mutable.cacheReleased) await new Promise(resolve => delayedReplies.add(resolve));
+        const pendingKey = cmd === 'performance.review' ? `review:${req.params.reference}` : JSON.stringify([req.params.repository_id, req.params.window_start_ms, req.params.window_end_ms, !!req.params.totals_only]);
+        const pending = scenario.performanceDetailsPending && cmd === 'performance.overview' && !req.params.totals_only && !mutable.cacheReleased || ['performance.overview', 'performance.review'].includes(cmd) && scenario.performancePendingRepository === req.params.repository_id || (cmd === 'performance.overview' && (scenario.performancePendingOnce || scenario.performancePendingByWindow) || cmd === 'performance.review' && scenario.performanceReviewPendingOnce) && (scenario.performanceHoldPending ? !mutable.cacheReleased : !mutable.performancePendingServed.has(pendingKey));
         if (pending) mutable.performancePendingServed.add(pendingKey);
         return reply({ok:true,data:performanceFixture(cmd,req.params,pending ? {...scenario, usageUnavailable:true, performanceRefreshPending:true} : scenario)});
       }
@@ -974,7 +996,7 @@ async function main() {
     const scenarioName = process.env.CONSOLE_VERIFY_HOLD_SCENARIO || 'populated';
     const scenario = SCENARIOS[scenarioName];
     if (!scenario) throw new Error(`unknown hold scenario ${scenarioName}`);
-    daemon.setScenario({ ...scenario, ...(process.env.CONSOLE_VERIFY_PERFORMANCE_DENSE ? { performanceDense: true } : {}), ...(process.env.CONSOLE_VERIFY_PERFORMANCE_WORKSTREAM ? { performanceWorkstream: true } : {}), ...(process.env.CONSOLE_VERIFY_PERFORMANCE_PENDING_REPOSITORY ? { performancePendingRepository: process.env.CONSOLE_VERIFY_PERFORMANCE_PENDING_REPOSITORY } : {}), ...(process.env.CONSOLE_VERIFY_PERFORMANCE_PENDING_ONCE ? { performancePendingOnce: true } : {}), ...(process.env.CONSOLE_VERIFY_PERFORMANCE_DELAY_MS ? { delayMs: Number(process.env.CONSOLE_VERIFY_PERFORMANCE_DELAY_MS), delayRepository: process.env.CONSOLE_VERIFY_PERFORMANCE_DELAY_REPOSITORY || null, delayOperations: (process.env.CONSOLE_VERIFY_PERFORMANCE_DELAY_OPERATIONS || 'performance.overview,performance.review').split(',').filter(Boolean) } : {}) });
+    daemon.setScenario({ ...scenario, ...(process.env.CONSOLE_VERIFY_PERFORMANCE_DENSE ? { performanceDense: true } : {}), ...(process.env.CONSOLE_VERIFY_PERFORMANCE_WORKSTREAM ? { performanceWorkstream: true } : {}), ...(process.env.CONSOLE_VERIFY_PERFORMANCE_HOLD_DETAILS_FROM ? { performanceHoldDetailsFrom: Number(process.env.CONSOLE_VERIFY_PERFORMANCE_HOLD_DETAILS_FROM) } : {}), ...(process.env.CONSOLE_VERIFY_PERFORMANCE_PENDING_REPOSITORY ? { performancePendingRepository: process.env.CONSOLE_VERIFY_PERFORMANCE_PENDING_REPOSITORY } : {}), ...(process.env.CONSOLE_VERIFY_PERFORMANCE_PENDING_ONCE ? { performancePendingOnce: true } : {}), ...(process.env.CONSOLE_VERIFY_PERFORMANCE_DELAY_MS ? { delayMs: Number(process.env.CONSOLE_VERIFY_PERFORMANCE_DELAY_MS), delayRepository: process.env.CONSOLE_VERIFY_PERFORMANCE_DELAY_REPOSITORY || null, delayOperations: (process.env.CONSOLE_VERIFY_PERFORMANCE_DELAY_OPERATIONS || 'performance.overview,performance.review').split(',').filter(Boolean) } : {}) });
     const { cookie } = sessions.issue({ sub: 'sub', email: scenario.identity, name: 'Verifier' });
     const holdView = process.env.CONSOLE_VERIFY_HOLD_VIEW || `#/deployments/${DEP}`;
     const targetUrl = `http://${HOST}:${port}/${holdView}`;
@@ -1144,6 +1166,23 @@ async function main() {
       check('usage-only: completeness explanation is a real focused contextual overlay', await explanation.getAttribute('role') === 'dialog' && !!await explanation.getAttribute('data-ui-contextual-overlay') && await explanation.evaluate((element) => document.activeElement === element && getComputedStyle(element).position === 'absolute'));
       await page.keyboard.press('Escape');
       check('usage-only: phase chart fits without horizontal scrolling', await page.locator('.usage-chart-scroll').evaluate((element) => element.scrollWidth <= element.clientWidth + 1));
+      const unknownObservations = page.locator('[data-usage-model-detail] dl div').filter({ has: page.locator('dt', { hasText: 'Unknown observations' }) }).locator('dd');
+      check('usage-only: measured zero observations remains zero', await unknownObservations.innerText() === '0');
+      daemon.setScenario({ ...SCENARIOS.populated, workspaceLongList: true, usageSignedComponents: true });
+      await page.reload();
+      await page.locator('[data-usage-model-detail] dl').waitFor();
+      check('usage-only: signed net components retain their actual values', await page.locator('[data-usage-model-detail] dl div').filter({ has: page.locator('dt', { hasText: /^Input$/ }) }).locator('dd').innerText() === '-4' && await page.locator('[data-usage-model-detail] dl div').filter({ has: page.locator('dt', { hasText: /^Cached input$/ }) }).locator('dd').innerText() === '-2');
+      check('usage-only: signed corrections do not invent cache efficiency', (await page.locator('.usage-metrics').innerText()).includes('Cache efficiency\n—'));
+      daemon.setScenario({ ...SCENARIOS.populated, workspaceLongList: true, usageUnknownMeasurements: true });
+      await page.reload();
+      await page.locator('[data-usage-model-detail] dl').waitFor();
+      check('usage-only: initially unmeasured observation counts remain unavailable', await unknownObservations.innerText() === '—');
+      check('usage-only: unknown cached input does not become zero efficiency', (await page.locator('.usage-metrics').innerText()).includes('Cache efficiency\n—'));
+      await page.locator('[data-usage-model-index="1"]').click();
+      check('usage-only: selected unmeasured observation counts remain unavailable', await unknownObservations.innerText() === '—');
+      await page.locator('[data-usage-model-index="2"]').click();
+      check('usage-only: measured unknown observations retain their real count', await unknownObservations.innerText() === '8');
+      daemon.setScenario({ ...SCENARIOS.populated, workspaceLongList: true });
       await page.setViewportSize({ width: 810, height: 867 });
       await page.reload();
       await page.waitForSelector('[data-usage-worktree-scope-toggle]');
@@ -1191,17 +1230,21 @@ async function main() {
         const { cookie } = sessions.issue({ sub: 'sub', email: 'owner@example.test' });
         await context.addCookies([{ name: 'dc2_session', value: cookie.split(';')[0].split('=')[1], domain: '.' + BASE, path: '/' }]);
         const page = await context.newPage();
-        for (const route of ['usage', 'usage/' + REPO, 'progress/' + REPO, 'deployments'].filter(route => !process.env.CONSOLE_VERIFY_CACHE_ROUTE || route.startsWith(process.env.CONSOLE_VERIFY_CACHE_ROUTE))) {
-          for (const cacheState of ['loading', 'stale', 'failed', 'unavailable']) {
+        await page.clock.install();
+        for (const route of ['usage', 'usage/' + REPO, 'progress/' + REPO].filter(route => !process.env.CONSOLE_VERIFY_CACHE_ROUTE || route.startsWith(process.env.CONSOLE_VERIFY_CACHE_ROUTE))) {
+          for (const cacheState of ['loading', 'stale', 'failed', 'unavailable', 'publication', 'publication_refresh']) {
             try {
             daemon.setScenario({ ...SCENARIOS.populated, cacheState });
             const operation = route === 'usage' ? 'usage.repositories' : route.startsWith('progress') ? 'progress.repository' : 'usage.repository';
             const failed = ['failed', 'unavailable'].includes(cacheState);
-            const waitRequest = failed ? null : page.waitForRequest(request => [operation, ...(route === 'usage' ? ['usage.repository'] : [])].some(name => request.url().endsWith('/api/v3/' + name)) && request.postDataJSON()?.wait_for_refresh === true).catch(error => ({ error }));
+            const publication = ['publication', 'publication_refresh'].includes(cacheState);
+            const navigationStarted = Date.now();
+            const waitRequest = failed || cacheState === 'publication' ? null : page.waitForRequest(request => [operation, ...(route === 'usage' ? ['usage.repository'] : [])].some(name => request.url().endsWith('/api/v3/' + name)) && request.postDataJSON()?.wait_for_refresh === true).then(request => ({ request, elapsed_ms: Date.now() - navigationStarted })).catch(error => ({ error }));
             await page.goto('http://' + HOST + ':' + port + '/?cache=' + cacheState + '#/' + route);
-            await page.waitForFunction(() => /Loading usage|Saved usage|Refresh failed|refresh failed/i.test(document.querySelector('main').innerText));
+            await page.waitForFunction(() => /Loading (token )?usage|Rebuilding usage cache|Indexing usage cache|Saved usage|Refresh failed/i.test(document.querySelector('main').innerText));
             const before = await page.locator('main').innerText();
-            check('cache ' + viewport.width + ' ' + route + ' ' + cacheState + ': truthful snapshot label', cacheState === 'loading' ? /Loading usage/.test(before) : failed ? /refresh failed/i.test(before) : /saved usage/i.test(before));
+            const renderedOperation = page.url().includes('#/usage/') ? 'usage.repository' : operation;
+            check('cache ' + viewport.width + ' ' + route + ' ' + cacheState + ': truthful snapshot label', cacheState === 'loading' ? /Loading (token )?usage|Rebuilding usage cache|Indexing usage cache/.test(before) : failed ? /refresh failed/i.test(before) : /saved usage/i.test(before));
             if (cacheState === 'unavailable' && route === 'usage/' + REPO) check('empty usage failure is shown once', (before.match(/refresh failed/gi) || []).length === 1 && await page.locator('.usage-metrics').count() === 0);
             if (cacheState === 'loading' && route === 'usage/' + REPO) check('cache cold detail hides unmeasured metrics', await page.locator('.usage-metrics').count() === 0);
             if (cacheState === 'loading' && route === 'usage/' + REPO) check('cache cold detail shows rebuild progress', await page.locator('.usage-rebuild-progress').count() === 1 && /3,426/.test(await page.locator('.usage-rebuild-progress').innerText()));
@@ -1211,11 +1254,30 @@ async function main() {
             if (waitRequest) {
               const received = await waitRequest;
               if (received.error) throw received.error;
+              check('cache ' + viewport.width + ' ' + route + ': initial continuation starts within one second', received.elapsed_ms < 1000, `${received.elapsed_ms}ms`);
+              if (cacheState === 'publication_refresh') {
+                await page.clock.fastForward(1100);
+                await waitForRenderFrame(page);
+                if (renderedOperation === 'progress.repository') check('cache ' + viewport.width + ' ' + route + ': owned outer refresh retains its updating status after one second', /Loading (token )?usage|Rebuilding usage cache|Indexing usage cache|Saved usage · updating|Updating saved usage/i.test(await page.locator('main').innerText()));
+                else check('cache ' + viewport.width + ' ' + route + ': owned outer refresh shows inline progress after one second', await page.locator('[data-usage-loading]').isVisible());
+              }
               daemon.releaseDelayed();
-              await page.waitForFunction(() => !/Loading usage|Saved usage · updating|Updating saved usage/.test(document.querySelector('main').innerText));
+              if (publication) await waitForSettledCall(daemon, page, call => call.operation === renderedOperation && call.params.wait_for_refresh === true);
+              else await page.waitForFunction(() => !/Loading (token )?usage|Rebuilding usage cache|Indexing usage cache|Saved usage · updating|Updating saved usage/.test(document.querySelector('main').innerText));
               if (cacheState === 'stale' && details) check('cache ' + route + ': open details survive refresh', await page.locator(details).getAttribute('open') !== null);
-              const renderedOperation = page.url().includes('#/usage/') ? 'usage.repository' : operation;
               check('cache ' + route + ': completion uses bounded event wait', daemon.calls.some(call => call.operation === renderedOperation && call.params.wait_for_refresh === true));
+            }
+            if (publication) {
+              const continuations = () => daemon.calls.filter(call => call.operation === renderedOperation && call.params.wait_for_refresh === true).length;
+              await waitForRenderFrame(page);
+              check('cache ' + viewport.width + ' ' + route + ' ' + cacheState + ': only owned work starts an immediate continuation', continuations() === (cacheState === 'publication_refresh' ? 1 : 0));
+              daemon.releaseDelayed();
+              // Advance the browser's clock across the retry interval; no wall-clock sleep is required.
+              await page.clock.fastForward(15000);
+              await waitForRenderFrame(page);
+              check('cache ' + viewport.width + ' ' + route + ' ' + cacheState + ': publication backlog does not repeat completed reads', continuations() === (cacheState === 'publication_refresh' ? 1 : 0));
+              if (renderedOperation === 'progress.repository') check('cache ' + viewport.width + ' ' + route + ' ' + cacheState + ': completed reads retain measured token evidence', /\d/.test(await page.locator('[data-progress-evidence="tokens"] > strong').innerText()));
+              else check('cache ' + viewport.width + ' ' + route + ' ' + cacheState + ': completed reads clear inline progress', await page.locator('[data-usage-loading]').isHidden());
             }
             check('cache ' + viewport.width + ' ' + route + ': no document overflow', await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth));
             await page.screenshot({ path: path.join(OUT, viewport.width + '-' + route.replaceAll('/', '-') + '-' + cacheState + '-initial.png') });

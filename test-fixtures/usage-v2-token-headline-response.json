@@ -1,0 +1,144 @@
+{
+  "contractVersion": 1,
+  "source": "usage-v2",
+  "generatedAt": 1794945700000,
+  "snapshot": {
+    "sourceWatermark": "usage-v2:headline:example-snapshot-id:g7:w42",
+    "generatedAt": 1794945700000,
+    "generation": 7,
+    "watermark": 42,
+    "journalWatermark": 42,
+    "watermarkAtMs": 1794945699999,
+    "updatedAtMs": 1794945700000,
+    "freshness": "fresh",
+    "pendingEntries": 0,
+    "pendingCorrections": 0,
+    "refreshId": null
+  },
+  "report": {
+    "schemaVersion": 1,
+    "kind": "usageSummary",
+    "projection": "token_headline",
+    "databaseSchemaVersion": 3,
+    "taxonomyVersion": 1,
+    "scope": {
+      "type": "repository",
+      "id": "example-repository"
+    },
+    "timeRange": {
+      "startMs": 1794945600001,
+      "endMs": 1794945700001
+    },
+    "counts": null,
+    "providerTokens": [
+      {
+        "category": "total_tokens",
+        "repositoryBucket": "example-repository",
+        "measurementProvenance": "provider_reported",
+        "measuredTokens": 120,
+        "exactTokens": 120,
+        "unknownObservations": 0,
+        "observationCount": 1
+      },
+      {
+        "category": "input_tokens",
+        "repositoryBucket": "example-repository",
+        "measurementProvenance": "provider_reported",
+        "measuredTokens": 100,
+        "exactTokens": 100,
+        "unknownObservations": 0,
+        "observationCount": 1
+      },
+      {
+        "category": "input_tokens_details.cached_tokens",
+        "repositoryBucket": "example-repository",
+        "measurementProvenance": "provider_reported",
+        "measuredTokens": 80,
+        "exactTokens": 80,
+        "unknownObservations": 0,
+        "observationCount": 1
+      },
+      {
+        "category": "output_tokens",
+        "repositoryBucket": "example-repository",
+        "measurementProvenance": "provider_reported",
+        "measuredTokens": 20,
+        "exactTokens": 20,
+        "unknownObservations": 0,
+        "observationCount": 1
+      },
+      {
+        "category": "output_tokens_details.reasoning_tokens",
+        "repositoryBucket": "example-repository",
+        "measurementProvenance": "provider_reported",
+        "measuredTokens": 5,
+        "exactTokens": 5,
+        "unknownObservations": 0,
+        "observationCount": 1
+      },
+      {
+        "category": "cache_write_input_tokens",
+        "repositoryBucket": "example-repository",
+        "measurementProvenance": "provider_reported",
+        "measuredTokens": 0,
+        "exactTokens": null,
+        "unknownObservations": 1,
+        "observationCount": 1
+      }
+    ],
+    "providerTokensByActivity": null,
+    "coverage": {
+      "state": "complete",
+      "hasGaps": false,
+      "providerTotals": "recorded",
+      "counts": "deferred",
+      "cost": "deferred",
+      "timing": "deferred",
+      "lifecycle": "deferred",
+      "contextSize": "deferred",
+      "workBindings": "deferred",
+      "activity": "deferred",
+      "details": {
+        "basis": "published_snapshot",
+        "exactAtPublishedWatermark": true,
+        "tokenObservations": 1,
+        "missingTokenObservations": 0,
+        "providerTotalUnknowns": 0,
+        "cacheWriteUnknowns": 1
+      }
+    },
+    "timing": null,
+    "lifecycle": null,
+    "contextSize": null,
+    "cost": null,
+    "measuredExecutionIntervalSumMs": null,
+    "workBindings": null,
+    "filters": {
+      "accountId": null,
+      "repositoryId": "example-repository",
+      "threadId": null
+    }
+  },
+  "summary": {
+    "projection": "token_headline",
+    "counts": null,
+    "inputTokens": 100,
+    "cachedInputTokens": 80,
+    "cacheWriteInputTokens": null,
+    "outputTokens": 20,
+    "reasoningOutputTokens": 5,
+    "providerTotalTokens": 120,
+    "tokenObservations": 1
+  },
+  "review": null,
+  "observations": null,
+  "nextRecordsCursor": null,
+  "operations": null,
+  "nextOperationsCursor": null,
+  "workContexts": [],
+  "operationBindings": [],
+  "contextSize": null,
+  "costProvenance": null,
+  "lifecycle": null,
+  "timing": null
+}

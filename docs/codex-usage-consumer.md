@@ -65,6 +65,33 @@ scope. Unknown-context work remains visible. `review.prepare` preserves its
 existing JSON fields, and review acceptance still requires interpreted evidence.
 The integration does not change verdict rules to manufacture a completed review.
 
+Performance `totals_only` requests negotiate the additive
+`supportsTokenHeadlines` capability. When true they send `includeReview:false`
+and require the separate `token_headline` projection: canonical provider token
+rows, exact requested repository/window, and the original versioned snapshot
+frontiers remain mandatory. Counts, activity, timing, lifecycle, context, work
+bindings, and pricing are explicitly deferred rather than fabricated as zero.
+The public totals' request/tool/operation counts are null for that projection;
+ordinary measured rich results retain numeric counts. Known token components
+remain available even when pricing is unavailable. An optional unknown cache
+write component does not erase an exact provider total at the published prefix.
+
+Headline and rich requests have distinct cache/loading keys. A producer without
+the capability (or with it false) retains the existing strict rich request;
+that compatibility fallback never trains the headline latency estimate. Rich
+review and Usage queries do not accept headline nulls or incomplete review
+payloads. Header projection does not manufacture Usage graphs, outcome
+attribution, or timing. Headline coverage describes token measurements at the
+canonical published prefix; source backlog and freshness remain separately
+visible in the unchanged snapshot metadata.
+
+Console requests the finite period and lifetime headlines before admitting the
+rich overview. It retains those measured summaries and their component details
+while rich detail is pending or fails, and shows deferred counts and pricing as
+unavailable rather than zero. A selected stored review remains readable even
+when headline attempts are still pending. The first pending continuation is
+immediate; the inline progress indicator is independently delayed one second.
+
 ## Coverage, timing and privacy
 
 Unavailable collectors are excluded, never counted as synthetic zeroes.
@@ -72,6 +99,40 @@ Provider total tokens are not reconstructed by adding components. Cached input
 and reasoning output are subsets. Unknown measurements retain null exact values.
 Summed concurrent operation durations are not elapsed wall time or active-agent
 time; dimensions lacking the necessary intervals stay unknown.
+
+Rich source-provided wall and elapsed-execution unions retain their measured
+value and exact/unknown state. A known empty union remains exact zero; an
+unavailable zero remains unknown. Positive unions from different sources may
+overlap: their maximum is retained as a measured lower bound with explicit
+overlap uncertainty, rather than summing them. Known empty unions add nothing.
+Source active-agent time is the sum of per-agent/thread unions and remains
+separate from wall time. Repository active measurements are not allocated into
+phases or outcomes. Diagnostic operation-interval sums remain separate snapshot
+metadata and are never substituted for any union.
+
+Cost availability reasons retain their bounded content-free labels and counts.
+Pricing observations and unique model requests remain distinct units: the
+repository request total comes from its matching rich report, while unknown
+priced/unpriced request counts are null when only observation counts exist.
+Priced and unknown observation counters are nullable when their matching scope
+has no observed count. Genuine measured request counters retain numeric JSON,
+including zero; a measured zero estimate also remains available. No repository
+request denominator or cost is borrowed for an outcome or workstream subset.
+
+Accepted retained adjustments can make input, cached-input, output, and
+reasoning components negative. Only those four canonical provider categories
+accept signed 64-bit net measurements; total tokens, cache-write tokens, and
+observation counters remain unsigned. The matching component fields in totals
+and cost details, including uncached input, preserve signs. Aggregation uses
+checked arithmetic and leaves an out-of-range result unavailable with a fixed
+coverage reason. Components never reconstruct the provider total or imply a
+refund or a new price; source-declared price amounts remain authoritative.
+
+When a source explicitly negotiates the token-headline projection, one compact
+read may run beside one rich read for a different exact scope. The cache keeps
+their projection and scope keys separate, and the global byte and job bounds
+still apply. A missing, false, or changed capability stays on the single rich
+read lane; it is never silently promoted into a second heavy query.
 
 Ordinary reports omit credentials, raw arguments, prompts, response bodies,
 private paths and contributing account identities. Source references used by
@@ -150,6 +211,15 @@ query payloads or additional workers. Hints expire after fifteen seconds
 without a retry and share the existing admission-memory budget. Other sources
 remain independent.
 
+A cold foreground request may wait on the existing source-completion condition
+for an occupied source within its supplied budget, capped at 650 milliseconds.
+After a wake it rechecks the exact cache key, failures, and source ownership
+before admitting or joining a read. Waiting for a free slot does not reset the
+deadline or create a second producer job. Saved measurements return immediately.
+Ending a foreground wait leaves an already-owned background read intact. The
+repository Usage continuation uses the same condition through its retained
+source cutoff; it does not require another polling worker or public API field.
+
 A failed refresh preserves these measurements with
 `refresh_failed: true` and the precise bounded reason until a successful refresh
 replaces them. Cold failures still have no measurements. Existing memory, byte,
@@ -178,6 +248,15 @@ workstream, and window class; it uses a bounded median and is labeled with
 scope keeps the estimate unknown. The five-minute source deadline is a timeout
 boundary, never an ETA. Loading clears when the owned read completes, even when
 the producer reports stale publication or partial coverage.
+
+An outer display-cache refresh uses the existing snapshot stage
+`cache_refresh` while its owned loader is active. This distinguishes it from
+the combined `snapshot.refreshing` flag, which may also describe a producer's
+publication backlog. The stage adds no progress count or ETA and clears when
+the cache loader finishes. Usage and Progress continue actual cache/query
+work, but completed usage-v2 reads with only publication backlog do not start
+immediate or repeated refresh requests. Snapshots without usage-v2 source
+provenance retain the legacy refresh continuation behavior.
 
 ## Verification and activation
 

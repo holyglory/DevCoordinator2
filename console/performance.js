@@ -43,15 +43,43 @@ window.DevCoordinatorPerformance = (() => {
       const componentMarkup = hasComponents
         ? `<dl>${rows.map(([name, value]) => `<div><dt>${esc(name)}</dt><dd>${value == null ? 'Unavailable' : integer(value)}</dd></div>`).join('')}</dl><dl class="performance-cost-detail">${costs.map(([name, value]) => `<div><dt>${esc(name)}</dt><dd>${value == null ? 'Unavailable' : usd(value)}</dd></div>`).join('')}</dl>`
         : '<p class="performance-token-popover-empty">Component details unavailable for this breakdown.</p>';
-      return `<span class="performance-token-detail"><button type="button" class="performance-token-detail-button" data-performance-token-detail="${id}" aria-expanded="false" aria-controls="${id}" aria-label="Show token breakdown for ${esc(label)}">${amount(measurement)}</button><span class="performance-token-popover" id="${id}" role="dialog" aria-label="Token breakdown" hidden><strong>${esc(label)}</strong>${componentMarkup}<small>${esc(costState(cost))} · API-equivalent Standard basis</small></span></span>`;
+      return `<span class="performance-token-detail"><button type="button" class="performance-token-detail-button" data-performance-token-detail="${id}" aria-expanded="false" aria-controls="${id}" aria-label="Show token breakdown for ${esc(label)}">${amount(measurement)}</button><span class="performance-token-popover" id="${id}" role="dialog" aria-label="Token breakdown" data-ui-contextual-overlay="Token breakdown temporarily overlays surrounding measurements" hidden><strong data-ui-continuation-anchor>${esc(label)}</strong>${componentMarkup}<small>${esc(costState(cost))} · API-equivalent Standard basis</small></span></span>`;
+    }
+    function placeTokenPopover(button, popover) {
+      const viewport = window.visualViewport;
+      const leftEdge = (viewport?.offsetLeft || 0) + 8;
+      const topEdge = (viewport?.offsetTop || 0) + 8;
+      const width = (viewport?.width || window.innerWidth) - 16;
+      const height = (viewport?.height || window.innerHeight) - 16;
+      popover.style.maxWidth = `${width}px`;
+      popover.style.maxHeight = `${height}px`;
+      popover.style.left = '0px';
+      popover.style.top = '0px';
+      const anchor = button.getBoundingClientRect();
+      const panel = popover.getBoundingClientRect();
+      const left = Math.max(leftEdge, Math.min(anchor.right - panel.width, leftEdge + width - panel.width));
+      const below = anchor.bottom + 8;
+      const preferredTop = below + panel.height <= topEdge + height ? below : anchor.top - panel.height - 8;
+      const top = Math.max(topEdge, Math.min(preferredTop, topEdge + height - panel.height));
+      // Account for a containing block in browsers without the native popover layer.
+      popover.style.left = `${left - panel.left}px`;
+      popover.style.top = `${top - panel.top}px`;
+    }
+    function setTokenPopoverOpen(button, popover, open) {
+      if (!open && popover.hasAttribute('popover') && popover.matches(':popover-open')) popover.hidePopover();
+      popover.hidden = !open;
+      button.setAttribute('aria-expanded', String(open));
+      if (!open) return;
+      // The top layer keeps activity-table scroll containers from clipping details.
+      if (typeof popover.showPopover === 'function') {
+        popover.setAttribute('popover', 'manual');
+        popover.showPopover();
+      }
+      placeTokenPopover(button, popover);
     }
     const costAmount = cost => usd(cost?.estimated_usd_micros);
     const totalSource = usage => usage?.totals || usage?.outcomes?.totals?.cost || null;
-    const pendingUsageReasons = new Set(['api_refresh_pending', 'api_source_busy', 'api_busy']);
-    const usageRefreshPending = coverage => {
-      const reasons = Object.keys(coverage?.unavailable_reasons || {});
-      return reasons.some(reason => pendingUsageReasons.has(reason)) || (!reasons.length && !!coverage?.snapshot?.refreshing);
-    };
+    const usageRefreshPending = coverage => window.DevCoordinatorUsageLoading.pending(coverage);
     const coverageStatusText = coverage => {
       const snapshot = coverage?.snapshot;
       const unavailableReasons = Object.keys(coverage?.unavailable_reasons || {});
@@ -103,11 +131,9 @@ window.DevCoordinatorPerformance = (() => {
       const rowLabel = row => phases.get(row.activity).size > 1 && row.phase
         ? `${activityLabel(row.activity)} · ${window.DevCoordinatorI18n.t('common.phase_' + row.phase)}`
         : activityLabel(row.activity);
-      return `<section class="performance-cost-matrix"><div class="performance-section-head"><div><h2>Activity breakdown</h2><p class="muted">Provider tokens and API-equivalent estimate by activity.</p></div><small class="muted">Standard API-equivalent basis</small></div><div class="tablewrap"><table><thead><tr><th>Activity</th><th>Tokens</th><th>API-equivalent USD</th><th>Requests</th><th>Coverage</th></tr></thead><tbody>${activityRows.map(row => `<tr><td>${esc(rowLabel(row))}</td><td>${tokenDetail(rowLabel(row), { measured: row.total_tokens, exact: usage.coverage.state === 'complete' ? row.total_tokens : null }, row.cost)}</td><td><strong>${esc(costAmount(row.cost))}</strong></td><td>${integer(row.operations)}</td><td><span class="performance-status ${esc(costState(row.cost).toLowerCase())}">${esc(costState(row.cost))}</span></td></tr>`).join('')}</tbody></table></div></section>`;
+      return `<section class="performance-cost-matrix"><div class="performance-section-head"><div><h2>Activity breakdown</h2><p class="muted">Provider tokens and API-equivalent estimate by activity.</p></div><small class="muted">Standard API-equivalent basis</small></div><div class="tablewrap"><table><thead><tr><th>Activity</th><th>Tokens</th><th>API-equivalent USD</th><th>Requests</th><th>Coverage</th></tr></thead><tbody>${activityRows.map(row => `<tr><td>${esc(rowLabel(row))}</td><td>${tokenDetail(rowLabel(row), { measured: row.total_tokens, exact: usage.coverage.state === 'complete' ? row.total_tokens : null }, row.cost)}</td><td><strong>${esc(costAmount(row.cost))}</strong></td><td>${integer(row.cost?.model_requests)}</td><td><span class="performance-status ${esc(costState(row.cost).toLowerCase())}">${esc(costState(row.cost))}</span></td></tr>`).join('')}</tbody></table></div></section>`;
     }
-    async function render(root, repositoryId, signal) {
-      if (!identity()?.administrator) { root.innerHTML = "<h1><a class=\"destination-link\" href=\"#/performance\"><span data-i18n=\"performance.performance_442ade\">Performance</span></a></h1><p class=\"notice\"><span data-i18n=\"performance.administrator_access_is_required_to_read_perform_81e663\">Administrator access is required to read performance reviews.</span></p>"; return; }
-      if (!repositoryId) { root.innerHTML = "<h1><a class=\"destination-link\" href=\"#/performance\"><span data-i18n=\"performance.performance_442ade\">Performance</span></a></h1><p><span data-i18n=\"performance.no_repository_is_selected_386f0c\">No repository is selected.</span></p>"; return; }
+    function selection(repositoryId) {
       let session = sessions.get(repositoryId);
       const now = Date.now();
       if (!session) { session = { end: now, lifetimeEnd: now, range: '7d', scroll: 0 }; if (sessions.size >= 16) sessions.delete(sessions.keys().next().value); sessions.set(repositoryId, session); }
@@ -121,12 +147,46 @@ window.DevCoordinatorPerformance = (() => {
       const recordedTo = Number(query.get('recordedTo'));
       if (query.has('recordedTo') && Number.isSafeInteger(recordedTo) && recordedTo > 0) session.lifetimeEnd = Math.min(recordedTo, now);
       const reference = query.get('review');
+      return { session, range, start, end, reference };
+    }
+    function prepare(repositoryId, signal) {
+      if (!repositoryId || signal.aborted || !identity()?.administrator) return null;
+      const { session, range, start, end, reference } = selection(repositoryId);
+      const query = new URLSearchParams({ range, from: String(start), to: String(end), recordedTo: String(session.lifetimeEnd) });
+      if (reference) query.set('review', reference);
+      // Pin the exact scope before navigation metadata resolves. The renderer
+      // consumes these two requests; it must not invent a second cutoff.
+      const route = `#/performance/${encodeURIComponent(repositoryId)}?${query}`;
+      if (location.hash !== route) history.replaceState(history.state, '', route);
+      const reads = new Map();
+      for (const params of [
+        { repository_id: repositoryId, window_start_ms: start, window_end_ms: end, outcome_limit: 5, totals_only: true },
+        { repository_id: repositoryId, window_start_ms: 0, window_end_ms: session.lifetimeEnd, totals_only: true },
+      ]) {
+        const key = `performance.overview:${JSON.stringify(params)}`;
+        const saved = cache.get(key);
+        const pending = saved && Date.now() - saved.at < 60000 ? Promise.resolve(saved.data) : api('performance.overview', params);
+        // A navigation failure/abort may prevent the renderer consuming this read.
+        pending.catch(() => {});
+        reads.set(key, pending);
+      }
+      return { signal, reads };
+    }
+    async function render(root, repositoryId, signal, prepared = null) {
+      if (!identity()?.administrator) { root.innerHTML = "<h1><a class=\"destination-link\" href=\"#/performance\"><span data-i18n=\"performance.performance_442ade\">Performance</span></a></h1><p class=\"notice\"><span data-i18n=\"performance.administrator_access_is_required_to_read_perform_81e663\">Administrator access is required to read performance reviews.</span></p>"; return; }
+      if (!repositoryId) { root.innerHTML = "<h1><a class=\"destination-link\" href=\"#/performance\"><span data-i18n=\"performance.performance_442ade\">Performance</span></a></h1><p><span data-i18n=\"performance.no_repository_is_selected_386f0c\">No repository is selected.</span></p>"; return; }
+      const { session, range, start, end, reference } = selection(repositoryId);
       const active = () => !signal.aborted && root.querySelector('[data-performance-page]');
       const find = name => root.querySelector(`[data-performance-${name}]`);
       const requests = { repository_id: repositoryId, window_start_ms: start, window_end_ms: end, outcome_limit: 5 };
       let currentUsage = null; let reviewData = null; let historyBefore = session.history?.next_before ?? null; let revisionBefore = null;
       const refreshTimers = new Map();
       let loadingProgress;
+      const headlinesReady = { period: false, lifetime: false };
+      let detailsStarted = false;
+      let reviewStarted = false;
+      let periodMeasurement = null;
+      let periodDetailsReady = false;
       function route(review, overrides = {}) {
         const p = new URLSearchParams({ range, from: String(start), to: String(end), recordedTo: String(session.lifetimeEnd), ...overrides });
         if (review) p.set('review', review);
@@ -151,12 +211,12 @@ window.DevCoordinatorPerformance = (() => {
         return usageRefreshPending(coverage);
       }
       const pendingMeasurements = coverage => coverage?.state === 'unavailable' && usageRefreshPending(coverage);
-      function scheduleRefresh(name, readAgain) {
+      function scheduleRefresh(name, readAgain, waiting) {
         if (refreshTimers.has(name) || signal.aborted) return;
         refreshTimers.set(name, window.setTimeout(() => {
           refreshTimers.delete(name);
           if (active()) readAgain(true);
-        }, 5000));
+        }, waiting ? 5000 : 0));
       }
       async function read(operation, params, useCache = true) {
         // A refresh updates the same period instead of caching a second version.
@@ -165,7 +225,9 @@ window.DevCoordinatorPerformance = (() => {
         if (useCache && saved && Date.now() - saved.at < 60000) return saved.data;
         loadingProgress.begin(key, operation === 'performance.reviews');
         try {
-          const data = await api(operation, params);
+          const pending = useCache && prepared?.signal === signal ? prepared.reads.get(key) : null;
+          prepared?.reads.delete(key);
+          const data = await (pending || api(operation, params));
           if (active()) {
             const coverage = data.usage?.coverage || data.coverage;
             loadingProgress.update(key, coverage);
@@ -214,15 +276,19 @@ window.DevCoordinatorPerformance = (() => {
         } else { root.querySelector('.performance-workspace').append(reader); root.querySelector('.performance-inline-reader')?.remove(); }
       }
       window.addEventListener('resize', placeReader, { signal });
+      const placeOpenTokenPopover = () => root.querySelectorAll('.performance-token-popover:not([hidden])').forEach(popover => placeTokenPopover(popover.previousElementSibling, popover));
+      window.addEventListener('resize', placeOpenTokenPopover, { signal });
+      window.addEventListener('scroll', placeOpenTokenPopover, { signal, passive: true, capture: true });
+      window.visualViewport?.addEventListener('resize', placeOpenTokenPopover, { signal });
+      window.visualViewport?.addEventListener('scroll', placeOpenTokenPopover, { signal, passive: true });
       root.addEventListener('click', event => {
         const button = event.target.closest('[data-performance-token-detail]');
         if (!button) return;
         const popover = root.querySelector('#' + CSS.escape(button.dataset.performanceTokenDetail));
         if (!popover) return;
         const open = !popover.hidden;
-        root.querySelectorAll('.performance-token-popover:not([hidden])').forEach(item => { item.hidden = true; item.previousElementSibling?.setAttribute('aria-expanded', 'false'); });
-        popover.hidden = open;
-        button.setAttribute('aria-expanded', String(!open));
+        root.querySelectorAll('.performance-token-popover:not([hidden])').forEach(item => setTokenPopoverOpen(item.previousElementSibling, item, false));
+        if (!open) setTokenPopoverOpen(button, popover, true);
       }, { signal });
       const showCoverage = usage => { window.DevCoordinatorI18n.bind(find('coverage'), () => `${coverageStatusText(usage.coverage)}${usage.outcomes.unattributed.operations ? ' · ' + window.DevCoordinatorI18n.t("performance.unattributedWork") : ''}`); };
       function showUsage(usage, append = false) {
@@ -234,7 +300,8 @@ window.DevCoordinatorPerformance = (() => {
         const source = workstream ? outcomes.totals.cost : usage.totals;
         if (!append && pendingMeasurements(usage.coverage) && !total.measured) {
           showCoverage(usage);
-          window.DevCoordinatorI18n.text(find('scope-total'), 'performance.loading_measurements_baea02');
+          if (!reference && periodMeasurement) find('scope-total').innerHTML = tokenDetail('Period total', periodMeasurement.total_tokens, periodMeasurement.totals);
+          else window.DevCoordinatorI18n.text(find('scope-total'), 'performance.loading_measurements_baea02');
           find('charts').innerHTML = `<p>${window.DevCoordinatorI18n.markup('performance.loading_token_breakdowns_b62cda')}</p>`;
           window.DevCoordinatorI18n.text(find('outcomes'), 'performance.loading_outcomes_a12af3');
           window.DevCoordinatorI18n.text(find('outcome-count'), 'performance.loading_ba3bbb');
@@ -305,42 +372,91 @@ window.DevCoordinatorPerformance = (() => {
         } catch (error) { if (active()) { if (!more) window.DevCoordinatorI18n.text(find('count'), "performance.unavailable_ca1844"); errorPanel(more ? find('history-more') : find('history'), error.message, () => loadHistory(more)); } }
       }
       root.addEventListener('click', event => { if (event.target.closest('[data-performance-select]')) { session.focusReview = true; session.activationScroll = window.scrollY; if (!reference) session.scroll = window.scrollY; } }, { signal });
+      function startDetails() {
+        if (!active() || detailsStarted || !headlinesReady.period || !headlinesReady.lifetime) return;
+        detailsStarted = true;
+        void loadPeriod();
+        startReview();
+      }
+      function startReview() {
+        if (!active() || !reference || reviewStarted) return;
+        reviewStarted = true;
+        void loadReview();
+      }
+      function showPeriodTotal(data, headline = false) {
+        const pending = pendingMeasurements(data.usage?.coverage || data.coverage) && !data.total_tokens.measured;
+        if (data.total_tokens.exact != null || data.total_tokens.measured) periodMeasurement = data;
+        // A rich read may still be queued after the exact headline has arrived.
+        if (pending && periodMeasurement) return;
+        const measured = periodMeasurement || data;
+        const target = find('period-total');
+        const open = target.querySelector('.performance-token-popover:not([hidden])');
+        const focused = target.contains(document.activeElement);
+        target.innerHTML = pending ? window.DevCoordinatorI18n.markup('performance.loading_ba3bbb') : tokenDetail('Overview period total', measured.total_tokens, measured.totals);
+        if (open) {
+          const popover = target.querySelector('.performance-token-popover');
+          if (popover) setTokenPopoverOpen(target.querySelector('button'), popover, true);
+          if (focused) target.querySelector('button')?.focus({ preventScroll: true });
+        }
+        const costPending = pending || headline && data.cost?.estimated_usd_micros == null;
+        find('period-cost').innerHTML = costPending ? window.DevCoordinatorI18n.markup('performance.loading_ba3bbb') : esc(costAmount(data.cost));
+        find('cost-status').textContent = costPending ? 'Standard API basis' : `${costState(data.cost)} · Standard API basis`;
+      }
+      async function loadPeriodHeadline(waitForRefresh = false) {
+        try {
+          const data = await read('performance.overview', { ...requests, totals_only: true, ...(waitForRefresh ? { wait_for_refresh: true } : {}) }, !waitForRefresh);
+          if (!active() || periodDetailsReady) return;
+          showPeriodTotal(data, true);
+          if (!reference) {
+            find('scope-total').innerHTML = pendingMeasurements(data.coverage) && !data.total_tokens.measured ? window.DevCoordinatorI18n.markup('performance.loading_measurements_baea02') : tokenDetail('Overview period total', data.total_tokens, data.totals);
+            window.DevCoordinatorI18n.bind(find('coverage'), () => coverageStatusText(data.coverage));
+          }
+          if (needsRefresh(data)) scheduleRefresh('period-headline', loadPeriodHeadline, waitForRefresh);
+          else clearRefresh('period-headline');
+          if (!pendingMeasurements(data.coverage)) { headlinesReady.period = true; startDetails(); }
+        } catch (error) {
+          if (active()) { window.DevCoordinatorI18n.text(find('period-total'), 'performance.unavailable_ca1844'); headlinesReady.period = true; startDetails(); }
+        }
+      }
       async function loadPeriod(waitForRefresh = false) {
         try {
           const data = await read('performance.overview', waitForRefresh ? { ...requests, wait_for_refresh: true } : requests, !waitForRefresh);
           if (!active()) return;
-          const pending = pendingMeasurements(data.usage?.coverage || data.coverage) && !data.total_tokens.measured;
-          find('period-total').innerHTML = pending ? window.DevCoordinatorI18n.markup('performance.loading_ba3bbb') : tokenDetail('Overview period total', data.total_tokens, data.totals);
-          find('period-cost').innerHTML = pending ? window.DevCoordinatorI18n.markup('performance.loading_ba3bbb') : esc(costAmount(data.cost));
-          find('cost-status').textContent = pending ? 'Standard API basis' : `${costState(data.cost)} · Standard API basis`;
+          showPeriodTotal(data);
           if (!reference) {
-            if (data.usage) showUsage(!waitForRefresh && session.periodUsage?.start === start && session.periodUsage?.end === end ? session.periodUsage.usage : data.usage);
+            if (data.usage) showUsage(data.usage);
             if (session.scroll) window.scrollTo({ top: session.scroll });
           }
-          if (needsRefresh(data)) scheduleRefresh('period', loadPeriod);
-          else { clearRefresh('period'); }
+          if (needsRefresh(data)) scheduleRefresh('period', loadPeriod, waitForRefresh);
+          else { clearRefresh('period'); clearRefresh('period-headline'); periodDetailsReady = true; }
         }
-        catch (error) { if (active()) { window.DevCoordinatorI18n.text(find('period-total'), "performance.unavailable_ca1844"); if (!reference) { window.DevCoordinatorI18n.text(find('coverage'), "performance.measurements_could_not_be_loaded_77193b"); window.DevCoordinatorI18n.text(find('outcomes'), "performance.measurements_could_not_be_loaded_77193b"); errorPanel(find('charts'), error.message, loadPeriod); } } }
+        catch (error) { if (active()) { if (!periodMeasurement) window.DevCoordinatorI18n.text(find('period-total'), "performance.unavailable_ca1844"); window.DevCoordinatorI18n.text(find('period-cost'), "performance.unavailable_ca1844"); if (!reference) { window.DevCoordinatorI18n.text(find('coverage'), "performance.measurements_could_not_be_loaded_77193b"); window.DevCoordinatorI18n.text(find('outcomes'), "performance.measurements_could_not_be_loaded_77193b"); errorPanel(find('charts'), error.message, loadPeriod); } } }
       }
       async function loadLifetime(waitForRefresh = false) {
         try {
-          const data = await read('performance.overview', { repository_id: repositoryId, window_start_ms: 0, window_end_ms: session.lifetimeEnd, totals_only: true }, !waitForRefresh);
+          const data = await read('performance.overview', { repository_id: repositoryId, window_start_ms: 0, window_end_ms: session.lifetimeEnd, totals_only: true, ...(waitForRefresh ? { wait_for_refresh: true } : {}) }, !waitForRefresh);
           if (!active()) return;
           find('lifetime').innerHTML = pendingMeasurements(data.coverage) && !data.total_tokens.measured ? window.DevCoordinatorI18n.markup('performance.loading_ba3bbb') : tokenDetail('All recorded total', data.total_tokens, data.totals);
           find('lifetime').title = coverageStatusText(data.coverage);
-          if (needsRefresh(data)) scheduleRefresh('lifetime', loadLifetime);
+          if (needsRefresh(data)) scheduleRefresh('lifetime', loadLifetime, waitForRefresh);
           else { clearRefresh('lifetime'); }
+          if (!pendingMeasurements(data.coverage)) { headlinesReady.lifetime = true; startDetails(); }
         }
-        catch (error) { if (active()) { window.DevCoordinatorI18n.text(find('lifetime'), "performance.unavailable_ca1844"); find('lifetime').title = error.message; } }
+        catch (error) { if (active()) { window.DevCoordinatorI18n.text(find('lifetime'), "performance.unavailable_ca1844"); find('lifetime').title = error.message; headlinesReady.lifetime = true; startDetails(); } }
       }
       async function loadReview(waitForRefresh = false) {
-        try { const data = await read('performance.review', { repository_id: repositoryId, reference, outcome_limit: 5 }, !waitForRefresh); if (!active()) return; showReview(data); if (needsRefresh(data)) scheduleRefresh('review', loadReview); else { clearRefresh('review'); } }
+        try { const data = await read('performance.review', { repository_id: repositoryId, reference, outcome_limit: 5 }, !waitForRefresh); if (!active()) return; showReview(data); if (needsRefresh(data)) scheduleRefresh('review', loadReview, waitForRefresh); else { clearRefresh('review'); } }
         catch (error) { if (active()) { errorPanel(find('reader'), error.message, loadReview); window.DevCoordinatorI18n.text(find('coverage'), "performance.review_measurements_are_unavailable_497d4e"); find('charts').innerHTML = ''; window.DevCoordinatorI18n.text(find('outcomes'), "performance.review_measurements_are_unavailable_497d4e"); } }
       }
-      await Promise.allSettled([loadHistory(), loadPeriod(), loadLifetime(), ...(reference ? [loadReview()] : [])]);
-      if (active()) root.style.minHeight = '';
+      await Promise.allSettled([loadHistory(), loadPeriodHeadline(), loadLifetime()]);
+      if (active()) {
+        // The stored decision stays readable even when a source cannot yet
+        // finish the two initial headline attempts.
+        startReview();
+        root.style.minHeight = '';
+      }
     }
-    return { render };
+    return { render, prepare };
   }
   return { create };
 })();

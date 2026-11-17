@@ -3,7 +3,15 @@
 // from a producer's publication backlog; the latter has no completion estimate.
 window.DevCoordinatorUsageLoading = (() => {
   const pendingReasons = new Set(['api_refresh_pending', 'api_source_busy', 'api_busy']);
-  const pending = coverage => Boolean(coverage?.loading) || Object.keys(coverage?.unavailable_reasons || {}).some(reason => pendingReasons.has(reason));
+  const pending = coverage => {
+    if (coverage?.loading || Object.keys(coverage?.unavailable_reasons || {}).some(reason => pendingReasons.has(reason))) return true;
+    const snapshot = coverage?.snapshot;
+    if (!snapshot?.refreshing) return false;
+    if (['cache_refresh', 'source_read'].includes(snapshot.progress_stage)) return true;
+    // A usage-v2 publication backlog can remain refreshing after our read ends.
+    // Older snapshots lack that provenance and retain their refresh contract.
+    return !(coverage.sources || []).some(source => source.contract_version === 1 && source.format_version === 3 && source.source_watermark?.startsWith('usage-v2:'));
+  };
   const markup = () => '<span class="usage-loading-status" data-usage-loading role="status" aria-live="polite" aria-atomic="true" hidden><span class="ti ti-refresh usage-loading-spinner" aria-hidden="true"></span><span data-usage-loading-label></span><span class="usage-loading-estimate" data-usage-loading-estimate></span></span>';
   function create({ target, signal }) {
     const reads = new Map();
@@ -23,9 +31,10 @@ window.DevCoordinatorUsageLoading = (() => {
           const title = entries.every(row => row.history) ? 'usageLoadingReviews' : 'usageLoadingTokens';
           const remaining = entries.map(row => {
             const value = row.loading?.estimated_remaining_ms;
+            // Source elapsed time is already deducted; only age the received estimate.
             return row.loading?.state === 'reading' && row.loading.estimate_samples >= 3
               && row.loading.estimate_basis === 'recent_comparable_source_reads'
-              && Number.isFinite(value) && value > 0 ? value - Number(row.loading.elapsed_ms || 0) : null;
+              && Number.isFinite(value) && value > 0 ? value - (now - row.observed) : null;
           });
           const overrun = entries.some(row => row.loading?.state === 'estimate_exceeded') || remaining.some(value => value != null && value <= 0);
           let estimate = text(overrun ? 'usageEstimateExceeded' : 'usageEstimateUnknown');

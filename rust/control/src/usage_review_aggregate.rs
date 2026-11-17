@@ -85,7 +85,7 @@ impl Groups {
             schema_version: 1, coverage: coverage.into(), totals, attributed, unattributed,
             unattributed_reasons: self.reasons, total_rows: rows.len(), rows, next_cursor: None,
             basis: if self.producer_aggregates {
-                "Explicit operation work-context bindings only. Provider totals are additive across collectors. Producer operation-interval sums are retained separately in source metadata; aggregate intervals cannot be unioned, so elapsed wall time remains unknown. Repository totals retain repository scope; outcome rows honor the requested workstream. Unknown measurements remain unknown."
+                "Explicit operation work-context bindings only. Provider totals are additive across collectors. A source-provided elapsed union retains its measured and unknown state. Positive unions from different histories may overlap: their maximum is a measured lower bound, not an exact combined union. Known empty unions add nothing. Operation-interval sums remain separate diagnostic metadata. Repository totals retain repository scope; outcome rows honor the requested workstream."
             } else {
                 "Prospective operation-start declarations only. Provider totals deduplicate by owner and source event; component categories are not added. Time is clipped to the UTC window. Active time sums per-agent unions after recorded waits; elapsed and waiting time are unions, not sums of outcome rows. Unknown capture and unrecorded waits cannot be reconstructed. Repository aggregates retain their repository scope; outcome rows honor the requested workstream, with undeclared work explicit."
             }.into(),
@@ -124,7 +124,7 @@ fn effort_from_api(effort: &devcoordinator2_api::outcomes::OutcomeEffort) -> Eff
         aggregate_sources: 1,
         inexact_tokens: effort.provider_total_tokens.exact.is_none(),
         inexact_active: effort.active_agent_ms.exact.is_none(),
-        inexact_elapsed: true,
+        inexact_elapsed: effort.elapsed_execution_ms.exact.is_none(),
         inexact_waits: effort.recorded_wait_ms.exact.is_none(),
         inexact_activities: effort
             .activities
@@ -148,10 +148,10 @@ fn effort_from_api(effort: &devcoordinator2_api::outcomes::OutcomeEffort) -> Eff
         tokens: effort.provider_total_tokens.measured,
         unknown_tokens: effort.provider_total_tokens.unknown,
         unknown_active: effort.active_agent_ms.unknown,
-        unknown_elapsed: effort.elapsed_execution_ms.unknown.max(effort.operations),
+        unknown_elapsed: effort.elapsed_execution_ms.unknown,
         unknown_waits: effort.recorded_wait_ms.unknown,
         aggregate_active_ms: effort.active_agent_ms.measured,
-        aggregate_elapsed_ms: 0,
+        aggregate_elapsed_ms: effort.elapsed_execution_ms.measured,
         aggregate_wait_ms: effort.recorded_wait_ms.measured,
         ..Default::default()
     }
@@ -247,7 +247,9 @@ fn aggregate_facts(
         );
         if let Some(value) = token.value {
             let count = report.tokens.entry(token.category.clone()).or_default();
-            *count = count.checked_add(value).ok_or("usage_overflow")?;
+            *count = count
+                .checked_add(i128::from(value))
+                .ok_or("usage_overflow")?;
         }
         if token.category != "total_tokens" {
             continue;
