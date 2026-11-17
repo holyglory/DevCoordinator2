@@ -23,7 +23,7 @@ export function performanceFixture(operation, params, scenario = {}) {
       ['coding', 3744000, 4],
       ['integration_testing', 2496000, 4],
       ['unknown', 160000, 1],
-    ].map(([activity, tokens, operations]) => ({ activity, total_tokens: tokens * base, operations, cost: cost(tokens * base) }));
+    ].map(([activity, tokens, operations]) => ({ activity, total_tokens: tokens * base, operations, cost: { ...cost(tokens * base), model_requests: activity === 'coding' ? 3 : activity === 'unknown' ? null : 4 } }));
     const unavailableCost = { status: 'unavailable', basis: 'api_equivalent', currency: 'USD', processing_tier: 'standard', estimated_usd_micros: null };
     if (scenario.performanceDense && !scenario.usageUnavailable) {
       const names = ['coding', 'configuration', 'repository_analysis', 'diagnosis', 'work_planning', 'research', 'test_authoring', 'integration_testing'];
@@ -35,7 +35,7 @@ export function performanceFixture(operation, params, scenario = {}) {
       return { coverage: { ...coverage, state: 'partial', has_gaps: true }, totals: { total_tokens: total, model_requests: 40, tool_calls: 40, operations: 80, cost: unavailableCost }, activities: activityRows, time: {}, tools: {}, semantics: {}, outcomes: { schemaVersion: 1, coverage: 'partial', totals: totalEffort, attributed: effort(0), unattributed: { ...totalEffort, activities: {} }, unattributedReasons: { outcome_not_declared: 80 }, rows: [], totalRows: 0, nextCursor: null, kinds: { unattributed: totalEffort.providerTotalTokens }, basis: 'Measured repository activity is available; outcome attribution and costs remain unavailable.' } };
     }
     const totals = effort(total); totals.activities = Object.fromEntries(activityRows.map(row => [row.activity, metric(row.total_tokens)]));
-    return { coverage: scenario.usageUnavailable ? { ...coverage, state: 'unavailable', has_gaps: true, available_collectors: 0, unavailable_reasons: scenario.performanceRefreshPending ? { api_refresh_pending: 1 } : { mapping_unavailable: 1, query_budget_exhausted: 1 }, ...(scenario.performanceRefreshPending ? { snapshot: { refreshing: true, refresh_failed: false, updated_at_ms: null }, loading: scenario.performanceLoadingEstimate ? { state: 'reading', elapsed_ms: 90000, estimated_remaining_ms: 120000, estimate_samples: 4, estimate_basis: 'recent_comparable_source_reads' } : undefined } : {}) } : scenario.performancePublicationBacklog ? { ...coverage, snapshot: { updated_at_ms: end, refreshing: true, refresh_failed: false, pending_entries: 97 }, loading: null } : coverage,
+    return { coverage: scenario.usageUnavailable ? { ...coverage, state: 'unavailable', has_gaps: true, available_collectors: 0, unavailable_reasons: scenario.performanceRefreshPending ? { api_refresh_pending: 1 } : { mapping_unavailable: 1, query_budget_exhausted: 1 }, ...(scenario.performanceRefreshPending ? { snapshot: { refreshing: true, refresh_failed: false, updated_at_ms: null }, loading: scenario.performanceLoadingEstimate ? { state: 'reading', elapsed_ms: 90000, estimated_remaining_ms: 120000, estimate_samples: 4, estimate_basis: 'recent_comparable_source_reads' } : undefined } : {}) } : scenario.performancePublicationBacklog ? { ...coverage, sources: [{ source: 'usage-v2', contract_version: 1, format_version: 3, source_watermark: 'usage-v2:fixture:g1:w2', generated_at_ms: end, generation: 1, watermark: 2, journal_watermark: 99, watermark_at_ms: end, updated_at_ms: end, freshness: 'refreshing', pending_entries: 97, pending_corrections: 0, refresh_id: null, measured_execution_interval_sum_ms: null }], snapshot: { updated_at_ms: end, refreshing: true, refresh_failed: false, progress_completed: null, progress_total: null, progress_stage: null }, loading: null } : coverage,
       totals: { total_tokens: scenario.usageUnavailable ? null : total, cost: cost(total) }, activities: scenario.empty || scenario.usageUnavailable ? [] : activityRows, time: {}, tools: {}, semantics: {},
       outcomes: { schemaVersion: 1, coverage: scenario.usageUnavailable ? 'unavailable' : 'complete', totals: scenario.usageUnavailable ? { ...effort(0), providerTotalTokens: { measured: 0, exact: null, unknown: 1 } } : totals, attributed: effort(6240000 * base), unattributed: effort(160000 * base), unattributedReasons: { outcome_not_declared: 1 }, rows: scenario.empty || scenario.usageUnavailable ? [] : next ? rows.slice(2) : rows.slice(0, 2), totalRows: scenario.empty || scenario.usageUnavailable ? 0 : 4, nextCursor: next || scenario.empty || scenario.usageUnavailable ? null : 'fixture:2', kinds: { improvement: metric(4000000 * base), user_feedback: metric(1600000 * base), goal: metric(640000 * base), unattributed: metric(160000 * base) }, basis: 'Provider total observations are counted once. Missing attribution remains explicit.' } };
   };
@@ -185,6 +185,16 @@ export async function verifyPerformance({ page, daemon, check, scenario, baseUrl
   await page.locator('[data-performance-overview]').click();
   await page.waitForFunction(() => document.querySelector('[data-performance-scope-title]')?.textContent.includes('Overview usage') && document.querySelector('main')?.style.minHeight === '');
   verify('returning to a refreshed overview keeps its measured headline', (await page.locator('[data-performance-period-total]').innerText()).includes('6.4'));
+  daemon.setScenario({ ...scenario, performanceDetailsPending: true });
+  await page.reload();
+  await page.waitForFunction(() => document.querySelector('[data-performance-coverage]')?.textContent.includes('Loading usage'));
+  await page.locator('[data-performance-select]').first().click();
+  await page.locator('[data-performance-reader] .performance-gain').first().waitFor();
+  daemon.releaseDelayed();
+  await page.locator('[data-performance-overview]').click();
+  await page.waitForFunction(() => document.querySelector('[data-performance-scope-title]')?.textContent === 'Overview usage' && document.querySelector('[data-performance-period-total]')?.textContent.includes('6.4'));
+  const recoveredOverview = await page.locator('.performance-cost-matrix tbody tr').first().waitFor({ timeout: 2000 }).then(() => true, () => false);
+  verify('returning after pending details complete uses fresh measurements instead of saved loading', recoveredOverview && (await page.locator('[data-performance-outcomes]').innerText()).includes('Faster usage queries'));
   daemon.setScenario({ ...scenario, performanceDense: true });
   await page.locator('[data-performance-refresh]').click();
   await page.locator('.performance-cost-matrix tbody tr').nth(39).waitFor();
@@ -211,6 +221,7 @@ export async function verifyPerformance({ page, daemon, check, scenario, baseUrl
     } else verify('group details omit unavailable component popovers', true);
   }
   verify('cost matrix shows API-equivalent estimates', await page.locator('.performance-cost-matrix').count() === 1 && (await page.locator('.performance-cost-matrix').innerText()).includes('API-equivalent USD'));
+  verify('activity request counts use measured requests and retain unavailable counts', await page.locator('.performance-cost-matrix tbody tr').first().locator('td').nth(3).textContent() === '3' && await page.locator('.performance-cost-matrix tbody tr').nth(2).locator('td').nth(3).textContent() === '—');
   await page.locator('.performance-exact summary').first().click();
   verify('exact values can be read without color', (await page.locator('.performance-exact[open]').innerText()).includes('3,744,000'));
   await page.locator('.performance-exact summary').first().click();

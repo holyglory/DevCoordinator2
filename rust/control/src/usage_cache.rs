@@ -107,7 +107,14 @@ impl UsageCache {
                 || source.as_ref().is_some_and(|s| s.refresh_failed),
             progress_completed: source.as_ref().and_then(|s| s.progress_completed),
             progress_total: source.as_ref().and_then(|s| s.progress_total),
-            progress_stage: source.as_ref().and_then(|s| s.progress_stage.clone()),
+            // The merged refreshing flag also includes producer publication
+            // backlog. Keep an owned cache refresh distinguishable until it
+            // finishes, without inventing a count or duration estimate.
+            progress_stage: if entry.refreshing {
+                Some("cache_refresh".into())
+            } else {
+                source.as_ref().and_then(|s| s.progress_stage.clone())
+            },
         });
         let cutoff_ms = entry.cutoff_ms;
         if start && room {
@@ -378,7 +385,12 @@ mod tests {
         });
         assert!(started.elapsed() < Duration::from_millis(250));
         assert_eq!(first.totals.total_tokens, None);
-        assert!(first.coverage.snapshot.unwrap().refreshing);
+        let initial_snapshot = first.coverage.snapshot.unwrap();
+        assert!(initial_snapshot.refreshing);
+        assert_eq!(
+            initial_snapshot.progress_stage.as_deref(),
+            Some("cache_refresh")
+        );
         for _ in 0..10 {
             let duplicate = cache.get_window("key".into(), 200, report(None), |_| {
                 panic!("duplicate loader")
@@ -421,7 +433,16 @@ mod tests {
                 cutoff, 300,
                 "a pending revalidation keeps its existing cutoff"
             );
-            Ok(report(Some(200)))
+            let mut published = report(Some(200));
+            published.coverage.snapshot = Some(UsageSnapshot {
+                updated_at_ms: Some(90),
+                refreshing: true,
+                refresh_failed: false,
+                progress_completed: None,
+                progress_total: None,
+                progress_stage: None,
+            });
+            Ok(published)
         });
         assert_eq!(retry.totals.total_tokens, Some(100));
         let snapshot = retry.coverage.snapshot.unwrap();
@@ -432,6 +453,14 @@ mod tests {
             panic!("completed source loader")
         });
         assert_eq!(ready.totals.total_tokens, Some(200));
+        assert_eq!(ready.generated_at_ms, 100);
+        let published = ready.coverage.snapshot.unwrap();
+        assert_eq!(published.updated_at_ms, Some(90));
+        assert!(published.refreshing, "publication backlog remains explicit");
+        assert_eq!(
+            published.progress_stage, None,
+            "the owned cache refresh ended"
+        );
     }
 
     #[test]

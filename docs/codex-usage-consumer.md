@@ -249,6 +249,15 @@ scope keeps the estimate unknown. The five-minute source deadline is a timeout
 boundary, never an ETA. Loading clears when the owned read completes, even when
 the producer reports stale publication or partial coverage.
 
+An outer display-cache refresh uses the existing snapshot stage
+`cache_refresh` while its owned loader is active. This distinguishes it from
+the combined `snapshot.refreshing` flag, which may also describe a producer's
+publication backlog. The stage adds no progress count or ETA and clears when
+the cache loader finishes. Usage and Progress continue actual cache/query
+work, but completed usage-v2 reads with only publication backlog do not start
+immediate or repeated refresh requests. Snapshots without usage-v2 source
+provenance retain the legacy refresh continuation behavior.
+
 ## Verification and activation
 
 Acceptance exercises authorized context ingestion and `review.prepare` through
