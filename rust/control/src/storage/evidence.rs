@@ -726,6 +726,100 @@ mod tests {
                 "indexed protection disagrees for {run}"
             );
         }
+        // Empty lifecycle manifests remain required evidence when a live pin,
+        // lease, current delivery, active review or open feedback names them.
+        // Exercise the new filesystem stage against the real indexed records.
+        database.transaction(|c| {
+            c.execute("INSERT INTO storage_artifacts(artifact_id,repository_id,kind,revision,removed_at_ms,record_json,updated_at_ms) VALUES('sa-run-pin','r1','evidence',1,NULL,$1,1)", [&artifact_record(&first, "run-pin", true)])?;
+            c.execute("INSERT INTO review_records(record_id,revision,repository_id,window_start_ms,window_end_ms,record_json,actor,recorded_at_ms) VALUES('review',1,'r1',1,2,$1,'fixture',2)", [&review_record("w1/run-review")])?;
+            c.execute("INSERT INTO review_policies(repository_id,workstream_key,interval_ms,escalation_ms,active,window_start_ms,window_end_ms,last_receipt) VALUES('r1','w1',1,1,1,1,2,'review@1')", [])?;
+            Ok(())
+        }).unwrap();
+        let logs = first.join(".devcoordinator/test/logs/runs");
+        std::fs::create_dir_all(&logs).unwrap();
+        let mut manifests = std::collections::BTreeMap::new();
+        for run in [
+            "run-lease",
+            "run-qualified",
+            "run-failed",
+            "run-feedback",
+            "run-pin",
+            "run-review",
+            "run-current",
+            "run-qualified-old",
+            "run-failed-old",
+        ] {
+            let path = logs.join(run);
+            std::fs::create_dir(&path).unwrap();
+            let lease = devcoordinator2_executor_core::RunLogLease::acquire(&path, run).unwrap();
+            lease
+                .publish_run_metadata(&devcoordinator2_executor_core::RunLogMetadata {
+                    schema: 2,
+                    run_id: run.into(),
+                    test: "complete".into(),
+                    started_at_epoch_ms: 1,
+                    finished_at_epoch_ms: Some(2),
+                    status: devcoordinator2_executor_core::protocol::RunStatus::Passed,
+                    complete: true,
+                })
+                .unwrap();
+            drop(lease);
+            std::fs::create_dir_all(path.join("checks/empty/cases")).unwrap();
+            manifests.insert(run, std::fs::read(path.join("run.json")).unwrap());
+        }
+        let request = devcoordinator2_executor_core::log_query::LogPruneRequest {
+            schema: 2,
+            repository_id: "raaaaaaaaaaaaaaaa".into(),
+            max_age_seconds: 86400,
+            case_depth: 3,
+            active_run_id: Some("run-current".into()),
+        };
+        let mut cursor = None;
+        let mut expired = std::collections::BTreeSet::new();
+        for page in 0..500 {
+            let step = devcoordinator2_executor_core::log_query::prune_retention_containers_step(
+                &first,
+                &request,
+                cursor.as_deref(),
+                2,
+                std::time::Duration::from_secs(1),
+                |run| {
+                    run_is_protected(&database, &first, run).map_err(|_| {
+                        devcoordinator2_executor_core::log_query::LogQueryError::Unavailable
+                    })
+                },
+                |run| {
+                    record_run_expired(&database, &first, run).map_err(|_| {
+                        devcoordinator2_executor_core::log_query::LogQueryError::Unavailable
+                    })?;
+                    expired.insert(run.to_owned());
+                    Ok(())
+                },
+            )
+            .unwrap();
+            assert!(step.visited_entries <= 2);
+            cursor = step.next_cursor;
+            if cursor.is_none() {
+                break;
+            }
+            assert!(page < 499, "protected container walk did not finish");
+        }
+        assert_eq!(
+            expired,
+            std::collections::BTreeSet::from(["run-qualified-old".into(), "run-failed-old".into()])
+        );
+        for (run, bytes) in manifests {
+            if expired.contains(run) {
+                assert!(!logs.join(run).exists());
+            } else {
+                assert_eq!(
+                    std::fs::read(logs.join(run).join("run.json")).unwrap(),
+                    bytes,
+                    "required {run} changed"
+                );
+                assert!(logs.join(run).join("checks/empty/cases").is_dir());
+            }
+        }
     }
 
     #[test]

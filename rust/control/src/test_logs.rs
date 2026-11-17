@@ -812,6 +812,7 @@ mod tests {
         let mut pages = 0;
         let mut removed = 0;
         let mut active = 0;
+        let mut resumed_legacy_garbage_cursor = false;
         loop {
             // Recreate the service and fetch only the durable cursor for each
             // turn, as a process restart does between scheduled pages.
@@ -833,7 +834,22 @@ mod tests {
                 break;
             }
             assert!(pages < 300, "resumable cleanup must make progress");
-            let saved = step.next_worktree_id.unwrap();
+            let mut saved = step.next_worktree_id.unwrap();
+            let mut legacy: serde_json::Value = serde_json::from_str(&saved).unwrap();
+            if !resumed_legacy_garbage_cursor && legacy["phase"] == "containers" {
+                assert!(
+                    std::fs::read_dir(worktree.join(".devcoordinator/test/logs/.garbage"))
+                        .unwrap()
+                        .next()
+                        .is_some(),
+                    "legacy garbage recovery must include real retained payload trees"
+                );
+                legacy["phase"] = serde_json::json!("garbage");
+                legacy["filesystem"] = serde_json::json!("legacy-garbage-walk");
+                legacy.as_object_mut().unwrap().remove("containers_checked");
+                saved = legacy.to_string();
+                resumed_legacy_garbage_cursor = true;
+            }
             database.maintenance_transaction(|tx|{tx.execute("INSERT INTO coordinator_maintenance(job_key,cursor,due_at_ms,lease_until_ms,attempts,priority,last_status,last_rows,last_bytes) VALUES('test-retention',$1,0,0,0,0,'pending',0,0) ON CONFLICT(job_key) DO UPDATE SET cursor=excluded.cursor",[saved])?;Ok(())}).unwrap();
             cursor = database
                 .read(|c| {
@@ -847,8 +863,13 @@ mod tests {
                 .into();
         }
         assert!(pages > 10);
+        assert!(resumed_legacy_garbage_cursor);
         assert_eq!(removed, 17);
         assert_eq!(active, 1);
+        assert!(
+            !worktree.join(".devcoordinator/test/logs/.garbage").exists(),
+            "migrating an old garbage cursor stranded previously renamed payloads"
+        );
         for (index, (_, directory)) in runs.iter().enumerate() {
             let case = if index == 20 {
                 "age-case"
@@ -859,6 +880,11 @@ mod tests {
                 directory.join("checks/unit/cases").join(case).exists(),
                 index == 0 || (17..=19).contains(&index) || index == 21,
                 "run index{index}"
+            );
+            assert_eq!(
+                directory.exists(),
+                index == 0 || (17..=19).contains(&index) || index == 21,
+                "expired lifecycle metadata for run index{index} survived retention"
             );
         }
         let (projection, jobs, receipts) = database

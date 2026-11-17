@@ -12,9 +12,10 @@ use devcoordinator2_executor_core::{
     Cancellation, Executor, LocalPermitProvider,
     log_query::{
         LogPruneRequest, LogQueryError, LogQueryOperation, LogQueryOptions, LogQueryRequest,
-        LogQueryResult, LogQuerySelector, RetentionPruneOutcome, discover_retention_step,
-        execute_log_query, lock_retention, prune_logs, prune_retention_observation,
-        remove_retained_run, retention_runs,
+        LogQueryResult, LogQuerySelector, RetentionPruneOutcome, collect_retention_garbage_step,
+        discover_retention_step, execute_log_query, lock_retention,
+        prune_empty_retention_containers, prune_logs, prune_retention_containers_step,
+        prune_retention_observation, remove_retained_run, retention_runs,
     },
     protocol::{
         CaseSpec, CheckPhase, CheckPlan, CheckRole, CompletionMode, DiagnosticOrigin,
@@ -724,5 +725,41 @@ async fn executor_logs_remain_complete_queryable_and_catalogue_safe() {
         retention_runs(&repository.root, &retention)
             .expect("retention readback")
             .is_empty()
+    );
+    let mut cursor = None;
+    loop {
+        let step = prune_retention_containers_step(
+            &repository.root,
+            &retention,
+            cursor.as_deref(),
+            2,
+            Duration::from_secs(1),
+            |_| Ok(false),
+            |_| Ok(()),
+        )
+        .expect("retire payload-free real executor lifecycle metadata");
+        assert!(step.visited_entries <= 2);
+        cursor = step.next_cursor;
+        if cursor.is_none() {
+            break;
+        }
+    }
+    loop {
+        let step = collect_retention_garbage_step(
+            &repository.root,
+            cursor.as_deref(),
+            2,
+            Duration::from_secs(1),
+        )
+        .expect("collect retired lifecycle metadata");
+        cursor = step.next_cursor;
+        if cursor.is_none() {
+            break;
+        }
+    }
+    prune_empty_retention_containers(&repository.root).expect("retire empty retention containers");
+    assert!(
+        !repository.root.join(".devcoordinator/test/logs").exists(),
+        "real evidence cleanup stranded its protected lifecycle containers"
     );
 }

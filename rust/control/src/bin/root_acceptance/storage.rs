@@ -552,6 +552,29 @@ fn unused_image_ownership(
     Ok(())
 }
 
+fn drain_log_retention(world: &World) -> Result<(), String> {
+    let database = world.authority()?;
+    let logs = devcoordinator2_control::test_logs::TestLogService::new(
+        database.clone(),
+        devcoordinator2_control::repository::Registry::new(database),
+    );
+    let mut cursor = None;
+    for _ in 0..256 {
+        let step = logs
+            .run_maintenance_step(cursor, 1, Duration::from_secs(2))
+            .map_err(|error| error.message)?;
+        ensure!(
+            step.report.errors.is_empty(),
+            "retention maintenance failed"
+        );
+        cursor = step.next_worktree_id;
+        if step.complete {
+            return Ok(());
+        }
+    }
+    Err("retention maintenance did not finish".into())
+}
+
 pub(super) fn retained_evidence_after_run(world: &World, run_id: &str) -> Result<(), String> {
     let repository = ids::repository_id(&world.repo).map_err(|e| e.to_string())?;
     let inventory = scanned(world, &repository, "retained-evidence-inventory")?;
@@ -582,6 +605,7 @@ pub(super) fn retained_evidence_after_run(world: &World, run_id: &str) -> Result
         json!({"artifact_ids":[row["artifact_id"]],"include_persistent_data":true}),
     )?;
     ensure!(blocked["ready"] == false, "pinned evidence was removable");
+    drain_log_retention(world).map_err(|error| format!("pinned evidence maintenance: {error}"))?;
     ensure!(
         !world.log_catalog(run_id, "main")?["entries"]
             .as_array()
@@ -658,6 +682,126 @@ pub(super) fn retained_evidence_after_run(world: &World, run_id: &str) -> Result
             .as_array()
             .is_some_and(|rows| rows.iter().any(|r| r["job_id"] == job["job_id"])),
         "retention lost the cleanup receipt"
+    );
+    // A real non-root process owns this exact existing active.lock. Its
+    // presence alone is not the acceptance assertion: the kernel lease must
+    // prevent retirement until that process exits.
+    struct HeldRun(Child);
+    impl Drop for HeldRun {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    let run = world
+        .repo
+        .join(".devcoordinator/test/logs/runs")
+        .join(run_id);
+    let manifest = fs::read(run.join("run.json")).map_err(|error| error.to_string())?;
+    let mut held = HeldRun(
+        Command::new("setpriv")
+            .arg(format!("--reuid={}", world.harness.caller_uid))
+            .arg(format!("--regid={}", world.harness.caller_gid))
+            .args([
+                "--clear-groups",
+                "--",
+                "/usr/bin/flock",
+                "--exclusive",
+                "--no-fork",
+            ])
+            .arg(run.join("active.lock"))
+            .arg(&world.harness.fixture)
+            .arg("print-write-sleep")
+            .arg("lease-held")
+            .arg(world.repo.join("retention-lease-ready"))
+            .args(["held", "60"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|error| error.to_string())?,
+    );
+    let mut ready = [0_u8; 11];
+    held.0
+        .stdout
+        .take()
+        .ok_or("lease readiness pipe missing")?
+        .read_exact(&mut ready)
+        .map_err(|error| error.to_string())?;
+    ensure!(&ready == b"lease-held\n", "real run lease was not acquired");
+    drain_log_retention(world)
+        .map_err(|error| format!("process-held lease maintenance: {error}"))?;
+    ensure!(
+        fs::read(run.join("run.json")).map_err(|error| error.to_string())? == manifest,
+        "a process-held run lease did not preserve lifecycle metadata"
+    );
+    drop(held);
+    drain_log_retention(world).map_err(|error| format!("released lease maintenance: {error}"))?;
+    ensure!(
+        !world.repo.join(".devcoordinator/test/logs").exists(),
+        "retired evidence left protected log containers that prevent worktree inventory"
+    );
+    let history = mcp(
+        world,
+        "storage_history",
+        json!({"artifact_id":row["artifact_id"]}),
+    )?;
+    ensure!(
+        history["jobs"]
+            .as_array()
+            .is_some_and(|rows| rows.iter().any(|r| r["job_id"] == job["job_id"])),
+        "retiring lifecycle metadata removed the durable cleanup receipt"
+    );
+    // An interruption after removing runs must not strand the remaining
+    // verified-empty root. The retention path owns recovery, not a read API.
+    let interrupted = world.repo.join(".devcoordinator/test/logs");
+    fs::create_dir_all(interrupted.join(".garbage")).map_err(|error| error.to_string())?;
+    fs::write(interrupted.join("maintenance.lock"), b"").map_err(|error| error.to_string())?;
+    drain_log_retention(world)
+        .map_err(|error| format!("interrupted empty-root maintenance: {error}"))?;
+    ensure!(
+        !interrupted.exists(),
+        "interrupted empty-root retirement did not recover"
+    );
+    fs::create_dir_all(interrupted.join(".garbage")).map_err(|error| error.to_string())?;
+    fs::write(
+        interrupted.join(".garbage/owner-data"),
+        b"unknown garbage bytes",
+    )
+    .map_err(|error| error.to_string())?;
+    ensure!(
+        drain_log_retention(world).is_err(),
+        "nonempty unverified garbage was accepted"
+    );
+    ensure!(
+        fs::read(interrupted.join(".garbage/owner-data")).map_err(|error| error.to_string())?
+            == b"unknown garbage bytes",
+        "unknown garbage changed during recovery"
+    );
+    let catalogue = world.call(
+        "test.log.catalog",
+        json!({"path":world.repo,"run_id":run_id}),
+    )?;
+    ensure!(
+        data(&catalogue).is_err() && !interrupted.join("runs").exists(),
+        "a read catalogue recreated missing retention containers"
+    );
+    fs::remove_file(interrupted.join(".garbage/owner-data")).map_err(|error| error.to_string())?;
+    fs::write(interrupted.join("owner-data"), b"unknown root bytes")
+        .map_err(|error| error.to_string())?;
+    ensure!(
+        drain_log_retention(world).is_err(),
+        "unknown root data was accepted"
+    );
+    ensure!(
+        fs::read(interrupted.join("owner-data")).map_err(|error| error.to_string())?
+            == b"unknown root bytes",
+        "unknown root data changed during recovery"
+    );
+    fs::remove_file(interrupted.join("owner-data")).map_err(|error| error.to_string())?;
+    drain_log_retention(world).map_err(|error| format!("verified empty-root recovery: {error}"))?;
+    ensure!(
+        !interrupted.exists(),
+        "verified empty root did not retire after blockers were removed"
     );
     Ok(())
 }
@@ -2542,6 +2686,37 @@ pub(super) fn worktrees_and_backup_floor(world: &mut World) -> Result<(), String
         fs::set_permissions(path, fs::Permissions::from_mode(0o711)).map_err(|e| e.to_string())?;
         chown_path(path, 0, 0)?;
     }
+    // Real leaf retention leaves a valid run manifest, lease file and empty
+    // check ancestors, rather than the literally empty runs root formerly
+    // used by this acceptance fixture.
+    let retired_run = "worktree-retention-fixture";
+    let retired_directory = runs_root.join(retired_run);
+    fs::create_dir(&retired_directory).map_err(|error| error.to_string())?;
+    let lease =
+        devcoordinator2_executor_core::RunLogLease::acquire(&retired_directory, retired_run)
+            .map_err(|error| error.to_string())?;
+    let finished = (time::OffsetDateTime::now_utc().unix_timestamp_nanos() / 1_000_000) as u64;
+    lease
+        .publish_run_metadata(&devcoordinator2_executor_core::RunLogMetadata {
+            schema: 2,
+            run_id: retired_run.into(),
+            test: "complete".into(),
+            started_at_epoch_ms: finished.saturating_sub(100),
+            finished_at_epoch_ms: Some(finished),
+            status: devcoordinator2_executor_core::protocol::RunStatus::Passed,
+            complete: true,
+        })
+        .map_err(|error| error.to_string())?;
+    drop(lease);
+    fs::create_dir_all(retired_directory.join("checks/retired/cases"))
+        .map_err(|error| error.to_string())?;
+    for path in [
+        &retired_directory,
+        &retired_directory.join("run.json"),
+        &retired_directory.join("active.lock"),
+    ] {
+        chown_path(path, world.harness.caller_uid, world.harness.caller_gid)?;
+    }
     for name in ["protected-child", "leased-child"] {
         let path = trees[0].join(name);
         fs::create_dir(&path).map_err(|e| e.to_string())?;
@@ -2711,6 +2886,10 @@ pub(super) fn worktrees_and_backup_floor(world: &mut World) -> Result<(), String
         }
     }
     let inventory = scanned(world, &repo, "reviewed-metadata-after-retention")?;
+    ensure!(
+        !logs_root.exists(),
+        "retired worktree log scaffolding survived supported retention"
+    );
     let rows = inventory["artifacts"]
         .as_array()
         .ok_or("reviewed metadata inventory missing")?;
