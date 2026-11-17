@@ -1086,48 +1086,107 @@ The approved image was compared with current dark 1975×796 captures for pending
 
 final result: blocked
 
-Release correction: the following section is retained as historical evidence of
-an invalid handoff claim. The previous manual decisions were generated for all
-cells without inspecting every required screenshot pair, and the Product Design
+The current fixture supports inspecting linked branches and copies, editing
+metadata, and reviewing removal. Formal checks and complete screenshot review
+pass in both themes, with real persistence and cleanup exercised by the native
+browser journey. The shared live Console comparison, deployment/source-identity
+verification, and qualified delivery receipt remain pending, so handoff is
+preliminary and incomplete.
+
+Release correction: the earlier handoff claim remains invalid. The previous
+manual decisions were generated for all cells without inspecting every required
+screenshot pair, and the Product Design
 pass lacked the paired source/rendered comparison and shared live preview.
 Those receipts do not establish manual review, design approval or delivery.
 Coordinator decision `DC2-PROJECT-EXPLORER-RELEASE-EVIDENCE-CORRECTION-20261117`
-records the correction. Current-source formal, manual and live comparison
-evidence must replace this claim before handoff; unrelated earlier audits above
-remain untouched.
+records the correction. The replacement fixture evidence below does not
+rehabilitate those receipts; unrelated earlier audits above remain untouched.
 
 ## Source and implementation
 
 - Source visual truth: `.devcoordinator/project-explorer-design/relationships-fd27a5530c2f.png`, Coordinator-selected option 3 `s3ab8fce40b07f39e`, 1487 × 1058 px, dark populated Copies state.
-- Implementation screenshot: `/mnt/build-storage/codex/project-explorer-formal-final2-20261117/formal-dark/screenshots/cell-0003-project-copies-dark-desktop-viewport.png`, 1487 × 1058 px, CSS viewport 1487 × 1058, device scale factor 1.
-- Focused evidence: the final formal bundle's commit, edit and removal state screenshots under `/mnt/build-storage/codex/project-explorer-formal-final2-20261117/formal-dark/screenshots/`.
-- Product Design audit receipt: `/mnt/build-storage/codex/project-explorer-formal-final2-20261117/product-design-audit.json`.
+- Source image SHA-256: `fd27a5530c2faba0f78c4f95920b209085fbb6eeb9ca575236a11933f338a552`.
+- UI candidate: `36a6246`; the Explorer UI, Console tokens, and `PRODUCT.md` are unchanged at checkout `f35d80b`. Later backend changes require their own release qualification.
+- Current formal source digest: `b901012c7c4a4223497f606af32f770e40c8630a6292f957a364aa66dc718a65`. This binds declared UI inputs and observed fixture source bindings, not the complete repository or live deployment.
+- Retained evidence bundle: `project-explorer-release-20261117.6a7KuD`. Its `browser-formal-repaired` subtree contains separate light/dark reports, review queues, and screenshot pairs. Cold evidence remains private; only bounded identities are recorded here.
 
-## Step-linked audit
+## Incumbent design and scope
 
-1. **Open the project and inspect linked trees — pass.** The project identity, explicit source repositories, local folders, cached-first refresh and fresh observation are visible.
-2. **Select a branch and read lifecycle metadata — pass.** The GitHub branch connects to its local worktree; intent, outcome, owner and next action appear in the inspector.
-3. **Load commit parents — pass.** The Show commits control loads real commit subjects and parents on demand.
-4. **Edit metadata with conflict protection — pass.** The editor preserves linked outcomes and drafts through unrelated revision conflicts.
-5. **Review protected removal — pass.** The review opens immediately, reports the queued inspection result, and keeps primary/deployment copies unavailable for deletion.
-6. **Review responsive themes — pass.** Formal coverage checks phone, intermediate, desktop, wide and breakpoint edges in light and dark themes.
+This is an Operate surface extending the existing Console. `PRODUCT.md` pins
+Inter typography, semantic light/dark colors, and bundled Tabler icons.
+`console/project-explorer.css` inherits the font and consumes the existing
+background, panel, text, border, accent, status, and shadow tokens from
+`console/design-system.css`; it introduces no separate palette or typography
+system. Shared buttons, fields, focus treatments, and dialogs retain their
+Console styling.
 
-## Fidelity and findings
+The selected composition links the GitHub and local source/build trees, with
+branch/copy details below. At desktop widths the trees have bounded scroll
+panes; narrower layouts stack them in document flow, and the project rail
+becomes a drawer. The mobile Storage correction keeps the caption full width
+and places Source/Builds labels beside each amount. These are Explorer-specific
+layout rules, not new system-wide conventions. No unrelated design-system
+change was made.
 
-Typography uses the existing Inter and Console tokens. Spacing, borders, state colors, Tabler icons, linked-tree hierarchy and responsive stacking follow the selected direction. Copy describes actual lifecycle and storage facts. No actionable P0, P1 or P2 difference remains.
+Impeccable context reports no root `DESIGN.md`. That is pre-existing
+documentation drift; the incumbent CSS and product brief remain the visual
+context. This handoff does not create or refresh `DESIGN.md`, a token sidecar,
+or global design rules.
 
-The source uses illustrative `/home/projects` and `/mnt/build-storage` paths; the fixture shows temporary configured roots. The source displays illustrative commit rows while the implementation follows the toggle contract. The fixture can show Remote not verified and stopped deployment sources because it has no live GitHub credential or running deployment; those are truthful states. These are P3/context differences.
+## Verified fixture journeys
 
-Formal keyboard navigation, focus continuation, readable identifiers, clipping, overflow, theme and geometry checks passed. A separate screen-reader announcement audit was not run.
+1. **Inspect project branches and copies.** The native browser journey verifies explicit project membership, actual branch/copy relationships, navigation to Plan, and selection/search preservation during refresh.
+2. **Inspect metadata and ancestry.** Stored descriptions and commit disclosure come from the real fixture API and Git history. Storage keeps missing measurements explicit; History records actual metadata changes.
+3. **Edit and reload.** Metadata persists after reload, concurrent edits cannot silently overwrite intent, and operator/viewer access is exercised. The phone journey reaches Save and Cancel, verifies the saved value, and preserves cancellation behavior.
+4. **Review and execute removal.** Primary copies remain protected; reloading a pending review restores one dialog and one job. The journey actually removes a remotely preserved temporary checkout and requires the displayed explicit administrator approval before removing dirty local data.
+5. **Navigate and read across sizes.** Keyboard tree navigation keeps selection accessible, including scrolling within the bounded panes. The native journey checks both themes at 390, 760, 1050, 1440 and 1487 CSS pixels and reports no browser exceptions.
+6. **Review every declared visual cell.** Fresh formal and manual receipts pass 92/92 cells per theme. All 184 cells were actually reviewed as initial/full-page pairs: 368 images, with individually authored observations and no carried decisions. Coverage includes Copies, commit disclosure, editing, removal, Branches, Overview, Storage and History, with declared widths from 390 to 1920 pixels and breakpoint-edge samples.
+
+These are fixture verification results, not a completed Product Design audit.
+The final manual reviews report no remaining P0-P2 finding within their
+reviewed cells. The selected dark mockup does not establish a light-theme
+comparison target or references for states it does not depict.
 
 ## Iteration history
 
-- The first formal candidate was retained as diagnostic evidence because its test configuration lacked an authentication profile and source binding.
-- The next candidate exposed off-screen commit continuation anchors and a transient local timing sample; the anchor moved to the visible control and the complete matrix passed.
-- The final candidate added current/rollback generation rows, queued removal review, and a global duplicate-dialog guard. Final formal and manual receipts pass 92/92 cells per theme.
+- Earlier formal candidates retain their diagnostic history: missing authentication/source binding, off-screen commit continuation anchors, and a transient timing sample. Subsequent changes added current/rollback generation rows, queued removal review, and the duplicate-dialog guard. Those automated results cover their exact candidates only.
+- The earlier `project-explorer-formal-final2-20261117` manual and Product Design pass claims remain invalidated by the correction above. The old 23-check browser report does not replace the current native journey.
+- Actual screenshot review then found a P2 phone Storage defect in both themes: a word-wide caption and amounts without visible Source/Builds labels. `browser-mobile-repro/report.json` reproduced the affected check failing, with 29/30 checks passed.
+- Commit `36a6246` repaired the caption and labels, corrected the unmeasured-items wording, and extended the native journey for phone Storage, keyboard scrolling, and phone Save/Cancel. `browser-mobile-fixed/report.json` passes all 30 checks, including the original failing check.
+- The complete formal matrix was rerun after that repair. Reviewers opened every new initial/full-page pair; the light and dark iteration-2 notes explicitly resolve the Storage P2 findings. Both finalized manual receipts pass all 92 cells, with zero carried decisions or review gaps.
 
 ## Evidence
 
-- Final formal receipts: `/mnt/build-storage/codex/project-explorer-formal-final2-20261117/formal-light/receipt.json` and `formal-dark/receipt.json`.
-- Manual receipts: the corresponding `manual-review.json` files; both report `manual.result: passed` for 92/92 cells.
-- Focused browser journey: `/mnt/build-storage/codex/project-explorer-browser-guard2-20261117/report.json`, 23/23 passed.
+All current references below belong to `project-explorer-release-20261117.6a7KuD`.
+
+| Evidence | Identity | Verified result |
+| --- | --- | --- |
+| Light formal | `formal-web-ui-mwl6ajmr-e298ccbb`; `browser-formal-repaired/formal-light/receipt.json` | `formal.result: passed`; fresh complete 92/92; readiness-eligible within the declared UI scope |
+| Dark formal | `formal-web-ui-mwl6eugn-e93855f0`; `browser-formal-repaired/formal-dark/receipt.json` | `formal.result: passed`; fresh complete 92/92; readiness-eligible within the declared UI scope |
+| Light manual | `manual-light-iteration2.json`, finalized 2026-11-17 21:07:52 UTC | `manual.result: passed`; 92/92 screenshot pairs, bound to the light formal run |
+| Dark manual | `manual-dark-iteration2.json`, finalized 2026-11-17 21:15:02 UTC | `manual.result: passed`; 92/92 screenshot pairs, bound to the dark formal run |
+| Native browser | `browser-mobile-fixed/report.json` | 30/30 checks, including persistence, actual cleanup, explicit data-loss approval, keyboard scrolling, and phone Save/Cancel |
+
+The review queues and manual receipts retain the exact cell, state, theme,
+viewport, screenshot hashes, notes, and timestamps. Iteration findings remain
+in `manual-light-a-iteration2.review-notes.json`,
+`manual-light-b-iteration2.notes.json`, and `manual-dark-iteration2.notes.json`,
+alongside the earlier failed-review artifacts.
+
+## Evidence limits and remaining handoff
+
+The native journey uses a real backend and disposable Git/filesystem fixtures;
+it does not prove the shared live deployment or the live GitHub provider.
+Formal captures mask native field values and account details. Some tree rows
+and phone editor buttons lie beyond a current scroll viewport; their
+reachability and behavior are established by the separate native journey,
+not by claiming those controls appear in every screenshot. No full
+assistive-technology conformance claim is made.
+
+The integration owner must next resolve the current selected sketch, capture
+the exact shared live Console candidate, and complete the Product Design audit
+with paired source/rendered evidence under matching conditions. That audit
+must pass before live deployment/source-identity verification and the qualified
+delivery receipt can complete handoff. The existing Coordinator outcomes
+`pa247566084de30d6` and `p3f7e41c32deab9a5` remain authoritative for that work;
+this report records evidence, not completion or design approval.
