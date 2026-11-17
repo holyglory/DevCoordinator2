@@ -9,7 +9,8 @@ use crate::database::{OptionalExtension, params};
 use devcoordinator2_api::{ErrorCode, ProtocolError};
 use devcoordinator2_executor_core::log_query::{
     LogPruneRequest, LogQueryError, RetentionObservation, RetentionPruneOutcome,
-    collect_retention_garbage_step, discover_retention_step, prune_retention_observation,
+    collect_retention_garbage_step, discover_retention_step, prune_retention_containers_step,
+    prune_retention_observation,
 };
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -27,6 +28,7 @@ enum Phase {
     Discover,
     Select,
     Cleanup,
+    Containers,
     Garbage,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -44,6 +46,8 @@ struct Cursor {
     skip_filesystem: bool,
     restart_changed: bool,
     #[serde(default)]
+    containers_checked: bool,
+    #[serde(default)]
     error: Option<String>,
 }
 impl Default for Cursor {
@@ -60,6 +64,7 @@ impl Default for Cursor {
             case_depth: 0,
             skip_filesystem: false,
             restart_changed: false,
+            containers_checked: false,
             error: None,
         }
     }
@@ -83,6 +88,7 @@ impl Cursor {
         self.case_depth = depth;
         self.skip_filesystem = false;
         self.restart_changed = false;
+        self.containers_checked = false;
         service.database.maintenance_transaction(|tx|{
             tx.execute("INSERT INTO dc2_test_log_retention_heads(worktree_id,generation,status,max_age_seconds,case_depth,published_at_ms) VALUES($1,$2,'building',$3,$4,NULL) ON CONFLICT(worktree_id) DO UPDATE SET generation=excluded.generation,status='building',max_age_seconds=excluded.max_age_seconds,case_depth=excluded.case_depth,published_at_ms=NULL",params![id,self.generation,age,depth])?;Ok(())
         }).map_err(database_error)?;
@@ -98,6 +104,7 @@ impl Cursor {
         self.phase = Phase::Discover;
         self.skip_filesystem = false;
         self.restart_changed = false;
+        self.containers_checked = false;
     }
 }
 fn unavailable() -> ProtocolError {
@@ -149,6 +156,12 @@ pub(super) fn step(
     };
     if cursor.version != 1 {
         return Err(unavailable());
+    }
+    // A durable cursor from before container retirement may already be in
+    // garbage collection. Run the new stage once, with its own fresh cursor.
+    if matches!(cursor.phase, Phase::Garbage) && !cursor.containers_checked {
+        cursor.phase = Phase::Containers;
+        cursor.filesystem = None;
     }
     let settings = service.retention()?;
     let mut result = report();
@@ -211,6 +224,23 @@ pub(super) fn step(
             }
         }
     };
+    if cursor.filesystem.is_none()
+        && matches!(cursor.phase, Phase::Discover | Phase::Containers)
+        && request
+            .as_ref()
+            .is_some_and(|request| request.active_run_id.is_none())
+    {
+        // Recovery belongs to this write-owned maintenance path. A crash can
+        // leave only the empty lock/garbage containers after runs was removed.
+        // The exact empty-container helper preserves unknown/nonempty entries;
+        // the normal strict discovery below still reports any remaining gap.
+        if matches!(
+            devcoordinator2_executor_core::log_query::prune_empty_retention_containers(&worktree),
+            Err(LogQueryError::MaintenanceBusy)
+        ) {
+            return Err(unavailable());
+        }
+    }
     match cursor.phase {
         Phase::Discover => {
             let discovered = discover_retention_step(
@@ -362,8 +392,40 @@ pub(super) fn step(
                 if cursor.skip_filesystem {
                     cursor.advance();
                 } else {
-                    cursor.phase = Phase::Garbage;
+                    cursor.phase = Phase::Containers;
                     cursor.filesystem = None;
+                }
+            }
+        }
+        Phase::Containers => {
+            match prune_retention_containers_step(
+                &worktree,
+                request.as_ref().ok_or_else(unavailable)?,
+                cursor.filesystem.as_deref(),
+                DISCOVERY_ENTRIES,
+                budget.saturating_sub(started.elapsed()),
+                |run| {
+                    crate::storage::evidence::run_is_protected(&service.database, &worktree, run)
+                        .map_err(|_| LogQueryError::Unavailable)
+                },
+                |run| {
+                    crate::storage::evidence::record_run_expired(&service.database, &worktree, run)
+                        .map_err(|_| LogQueryError::Unavailable)
+                },
+            ) {
+                Ok(containers) => {
+                    visited = containers.visited_entries as u64;
+                    cursor.filesystem = containers.next_cursor;
+                    if cursor.filesystem.is_none() {
+                        cursor.containers_checked = true;
+                        cursor.phase = Phase::Garbage;
+                    }
+                }
+                Err(LogQueryError::MaintenanceBusy) => return Err(unavailable()),
+                Err(LogQueryError::CursorStale) => cursor.filesystem = None,
+                Err(_) => {
+                    push_maintenance_error(&mut result.errors, &mut 0, repository);
+                    cursor.advance();
                 }
             }
         }
@@ -378,7 +440,8 @@ pub(super) fn step(
                     visited = garbage.visited_entries as u64;
                     cursor.filesystem = garbage.next_cursor;
                     if cursor.filesystem.is_none() {
-                        if let Err(error) = devcoordinator2_executor_core::log_query::prune_empty_retention_containers(
+                        if request.as_ref().is_some_and(|request| request.active_run_id.is_none())
+                            && let Err(error) = devcoordinator2_executor_core::log_query::prune_empty_retention_containers(
                             &worktree,
                         ) && !matches!(error, LogQueryError::LogNotFound) {
                             push_maintenance_error(
