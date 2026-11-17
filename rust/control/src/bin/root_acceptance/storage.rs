@@ -3121,6 +3121,14 @@ pub(super) fn worktrees_and_backup_floor(world: &mut World) -> Result<(), String
         "bounded dirty worktree registration did not preserve blockers: {}",
         bounded_json(&dirty_intent)
     );
+    // The large evidence journey runs discovery and retention after this
+    // fixture's first snapshot. Bind its review to the current artifact at
+    // the mutation boundary, preserving the service's revision guard.
+    let ignored = mcp(
+        world,
+        "storage_artifact_get",
+        json!({"artifact_id":ignored["artifact_id"]}),
+    )?;
     let ignored_intent = mcp(
         world,
         "storage_register",
