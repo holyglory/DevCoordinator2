@@ -111,6 +111,19 @@ export async function verifyProjects({page,browser,base,call,request,check,cooki
     const data=await call('project.status',{project_id:id});
     assert.ok(data.storage.unmeasured_count>0);
   },page);
+  await check('Phone storage keeps its caption readable and labels every amount',async()=>{
+    try {
+      await page.setViewportSize({width:390,height:664});
+      for(const theme of ['light','dark']) {
+        await page.evaluate(theme=>{document.documentElement.dataset.theme=theme;localStorage.setItem('dc2-theme',theme);},theme);
+        const facts=await page.locator('.pe-storage-table').evaluate(table=>{
+          const caption=table.querySelector('caption'),style=getComputedStyle(caption);
+          return {captionHeight:caption.getBoundingClientRect().height,lineHeight:parseFloat(style.lineHeight)||parseFloat(style.fontSize)*1.5,rows:[...table.querySelectorAll('tbody tr')].map(row=>row.innerText)};
+        });
+        assert.ok(facts.captionHeight<=facts.lineHeight*2+1&&facts.rows.length>0&&facts.rows.every(row=>/Source\s*(?:[\d.,]+\s*[KMGT]?i?B|Not measured)/.test(row)&&/Builds\s*(?:[\d.,]+\s*[KMGT]?i?B|Not measured)/.test(row)),JSON.stringify({theme,...facts}));
+      }
+    } finally {await page.setViewportSize({width:1440,height:900});}
+  },page);
   await check('Project history records actual metadata changes',async()=>{
     await page.locator('[data-pe-view=history]').click();
     await page.locator('.pe-history li').first().waitFor();
@@ -226,9 +239,29 @@ export async function verifyProjects({page,browser,base,call,request,check,cooki
   },page);
   await check('Keyboard tree navigation keeps selection accessible',async()=>{
     await page.setViewportSize({width:1440,height:1024});await page.goto(route);await branch().waitFor();
-    const first=page.locator('.pe-remote [role=treeitem]').first();await first.focus();await page.keyboard.press('ArrowDown');
-    assert.ok(await page.locator('.pe-remote [role=treeitem]:focus').count());
-    await page.keyboard.press('End');assert.ok(await page.locator('.pe-remote [role=treeitem]:focus').count());
+    for(const selector of ['.pe-remote','.pe-local']) {
+      await page.locator(`${selector} [role=treeitem]`).first().focus();
+      for(const key of ['ArrowDown','End','Home']) {
+        await page.keyboard.press(key);
+        const focused=page.locator(`${selector} [role=treeitem]:focus`);assert.equal(await focused.count(),1);
+        const bounds=await focused.evaluate(node=>({row:node.getBoundingClientRect().toJSON(),pane:node.closest('[role=tree]').getBoundingClientRect().toJSON()}));
+        assert.ok(bounds.row.top>=bounds.pane.top-1&&bounds.row.bottom<=bounds.pane.bottom+1,JSON.stringify({selector,key,...bounds}));
+      }
+    }
+  },page);
+  await check('Phone editing reaches Save and Cancel without losing the entered metadata',async()=>{
+    await page.setViewportSize({width:390,height:664});await page.goto(route);await branch().waitFor();await branch().click();
+    await page.locator('[data-pe-edit]').click();
+    const owner=page.locator('[data-pe-editor] [name=owner]');await owner.fill('Phone editor verification');
+    const save=page.locator('[data-pe-editor] [type=submit]');await save.focus();await save.click({trial:true});await save.click();
+    await page.locator('[data-pe-editor]').waitFor({state:'detached'});
+    await page.locator('[data-pe-inspector]').getByText('Phone editor verification',{exact:true}).waitFor();
+    await page.locator('[data-pe-edit]').click();
+    await owner.fill('Discard this phone draft');
+    const cancel=page.locator('[data-pe-cancel-edit]');await cancel.focus();await cancel.click({trial:true});await cancel.click();
+    await page.locator('[data-pe-editor]').waitFor({state:'detached'});
+    await page.locator('[data-pe-inspector]').getByText('Phone editor verification',{exact:true}).waitFor();
+    assert.equal(await page.locator('[data-pe-inspector]').getByText('Discard this phone draft',{exact:true}).count(),0);
   },page);
   if(process.env.PROJECT_EXPLORER_FORMAL_BINARY) await check('Project explorer fresh formal light and dark coverage',async()=>{
     const binary=process.env.PROJECT_EXPLORER_FORMAL_BINARY;const pw=process.env.CONSOLE_VERIFY_PLAYWRIGHT||'/opt/holyskills-validation-runtime';

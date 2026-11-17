@@ -36,7 +36,7 @@
   "projectRoots": "Project folders",
   "outsideRoots": "Outside project folders",
   "measuredLocalSpace": "Measured local space",
-  "unmeasuredCount": "{count} items not measured",
+  "unmeasuredCount": "Unmeasured items: {count}",
   "githubTree": "GitHub branches",
   "remoteDescription": "Source repositories and remote branches",
   "onThisServer": "On this server",
