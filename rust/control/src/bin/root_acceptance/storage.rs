@@ -2270,7 +2270,7 @@ fn targeted_worktree_revalidation(
         } else {
             let metadata = fs::symlink_metadata(path).map_err(|e| e.to_string())?;
             let replacement_key = format!("fs:{}:{}", metadata.dev(), metadata.ino());
-            let owners:i64=world.authority()?.read(|db|Ok(db.query_row("SELECT COUNT(*) FROM storage_artifacts WHERE projection_resource_key=$1 AND (record_json->>'disposal_approved')::boolean",[replacement_key],|row|row.get(0))?)).map_err(|e|e.to_string())?;
+            let owners:i64=world.authority()?.read(|db|Ok(db.query_row("SELECT COUNT(*) FROM storage_artifacts WHERE removed_at_ms IS NULL AND projection_resource_key=$1 AND (record_json->>'disposal_approved')::boolean",[replacement_key],|row|row.get(0))?)).map_err(|e|e.to_string())?;
             ensure!(owners == 0, "replacement inherited disposal ownership");
             fs::remove_dir(path).map_err(|e| e.to_string())?;
         }
